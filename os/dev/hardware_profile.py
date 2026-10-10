@@ -14,7 +14,23 @@ DEFINITION_PATH = Path("usr/lib/tilo/hardware-profile-definition.json")
 ARCH_CONFIG = {"x86_64": "CONFIG_X86_64=y", "aarch64": "CONFIG_ARM64=y"}
 FIELDS = {"schema_version", "id", "architecture", "devicetree", "firmware"}
 FIELDS_V2 = FIELDS | {"system_firmware"}
-OPTIONAL_V2 = {"boot_modules", "always_on", "kernel_args", "wifi_wake_on_wlan", "internal_keyboards"}
+OPTIONAL_V2 = {"boot_modules", "always_on", "kernel_args", "wifi_wake_on_wlan", "internal_keyboards", "firmware_exclude"}
+# Fedora firmware RPMs a board layer may remove (`firmware_exclude`), each with
+# the /usr/lib/firmware subtrees it owns. Closed on purpose: a board can only
+# drop vendor firmware known to be separable, and never one whose subtree its
+# own `system_firmware` or `firmware` names. Generic images exclude nothing.
+FIRMWARE_PACKAGE_TREES = {
+    "nvidia-gpu-firmware": ("nvidia",),
+    "amd-gpu-firmware": ("amdgpu", "radeon"),
+    "intel-gpu-firmware": ("i915", "xe"),
+    "intel-audio-firmware": ("intel/avs", "intel/sof", "intel/sof-ipc4", "intel/sof-tplg"),
+    "intel-npu-firmware": ("intel/vpu",),
+    "amd-ucode-firmware": ("amd-ucode",),
+    "mt7xxx-firmware": ("mediatek",),
+    "brcmfmac-firmware": ("brcm", "cypress"),
+    "nxpwireless-firmware": ("nxp",),
+    "tiwilink-firmware": ("ti-connectivity",),
+}
 INTERNAL_KEYBOARD_FIELDS = {"name", "bus", "vendor", "product", "devicetree_compatible"}
 PROFILE_PATH = Path("usr/lib/tilo/hardware-profile.json")
 PROFILE_FIELDS = {"schema_version", "id", "architecture", "devicetree", "devicetree_sha256", "target_update_ref"}
@@ -262,6 +278,18 @@ def validate_definition(data):
                for destination in destinations):
             raise ValueError("system firmware must not overlap local firmware destinations")
         system_paths.add(path)
+    excluded = data.get("firmware_exclude", [])
+    if not isinstance(excluded, list) or len(excluded) > len(FIRMWARE_PACKAGE_TREES):
+        raise ValueError("hardware definition firmware_exclude must be a bounded package list")
+    if len(set(map(str, excluded))) != len(excluded):
+        raise ValueError("hardware definition firmware_exclude packages must be unique")
+    needed = [*system_paths, *destinations]
+    for package in excluded:
+        if not isinstance(package, str) or package not in FIRMWARE_PACKAGE_TREES:
+            raise ValueError("hardware definition firmware_exclude names a package that may not be removed")
+        for tree in FIRMWARE_PACKAGE_TREES[package]:
+            if any(path == tree or path.startswith(tree + "/") or tree.startswith(path + "/") for path in needed):
+                raise ValueError(f"firmware_exclude {package} would remove firmware the definition names")
     boot_modules = data.get("boot_modules", [])
     if not isinstance(boot_modules, list) or len(boot_modules) > 64:
         raise ValueError("hardware definition boot modules must be a bounded name list")

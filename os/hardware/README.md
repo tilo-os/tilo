@@ -35,6 +35,12 @@ firmware manifest. Paths cannot be absolute, traverse directories, or contain
 shell metacharacters. Unknown fields and unsupported architectures fail.
 The optional `always_on` (version 2, default `false`) marks a board that is
 an always-on host rather than a personal computer; see the Orange Pi below.
+The optional `firmware_exclude` (version 2) names Fedora firmware RPMs the
+board layer removes (`os/dev/install-board-layer.sh`) because the board has no
+such hardware. Only packages in `FIRMWARE_PACKAGE_TREES`
+(`os/dev/hardware_profile.py`) are accepted, and a package whose firmware
+subtree the definition's own `system_firmware` or `firmware` names is refused.
+Generic images keep every package. lenovo-83ed drops about 190 MB this way.
 The optional `kernel_args` (version 2) lists kernel arguments the board
 needs, one unquoted token each. The preparer writes them to
 `/usr/lib/bootc/kargs.d/10-hardware-profile.toml`, after the image's own

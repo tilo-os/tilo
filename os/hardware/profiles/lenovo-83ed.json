@@ -17,6 +17,18 @@
     "regulatory.db",
     "regulatory.db.p7s"
   ],
+  "firmware_exclude": [
+    "nvidia-gpu-firmware",
+    "amd-gpu-firmware",
+    "intel-gpu-firmware",
+    "intel-audio-firmware",
+    "intel-npu-firmware",
+    "amd-ucode-firmware",
+    "mt7xxx-firmware",
+    "brcmfmac-firmware",
+    "nxpwireless-firmware",
+    "tiwilink-firmware"
+  ],
   "boot_modules": [
     "cfg80211",
     "mac80211",
