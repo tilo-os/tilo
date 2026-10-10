@@ -1286,8 +1286,7 @@ mod tests {
 
     /// A session broker without a channel service answers an endpoint's
     /// `channelKeysChanged` with a wait, not a refusal: a refusal makes the
-    /// endpoint ask the identity service for every route once a second
-    ///. The wait still ends when the slot it follows changes.
+    /// endpoint ask the identity service for every route once a second. The wait still ends when the slot it follows changes.
     #[test]
     fn a_session_broker_without_a_channel_service_keeps_key_follows_pending() {
         use std::future::Future as _;

@@ -151,8 +151,7 @@ containerfile="$repo/os/Containerfile"
 # replaces the context copy of its sources; make-plymouth-assets.py, which
 # rendered it inside the rootfs, no longer enters /usr/local/bin.
 # The app store arrives from the app-store stage, the builder's store with the
-# env-runtime's host-identical files left out and named in its host-sources
-#; the installed path is unchanged.
+# env-runtime's host-identical files left out and named in its host-sources; the installed path is unchanged.
 # tilo-network-start.service replaces tilo-network-start.timer: the network is
 # queued once logins are allowed instead of at OnBootSec=0, where it held the
 # greeter through network.target.

@@ -17,8 +17,7 @@
 //!
 //! A second scenario types: each keystroke is a retained delta followed by
 //! the toolkit's `Typing` and `Caret`, as the shell sends them. The caret
-//! and typing are held for the delta they follow and ride in its write
-//!, so a `tilo-relay/7` member receives a keystroke in one write
+//! and typing are held for the delta they follow and ride in its write, so a `tilo-relay/7` member receives a keystroke in one write
 //! where it took two or three. It prints one `KEYSTROKE_WRITES key=value …`
 //! line and gates the median keystroke.
 //!

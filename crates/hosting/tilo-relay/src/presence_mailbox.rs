@@ -1,5 +1,4 @@
-//! Presence on its way to one connection: coalesced, paced and batched
-//!.
+//! Presence on its way to one connection: coalesced, paced and batched.
 //!
 //! Every room a connection is subscribed to posts the presence it fans out
 //! into the connection's [`PresenceMailbox`] instead of its frame queue, and

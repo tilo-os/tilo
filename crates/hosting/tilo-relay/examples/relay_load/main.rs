@@ -1,5 +1,4 @@
-//! What an active collaborator costs a relay: the hosting-cost load bench
-//!.
+//! What an active collaborator costs a relay: the hosting-cost load bench.
 //!
 //! One relay runs in its own process, so its CPU time and memory are its
 //! own: this binary re-executes itself with `--serve`, which starts the

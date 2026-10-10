@@ -1389,8 +1389,7 @@ async fn replica(config_path: PathBuf) -> Result<()> {
     validate_home_peer_set(&bundle)?;
     // Held for the life of the process: the relay honours a ready status
     // only while this lock is held (or its stamp is a few seconds old), so
-    // the status is written when it changes rather than every second
-    //. Taken before the status is touched, so a second replica
+    // the status is written when it changes rather than every second. Taken before the status is touched, so a second replica
     // refused here cannot clobber a running one's status.
     let _alive = fs::full_replica::ReplicaLiveness::hold(&bundle.status_file)?;
     save_status(
