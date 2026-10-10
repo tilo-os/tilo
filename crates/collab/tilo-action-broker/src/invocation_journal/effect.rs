@@ -91,7 +91,8 @@ impl PreparedEffect {
             | InvocationOwner::AuthenticatedLocal {
                 root, agent: None, ..
             } => Some(super::super::principal_id_for_root(*root)),
-            InvocationOwner::AuthenticatedLocal {
+            InvocationOwner::NativeTask { agent, .. }
+            | InvocationOwner::AuthenticatedLocal {
                 agent: Some(agent), ..
             } => Some(format!("agent:{agent}")),
             // Its exact current task/source admission is checked by the observing caller.
