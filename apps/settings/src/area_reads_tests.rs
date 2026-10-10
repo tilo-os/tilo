@@ -245,6 +245,12 @@ fn a_window_publishes_every_area_a_little_after_its_first_frame() {
     }
     window.settle();
     let settled = published(&mut window);
+    // Compare with a window that reads first now, beside the one that has
+    // just read: the device's account file both take in is shared with
+    // the tests running beside this one.
+    let mut first = reading_first();
+    first.settle();
+    let whole = published(&mut first);
     if settled.0 != whole.0 {
         report_resource_difference(&settled.0, &whole.0);
     }
