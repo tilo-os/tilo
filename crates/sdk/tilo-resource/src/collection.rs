@@ -78,6 +78,26 @@ pub(crate) const VALUE: &str = "v";
 #[derive(Clone, Debug)]
 pub struct Collection<T> {
     items: Vec<Entry<T>>,
+    membership: Membership,
+}
+
+/// Which ids a [`Collection`] holds, in which order, as one value to
+/// compare: two collections (or one collection at two times) with the same
+/// membership hold the same ids in the same order. A list view keeps it to
+/// tell that a change left its rows as they were without comparing every
+/// id. Different memberships say nothing: the ids may still be the same.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Membership(u64);
+
+impl Membership {
+    /// The membership of every empty collection never changed since.
+    const EMPTY: Self = Self(0);
+
+    /// A membership no collection had before.
+    fn fresh() -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        Self(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -114,7 +134,10 @@ impl<T: PartialEq> PartialEq for Collection<T> {
 
 impl<T> Default for Collection<T> {
     fn default() -> Self {
-        Self { items: Vec::new() }
+        Self {
+            items: Vec::new(),
+            membership: Membership::EMPTY,
+        }
     }
 }
 
@@ -130,6 +153,17 @@ impl<T> Collection<T> {
 
     pub fn is_empty(&self) -> bool {
         self.items.is_empty()
+    }
+
+    /// Which ids the collection holds, in which order ([`Membership`]).
+    /// Editing an item keeps it; adding, removing or moving one changes it.
+    pub fn membership(&self) -> Membership {
+        self.membership
+    }
+
+    /// The ids or their order may have changed.
+    fn moved(&mut self) {
+        self.membership = Membership::fresh();
     }
 
     /// Items in collection order.
@@ -190,6 +224,7 @@ impl<T> Collection<T> {
     /// Append an item. Returns its id for chaining.
     pub fn push(&mut self, id: Id, item: T) -> Id {
         self.items.push(Entry::new(id.clone(), item));
+        self.moved();
         id
     }
 
@@ -197,11 +232,13 @@ impl<T> Collection<T> {
     pub fn insert(&mut self, index: usize, id: Id, item: T) -> Id {
         let index = index.min(self.items.len());
         self.items.insert(index, Entry::new(id.clone(), item));
+        self.moved();
         id
     }
 
     pub fn remove(&mut self, id: &Id) -> Option<T> {
         let index = self.position(id)?;
+        self.moved();
         Some(self.items.remove(index).item)
     }
 
@@ -214,11 +251,17 @@ impl<T> Collection<T> {
         entry.key = None;
         let index = index.min(self.items.len());
         self.items.insert(index, entry);
+        self.moved();
         true
     }
 
     pub fn retain(&mut self, mut keep: impl FnMut(&Id, &T) -> bool) {
+        let before = self.items.len();
         self.items.retain(|entry| keep(&entry.id, &entry.item));
+        // Retaining only removes: the same length is the same ids.
+        if self.items.len() != before {
+            self.moved();
+        }
     }
 
     pub fn sort_by(&mut self, mut compare: impl FnMut(&T, &T) -> std::cmp::Ordering) {
@@ -226,6 +269,7 @@ impl<T> Collection<T> {
         for entry in &mut self.items {
             entry.key = None;
         }
+        self.moved();
     }
 }
 
@@ -304,6 +348,7 @@ impl<T> FromIterator<(Id, T)> for Collection<T> {
                 .into_iter()
                 .map(|(id, item)| Entry::new(id, item))
                 .collect(),
+            membership: Membership::fresh(),
         }
     }
 }
@@ -380,7 +425,10 @@ impl<T: Model> Model for Collection<T> {
                     .map_err(|error| error.at(stored.id.as_str()))
             })
             .collect::<Result<Vec<_>, _>>()
-            .map(|items| Self { items })
+            .map(|items| Self {
+                items,
+                membership: Membership::fresh(),
+            })
     }
 
     fn refresh(
@@ -404,6 +452,7 @@ impl<T: Model> Model for Collection<T> {
             let Some((Value::Object(ObjType::Map), entry)) = doc.get(id, key)? else {
                 if let Some(position) = position {
                     self.items.remove(position);
+                    self.moved();
                 }
                 continue;
             };
@@ -428,11 +477,16 @@ impl<T: Model> Model for Collection<T> {
             };
             match position.and_then(|position| self.items.get_mut(position)) {
                 Some(existing) => *existing = fresh,
-                None => self.items.push(fresh),
+                None => {
+                    self.items.push(fresh);
+                    self.moved();
+                }
             }
             reorder = true;
         }
+        // A moved order key or a new entry: sorting may move items.
         if reorder {
+            self.moved();
             self.items
                 .sort_by(|a, b| a.key.cmp(&b.key).then_with(|| a.id.cmp(&b.id)));
         }
