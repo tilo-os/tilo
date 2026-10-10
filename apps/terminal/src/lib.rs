@@ -55,7 +55,6 @@ mod inner {
     include!("target_ui.rs");
 }
 
-#[cfg(unix)]
 mod async_open;
 pub mod sessions;
 
@@ -134,11 +133,19 @@ impl HostedProcessServices {
         target: &target::SessionTarget,
         requested_by: Requester,
         relay_session: Option<&str>,
+        cancellation: Option<&runtime_portal::pending_connection::Cancellation>,
     ) -> Result<TerminalBackend, OpenError> {
         let stream = first
             .and_then(|services| services.ush)
             .or_else(|| Self::default().ush)
-            .ok_or_else(|| OpenError::Unavailable("the shell runtime is not running".into()))?;
+            .ok_or_else(|| {
+                OpenError::NoRuntime("the required ush supervisor is not running".into())
+            })?;
+        if let Some(cancellation) = cancellation {
+            cancellation
+                .track(&stream)
+                .map_err(|e| OpenError::Failed(e.to_string()))?;
+        }
         crate::inner::ush_backend_on(&stream, &[], target, requested_by, relay_session)
     }
 
@@ -418,9 +425,10 @@ impl HostedProcessServices {
         _target: &target::SessionTarget,
         _requested_by: Requester,
         _relay_session: Option<&str>,
+        _cancellation: Option<&runtime_portal::pending_connection::Cancellation>,
     ) -> Result<TerminalBackend, OpenError> {
-        Err(OpenError::Unavailable(
-            "Tilo hosted terminal service transport is unavailable here".into(),
+        Err(OpenError::NoRuntime(
+            HostedTerminalError::RequiredServiceMissing("ush").to_string(),
         ))
     }
 

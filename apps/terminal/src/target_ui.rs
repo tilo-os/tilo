@@ -261,12 +261,8 @@ impl TerminalWidget {
         attach: Option<&str>,
     ) {
         self.sessions.target = Some(target.clone());
-        #[cfg(unix)]
-        if let Some(socket) = self.service_lifetime.take() {
-            // Reader threads also hold a clone: dropping only the widget's
-            // descriptor would leave the old child alive.
-            let _ = socket.shutdown(std::net::Shutdown::Both);
-        }
+        // Dropping the platform lifetime also shuts down reader-held clones.
+        self.service_lifetime = None;
         if let Some(result) =
             self.sessions
                 .begin_open(target, requested_by, attach, Arc::clone(&self.waker))
