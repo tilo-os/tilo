@@ -67,6 +67,7 @@ impl super::App {
     /// [`Self::pump_hosted_model`], answering whether the app's record
     /// changed: a different document under the same widgets, which their
     /// damage does not describe.
+    #[cfg(feature = "native")]
     pub(super) fn pump_hosted_model_record_changed(&mut self) -> bool {
         self.pump_hosted_model_with_record(host_perf_baseline()).1
     }
