@@ -2,6 +2,7 @@
 //! mirror of the CRDT document (see `doc.rs`); state is authored here and
 //! flushed into Automerge so undo/redo and live collaboration work.
 
+use crate::actions::GraphKind;
 use crate::engine::{self, Ctx};
 
 /// Top-level app mode (segmented control in the header).
@@ -43,6 +44,14 @@ impl Mode {
             1 => Mode::Graph2d,
             2 => Mode::Graph3d,
             _ => Mode::Calc,
+        }
+    }
+    /// The graph list this mode plots, if it is a graph mode.
+    pub fn graph(self) -> Option<GraphKind> {
+        match self {
+            Mode::Calc => None,
+            Mode::Graph2d => Some(GraphKind::Curve2d),
+            Mode::Graph3d => Some(GraphKind::Surface3d),
         }
     }
 }
@@ -167,6 +176,36 @@ pub const DEMO_CURVES: [&str; 4] = ["(x^2+1)/(x-3)", "0.25*x^2-2", "sqrt(x+6)", 
 pub const DEMO_SURFACES: [&str; 2] = [DEFAULT_SURFACE, "sin(x)*cos(y)-3"];
 
 impl CalcModel {
+    /// The rows of a graph list.
+    pub fn graphs(&self, kind: GraphKind) -> &[PlotFn] {
+        match kind {
+            GraphKind::Curve2d => &self.funcs,
+            GraphKind::Surface3d => &self.surfaces,
+        }
+    }
+
+    pub fn graphs_mut(&mut self, kind: GraphKind) -> &mut Vec<PlotFn> {
+        match kind {
+            GraphKind::Curve2d => &mut self.funcs,
+            GraphKind::Surface3d => &mut self.surfaces,
+        }
+    }
+
+    /// The row of a graph list its editor edits.
+    pub fn active_graph(&self, kind: GraphKind) -> usize {
+        match kind {
+            GraphKind::Curve2d => self.active_fn,
+            GraphKind::Surface3d => self.active_surface,
+        }
+    }
+
+    pub fn active_graph_mut(&mut self, kind: GraphKind) -> &mut usize {
+        match kind {
+            GraphKind::Curve2d => &mut self.active_fn,
+            GraphKind::Surface3d => &mut self.active_surface,
+        }
+    }
+
     /// Rich starting content for tests and offline demos: a populated,
     /// lived-in calculator and graphs. The live app boots empty
     /// ([`CalcModel::default`]); a capture stages the same content through

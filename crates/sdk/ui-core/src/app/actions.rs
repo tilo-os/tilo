@@ -266,7 +266,7 @@ impl App {
             resources.extend(
                 snapshots
                     .into_iter()
-                    .flat_map(|snapshot| snapshot.resources),
+                    .flat_map(|snapshot| std::rc::Rc::unwrap_or_clone(snapshot.resources)),
             );
         }
         if let Ok(legacy) = crate::bound_dispatch::legacy_document::legacy_resources(
@@ -378,7 +378,7 @@ impl App {
             resources.extend(
                 snapshots
                     .into_iter()
-                    .flat_map(|snapshot| snapshot.resources),
+                    .flat_map(|snapshot| std::rc::Rc::unwrap_or_clone(snapshot.resources)),
             );
         }
         if let Ok(legacy) = crate::bound_dispatch::legacy_document::legacy_resources(
@@ -618,7 +618,7 @@ impl App {
                 }
                 continue;
             }
-            for resource in component.resources {
+            for resource in std::rc::Rc::unwrap_or_clone(component.resources) {
                 if let Ok(resource) = self
                     .actions
                     .bound_publication
@@ -1976,7 +1976,7 @@ impl App {
         let mut candidates = snapshots
             .iter()
             .filter(|snapshot| snapshot.binding.same_component(binding))
-            .flat_map(|snapshot| &snapshot.resources)
+            .flat_map(|snapshot| snapshot.resources.iter())
             .filter(|resource| {
                 resource.actions.iter().any(|spec| {
                     spec.id == action && spec.kind == tilo_actions::OperationKind::Document
@@ -4417,7 +4417,7 @@ impl App {
                     &target.address.address.action,
                 )
             {
-                snapshot.resources.push(resource);
+                std::rc::Rc::make_mut(&mut snapshot.resources).push(resource);
             }
         }
         if let Some(palette) = self.actions.action_palette.as_mut() {
