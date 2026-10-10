@@ -219,10 +219,6 @@ pub struct FileArea {
     durable: bool,
 }
 
-fn hex(key: &AreaKey) -> String {
-    hex::encode(key)
-}
-
 fn db_error(error: impl std::fmt::Display) -> io::Error {
     io::Error::other(error.to_string())
 }
@@ -386,7 +382,7 @@ impl FileArea {
 
     /// The file holding `key`'s bytes.
     pub fn path_of(&self, key: &AreaKey) -> PathBuf {
-        self.data.join(hex(key))
+        self.data.join(hex::encode(key))
     }
 
     pub fn budget(&self) -> u64 {
@@ -906,7 +902,7 @@ impl FileArea {
 
     fn staging_path(&self, key: &AreaKey) -> PathBuf {
         let n = self.staging.fetch_add(1, Ordering::Relaxed);
-        self.data.join(format!(".{}.{n}.staging", hex(key)))
+        self.data.join(format!(".{}.{n}.staging", hex::encode(key)))
     }
 
     fn install(

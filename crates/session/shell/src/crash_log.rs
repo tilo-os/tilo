@@ -217,11 +217,7 @@ fn gnu_build_id(mut notes: &[u8]) -> Option<String> {
         let name = notes.get(12..name_end)?;
         let desc = notes.get(desc_start..desc_end)?;
         if kind == NT_GNU_BUILD_ID && name == b"GNU\0" {
-            let mut hex = String::with_capacity(desc.len().saturating_mul(2));
-            for byte in desc {
-                let _ = write!(hex, "{byte:02x}");
-            }
-            return Some(hex);
+            return Some(hex::encode(desc));
         }
         notes = notes.get(desc_end.checked_next_multiple_of(4)?..)?;
     }
