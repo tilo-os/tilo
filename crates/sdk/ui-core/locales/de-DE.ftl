@@ -470,3 +470,9 @@ device-display-session-disconnected = Die Verbindung zur Tilo-Sitzung wurde getr
 
 app-activate-window = Dieses Fenster anzeigen
 app-activate-window-description = Die Plattform bitten, das vorhandene Fenster anzuzeigen, ohne den Dokumentbesitzer zu wechseln.
+
+display-arrangement-offline = Offline
+display-arrangement-excluded = Nicht im Layout
+display-arrangement-offline-excluded = Offline · Nicht im Layout
+display-arrangement-item-status = { $position }; { $status }
+display-arrangement-caption-status = { $status } · { $name }
