@@ -74,9 +74,20 @@ pub(super) fn configured_shortcut_action(
     logical_key: &Key,
     modifiers: Modifiers,
 ) -> Option<ShortcutAction> {
-    shortcuts.bindings.iter().find_map(|(action, chord)| {
-        shortcut_chord_matches(logical_key, modifiers, chord).then_some(*action)
-    })
+    shortcuts
+        .bindings
+        .iter()
+        .find_map(|(action, chord)| {
+            shortcut_chord_matches(logical_key, modifiers, chord).then_some(*action)
+        })
+        .or_else(|| is_bare_f11(logical_key, modifiers).then_some(ShortcutAction::ToggleFullscreen))
+}
+
+/// F11 is every desktop's full-screen key; it toggles the same real
+/// fullscreen as the configurable chord, unless the person bound it to
+/// something else.
+fn is_bare_f11(logical_key: &Key, modifiers: Modifiers) -> bool {
+    *logical_key == Key::Named(NamedKey::F11) && modifiers.state().is_empty()
 }
 
 #[cfg(test)]
@@ -244,4 +255,33 @@ pub(super) fn shortcut_reference_group_height(compact: bool) -> f64 {
 
 pub(super) fn shortcut_guide_chord(chord: &KeyChord) -> String {
     keyboard_shortcuts::chord_text(chord)
+}
+
+#[cfg(test)]
+mod f11_tests {
+    use super::*;
+
+    #[test]
+    fn bare_f11_toggles_fullscreen_unless_bound_to_something_else() {
+        let f11 = Key::Named(NamedKey::F11);
+        let none = Modifiers::default();
+        let mut shortcuts = ShortcutConfig::default();
+        assert_eq!(
+            configured_shortcut_action(&shortcuts, &f11, none),
+            Some(ShortcutAction::ToggleFullscreen)
+        );
+        let ctrl = Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
+        assert_eq!(configured_shortcut_action(&shortcuts, &f11, ctrl), None);
+        shortcuts
+            .set(
+                ShortcutAction::Search,
+                KeyChord::parse("F11").expect("F11 parses"),
+            )
+            .expect("F11 is free");
+        assert_eq!(
+            configured_shortcut_action(&shortcuts, &f11, none),
+            Some(ShortcutAction::Search),
+            "a person's own binding wins"
+        );
+    }
 }

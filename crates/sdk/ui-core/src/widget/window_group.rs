@@ -158,6 +158,7 @@ impl WindowGroup {
         let shift = vello::kurbo::Vec2::new(dx, 0.0);
         self.rect = self.rect + shift;
         self.restore_rect = self.restore_rect + shift;
+        self.fullscreen_rect = self.fullscreen_rect + shift;
         self.close_rect = self.close_rect + shift;
         self.bar.offset_layout(dx);
         for (_, host) in &mut self.hosts {
@@ -225,6 +226,10 @@ pub struct WindowGroup {
     pub focused: bool,
     restore_rect: Rect,
     restore_hover: bool,
+    /// The `[Full screen]` chip beside Restore, and its pending request.
+    fullscreen_rect: Rect,
+    fullscreen_hover: bool,
+    pending_fullscreen_request: bool,
     close_rect: Rect,
     close_hover: bool,
     last_cursor: Point,
@@ -423,6 +428,9 @@ impl WindowGroup {
             focused: false,
             restore_rect: Rect::ZERO,
             restore_hover: false,
+            fullscreen_rect: Rect::ZERO,
+            fullscreen_hover: false,
+            pending_fullscreen_request: false,
             close_rect: Rect::ZERO,
             close_hover: false,
             last_cursor: Point::ZERO,
@@ -895,6 +903,16 @@ impl WindowGroup {
         self.bar.take_detach()
     }
 
+    /// The person asked, from the maximized chrome, for real fullscreen.
+    pub fn take_pending_fullscreen_request(&mut self) -> bool {
+        std::mem::take(&mut self.pending_fullscreen_request)
+    }
+
+    /// Painted `[Full screen]` chip of a maximized group; zero when hidden.
+    pub fn fullscreen_rect(&self) -> Rect {
+        self.fullscreen_rect
+    }
+
     pub fn take_pending_maximize_change(&mut self) -> Option<bool> {
         self.pending_maximize_change.take()
     }
@@ -1062,6 +1080,9 @@ impl WindowGroup {
             focused: false,
             restore_rect: Rect::ZERO,
             restore_hover: false,
+            fullscreen_rect: Rect::ZERO,
+            fullscreen_hover: false,
+            pending_fullscreen_request: false,
             close_rect: Rect::ZERO,
             close_hover: false,
             last_cursor: Point::ZERO,
@@ -1452,6 +1473,7 @@ impl WindowGroup {
                 self.grip_dirty |= hover != self.hover_resize;
                 self.hover_resize = hover;
                 self.restore_hover = self.maximized && self.restore_rect.contains(pt);
+                self.fullscreen_hover = self.maximized && self.fullscreen_rect.contains(pt);
                 self.close_hover = self.maximized && self.close_rect.contains(pt);
                 if self.resize_origin.is_some() {
                     self.update_resize(px_f32(pt.x));
@@ -1486,6 +1508,17 @@ impl WindowGroup {
                 self.maximized = false;
                 self.style_dirty = true;
                 self.pending_maximize_change = Some(false);
+                true
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } if !self.external_navigation
+                && self.maximized
+                && self.fullscreen_rect.contains(self.last_cursor) =>
+            {
+                self.pending_fullscreen_request = true;
                 true
             }
             WindowEvent::MouseInput {
@@ -1915,6 +1948,58 @@ impl WindowGroup {
             .max(icon_inset + MAXIMIZED_ICON_PX + icon_inset + f64::from(lw) + icon_inset);
         let restore_x0 = close_x0 - restore_w - f64::from(theme.tokens.spacing.s1);
         self.restore_rect = Rect::new(restore_x0, y0, restore_x0 + restore_w, y0 + pill_h);
+        let full_label = crate::i18n::widget_format("widget-maximized-fullscreen", &[]);
+        let (flw, flh) = tr.measure_style(&full_label, None, &title_style);
+        let full_w = MAXIMIZED_RESTORE_CHIP_W
+            .max(icon_inset + MAXIMIZED_ICON_PX + icon_inset + f64::from(flw) + icon_inset);
+        let full_x0 = restore_x0 - full_w - f64::from(theme.tokens.spacing.s1);
+        self.fullscreen_rect = Rect::new(full_x0, y0, full_x0 + full_w, y0 + pill_h);
+        crate::surface::shadow(
+            scene,
+            transform,
+            self.fullscreen_rect,
+            self.fullscreen_rect.height() / 2.0,
+            &theme.tokens.elevation.floating,
+        );
+        crate::widget::chip::paint_pill_body(
+            scene,
+            transform,
+            self.fullscreen_rect,
+            crate::widget::ChipStyle::Neutral,
+            self.fullscreen_hover,
+            theme,
+        );
+        let full_icon = Rect::new(
+            self.fullscreen_rect.x0 + icon_inset,
+            self.fullscreen_rect.center().y - MAXIMIZED_ICON_PX / 2.0,
+            self.fullscreen_rect.x0 + icon_inset + MAXIMIZED_ICON_PX,
+            self.fullscreen_rect.center().y + MAXIMIZED_ICON_PX / 2.0,
+        );
+        icons::draw_icon(
+            scene,
+            transform,
+            full_icon,
+            icons::Icon::Maximize2,
+            theme.tokens.colors.text_primary,
+            icons::LUCIDE_DEFAULT_STROKE_PX,
+        );
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "Affine `*` composes floating-point transform matrices, not integer arithmetic"
+        )]
+        let full_label_transform = transform
+            * vello::kurbo::Affine::translate((
+                full_icon.x1 + f64::from(theme.tokens.spacing.s2),
+                self.fullscreen_rect.center().y - f64::from(flh) / 2.0,
+            ));
+        tr.draw_style(
+            scene,
+            &full_label,
+            theme.tokens.colors.text_primary,
+            full_label_transform,
+            None,
+            &title_style,
+        );
 
         crate::surface::shadow(
             scene,
@@ -2574,6 +2659,7 @@ impl Widget for WindowGroup {
             self.draw_maximized_chrome(scene, transform, tr, theme);
         } else {
             self.restore_rect = Rect::ZERO;
+            self.fullscreen_rect = Rect::ZERO;
             self.close_rect = Rect::ZERO;
         }
 
@@ -3739,6 +3825,31 @@ mod tests {
         };
 
         (g, taffy, group_node, moved, press)
+    }
+
+    /// The expanded chip row carries a `[Full screen]` entry beside
+    /// Restore; pressing it asks for real fullscreen once.
+    #[test]
+    fn the_expanded_chrome_offers_full_screen_beside_restore() {
+        let (mut g, taffy, group_node, _moved, press) = open_maximize_chip();
+        let theme = Theme::dark();
+        g.maximized = true;
+        g.last_cursor = Point::new(g.rect.x0, g.rect.y0);
+        g.draw_maximized_chrome(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &theme,
+        );
+        let chip = g.fullscreen_rect();
+        assert!(chip.width() > 0.0, "the chip is drawn");
+        assert_eq!(chip.y0, g.restore_rect.y0, "one row with Restore");
+        assert!(chip.x1 <= g.restore_rect.x0, "left of Restore");
+        assert!(!g.take_pending_fullscreen_request());
+        g.last_cursor = chip.center();
+        assert!(dispatch_at(&mut g, &taffy, group_node, &press));
+        assert!(g.take_pending_fullscreen_request());
+        assert!(!g.take_pending_fullscreen_request(), "drained once");
     }
 
     #[test]
