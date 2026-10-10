@@ -63,8 +63,10 @@ pub struct FileTask {
 /// the filesystem changes queued from Files.
 #[derive(Model, Default, Clone, Debug, PartialEq)]
 pub struct FileExplorer {
-    /// The bookmarked places, in order. Each is stored under an id derived
-    /// from the place, so two people pinning the same folder pin it once.
+    /// The bookmarked places, in order.
+    ///
+    /// Each is stored under an id derived from the place, so two people
+    /// pinning the same folder pin it once.
     pub places: Collection<Bookmark>,
     /// Filesystem changes, each settled by its device with what it changed.
     pub ops: Outbox<FileTask, Vec<Change>>,
@@ -376,39 +378,6 @@ impl FileExplorer {
         receipt: crate::files_app::ClipboardReceipt,
     ) -> Result<(), Refusal> {
         record_native(cx, ops, device, &receipt)
-    }
-
-    /// Record that the native host took back transfers before it could
-    /// answer (a restart, a killed process): the pending reverts of those
-    /// transfers settle as done, from the host's durable receipts.
-    #[action(
-        id = "record-recovered-undos",
-        label = "Recover clipboard transfers",
-        external
-    )]
-    pub fn record_recovered(
-        &mut self,
-        #[param("Clipboard operations the host's durable receipts show taken back")]
-        operations: Vec<String>,
-    ) -> Result<(), Refusal> {
-        let recovered: Vec<(Id, String)> = self
-            .ops
-            .pending()
-            .filter_map(|(id, task)| {
-                let (operation, redo) = native_compensation(self, task)?;
-                (!redo && operations.contains(&operation)).then(|| (id.clone(), operation))
-            })
-            .collect();
-        if recovered.is_empty() {
-            return Err(Refusal::new("no pending undo of those transfers"));
-        }
-        for (id, operation) in recovered {
-            self.ops.settle(
-                &id,
-                Settled::Done(vec![Change::ClipboardUndo { operation }]),
-            );
-        }
-        Ok(())
     }
 
     /// Take back a filesystem change: the device that made it compensates
@@ -803,15 +772,27 @@ impl ResourceSurface<FileExplorer, FilesEffect> for FileExplorerWidget {
                         // An Undo the host carried out before it could answer
                         // (a restart, a killed process) is settled from its
                         // durable receipt.
-                        let pending = cx.live().with(|state| {
-                            state.ops.pending().any(|(_, task)| {
-                                native_compensation(state, task).is_some_and(|(operation, redo)| {
-                                    !redo && operations.contains(&operation)
+                        let recovered: Vec<(Id, String)> = cx.live().with(|state| {
+                            state
+                                .ops
+                                .pending()
+                                .filter_map(|(id, task)| {
+                                    let (operation, redo) = native_compensation(state, task)?;
+                                    (!redo && operations.contains(&operation))
+                                        .then(|| (id.clone(), operation))
                                 })
-                            })
+                                .collect()
                         });
-                        if pending {
-                            cx.invoke(FileExplorer::RECORD_RECOVERED.with(operations));
+                        for (id, operation) in recovered {
+                            cx.invoke(
+                                FileExplorer::paths()
+                                    .ops
+                                    .settle(
+                                        &id,
+                                        &Settled::Done(vec![Change::ClipboardUndo { operation }]),
+                                    )
+                                    .into(),
+                            );
                         }
                         if let Some(error) = value.get("error").and_then(serde_json::Value::as_str)
                         {

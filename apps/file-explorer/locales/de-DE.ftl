@@ -627,7 +627,6 @@ file-explorer-trash = Dateien in den Papierkorb verschoben
 file-explorer-move = Dateien nach { $to } verschoben
 file-explorer-copy = Dateien nach { $to } kopiert
 file-explorer-revert = Eine Dateiänderung zurückgenommen
-file-explorer-record-recovered-undos = Unterbrochene Zwischenablage-Übertragungen wiederhergestellt
 
 files-native-trash-delete-unavailable = Diese Objekte können wiederhergestellt werden. Dauerhaftes Löschen ist hier nicht verfügbar.
 files-user-trash-unavailable = Dein Papierkorb ist in diesem Arbeitsbereich nicht verfügbar.
