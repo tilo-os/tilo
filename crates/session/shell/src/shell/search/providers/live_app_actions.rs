@@ -276,6 +276,7 @@ pub struct LiveAppActionsProvider {
     service_pages: RefCell<HashMap<ServiceCacheKey, CataloguePage>>,
     service_pending: RefCell<HashMap<ServiceCacheKey, PendingDirectoryPage>>,
     service_context: RefCell<Option<(String, String, u64, u64)>>,
+    service_source_revision: RefCell<Option<String>>,
     /// One bit per closed observation, bounded by the same service-page keys.
     /// Repeated headless catalogue surveys must not flood the production log.
     service_diagnostics: RefCell<HashMap<ServiceCacheKey, u16>>,
@@ -573,6 +574,7 @@ impl LiveAppActionsProvider {
             service_pages: RefCell::new(HashMap::new()),
             service_pending: RefCell::new(HashMap::new()),
             service_context: RefCell::new(None),
+            service_source_revision: RefCell::new(None),
             service_diagnostics: RefCell::new(HashMap::new()),
             directory_query: RefCell::new(None),
             resource_kinds: vec![
@@ -1063,9 +1065,11 @@ impl LiveAppActionsProvider {
 
     fn poll_service_pages_at(&self, now: Instant) {
         let mut service_ready = Vec::new();
+        let mut retry_projection = false;
         self.service_pending.borrow_mut().retain(|key, pending| {
             if pending.deadline <= now {
                 self.report_service_diagnostic(key, 1 << 6, "service_page", "timed_out");
+                retry_projection = true;
                 return false;
             }
             match pending.receiver.poll_ready() {
@@ -1075,23 +1079,51 @@ impl LiveAppActionsProvider {
                 }
                 PendingPoll::Ready(Ok(_)) => {
                     self.report_service_diagnostic(key, 1 << 5, "service_page", "stale");
+                    retry_projection = true;
                     false
                 }
                 PendingPoll::Ready(Err(_)) => {
                     self.report_service_diagnostic(key, 1 << 4, "service_page", "failed");
+                    retry_projection = true;
                     false
                 }
                 PendingPoll::Abandoned => {
                     self.report_service_diagnostic(key, 1 << 7, "service_page", "uncertain");
+                    retry_projection = true;
                     false
                 }
                 PendingPoll::Waiting => true,
             }
         });
+        if retry_projection {
+            // An unanswered service page is not an authoritative empty result.
+            // Retire the projection so the next query owes a fresh bounded page.
+            self.auxiliary_snapshot.borrow_mut().take();
+            self.directory_epoch.fetch_add(1, Ordering::Relaxed);
+        }
         if !service_ready.is_empty() {
             let mut pages = self.service_pages.borrow_mut();
             let mut visible_projection_changed = false;
             for (key, page) in service_ready {
+                // Closed diagnostics distinguish a genuinely empty service
+                // projection from a first page stopped before service rows.
+                // Never log query text, identities, rows or opaque revisions.
+                tracing::debug!(
+                    target: SERVICE_DIAGNOSTIC_TARGET,
+                    stage = "service_page_shape",
+                    empty_needle = key.2.is_empty(),
+                    row_count = page.rows.len(),
+                    workspace_row_count = page.rows.iter().filter(|row| {
+                        tilo_actions::remote::workspace_provider_room(&row.provider)
+                            == Some(key.0.as_str())
+                    }).count(),
+                    exhausted = page.exhausted,
+                    next_cursor_present = !page.next_cursor.is_empty(),
+                    budget_exhausted = page.budget_exhausted,
+                    revision_changed = pages.get(&key)
+                        .is_some_and(|previous| previous.revision != page.revision),
+                    "native workspace service catalogue shape"
+                );
                 let page_is_visible = |page: &CataloguePage| {
                     page.rows.iter().any(|row| {
                         tilo_actions::remote::workspace_provider_room(&row.provider)
@@ -1182,8 +1214,23 @@ impl LiveAppActionsProvider {
                 )
             })
         };
+        // This is the providers-only projection's stamp, not the eager rows'
+        // digest. Sample after releasing the tree guard: admission re-reads it.
+        let source_revision = current.as_ref().and_then(|(room, actor, _, _)| {
+            let session = self.action_sessions.open(room, Some(actor)).ok()?;
+            let mut answer = session.query(CatalogueQuery {
+                max_results: 0,
+                ..CatalogueQuery::default()
+            });
+            match answer.poll_ready() {
+                PendingPoll::Ready(Ok(page)) if !page.stale_cursor => Some(page.revision),
+                _ => None,
+            }
+        });
         let previous_service_context = self.service_context.borrow().clone();
-        if previous_service_context.as_ref() != current.as_ref() {
+        if previous_service_context.as_ref() != current.as_ref()
+            || *self.service_source_revision.borrow() != source_revision
+        {
             self.service_pages.borrow_mut().clear();
             self.service_pending.borrow_mut().clear();
             self.service_diagnostics.borrow_mut().clear();
@@ -1191,6 +1238,7 @@ impl LiveAppActionsProvider {
                 self.directory_epoch.fetch_add(1, Ordering::Relaxed);
             }
             self.service_context.borrow_mut().clone_from(&current);
+            self.service_source_revision.replace(source_revision);
         }
         self.service_pages
             .borrow_mut()
@@ -1345,18 +1393,6 @@ impl LiveAppActionsProvider {
             #[cfg(test)]
             if let Some(probe) = self.auxiliary_service_probe.borrow_mut().take() {
                 probe();
-            }
-            let current_revision = self.directory_roots(ctx).1;
-            if !current_revision.is_empty()
-                && self
-                    .service_pages
-                    .borrow()
-                    .get(&key)
-                    .is_some_and(|page| page.revision != current_revision)
-            {
-                self.service_pages.borrow_mut().remove(&key);
-                self.service_pending.borrow_mut().remove(&key);
-                self.directory_epoch.fetch_add(1, Ordering::Relaxed);
             }
             self.request_service_page(&room, &workspace_actor, needle);
             if let Some(page) = self.service_pages.borrow().get(&key) {
@@ -3596,6 +3632,7 @@ pub(crate) fn fixture_with_directory_page(
 mod tests {
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
+    use std::sync::atomic::Ordering;
     use std::time::{Duration, Instant};
 
     use super::{
@@ -4020,6 +4057,112 @@ mod tests {
                 !registry.indexes_settling(&args),
                 "the actual completed workspace-service listing may settle"
             );
+        }
+    }
+
+    #[test]
+    fn unanswered_workspace_service_page_retries_before_listing_settles() {
+        for outcome in ["failed", "stale", "abandoned", "timed_out"] {
+            let chrome = chrome();
+            let owner = chrome.borrow().active_local_user();
+            chrome.borrow().tree_handle().write().desktop.workspaces[0].set_owner(owner);
+            let provider = LiveAppActionsProvider::new_with_fixture_identity(broker_for(&chrome));
+            let doc = AutoCommit::new();
+            let chrome_state = chrome.borrow();
+            let ctx = SearchContext {
+                query_scope: Some(crate::shell::chrome_state::SearchScope::All),
+                ..context("profile.save", &chrome_state, &doc)
+            };
+            provider.query_page(ctx, None, SearchBudget::PALETTE);
+            finish_local_index(&provider, &ctx);
+            assert!(provider.auxiliary_snapshot.borrow().is_some());
+            let key = provider
+                .service_pending
+                .borrow()
+                .keys()
+                .next()
+                .unwrap()
+                .clone();
+            let (sender, receiver) = pending();
+            let now = Instant::now();
+            provider.service_pending.borrow_mut().insert(
+                key,
+                PendingDirectoryPage {
+                    receiver,
+                    deadline: if outcome == "timed_out" {
+                        now
+                    } else {
+                        now + Duration::from_secs(3)
+                    },
+                    initial_page: true,
+                },
+            );
+            let unanswered = match outcome {
+                "failed" => {
+                    sender.complete(Err(tilo_actions::remote::ActionHostError::Unavailable {
+                        reason: "source changed during listing".into(),
+                    }));
+                    None
+                }
+                "stale" => {
+                    sender.complete(Ok(CataloguePage {
+                        stale_cursor: true,
+                        ..CataloguePage::default()
+                    }));
+                    None
+                }
+                "abandoned" => {
+                    drop(sender);
+                    None
+                }
+                "timed_out" => Some(sender),
+                _ => unreachable!(),
+            };
+            let epoch = provider.directory_epoch.load(Ordering::Relaxed);
+            provider.poll_service_pages_at(now);
+            assert!(provider.service_pending.borrow().is_empty());
+            assert!(provider.auxiliary_snapshot.borrow().is_none());
+            assert!(provider.directory_epoch.load(Ordering::Relaxed) > epoch);
+            let retried = provider.query_page(ctx, None, SearchBudget::PALETTE);
+            assert!(
+                retried
+                    .results
+                    .iter()
+                    .all(|row| !row.id.starts_with("service\u{1f}"))
+            );
+            assert!(!provider.service_pending.borrow().is_empty());
+            assert!(
+                provider.index_settling(&ctx),
+                "{outcome}: a fresh page is still owed"
+            );
+            let deadline = Instant::now()
+                .checked_add(Duration::from_secs(3))
+                .expect("the fixture deadline fits the monotonic clock");
+            loop {
+                let completed = provider.query_page(ctx, None, SearchBudget::PALETTE);
+                if completed
+                    .results
+                    .iter()
+                    .any(|row| row.id.ends_with("\u{1f}profile.save"))
+                {
+                    break;
+                }
+                assert!(
+                    provider.index_settling(&ctx),
+                    "{outcome}: the unanswered real broker page cannot settle"
+                );
+                assert!(
+                    Instant::now() < deadline,
+                    "{outcome}: the actual broker profile action did not arrive"
+                );
+                std::thread::yield_now();
+            }
+            finish_local_index(&provider, &ctx);
+            assert!(
+                !provider.index_settling(&ctx),
+                "{outcome}: actual broker rows settled"
+            );
+            drop(unanswered);
         }
     }
 

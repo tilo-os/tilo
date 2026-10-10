@@ -82,8 +82,15 @@ enum DirectoryResolutionMode {
 struct EagerCatalogueRevision {
     surfaces: u64,
     directories: u64,
-    authority: Option<(u64, u64)>,
+    authority: Option<EagerAuthorityRevision>,
     policy_epoch: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct EagerAuthorityRevision {
+    room_epoch: u64,
+    external_revision: u64,
+    next_expiry: Option<u64>,
 }
 
 impl EagerCatalogueRevision {
@@ -99,11 +106,19 @@ impl EagerCatalogueRevision {
         let contents = blake3::hash(&projected).to_hex();
         let authority = self.authority.map_or_else(
             || "none".into(),
-            |(room, external)| format!("{room}.{external}"),
+            |authority| {
+                let expiry = authority
+                    .next_expiry
+                    .map_or_else(|| "none".into(), |expiry| expiry.to_string());
+                format!(
+                    "{}.{}.{expiry}",
+                    authority.room_epoch, authority.external_revision
+                )
+            },
         );
         Ok(format!(
-            "{}.{}.{authority}.{contents}",
-            self.surfaces, self.directories
+            "{}.{}.{authority}.{}.{contents}",
+            self.surfaces, self.directories, self.policy_epoch
         ))
     }
 }
@@ -1176,13 +1191,31 @@ impl CapnpBrokerState {
     /// Every source that can change an eager catalogue page. The authority
     /// revisions are sampled from the same committed tree that filters its
     /// rows; inability to observe that tree cannot produce a reusable page.
-    fn eager_catalogue_revision(&self) -> Result<EagerCatalogueRevision, ActionHostError> {
+    fn eager_catalogue_revision(
+        &self,
+        caller: &Caller,
+    ) -> Result<EagerCatalogueRevision, ActionHostError> {
         let authority = self
             .membership
             .as_ref()
             .map(|membership| {
+                let now = self
+                    .policy_now_ns()
+                    .map_err(|_| ActionHostError::Unavailable {
+                        reason: "workspace authority is unavailable".into(),
+                    })?
+                    / 1_000_000_000;
                 membership
-                    .decide_in_tree(|tree| (tree.room_epoch(), tree.external_revision))
+                    .decide_in_tree(|tree| EagerAuthorityRevision {
+                        room_epoch: tree.room_epoch(),
+                        external_revision: tree.external_revision,
+                        next_expiry: tree
+                            .workspaces
+                            .iter()
+                            .filter(|workspace| Self::may_act_in(caller, workspace, now))
+                            .filter_map(|workspace| workspace.next_capability_expiry_after(now))
+                            .min(),
+                    })
                     .map_err(|_| ActionHostError::Unavailable {
                         reason: "workspace authority is unavailable".into(),
                     })
@@ -1254,12 +1287,12 @@ impl CapnpBrokerState {
             None if query.max_results == 0 => RowScope::None,
             None => RowScope::All,
         };
-        let before = match self.eager_catalogue_revision() {
+        let before = match self.eager_catalogue_revision(caller) {
             Ok(revision) => revision,
             Err(error) => return Pending::ready(Err(error)),
         };
         let (rows, providers) = self.eager_catalogue(caller, scope);
-        let after = match self.eager_catalogue_revision() {
+        let after = match self.eager_catalogue_revision(caller) {
             Ok(revision) if revision == before => revision,
             Ok(_) => {
                 return Pending::ready(Err(ActionHostError::Unavailable {
@@ -3941,21 +3974,31 @@ mod app_close_tests {
             max_results: 64,
             ..Default::default()
         };
+        let providers_query = tilo_actions::remote::CatalogueQuery {
+            max_results: 0,
+            ..Default::default()
+        };
         let restricted = answered(&state, &launcher, &caller, &query).0;
+        let providers_before = answered(&state, &launcher, &caller, &providers_query).0;
         assert!(!restricted.rows.iter().any(|row| {
             row.action
                 .as_ref()
                 .is_some_and(|action| action.address.action == APPLICATION_CLOSE_ACTION)
         }));
+        assert!(providers_before.rows.is_empty());
 
         control.set_wall_ns(12 * SECOND);
         let expired = answered(&state, &launcher, &caller, &query).0;
+        let providers_after = answered(&state, &launcher, &caller, &providers_query).0;
         assert_ne!(expired.revision, restricted.revision);
         assert!(expired.rows.iter().any(|row| {
             row.action
                 .as_ref()
                 .is_some_and(|action| action.address.action == APPLICATION_CLOSE_ACTION)
         }));
+        assert!(providers_after.rows.is_empty());
+        assert_eq!(providers_after.providers, providers_before.providers);
+        assert_ne!(providers_after.revision, providers_before.revision);
     }
 
     #[test]
