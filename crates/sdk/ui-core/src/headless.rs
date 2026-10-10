@@ -677,6 +677,27 @@ fn full_relayout_forced() -> bool {
 /// Backwards-compatible name for the input-driving use of [`FrameHarness`].
 pub type Driver = FrameHarness;
 
+/// How many replaced compositions may be re-admitted inside one another
+/// before a view counts as never settling.
+const MAX_READMISSIONS: u8 = 8;
+
+thread_local! {
+    /// Re-admissions in progress on this thread, nested inside each other.
+    static READMISSIONS: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
+}
+
+/// The innermost widget under `widget` whose control invocation is pending.
+fn pending_control_owner(widget: &dyn Widget) -> Option<String> {
+    if !crate::widget::controls::has_pending_control_invocation(widget) {
+        return None;
+    }
+    widget
+        .children()
+        .into_iter()
+        .find_map(pending_control_owner)
+        .or_else(|| Some(widget.name().to_owned()))
+}
+
 /// What the root reported for one [`FrameHarness::dispatch_to_root_outcome`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RootDispatch {
@@ -5925,10 +5946,41 @@ impl FrameHarness {
 
     /// When the composition was replaced since it was admitted, retire its
     /// raw nodes and admit the new one, keeping a surviving live focus.
+    ///
+    /// A view that replaces its composition again on every pass while a
+    /// change of its own is still pending never settles: after
+    /// [`MAX_READMISSIONS`] nested passes the harness stops and says which
+    /// view it is (a test fails on it) instead of recursing until the stack
+    /// overflows.
     fn readmit_replaced_composition(&mut self) {
         if !self.take_composition_dirty() {
             return;
         }
+        let depth = READMISSIONS.get();
+        if depth >= MAX_READMISSIONS {
+            let pending = pending_control_owner(self.root.as_ref());
+            let message = format!(
+                "headless: `{}` never settles: it replaces its composition on every pass while \
+                 a change is pending{}",
+                self.root.name(),
+                pending.map_or_else(String::new, |owner| format!(
+                    " (a control invocation of `{owner}` stays pending)"
+                )),
+            );
+            tracing::error!("{message}");
+            self.discard_layout_tree();
+            // A test fails on it; a release host skips the frame.
+            debug_assert!(false, "{message}");
+            return;
+        }
+        READMISSIONS.set(depth.saturating_add(1));
+        struct Leave;
+        impl Drop for Leave {
+            fn drop(&mut self) {
+                READMISSIONS.set(READMISSIONS.get().saturating_sub(1));
+            }
+        }
+        let _leave = Leave;
         let focus = crate::widget::layout::CompositionFocus::capture_live(self.root.as_ref());
         self.discard_layout_tree();
         self.relayout();
@@ -10258,6 +10310,72 @@ mod tests {
         fn take_structure_dirty(&mut self) -> bool {
             std::mem::take(&mut self.structure_dirty)
         }
+    }
+
+    /// A view that replaces its child on every sync and keeps a control
+    /// invocation pending: each pass asks for another.
+    struct NeverSettles {
+        current: Box<dyn Widget>,
+        retired: Vec<Box<dyn Widget>>,
+        structure_dirty: bool,
+        restless: std::rc::Rc<std::cell::Cell<bool>>,
+    }
+
+    impl Widget for NeverSettles {
+        crate::provides!(dyn crate::widget::controls::ActionControls);
+        crate::testing::delegate_widget_methods!(
+            current: build_layout,
+            apply_layout,
+            draw,
+            get_rect
+        );
+        fn name(&self) -> &'static str {
+            "NeverSettles"
+        }
+        fn sync(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
+            if self.restless.get() {
+                let replaced = std::mem::replace(
+                    &mut self.current,
+                    Box::new(Button::new("restless", "Again")),
+                );
+                self.retired.push(replaced);
+                self.structure_dirty = true;
+            }
+            self.current.sync(state, path);
+        }
+        fn children(&self) -> Vec<&dyn Widget> {
+            vec![self.current.as_ref()]
+        }
+        fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+            vec![self.current.as_mut()]
+        }
+        fn take_structure_dirty(&mut self) -> bool {
+            std::mem::take(&mut self.structure_dirty)
+        }
+    }
+
+    impl crate::widget::controls::ActionControls for NeverSettles {
+        fn has_pending_control_invocation(&self) -> bool {
+            self.restless.get()
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "`NeverSettles` never settles")]
+    fn a_view_that_never_settles_fails_instead_of_overflowing_the_stack() {
+        let restless = std::rc::Rc::new(std::cell::Cell::new(false));
+        let mut driver = Driver::new(
+            State::new(),
+            Box::new(NeverSettles {
+                current: Box::new(Button::new("restless", "First")),
+                retired: Vec::new(),
+                structure_dirty: false,
+                restless: restless.clone(),
+            }),
+            (400, 200),
+        );
+        restless.set(true);
+        driver.relayout();
     }
 
     #[test]
