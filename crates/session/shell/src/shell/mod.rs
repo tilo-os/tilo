@@ -19,6 +19,7 @@ pub mod automation_folders;
 pub mod automation_host;
 pub mod automation_triggers;
 pub(crate) mod broker_services;
+pub use broker_services::decide_receipt_against_surfaces;
 pub mod capture_protection;
 pub(crate) mod capture_surface;
 pub mod catalogue;

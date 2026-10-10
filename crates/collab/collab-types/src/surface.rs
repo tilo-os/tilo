@@ -130,7 +130,8 @@ impl ReceiptSurface for KindSurface {
     }
 }
 
-type ReadContent = dyn Fn(&str) -> Option<Vec<u8>> + Send + Sync;
+/// Reads content by lowercase hex hash, from the record's room and app.
+type ReadContent = dyn Fn(&Record<'_>, &str) -> Option<Vec<u8>> + Send + Sync;
 
 /// Surfaces read from a content store by the hash each op names, parsed
 /// once per hash.
@@ -140,20 +141,23 @@ pub struct ContentSurfaces {
 }
 
 impl ContentSurfaces {
-    /// Surfaces whose bytes `read` returns by lowercase hex hash.
-    pub fn new(read: impl Fn(&str) -> Option<Vec<u8>> + Send + Sync + 'static) -> Self {
+    /// Surfaces whose bytes `read` returns by lowercase hex hash, wherever
+    /// the record's room and app keep content.
+    pub fn new(
+        read: impl Fn(&Record<'_>, &str) -> Option<Vec<u8>> + Send + Sync + 'static,
+    ) -> Self {
         Self {
             read: Box::new(read),
             parsed: Mutex::new(BTreeMap::new()),
         }
     }
 
-    fn file(&self, hash: &[u8; 32]) -> Option<Arc<SurfaceFile>> {
+    fn file(&self, record: &Record<'_>, hash: &[u8; 32]) -> Option<Arc<SurfaceFile>> {
         if let Some(file) = self.parsed.lock().ok()?.get(hash) {
             return Some(Arc::clone(file));
         }
         let hex = hex::encode(hash);
-        let bytes = (self.read)(&hex)?;
+        let bytes = (self.read)(record, &hex)?;
         // Only the bytes the hash names are the surface.
         if blake3::hash(&bytes).as_bytes() != hash {
             return None;
@@ -167,11 +171,11 @@ impl ContentSurfaces {
 impl SurfaceSource for ContentSurfaces {
     fn surface(
         &self,
-        _: &Record<'_>,
+        record: &Record<'_>,
         kind: Option<&str>,
         named: Option<&[u8; 32]>,
     ) -> Option<Arc<dyn ReceiptSurface>> {
-        let file = self.file(named?)?;
+        let file = self.file(record, named?)?;
         let surface = file.resource(kind)?.clone();
         Some(Arc::new(KindSurface(surface)))
     }
@@ -238,7 +242,9 @@ writes = ["record", "comments.*"]
         let hash = *blake3::hash(FILE.as_bytes()).as_bytes();
         let hex = hex::encode(hash);
         (
-            ContentSurfaces::new(move |wanted| (wanted == hex).then(|| FILE.as_bytes().to_vec())),
+            ContentSurfaces::new(move |_, wanted| {
+                (wanted == hex).then(|| FILE.as_bytes().to_vec())
+            }),
             hash,
         )
     }
@@ -292,7 +298,25 @@ writes = ["record", "comments.*"]
             "a whole-record edit writes any unit"
         );
 
-        let forged = ContentSurfaces::new(|_| Some(b"[[resources]]".to_vec()));
+        let forged = ContentSurfaces::new(|_, _| Some(b"[[resources]]".to_vec()));
         assert!(forged.surface(&record, None, Some(&hash)).is_none());
+    }
+
+    /// Every app's committed surface parses as a receiver reads it.
+    #[test]
+    fn every_committed_surface_parses() {
+        let apps = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps");
+        let mut parsed = 0;
+        for app in std::fs::read_dir(apps).unwrap() {
+            let file = app.unwrap().path().join("surface.toml");
+            let Ok(bytes) = std::fs::read(&file) else {
+                continue;
+            };
+            let surface = SurfaceFile::parse(&bytes)
+                .unwrap_or_else(|error| panic!("{}: {error}", file.display()));
+            assert!(surface.resource(None).is_some(), "{}", file.display());
+            parsed += 1;
+        }
+        assert!(parsed > 10, "found the apps' surfaces");
     }
 }

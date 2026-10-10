@@ -17696,6 +17696,7 @@ name = "tilo-relay"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "app-registry",
  "base64",
  "blake3",
  "bounded-command",
@@ -18013,6 +18014,7 @@ dependencies = [
  "tilo-automerge-isolate",
  "tilo-capture",
  "tilo-clock",
+ "tilo-content",
  "tilo-delivery-protocol",
  "tilo-desktop-model",
  "tilo-dialogs",

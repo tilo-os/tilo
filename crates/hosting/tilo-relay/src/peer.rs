@@ -5261,6 +5261,16 @@ async fn handle_delta(
         }));
     };
     trace_native_publication("server_authorized", &env, None);
+    // The change itself must say what it does and stay inside what its app
+    // publishes, before the relay keeps or forwards it.
+    if let Envelope::Delta { delta, .. } = &env
+        && let Some(reason) = crate::surfaces::refusal(delta)
+    {
+        // Neither kept nor forwarded. The session stays: one bad change
+        // is not a membership decision.
+        tracing::warn!(%reason, device = %hex::encode(peer.device_public_key), "refused a document change");
+        return Ok(None);
+    }
     let observed = match (&env, session.compactor) {
         (Envelope::Delta { delta, .. }, Some(_)) => crate::compaction::Compactor::observe(delta),
         _ => None,

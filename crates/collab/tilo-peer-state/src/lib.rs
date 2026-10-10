@@ -25,7 +25,8 @@ pub use state::{
     PeerDeliveryPolicy, PeerDeliveryPolicyError, PeerDocumentRead, PeerDocumentReadError,
     PeerLimits, PeerMediaCall, PeerMember, PeerPolicyBasis, PeerRead, PeerRevocations,
     PeerRoomAccess, ReceiveOutcome, Reseal, SealCheckpoint, SeedDocument, SeedState, StatePeer,
-    TransportOrigin, VerifiedSecurityMetadataOnly, peer_handle, seed_room,
+    TransportOrigin, VerifiedSecurityMetadataOnly, decide_with_surfaces, default_surfaces,
+    peer_handle, seed_room,
 };
 pub mod coverage;
 mod governed_routes;

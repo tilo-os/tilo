@@ -371,10 +371,17 @@ pub fn decide_op(
                     })
                 };
             };
-            let surface = source.surface(record, kind, op.surface.as_ref());
+            let surface_for = |claims: &[ChangeClaim]| {
+                source.surface(
+                    record,
+                    kind.or_else(|| claimed_kind(claims)),
+                    op.surface.as_ref(),
+                )
+            };
             let Some(changes) = cleartext_changes(op)? else {
                 // A sealed op: the relay decides the claims its envelope
                 // carries; devices check the changes once they open them.
+                let surface = surface_for(&op.claims);
                 return check_claims(&op.claims, record, None, None, surface.as_deref(), allows);
             };
             // A cleartext change names its action in itself, under the op's
@@ -397,6 +404,7 @@ pub fn decide_op(
                 })
                 .collect::<Result<Vec<_>, _>>()?;
             let hashes: Vec<[u8; 32]> = changes.iter().map(|change| change.hash().0).collect();
+            let surface = surface_for(&claims);
             check_claims(
                 &claims,
                 record,
@@ -407,6 +415,19 @@ pub fn decide_op(
             )
         }
     }
+}
+
+/// The resource kind the claims name, for a receiver that does not know the
+/// record's: the kind of the first verb or field edit that names one.
+fn claimed_kind(claims: &[ChangeClaim]) -> Option<&str> {
+    claims
+        .iter()
+        .flat_map(|claim| claim.action.members())
+        .find_map(|action| match action {
+            ClaimedAction::Verb { action, .. } => Some(action.kind.as_str()),
+            ClaimedAction::Edit { kind, .. } if !kind.is_empty() => Some(kind.as_str()),
+            _ => None,
+        })
 }
 
 /// The hashes of the changes a cleartext op carries; `None` for a sealed

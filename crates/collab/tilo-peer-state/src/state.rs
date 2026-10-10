@@ -326,6 +326,39 @@ pub struct StatePeer {
     app_surfaces: AppSurfaces,
 }
 
+fn defaults() -> &'static std::sync::Mutex<(collab_types::Surfaces, AppSurfaces)> {
+    static DEFAULTS: std::sync::OnceLock<std::sync::Mutex<(collab_types::Surfaces, AppSurfaces)>> =
+        std::sync::OnceLock::new();
+    DEFAULTS.get_or_init(std::sync::Mutex::default)
+}
+
+fn process_default() -> (collab_types::Surfaces, AppSurfaces) {
+    defaults()
+        .lock()
+        .map(|defaults| defaults.clone())
+        .unwrap_or_default()
+}
+
+/// The app surfaces this process decides received changes against
+/// ([`decide_with_surfaces`]).
+#[must_use]
+pub fn default_surfaces() -> collab_types::Surfaces {
+    process_default().0
+}
+
+/// Decide the changes every peer of this process receives against the app
+/// surfaces `surfaces` finds, and name in the changes it signs the surface
+/// `of` returns for each app: what a host sets once, before it opens or
+/// restores its rooms. A peer made before keeps what it had.
+pub fn decide_with_surfaces(
+    surfaces: collab_types::Surfaces,
+    of: impl Fn(&str) -> Option<[u8; 32]> + Send + Sync + 'static,
+) {
+    if let Ok(mut defaults) = defaults().lock() {
+        *defaults = (surfaces, AppSurfaces(Some(std::sync::Arc::new(of))));
+    }
+}
+
 /// The surface hash of an app's package, by app id.
 #[derive(Clone, Default)]
 struct AppSurfaces(Option<std::sync::Arc<SurfaceOf>>);
@@ -405,8 +438,8 @@ impl StatePeer {
                 native_cut_publisher: None,
                 _retention: (),
             },
-            surfaces: collab_types::Surfaces::default(),
-            app_surfaces: AppSurfaces::default(),
+            surfaces: process_default().0,
+            app_surfaces: process_default().1,
         })
     }
     /// Add a root-certified viewer to existing governed history. Only the pinned
@@ -3435,8 +3468,8 @@ impl StatePeer {
                 native_cut_publisher: None,
                 _retention: (),
             },
-            surfaces: collab_types::Surfaces::default(),
-            app_surfaces: AppSurfaces::default(),
+            surfaces: process_default().0,
+            app_surfaces: process_default().1,
         };
         backend::validate_pending(&peer.core.pending, peer.core.pending_bytes).map_err(err)?;
         peer.core.revocations = backend::restore_revocation_union(

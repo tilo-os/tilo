@@ -386,6 +386,25 @@ pub(super) fn with_session_blobs<T>(
     result
 }
 
+/// Decide every change this session's rooms receive by its claim against
+/// the app surface its op names, read from the session's content store in
+/// the record's room and app; name, in the changes the session signs for an
+/// app it hosts, the surface that app was started with.
+pub fn decide_receipt_against_surfaces() {
+    use runtime_fs::blobs::ReadOutcome;
+    tilo_action_broker::decide_receipt_against_surfaces(|record, hash| {
+        match with_session_blobs(|client| {
+            client
+                .scope(record.room, record.app)
+                .and_then(|scoped| scoped.read_all(hash))
+        }) {
+            Ok(ReadOutcome::Ready { bytes, .. }) => Some(bytes),
+            // Still arriving, or nowhere: the op waits.
+            Ok(ReadOutcome::Pending | ReadOutcome::Unavailable) | Err(_) => None,
+        }
+    });
+}
+
 impl LaunchContentReader for SessionContentStore {
     fn read(&self, room: &str, app: &str, hash: &str) -> Result<Vec<u8>, String> {
         use runtime_fs::blobs::ReadOutcome;
