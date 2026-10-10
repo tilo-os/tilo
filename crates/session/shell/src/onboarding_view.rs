@@ -6320,7 +6320,10 @@ mod tests {
             );
 
             let mut focus = None;
-            for event in [pointer_event(label_point), mouse_press()] {
+            // A hover move is left unconsumed so neighbouring controls still
+            // see it; only the press is the row's to handle.
+            for (event, must_handle) in [(pointer_event(label_point), false), (mouse_press(), true)]
+            {
                 let mut handled = false;
                 view.handle_event(
                     &event,
@@ -6335,7 +6338,10 @@ mod tests {
                         taffy: &taffy,
                     },
                 );
-                assert!(handled, "the labelled checkbox row must handle {event:?}");
+                assert!(
+                    handled || !must_handle,
+                    "the labelled checkbox row must handle {event:?}"
+                );
             }
             view.settle(
                 &mut ui::widget::Edits::lend(&mut document),
