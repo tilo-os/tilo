@@ -268,21 +268,26 @@ def _app_check(app_id, label, foreign=True):
     return body
 
 
+SHELL_READY_S = core.TERMINAL_SHELL_S
+
+
 @check("A01", AREA, "Terminal opens with a live shell and closes cleanly")
 def terminal(ctx, res):
+    shells = core.terminal_shells(ctx)
     gid, procs, toasts0 = _lifecycle(ctx, res, "so.tilo.terminal", "applications", "A01-terminal", False)
+    ready = core.wait_new_terminal_shell(ctx, shells, SHELL_READY_S)
+    res.metrics["seconds_to_shell"] = ready
     probe = f"acc-term-{int(time.time())}"
     ctx.vm.control("type", f"echo ok > ~/{probe}")
     ctx.vm.control("key", "Enter")
-    found = wait_until(lambda: [l for l in ctx.vm.exec(
-        f'find "$HOME" /tmp -maxdepth 4 -name {probe} 2>/dev/null; true').splitlines() if l.strip()], 8, 1)
+    found = wait_until(lambda: core.terminal_probe(ctx, probe), 8, 1)
     ctx.shot("A01-terminal-command")
     res.metrics["shell_ran_command"] = bool(found)
-    has_shell = any(c.exe in ("bash", "sh", "zsh", "fish") for c in procs.values())
-    res.metrics["shell_process"] = has_shell
-    expect(found, "a command typed into Terminal (control-socket type + Enter) never ran"
-           + (" although a shell process is running: the keys did not reach it (see W17)"
-              if has_shell else ", and no shell process was started"))
+    if ready is None or not found:
+        ctx.write("A01-ush.txt", core.ush_diagnostics(ctx))
+    expect(ready is not None, f"no shell ran in Terminal's environment within {SHELL_READY_S} s "
+                              "of its window opening (A01-ush.txt shows the shell runtime)")
+    expect(found, "a command typed into Terminal (control-socket type + Enter) never ran")
     _close(ctx, res, "A01-terminal", gid, procs, toasts0)
 
 

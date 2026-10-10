@@ -250,6 +250,25 @@ impl LiveSettings {
         )
     }
 
+    /// Block until the generation moves past `seen`, however long that takes,
+    /// and return the snapshot current then: for a reader with nothing to do
+    /// until the document changes, which then costs no wakeups at all.
+    #[must_use]
+    pub fn wait_for_next(&self, seen: u64) -> Arc<Snapshot> {
+        let current = self
+            .0
+            .current
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        Arc::clone(
+            &self
+                .0
+                .changed
+                .wait_while(current, |current| current.generation == seen)
+                .unwrap_or_else(PoisonError::into_inner),
+        )
+    }
+
     /// Ask the refresh thread to re-read now rather than on the next poll —
     /// for a caller that knows the document was written by a path that may
     /// ring nothing.
@@ -388,6 +407,25 @@ mod tests {
         std::thread::sleep(POLL_INTERVAL.saturating_add(Duration::from_millis(200)));
         assert_eq!(live.generation(), 1);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(target_os = "linux")] // the thread's wakeups are read from /proc
+    #[test]
+    fn waiting_for_the_next_change_sleeps_until_it_comes() {
+        let source = Arc::new(HostDocument::new(Map::new(), |_| Ok(())));
+        let waiting = LiveSettings::start_from(source.clone(), || {});
+        let (tx, rx) = mpsc::channel();
+        let (_waiter, tid) = tilo_test_env::idle::spawned_thread("settings-next", || {
+            std::thread::Builder::new()
+                .name("settings-next".into())
+                .spawn(move || tx.send(waiting.wait_for_next(0).generation).unwrap())
+                .unwrap()
+        });
+        tilo_test_env::idle::assert_stays_asleep(&tid, "a reader waiting for the next change");
+        assert!(rx.try_recv().is_err(), "returned with no change");
+
+        source.update_section("display", display(2.0)).unwrap();
+        assert_eq!(rx.recv_timeout(tilo_test_env::hang_bound()).unwrap(), 1);
     }
 
     #[test]

@@ -656,32 +656,45 @@ pub fn local_materialized_tree(store: &Store, id: &PackageId) -> Result<PathBuf,
     }
     let layout = store.user.layout();
     crate::content::session(&layout.content(), &layout.tmp(), |content| {
-        for (relative, expected) in &meta.collection.entries {
-            let path = source.join(relative);
-            if !std::fs::symlink_metadata(&path)?.is_file() {
-                return Err(StoreError::Payload(format!(
-                    "{relative}: image payload is not a regular file"
-                )));
-            }
-            let mut file = std::fs::File::open(&path)?;
-            let len = file.metadata()?.len();
-            // A previous interrupted import may already hold this signed blob.
-            // Cache completeness selects reuse; it does not verify the source.
-            let actual = if content.len(expected)? == Some(len) {
-                BlobHash::of_reader(&mut file)?.0
-            } else {
-                content.ingest(len, &mut file)?
-            };
-            if actual != *expected {
-                return Err(StoreError::Payload(format!(
-                    "{relative}: image payload does not match its signed hash"
-                )));
-            }
-        }
+        // An image is thousands of files: one database sync for all of them,
+        // before the tree is materialised and published, not one per file.
+        content.deferred(|| import_image_payload(content, &meta, &source))?;
         store.user.materialise(content, &meta)
     })?;
     verify_local_tree(&meta, &local)?;
     Ok(local)
+}
+
+/// Ingest every file of the image tree at `source` into `content`, checking
+/// each against the hash `meta` signed.
+fn import_image_payload(
+    content: &crate::content::Content<'_>,
+    meta: &PackageMeta,
+    source: &std::path::Path,
+) -> Result<(), StoreError> {
+    for (relative, expected) in &meta.collection.entries {
+        let path = source.join(relative);
+        if !std::fs::symlink_metadata(&path)?.is_file() {
+            return Err(StoreError::Payload(format!(
+                "{relative}: image payload is not a regular file"
+            )));
+        }
+        let mut file = std::fs::File::open(&path)?;
+        let len = file.metadata()?.len();
+        // A previous interrupted import may already hold this signed blob.
+        // Cache completeness selects reuse; it does not verify the source.
+        let actual = if content.len(expected)? == Some(len) {
+            BlobHash::of_reader(&mut file)?.0
+        } else {
+            content.ingest(len, &mut file)?
+        };
+        if actual != *expected {
+            return Err(StoreError::Payload(format!(
+                "{relative}: image payload does not match its signed hash"
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn verify_local_tree(meta: &PackageMeta, root: &std::path::Path) -> Result<(), StoreError> {
