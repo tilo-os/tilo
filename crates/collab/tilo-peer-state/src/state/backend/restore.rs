@@ -139,7 +139,9 @@ pub(in crate::state) fn restore(
                 channel,
                 encryption_required: document.encryption_required,
                 covered: document.covered,
-                covered_snapshot: document.covered_snapshot.map(|_| NativeCheckpoint),
+                covered_snapshot: document
+                    .covered_snapshot
+                    .map(|original| NativeCheckpoint { original }),
                 sealed: Vec::new(),
             },
         );
