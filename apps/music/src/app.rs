@@ -59,6 +59,7 @@ use crate::stream::{StreamRequest, StreamUpdate, StreamWorker};
 /// non-cancellable lifecycle contract without turning a slow normal seek into
 /// a fabricated success.
 const STREAM_START_TIMEOUT: Duration = Duration::from_secs(30);
+const PLAYBACK_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 /// What a failed offline download says in passing. The reason stays with the
 /// song: its row in Downloads offers Retry, and that button names the cause.
