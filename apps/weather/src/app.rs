@@ -26,15 +26,13 @@
 //! provides, and a past version shows the places without forecasts.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::rc::Rc;
 use ui::time::Instant;
 use ui::widget::{AppModel, ModelPath};
 
-use taffy::{NodeId, TaffyTree};
 use ui::a11y::{AccessNode, Politeness, Role};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::Affine;
 use winit::event::WindowEvent;
 
 use ui::framework::{EffectCx, EffectStatus, Effected, LiveRow, RunMode, SurfaceCx};
@@ -572,28 +570,21 @@ impl Default for WeatherApp {
     }
 }
 
-impl Widget for WeatherApp {
+impl ui::widget::Decorator for WeatherApp {
+    type Inner = NavShell;
+
+    fn inner(&self) -> &NavShell {
+        &self.nav
+    }
+
+    fn inner_mut(&mut self) -> &mut NavShell {
+        &mut self.nav
+    }
+
     fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
         // Semantic actions reach the owning pane directly, so finish their
         // navigation here as well as on pointer input.
         self.follow_core()
-    }
-
-    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        self.nav.sync(state, path);
-    }
-
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        self.nav.build_layout(taffy, theme, node_map)
-    }
-
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.nav.apply_layout(taffy, node, origin);
     }
 
     fn draw(
@@ -631,18 +622,6 @@ impl Widget for WeatherApp {
         self.stage_pending_scenario();
     }
 
-    fn draw_overlay(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        self.nav
-            .draw_overlay(scene, transform, text_renderer, theme, presence);
-    }
-
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         self.ensure_service();
         self.nav.handle_event(event, ctx);
@@ -655,20 +634,8 @@ impl Widget for WeatherApp {
         self.tick_network();
     }
 
-    fn children(&self) -> Vec<&dyn Widget> {
-        vec![&self.nav]
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        vec![&mut self.nav]
-    }
-
     fn name(&self) -> &'static str {
         "WeatherApp"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.nav.get_rect()
     }
 
     fn accessibility(&self) -> Option<AccessNode> {
@@ -716,14 +683,6 @@ impl Widget for WeatherApp {
             .into_iter()
             .chain(self.nav.next_wake_deadline())
             .min()
-    }
-
-    fn take_structure_dirty(&mut self) -> bool {
-        self.nav.take_structure_dirty()
-    }
-
-    fn modal_capture(&self) -> Option<Rect> {
-        self.nav.modal_capture()
     }
 }
 
