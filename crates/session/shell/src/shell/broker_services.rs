@@ -17,6 +17,7 @@ pub(crate) use file_clipboard::test_support::TestTransferPause;
 mod native_effect_tests;
 mod nearby_transfer;
 mod resource_views;
+mod task_execution;
 pub use nearby_transfer::NativeNearbyTransfer;
 use std::sync::Arc;
 use tilo_action_broker::services::{
@@ -1513,6 +1514,10 @@ pub fn native_services(
         Arc::new(NativeOwnerCommitService::new(tree.clone(), network.clone()))
             as Arc<dyn tilo_action_broker::services::WorkspaceMemberships>
     });
+    let task_execution = membership.as_ref().map(|tree| {
+        Arc::new(NativeOwnerCommitService::new(tree.clone(), network.clone()))
+            as Arc<dyn tilo_action_broker::services::WorkspaceTaskExecution>
+    });
     let resource_views = membership
         .as_ref()
         .zip(network.as_ref())
@@ -1574,6 +1579,7 @@ pub fn native_services(
         app_action_grants,
         committed_documents,
         workspace_memberships,
+        task_execution,
         resource_views,
         desktop_commands: None,
         native_certificates: Some(Arc::new(NativeCertificates::default())),

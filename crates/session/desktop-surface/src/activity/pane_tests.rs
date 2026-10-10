@@ -3832,6 +3832,7 @@ mod task_review_tests {
                             epoch: 3,
                             started_at: 100,
                             applied_direction_revision: 0,
+                            approval: None,
                         }),
                         ..Default::default()
                     },
@@ -3944,6 +3945,99 @@ mod task_review_tests {
             }
         }
     }
+    #[test]
+    fn queued_run_approval_uses_exact_frontier_and_shared_keyboard_controls() {
+        use crate::activity::TaskReviewCommand;
+        let (mut tree, mut pane, host) = review_fixture();
+        let id = pane.selected_task.clone().unwrap();
+        {
+            let mut snapshot = host.snapshot.borrow_mut();
+            snapshot.tasks[0].status = WorkspaceTaskStatus::Queued;
+            snapshot.controls.get_mut(&id).unwrap().active_run = None;
+        }
+        pane.refresh(&mut tree);
+        assert!(
+            pane.task_actions_for(&pane.tasks[0])
+                .contains(&TaskAction::ApproveRun)
+        );
+        for theme in [Theme::light(), Theme::dark(), Theme::high_contrast()] {
+            let theme = theme.with_text_scale(2.0);
+            pane.layout_window(Rect::new(0.0, 0.0, 900.0, 900.0));
+            pane.draw(
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut TextRenderer::new(),
+                &theme,
+                &PresenceCtx::empty(),
+            );
+            assert!(
+                pane.focus_order()
+                    .contains(&ActivityFocus::TaskAction(TaskAction::ApproveRun))
+            );
+            let rect = pane
+                .task_action_rects
+                .iter()
+                .find(|(action, _)| *action == TaskAction::ApproveRun)
+                .unwrap()
+                .1;
+            assert_eq!(rect.intersect(pane.sheet), rect);
+            assert!(
+                pane.accessibility_snapshot()
+                    .children
+                    .iter()
+                    .any(|node| node.name.as_deref()
+                        == Some(TaskAction::ApproveRun.label().as_str()))
+            );
+        }
+        pane.apply_task_action(TaskAction::ApproveRun, &mut tree);
+        assert!(
+            matches!(&host.submitted.borrow()[0].command, TaskReviewCommand::Approve {task_id,run_epoch:3,after_revision:0,..} if task_id==&id)
+        );
+        assert!(
+            pane.review_pending.is_some(),
+            "approval must await its durable receipt"
+        );
+    }
+    #[test]
+    fn approval_keeps_the_painted_frontier_when_a_new_run_is_unseen() {
+        use crate::activity::TaskReviewCommand;
+        let (mut tree, mut pane, host) = review_fixture();
+        let id = pane.selected_task.clone().unwrap();
+        {
+            let mut snapshot = host.snapshot.borrow_mut();
+            snapshot.tasks[0].status = WorkspaceTaskStatus::Queued;
+            snapshot.controls.get_mut(&id).unwrap().active_run = None;
+        }
+        pane.refresh(&mut tree);
+        pane.layout_window(Rect::new(0.0, 0.0, 900.0, 900.0));
+        let mut scene = Scene::new();
+        let mut text = TextRenderer::new();
+        pane.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &Theme::light(),
+            &PresenceCtx::empty(),
+        );
+        {
+            let mut snapshot = host.snapshot.borrow_mut();
+            snapshot.controls.get_mut(&id).unwrap().run_epoch = 4;
+        }
+        pane.refresh(&mut tree);
+        pane.apply_task_action(TaskAction::ApproveRun, &mut tree);
+        assert!(
+            matches!(
+                &host.submitted.borrow()[0].command,
+                TaskReviewCommand::Approve {
+                    run_epoch: 3,
+                    after_revision: 0,
+                    ..
+                }
+            ),
+            "refreshing unseen state must not approve its new run frontier"
+        );
+    }
+
     #[test]
     fn steering_draft_keeps_observed_run_and_revision_after_refresh() {
         use crate::activity::TaskReviewCommand;

@@ -1465,6 +1465,16 @@ fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<usize>) {
             }
             "TaskRunCancellation"
         }
+        CollabEvent::TaskRunReportResult { result, .. } => {
+            if let Err(error) = result {
+                meter.string_capacity(error);
+            }
+            "TaskRunReportResult"
+        }
+        CollabEvent::TaskRunControl { control, .. } => {
+            serialized_bytes(control, &mut meter);
+            "TaskRunControl"
+        }
         CollabEvent::WorkspaceControl { event, .. } => {
             workspace_control_event_bytes(event, &mut meter);
             "WorkspaceControl"
@@ -6564,11 +6574,20 @@ async fn dispatch_sdk_request(
             let _ = inbound_tx.send_durable(CollabEvent::EnrolledTaskReply { request_id, result });
         }
         CollabRequest::ReportTaskRun {
+            request_id,
             run_id,
             lease,
             update,
         } => {
-            if let Err(error) = route.channel.report_task_run(run_id, &lease, &update).await {
+            let result = route
+                .channel
+                .report_task_run(run_id, &lease, &update)
+                .await
+                .map_err(|error| error.to_string());
+            if let Some(request_id) = request_id {
+                let _ = inbound_tx
+                    .send_durable(CollabEvent::TaskRunReportResult { request_id, result });
+            } else if let Err(error) = result {
                 tracing::warn!(%error, run_id, "collab: reporting task run update failed");
             }
         }
@@ -6627,9 +6646,18 @@ async fn dispatch_sdk_request(
         } => {
             let result = route
                 .channel
-                .task_run_cancelled(run_id, &lease)
+                .task_run_status(run_id, &lease)
                 .await
-                .map_err(|error| error.to_string());
+                .map_err(|error| error.to_string())
+                .map(|status| {
+                    if let Some(control) = status.control {
+                        let _ = inbound_tx.send_durable(CollabEvent::TaskRunControl {
+                            request_id,
+                            control,
+                        });
+                    }
+                    status.cancelled
+                });
             let _ =
                 inbound_tx.send_durable(CollabEvent::TaskRunCancellation { request_id, result });
         }

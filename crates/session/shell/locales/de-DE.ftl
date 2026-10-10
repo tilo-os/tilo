@@ -2512,6 +2512,10 @@ shell-launch-writer-still-closing = Die vorherige App wird noch geschlossen. Öf
 shell-window-restore-interrupted = Dieses gespeicherte Fenster wurde nicht vollständig wieder geöffnet.
 shell-window-retry = Fenster erneut öffnen
 
+task-review-approve = Aufgabenausführung freigeben
+
+# Shared activity label used by native task-review rendering.
+activity-task-approve-run = Ausführung freigeben
 device-fabric-error-input-operation-unavailable = Die Eingabesteuerung ist beschäftigt. Versuche es erneut.
 device-fabric-error-input-decline-unavailable = Deine abgelehnten Eingabegeräte konnten nicht gelesen werden.
 device-fabric-error-input-decline-save-failed = Die Eingabesteuerung wurde widerrufen, aber die Ablehnung konnte nicht gespeichert werden. Automatische Eingabe bleibt deaktiviert.
