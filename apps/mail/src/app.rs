@@ -671,7 +671,7 @@ impl MailApp {
                 .map(|m| m.id)
         };
         if let Some(id) = id {
-            self.shared.borrow_mut().select_message(doc, id);
+            self.shared.borrow_mut().open_message(doc, id);
             self.process_intents();
         }
     }
@@ -799,7 +799,7 @@ impl MailApp {
             let mut doc = automerge::AutoCommit::new();
             self.shared
                 .borrow_mut()
-                .select_message(&mut ui::widget::Edits::lend(&mut doc), id);
+                .open_message(&mut ui::widget::Edits::lend(&mut doc), id);
             self.process_intents();
         }
         self.dirty = true;
@@ -4817,7 +4817,7 @@ impl MailApp {
         if is_draft {
             mail.push_intent(Intent::EditDraft(id));
         } else {
-            mail.select_message(state, id);
+            mail.open_message(state, id);
         }
         drop(mail);
         self.process_intents();
@@ -5709,7 +5709,7 @@ mod tests {
                 .expect("second sample message");
             app.shared
                 .borrow_mut()
-                .select_message(&mut ui::widget::Edits::lend(&mut doc), other);
+                .open_message(&mut ui::widget::Edits::lend(&mut doc), other);
             app.process_intents();
             assert!(
                 !app.perform_semantic_action(
@@ -5816,7 +5816,7 @@ mod tests {
             .expect("an unread message");
             app.shared
                 .borrow_mut()
-                .select_message(&mut ui::widget::Edits::lend(&mut doc), id);
+                .open_message(&mut ui::widget::Edits::lend(&mut doc), id);
             assert!(app.shared.borrow().mailbox.get(id).unwrap().read);
             let mut fresh = app.shared.borrow().mailbox.clone();
             for m in fresh.messages.values_mut() {

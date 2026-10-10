@@ -753,7 +753,7 @@ mod tests {
         let mut doc = crate::resource::TestMail::doc();
         shared
             .borrow_mut()
-            .select_message(&mut ui::widget::Edits::lend(&mut doc), id);
+            .open_message(&mut ui::widget::Edits::lend(&mut doc), id);
         shared.borrow_mut().take_intents();
         let mut reader = MessageReader::new(shared.clone());
         reader.rect = Rect::new(0.0, 0.0, w, h);
@@ -825,7 +825,7 @@ mod tests {
         let mut doc = crate::resource::TestMail::doc();
         shared
             .borrow_mut()
-            .select_message(&mut ui::widget::Edits::lend(&mut doc), plain);
+            .open_message(&mut ui::widget::Edits::lend(&mut doc), plain);
         draw(&mut reader);
         assert!(
             reader.html_loaded_key().is_none(),
@@ -834,7 +834,7 @@ mod tests {
         assert!(reader.remote_button().is_none());
         shared
             .borrow_mut()
-            .select_message(&mut ui::widget::Edits::lend(&mut doc), id);
+            .open_message(&mut ui::widget::Edits::lend(&mut doc), id);
         draw(&mut reader);
         assert_eq!(reader.html_loaded_key(), Some((id, true)));
     }
