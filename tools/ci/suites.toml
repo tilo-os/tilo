@@ -449,6 +449,7 @@ suites = [
   "scripts/perf/settings_effects_test.py",
   "scripts/perf/word_processor_effects_test.py",
   "scripts/perf/worker_handoff_test.py",
+  "tools/perf/test_ab.py",
   "tools/perf/test_adapters.py",
   "tools/perf/test_compare.py",
   "tools/perf/test_image_size.py",
