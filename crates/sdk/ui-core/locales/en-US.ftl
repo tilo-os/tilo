@@ -473,3 +473,9 @@ device-display-session-disconnected = The Tilo session disconnected.
 
 app-activate-window = Show this window
 app-activate-window-description = Ask the platform to reveal the existing window, keeping its document owner.
+
+display-arrangement-offline = Offline
+display-arrangement-excluded = Not in layout
+display-arrangement-offline-excluded = Offline · Not in layout
+display-arrangement-item-status = { $position }; { $status }
+display-arrangement-caption-status = { $status } · { $name }
