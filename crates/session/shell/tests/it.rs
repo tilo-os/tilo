@@ -121,6 +121,8 @@ mod headless_examples_smoke;
 mod identity_startup;
 #[path = "idle_inhibit_protocol.rs"]
 mod idle_inhibit_protocol;
+#[path = "idle_memory.rs"]
+mod idle_memory;
 #[path = "idle_settles.rs"]
 mod idle_settles;
 #[path = "idle_wakeups.rs"]
