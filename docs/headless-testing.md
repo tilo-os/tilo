@@ -540,6 +540,12 @@ a process tree, and `sample_process` with `Wakeups::between` for a stretch the
 test drives itself (`shell::network::idle_quiet_tests` uses it for the
 collaboration plane of two converged desktops).
 
+A gate that runs inside the pull-request test shard shares the runner with
+other tests, and preemptions grow with that load. `Wakeups::blocking_per_second`
+counts only voluntary switches, one per wakeup. The lone-desktop gate in
+`idle_quiet_tests` uses it, together with a CPU bound that catches a thread
+spinning without blocking (TIL-749).
+
 ## Where to look in source
 
 | What | Where |
