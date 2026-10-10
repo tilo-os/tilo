@@ -38,12 +38,6 @@ mod history;
 #[cfg(target_arch = "wasm32")]
 mod host_services;
 #[cfg(target_arch = "wasm32")]
-#[allow(
-    dead_code,
-    reason = "LIVE_V1 helpers the page runtime's snapshot/apply exports do not all reach yet"
-)]
-mod live_view;
-#[cfg(target_arch = "wasm32")]
 mod mount_service_custody;
 #[cfg(target_arch = "wasm32")]
 mod page_authors;
