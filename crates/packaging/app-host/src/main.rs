@@ -40,8 +40,8 @@ struct Cli {
     /// are evicted least recently used first until the total drops below
     /// the cap. Pinned packages are never evicted. Pass `0` to disable the
     /// sweep; explicit `diskUsage` reports still work.
-    /// Default: 4 GiB.
-    #[arg(long, default_value_t = 4 * 1024 * 1024 * 1024)]
+    /// Default: 4 GiB, the cap `tilo-install` applies too.
+    #[arg(long, default_value_t = package_store::DEFAULT_MAX_STORE_BYTES)]
     max_store_bytes: u64,
 }
 

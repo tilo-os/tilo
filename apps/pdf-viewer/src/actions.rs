@@ -48,7 +48,7 @@ pub const PDF_VIEWER_ACTION_TYPE: &str = "pdf_viewer.action";
 
 /// The action palette is refreshed frequently. Keep that contextual snapshot
 /// small even for a scanned book with thousands of pages or a heavily-reviewed
-/// contract, while [`ResourceProvider::resource`] retains complete reachability
+/// contract, while `PublishesResources::resource` retains complete reachability
 /// by stable id.
 pub const CONTEXTUAL_CHILD_LIMIT: usize = 32;
 /// A find query can produce hundreds of matches, but resources are consumed by
