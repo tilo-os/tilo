@@ -573,8 +573,8 @@ def run_task(model: ModelClient, tools: Tools, prompt: str, max_turns: int = 12)
 
 # --- the desktop ----------------------------------------------------------------
 
-def wait_for_notes(conn: Connection, timeout: float) -> None:
-    """Until the restored notebook publishes `new-page`; fail with what was listed."""
+def wait_for_notes(conn: Connection, timeout: float, diagnostics: Path | None = None) -> None:
+    """Until the restored notebook publishes `new-page`; fail with what the desktop showed."""
     deadline = time.monotonic() + timeout
     rows: list[Any] = []
     while time.monotonic() < deadline:
@@ -584,8 +584,49 @@ def wait_for_notes(conn: Connection, timeout: float) -> None:
         if any(notes_row(r) and operation_of(r) == "new-page" for r in rows):
             return
         time.sleep(0.2)
+    seen = describe_desktop(conn, diagnostics)
     raise BenchError(f"Notes never published new-page within {timeout:.0f} s; "
-                     f"listed {len(rows)}: {describe_rows(rows)}")
+                     f"'New note' listed {len(rows)}: {describe_rows(rows)}\n{seen}")
+
+
+def describe_desktop(conn: Connection, path: Path | None) -> str:
+    """What the desktop shows, for a run that could not find its subject: the
+    whole listing, the drawn targets and the state dump (to `path` in full)."""
+    probes: dict[str, Any] = {}
+    for name, payload in (
+            ("listing", {"op": "actions_enumerate", "query": "", "detail": "compact",
+                         "limit": 2000, "wait_ms": WAIT_MS}),
+            ("listing_note", {"op": "actions_enumerate", "query": "note", "detail": "compact",
+                              "wait_ms": WAIT_MS}),
+            ("targets", {"op": "list_targets"}),
+            ("state", {"op": "state_dump"})):
+        try:
+            _, line = conn.round_trip(request(payload))
+            probes[name] = json.loads(line)
+        except (OSError, BenchError, json.JSONDecodeError) as error:
+            probes[name] = {"probe_error": str(error)}
+    if path is not None:
+        path.write_text(json.dumps(probes, indent=1, default=str), encoding="utf-8")
+
+    def rows(name: str) -> list[dict[str, Any]]:
+        answer = probes[name].get("answer") or {}
+        return [r for r in answer.get("actions", []) if isinstance(r, dict)] if isinstance(answer, dict) else []
+
+    listing = rows("listing")
+    applications = sorted({str(r.get("application")) for r in listing})
+    targets = probes["targets"].get("targets") or []
+    names = [t.get("name") for t in targets if isinstance(t, dict)][:60]
+    state = probes["state"]
+    capture = json.dumps(state)[:0]
+    with contextlib.suppress(AttributeError, TypeError):
+        capture = json.dumps(state.get("chrome", state.get("state", {}).get("chrome", {}))
+                             .get("input_capture"))
+    return (f"whole listing: {len(listing)} rows, applications {applications}; "
+            f"providers {sorted({str(r.get('provider')) for r in listing})}\n"
+            f"'note' listed: {describe_rows(rows('listing_note'))}\n"
+            f"targets ({len(targets)}): {names}\ninput capture: {capture}\n"
+            f"state keys: {sorted(state) if isinstance(state, dict) else type(state)}"
+            + (f"\nfull probes: {path}" if path else ""))
 
 
 @contextlib.contextmanager
@@ -663,7 +704,9 @@ def measure(socket_path: str, args: argparse.Namespace) -> tuple[list[TaskRun], 
         return task["value"].respond(messages)
 
     try:
-        wait_for_notes(conn, args.startup_timeout)
+        log = getattr(args, "log", None)
+        wait_for_notes(conn, args.startup_timeout,
+                       log.with_name(log.stem + ".probes.json") if log else None)
         model = FakeModel(respond, args.think_ms, args.tokens_per_s)
         client = ModelClient(model.port)
         runs: list[TaskRun] = []
