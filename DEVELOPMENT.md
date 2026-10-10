@@ -522,9 +522,12 @@ every generic image it publishes out by content before anything consumes it
   on their own, the rest grouped, packed into at most 128 layers. An unchanged
   component is the same blob in the next build. Whited-out bytes, the base's
   old kernel and `/sysroot`'s ostree objects are in no layer.
-- `os/scripts/oci-rechunk.py` adds one layer with every directory's exact
-  metadata (chunkah caps a directory's time per layer; fontconfig's cache needs
-  font directories' times unchanged), gives the result the raw image's config,
+- `os/scripts/oci-rechunk.py` takes extended attributes from the raw image's
+  layers where chunkah's differ (BuildKit's snapshot of the image, which
+  chunkah reads, lacks the base binaries' file capabilities), adds one layer
+  with every directory's exact metadata (chunkah caps a directory's time per
+  layer; fontconfig's cache needs font directories' times unchanged), gives
+  the result the raw image's config,
   and refuses it unless every path matches the raw image: type, mode, owner,
   xattrs, bytes, symlink target. Only file times may be lower (capped at the
   package's build time, or for files no package owns at an epoch that moves

@@ -6,13 +6,19 @@ layers (TIL-747). Before that layout is published, this script
 
 1. replays the raw image's layers (whiteouts and opaque directories applied)
    and the chunked layers, hashing every regular file;
-2. appends one small layer holding every directory of the raw image with its
+2. gives every entry the raw image's extended attributes where chunkah's
+   differ, rewriting only the layers that hold one. chunkah reads the root
+   through BuildKit's snapshot of the image, and that snapshot lacks the file
+   capabilities of the base image's binaries (arping, newuidmap, the sssd
+   helpers...) that the image's layers carry: the layers, not the snapshot,
+   are the image;
+3. appends one small layer holding every directory of the raw image with its
    exact mode, owner, time and extended attributes. chunkah writes a
    directory into each layer that holds something below it, its time capped
    at that layer's clamp, and the top-most copy wins; fontconfig's system
    cache, among others, is valid only while a font directory's time is the one
    `fc-cache` recorded, so directory times must come through unchanged;
-3. compares the two roots. Every path must have the same type, mode, owner,
+4. compares the two roots. Every path must have the same type, mode, owner,
    extended attributes, size and bytes, symlink target and device numbers.
    Two differences are expected and allowed, and counted in the report:
    * a file's or symlink's time may be lower (chunkah caps it at its
@@ -21,7 +27,7 @@ layers (TIL-747). Before that layout is published, this script
      bootc's composefs backend does not deploy), and a hard-link group may be
      split where its paths fall into different layers (same bytes, read-only).
    Anything else fails: a rechunk that cannot be proven equal is not published;
-4. gives the chunked image the raw image's config (labels, environment,
+5. gives the chunked image the raw image's config (labels, environment,
    command, creation time) and names it in index.json the way buildx does, so
    os/scripts/oci-archive-ref.py and skopeo's oci and oci-archive transports
    select it; optionally writes it as an OCI archive.
@@ -121,10 +127,12 @@ def mtime(member: tarfile.TarInfo) -> decimal.Decimal:
 class Tree:
     """A merged root as layers replay, with each path's full metadata."""
 
-    def __init__(self) -> None:
+    def __init__(self, record: bool = False) -> None:
         self.nodes: dict[str, Node] = {}
         self.layer: dict[str, int] = {}
         self.inodes = 0
+        # With `record`, every path each layer writes an entry for, by layer.
+        self.members: dict[int, set[str]] | None = {} if record else None
 
     def below(self, path: str) -> list[str]:
         prefix = path + "/" if path else ""
@@ -162,6 +170,8 @@ class Tree:
             if base.startswith(".wh."):
                 self.drop(f"{parent}/{base[4:]}" if parent else base[4:])
                 continue
+            if self.members is not None:
+                self.members.setdefault(index, set()).add(path)
             existing = self.nodes.get(path)
             if existing is not None and (existing.kind != "dir" or not member.isdir()):
                 self.drop(path)
@@ -221,8 +231,85 @@ def open_image(source: str) -> image_size.Image:
     return image_size.registry_image(source, None)
 
 
-def replay_source(source: str) -> Tree:
-    return replay(open_image(source))
+def replay_source(source: str, record: bool = False) -> Tree:
+    return replay(open_image(source), Tree(record))
+
+
+# ---------------------------------------------------------------- extended attributes
+
+XATTR_KEYS = ("SCHILY.xattr.", "LIBARCHIVE.xattr.")
+
+
+def xattr_repairs(raw: Tree, chunked: Tree) -> dict[str, tuple[tuple[str, bytes], ...]]:
+    """Paths whose extended attributes chunkah wrote differently, mapped to the raw image's."""
+    repairs = {}
+    for path, node in chunked.nodes.items():
+        before = raw.nodes.get(path)
+        if (before is None or before.implicit or before.kind != node.kind or path.startswith(PRUNED)
+                or before.xattrs == node.xattrs):
+            continue
+        repairs[path] = before.xattrs
+    return repairs
+
+
+def rewrite_layer(root: Path, item: dict[str, Any],
+                  repairs: dict[str, tuple[tuple[str, bytes], ...]]) -> tuple[dict[str, Any], str, int]:
+    """One chunkah layer again with the raw image's xattrs on `repairs`: its descriptor, diff ID and count."""
+    blobs = root / "blobs" / "sha256"
+    plain, packed = root / "rewrite.tar", root / "rewrite.tar.gz"
+    rewritten = 0
+    try:
+        with (blobs / item["digest"][7:]).open("rb") as source, plain.open("wb") as sink:
+            stream = image_size.decompressed(item["mediaType"], source)
+            with tarfile.open(fileobj=stream, mode="r|") as archive, \
+                    tarfile.open(fileobj=sink, mode="w", format=tarfile.PAX_FORMAT) as output:
+                for member in archive:
+                    wanted = repairs.get(normal(member.name))
+                    if wanted is not None:
+                        headers = {key: value for key, value in member.pax_headers.items()
+                                   if not key.startswith(XATTR_KEYS)}
+                        headers.update({f"SCHILY.xattr.{key}": value.decode("utf-8", "surrogateescape")
+                                        for key, value in wanted})
+                        member.pax_headers = headers
+                        rewritten += 1
+                    output.addfile(member, archive.extractfile(member) if member.isreg() else None)
+        diff = hashlib.sha256()
+        with plain.open("rb") as source, packed.open("wb") as sink, \
+                gzip.GzipFile(filename="", mode="wb", fileobj=sink, compresslevel=6, mtime=0) as packer:
+            while chunk := source.read(image_size.CHUNK):
+                diff.update(chunk)
+                packer.write(chunk)
+        digest = hashlib.sha256()
+        with packed.open("rb") as source:
+            while chunk := source.read(image_size.CHUNK):
+                digest.update(chunk)
+        target = blobs / digest.hexdigest()
+        os.replace(packed, target)
+        return ({**item, "digest": "sha256:" + target.name, "size": target.stat().st_size},
+                "sha256:" + diff.hexdigest(), rewritten)
+    finally:
+        plain.unlink(missing_ok=True)
+        packed.unlink(missing_ok=True)
+
+
+def repair_xattrs(root: Path, chunked: Tree, repairs: dict[str, tuple[tuple[str, bytes], ...]]) -> tuple[int, int]:
+    """Rewrite every layer of the chunkah layout that writes a path in `repairs`; return layers and entries."""
+    assert chunked.members is not None
+    image = image_size.layout_image(root, None)
+    manifest, config = copy.deepcopy(image.manifest), copy.deepcopy(image.config)
+    affected = sorted(index for index, paths in chunked.members.items() if not paths.isdisjoint(repairs))
+    entries = 0
+    for index in affected:
+        manifest["layers"][index], config["rootfs"]["diff_ids"][index], count = rewrite_layer(
+            root, manifest["layers"][index], repairs)
+        entries += count
+    config_bytes = canonical(config)
+    manifest["config"] = {**manifest["config"], "digest": put(root, config_bytes), "size": len(config_bytes)}
+    manifest_bytes = canonical(manifest)
+    index = json.loads((root / "index.json").read_text(encoding="utf-8"))
+    index["manifests"] = [{**index["manifests"][0], "digest": put(root, manifest_bytes), "size": len(manifest_bytes)}]
+    (root / "index.json").write_bytes(canonical(index))
+    return len(affected), entries
 
 
 # ---------------------------------------------------------------- the directory layer
@@ -308,13 +395,17 @@ def directory_drift(raw: Tree, chunked: Tree) -> tuple[list[str], int]:
 
 def compare(raw: Tree, chunked: Tree) -> Comparison:
     result = Comparison()
-    kept = set()
+    kept = {path for path in raw.nodes if not path.startswith(PRUNED)}
+    # Bytes only /sysroot names, once per inode (image_size.py's `undeployed`):
+    # the base's ostree objects hard-linked to /usr stay in the image.
+    deployed = {raw.nodes[path].inode for path in kept}
+    counted = set()
     for path, node in raw.nodes.items():
         if path.startswith(PRUNED):
             result.pruned += 1
-            result.pruned_bytes += node.size
-        else:
-            kept.add(path)
+            if node.inode not in deployed and node.inode not in counted:
+                counted.add(node.inode)
+                result.pruned_bytes += node.size
     present = set(chunked.nodes)
     for path in sorted(kept - present):
         result.fail(f"missing: /{path}")
@@ -456,8 +547,14 @@ def finish(raw_source: str, chunked: Path, name: str, archive: Path | None,
     before = image_size.layout_image(chunked, None)
     with concurrent.futures.ProcessPoolExecutor(max_workers=2) as pool:
         raw_future = pool.submit(replay_source, raw_source)
-        chunked_future = pool.submit(replay_source, f"oci:{chunked}")
+        chunked_future = pool.submit(replay_source, f"oci:{chunked}", True)
         raw_tree, chunked_tree = raw_future.result(), chunked_future.result()
+    repairs = xattr_repairs(raw_tree, chunked_tree)
+    repaired_layers = repaired_entries = 0
+    if repairs:
+        repaired_layers, repaired_entries = repair_xattrs(chunked, chunked_tree, repairs)
+        # Everything below is proven on the layers as rewritten.
+        chunked_tree = replay_source(f"oci:{chunked}")
     drift, restored = directory_drift(raw_tree, chunked_tree)
     layer = directory_layer(raw_tree)
     digest, manifest = finish_layout(chunked, raw_image.config, name, layer)
@@ -478,6 +575,8 @@ def finish(raw_source: str, chunked: Path, name: str, archive: Path | None,
         "paths": result.paths, "clamped_times": result.clamped, "pruned_paths": result.pruned,
         "pruned_bytes": result.pruned_bytes, "split_hard_link_groups": result.split_links,
         "directory_times_restored": restored,
+        "xattrs_restored": {"paths": len(repairs), "entries": repaired_entries, "layers": repaired_layers,
+                            "first": sorted("/" + path for path in repairs)[:SHOWN]},
         "problems": len(result.problems), "seconds": round(time.monotonic() - started, 1),
         "before": before.manifest_digest,
     }

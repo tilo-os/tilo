@@ -236,8 +236,23 @@ class Rechunk(unittest.TestCase):
     def test_changed_mode_is_refused(self) -> None:
         self.assert_refused("/usr/bin/tool: mode", tool_mode=0o4755)
 
-    def test_lost_capability_is_refused(self) -> None:
-        self.assert_refused("/usr/bin/tool: xattrs", cap=False)
+    def test_a_capability_chunkah_could_not_read_comes_from_the_raw_layers(self) -> None:
+        # BuildKit's snapshot of the image lacks the base binaries' file
+        # capabilities; the image's own layers carry them, and so must the
+        # rechunked image's.
+        root = self.chunked(cap=False)
+        untouched = rechunk.image_size.layout_image(root, None).manifest["layers"][1]["digest"]
+        _, report = self.finish(root)
+        self.assertEqual(report["problems"], 0)
+        self.assertEqual(report["xattrs_restored"], {
+            "paths": 2, "entries": 2, "layers": 1, "first": ["/usr/bin/tool", "/usr/bin/tool-alias"]})
+        image = rechunk.image_size.layout_image(root, None)
+        final = rechunk.replay(image)
+        self.assertEqual(final.nodes["usr/bin/tool"].xattrs, (("security.capability", CAP),))
+        self.assertEqual(final.nodes["usr/bin/tool"].inode, final.nodes["usr/bin/tool-alias"].inode)
+        # Only the layer that holds them was written again.
+        self.assertEqual(image.manifest["layers"][1]["digest"], untouched)
+        self.assertEqual(len(list((root / "blobs" / "sha256").iterdir())), 2 + len(image.manifest["layers"]))
 
     def test_a_raised_time_is_refused(self) -> None:
         self.assert_refused("/usr/bin/tool: time 900 rose to 950", tool_time=950)
