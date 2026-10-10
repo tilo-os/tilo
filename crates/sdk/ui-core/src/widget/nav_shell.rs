@@ -1459,14 +1459,6 @@ impl NavShell {
         self
     }
 
-    /// How many items the sidebar holds, after its title (a quiet count, as
-    /// `SectionHeader::count`).
-    #[must_use]
-    pub fn sidebar_count(mut self, count: usize) -> Self {
-        self.set_count(Column::Sidebar, Some(count));
-        self
-    }
-
     /// How many items the overview lists, after its title.
     #[must_use]
     pub fn overview_count(mut self, count: usize) -> Self {
@@ -1696,24 +1688,9 @@ impl NavShell {
         self.set_title(Column::Inspector, title.into());
     }
 
-    /// Show or clear the count after the sidebar's title.
-    pub fn set_sidebar_count(&mut self, count: Option<usize>) {
-        self.set_count(Column::Sidebar, count);
-    }
-
-    /// Show or clear the count after the overview's title.
-    pub fn set_overview_count(&mut self, count: Option<usize>) {
-        self.set_count(Column::Overview, count);
-    }
-
     /// Show or clear the count after the content's title.
     pub fn set_content_count(&mut self, count: Option<usize>) {
         self.set_count(Column::Content, count);
-    }
-
-    /// Show or clear the count after the inspector's title.
-    pub fn set_inspector_count(&mut self, count: Option<usize>) {
-        self.set_count(Column::Inspector, count);
     }
 
     /// Whether the content's page stack can go back, for an app that keeps
@@ -1918,15 +1895,6 @@ impl NavShell {
         let slot = match at_mut(&mut self.pending.bodies, Column::Content) {
             Some(Staged(pending)) => pending.as_deref_mut(),
             None => Some(self.content.as_mut()),
-        };
-        downcast(slot)
-    }
-
-    /// The inspector as the widget the app gave it.
-    pub fn inspector_mut<T: Widget + 'static>(&mut self) -> Option<&mut T> {
-        let slot = match at_mut(&mut self.pending.bodies, Column::Inspector) {
-            Some(Staged(pending)) => pending.as_deref_mut(),
-            None => self.inspector.as_deref_mut(),
         };
         downcast(slot)
     }

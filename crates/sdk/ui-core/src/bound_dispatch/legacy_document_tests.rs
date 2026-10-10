@@ -322,9 +322,6 @@ impl Fixture {
             probe,
         }
     }
-    pub(crate) fn _temp_path_for_test(&self) -> std::path::PathBuf {
-        self._temp.path().join("profile")
-    }
     pub(crate) fn into_closed_profile(self) -> (tempfile::TempDir, RecordCheckout) {
         (self._temp, self.checkout)
     }

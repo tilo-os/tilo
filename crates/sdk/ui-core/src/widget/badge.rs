@@ -168,10 +168,6 @@ impl<'a> BadgeFace<'a> {
         }
     }
 
-    /// The side of a badge dot in `theme`.
-    pub fn dot_size(theme: &Theme) -> f64 {
-        BadgeMetrics::of(theme).dot
-    }
     #[must_use]
     pub fn style(mut self, style: ChipStyle) -> Self {
         self.style = style;
