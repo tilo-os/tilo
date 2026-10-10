@@ -129,10 +129,10 @@
     "other_setup": "Header preparation had a syntax failure and gio-querymodules was unavailable after successful cc; automatic GIO scan without cache was observed. Earlier privacy attempts had wrong refusal target identity, focus log ordering and empty-buffer native Copy observations; each stayed failed."
   },
   "artifact_recovery": {
-    "normal_rcargo_builds": "worker/witness and compositor rebuilt serially with --no-fallback --no-fetch --locked -j2",
+    "normal_cargo_drop_in_builds": "worker/witness and compositor rebuilt serially with --no-fallback --no-fetch --locked -j2",
     "identity": "all three binaries byte-identical to prior qualified artifacts",
     "policy": "existing watermark/LRU collection can evict idle worktree artifacts; prior SSH qualification did not hold the owned existing worktree lock",
-    "actual_deleting_actor": "unconfirmed; scoped rcargo GC/idle journal had no matching entry",
+    "actual_deleting_actor": "unconfirmed; scoped remote Cargo drop-in GC/idle journal had no matching entry",
     "mitigation": "bounded existing owned lock held through private prep, test and full evidence export; no runner reservation or global policy change"
   },
   "archive": {

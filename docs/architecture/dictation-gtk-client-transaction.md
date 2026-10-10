@@ -50,7 +50,8 @@ they do not acquire sandbox or collaboration authority. Compatible legacy app
 packaging owns its toolkit. The native OS toolkit exclusion remains intact.
 
 The disappearing remote artifacts were recovered through normal serialized
-rcargo builds. Existing watermark/LRU collection can remove idle worktrees;
+remote Cargo drop-in builds. Existing watermark/LRU collection can remove idle
+worktrees;
 the exact deleting actor remains unconfirmed by the scoped journal. Subsequent
 qualification held only the existing owned worktree lock through prep/test/full
 export, with bounded lifetime and no runner reservation or global policy change.
@@ -66,8 +67,9 @@ match the repository licence; its repository builder corroborates identical comp
 Production signed-model admission, compatible legacy-runtime packaging/activation,
 GTK3/X11/Flatpak coverage, physical microphones, ARM/older devices and broader
 editor/language acceptance remain unqualified. No microphone permission, persistent
-access grant, global input-method selection, image deployment or removal of the
-explicit merge hold is part of this increment.
+access grant, global input-method selection or image deployment was performed
+by this qualification. Source delivery follows the subsequent authorization
+recorded with the Qt acceptance evidence.
 
 [Additional native Qt acceptance](dictation-qt-native-evidence.md) qualifies three
 standard editable widgets and separately observes protected-field refusal. It

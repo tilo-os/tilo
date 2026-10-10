@@ -850,11 +850,12 @@
     "gtk_renderer": "The raw plain/rich manifests inherited a GTK Cairo label. These clients use ordinary Qt Widgets, no GTK adapter, and no DRM device access."
   },
   "merge_hold": {
-    "source": "Original user delegation for source thread 01a10d3b-35c8-7042-92e0-d8dab7a2a013",
-    "instruction": "draft PR with hold, no merge/deploy",
     "pr": 4014,
-    "override_received": false,
-    "meaning": "Explicit task scope; not an invented code-review approval or microphone-permission requirement."
+    "historical_status": "Initially WIP/draft with hold pending source-delivery provenance review",
+    "source": "Parent provenance audit and subsequent source-delivery instruction for source thread 01a10d3b-35c8-7042-92e0-d8dab7a2a013",
+    "override_received": true,
+    "current_instruction": "Follow full exact-head CI/review and protected integration under tested-merge authorization; remove the temporary source hold when qualified and permitted.",
+    "meaning": "The temporary source restriction was withdrawn. Microphone, persistent grants, model activation and deployment boundaries remain separate and unchanged."
   },
   "boundaries": {
     "physical_microphone": "Not accessed; a separate explicit permission is required if future work needs a new microphone grant.",
@@ -863,7 +864,7 @@
     "new_persistent_access": "None",
     "devices_rebooted": "None",
     "local_vms_started": "None",
-    "rust_builds": "rcargo --no-fallback only",
+    "rust_builds": "$CARGO --no-fallback only",
     "qt_installation": "Private extracted signed runtime only; native OS toolkit exclusion unchanged"
   },
   "cleanup_verification": {

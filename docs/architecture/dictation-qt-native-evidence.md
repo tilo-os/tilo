@@ -76,13 +76,14 @@ the actual Qt client identity and presented application ID identify the subject.
 No failed run is relabeled as passed. Complete raw output is preserved losslessly
 as escaped lines alongside its original and portable hashes.
 
-PR #4014 retains its WIP/draft status and `hold` label because the original user
-delegation explicitly requires **"draft PR with hold, no merge/deploy"**. This is
-an existing scope instruction, not a new approval gate. Broad integration
-permission does not override it. Physical microphone access, new persistent
-permissions, paid APIs and production signed-model admission remain distinct
-from these already authorized public recorded-audio tests. The exact bookmark
-identity of "phonnon 2" remains unverified.
+PR #4014 was initially parked as WIP/draft with `hold` while source-delivery
+authorization was being checked. The parent provenance audit subsequently
+withdrew that temporary restriction and confirmed the user's tested-merge
+authorization. Source integration must pass exact-head CI and the protected
+repository process. Physical microphone access, new persistent permissions,
+paid APIs, production signed-model admission and deployment remain distinct
+from these already authorized public recorded-audio tests and source delivery.
+The exact bookmark identity of "phonnon 2" remains unverified.
 
 [Ledger](dictation-qt-native-evidence.json) ·
 [Full historical fixtures](../../tools/release/fixtures/qt_dictation_20261010/README.md)
