@@ -317,7 +317,11 @@ mod tests {
             .collect();
         assert_eq!(
             removed,
-            ["2026.10.1-chromium", "2026.10.2-chromium", "2026.10.4-chromium"]
+            [
+                "2026.10.1-chromium",
+                "2026.10.2-chromium",
+                "2026.10.4-chromium"
+            ]
         );
         assert!(bundles.join(ENGINE).join("bundle.toml").exists());
         assert!(bundles.join(NATIVE).join("bundle.toml").exists());

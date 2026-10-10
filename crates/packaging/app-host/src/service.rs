@@ -21,11 +21,12 @@ use tilo_app_package::id::PackageId;
 
 /// Service state shared across every accepted connection.
 /// What `tilo-install` runs after every install, update and uninstall, run
-/// after this daemon's own: the store's size cap, payload trees and staging
+/// after this daemon's own, and at every start of the daemon (a new image or a
+/// swapped userspace changes the system store without any install running): the store's size cap, payload trees and staging
 /// nothing names, and the runtime builds nothing installed runs on any
 /// more. A tree a launch holds or a running app has mounted stays. Never
 /// fails the change it follows.
-fn collect_after_change(store: &PackageStore, catalog: &Catalog, max_store_bytes: u64) {
+pub fn collect_after_change(store: &PackageStore, catalog: &Catalog, max_store_bytes: u64) {
     let runtimes = match runtime_bundle::gc::BundleRoot::from_env() {
         Ok(runtimes) => runtimes,
         Err(error) => {

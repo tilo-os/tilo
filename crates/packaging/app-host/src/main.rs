@@ -90,9 +90,10 @@ fn main() -> anyhow::Result<()> {
         // mutations are serialised by the store's lock, so accepting requests
         // meanwhile is safe.
         let startup_store = Arc::clone(&store);
+        let startup_catalog = Arc::clone(&catalog);
         let max_store_bytes = cli.max_store_bytes;
         let _startup = tokio::task::spawn_blocking(move || {
-            startup(&startup_store, max_store_bytes);
+            startup(&startup_store, &startup_catalog, max_store_bytes);
         });
         transport::serve(listener, store, catalog, cli.max_store_bytes).await
     })
@@ -160,9 +161,11 @@ fn init_tracing() {
         .try_init();
 }
 
-/// Enforce the size cap. A failure is logged and retried on the next start.
-fn startup(store: &PackageStore, max_store_bytes: u64) {
-    if let Err(error) = store.sweep(max_store_bytes) {
-        tracing::warn!(%error, "startup sweep failed");
-    }
+/// Enforce the size cap and reclaim what the system store no longer needs:
+/// a new image or a swapped userspace changes which runtime builds the
+/// shipped apps pin (the Browser's engine among them) without any install
+/// running, so the builds an earlier one left are collected here. A failure
+/// is logged and retried on the next start.
+fn startup(store: &PackageStore, catalog: &Catalog, max_store_bytes: u64) {
+    app_host::service::collect_after_change(store, catalog, max_store_bytes);
 }
