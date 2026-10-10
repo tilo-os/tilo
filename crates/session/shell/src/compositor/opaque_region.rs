@@ -85,6 +85,7 @@ impl Span {
         }
         if self.x0 < inner.x0 {
             out.push(Self {
+                x0: self.x0,
                 x1: inner.x0,
                 ..inner
             });
@@ -240,6 +241,28 @@ mod tests {
             Some(&region(&[
                 (ADD, rect(0, 0, 960, 1080)),
                 (ADD, rect(960, 0, 960, 1080)),
+            ])),
+            SURFACE
+        ));
+        assert!(
+            covers(
+                Some(&region(&[
+                    (ADD, rect(0, 0, 1920, 400)),
+                    (ADD, rect(0, 680, 1920, 400)),
+                    (ADD, rect(0, 400, 500, 280)),
+                    (ADD, rect(1420, 400, 500, 280)),
+                    (ADD, rect(500, 400, 920, 280)),
+                ])),
+                SURFACE
+            ),
+            "a centre added last leaves a frame on every side for the others"
+        );
+        assert!(!covers(
+            Some(&region(&[
+                (ADD, rect(0, 0, 1920, 400)),
+                (ADD, rect(0, 680, 1920, 400)),
+                (ADD, rect(1420, 400, 500, 280)),
+                (ADD, rect(500, 400, 920, 280)),
             ])),
             SURFACE
         ));
