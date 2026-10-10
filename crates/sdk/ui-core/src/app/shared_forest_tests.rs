@@ -181,6 +181,7 @@ fn a_shared_forest_derives_exactly_what_a_fresh_tree_does_after_any_edit() {
         let shared = crate::bound_dispatch::BoundResourceSnapshot::shared(
             binding.clone(),
             Rc::clone(&forest),
+            Rc::clone(&forest),
             Rc::clone(&controls),
         );
         let plain = crate::bound_dispatch::BoundResourceSnapshot::new(
@@ -266,6 +267,7 @@ fn an_item_edit_updates_that_items_semantic_node_only() {
     let mut refresh = |forest: Rc<[SharedResource]>| {
         let snapshot = crate::bound_dispatch::BoundResourceSnapshot::shared(
             binding.clone(),
+            Rc::clone(&forest),
             forest,
             Rc::default(),
         );

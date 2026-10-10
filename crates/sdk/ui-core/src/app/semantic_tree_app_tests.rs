@@ -160,6 +160,7 @@ struct CounterCard {
     fresh_dynamic: bool,
     button: Button,
     destructive: bool,
+    declare_bump: Rc<Cell<bool>>,
     lazy_resource: Option<Resource>,
     directory_provider: Option<LargeDirectoryProvider>,
     directory_roots: usize,
@@ -258,6 +259,7 @@ impl CounterCard {
             fresh_semantic: false,
             fresh_dynamic: false,
             destructive,
+            declare_bump: Rc::new(Cell::new(true)),
             lazy_resource: None,
             directory_provider: None,
             directory_roots: 1,
@@ -291,6 +293,7 @@ impl CounterCard {
             fresh_semantic: false,
             fresh_dynamic: false,
             destructive: false,
+            declare_bump: Rc::new(Cell::new(true)),
             lazy_resource: Some(resource),
             directory_provider: None,
             directory_roots: 1,
@@ -323,6 +326,9 @@ impl CounterCard {
             self.destructive,
             self.post_bump_reset && counter_in_doc(doc) > 0,
         );
+        if !self.declare_bump.get() {
+            resource.actions.retain(|action| action.id != "bump");
+        }
         if self.fresh_semantic {
             resource.semantic_identity = Some(tilo_actions::ResourceSemanticIdentity {
                 kind: "test.counter".into(),

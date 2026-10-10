@@ -359,6 +359,15 @@ impl App {
     /// the app plus ordinary controls projected from its retained semantic
     /// tree. Ctrl+K, scripts, and agents therefore consume one catalogue.
     pub fn collect_resources(&self) -> Vec<tilo_actions::Resource> {
+        self.collect_resources_with_bound_declarations().0
+    }
+
+    fn collect_resources_with_bound_declarations(
+        &self,
+    ) -> (
+        Vec<tilo_actions::Resource>,
+        Vec<crate::bound_dispatch::BoundResourceSnapshot>,
+    ) {
         let _entry = self.enter_wake_scope();
         let key = self.ensure_resource_cache();
         let mut resources = self
@@ -369,18 +378,18 @@ impl App {
             .filter(|cache| cache.key == key)
             .and_then(|cache| cache.complete.clone())
             .unwrap_or_default();
-        if let Ok(snapshots) = crate::bound_dispatch::discover_cached_bound_resources(
+        let snapshots = crate::bound_dispatch::discover_cached_bound_resources(
             self.root_widget.as_ref(),
             &self.state.doc,
             &self.actions.bound_resource_cache,
             self.actions.resource_generation.get(),
-        ) {
-            resources.extend(
-                snapshots
-                    .into_iter()
-                    .flat_map(|snapshot| snapshot.into_resources()),
-            );
-        }
+        )
+        .unwrap_or_default();
+        resources.extend(
+            snapshots
+                .iter()
+                .flat_map(|snapshot| snapshot.resources().iter().cloned()),
+        );
         if let Ok(legacy) = crate::bound_dispatch::legacy_document::legacy_resources(
             self.root_widget.as_ref(),
             &self.permission_ctx,
@@ -389,7 +398,7 @@ impl App {
         ) {
             resources.extend(legacy);
         }
-        resources
+        (resources, snapshots)
     }
 
     /// Audit every retained control binding against the fresh resource tree.
@@ -398,8 +407,8 @@ impl App {
     /// report without inspecting widget implementation details.
     pub fn control_action_coverage(&self) -> Vec<ControlBindingCoverage> {
         let _entry = self.enter_wake_scope();
-        let resources = self.collect_resources();
-        self.control_action_coverage_for(&resources)
+        let (resources, bound) = self.collect_resources_with_bound_declarations();
+        self.control_action_coverage_for(&resources, &bound)
     }
 
     /// Locate every on-screen affordance for one canonical action and rank
@@ -429,10 +438,12 @@ impl App {
     fn control_action_coverage_for(
         &self,
         resources: &[tilo_actions::Resource],
+        bound: &[crate::bound_dispatch::BoundResourceSnapshot],
     ) -> Vec<ControlBindingCoverage> {
         self.control_binding_coverage_for(
             resources,
             crate::widget::controls::control_action_bindings(self.root_widget.as_ref()),
+            bound,
         )
     }
 
@@ -440,6 +451,7 @@ impl App {
         &self,
         resources: &[tilo_actions::Resource],
         bindings: Vec<crate::widget::ControlBindingMetadata>,
+        bound: &[crate::bound_dispatch::BoundResourceSnapshot],
     ) -> Vec<ControlBindingCoverage> {
         // Shared chrome invokes doors served by this host, rather than by
         // the app's resource provider. Audit those exact declarations too.
@@ -460,6 +472,7 @@ impl App {
                     crate::widget::ControlBindingKind::Action(address) => {
                         if tilo_actions::door::resolve(resources, address).is_none()
                             && tilo_actions::door::resolve(&host_resources, address).is_none()
+                            && !bound.iter().any(|snapshot| snapshot.declares(address))
                         {
                             ControlBindingStatus::StaleAddress
                         } else if !seen.insert(address.clone()) {
@@ -688,9 +701,12 @@ impl App {
         // Use this exact snapshot for coverage as well as publication. That
         // prevents recursive/repeated resource collection and makes the audit
         // correspond to the catalogue about to cross the wire.
+        let (control_resources, bound_declarations) =
+            self.collect_resources_with_bound_declarations();
         let binding_coverage = self.control_binding_coverage_for(
-            &self.collect_resources(),
+            &control_resources,
             crate::widget::controls::action_control_bindings(self.root_widget.as_ref()),
+            &bound_declarations,
         );
         if binding_coverage
             .iter()

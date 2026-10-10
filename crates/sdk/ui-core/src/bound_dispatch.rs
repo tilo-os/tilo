@@ -597,6 +597,10 @@ pub(crate) fn poll_resource_operation(
 pub(crate) struct BoundResourceSnapshot {
     pub(crate) binding: CallbackBinding,
     forest: Rc<Forest>,
+    /// The owner's unfiltered declarations, retained only so internal control
+    /// coverage can distinguish a permission-disabled control from a stale
+    /// address. This forest is never returned to catalogue consumers.
+    declarations: Rc<Forest>,
     /// The component controls' allowed addresses last derived, carried from
     /// one snapshot of the component to the one that replaces it.
     controls: Rc<RefCell<Option<ControlAvailability>>>,
@@ -612,12 +616,14 @@ struct Forest {
 
 impl BoundResourceSnapshot {
     pub(crate) fn new(binding: CallbackBinding, resources: Vec<tilo_actions::Resource>) -> Self {
+        let forest = Rc::new(Forest {
+            shared: std::cell::OnceCell::new(),
+            plain: std::cell::OnceCell::from(Rc::new(resources)),
+        });
         Self {
             binding,
-            forest: Rc::new(Forest {
-                shared: std::cell::OnceCell::new(),
-                plain: std::cell::OnceCell::from(Rc::new(resources)),
-            }),
+            forest: Rc::clone(&forest),
+            declarations: forest,
             controls: Rc::default(),
         }
     }
@@ -625,6 +631,7 @@ impl BoundResourceSnapshot {
     pub(crate) fn shared(
         binding: CallbackBinding,
         forest: Rc<[SharedResource]>,
+        declarations: Rc<[SharedResource]>,
         controls: Rc<RefCell<Option<ControlAvailability>>>,
     ) -> Self {
         Self {
@@ -633,7 +640,51 @@ impl BoundResourceSnapshot {
                 shared: std::cell::OnceCell::from(forest),
                 plain: std::cell::OnceCell::new(),
             }),
+            declarations: Rc::new(Forest {
+                shared: std::cell::OnceCell::from(declarations),
+                plain: std::cell::OnceCell::new(),
+            }),
             controls,
+        }
+    }
+
+    /// Whether the owner declared 'address' before its reader-specific
+    /// permission projection. Used only by the stale-control audit.
+    pub(crate) fn declares(&self, address: &tilo_actions::ActionAddress) -> bool {
+        fn shared_has(resource: &SharedResource, address: &tilo_actions::ActionAddress) -> bool {
+            (resource.id() == address.resource
+                && resource
+                    .head()
+                    .actions
+                    .iter()
+                    .any(|action| action.id == address.action))
+                || resource
+                    .children()
+                    .iter()
+                    .any(|child| shared_has(child, address))
+        }
+        fn plain_has(
+            resource: &tilo_actions::Resource,
+            address: &tilo_actions::ActionAddress,
+        ) -> bool {
+            (resource.id.as_str() == address.resource
+                && resource
+                    .actions
+                    .iter()
+                    .any(|action| action.id == address.action))
+                || resource
+                    .children
+                    .iter()
+                    .any(|child| plain_has(child, address))
+        }
+        if let Some(forest) = self.declarations.shared.get() {
+            forest.iter().any(|resource| shared_has(resource, address))
+        } else {
+            self.declarations.plain.get().is_some_and(|resources| {
+                resources
+                    .iter()
+                    .any(|resource| plain_has(resource, address))
+            })
         }
     }
 
@@ -1338,23 +1389,33 @@ pub(crate) fn discover_cached_bound_resources(
                             (token, Rc::clone(&entry.snapshot.controls))
                         },
                     );
-                let resources: Rc<[SharedResource]> = binding
-                    .read_document(doc, |doc, _| {
-                        let mut resources = Vec::new();
-                        owned(widget, doc, binding, &mut resources, &mut Vec::new(), true);
-                        resources
-                            .iter()
-                            .filter_map(|resource| filter_shared(binding, filter_token, resource))
-                            .collect()
-                    })
-                    .map_err(|error| format!("{error:?}"))?;
+                let (declarations, resources): (Rc<[SharedResource]>, Rc<[SharedResource]>) =
+                    binding
+                        .read_document(doc, |doc, _| {
+                            let mut resources = Vec::new();
+                            owned(widget, doc, binding, &mut resources, &mut Vec::new(), true);
+                            let declarations: Rc<[SharedResource]> = Rc::from(resources);
+                            let filtered = declarations
+                                .iter()
+                                .filter_map(|resource| {
+                                    filter_shared(binding, filter_token, resource)
+                                })
+                                .collect::<Rc<[_]>>();
+                            (declarations, filtered)
+                        })
+                        .map_err(|error| format!("{error:?}"))?;
                 // Each row was filtered using current permission checks. Do
                 // not cache a mixed projection if time/policy changed while
                 // those checks were running.
                 if binding.permissions.borrow().directory_witness()? != permissions {
                     return Err("owner policy changed while filtering resources".into());
                 }
-                let snapshot = BoundResourceSnapshot::shared(binding.clone(), resources, controls);
+                let snapshot = BoundResourceSnapshot::shared(
+                    binding.clone(),
+                    resources,
+                    declarations,
+                    controls,
+                );
                 let mut entries = cache.0.borrow_mut();
                 entries.retain(|entry| {
                     !entry.snapshot.binding.closing.get()

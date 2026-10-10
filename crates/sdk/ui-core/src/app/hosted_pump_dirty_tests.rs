@@ -461,6 +461,210 @@ struct OwnerAuthorityFixture {
     deadline: Arc<std::sync::atomic::AtomicU64>,
 }
 
+thread_local! {
+    static HOSTED_COUNTER_DECLARATION: RefCell<Option<Rc<Cell<bool>>>> = const {
+        RefCell::new(None)
+    };
+}
+
+fn owned_counter_component(
+    mut context: crate::application::HostContext,
+) -> Result<crate::application::AppComponent, crate::launch::LaunchError> {
+    context
+        .initialize_new_record(|doc| doc.put(ROOT, "seed", true).map_err(|e| e.to_string()))
+        .map_err(crate::launch::LaunchError::Record)?;
+    let mut registry = tilo_actions::ActionRegistry::new();
+    registry.register::<CounterAction>(COUNTER_TYPE);
+    let declaration = HOSTED_COUNTER_DECLARATION.with_borrow(Clone::clone);
+    let mut counter = CounterCard::new();
+    if let Some(declaration) = declaration {
+        counter.declare_bump = declaration;
+    }
+    Ok(crate::application::AppComponent::new(
+        context,
+        Box::new(counter),
+        registry,
+    ))
+}
+
+fn owned_counter_factory(
+    context: crate::application::HostContext,
+    _: crate::application::LaunchTarget,
+    _: crate::application::RestoreInput,
+) -> Result<crate::application::AppComponent, crate::launch::LaunchError> {
+    owned_counter_component(context)
+}
+
+struct HostedOwnedCounter {
+    _temp: tempfile::TempDir,
+    app: App,
+    permissions: Rc<RefCell<crate::permissions::PermissionContext>>,
+    declaration: Rc<Cell<bool>>,
+}
+
+fn hosted_owned_counter() -> HostedOwnedCounter {
+    use crate::application::{
+        ApplicationDefinition, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
+    };
+    let temp = tempfile::tempdir().unwrap();
+    let mut owners = crate::record::RecordOwners::new(temp.path().into());
+    let records = owners
+        .open("test.directory", "00000000-0000-0000-0000-000000000006")
+        .unwrap();
+    let views = Rc::new(
+        crate::application_view::InstanceViewStore::new(
+            temp.path().into(),
+            "D",
+            "00000000-0000-0000-0000-000000000006",
+        )
+        .unwrap(),
+    );
+    let permissions = Rc::new(RefCell::new(
+        crate::permissions::PermissionContext::permissive(),
+    ));
+    let definition = ApplicationDefinition {
+        app_id: "test.directory",
+        title: "Directory",
+        icon: crate::widget::IconDescriptor::Glyph("D"),
+        record_kind: crate::record::RecordKind::new("directory"),
+        required: vec![],
+        optional: vec![],
+        opens: &[],
+        room_record: false,
+        create: owned_counter_factory,
+    };
+    let declaration = Rc::new(Cell::new(true));
+    HOSTED_COUNTER_DECLARATION.with_borrow_mut(|slot| {
+        assert!(slot.replace(Rc::clone(&declaration)).is_none());
+    });
+    let context = HostContext::prepare(
+        &definition,
+        HostContextInputs {
+            records,
+            views,
+            device_id: "D".into(),
+            instance_id: 83,
+            permissions: Rc::clone(&permissions),
+            author: crate::permissions::UserId("fixture-user".into()),
+            action_context: tilo_actions::ActionContext::default(),
+        },
+        &LaunchTarget::New,
+    )
+    .unwrap();
+    let component = definition
+        .instantiate(context, LaunchTarget::New, RestoreInput::None)
+        .unwrap();
+    HOSTED_COUNTER_DECLARATION.with_borrow_mut(|slot| {
+        assert!(slot.take().is_some());
+    });
+    let binding = component.callback_binding();
+    let inputs = crate::application::ComponentRunnerInputs {
+        theme: Theme::dark(),
+        text_renderer: crate::font_catalog::fixture_renderer(),
+    };
+    let mut app = App::from_component_using(component, inputs, |_, _| {
+        AppConstructionInputs::controlled()
+    })
+    .unwrap();
+    app.collaboration.manager = CollaborationManager::connected_for_lifecycle_test();
+    app.actions.bound_broker_route_for_test = Some(crate::collaboration::PrimaryRouteWitness {
+        route: binding.broker_route().unwrap(),
+        epoch: uuid::Uuid::new_v4(),
+    });
+    app.init_layout();
+    let mut settled = false;
+    for _ in 0..8 {
+        app.collaboration.manager.wait_for_commands_for_test();
+        if app.pump_hosted_model_as(false) == model_lifecycle::HostedPumpReport::default() {
+            settled = true;
+            break;
+        }
+    }
+    assert!(
+        settled,
+        "hosted counter never reached its publication-ready idle state"
+    );
+    app.collaboration.manager.wait_for_commands_for_test();
+    HostedOwnedCounter {
+        _temp: temp,
+        app,
+        permissions,
+        declaration,
+    }
+}
+
+fn restrict_counter_owner_to_read(fixture: &HostedOwnedCounter) {
+    use crate::permissions::{Actor, CapOverride, Effect, Scope, Subject, Verb};
+    let mut ceiling = CapOverride::grant(
+        Subject::person("fixture-user"),
+        Scope::App("test.directory".into()),
+        Verb::Read,
+    );
+    ceiling.effect = Effect::Restrict;
+    *fixture.permissions.borrow_mut() = crate::permissions::PermissionContext::from_capabilities(
+        Actor::person(Some(crate::permissions::Role::Owner), "fixture-user"),
+        vec![ceiling],
+    );
+}
+
+#[test]
+fn hosted_owner_read_ceiling_keeps_read_publication_and_disables_write_control() {
+    let mut fixture = hosted_owned_counter();
+    restrict_counter_owner_to_read(&fixture);
+    let report = fixture.app.pump_hosted_model_as(false);
+    assert!(report.synced && report.published);
+    fixture.app.refresh_control_action_availability();
+    let button = fixture
+        .app
+        .layout
+        .node_map
+        .values()
+        .copied()
+        .find(|widget| unsafe { (**widget).test_id() == Some("bump") })
+        .expect("the retained bound Write button remains in the mounted view");
+    assert!(!unsafe { (*button).is_enabled() });
+    let published = fixture
+        .app
+        .actions
+        .last_published_actions
+        .as_ref()
+        .expect("the restricted owner still publishes its readable surface");
+    assert!(
+        published
+            .iter()
+            .any(|action| action.address.action == "inspect")
+    );
+    assert!(
+        published
+            .iter()
+            .all(|action| action.address.action != "bump")
+    );
+}
+
+#[test]
+fn hosted_undeclared_bound_control_still_withdraws_the_surface() {
+    let mut fixture = hosted_owned_counter();
+    assert!(
+        fixture
+            .app
+            .actions
+            .last_published_actions
+            .as_ref()
+            .is_some_and(|actions| !actions.is_empty())
+    );
+    fixture.declaration.set(false);
+    fixture.app.invalidate_widget_resource_cache();
+    fixture.app.pump_hosted_model_as(false);
+    assert!(
+        fixture
+            .app
+            .actions
+            .last_published_actions
+            .as_ref()
+            .is_some_and(Vec::is_empty)
+    );
+}
+
 fn live_owner_authority() -> OwnerAuthorityFixture {
     let current = Arc::new(std::sync::Mutex::new(true));
     let deadline = Arc::new(std::sync::atomic::AtomicU64::new(
