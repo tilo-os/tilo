@@ -317,14 +317,12 @@ phone.invokeAction(phone.opened.resource, 'highlight-selection');
 
 `mountDesktop(element, {app: 'desktop', local})` runs the canonical desktop
 (`tilo_desktop::composition::DesktopSurface` and its chrome, as the Cloud
-frontend does) without a peer. `src/local_desktop.rs` builds one room document
-per seeded workspace (the first is the mount's `room`, the others derived from
-it) and is their only topology owner: a command the shell binds is reduced
-with `tilo_desktop_model::commands::apply_command`, projected with
-`project_owned_contents`/`bind_tab_record` as the workspace host does, and
-handed to the desktop as its next admission in the same frame, instead of
-being queued for a peer. Nothing is replicated or persisted but the apps'
-records, which go to the profile's storage like a standalone mount's.
+frontend does) without a peer. `src/desktop.rs` runs `tilo-desktop-surface`
+over a `tilo-desktop-model` tree, every tab an in-process application. The
+tree and the record each tab shows are kept per room in the profile's
+storage and committed with the records themselves, so a reload restores the
+same windows on the same documents; a profile with no stored desktop is
+seeded with a window per requested application.
 
 - Windows are resolved through the same catalogue and resolver as standalone
   mounts: the host links every seeded app (and `local.apps`) before mounting,
