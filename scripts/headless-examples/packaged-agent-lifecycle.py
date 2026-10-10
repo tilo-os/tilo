@@ -5121,7 +5121,7 @@ def assign_expiring_app_write_restriction(
         "rules": [{
             "scope": {"App": app},
             "effect": "Restrict",
-            "verb": "Write",
+            "verb": "Read",
         }],
         "confirm": True,
     }), process)
@@ -5296,16 +5296,30 @@ def reopen_marker_composer_while_live(socket, agent, marker, windows, process, *
     wait_for("initial marker's physical Message draft", lambda:
              private_editor_value_matches(access, draft), process)
     require_ok(call(socket, {"op": "click_named", "name": "agent-quick-close"}))
-    wait_for("initial quick composer close", lambda: composer() is None, process)
     # This is the freshly observed real node. Its public activation rejects
     # an expired pulse; caching the address cannot extend its authority.
     if pointer:
-        current_marker = agent_marker_accessibility(agent, windows=windows)
-        if current_marker is None or any(current_marker.get(key) != marker.get(key)
-                                         for key in ("bus", "window", "root")):
-            raise RuntimeError("physical marker reopen lost its original owned shell route")
+        def current_owned_marker():
+            current = agent_marker_accessibility(agent, windows=windows)
+            if current is None:
+                return None
+            if any(current.get(key) != marker.get(key)
+                   for key in ("bus", "window", "root")):
+                raise RuntimeError("physical marker reopen changed its owned shell route")
+            return current
+
+        # Shell accessibility deliberately suppresses every marker while the
+        # composer is open. Its exact fresh marker returning therefore proves
+        # the physical Close landed without spending the finite terminal dwell
+        # on a redundant walk of the whole composer subtree.
+        current_marker = wait_for(
+            "initial quick composer close and exact marker return",
+            current_owned_marker,
+            process,
+        )
         click_current_agent_marker(socket, current_marker)
     else:
+        wait_for("initial quick composer close", lambda: composer() is None, process)
         activate_shell_accessibility_control(marker, marker["label"])
     reopened = wait_for("initial marker composer reopened", composer, process)
     if not private_editor_value_matches(reopened, draft):

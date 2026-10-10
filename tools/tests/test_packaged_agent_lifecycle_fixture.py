@@ -1474,28 +1474,31 @@ class PresentedEditorTargetTests(unittest.TestCase):
             calls.append((action, arguments))
             return {"receipt": {"action": action["id"]}}
 
-        with patch.object(PROOF, "wait_for", side_effect=[save, assign]), \
-                patch.object(PROOF, "invoke", side_effect=invoke), \
-                patch.object(PROOF, "wait_terminal", side_effect=lambda _s, row, _p: row), \
-                patch.object(PROOF, "terminal_invocation", side_effect=["saved", "assigned"]), \
-                patch.object(PROOF.time, "time", return_value=100):
-            result = PROOF.assign_expiring_app_write_restriction(
-                "socket", "room", "b" * 64, "so.tilo.chat", "profile", None
-            )
-        self.assertEqual(calls[0][1]["rules"], [{
-            "scope": {"App": "so.tilo.chat"},
-            "effect": "Restrict",
-            "verb": "Write",
-        }])
-        self.assertEqual(calls[1][1], {
-            "profile": "profile", "subject_kind": "person", "subject": "b" * 64,
-            "expires_unix": 112, "confirm": True,
-        })
-        self.assertEqual(result, {
-            "save_invocation": "saved", "assign_invocation": "assigned",
-            "expires_unix": 112,
-        })
-        self.assertNotIn("b" * 64, json.dumps(result))
+        for app in ("so.tilo.chat", "so.tilo.desktop"):
+            calls.clear()
+            with self.subTest(app=app), patch.object(PROOF, "wait_for", side_effect=[save, assign]), \
+                    patch.object(PROOF, "invoke", side_effect=invoke), \
+                    patch.object(PROOF, "wait_terminal", side_effect=lambda _s, row, _p: row), \
+                    patch.object(PROOF, "terminal_invocation", side_effect=["saved", "assigned"]), \
+                    patch.object(PROOF.time, "time", return_value=100):
+                result = PROOF.assign_expiring_app_write_restriction(
+                    "socket", "room", "b" * 64, app, "profile", None
+                )
+            self.assertEqual(len(calls), 2)
+            self.assertEqual(calls[0], (save, {
+                "name": "profile", "description": "Native independent app permission proof",
+                "rules": [{"scope": {"App": app}, "effect": "Restrict", "verb": "Read"}],
+                "confirm": True,
+            }))
+            self.assertEqual(calls[1], (assign, {
+                "profile": "profile", "subject_kind": "person", "subject": "b" * 64,
+                "expires_unix": 112, "confirm": True,
+            }))
+            self.assertEqual(result, {
+                "save_invocation": "saved", "assign_invocation": "assigned",
+                "expires_unix": 112,
+            })
+            self.assertNotIn("b" * 64, json.dumps(result))
 
     def test_permission_evidence_never_serializes_private_person(self):
         class Provider:
@@ -2046,7 +2049,8 @@ class PresentedEditorTargetTests(unittest.TestCase):
                                  lambda _access, value: state["draft"] == value), \
                     patch.object(PROOF, "call", side_effect=control) as called, \
                     patch.object(PROOF, "require_ok"), \
-                    patch.object(PROOF, "agent_marker_accessibility", return_value=marker), \
+                    patch.object(PROOF, "agent_marker_accessibility", side_effect=
+                                 lambda *_args, **_kwargs: marker if not state["open"] else None), \
                     patch.object(PROOF, "click_current_agent_marker",
                                  side_effect=lambda _socket, actual: activate(actual, actual["label"])), \
                     patch.object(PROOF, "activate_shell_accessibility_control", side_effect=activate):
@@ -2066,6 +2070,42 @@ class PresentedEditorTargetTests(unittest.TestCase):
                     "Keep this marker Message draft private."}), called.call_args_list)
                 self.assertIn(call("socket", {"op": "click_named", "name":
                     "agent-quick-close"}), called.call_args_list)
+
+    def test_physical_marker_reopen_fails_when_no_fresh_marker_returns(self):
+        state = {"open": True, "draft": ""}
+        marker = {"bus": "owned", "window": "/window", "root": "/workspace",
+                  "control": "/marker", "label": "Agent action: tide"}
+        access = {"bus": "owned", "composer": "/editor"}
+
+        def control(_socket, request):
+            if request.get("op") == "type":
+                state["draft"] = request["text"]
+            if request.get("name") == "agent-quick-close":
+                state["open"] = False
+            return {}
+
+        def bounded_wait(label, predicate, _process=None, **_kwargs):
+            result = predicate()
+            if result:
+                return result
+            raise PROOF.ProofTimeout(f"timed out waiting for {label}")
+
+        with patch.object(PROOF, "agent_quick_composer_accessibility", side_effect=
+                          lambda *_args, **_kwargs: access if state["open"] else None), \
+                patch.object(PROOF, "private_editor_value_matches", side_effect=
+                             lambda _access, value: state["draft"] == value), \
+                patch.object(PROOF, "call", side_effect=control) as called, \
+                patch.object(PROOF, "require_ok"), \
+                patch.object(PROOF, "agent_marker_accessibility", return_value=None), \
+                patch.object(PROOF, "wait_for", side_effect=bounded_wait), \
+                patch.object(PROOF, "click_current_agent_marker") as click_marker:
+            with self.assertRaisesRegex(
+                    PROOF.ProofTimeout, "exact marker return"):
+                PROOF.reopen_marker_composer_while_live(
+                    "socket", "tide", marker, [], None, pointer=True)
+        self.assertEqual(called.call_args_list.count(call(
+            "socket", {"op": "click_named", "name": "agent-quick-close"})), 1)
+        click_marker.assert_not_called()
 
     def test_ime_drag_refusal_exports_only_closed_public_geometry(self):
         frame = {
