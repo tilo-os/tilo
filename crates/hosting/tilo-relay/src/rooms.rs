@@ -596,18 +596,12 @@ impl Rooms {
         let now = SystemTime::now();
         let member = governed.peer().permissions(device, now).ok()?;
         drop(governed);
-        let millis =
-            u64::try_from(now.duration_since(SystemTime::UNIX_EPOCH).ok()?.as_millis()).ok()?;
-        let foreign_bound = tilo_action_policy::roles::foreign_device_bound();
-        (member
-            .authority(&foreign_bound)
-            .decide(
+        member
+            .allows(
                 &member.policy.node(),
                 tilo_action_policy::ActionKind::Undoable,
-                &tilo_action_policy::Context::at(millis),
+                now,
             )
-            .answer
-            == tilo_action_policy::Answer::Allow)
             .then_some(member.role)
     }
 
@@ -758,23 +752,8 @@ impl Rooms {
         }
         let now = SystemTime::now();
         let member = room.peer().permissions(author, now)?;
-        let foreign_bound = tilo_action_policy::roles::foreign_device_bound();
-        let millis = now
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .ok()
-            .and_then(|elapsed| u64::try_from(elapsed.as_millis()).ok())
-            .ok_or("relay clock is before the Unix epoch")?;
         let node = collab_types::validator::document_node(&member.policy.room, &app_id, &record_id);
-        if member
-            .authority(&foreign_bound)
-            .decide(
-                &node,
-                tilo_action_policy::ActionKind::Undoable,
-                &tilo_action_policy::Context::at(millis),
-            )
-            .answer
-            != tilo_action_policy::Answer::Allow
-        {
+        if !member.allows(&node, tilo_action_policy::ActionKind::Undoable, now) {
             return Err(format!(
                 "{app_id} record written by a device that may not edit"
             ));

@@ -1781,9 +1781,10 @@ async fn serve(
             .filter(|_| remote_ticket.is_none())
             .zip(share_issuer.as_ref())
             .map(|(path, signer)| -> Result<_> {
-                let capabilities = serde_json::from_slice(&std::fs::read(path)?)
-                    .context("parse workspace authority bootstrap capabilities")?;
-                Ok((capabilities, signer))
+                let authority: collab_types::FsAuthority =
+                    serde_json::from_slice(&std::fs::read(path)?)
+                        .context("parse workspace authority bootstrap capabilities")?;
+                Ok((authority.capabilities, signer))
             })
             .transpose()?;
         records.workspace_authority = workspace_startup::owner_authority(
@@ -4169,7 +4170,7 @@ mod tests {
             let err = resolve_acl(&args, NODE_KEY)
                 .expect_err("a malformed capability list must abort the mount");
             assert!(
-                format!("{err:#}").contains("JSON array of capabilities"),
+                format!("{err:#}").contains("not the governor's file authority"),
                 "expected a parse failure, got: {err:#}"
             );
         }
@@ -4206,7 +4207,11 @@ mod tests {
             )];
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("caps.json");
-            std::fs::write(&path, serde_json::to_vec(&caps).unwrap()).unwrap();
+            std::fs::write(
+                &path,
+                serde_json::to_vec(&collab_types::FsAuthority::from(caps)).unwrap(),
+            )
+            .unwrap();
 
             let args = acl_args_from(&[
                 "--acl",

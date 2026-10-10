@@ -517,8 +517,9 @@ fn filesystem_capabilities_export_exactly_and_inherit_to_the_boundary() {
 
         persist::wait_for_saves();
         let raw = std::fs::read_to_string(&acl_path).expect("the export must exist after a grant");
-        let exported: Vec<CapOverride> =
-            serde_json::from_str(&raw).expect("the export must be the array the filesystem parses");
+        let exported: Vec<CapOverride> = serde_json::from_str::<collab_types::FsAuthority>(&raw)
+            .expect("the export must be the authority the filesystem parses")
+            .capabilities;
 
         assert!(
             exported.iter().any(|c| c.id == "bob-design"),
@@ -538,7 +539,9 @@ fn filesystem_capabilities_export_exactly_and_inherit_to_the_boundary() {
         assert!(tree.revoke_sandbox_in_workspace(id, &ALICE.to_string(), "bob-design"));
         persist::wait_for_saves();
         let raw = std::fs::read_to_string(&acl_path).expect("export still present");
-        let exported: Vec<CapOverride> = serde_json::from_str(&raw).expect("parse");
+        let exported: Vec<CapOverride> = serde_json::from_str::<collab_types::FsAuthority>(&raw)
+            .expect("parse")
+            .capabilities;
         assert!(
             !exported.iter().any(|c| c.id == "bob-design"),
             "a revoked capability must disappear from the filesystem's list, or the mount \

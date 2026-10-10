@@ -213,14 +213,9 @@ fn native_record_observation(
         let member = view
             .peer()
             .permissions(view.device().device_public_key, now)?;
-        let millis = now
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .map_err(|_| "owner policy clock is unavailable")?
-            .as_millis();
-        let app_write_permitted = member.policy.app_authors(
-            "so.tilo.chat",
-            &tilo_action_policy::Context::at(u64::try_from(millis).unwrap_or(u64::MAX)),
-        );
+        let app_write_permitted = member
+            .policy
+            .app_authors("so.tilo.chat", &tilo_action_policy::Context::at_time(now));
         let person_write_permitted = member.allows(
             &member.policy.node(),
             tilo_action_policy::ActionKind::Undoable,

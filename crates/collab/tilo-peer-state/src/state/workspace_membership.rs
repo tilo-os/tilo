@@ -116,7 +116,7 @@ impl StatePeer {
         let member = self.permissions(caller.device_public_key, now)?;
         let bound = roles::foreign_device_bound();
         let authority = member.authority(&bound);
-        let cx = super::policy_context(now);
+        let cx = tilo_action_policy::Context::at_time(now);
         let change = match command {
             WorkspaceMembershipCommand::Grant { grant } => Change::Grant(grant.clone()),
             WorkspaceMembershipCommand::Revoke { grant } => Change::Revoke(grant.clone()),

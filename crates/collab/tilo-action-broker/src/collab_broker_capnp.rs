@@ -696,9 +696,30 @@ impl BrokerActor {
         self.answer_for_in(workspace, node, kind, false, now)
     }
 
-    /// [`Self::answer_in`], of a privileged action when `privileged`
-    /// ([`tilo_action_policy::Verdict::privileged`]).
-    pub(crate) fn answer_for_in(
+    /// The answer for the action `action` on `resource` (of kind
+    /// `resource_kind`) the app `app` publishes, which `need` describes, in
+    /// `workspace` at `now`: decided at its node, and as privileged when
+    /// `need` is ([`tilo_action_policy::Verdict::privileged`]).
+    pub(crate) fn action_answer_in(
+        &self,
+        workspace: &tilo_desktop_model::Workspace,
+        app: &str,
+        (resource_kind, resource, action): (&str, &str, &str),
+        need: &tilo_actions::ActionNeed,
+        now: u64,
+    ) -> Answer {
+        let node = tilo_actions::action_node(
+            &workspace.node(),
+            app,
+            resource_kind,
+            resource,
+            need.field.as_deref(),
+            action,
+        );
+        self.answer_for_in(workspace, &node, need.kind, need.privileged, now)
+    }
+
+    fn answer_for_in(
         &self,
         workspace: &tilo_desktop_model::Workspace,
         node: &TreePath,
@@ -4694,10 +4715,11 @@ impl CapnpBrokerState {
                     // Listed when the actor may take it, or would be asked
                     // first.
                     surface.actions.retain(|action| {
-                        actor.answer_in(
+                        actor.action_answer_in(
                             workspace,
-                            &published_node(workspace, &surface.app_id, action),
-                            action.contract.kind,
+                            &surface.app_id,
+                            (&action.resource_kind, &action.resource, &action.action),
+                            &action.contract.need(),
                             now,
                         ) != Answer::Deny
                     });

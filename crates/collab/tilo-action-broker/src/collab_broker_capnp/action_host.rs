@@ -643,8 +643,8 @@ impl CapnpBrokerState {
         target: (&str, &str, &str),
         contract: &tilo_actions::ActionContract,
     ) -> bool {
-        let node = Self::target_node(workspace, app, target, contract);
-        actor.answer_in(workspace, &node, contract.kind, now) != tilo_action_policy::Answer::Deny
+        actor.action_answer_in(workspace, app, target, &contract.need(), now)
+            != tilo_action_policy::Answer::Deny
     }
 
     /// Whether `actor` may take the action `target` now. See
@@ -657,23 +657,9 @@ impl CapnpBrokerState {
         target: (&str, &str, &str),
         contract: &tilo_actions::ActionContract,
     ) -> bool {
-        let node = Self::target_node(workspace, app, target, contract);
-        actor.may_in(workspace, &node, contract.kind, now)
-    }
-
-    fn target_node(
-        workspace: &Workspace,
-        app: &str,
-        (resource_kind, resource, action): (&str, &str, &str),
-        contract: &tilo_actions::ActionContract,
-    ) -> tilo_action_policy::TreePath {
-        tilo_actions::action_node(
-            &workspace.node(),
-            app,
-            resource_kind,
-            resource,
-            contract.field.as_deref(),
-            action,
+        crate::published_authorization::permits(
+            actor.action_answer_in(workspace, app, target, &contract.need(), now),
+            actor.direct(),
         )
     }
 
@@ -950,7 +936,7 @@ impl CapnpBrokerState {
             if descriptor.contract.confirmation != tilo_actions::ConfirmationPolicy::None {
                 continue;
             }
-            let node = Self::target_node(
+            if actor.action_answer_in(
                 workspace,
                 &app,
                 (
@@ -958,10 +944,9 @@ impl CapnpBrokerState {
                     &descriptor.address.resource,
                     &descriptor.address.action,
                 ),
-                &descriptor.contract,
-            );
-            if actor.answer_in(workspace, &node, descriptor.contract.kind, now)
-                == tilo_action_policy::Answer::Ask
+                &descriptor.contract.need(),
+                now,
+            ) == tilo_action_policy::Answer::Ask
             {
                 descriptor.contract.confirmation = tilo_actions::ConfirmationPolicy::Confirm;
             }
@@ -2166,7 +2151,7 @@ impl CapnpBrokerState {
         descriptor: &ActionDescriptor,
         (argument, confirmation): (Option<&str>, Option<&Confirmation>),
     ) -> Result<(), ActionHostError> {
-        let node = Self::target_node(
+        match policy.action_answer_in(
             workspace,
             app,
             (
@@ -2174,9 +2159,9 @@ impl CapnpBrokerState {
                 &descriptor.address.resource,
                 &descriptor.address.action,
             ),
-            &descriptor.contract,
-        );
-        match policy.answer_in(workspace, &node, descriptor.contract.kind, now) {
+            &descriptor.contract.need(),
+            now,
+        ) {
             tilo_action_policy::Answer::Allow => Ok(()),
             tilo_action_policy::Answer::Deny => Err(ActionHostError::NotPermitted),
             tilo_action_policy::Answer::Ask => {

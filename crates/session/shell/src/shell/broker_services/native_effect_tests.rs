@@ -8,17 +8,6 @@ use tilo_action_broker::peer_actions::CertificateAuthority;
 use tilo_actions::InvocationUpdate;
 use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
 
-fn policy_context(now: std::time::SystemTime) -> tilo_action_policy::Context<'static> {
-    tilo_action_policy::Context::at(
-        u64::try_from(
-            now.duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_millis(),
-        )
-        .unwrap(),
-    )
-}
-
 struct NativeFixture {
     home: tilo_test_env::TestHome,
     owner: tilo_joined_room::NativeWorkspaceOwner,
@@ -97,7 +86,7 @@ fn native_published_authorship_requires_admin_and_durably_enables_the_actual_app
                 assert_eq!(
                     member
                         .policy
-                        .app_authors("so.tilo.chat", &policy_context(now)),
+                        .app_authors("so.tilo.chat", &tilo_action_policy::Context::at_time(now)),
                     expected
                 );
                 assert!(
@@ -141,7 +130,7 @@ fn native_published_authorship_requires_admin_and_durably_enables_the_actual_app
             assert!(
                 member
                     .policy
-                    .app_authors("so.tilo.chat", &policy_context(now))
+                    .app_authors("so.tilo.chat", &tilo_action_policy::Context::at_time(now))
             );
             assert!(view.peer().document("so.tilo.chat", "").is_none());
             Ok(())
@@ -771,7 +760,11 @@ fn native_files_home_consent_is_not_reconstructed_when_session_reopens() {
             let member = view
                 .peer()
                 .permissions(fixture.certificate.device_public_key, now)?;
-            assert!(member.policy.app_authors(FILES, &policy_context(now)));
+            assert!(
+                member
+                    .policy
+                    .app_authors(FILES, &tilo_action_policy::Context::at_time(now))
+            );
             Ok(())
         })
         .unwrap();

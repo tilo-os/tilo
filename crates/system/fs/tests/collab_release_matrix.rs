@@ -684,7 +684,7 @@ fn shipped_daemons_partition_restart_and_converge_through_real_fuse() {
     ];
     std::fs::write(
         &acl,
-        serde_json::to_vec(&collab_types::FsAuthority::from(caps.clone())).unwrap(),
+        serde_json::to_vec(&collab_types::FsAuthority::from(caps)).unwrap(),
     )
     .unwrap();
 

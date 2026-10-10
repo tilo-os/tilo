@@ -62,14 +62,7 @@ fn app_authorship_is_governor_signed_durable_and_exact_retry_only() {
                 .peer()
                 .permissions(fixture.certificate.device_public_key, now)?
                 .policy;
-            let cx = tilo_action_policy::Context::at(
-                u64::try_from(
-                    now.duration_since(std::time::UNIX_EPOCH)
-                        .unwrap()
-                        .as_millis(),
-                )
-                .unwrap(),
-            );
+            let cx = tilo_action_policy::Context::at_time(now);
             assert!(policy.app_authors("so.tilo.chat", &cx));
             assert!(!policy.app_authors("so.tilo.files", &cx));
             Ok(())

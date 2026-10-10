@@ -104,7 +104,7 @@ impl MemberAuthority {
     pub fn allows(&self, node: &TreePath, kind: ActionKind, now: SystemTime) -> bool {
         let bound = tilo_action_policy::roles::foreign_device_bound();
         self.authority(&bound)
-            .decide(node, kind, &policy_context(now))
+            .decide(node, kind, &tilo_action_policy::Context::at_time(now))
             .answer
             == Answer::Allow
     }
@@ -112,7 +112,7 @@ impl MemberAuthority {
 /// Whether `agent` is admitted to the room: it holds a live grant on the room
 /// itself.
 pub(crate) fn agent_is_member(policy: &RoomPolicy, agent: &str, now: SystemTime) -> bool {
-    let cx = policy_context(now);
+    let cx = tilo_action_policy::Context::at_time(now);
     let room = policy.node();
     policy.grants.iter().any(|grant| {
         matches!(&grant.subject, Subject::Agent(held) if held == agent)
@@ -126,15 +126,6 @@ fn administrator_grant_id(user_public_key: [u8; 32]) -> String {
     format!("room-admin-v1:{}", hex::encode(user_public_key))
 }
 /// The decision context of a policy question asked at `now`.
-pub(crate) fn policy_context(now: SystemTime) -> tilo_action_policy::Context<'static> {
-    tilo_action_policy::Context::at(
-        now.duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis()
-            .try_into()
-            .unwrap_or(u64::MAX),
-    )
-}
 pub fn peer_handle(key: &[u8; 32]) -> u64 {
     let mut hasher = fnv::FnvHasher::default();
     std::hash::Hasher::write(&mut hasher, key);

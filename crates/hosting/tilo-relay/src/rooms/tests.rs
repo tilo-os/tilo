@@ -491,19 +491,7 @@ async fn app_authorship_grant_uses_current_owner_and_conflict_checked_retries() 
             grant.subject,
             tilo_action_policy::Subject::App("so.tilo.chat".into())
         );
-        assert!(
-            policy.app_authors(
-                "so.tilo.chat",
-                &tilo_action_policy::Context::at(
-                    u64::try_from(
-                        now.duration_since(std::time::UNIX_EPOCH)
-                            .unwrap()
-                            .as_millis()
-                    )
-                    .unwrap()
-                ),
-            )
-        );
+        assert!(policy.app_authors("so.tilo.chat", &tilo_action_policy::Context::at_time(now),));
     }
     let mut conflict = request.clone();
     conflict.app = "so.tilo.ebook".into();

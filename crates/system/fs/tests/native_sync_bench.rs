@@ -160,7 +160,7 @@ fn full_access_acl(path: &Path, person_seed: [u8; 32]) {
     .collect();
     std::fs::write(
         path,
-        serde_json::to_vec(&collab_types::FsAuthority::from(caps.clone())).unwrap(),
+        serde_json::to_vec(&collab_types::FsAuthority::from(caps)).unwrap(),
     )
     .unwrap();
 }

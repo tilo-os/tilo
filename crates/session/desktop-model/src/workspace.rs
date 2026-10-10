@@ -251,7 +251,7 @@ pub enum WorkspaceDefaultError {
 /// [`session_id`]) is dead in any later one.
 #[must_use]
 pub fn context_at(now: u64) -> Context<'static> {
-    Context::at(now.saturating_mul(1000)).in_session(session_id())
+    Context::at_secs(now).in_session(session_id())
 }
 
 /// This process's session, which a grant given "until log out" names.

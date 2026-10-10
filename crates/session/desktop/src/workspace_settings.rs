@@ -5801,7 +5801,9 @@ mod permissions_pane_tests {
                                 Scope::Device(d) => ResourceRef::Device(d.clone()),
                                 Scope::NetHost(h) => ResourceRef::NetHost(h.clone()),
                                 Scope::FsPath(p) => ResourceRef::FsPath(p.clone()),
-                                other => panic!("unexpected scope in the grant table: {other:?}"),
+                                Scope::FsRecord(record) => {
+                                    panic!("unexpected scope in the grant table: {record:?}")
+                                }
                             };
                             probe
                                 .grant_as(&OWNER.to_string(), cap.clone())

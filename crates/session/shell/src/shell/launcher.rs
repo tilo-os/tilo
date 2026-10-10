@@ -3184,19 +3184,14 @@ fn native_app_open_access(
         } else if !administrator {
             return Err("creating an application requires governor-authorized authorship".into());
         }
-        let seconds = now
-            .duration_since(std::time::SystemTime::UNIX_EPOCH)
-            .map_err(|_| "native app opening clock is before the Unix epoch")?
-            .as_secs();
         let person_writes = member.allows(
             &member.policy.node().app(package),
             tilo_action_policy::ActionKind::Undoable,
             now,
         );
-        let application_writes = member.policy.app_authors(
-            package,
-            &tilo_action_policy::Context::at(seconds.saturating_mul(1000)),
-        );
+        let application_writes = member
+            .policy
+            .app_authors(package, &tilo_action_policy::Context::at_time(now));
         if person_writes && application_writes {
             return Ok(NativeAppOpenAccess::Author);
         }

@@ -1261,10 +1261,6 @@ impl Relay {
 /// Import full-workspace residency from the same bundle the filesystem worker
 /// consumes. The operator cannot accidentally advertise a relay-only binding
 /// for a workspace whose NAS worker is configured to retain complete content.
-#[expect(
-    clippy::too_many_lines,
-    reason = "one ordered protocol state machine; splitting it would scatter the invariants each step relies on"
-)]
 fn import_home_peer_bindings(cfg: &mut RelayConfig) -> Result<(), RelayError> {
     if !cfg.home_peer_bundle.exists() {
         return Ok(());

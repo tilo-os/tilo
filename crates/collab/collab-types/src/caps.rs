@@ -207,13 +207,18 @@ impl Actor {
 pub enum Scope {
     /// A filesystem path and everything below it.
     FsPath(String),
-    /// A device class (`camera`, `microphone`, `printer`, ...).
+    /// A device class (`camera`, `microphone`, `printer`, ...), or `*` for
+    /// every device.
     Device(String),
     /// A network host pattern; see [`net`].
     NetHost(String),
-    /// A stable collaborative-file record id.
+    /// A stable collaborative-file record id, or `*` for every record.
     FsRecord(String),
 }
+
+/// The scope pattern a [`Scope::Device`] or [`Scope::FsRecord`] uses for
+/// every one.
+pub const EVERY: &str = "*";
 
 impl Scope {
     /// Does this scope cover `resource`?
@@ -221,7 +226,7 @@ impl Scope {
         match (self, resource) {
             (Scope::FsPath(prefix), ResourceRef::FsPath(path)) => path_covers(prefix, path),
             (Scope::Device(d), ResourceRef::Device(e))
-            | (Scope::FsRecord(d), ResourceRef::FsRecord(e)) => d == e,
+            | (Scope::FsRecord(d), ResourceRef::FsRecord(e)) => d == EVERY || d == e,
             (Scope::NetHost(h), ResourceRef::NetHost(target)) => host_covers(h, target),
             (Scope::FsPath(_) | Scope::Device(_) | Scope::NetHost(_) | Scope::FsRecord(_), _) => {
                 false
