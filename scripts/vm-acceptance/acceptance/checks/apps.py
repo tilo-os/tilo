@@ -289,6 +289,7 @@ def terminal(ctx, res):
                               "of its window opening (A01-ush.txt shows the shell runtime)")
     expect(found, "a command typed into Terminal (control-socket type + Enter) never ran")
     _close(ctx, res, "A01-terminal", gid, procs, toasts0)
+    core.assert_terminal_shell_performance(ready)
 
 
 check("A02", AREA, "Files opens, draws its first frame, and exits on close")(

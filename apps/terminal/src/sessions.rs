@@ -19,6 +19,8 @@ pub enum OpenState {
     Fixed,
     /// Waiting for the first sync to learn the target.
     Unopened,
+    /// A supervisor is opening the session off the UI thread.
+    Opening,
     /// A session is attached.
     Open,
     /// The device's own shell needs the person's allow; the shell is asking.
@@ -29,6 +31,12 @@ pub enum OpenState {
     /// installed). The tab says so and offers the device's own shell.
     NoRuntime(String),
 }
+
+pub(crate) type OpenAnswer = (
+    Requester,
+    Option<String>,
+    Result<TerminalBackend, OpenError>,
+);
 
 enum Source {
     /// Never opens a session.
@@ -66,6 +74,8 @@ impl std::fmt::Debug for Source {
 /// The tab's session source, target and the places it can run.
 pub struct Sessions {
     source: Source,
+    #[cfg(unix)]
+    pending: Option<crate::async_open::PendingOpen>,
     pub state: OpenState,
     /// The target the current (or last attempted) session runs on.
     pub target: Option<SessionTarget>,
@@ -104,6 +114,8 @@ impl Sessions {
     fn with(source: Source, state: OpenState, recent: RecentTarget) -> Self {
         Self {
             source,
+            #[cfg(unix)]
+            pending: None,
             state,
             target: None,
             recent,
@@ -134,6 +146,16 @@ impl Sessions {
     pub fn hosted(first: crate::HostedProcessServices) -> Self {
         Self::with(
             Source::Hosted { first: Some(first) },
+            OpenState::Unopened,
+            RecentTarget::discover(),
+        )
+    }
+
+    /// A real host grants discovery, without connecting on its UI thread.
+    #[cfg(unix)]
+    pub(crate) fn hosted_deferred() -> Self {
+        Self::with(
+            Source::Hosted { first: None },
             OpenState::Unopened,
             RecentTarget::discover(),
         )
@@ -208,6 +230,59 @@ impl Sessions {
             #[cfg(test)]
             Source::Scripted(open) => open(target, requested_by, relay_session),
         }
+    }
+
+    /// Start a hosted open on a worker; other sources retain their own routing.
+    pub(crate) fn begin_open(
+        &mut self,
+        target: &SessionTarget,
+        requester: Requester,
+        attach: Option<&str>,
+        waker: std::sync::Arc<std::sync::Mutex<ui::WakeHandle>>,
+    ) -> Option<Result<TerminalBackend, OpenError>> {
+        #[cfg(unix)]
+        {
+            // Cancels any superseded request before consuming another connection.
+            self.pending = None;
+            if let Source::Hosted { first } = &mut self.source {
+                if requester == Requester::Agent && target.is_host() {
+                    return Some(Err(OpenError::Refused(
+                        "agents may not open the device's own shell".into(),
+                    )));
+                }
+                match crate::async_open::PendingOpen::start(
+                    first.take(),
+                    target.clone(),
+                    requester,
+                    attach.map(str::to_owned),
+                    waker,
+                ) {
+                    Ok(pending) => {
+                        self.pending = Some(pending);
+                        self.state = OpenState::Opening;
+                        return None;
+                    }
+                    Err(error) => return Some(Err(error)),
+                }
+            }
+        }
+        #[cfg(not(unix))]
+        let _ = waker;
+        Some(self.open(target, requester, attach))
+    }
+
+    pub(crate) fn take_open_answer(&mut self) -> Option<OpenAnswer> {
+        #[cfg(unix)]
+        {
+            let pending = self.pending.as_ref()?;
+            let result = pending.take_answer()?;
+            let requester = pending.requester;
+            let attach = pending.attach.clone();
+            self.pending = None;
+            Some((requester, attach, result))
+        }
+        #[cfg(not(unix))]
+        None
     }
 
     /// Ask the shell to put the device's own shell to the person, once.

@@ -1192,6 +1192,7 @@ impl TerminalWidget {
         let (lifecycle, startup_reason) = match &self.sessions.state {
             OpenState::Fixed => ("fixed", None),
             OpenState::Unopened => ("unopened", None),
+            OpenState::Opening => ("opening", None),
             OpenState::Open => ("open", None),
             OpenState::AwaitingAllow => ("awaiting_allow", None),
             OpenState::Failed(reason) => ("failed", Some(reason.as_str())),
@@ -1817,7 +1818,8 @@ impl TerminalWidget {
     /// the compositor's tile host) and `Widget::sync`. Returns whether any
     /// bytes were processed this call.
     fn pump(&mut self) -> bool {
-        let native_activity = self.poll_native_ime();
+        let open_activity = self.poll_session_open();
+        let native_activity = self.poll_native_ime() || open_activity;
         // Drain every queued read and coalesce them into one buffer, then feed
         // the parser once. The reader thread hands over one `Vec` per ~8 KB
         // `read`, and a burst (`cat` of a big file, a full-screen redraw)
@@ -2343,7 +2345,9 @@ impl TerminalWidget {
                 .is_some_and(crate::target::SessionTarget::is_host)
                 && matches!(
                     self.sessions.state,
-                    crate::sessions::OpenState::Open | crate::sessions::OpenState::AwaitingAllow
+                    crate::sessions::OpenState::Open
+                        | crate::sessions::OpenState::Opening
+                        | crate::sessions::OpenState::AwaitingAllow
                 );
             if !(already_selected || self.request_device_shell()) {
                 return Err("The device shell could not open".into());
@@ -7285,6 +7289,20 @@ impl TerminalWidget {
         Ok(widget)
     }
 
+    /// Construct a live hosted tab without doing socket IO on the host.
+    pub(crate) fn spawn_hosted_deferred() -> Self {
+        #[cfg(unix)]
+        {
+            let mut widget = Self::without_process(ContentStore::memory());
+            widget.sessions = crate::sessions::Sessions::hosted_deferred();
+            widget
+        }
+        #[cfg(not(unix))]
+        Self::without_hosted_runtime(
+            crate::HostedTerminalError::RequiredServiceMissing("ush").to_string(),
+        )
+    }
+
     /// A live hosted tab whose required supervisor is unavailable. Keep the
     /// startup cause visible and input refused, rather than presenting it as
     /// a capture-only terminal that was never meant to open a process.
@@ -7349,6 +7367,15 @@ impl TerminalWidget {
     pub fn with_content(mut self, content: ContentStore) -> Self {
         self.content = content;
         self
+    }
+}
+
+#[cfg(unix)]
+impl Drop for TerminalWidget {
+    fn drop(&mut self) {
+        if let Some(socket) = self.service_lifetime.take() {
+            let _ = socket.shutdown(std::net::Shutdown::Both);
+        }
     }
 }
 

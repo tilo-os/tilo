@@ -408,10 +408,13 @@ impl ResourceApp for TerminalShell {
         // screenshot, a participant who may only view, and this crate's own
         // tests present a terminal with no process behind it.
         // Mounted in the shell, sessions open through the supervisor
-        // connection the shell lent; in its own process, locally.
+        // service permission or connection the shell lent; in its own process, locally.
         let lent = cx.take_lent::<crate::HostedProcessServices>();
+        let deferred = cx.take_lent::<crate::HostedSessionSource>().is_some();
         let widget = if cx.read_only() {
             TerminalWidget::spawn_headless()
+        } else if deferred {
+            Ok(TerminalWidget::spawn_hosted_deferred())
         } else if let Some(services) = lent {
             TerminalWidget::spawn_hosted(services)
                 .map_err(|error| anyhow::anyhow!(error.to_string()))
