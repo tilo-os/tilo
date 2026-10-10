@@ -13,19 +13,12 @@ use registry_types::{RegistryEntry, RegistryVersion};
 use serde::Serialize;
 use thiserror::Error;
 
-/// Largest web runtime (toolkit core plus its fonts and assets) review will
-/// download. Web apps still obey the application limit once decoded.
-pub const MAX_WEB_RUNTIME_TAPP_BYTES: u64 = 64 * 1024 * 1024;
-
 /// Read size of the streaming copies that move payload objects to storage.
 const COPY_BUFFER_BYTES: usize = 64 * 1024;
 
 #[derive(Clone, Copy, Debug)]
 pub struct InspectionPolicy {
     pub max_package_bytes: u64,
-    /// Download ceiling for web versions, which may be the shared toolkit
-    /// core rather than an app.
-    pub max_web_runtime_bytes: u64,
     /// Distinct payload bytes a `kind = "runtime"` package may reference.
     /// Its payload travels as objects beside a thin `.tapp`, each at most
     /// [`tilo_app_package::chunks::MAX_OBJECT_BYTES`].
@@ -40,7 +33,6 @@ impl Default for InspectionPolicy {
     fn default() -> Self {
         Self {
             max_package_bytes: app_registry::MAX_APP_TAPP_BYTES,
-            max_web_runtime_bytes: MAX_WEB_RUNTIME_TAPP_BYTES,
             max_runtime_payload_bytes: tilo_app_package::MAX_RUNTIME_PAYLOAD_BYTES,
             timeout: Duration::from_secs(30),
             allow_insecure_local: false,
@@ -50,9 +42,7 @@ impl Default for InspectionPolicy {
 
 impl InspectionPolicy {
     fn download_limit(&self, version: &RegistryVersion) -> u64 {
-        if version.target.is_web() {
-            self.max_package_bytes.max(self.max_web_runtime_bytes)
-        } else if registry_types::DESKTOP_PLATFORMS.contains(&version.target.platform.as_str()) {
+        if registry_types::DESKTOP_PLATFORMS.contains(&version.target.platform.as_str()) {
             self.max_package_bytes
                 .max(tilo_app_package::platform_size_limit(
                     &version.target.platform,
@@ -799,7 +789,6 @@ fn inspect_metadata(
     }
     match version.target.platform.as_str() {
         registry_types::TILO_OS_PLATFORM => check_native_target(version, &meta.manifest)?,
-        registry_types::WEB_PLATFORM => check_web_target(version, &meta.manifest, bytes.len())?,
         registry_types::LINUX_PLATFORM
         | registry_types::WINDOWS_PLATFORM
         | registry_types::MACOS_PLATFORM
@@ -813,24 +802,6 @@ fn inspect_metadata(
         }
     }
     Ok(meta)
-}
-
-/// The signed manifest of a web build records exactly the target the version
-/// binds; an app build additionally obeys the application size limit.
-fn check_web_target(
-    version: &RegistryVersion,
-    manifest: &tilo_app_package::Manifest,
-    size: usize,
-) -> Result<(), BundleReviewError> {
-    check_signed_target(version, manifest)?;
-    if !tilo_app_package::tapp_size_allowed(manifest.package.kind, size as u64) {
-        return Err(BundleReviewError::TooLarge {
-            version: version.version.clone(),
-            size: size as u64,
-            limit: tilo_app_package::MAX_APP_TAPP_BYTES,
-        });
-    }
-    Ok(())
 }
 
 /// A Linux, Windows, macOS or Android build is a self-contained executable:
@@ -1107,92 +1078,6 @@ mod tests {
                 Err(BundleReviewError::TargetMismatch { .. })
             ));
         }
-    }
-
-    #[test]
-    fn web_artifact_inspection_binds_the_signed_web_target() {
-        let identity = SigningIdentity::generate();
-        let (native, _) = signed_tapp(&identity);
-        let authored = app_registry::tapp::load(&native).unwrap().manifest;
-        let manifest = tilo_app_package::web::web_manifest(
-            &authored,
-            "editor.wasm",
-            &tilo_app_package::web::WasmModuleInfo {
-                runtime_abi: Some(
-                    "tilo-runtime/2026.07+wasm.00112233445566778899aabbccddeeff".into(),
-                ),
-                features: Some(vec!["sign-ext".into()]),
-            },
-            &tilo_app_package::web::WebBuildOptions::default(),
-        );
-        // The fixture declares no runtime; a web app needs one.
-        assert!(manifest.is_err());
-        let mut authored = authored;
-        authored.package.runtime = Some("tilo-runtime/2026.07".into());
-        let manifest = tilo_app_package::web::web_manifest(
-            &authored,
-            "editor.wasm",
-            &tilo_app_package::web::WasmModuleInfo {
-                runtime_abi: Some(
-                    "tilo-runtime/2026.07+wasm.00112233445566778899aabbccddeeff".into(),
-                ),
-                features: Some(vec!["sign-ext".into()]),
-            },
-            &tilo_app_package::web::WebBuildOptions::default(),
-        )
-        .unwrap();
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("editor.wasm"), b"\0asm\x01\0\0\0").unwrap();
-        let packed = pack(dir.path(), &manifest, &identity).unwrap();
-        let bytes = tilo_app_package::tapp::to_bytes(&packed.meta, Some(&packed)).unwrap();
-        let signed = manifest.target.unwrap();
-
-        let mut entry = sample_entry("https://example.com/editor-web.tapp");
-        entry.publisher_pubkey_hex = hex::encode(identity.public_key_bytes());
-        let version = &mut entry.versions[0];
-        version.tapp_root_hash_hex = hex::encode(packed.id().as_bytes());
-        version.tapp_size_bytes = bytes.len() as u64;
-        version.tapp_blake3_hex = blake3::hash(&bytes).to_hex().to_string();
-        version.target = registry_types::RegistryTarget {
-            platform: signed.platform,
-            architecture: signed.architecture,
-            isa: signed.isa,
-            runtime: Some(signed.runtime),
-            interfaces: Vec::new(),
-        };
-        assert!(inspect_bytes(&entry, &entry.versions[0], &bytes).is_ok());
-
-        let mut other_abi = entry.versions[0].clone();
-        other_abi.target.runtime =
-            Some("tilo-runtime/2026.07+wasm.ffeeddccbbaa99887766554433221100".into());
-        assert!(matches!(
-            inspect_bytes(&entry, &other_abi, &bytes),
-            Err(BundleReviewError::TargetMismatch { .. })
-        ));
-        let mut as_native = entry.versions[0].clone();
-        as_native.target = registry_types::RegistryTarget {
-            platform: registry_types::TILO_OS_PLATFORM.into(),
-            architecture: "x86_64".into(),
-            isa: "x86_64-v3".into(),
-            runtime: Some("tilo-runtime/2026.07".into()),
-            interfaces: Vec::new(),
-        };
-        assert!(matches!(
-            inspect_bytes(&entry, &as_native, &bytes),
-            Err(BundleReviewError::TargetMismatch { .. })
-        ));
-
-        let policy = InspectionPolicy::default();
-        let mut runtime_sized = entry.versions[0].clone();
-        runtime_sized.tapp_size_bytes = app_registry::MAX_APP_TAPP_BYTES + 1;
-        assert_eq!(
-            policy.download_limit(&runtime_sized),
-            MAX_WEB_RUNTIME_TAPP_BYTES
-        );
-        assert_eq!(
-            policy.download_limit(&sample_entry("https://example.com/a.tapp").versions[0]),
-            app_registry::MAX_APP_TAPP_BYTES
-        );
     }
 
     #[test]

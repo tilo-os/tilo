@@ -74,6 +74,8 @@ run 'Document content stays behind the document layer' \
   python3 tools/policy/check_document_engine_boundary.py
 run 'Desktop crates dependency boundary' \
   python3 tools/policy/check_desktop_model_dependencies.py
+run 'Shared app runtime carries no OS internals or dead weight' \
+  python3 tools/policy/check_runtime_dylib_surface.py
 run 'Browser wasm32 builds stay off the workspace-hack' \
   python3 tools/policy/check_wasm_workspace_hack.py
 run 'GStreamer is the only media stack' python3 tools/policy/check_media_stack.py

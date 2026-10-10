@@ -292,10 +292,6 @@ pub const HOST_MINIMAL_PATHS_AARCH64: &[&str] = &[
     "/lib/aarch64-linux-gnu/libutil.so.1",
 ];
 
-/// Legacy alias for [`HOST_MINIMAL_PATHS_X86_64`]; new code should use [`host_minimal_paths_for`].
-#[deprecated(note = "use host_minimal_paths_for(arch) — HOST_MINIMAL_PATHS is x86_64-only")]
-pub const HOST_MINIMAL_PATHS: &[&str] = HOST_MINIMAL_PATHS_X86_64;
-
 /// Optional `/etc/ld.so.cache` — loader falls back to a slower search without it; include when present.
 pub const HOST_LD_SO_CACHE: &str = "/etc/ld.so.cache";
 
