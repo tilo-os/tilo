@@ -47,6 +47,9 @@ from typing import Callable, Iterable
 MANIFEST_TYPE = "tilo.system-extension.sysext-manifest"
 MANIFEST_SCHEMA = 1
 FORMAT = "rpm"
+# A prebuilt systemd-sysext image: one artifact, built by Tilo CI, pinned by size
+# and SHA-256 (tools/extensions/sysext_image.py).
+RAW_FORMAT = "sysext-raw"
 PART_STATES = ("available", "waiting", "unsupported")
 RULES = ("exact", "compatible", "newest")
 ARCHITECTURES = ("x86_64", "aarch64")
@@ -611,9 +614,11 @@ def check_manifest(manifest: dict) -> list[str]:
         problems.append("parts must be unique and sorted")
     for part in parts:
         name = part.get("name")
-        if part.get("format") != FORMAT or part.get("state") not in PART_STATES:
+        if part.get("format") not in (FORMAT, RAW_FORMAT) or part.get("state") not in PART_STATES:
             problems.append(f"{name}: wrong format or state")
         artifacts = part.get("artifacts", [])
+        if part.get("format") == RAW_FORMAT and len(artifacts) > 1:
+            problems.append(f"{name}: a sysext image part is exactly one artifact")
         if (part.get("state") == "available") != bool(artifacts):
             problems.append(f"{name}: only an available part has artifacts")
         if part.get("state") != "available" and not part.get("message"):

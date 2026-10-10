@@ -255,7 +255,14 @@ class Catalogue(unittest.TestCase):
         for ident in ids:
             entry = ext.Catalogue.parse((CATALOGUE / f"{ident}.json").read_text(), ident)
             self.assertTrue(entry.manifest.startswith("https://code.tilo.so/"))
-            self.assertNotIn("code.tilo.so", entry.hosts, "Tilo must not serve extension payloads")
+            if entry.kind == "windows-compat":
+                # Tilo builds and signs this payload itself (os/Containerfile
+                # windows-compat-sysext); nothing else may host it.
+                self.assertEqual(entry.hosts, frozenset({"code.tilo.so"}))
+                self.assertGreater(entry.download_bytes, 0)
+                self.assertGreater(entry.installed_bytes, entry.download_bytes)
+            else:
+                self.assertNotIn("code.tilo.so", entry.hosts, "Tilo must not serve extension payloads")
 
     def test_entry_must_name_itself_and_pin_the_base(self):
         good = json.loads((CATALOGUE / "media-codecs.json").read_text())
@@ -779,3 +786,101 @@ class Shipped(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SysextImage(unittest.TestCase):
+    """A prebuilt, manifest-pinned sysext image (format "sysext-raw")."""
+
+    ID = "windows-compat"
+    PART = "tilo-windows-compat"
+    BASE_URL = "https://code.tilo.so/api/packages/tilo/generic/tilo-extension-windows-compat"
+
+    def machine(self):
+        machine = Machine(self)
+        (machine.layout.catalogue_dir / f"{self.ID}.json").write_text(
+            (CATALOGUE / f"{self.ID}.json").read_text())
+        return machine
+
+    def publish(self, machine, image=b"erofs image bytes" * 100, artifacts=None, **part):
+        url = f"{self.BASE_URL}/x86_64-{machine.fingerprint}/{self.PART}.raw"
+        machine.web[url] = image
+        artifact = {"package": f"{self.PART}.raw", "urls": [url], "size": len(image),
+                    "sha256": hashlib.sha256(image).hexdigest(), "publisher": "Tilo",
+                    "license": "see /usr/share/licenses inside the image"}
+        document = {
+            "type": ext.MANIFEST_TYPE, "schema": 1, "id": self.ID, "revision": 1,
+            "created": "2026-10-03T12:00:00Z",
+            "base": {"os_id": "fedora", "version_id": "44", "architecture": "x86_64",
+                     "packages_sha256": machine.fingerprint},
+            "parts": [{"name": self.PART, "format": "sysext-raw", "state": "available",
+                       "requires_base": {}, "artifacts": artifacts if artifacts is not None else [artifact],
+                       **part}],
+        }
+        data = json.dumps(document).encode()
+        manifest_url = f"{self.BASE_URL}/x86_64-{machine.fingerprint}/manifest.json"
+        machine.web[manifest_url] = data
+        machine.web[manifest_url + ".sig"] = sign(TRUSTED, data)
+        return image, artifact
+
+    def live(self, machine):
+        return machine.layout.extensions / f"{self.PART}.raw"
+
+    def test_install_links_the_verified_image_and_merges_it(self):
+        machine = self.machine()
+        image, _ = self.publish(machine)
+        self.assertEqual(machine.run("install", self.ID), 0)
+        self.assertEqual(self.live(machine).read_bytes(), image)
+        self.assertEqual(machine.merged, [f"{self.PART}.raw"])
+        status = json.loads(machine.layout.status(self.ID).read_text())
+        self.assertEqual((status["state"], status["parts"]), ("installed", {self.PART: "enabled"}))
+        record = json.loads((machine.layout.extensions / f".{self.PART}.record.json").read_text())
+        self.assertEqual(record["format"], "sysext-raw")
+        self.assertEqual(machine.run("activate"), 0, "the image is accepted again at the next boot")
+        self.assertEqual(machine.merged, [f"{self.PART}.raw"])
+
+    def test_catalogue_declares_the_size_the_owner_is_told(self):
+        entry = ext.Catalogue.parse((CATALOGUE / f"{self.ID}.json").read_text(), self.ID)
+        self.assertGreaterEqual(entry.installed_bytes, 3_000_000_000)
+
+    def test_a_changed_image_is_not_merged_at_activation(self):
+        machine = self.machine()
+        _, artifact = self.publish(machine)
+        self.assertEqual(machine.run("install", self.ID), 0)
+        obj = machine.layout.objects(self.ID) / artifact["sha256"]
+        obj.write_bytes(b"tampered")
+        machine.run("activate")
+        self.assertFalse(self.live(machine).exists())
+        status = json.loads(machine.layout.status(self.ID).read_text())
+        self.assertEqual(status["parts"], {self.PART: "waiting"})
+
+    def test_remove_deletes_the_image_and_its_record(self):
+        machine = self.machine()
+        self.publish(machine)
+        self.assertEqual(machine.run("install", self.ID), 0)
+        self.assertEqual(machine.run("remove", self.ID), 0)
+        self.assertFalse(self.live(machine).exists())
+        self.assertFalse((machine.layout.extensions / f".{self.PART}.record.json").exists())
+        self.assertEqual(json.loads(machine.layout.status(self.ID).read_text())["state"], "not-installed")
+
+    def test_an_image_with_the_wrong_digest_is_refused(self):
+        machine = self.machine()
+        _, artifact = self.publish(machine)
+        machine.web[artifact["urls"][0]] = b"not what was signed" * 10
+        self.assertNotEqual(machine.run("install", self.ID), 0)
+        self.assertFalse(self.live(machine).exists())
+
+    def test_a_sysext_image_part_is_exactly_one_artifact(self):
+        machine = self.machine()
+        _, artifact = self.publish(machine)
+        self.publish(machine, artifacts=[artifact, artifact])
+        self.assertNotEqual(machine.run("install", self.ID), 0)
+        self.assertFalse(self.live(machine).exists())
+
+    def test_an_unmanaged_image_in_the_search_path_still_refuses_the_merge(self):
+        machine = self.machine()
+        self.publish(machine)
+        machine.layout.extensions.mkdir(parents=True, exist_ok=True)
+        (machine.layout.extensions / "evil.raw").write_bytes(b"x")
+        machine.run("install", self.ID)
+        self.assertFalse(self.live(machine).exists())
+        self.assertGreaterEqual(machine.unmerges, 1)

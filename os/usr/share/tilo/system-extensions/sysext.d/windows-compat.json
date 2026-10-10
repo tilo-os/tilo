@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "id": "windows-compat",
+  "kind": "windows-compat",
+  "manifest": "https://code.tilo.so/api/packages/tilo/generic/tilo-extension-windows-compat/{arch}-{base}/manifest.json",
+  "hosts": ["code.tilo.so"],
+  "parts": ["tilo-windows-compat"],
+  "size": {
+    "download_bytes": 1900000000,
+    "installed_bytes": 3100000000
+  }
+}

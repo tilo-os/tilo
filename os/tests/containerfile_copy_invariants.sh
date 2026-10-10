@@ -159,7 +159,10 @@ containerfile="$repo/os/Containerfile"
 # The session-priority polkit rule (set-property on session scopes only) ships
 # beside the other policies; it is the one payload row added by the interactive
 # priority policy. Its unit drop-ins ride the existing /etc/systemd/ COPY.
-expected_contract=75785025e2d98e238c25d04ef6b7034ecd55652d7cba78207ac7dfe5f546cda0
+# Windows compatibility is a system extension (windows-compat-sysext), not
+# rootfs content: Proton, the Steam runtime, the virtio-win media, the FEX
+# payload and the x86 guest are no longer copied into /usr here.
+expected_contract=0051c94345220ef3e9210e2fbc98268aaabd505fc57be6b32b63663f8a1e2f1b
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
@@ -171,8 +174,8 @@ actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" 
 # mask an earlier payload at the same path. Directory-content copies remain
 # single-source entries and were intentionally not consolidated.
 # Two directory-content copies share /usr/ as their destination, with disjoint
-# trees: the Windows provider's (provider.json; on ARM also the FEX payload
-# and the x86 guest under /usr/lib/tilo/windows-runners), and the assembled
+# trees: the Windows provider's (provider.json only; its payload is the
+# windows-compat sysext), and the assembled
 # runtime tree
 # (/usr/lib/tilo-runtime, /usr/share/fonts/tilo, /usr/share/tilo/font-catalogs),
 # which must be one COPY so its hard links stay one layer's.
