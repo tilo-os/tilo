@@ -1655,7 +1655,7 @@ impl Engine<'_> {
                     .get_efi_var(&efi::boot_var_name(number))
                     .map_err(io_refusal)?
                 {
-                    entries.insert(n.clone(), efi::hex(&bytes));
+                    entries.insert(n.clone(), hex::encode(&bytes));
                 }
             }
             self.record = Some(Record::new(
