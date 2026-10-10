@@ -48,37 +48,54 @@ def stage(destination, url, size, sha256):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("destination", type=Path)
+    parser.add_argument("--source", type=Path,
+                        default=ROOT / "dist/local-models/catalog-source-speech-candidate.json")
     args = parser.parse_args()
     destination = args.destination
     destination.mkdir(parents=True, exist_ok=False)
-    source_path = ROOT / "dist/local-models/catalog-source-speech-candidate.json"
+    source_path = args.source
     source = json.loads(source_path.read_text())
     if (source["key_id"] != "tilo-local-model-release-2026-10"
             or source["runtimes"] or source["recommendation"]
-            or [m["id"] for m in source["models"]] != ["u2net-subject", "whisper-tiny-multilingual"]):
+            or source["schema"] != 1 or source["production"] is not True
+            or [m["id"] for m in source["models"]] != ["u2net-subject", "whisper-tiny-multilingual",
+                                                        "whisper-base-multilingual",
+                                                        "whisper-small-q5_1-multilingual"]):
         raise ValueError("unexpected speech review candidate")
-    subject, speech = source["models"]
+    subject, *speech_models = source["models"]
     current = json.loads((ROOT / "dist/local-models/catalog-source.json").read_text())
     if (subject != current["models"][0]
-            or subject["artifact"]["file"] != "artifacts/u2net.onnx"
-            or speech["artifact"]["file"] != "artifacts/ggml-tiny.bin"):
+            or subject["artifact"]["file"] != "artifacts/u2net.onnx"):
         raise ValueError("unexpected artifact paths or changed subject release")
-    receipt = json.loads((ROOT / "dist/local-models/whisper-tiny/upstream-receipt.json").read_text())
-    if (speech["artifact"]["sha256"] != receipt["sha256"]
-            or speech["artifact"]["size_bytes"] != receipt["size_bytes"]
-            or speech["revision"] != receipt["revision"]
-            or speech["artifact_format"] != "whisper_ggml"):
-        raise ValueError("speech candidate disagrees with reviewed upstream")
+    receipts = []
+    for speech, package in zip(speech_models, ["whisper-tiny", "whisper-base", "whisper-small-q5_1"]):
+        receipt = json.loads((ROOT / f"dist/local-models/{package}/upstream-receipt.json").read_text())
+        base = f"https://code.tilo.so/api/packages/tilo/generic/{package}/{receipt['revision']}"
+        if (speech["artifact"] != {"file": f"artifacts/{receipt['file']}",
+                                  "url": f"{base}/{receipt['file']}",
+                                  "sha256": receipt["sha256"], "size_bytes": receipt["size_bytes"]}
+                or speech["revision"] != receipt["revision"]
+                or speech["artifact_format"] != "whisper_ggml"
+                or speech["license_url"] != f"{base}/LICENSE"
+                or speech["license_id"] != "MIT" or speech["requires_acceptance"] is not True
+                or speech["installed_size_bytes"] != receipt["size_bytes"]
+                or speech["allowed_runtimes"] or speech["context_window"]
+                or any(speech[key] for key in ["vision", "face_recognition", "segmentation"])
+                or speech["required_accelerator_mib"]
+                or speech["required_memory_mib"] != (2048 if package == "whisper-small-q5_1" else 1024)):
+            raise ValueError("speech candidate disagrees with reviewed upstream")
+        notice = ROOT / f"dist/local-models/{package}/LICENSE"
+        if (len(notice.read_bytes()) != receipt["license_size_bytes"]
+                or hashlib.sha256(notice.read_bytes()).hexdigest() != receipt["license_sha256"]):
+            raise ValueError("upstream MIT notice receipt mismatch")
+        receipts.append((speech, package, receipt, notice))
     stage(destination / subject["artifact"]["file"], subject["artifact"]["url"],
           subject["artifact"]["size_bytes"], subject["artifact"]["sha256"])
     stage(destination / "artifacts/u2net-LICENSE", subject["license_url"], 11357,
           "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4")
-    stage(destination / speech["artifact"]["file"], receipt["url"], receipt["size_bytes"], receipt["sha256"])
-    notice = ROOT / "dist/local-models/whisper-tiny/LICENSE"
-    if (len(notice.read_bytes()) != receipt["license_size_bytes"]
-            or hashlib.sha256(notice.read_bytes()).hexdigest() != receipt["license_sha256"]):
-        raise ValueError("upstream MIT notice receipt mismatch")
-    (destination / "artifacts/whisper-LICENSE").write_bytes(notice.read_bytes())
+    for speech, package, receipt, notice in receipts:
+        stage(destination / speech["artifact"]["file"], receipt["url"], receipt["size_bytes"], receipt["sha256"])
+        (destination / f"artifacts/{package}-LICENSE").write_bytes(notice.read_bytes())
     (destination / "source.json").write_bytes(source_path.read_bytes())
     print("Review candidate prepared; signing, publication and image activation remain separate.")
 

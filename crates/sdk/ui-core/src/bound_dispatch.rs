@@ -890,6 +890,82 @@ pub(crate) fn directory_witness(
 
 #[derive(Default)]
 pub(crate) struct BoundResourceCache(RefCell<Vec<CachedBoundResources>>);
+
+/// One bound owner's admission generation and record frontier, read on each
+/// side of an input dispatch. Only a native surface's input path reads it.
+#[cfg(feature = "native")]
+pub(crate) struct BoundOwnerMark {
+    binding: CallbackBinding,
+    generation: Option<u64>,
+    document: Option<(Vec<automerge::ChangeHash>, usize)>,
+}
+
+/// Every live bound owner under `root`, once each, in tree order.
+#[cfg(feature = "native")]
+pub(crate) fn bound_owner_marks(root: &dyn Widget, outer: &AutoCommit) -> Vec<BoundOwnerMark> {
+    fn visit(widget: &dyn Widget, outer: &AutoCommit, marks: &mut Vec<BoundOwnerMark>) {
+        if let Some(binding) = widget.callback_binding()
+            && !binding.closing.get()
+            && binding.lifetime.is_active()
+            && !marks
+                .iter()
+                .any(|mark| mark.binding.same_component(&binding))
+        {
+            let entry = binding.enter();
+            let generation = binding.generation().ok().flatten();
+            let document = binding
+                .read_document(outer, |doc, _| crate::widget::settle_mark(doc))
+                .ok();
+            drop(entry);
+            marks.push(BoundOwnerMark {
+                binding,
+                generation,
+                document,
+            });
+        }
+        widget.for_each_child(&mut |child| visit(child, outer, marks));
+    }
+    let mut marks = Vec::new();
+    visit(root, outer, &mut marks);
+    marks
+}
+
+#[cfg(feature = "native")]
+impl BoundResourceCache {
+    /// An input dispatch lends each owner its record mutably, which advances
+    /// the owner's admission generation whether or not anything was written.
+    /// When the owners' records stand exactly where they did `before` the
+    /// dispatch, carry each snapshot that was current then to the generation
+    /// now. Returns `false`, carrying nothing, when any owner's record moved
+    /// or the owners changed: the caller must republish.
+    pub(crate) fn carry_across_input(
+        &self,
+        before: &[BoundOwnerMark],
+        after: &[BoundOwnerMark],
+    ) -> bool {
+        let unmoved = before.len() == after.len()
+            && before.iter().zip(after).all(|(before, after)| {
+                before.binding.same_component(&after.binding)
+                    && before.document.is_some()
+                    && before.document == after.document
+            });
+        if !unmoved {
+            return false;
+        }
+        let mut entries = self.0.borrow_mut();
+        for (before, after) in before.iter().zip(after) {
+            let (Some(was), Some(now)) = (before.generation, after.generation) else {
+                continue;
+            };
+            for entry in entries.iter_mut().filter(|entry| {
+                entry.generation == was && entry.snapshot.binding.same_component(&before.binding)
+            }) {
+                entry.generation = now;
+            }
+        }
+        true
+    }
+}
 struct CachedBoundResources {
     snapshot: BoundResourceSnapshot,
     generation: u64,
@@ -1041,19 +1117,28 @@ pub(crate) fn discover_cached_bound_resources(
     Ok(snapshots)
 }
 
-/// Action-scoped authority shared by native and headless legacy hosts.
+/// Action-scoped authority shared by native and headless legacy hosts: the
+/// action `action` on the resource `resource_id`.
 pub(crate) fn permits_local_action(
     permissions: &PermissionContext,
     app_id: &str,
+    resource_id: &str,
     action: &tilo_actions::ActionSpec,
 ) -> bool {
-    permits_local_invocation(permissions, app_id, action, action.contract.permission)
+    permits_local_invocation(
+        permissions,
+        app_id,
+        resource_id,
+        action,
+        action.contract.permission,
+    )
 }
 
 /// [`permits_local_action`] for one invocation: what its arguments ask.
 pub(crate) fn permits_local_value(
     permissions: &PermissionContext,
     app_id: &str,
+    resource_id: &str,
     action: &tilo_actions::ActionSpec,
     typed: Option<&serde_json::Map<String, serde_json::Value>>,
     argument: Option<&str>,
@@ -1062,12 +1147,13 @@ pub(crate) fn permits_local_value(
         Some(arguments) => action.permission_for_json(arguments),
         None => action.permission_for_argument(argument),
     };
-    permits_local_invocation(permissions, app_id, action, requirement)
+    permits_local_invocation(permissions, app_id, resource_id, action, requirement)
 }
 
 fn permits_local_invocation(
     permissions: &PermissionContext,
     app_id: &str,
+    resource_id: &str,
     action: &tilo_actions::ActionSpec,
     requirement: tilo_actions::PermissionRequirement,
 ) -> bool {
@@ -1082,15 +1168,19 @@ fn permits_local_invocation(
         Requirement::Admin => Verb::Admin,
     };
     permissions.check(&crate::permissions::PermissionScope::action(
-        app_id, &action.id, verb,
+        app_id,
+        resource_id,
+        &action.id,
+        verb,
     ))
 }
 
 /// May the component's participant take this one invocation of `action`:
-/// what its arguments ask, under the same app scope the published tree is
+/// what its arguments ask, under the same resource scope the published tree is
 /// filtered by.
 fn permits_invocation(
     binding: &CallbackBinding,
+    resource_id: &str,
     action: &tilo_actions::ActionSpec,
     typed: Option<&serde_json::Map<String, serde_json::Value>>,
     argument: Option<&str>,
@@ -1112,8 +1202,10 @@ fn permits_invocation(
     binding
         .permissions
         .borrow()
-        .check(&crate::permissions::PermissionScope::app(
+        .check(&crate::permissions::PermissionScope::action(
             &binding.app_id,
+            resource_id,
+            &action.id,
             verb,
         ))
 }
@@ -1130,6 +1222,7 @@ pub(crate) fn filter_resource(
     binding: &CallbackBinding,
     mut resource: tilo_actions::Resource,
 ) -> Option<tilo_actions::Resource> {
+    let resource_id = resource.id.as_str().to_owned();
     resource.actions.retain(|action| {
         use crate::permissions::Verb;
         use tilo_actions::PermissionRequirement as Requirement;
@@ -1144,8 +1237,10 @@ pub(crate) fn filter_resource(
         binding
             .permissions
             .borrow()
-            .check(&crate::permissions::PermissionScope::app(
+            .check(&crate::permissions::PermissionScope::action(
                 &binding.app_id,
+                &resource_id,
+                &action.id,
                 verb,
             ))
     });
@@ -1824,6 +1919,7 @@ fn execute_document(
 
 /// A resolved, encoded resource operation and the caller it runs for.
 pub(crate) struct ResourceOperation<'a> {
+    pub(crate) target_route: Option<crate::collaboration::RouteSpec>,
     pub(crate) address: &'a tilo_actions::ActionAddress,
     pub(crate) resource: &'a tilo_actions::Resource,
     pub(crate) spec: &'a tilo_actions::ActionSpec,
@@ -1850,6 +1946,7 @@ pub(crate) fn execute_resource_operation(
     operation: ResourceOperation<'_>,
 ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
     let ResourceOperation {
+        target_route,
         address,
         resource,
         spec,
@@ -2012,6 +2109,9 @@ pub(crate) fn execute_resource_operation(
             selected.read(scope, doc).map_err(refused)?,
         )
     } else {
+        let target = target_route.map(|route| {
+            crate::widget::resource_operation::OperationTarget::new(route, address.clone())
+        });
         let op = match scope {
             Some(scope) => crate::widget::ResourceOperation::scoped(
                 scope,
@@ -2026,6 +2126,7 @@ pub(crate) fn execute_resource_operation(
                 &encoded.payload,
             ),
         };
+        let op = op.with_target(target.as_ref());
         widget
             .start_operation(&op, &mut crate::widget::Edits::lend(doc), path)
             .map_err(tilo_actions::DoorError::Failed)?
@@ -2139,7 +2240,7 @@ pub(crate) fn invoke_resource_action(
                     }
                     // The tree offers an action under the least it needs;
                     // this invocation needs what its value asks.
-                    if !permits_invocation(binding, spec, arguments.as_ref(), argument) {
+                    if !permits_invocation(binding, &target.address.address.resource, spec, arguments.as_ref(), argument) {
                         return Err(denied(spec).into());
                     }
                     crate::invocation_scope::check_continuation(
@@ -2180,6 +2281,7 @@ pub(crate) fn invoke_resource_action(
                             registry,
                             transport,
                             ResourceOperation {
+                                target_route: route.clone(),
                                 address: &target.address.address,
                                 resource,
                                 spec,
@@ -3279,41 +3381,6 @@ impl Drop for ActiveEntry {
     }
 }
 
-pub(crate) fn with_owned_record_action<R>(
-    records: &RecordStore,
-    checkout: &RecordCheckout,
-    instance_id: crate::application::InstanceId,
-    app_id: &str,
-    author: UserId,
-    context: tilo_actions::ActionContext,
-    callback: impl FnOnce(&mut AutoCommit, &ObjId) -> R,
-) -> Result<R, BoundDispatchError> {
-    let scope = crate::wake::WakeScope::new();
-    let owner = Rc::new(());
-    let binding = CallbackBinding {
-        lifetime: scope.handle(),
-        closing: Rc::new(Cell::new(false)),
-        registry_owner: Rc::downgrade(&owner),
-        lifetime_id: uuid::Uuid::new_v4(),
-        control_domain: crate::control_custody::WeakControlDomain::default(),
-        queued_controls: Rc::new(RefCell::new(std::collections::VecDeque::new())),
-        search_requests: Rc::default(),
-        instance_id,
-        app_id: app_id.to_string(),
-        records: records.clone(),
-        checkout: checkout.clone(),
-        permissions: Rc::new(RefCell::new(PermissionContext::permissive())),
-        author,
-        operation_context: context,
-        writes_as_author: false,
-    };
-    let mut outer_witness = AutoCommit::new();
-    binding.with_document(&mut outer_witness, |document, root| {
-        let value = callback(document, root);
-        binding.finish_action_boundary(document).map(|()| value)
-    })?
-}
-
 impl CallbackBinding {
     /// Queue a search for the host presenting this component. Only the
     /// latest request matters: an older one the host has not shown yet is
@@ -4313,6 +4380,7 @@ mod owned_restore_tests;
 
 /// Remote delivery is not a local action. A physical or logical edit must be
 /// finished by its existing owner; the network queue never commits it.
+#[cfg(all(feature = "native", any(test, feature = "test-support")))]
 pub(crate) fn can_merge_remote_owned_document(
     store: &RecordStore,
     checkout: &RecordCheckout,

@@ -5,7 +5,7 @@ pub mod governance;
 pub mod hdr_metadata;
 pub mod join;
 pub mod protocol;
-pub use protocol::NeighbourMsg;
+pub use protocol::{NeighbourMsg, PresenceSlot};
 #[cfg(test)]
 mod admission_tests;
 #[cfg(test)]

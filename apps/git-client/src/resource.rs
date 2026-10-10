@@ -209,6 +209,7 @@ mod tests {
     use crate::doc::{SharedRepo, shared_fingerprint};
     use crate::settings::{DiffLayout, Settings};
     use ui::automerge::AutoCommit;
+    use ui::framework::Effect as _;
     use ui::framework::testing::TestApp;
 
     /// A repository with one commit and one untracked file, in a directory
@@ -231,6 +232,29 @@ mod tests {
             .unwrap();
         std::fs::write(path.join("new.txt"), "new\n").unwrap();
         (dir, path)
+    }
+
+    #[test]
+    fn ordinary_primary_repository_declares_identity_in_native_tree_and_actions() {
+        let (_dir, path) = scratch_repository("primary-identity");
+        let mut app = TestApp::<GitClientShell>::launched(&[path.to_str().unwrap()]).unwrap();
+        let resources = app.harness().resources();
+        let root = resources
+            .iter()
+            .find(|resource| resource.id.as_str() == "git_client.repo")
+            .expect("normal primary repository resource");
+        let expected =
+            ui::tilo_actions::ResourceSemanticIdentity::new("git_client.repo", "git_client.repo");
+        assert_eq!(root.semantic_identity, expected);
+        let actions = app.actions().unwrap();
+        let primary = actions
+            .iter()
+            .find(|action| {
+                action.address.resource.as_str() == "git_client.repo"
+                    && action.address.action == ui::tilo_resource::APPLY
+            })
+            .expect("normal primary repository document action");
+        assert_eq!(primary.semantic_identity, expected);
     }
 
     /// The repository door carries the projection's history, branches and
@@ -471,6 +495,33 @@ mod tests {
         ] {
             assert!(!device_only(id), "{id}");
         }
+    }
+
+    #[test]
+    fn approved_project_check_is_a_cancellable_host_job_with_only_an_id_parameter() {
+        let declaration = GitClientEffect::declarations()
+            .into_iter()
+            .find(|declaration| declaration.id == "run-approved-check")
+            .expect("approved project check is on the actual repository effect surface");
+        assert!(!declaration.device_only);
+        assert_eq!(
+            declaration.answers,
+            ui::tilo_resource::effect::Answers::Later {
+                cancellable: true,
+                returns: true
+            }
+        );
+        assert!(declaration.untrusted);
+        assert_eq!(declaration.params.len(), 1);
+        assert_eq!(declaration.params[0].name, "check_id");
+        let check = GitClientEffect::RunApprovedCheck {
+            check_id: "regression".into(),
+        };
+        let mut app = TestApp::<GitClientShell>::capture(Some("empty")).unwrap();
+        let error = app
+            .effect(&check)
+            .expect_err("detached test app cannot manufacture admitted project custody");
+        assert!(error.to_string().contains("approved"));
     }
 
     /// Undo takes back what the launch did in the record — opening the

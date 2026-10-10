@@ -12,6 +12,9 @@
 
 use serde::{Deserialize, Serialize};
 pub mod action_authority;
+pub mod net;
+
+pub use net::{Allowed, EgressPolicy, HostPattern, NetHostError, NetHostPattern, host_covers};
 
 use crate::channel::ArtifactId;
 use crate::crypto::Ed25519PublicKey;
@@ -275,12 +278,32 @@ pub enum Scope {
     /// A hardware/system device class the portal brokers: `"camera"`,
     /// `"microphone"`, `"screencast"`. Filesystem- and op-inert.
     Device(String),
-    /// An outbound network host. `"*"` matches every host; a leading dot
+    /// An outbound network host, stored as written and read through
+    /// [`NetHostPattern`]: `"*"` matches every host; a leading dot (or `*.`)
     /// matches the domain and subdomains; anything else is an exact hostname.
+    /// An IP literal is not a host and matches nothing.
     NetHost(String),
-    /// One action an app exports, `(app, action)` — the finest scope: exactly
-    /// one verb-bearing operation on one app's surface.
-    Action { app: String, action: String },
+    /// One action on one resource an app exports, `(app, resource, action)`
+    /// — the finest scope: exactly one verb-bearing operation on one
+    /// resource of one app's surface. The same action id on another
+    /// resource (a page body's `apply` and the notebook's `apply`) is a
+    /// different action and is not covered.
+    Action {
+        app: String,
+        resource: String,
+        action: String,
+    },
+    /// One action on every resource of one kind an app exports,
+    /// `(app, kind, action)`: what a shortcut step that picks its resource
+    /// when it runs (the first of a kind, a bound value) needs. Only a
+    /// shortcut's grant is evaluated against it, where the action's
+    /// descriptor names the resource's kind; against any other resource it
+    /// is inert.
+    ActionOnKind {
+        app: String,
+        kind: String,
+        action: String,
+    },
     /// A room as a *resource*. A capability scoped to a room, subject a
     /// person, **is** that person's room membership — the same machinery as
     /// any other share, so there is no second sharing system.
@@ -291,15 +314,6 @@ pub enum Scope {
 }
 
 impl Scope {
-    /// Does this scope apply to an op with the given resource context?
-    pub fn matches_op(&self, ctx: &ResourceScope) -> bool {
-        self.matches_resource(&ResourceRef::Artifact {
-            app: ctx.app.clone(),
-            kind: ctx.kind,
-            instance: ctx.instance,
-        })
-    }
-
     /// Does this scope cover `resource`?
     ///
     /// Scopes nest: `Workspace` covers everything, `App(a)` covers every
@@ -341,9 +355,18 @@ impl Scope {
 
             (Scope::NetHost(h), ResourceRef::NetHost(target)) => host_covers(h, target),
 
-            (Scope::Action { app, action }, ResourceRef::Action { app: b, action: c }) => {
-                app == b && action == c
-            }
+            (
+                Scope::Action {
+                    app,
+                    resource,
+                    action,
+                },
+                ResourceRef::Action {
+                    app: b,
+                    resource: r,
+                    action: c,
+                },
+            ) => app == b && resource == r && action == c,
 
             // Room membership is converted into an actor role by `Workspace`
             // before an action is checked. Direct scope matching remains narrow:
@@ -362,6 +385,7 @@ impl Scope {
                 | Scope::Device(_)
                 | Scope::NetHost(_)
                 | Scope::Action { .. }
+                | Scope::ActionOnKind { .. }
                 | Scope::Room(_)
                 | Scope::FsRecord(_),
                 _,
@@ -391,24 +415,6 @@ pub fn path_covers(prefix: &str, path: &str) -> bool {
     path.starts_with(&with_sep)
 }
 
-/// Does the host pattern `pattern` cover `host`?
-///
-/// `"*"` covers every host; a leading `.` covers the domain and
-/// subdomains. Anything else is an exact, case-insensitive match.
-/// Deliberately not a glob — `*.evil.com` style patterns invite mistakes
-/// on this security boundary.
-pub fn host_covers(pattern: &str, host: &str) -> bool {
-    if pattern == "*" {
-        return true;
-    }
-    let pattern = pattern.to_ascii_lowercase();
-    let host = host.to_ascii_lowercase();
-    if let Some(domain) = pattern.strip_prefix('.') {
-        return host == domain || host.ends_with(&pattern);
-    }
-    pattern == host
-}
-
 /// A resource a subject might act on. Resources nest — see
 /// [`Scope::matches_resource`]. Showing one needs no capability; only
 /// acting on one is checked.
@@ -430,8 +436,12 @@ pub enum ResourceRef {
     Device(String),
     /// An outbound network host.
     NetHost(String),
-    /// One exported action on one app.
-    Action { app: String, action: String },
+    /// One exported action on one resource of one app.
+    Action {
+        app: String,
+        resource: String,
+        action: String,
+    },
     /// A room, as the target of a membership capability.
     Room(String),
     /// A stable collaborative-file record id.

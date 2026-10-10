@@ -201,6 +201,16 @@ def prepare_profile(profile: str, root: Path, kernel_version: str, firmware_dir:
     if kernel_args:
         outputs[KARGS_PATH] = ("# Kernel arguments of the hardware profile.\nkargs = "
                                + json.dumps(kernel_args) + "\n").encode("utf-8")
+    if "wifi_wake_on_wlan" in definition:
+        # Validation binds this quirk to the Lenovo 83ED/WCN7850 definition.
+        # A connection's explicit wake flags still override an NM default.
+        outputs[Path("usr/lib/NetworkManager/conf.d/30-tilo-lenovo-wifi.conf")] = (
+            "# Lenovo 83ED WCN7850 WoW resume can leave MHI unusable.\n"
+            "# Disable WoWLAN by default; no profile mutation.\n"
+            "[connection-tilo-lenovo-wifi]\n"
+            "match-device=driver:ath12k_wifi7_pci\n"
+            f"wifi.wake-on-wlan={definition['wifi_wake_on_wlan']}\n"
+        ).encode("utf-8")
     # Check every destination before creating directories or installing bytes.
     # This includes existing output files, including dangling symlinks.
     destinations = {

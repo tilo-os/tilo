@@ -4,10 +4,13 @@ use super::state::WorkspaceAuthority as _;
 use super::state::WorkspaceTreeHandle;
 #[cfg(target_os = "linux")]
 mod airdrop_transfer;
+#[cfg(target_os = "linux")]
+pub mod approved_checks;
 mod committed_document;
 #[cfg(target_os = "linux")]
 mod file_clipboard;
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 pub(crate) use file_clipboard::test_support::TestTransferPause;
 #[cfg(test)]
 #[path = "broker_services/native_effect_tests.rs"]
@@ -153,6 +156,17 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
             .health()
     }
 
+    fn task_snapshot(
+        &self,
+        room: &str,
+    ) -> Result<tilo_peer_state::workspace_task::WorkspaceTaskSnapshot, String> {
+        let room = super::state::RoomId::parse(room).ok_or("invalid native task room")?;
+        self.owner
+            .as_ref()
+            .ok_or("native task owner unavailable")?
+            .workspace_task_snapshot(room)
+    }
+
     fn execute(
         &self,
         request: tilo_peer_state::owner_commit::OwnerCommitRequest,
@@ -169,14 +183,22 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
                     return Err("workspace membership requires the governing owner".into());
                 }
             }
-            let (key, governor) = tilo_identity_host::broker::trusted_current_device(&request.room)
-                .map_err(|error| format!("workspace governor is unavailable: {error}"))?;
-            let receipt = owner.commit_workspace_membership_command(
-                request,
-                &governor,
-                &key,
-                std::time::SystemTime::now(),
-            )?;
+            let receipt = if matches!(
+                request.operation,
+                tilo_peer_state::owner_commit::CommitOperation::WorkspaceTaskCommand { .. }
+            ) {
+                owner.commit_workspace_task_command(request, std::time::SystemTime::now())?
+            } else {
+                let (key, governor) =
+                    tilo_identity_host::broker::trusted_current_device(&request.room)
+                        .map_err(|error| format!("workspace governor is unavailable: {error}"))?;
+                owner.commit_workspace_membership_command(
+                    request,
+                    &governor,
+                    &key,
+                    std::time::SystemTime::now(),
+                )?
+            };
             if let Some(network) = network {
                 network.schedule_native_owner_publication(room);
             }
@@ -246,8 +268,14 @@ async fn record_receipt_elsewhere(
 
 pub struct NativeWorkspaceAuthority(pub WorkspaceTreeHandle);
 impl WorkspaceAuthority for NativeWorkspaceAuthority {
-    fn snapshot(&self) -> Result<tilo_desktop_model::DesktopTree, String> {
-        Ok(self.0.read().desktop.clone())
+    /// Borrows the committed tree under the compositor's read lock for one
+    /// short policy read; nothing is copied.
+    fn with_tree(
+        &self,
+        read: &mut dyn FnMut(&tilo_desktop_model::DesktopTree),
+    ) -> Result<(), String> {
+        read(&self.0.read().desktop);
+        Ok(())
     }
     fn legacy_journal_root(&self) -> Option<std::path::PathBuf> {
         self.0.read().persist_path.as_ref().map(|path| {
@@ -255,6 +283,13 @@ impl WorkspaceAuthority for NativeWorkspaceAuthority {
             name.push(".invocations");
             name.into()
         })
+    }
+    /// A tree write that changes policy announces as its guard is released;
+    /// the fleet and registry announce on save and through the identity
+    /// directory's watch; the native owner announces each publication
+    /// (`tilo_identity_host::policy_change`).
+    fn announces_policy_changes(&self) -> bool {
+        true
     }
 }
 impl LegacyWorkspaceProjection for NativeWorkspaceAuthority {
@@ -416,8 +451,8 @@ fn stage_launch_content(
     {
         return Err("launch content failed integrity validation".into());
     }
-    let dir = xdg_paths::xdg::runtime_dir()
-        .unwrap_or_else(std::env::temp_dir)
+    let dir = tilo_paths::xdg::runtime_dir()
+        .ok_or("launch staging needs XDG_RUNTIME_DIR")?
         .join("tilo-opened");
     std::fs::create_dir_all(&dir).map_err(|error| format!("create launch staging: {error}"))?;
     #[cfg(unix)]
@@ -1004,10 +1039,12 @@ impl WorkspaceGovernanceServices for NativeWorkspaceGovernance {
         {
             return Err("explicit confirmation is required".into());
         }
+        // The resource the action is invoked on, as the catalogue checked it.
         if workspace.decide(
             &caller,
             &super::state::ResourceRef::Action {
                 app: super::state::WORKSPACE_GOVERNANCE_APP_ID.into(),
+                resource: resource.id.as_str().to_owned(),
                 action: request.action.into(),
             },
             super::state::Verb::Admin,
@@ -1088,21 +1125,25 @@ fn govern_elsewhere(
         Operation::GrantAppAction {
             app,
             target_app,
+            resource,
             action,
             lifetime,
         } => DesktopCommand::GrantAppAction {
             app,
             target_app,
+            resource,
             action,
             lifetime,
         },
         Operation::RevokeAppAction {
             app,
             target_app,
+            resource,
             action,
         } => DesktopCommand::RevokeAppAction {
             app,
             target_app,
+            resource,
             action,
         },
     };
@@ -1284,7 +1325,7 @@ impl tilo_action_broker::services::AppActionGrants for NativeAppActionGrants {
             &request.room,
             &label(&request.app_id),
             &label(&request.target_app),
-            &request.action_label,
+            &format!("{} · {}", request.resource_label, request.action_label),
             answer.lifetime(),
         );
         let _ = tree.append_workspace_effect_receipt(
@@ -1502,22 +1543,28 @@ pub fn native_services(
         Arc::new(NativeAppActionGrants(tree.clone()))
             as Arc<dyn tilo_action_broker::services::AppActionGrants>
     });
+    #[cfg(target_os = "linux")]
+    let approved_checks = membership
+        .as_ref()
+        .map(|tree| approved_checks::service(tree.clone(), network.clone()));
     let launcher = Arc::new(NativeLauncher(membership.clone(), network.clone()));
     let display_control = membership
         .as_ref()
         .zip(settings_store::installed_source())
         .map(|(tree, source)| {
             Arc::new(super::display_control::NativeDisplayControl {
-                tree: Arc::downgrade(tree),
+                tree: tree.downgrade(),
                 source,
             }) as Arc<dyn tilo_action_broker::services::DisplayControlServices>
         });
     let local_person = membership.as_ref().map(|tree| {
         Arc::new(super::local_person::NativeLocalPerson {
-            tree: Arc::downgrade(tree),
+            tree: tree.downgrade(),
         }) as Arc<dyn tilo_action_broker::services::LocalPersonServices>
     });
     HostServices {
+        #[cfg(target_os = "linux")]
+        approved_checks,
         #[cfg(target_os = "linux")]
         file_clipboard: membership.as_ref().map(|tree| {
             Arc::new(file_clipboard::NativeFileClipboard::new(tree.clone()))
@@ -1566,7 +1613,7 @@ fn launchable_catalogue_path() -> Option<std::path::PathBuf> {
     if cfg!(test) {
         return None;
     }
-    xdg_paths::state_dir().map(|root| root.join("tilo/actions/launchable.json"))
+    tilo_paths::state_dir().map(|root| root.join("tilo/actions/launchable.json"))
 }
 
 /// A broker over `membership` with the native services an action host

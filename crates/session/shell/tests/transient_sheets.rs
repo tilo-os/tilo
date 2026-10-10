@@ -1,16 +1,11 @@
 //! Wire-level tests for transient toplevels: a toplevel with an xdg parent
 //! is a sheet on its parent's tile, never a tab of its own.
 
-use std::os::unix::net::UnixStream;
-use std::sync::Arc;
-
-use smithay::reexports::calloop::EventLoop;
-use smithay::reexports::wayland_server::Display;
 use vello::kurbo::Rect;
-use wayland_client::protocol::{wl_compositor, wl_keyboard, wl_registry, wl_seat, wl_surface};
+use wayland_client::protocol::{wl_compositor, wl_keyboard, wl_seat, wl_surface};
 use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, delegate_noop};
 use wayland_protocols::xdg::dialog::v1::client::{xdg_dialog_v1, xdg_wm_dialog_v1};
-use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
+use wayland_protocols::xdg::shell::client::{xdg_toplevel, xdg_wm_base};
 
 use shell::compositor::foreign::{PointRoute, store};
 
@@ -23,25 +18,7 @@ struct Client {
     pressed_keys: Vec<u32>,
 }
 
-impl Dispatch<wl_registry::WlRegistry, ()> for Client {
-    fn event(
-        state: &mut Self,
-        _: &wl_registry::WlRegistry,
-        event: wl_registry::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        if let wl_registry::Event::Global {
-            name,
-            interface,
-            version,
-        } = event
-        {
-            state.globals.push((name, interface, version));
-        }
-    }
-}
+crate::support::wayland::test_client!(Client);
 
 impl Dispatch<wl_keyboard::WlKeyboard, ()> for Client {
     fn event(
@@ -60,36 +37,6 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for Client {
                 ..
             } => state.pressed_keys.push(key),
             _ => {}
-        }
-    }
-}
-
-impl Dispatch<xdg_wm_base::XdgWmBase, ()> for Client {
-    fn event(
-        _: &mut Self,
-        base: &xdg_wm_base::XdgWmBase,
-        event: xdg_wm_base::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        if let xdg_wm_base::Event::Ping { serial } = event {
-            base.pong(serial);
-        }
-    }
-}
-
-impl Dispatch<xdg_surface::XdgSurface, ()> for Client {
-    fn event(
-        _: &mut Self,
-        surface: &xdg_surface::XdgSurface,
-        event: xdg_surface::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        if let xdg_surface::Event::Configure { serial } = event {
-            surface.ack_configure(serial);
         }
     }
 }
@@ -120,67 +67,7 @@ delegate_noop!(Client: ignore wl_seat::WlSeat);
 delegate_noop!(Client: ignore xdg_wm_dialog_v1::XdgWmDialogV1);
 delegate_noop!(Client: ignore xdg_dialog_v1::XdgDialogV1);
 
-struct Harness {
-    display: Display<shell::compositor::state::State>,
-    state: shell::compositor::state::State,
-    queue: wayland_client::EventQueue<Client>,
-    client: Client,
-    conn: Connection,
-    _event_loop: EventLoop<'static, shell::compositor::state::State>,
-}
-
-impl Harness {
-    fn new() -> Self {
-        let event_loop = EventLoop::try_new().expect("calloop");
-        let display = Display::new().expect("display");
-        let state = shell::compositor::state::State::new(event_loop.handle(), display.handle());
-        let (server, client) = UnixStream::pair().expect("socket pair");
-        display
-            .handle()
-            .insert_client(
-                server,
-                Arc::new(shell::compositor::state::ClientState::default()),
-            )
-            .expect("client insert");
-        client.set_nonblocking(true).expect("nonblocking");
-        let conn = Connection::from_socket(client).expect("client connection");
-        let queue = conn.new_event_queue::<Client>();
-        Self {
-            display,
-            state,
-            queue,
-            client: Client::default(),
-            conn,
-            _event_loop: event_loop,
-        }
-    }
-
-    fn pump(&mut self) {
-        for _ in 0..6 {
-            let _ = self.queue.flush();
-            let _ = self.display.dispatch_clients(&mut self.state);
-            let _ = self.display.flush_clients();
-            if let Some(guard) = self.conn.prepare_read() {
-                let _ = guard.read();
-            }
-            let _ = self.queue.dispatch_pending(&mut self.client);
-        }
-    }
-
-    fn bind<I: Proxy + 'static>(&self, interface: &str, version: u32) -> Option<I>
-    where
-        Client: Dispatch<I, ()>,
-    {
-        let (name, _, advertised) = self
-            .client
-            .globals
-            .iter()
-            .find(|(_, name, _)| name == interface)?
-            .clone();
-        let registry = self.conn.display().get_registry(&self.queue.handle(), ());
-        Some(registry.bind(name, version.min(advertised), &self.queue.handle(), ()))
-    }
-}
+type Harness = crate::support::wayland::Harness<Client>;
 
 fn foreign_tabs(state: &shell::compositor::state::State) -> Vec<(u64, String)> {
     let tree = state.workspace_tree.read();
@@ -210,18 +97,10 @@ fn opaque(w: u32, h: u32) -> Vec<u8> {
 #[test]
 fn a_modal_dialog_is_a_sheet_on_its_parent_tile_and_owns_its_input() {
     let mut h = Harness::new();
-    let _registry = h.conn.display().get_registry(&h.queue.handle(), ());
-    h.pump();
-    let compositor = h
-        .bind::<wl_compositor::WlCompositor>("wl_compositor", 4)
-        .expect("compositor");
-    let wm = h
-        .bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 3)
-        .expect("xdg shell");
-    let dialogs = h
-        .bind::<xdg_wm_dialog_v1::XdgWmDialogV1>("xdg_wm_dialog_v1", 1)
-        .expect("xdg_wm_dialog_v1 must be advertised");
-    let seat = h.bind::<wl_seat::WlSeat>("wl_seat", 9).expect("seat");
+    let compositor = h.bind::<wl_compositor::WlCompositor>("wl_compositor", 4);
+    let wm = h.bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 3);
+    let dialogs = h.bind::<xdg_wm_dialog_v1::XdgWmDialogV1>("xdg_wm_dialog_v1", 1);
+    let seat = h.bind::<wl_seat::WlSeat>("wl_seat", 9);
     let _keyboard = seat.get_keyboard(&h.queue.handle(), ());
     let qh = h.queue.handle();
 

@@ -117,12 +117,6 @@ impl IconGrid {
         self
     }
 
-    #[must_use]
-    pub fn with_icon_size(mut self, px: f64) -> Self {
-        self.icon_px = px.max(4.0);
-        self
-    }
-
     /// Host owns the selection across frames.
     pub fn set_selection(&mut self, sel: SelectionModel) {
         self.selection = sel;
@@ -295,9 +289,7 @@ impl Widget for IconGrid {
                 2.0 * f64::from(tokens.spacing.s3),
             );
         }
-        let node = taffy.leaf_node(Style::default());
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_leaf(Style::default(), node_map, self)
     }
 
     fn measure(
@@ -325,13 +317,7 @@ impl Widget for IconGrid {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         // Actual allocated width — measure may have run against a
         // different available width.
         self.columns = self.columns_for_width(self.rect.width());
@@ -560,7 +546,6 @@ impl Widget for IconGrid {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use automerge::AutoCommit;
     use taffy::prelude::TaffyMaxContent;
 
     fn items(n: usize) -> Vec<IconGridItem> {
@@ -622,28 +607,9 @@ mod tests {
             g.rect = Rect::new(0.0, 0.0, 324.0, 200.0);
             g.columns = 3;
 
-            let mut tree = TaffyTree::<()>::new();
-            let node = tree.leaf_node(Style::default());
-            let mods = winit::event::Modifiers::default();
-            let device: winit::event::DeviceId = unsafe { std::mem::zeroed() };
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            let mut feed = |g: &mut IconGrid, ev: WindowEvent| {
-                let mut h = false;
-                let mut f = None;
-                g.handle_event(
-                    &ev,
-                    &mut crate::widget::EventCtx {
-                        scale_factor: 1.0,
-                        modifiers: &mods,
-                        state: crate::widget::Edits::lend(&mut doc),
-                        path: &root,
-                        handled: &mut h,
-                        focus_target: &mut f,
-                        node_id: node,
-                        taffy: &tree,
-                    },
-                );
+            let device = winit::event::DeviceId::dummy();
+            let feed = |g: &mut IconGrid, ev: WindowEvent| {
+                crate::testing::dispatch(g, &ev);
             };
             feed(
                 &mut g,

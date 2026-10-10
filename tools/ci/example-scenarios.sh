@@ -16,10 +16,12 @@ cd "$(dirname "$0")/../.."
 
 selected=" $* "
 apps=()
+packages=()
 for manifest in examples/apps/*/Cargo.toml; do
   package=$(sed -n 's/^name = "\(.*\)"$/\1/p' "$manifest" | head -n 1)
   if [[ "$selected" == *" -p tilo-app-cli "* || "$selected" == *" -p $package "* ]]; then
     apps+=("$(dirname "$manifest")")
+    packages+=(-p "$package")
   fi
 done
 if [[ ${#apps[@]} -eq 0 ]]; then
@@ -29,6 +31,13 @@ fi
 
 cargo build --locked --quiet -p tilo-app-cli --bin tilo-app
 tilo_app=$PWD/target/debug/tilo-app
+# Examples share the same dependency feature set. Link the selected binaries
+# in one Cargo graph instead of serializing ten independent builds. Each
+# scenario still performs its normal Cargo freshness check and native audit.
+# A single selected example keeps the original path without an extra check.
+if [[ ${#apps[@]} -gt 1 ]]; then
+  cargo build --locked --bins "${packages[@]}"
+fi
 failed=()
 for app in "${apps[@]}"; do
   echo "== ${app}"

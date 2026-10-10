@@ -16,7 +16,7 @@ pub fn trash_dir() -> Option<PathBuf> {
         None
     }
     #[cfg(not(windows))]
-    xdg_paths::data_dir().map(|directory| directory.join("Trash/files"))
+    tilo_paths::data_dir().map(|directory| directory.join("Trash/files"))
 }
 
 /// The user's Trash accessible through an existing launcher grant. This is
@@ -35,7 +35,7 @@ pub fn user_trash_dir() -> Option<PathBuf> {
                 .map(PathBuf::from)
                 .filter(|path| path.is_absolute())
         } else {
-            xdg_paths::data_dir()
+            tilo_paths::data_dir()
         };
         data.map(|directory| directory.join("Trash/files"))
     }

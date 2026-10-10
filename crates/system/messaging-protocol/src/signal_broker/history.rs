@@ -101,7 +101,10 @@ impl History {
         if !owner.valid_principal()
             || !matches!(
                 owner.service,
-                crate::Service::Signal | crate::Service::Whatsapp | crate::Service::Sms
+                crate::Service::Tilo
+                    | crate::Service::Signal
+                    | crate::Service::Whatsapp
+                    | crate::Service::Sms
             )
             || !crate::identifier(&owner.device)
             || !crate::identifier(&owner.account)
@@ -113,6 +116,7 @@ impl History {
             .map_err(|_| SendError::Unavailable)?;
         let lock = FileLock::try_exclusive(file).map_err(|_| SendError::Unavailable)?;
         let path = root.join("history.enc");
+        let mut created = false;
         let ledger = match private_fs::open_owned_for_read(&path, (MAX_BYTES + 1024) as u64) {
             Ok((mut file, _)) => {
                 use std::io::Read;
@@ -123,11 +127,14 @@ impl History {
                 let plain = Zeroizing::new(plain);
                 serde_json::from_slice::<Ledger>(&plain).map_err(|_| SendError::Unavailable)?
             }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ledger {
-                owner: owner.clone(),
-                rows: BTreeMap::new(),
-                pending: Vec::new(),
-            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                created = true;
+                Ledger {
+                    owner: owner.clone(),
+                    rows: BTreeMap::new(),
+                    pending: Vec::new(),
+                }
+            }
             Err(_) => return Err(SendError::Unavailable),
         };
         if &ledger.owner != owner
@@ -142,7 +149,9 @@ impl History {
                     || (r.recipient_evidence.is_some()
                         && (!matches!(
                             owner.service,
-                            crate::Service::Whatsapp | crate::Service::Signal
+                            crate::Service::Tilo
+                                | crate::Service::Whatsapp
+                                | crate::Service::Signal
                         ) || r.incoming))
             })
         {
@@ -155,7 +164,9 @@ impl History {
             usable: true,
             _lock: lock,
         };
-        history.persist()?;
+        if created {
+            history.persist()?;
+        }
         Ok(history)
     }
     pub(crate) fn owner(&self) -> &Owner {
@@ -432,7 +443,7 @@ impl History {
     ) -> Result<bool, SendError> {
         if !matches!(
             self.ledger.owner.service,
-            crate::Service::Whatsapp | crate::Service::Signal
+            crate::Service::Tilo | crate::Service::Whatsapp | crate::Service::Signal
         ) || self.outgoing_route(operation)? != *route
         {
             return Err(SendError::Revoked);

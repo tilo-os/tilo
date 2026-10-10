@@ -1,15 +1,16 @@
 //! A pointer setting changed in Settings reaches an attached device.
 //!
-//! Drives the compositor's own reload path — the settings-file watch, the
-//! `input` section reader and the per-device reconfiguration — against a
+//! Drives the compositor's own reload path — the live settings document and
+//! its section follower, the `input` section reader and the per-device reconfiguration — against a
 //! recording device instead of libinput, so it runs without a seat.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::Duration;
 
+use settings_store::live::{LiveSettings, SectionFollower};
 use shell::compositor::backend::drm::input_config::{
     self, ClickMethod, ConfigurableDevice, DeviceCaps, DevicePlan, InputSettings, ScrollMethod,
-    SettingsWatch,
 };
 
 /// A clickpad as libinput describes a typical laptop touchpad, recording
@@ -44,30 +45,38 @@ impl ConfigurableDevice for FakeTouchpad {
 
 fn scratch_settings() -> PathBuf {
     let dir = std::env::temp_dir().join(format!("tilo-input-it-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir.join("settings.json")
 }
 
-/// Write `body` and move the mtime forward explicitly: a same-second rewrite
-/// can keep the old mtime on coarse-timestamp filesystems.
-fn write_settings(path: &Path, body: &serde_json::Value, bump: Duration) {
-    std::fs::write(path, serde_json::to_vec(body).unwrap()).unwrap();
-    let file = std::fs::File::options().write(true).open(path).unwrap();
-    file.set_modified(SystemTime::now().checked_add(bump).unwrap())
-        .unwrap();
+/// Replace the document the way every settings writer does: a temp file
+/// renamed into place, so the watch sees one complete write.
+fn write_settings(path: &Path, body: &serde_json::Value) {
+    let staged = path.with_extension("json.tmp");
+    std::fs::write(&staged, serde_json::to_vec(body).unwrap()).unwrap();
+    std::fs::rename(&staged, path).unwrap();
+}
+
+/// Write `body` and wait until the live document has taken it in.
+fn write_and_wait(live: &LiveSettings, path: &Path, body: &serde_json::Value) {
+    let seen = live.generation();
+    write_settings(path, body);
+    let snapshot = live.wait_for_change(seen, tilo_test_env::hang_bound());
+    assert_ne!(
+        snapshot.generation, seen,
+        "the write must reach the live document"
+    );
 }
 
 #[test]
 fn changing_a_touchpad_setting_reconfigures_the_attached_device() {
     let path = scratch_settings();
-    write_settings(
-        &path,
-        &serde_json::json!({"input": {"tap_to_click": true}}),
-        Duration::ZERO,
-    );
-    let mut watch = SettingsWatch::at(Some(path.clone())).with_interval(Duration::ZERO);
+    write_settings(&path, &serde_json::json!({"input": {"tap_to_click": true}}));
+    let live = LiveSettings::start_at(path.clone(), || {});
+    let mut follower = SectionFollower::new(&live);
     assert!(
-        !watch.changed(Instant::now()),
+        follower.changed_sections(&live).is_empty(),
         "the first look is a baseline"
     );
 
@@ -82,8 +91,9 @@ fn changing_a_touchpad_setting_reconfigures_the_attached_device() {
     assert_eq!(added.click_method, Some(ClickMethod::ButtonAreas));
     assert_eq!(added.scroll_method, Some(ScrollMethod::TwoFinger));
 
-    // Settings writes new choices; the watch notices and the device follows.
-    write_settings(
+    // Settings writes new choices; the follower notices and the device follows.
+    write_and_wait(
+        &live,
         &path,
         &serde_json::json!({"input": {
             "tap_to_click": true,
@@ -93,9 +103,12 @@ fn changing_a_touchpad_setting_reconfigures_the_attached_device() {
             "disable_while_typing": false,
             "touchpad_natural_scroll": false,
         }}),
-        Duration::from_secs(2),
     );
-    assert!(watch.changed(Instant::now()), "the rewrite is noticed");
+    assert_eq!(
+        follower.changed_sections(&live),
+        BTreeSet::from(["input".to_string()]),
+        "the rewrite is noticed, as an input change"
+    );
     input_config::reconfigure_all(&InputSettings::load_at(&path), &mut devices);
     assert_eq!(devices[0].applied.len(), 2, "reconfigured exactly once");
     let changed = devices[0].applied[1];
@@ -106,18 +119,25 @@ fn changing_a_touchpad_setting_reconfigures_the_attached_device() {
     assert_eq!(changed.natural_scroll, Some(false));
 
     // Turning tapping off takes the drag lock with it on the same device.
-    write_settings(
+    write_and_wait(
+        &live,
         &path,
         &serde_json::json!({"input": {"tap_to_click": false, "tap_drag_lock": true}}),
-        Duration::from_secs(4),
     );
-    assert!(watch.changed(Instant::now()));
+    assert_eq!(
+        follower.changed_sections(&live),
+        BTreeSet::from(["input".to_string()])
+    );
     input_config::reconfigure_all(&InputSettings::load_at(&path), &mut devices);
     let off = devices[0].applied[2];
     assert_eq!(off.tap, Some(false));
     assert_eq!(off.tap_drag_lock, Some(false));
+    // Long enough for every notification of the write and one stamp poll.
+    std::thread::sleep(
+        settings_store::live::POLL_INTERVAL.saturating_add(Duration::from_millis(300)),
+    );
     assert!(
-        !watch.changed(Instant::now()),
+        follower.changed_sections(&live).is_empty(),
         "no further change, no further reconfiguration"
     );
 

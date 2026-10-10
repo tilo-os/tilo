@@ -17,7 +17,8 @@
 //! [`ListSlot`] the host keeps, so scrolling and column widths survive a
 //! rebuild; the grid recomputes its ephemeral state (hover) from the cursor.
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 use host_fs::attributes as xattr;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -26,6 +27,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use taffy::{Dimension, LengthPercentage, NodeId, Size, Style, TaffyTree};
+use ui::widget::TaffyTreeExt;
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect};
 use vello::peniko::{Blob, Color, Fill, ImageAlphaType, ImageData as PenikoImage, ImageFormat};
@@ -917,22 +919,15 @@ impl Widget for FileView {
         // the grid.
         // `new_leaf` only fails on tree-internal bookkeeping errors, never on
         // caller input; there is none to report here.
-        #[allow(
-            clippy::unwrap_used,
-            reason = "new_leaf cannot fail for a freshly built style"
-        )]
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::auto(),
-                },
-                align_self: Some(taffy::AlignSelf::Start),
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let style = Style {
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::auto(),
+            },
+            align_self: Some(taffy::AlignSelf::Start),
+            ..Default::default()
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn measure(
@@ -966,12 +961,7 @@ impl Widget for FileView {
             reason = "node was built in this tree by build_layout; a miss means the frame cycle called these out of order"
         )]
         let l = taffy.layout(node).unwrap();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = ui::widget::placed(l, origin);
         if self.mode == ViewMode::Grid {
             self.columns = self.columns_for_width(self.rect.width());
             return;
@@ -1295,13 +1285,7 @@ impl FileView {
         };
         // `new_with_children` only fails when a child belongs to a different
         // tree; the table's node was just built in this one.
-        #[allow(
-            clippy::unwrap_used,
-            reason = "the table's node was just created in this same tree"
-        )]
-        let node = taffy.new_with_children(style, &children).unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_node(style, &children, node_map, self)
     }
 }
 
@@ -1576,31 +1560,6 @@ mod tests {
     use super::*;
     use crate::command::{FileCommand, new_sink};
     use std::path::PathBuf;
-
-    fn dev() -> winit::event::DeviceId {
-        unsafe { std::mem::zeroed() }
-    }
-
-    fn dispatch(v: &mut FileView, tree: &TaffyTree<()>, node: NodeId, ev: &WindowEvent) {
-        let mut handled = false;
-        let mut focus = None;
-        let mut doc = automerge::AutoCommit::new();
-        let root = automerge::ROOT;
-        let mods = winit::event::Modifiers::default();
-        v.handle_event(
-            ev,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &mods,
-                state: ui::widget::Edits::lend(&mut doc),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: tree,
-            },
-        );
-    }
 
     fn ent(name: &str, is_dir: bool) -> Entry {
         Entry {
@@ -2712,19 +2671,21 @@ mod tests {
         fn send(&mut self, event: &WindowEvent) {
             let (_, tree, node) = self.frame.layout_parts().expect("laid out");
             let tree = tree.clone();
-            dispatch(&mut self.view, &tree, node, event);
+            ui::testing::Dispatch::new()
+                .layout(&tree, node)
+                .send(&mut self.view, event);
         }
 
         fn move_to(&mut self, at: Point) {
             self.send(&WindowEvent::CursorMoved {
-                device_id: dev(),
+                device_id: winit::event::DeviceId::dummy(),
                 position: (at.x, at.y).into(),
             });
         }
 
         fn press(&mut self, button: MouseButton) {
             self.send(&WindowEvent::MouseInput {
-                device_id: dev(),
+                device_id: winit::event::DeviceId::dummy(),
                 state: ElementState::Pressed,
                 button,
             });
@@ -2827,7 +2788,7 @@ mod tests {
         let centre = laid.view.list.rect().center();
         laid.move_to(centre);
         laid.send(&WindowEvent::MouseWheel {
-            device_id: dev(),
+            device_id: winit::event::DeviceId::dummy(),
             delta: winit::event::MouseScrollDelta::LineDelta(0.0, -5.0),
             phase: winit::event::TouchPhase::Moved,
         });

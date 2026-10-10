@@ -3,8 +3,8 @@
 # bundle's private LD_LIBRARY_PATH; changing it would invalidate the signed
 # app/runtime contract. The bundled glibc necessarily contains its own mktemp
 # compatibility symbol; no Tilo package script or executable calls mktemp.
-addFilter(r"tilo-session-apps.*invalid-soname /usr/lib/tilo-runtime/2026\.07/lib/libruntime_dylib\.so libruntime_dylib\.so")
-addFilter(r"tilo-session-apps.*call-to-mktemp /usr/lib/tilo-runtime/2026\.07/lib/lib64/libc\.so\.6")
+addFilter(r"^tilo-session-apps(?:\.[A-Za-z0-9_]+)?: [EW]: invalid-soname /usr/lib/tilo-runtime/2026\.07(?:\+native\.[0-9a-f]{32})?/lib/libruntime_dylib\.so libruntime_dylib\.so$")
+addFilter(r"^tilo-session-apps(?:\.[A-Za-z0-9_]+)?: [EW]: call-to-mktemp /usr/lib/tilo-runtime/2026\.07(?:\+native\.[0-9a-f]{32})?/lib/lib64/libc\.so\.6$")
 
 # The env-runtime environment image is a signed, read-only userland that
 # environments stack under their own /usr and /etc. Its files keep exactly the

@@ -26,6 +26,12 @@ pub(crate) use tilo_joined_room::{DocumentRead, NativeCommittedView, NativeWorks
 #[cfg(test)]
 pub(crate) use tilo_joined_room::{NativeBootstrap, PendingEnrollmentId, PendingEnrollmentStatus};
 
+#[cfg(test)]
+thread_local! {
+    /// Owner publications this thread made, so a test can weigh what each costs.
+    static PUBLICATIONS_ON_THIS_THREAD: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// The owner's record as one field of the state file, written through the
 /// state file's single writer.
 struct TreeStore {
@@ -63,9 +69,17 @@ impl Store for TreeStore {
         change: Change<'_>,
         install: &mut dyn FnMut(),
     ) -> Result<(), String> {
+        #[cfg(test)]
+        PUBLICATIONS_ON_THIS_THREAD.with(|count| count.set(count.get().saturating_add(1)));
         let mut tree = self.tree.write();
-        store::preflight(&*tree, store::MAX_STATE_BYTES).map_err(|e| e.to_string())?;
-        let mut candidate = tree.clone();
+        let path = tree
+            .persist_path
+            .clone()
+            .ok_or("native owner state-file path removed")?;
+        // Everything but the documents: encoded once below, and installed
+        // with the live documents moved into it only once it is published.
+        let mut candidate = tree.clone_without_documents();
+        let mut bound = false;
         if let Change::Room {
             room,
             bind: Some(target),
@@ -82,21 +96,19 @@ impl Store for TreeStore {
             if candidate.room_of(target.workspace) != Some(room) {
                 return Err("enrollment local slot cannot be bound".into());
             }
+            bound = true;
         }
         candidate.native_authority = next.clone();
         if let Change::Room { room, peer, .. } = change {
             candidate.project_native_room(room, peer);
         }
+        // The encode is bounded: an oversized candidate is refused here.
         let bytes = persist::encode_tree(&candidate).map_err(|e| e.to_string())?;
-        let path = tree
-            .persist_path
-            .as_ref()
-            .ok_or("native owner state-file path removed")?;
         let sequence = tree.native_runtime.next_sequence();
         let published = tree
             .native_runtime
             .publish(
-                path,
+                &path,
                 &tree.native_authority,
                 &candidate.native_authority,
                 &bytes,
@@ -108,11 +120,17 @@ impl Store for TreeStore {
         if published == store::Publication::Superseded {
             return Err("native owner publication was superseded".into());
         }
+        candidate.adopt_documents_of(&mut tree);
+        if bound {
+            // The binding mirrored the room into the candidate's placeholder
+            // document; record it in the live one.
+            candidate.seed_doc_from_cache();
+        }
         match change {
             Change::Pending => {
-                persist::save_doc_for(&candidate, path, &bytes, sequence);
                 install();
                 *tree = candidate;
+                persist::save_document(&tree, &path);
             }
             Change::Room { .. } => {
                 install();

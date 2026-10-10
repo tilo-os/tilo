@@ -28,10 +28,11 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
-from acceptance import core, report  # noqa: E402
+from acceptance import core, records, report  # noqa: E402
 from acceptance.checks import (apps, basics, daily_apps, provenance, resources, search,  # noqa: E402,F401
                                startup, ui, window)
 from acceptance.context import Context  # noqa: E402
+from management import start_management  # noqa: E402
 from acceptance.vm import TiloVm, VmError, first_json  # noqa: E402
 
 REPO = HERE.parents[1]
@@ -59,19 +60,25 @@ BUDGETS = {
     # host's GPU, both of which compile every render pipeline on the first frame: a cold
     # launch there is judged against a generous ceiling that still catches a stall of seconds.
     "files_first_frame_s": 3.0, "files_first_frame_hw_s": 0.3,
+    # The installed-desktop gates build-image.yml runs on a KVM guest: kernel and userspace
+    # to a usable greeter (whole seconds, the boot gate's unit), and the render-path gate's
+    # per-frame presentation and main-thread work on a software renderer.
+    "boot_to_greeter_s": 20, "render_frame_ms": 1000, "render_frame_work_ms": 100,
 }
 
 # Run in a German session (a second slot), after the main pass.
 DE_PASS = ("U03", "U04", "S03")
 # A14 runs before anything else opens Files, so it times the session's first launch. R05
-# runs last but P03, so the adapter lines of every app the run opened are in the log.
-ORDER = ["P01", "P02", "R01", "A14", "R02", "R03", "R04",
+# runs last but P03, so the adapter lines of every app the run opened are in the log; R07
+# and A16 judge everything the run rendered and launched. R06 reads this boot's
+# timestamps, so it may run anywhere. A15 times apps R02 has already opened once.
+ORDER = ["P01", "P02", "R06", "R01", "A14", "R02", "R03", "A15", "R04",
          "W01", "W02", "W03", "W04", "W05", "W06", "W07", "W08", "W09", "W10", "W11", "W12",
          "W13", "W14", "W15", "W16", "W17", "W18", "W19", "W20", "W21",
          "A01", "A02", "A03", "A04", "A05", "A06", "A07",
          "A08", "A09", "A10", "A11", "A12", "A13",
          "S01", "S02", "S04", "S05", "S06", "S07", "S08", "S09",
-         "U01", "U02", "B01", "B02", "B03", "B04", "B05", "B06", "B07", "R05", "P03"]
+         "U01", "U02", "B01", "B02", "B03", "B04", "B05", "B06", "B07", "R07", "A16", "R05", "P03"]
 
 
 def git(*args: str, repo: Path = REPO) -> str:
@@ -185,6 +192,44 @@ def slot_create(vm: TiloVm, outputs: list[str], locale: str | None) -> None:
         vm.run(*args, timeout=300, slot=False)
 
 
+def keep_slot_logs(vm: TiloVm, out: Path) -> Path | None:
+    """What the slot's compositor and tilo-vmd said, for a run that could not set up its
+    session: `tilo-vm logs <slot>`, which the throwaway VM takes with it when it goes."""
+    try:
+        text = vm.run("logs", vm.slot, timeout=120, check=False, slot=False)
+    except VmError as exc:
+        text = f"tilo-vm logs {vm.slot} failed: {exc}"
+    if not text.strip():
+        return None
+    path = out / "data" / f"P00-{vm.slot}-logs.txt"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+    return path
+
+
+def write_records(path: Path, samples: list[dict], meta: dict, runner: str) -> int:
+    """The run's performance records (acceptance/records.py). They name the commit whose
+    code was measured: the swapped ref's when components were swapped, else the disk's.
+    An aborted run measured nothing and writes an empty file."""
+    if not samples:
+        records.write(path, [])
+        return 0
+    provenance = meta.get("provenance") or {}
+    swap = provenance.get("swap") or {}
+    base = (provenance.get("record") or {}).get("commit") or meta.get("commit") or "unknown"
+    swapped = [c["component"] for c in swap.get("components", []) if "error" not in c]
+    guest = f"{meta['vm_cpus']} vCPU, {meta['vm_memory_mb']} MiB, outputs {','.join(meta['outputs'])}"
+    env = records.environment(swap.get("commit") if swapped else base,
+                              records.renderer(meta.get("renderer"), meta.get("display")), runner, guest)
+    run_meta = {"suite": "scripts/vm-acceptance", "base_commit": base,
+                "swapped": ",".join(swapped) or "none",
+                "image_digest": provenance.get("booted_digest") or "unknown",
+                "renderer_line": (meta.get("renderer") or "")[:200]}
+    built = records.build(samples, env, run_meta)
+    records.write(path, built)
+    return len(built)
+
+
 def whole_json(text: str) -> dict:
     """`tilo-vm --json`'s one object, which it may print across lines; {} if there is none."""
     start = text.find("{")
@@ -237,8 +282,8 @@ def switch_locale(vm: TiloVm, lang: str) -> None:
     """Set the system locale as the installer seeds it (/etc/locale.conf, which the
     session's PAM login inherits from systemd) and restart the slot's session in it."""
     vm.vm_cmd("ssh", "--", f"localectl set-locale LANG={lang} && systemctl daemon-reload", timeout=60)
-    vm.run("slot", "restart", vm.slot, timeout=300, slot=False)
-    got = vm.root_exec(f"tr '\\0' '\\n' < /proc/$(pgrep -u $(id -u tds-{vm.slot}) -x shell | head -1)/environ "
+    vm.restart_session()
+    got =vm.root_exec(f"tr '\\0' '\\n' < /proc/$(pgrep -u $(id -u tds-{vm.slot}) -x shell | head -1)/environ "
                        "| grep -E '^(LANG|LC_ALL|LC_MESSAGES)='", timeout=60)
     if lang not in got:
         raise VmError(f"the restarted compositor runs with {got.strip() or 'no LANG'}, not LANG={lang}")
@@ -262,15 +307,22 @@ def main() -> int:
     ap.add_argument("--gl", action="store_true", help="create the VM with virgl (--disk only)")
     ap.add_argument("--keep", action="store_true", help="leave the VM running (and a created VM registered)")
     ap.add_argument("--tilo-vm")
+    ap.add_argument("--bootstrap-tilo-vm", help="fixture-matching CLI for a canonical management upgrade")
+    ap.add_argument("--bootstrap-from", type=Path, help="exact target source for the management upgrade")
     ap.add_argument("--swap", help="comma-separated components (os/components.toml) or app:<dir> to build "
                     "from this worktree on the host and swap in before the checks; the disk is then the base")
     ap.add_argument("--swap-from", type=Path, help="the worktree --swap builds from (default: this one)")
     ap.add_argument("--swap-ref", help="the ref the swapped components are built from, for the report "
                     "(default: the --swap-from worktree's HEAD)")
     ap.add_argument("--owners", help="area=owner,... to name who each area routes to")
+    ap.add_argument("--records", type=Path, help="write the run's performance records here "
+                    "(JSON lines, tools/perf/record.py)")
+    ap.add_argument("--runner", default="local", help="the runner class the records name")
     ap.add_argument("--out", type=Path)
     args = ap.parse_args()
 
+    if bool(args.bootstrap_tilo_vm) != bool(args.bootstrap_from):
+        ap.error("--bootstrap-tilo-vm and --bootstrap-from must be supplied together")
     binary = find_tilo_vm(args.tilo_vm)
     swaps = [c.strip() for c in (args.swap or "").split(",") if c.strip()]
     swap_from = (args.swap_from or REPO).resolve()
@@ -295,6 +347,9 @@ def main() -> int:
         disk = Path(entry["image"]).expanduser() if entry.get("image") else None
     vm = TiloVm(binary, vm_name, args.slot, out / "tilo-vm.log")
 
+    startup_vm = (TiloVm(find_tilo_vm(args.bootstrap_tilo_vm), vm_name, args.slot, out / "tilo-vm.log")
+                  if args.bootstrap_tilo_vm else vm)
+
     others = [n for n in running_vms() if n != vm_name]
     if others:
         sys.exit(f"other VMs are running ({others}); this laptop runs one VM at a time")
@@ -312,23 +367,40 @@ def main() -> int:
         "host_mem_available_mb_at_start": mem_available_mb(),
     }
     results: list[core.Result] = []
+    ctx = None
     owners = report.owners_from(args.owners)
     try:
+        cmd = None
         if args.disk:
             existing = (vms_toml().get("vms") or {}).get(vm_name)
             if existing is None:
                 cmd = ["create", vm_name, "--image", str(disk), "--heads", str(len(outputs)),
                        "--resolution", outputs[0].split("@")[0], "--memory-mb", str(args.memory_mb),
                        "--cpus", str(args.cpus)] + (["--gl"] if args.gl else [])
-                vm.vm_cmd(*cmd, timeout=900)
                 created = True
-        vm.vm_cmd("start", vm_name, timeout=600)
+        management = start_management(vm, startup_vm,
+                                      args.bootstrap_from.resolve() if args.bootstrap_from else None,
+                                      swap_ref, cmd)
         meta["vm_up"] = dt.datetime.now(dt.UTC).isoformat(timespec="seconds")
         facts = {"provenance": provenance_of(vm, disk, want_commit)}
+        if management:
+            facts["provenance"]["swap"] = management
         meta["provenance"] = facts["provenance"]
-        slot_create(vm, outputs, None)
+        try:
+            slot_create(vm, outputs, None)
+        except VmError:
+            logs = keep_slot_logs(vm, out)
+            if logs:
+                print(f"the slot's logs: {logs}", file=sys.stderr)
+            raise
         if swaps:
-            facts["provenance"]["swap"] = swap_components(vm, swaps, swap_ref, swap_from)
+            swapped = swap_components(vm, swaps, swap_ref, swap_from)
+            if management:
+                if swapped["commit"] != management["commit"]:
+                    raise VmError("management and session swaps have different source commits")
+                swapped["components"] = management["components"] + swapped["components"]
+                swapped["slot_layers"].update(management["slot_layers"])
+            facts["provenance"]["swap"] = swapped
         time.sleep(5)
         facts["renderer"], facts["display"] = renderer(vm)
         meta["renderer"], meta["display"] = facts["renderer"], facts["display"]
@@ -367,6 +439,9 @@ def main() -> int:
                                    status="fail", detail=str(exc), unobservable=True))
     finally:
         meta["finished"] = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%SZ")
+        if ctx is not None and ctx.facts.get("session_recovered_after"):
+            # The checks after which the harness restarted a session left locked.
+            meta["session_recovered_after"] = ctx.facts["session_recovered_after"]
         if not args.keep:
             try:
                 vm.vm_cmd("stop", vm_name, timeout=300, check=False)
@@ -375,6 +450,13 @@ def main() -> int:
             except VmError as exc:
                 meta["cleanup_error"] = str(exc)
         doc = report.write(out, meta, results, owners)
+        if args.records:
+            try:
+                written = write_records(args.records, ctx.samples if ctx else [], meta, args.runner)
+                print(f"records: {written} written to {args.records}")
+            except ValueError as exc:
+                # No file: the comparison then reports every KPI of the run as missing.
+                print(f"records: none written: {exc}", file=sys.stderr)
     print(f"\n{doc['overall'].upper()}: {sum(r.status == 'pass' for r in results)}/{len(results)} checks pass")
     print(f"report: {out / 'report.md'}")
     return 0 if doc["overall"] == "pass" else 1

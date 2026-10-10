@@ -14,6 +14,9 @@
 //!   starting a flow that cannot finish.
 //! - **Remove** is explicitly confirmed, then transactionally clears the
 //!   canonical metadata, sealed credential, and local sync-health record.
+//! - **Sync now**, **Pause sync** and **Resume sync** reach a file account's
+//!   mount through the cloud account service (`cloud_control`), offered
+//!   exactly while the service lists the account as mounted.
 //!
 //! ## Live vs. sample
 //!
@@ -44,8 +47,11 @@ use crate::widgets::{
     value_row,
 };
 
+mod cloud_control;
 mod cloud_signin;
+pub(crate) use cloud_control::CloudMounts;
 pub use cloud_signin::{BrowserOpener, PortalOpener};
+use runtime_fs::cloud::CloudRequest;
 #[cfg(test)]
 mod signin_tests;
 
@@ -108,6 +114,25 @@ pub enum AccountsEffect {
         #[param("The account's id")]
         account: String,
     },
+    /// Sync a mounted file account now; one that could not start is tried
+    /// again.
+    #[effect(row, job, device_only, idempotent, label = "Sync now")]
+    SyncNow {
+        #[param("The account's id")]
+        account: String,
+    },
+    /// Pause a mounted file account's background sync and uploads.
+    #[effect(row, job, device_only, idempotent, label = "Pause sync")]
+    PauseSync {
+        #[param("The account's id")]
+        account: String,
+    },
+    /// Resume a paused file account's sync.
+    #[effect(row, job, device_only, idempotent, label = "Resume sync")]
+    ResumeSync {
+        #[param("The account's id")]
+        account: String,
+    },
 }
 
 /// Answer `effect` on the area's model; a connection check runs on a
@@ -158,6 +183,15 @@ pub(crate) fn answer(
             model.command(AccountViewCommand::CancelReauthentication);
         }
         AccountsEffect::RemoveAccount { account } => model.remove(&account)?,
+        AccountsEffect::SyncNow { account } => {
+            return cloud(model, CloudRequest::SyncNow { account }, cx);
+        }
+        AccountsEffect::PauseSync { account } => {
+            return cloud(model, CloudRequest::Pause { account }, cx);
+        }
+        AccountsEffect::ResumeSync { account } => {
+            return cloud(model, CloudRequest::Resume { account }, cx);
+        }
         AccountsEffect::TestAccount { account } => {
             let check = model.connection_check(&account)?;
             drop(model);
@@ -174,6 +208,24 @@ pub(crate) fn answer(
 
 fn complete_account_check(outcome: Result<String, String>) -> EffectAnswer {
     outcome.map(Effected::value)
+}
+
+/// Send `request` to the cloud account service on a worker; the pane asks
+/// the service for its mounts again once it answered.
+fn cloud(
+    model: std::cell::RefMut<'_, AccountsPane>,
+    request: CloudRequest,
+    cx: &mut EffectCx<Settings, SettingsApp>,
+) -> EffectAnswer {
+    let send = model.cloud.request(request)?;
+    drop(model);
+    Ok(cx.thread(
+        move |_| send(),
+        |app: &mut SettingsApp, outcome: Result<(), String>, _| {
+            app.accounts().model().borrow_mut().cloud.invalidate();
+            outcome.map(|()| Effected::done())
+        },
+    ))
 }
 
 /// What the External Accounts area keeps for the window: the model, read
@@ -228,6 +280,13 @@ impl AccountsArea {
         }
     }
 
+    /// Whether the area has read what its rows show: its pane was shown,
+    /// an effect or a row lookup reached it, or the window read it after
+    /// its first frame ([`crate::effects::LIVE_AREAS`]).
+    pub(crate) fn is_open(&self) -> bool {
+        self.model.get().is_some()
+    }
+
     /// One row per account, offering what can be done to it.
     pub(crate) fn rows(&self) -> Vec<LiveRow> {
         let model = self.model().borrow();
@@ -248,6 +307,20 @@ impl AccountsArea {
                 if !view.kind.is_cloud_storage() {
                     row = row.operation(offer(AccountsEffect::EditAccount {
                         account: id.clone(),
+                    }));
+                }
+                if let Some(mount) = model.cloud.mount(&id) {
+                    row = row.operation(offer(AccountsEffect::SyncNow {
+                        account: id.clone(),
+                    }));
+                    row = row.operation(offer(if mount.paused {
+                        AccountsEffect::ResumeSync {
+                            account: id.clone(),
+                        }
+                    } else {
+                        AccountsEffect::PauseSync {
+                            account: id.clone(),
+                        }
                     }));
                 }
                 row.operation(offer(AccountsEffect::SignInAgain {
@@ -421,6 +494,8 @@ pub struct AccountsPane {
     sign_in: Option<cloud_signin::SignInFlow>,
     custodian: account_custody::Custodian,
     opener: std::sync::Arc<dyn BrowserOpener>,
+    /// The file accounts the cloud service has mounted.
+    cloud: CloudMounts,
     changed: bool,
 }
 
@@ -462,6 +537,7 @@ impl AccountsPane {
             sign_in: None,
             custodian: account_root.custodian(),
             opener: std::sync::Arc::new(PortalOpener),
+            cloud: CloudMounts::live(),
             changed: false,
             cx: None,
             account_root,
@@ -502,11 +578,20 @@ impl AccountsPane {
             sign_in: None,
             custodian: account_root.custodian(),
             opener: std::sync::Arc::new(PortalOpener),
+            cloud: CloudMounts::at(None),
             changed: false,
             cx: None,
             account_root,
             seen_accounts: None,
         }
+    }
+
+    /// Know the cloud service's mounts from `cloud` (tests).
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn with_cloud_mounts(mut self, cloud: CloudMounts) -> Self {
+        self.cloud = cloud;
+        self
     }
 
     pub fn is_sample(&self) -> bool {
@@ -1042,11 +1127,16 @@ impl AccountsPane {
     fn account_row(&self, view: &AccountView) -> El {
         let id = accounts::AccountId::from(view.id.clone());
         let runtime = self.sync_statuses.get(&id);
-        let (status, status_tone) = account_status(
-            self.is_sample,
-            view.enabled,
-            runtime.map(|status| status.health),
-        );
+        let mount = self.cloud.mount(&view.id);
+        let (status, status_tone) = if mount.is_some_and(|mount| mount.paused) {
+            (t("accounts-status-paused"), StatusTone::Neutral)
+        } else {
+            account_status(
+                self.is_sample,
+                view.enabled,
+                runtime.map(|status| status.health),
+            )
+        };
 
         // Keep identity and health together; maintenance actions get their own
         // row so narrow layouts remain legible and touch targets never crush
@@ -1149,8 +1239,46 @@ impl AccountsPane {
             column = column
                 .push(Box::new(primary_actions))
                 .push(Box::new(secondary_actions));
+            if let Some(mount) = mount {
+                column = column.push(Box::new(self.sync_actions(&view.id, mount.paused)));
+            }
         }
         Box::new(column)
+    }
+
+    /// Sync now, and pause or resume, for a mounted file account.
+    fn sync_actions(&self, id: &str, paused: bool) -> Row {
+        let (toggle_id, toggle_label, toggle) = if paused {
+            (
+                format!("settings.accounts.resume-sync.{id}"),
+                t("accounts-resume-sync"),
+                AccountsEffect::ResumeSync {
+                    account: id.to_owned(),
+                },
+            )
+        } else {
+            (
+                format!("settings.accounts.pause-sync.{id}"),
+                t("accounts-pause-sync"),
+                AccountsEffect::PauseSync {
+                    account: id.to_owned(),
+                },
+            )
+        };
+        Row::new()
+            .push(Box::new(self.bound(
+                Button::new(
+                    &format!("settings.accounts.sync-now.{id}"),
+                    &t("accounts-sync-now"),
+                ),
+                AccountsEffect::SyncNow {
+                    account: id.to_owned(),
+                },
+            )))
+            .push(Box::new(
+                self.bound(Button::new(&toggle_id, &toggle_label), toggle),
+            ))
+            .push(Box::new(Spacer::new()))
     }
 
     /// The inline add-email form: fields bound to CRDT keys plus Save/Cancel.
@@ -1912,6 +2040,9 @@ impl AccountsPane {
         self.poll_form_probe();
         self.poll_sign_in();
         self.poll_reauth_probe();
+        if !self.is_sample && self.cloud.poll() {
+            self.changed = true;
+        }
         std::mem::take(&mut self.changed)
     }
 }
@@ -1940,9 +2071,7 @@ impl PaneModel for AccountsPane {
 }
 
 fn relative_sync_time(unix: i64) -> String {
-    let now = ui::time::wall()
-        .duration_since(ui::time::UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_secs() as i64);
+    let now = ui::time::unix_now_i64();
     let age = now.saturating_sub(unix).max(0);
     match age {
         0..=59 => t("accounts-just-now"),
@@ -2513,6 +2642,89 @@ mod tests {
                 root.vault().get(&id).map(|secret| secret.password),
                 Some("old-password".into()),
                 "rejected candidate must never replace the stored credential"
+            );
+        }
+    }
+
+    /// Sync now and pause or resume ride on exactly the accounts the cloud
+    /// service lists as mounted, and the window offers the same controls.
+    #[test]
+    fn account_actions_include_sync_now_for_mounted_accounts() {
+        use runtime_fs::cloud::{CloudCapabilities, CloudMount, MountHealth};
+        let mount = |account: &str, paused: bool| CloudMount {
+            account: account.into(),
+            mount_point: std::path::PathBuf::from("/home/ada/Remote").join(account),
+            health: Some(MountHealth::Healthy),
+            paused,
+            capabilities: CloudCapabilities::default(),
+        };
+        for paused in [false, true] {
+            let (_scratch, root) = scratch_root();
+            // Sample accounts take fresh ids each time: read them back.
+            let pane = AccountsPane::from_dir_in(root.clone(), sample_directory(), false);
+            let files = pane.directory().views_of(AccountKind::Nextcloud)[0]
+                .id
+                .clone();
+            let mail = pane.directory().views_of(AccountKind::Mail)[0].id.clone();
+            let pane = pane.with_cloud_mounts(CloudMounts::known(vec![mount(&files, paused)]));
+            let composed = lay_out(&pane);
+            let mut labels = Vec::new();
+            button_labels(composed.as_ref(), &mut labels);
+            let profile = tempfile::tempdir().unwrap();
+            let cx = PaneCx::in_file(profile.path().join("settings.json"));
+            let area = AccountsArea::new(&cx).with_account_root(root);
+            let _ = area.model.set(Rc::new(std::cell::RefCell::new(pane)));
+            let actions = |account: &str| -> Vec<String> {
+                let row = format!("settings.account:{account}");
+                area.rows()
+                    .into_iter()
+                    .find(|published| published.id() == row)
+                    .map(|published| {
+                        published
+                            .into_resource()
+                            .actions
+                            .into_iter()
+                            .map(|spec| spec.id)
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            };
+            let mounted = actions(&files);
+            assert!(mounted.contains(&"sync-now".to_owned()), "{mounted:?}");
+            let (offered, withheld) = if paused {
+                ("resume-sync", "pause-sync")
+            } else {
+                ("pause-sync", "resume-sync")
+            };
+            assert!(mounted.contains(&offered.to_owned()), "{mounted:?}");
+            assert!(!mounted.contains(&withheld.to_owned()), "{mounted:?}");
+            let unmounted = actions(&mail);
+            assert!(
+                unmounted.contains(&"test-account".to_owned()),
+                "{unmounted:?}"
+            );
+            assert!(
+                unmounted
+                    .iter()
+                    .all(|id| !matches!(id.as_str(), "sync-now" | "pause-sync" | "resume-sync")),
+                "an account the service has not mounted offers no sync control: {unmounted:?}"
+            );
+            assert_eq!(
+                labels
+                    .iter()
+                    .filter(|label| label.as_str() == "Sync now")
+                    .count(),
+                1,
+                "{labels:?}"
+            );
+            let toggle = if paused { "Resume sync" } else { "Pause sync" };
+            assert_eq!(
+                labels
+                    .iter()
+                    .filter(|label| label.as_str() == toggle)
+                    .count(),
+                1,
+                "{labels:?}"
             );
         }
     }

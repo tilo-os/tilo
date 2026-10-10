@@ -13,7 +13,7 @@ name = "spellcheck"
 path = "src/lib.rs"
 
 [dependencies]
-tilo-xdg-paths = { version = "0.1.0", path = "../../system/xdg-paths" }
+tilo-paths.workspace = true
 # Hunspell dictionaries (.aff/.dic) checked in-process, and the legacy
 # 8-bit encodings many of them declare with `SET`.
 spellbook = "0.4"

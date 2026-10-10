@@ -24,6 +24,14 @@ on:
         required: true
   workflow_dispatch:
     inputs:
+      rpm-source-run:
+        description: "Optional public Tilo API run ID holding accepted RPMs; skips compilation."
+        required: false
+        default: ""
+      rpm-source-commit:
+        description: "Exact full source commit required with rpm-source-run."
+        required: false
+        default: ""
       apps:
         description: "Comma-separated package ids to open; empty: all (so.tilo.settings, so.tilo.notes, so.tilo.file-explorer, so.tilo.terminal)."
         required: false
@@ -64,20 +72,49 @@ jobs:
   # instead would skip host-session too, or need an always() condition that a
   # caller's skipped jobs would then pass.)
   rpms:
-    runs-on: ${{ inputs.rpm-artifact && 'runner-quality' || 'runner-large' }}
+    runs-on: ${{ (inputs.rpm-artifact || inputs.rpm-source-run) && 'runner-quality' || 'runner-large' }}
     timeout-minutes: 120
+    env:
+      TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY: ${{ vars.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}
     steps:
+      - name: Validate explicit RPM replay source
+        env:
+          RPM_SOURCE_RUN: ${{ inputs.rpm-source-run }}
+          RPM_SOURCE_COMMIT: ${{ inputs.rpm-source-commit }}
+        run: |
+          set -euo pipefail
+          if [[ -n ${RPM_SOURCE_RUN:-} || -n ${RPM_SOURCE_COMMIT:-} ]]; then
+            [[ ${RPM_SOURCE_RUN:-} =~ ^[1-9][0-9]{0,18}$ && ${RPM_SOURCE_COMMIT:-} =~ ^[0-9a-f]{40}$ ]] || {
+              echo '::error::RPM replay requires both a positive API run ID and a full source commit'
+              exit 1
+            }
+          fi
+      # Fail before checkout, runtime download and compilation if the existing
+      # independent app-store authority is not configured. Caller RPMs have
+      # already passed the package lane's staging checks.
+      - name: Validate the app-store registry owner
+        if: ${{ !inputs.rpm-artifact && !inputs.rpm-source-run }}
+        run: |
+          set -euo pipefail
+          owner=${TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY:-}
+          [[ $owner =~ ^[0-9a-fA-F]{64}$ && $owner != $(printf '0%.0s' {1..64}) ]] || {
+            echo '::error::TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY must be a non-placeholder 32-byte hex key'
+            exit 1
+          }
       # A full clone, as the package lane takes (dist/ci/run-package-job.sh).
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        if: ${{ !inputs.rpm-artifact }}
+        if: ${{ !inputs.rpm-artifact && !inputs.rpm-source-run }}
         with:
           fetch-depth: 0
           persist-credentials: false
+      - name: Validate RPM lint exception paths before building
+        if: ${{ !inputs.rpm-artifact && !inputs.rpm-source-run }}
+        run: python3 dist/rpm/test-rpmlint-config.py
       - name: Fetch the env-runtime environment image
-        if: ${{ !inputs.rpm-artifact }}
+        if: ${{ !inputs.rpm-artifact && !inputs.rpm-source-run }}
         run: bash dist/ci/fetch-package-env-runtime.sh
       - name: Build and install-test the Fedora 44 RPMs
-        if: ${{ !inputs.rpm-artifact }}
+        if: ${{ !inputs.rpm-artifact && !inputs.rpm-source-run }}
         env:
           TILO_CARGO_JOBS: "6"
         run: |
@@ -85,11 +122,22 @@ jobs:
           IFS='|' read -r distro image revision < <(dist/ci/package-targets.sh amd64 fedora-44)
           dist/ci/run-package-job.sh "$distro" "$image" amd64 "$revision"
       - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
-        if: ${{ !inputs.rpm-artifact }}
+        if: ${{ !inputs.rpm-artifact && !inputs.rpm-source-run }}
         with:
           name: fedora-44-amd64
           path: dist/ci-output/fedora-44-amd64/*
           if-no-files-found: error
+          retention-days: 7
+      # Failed RPMs are diagnostic inputs only, never the accepted artifact
+      # consumed by host-session. Collection is capped at three RPMs / 4 GiB.
+      - name: Retain source-bound RPMs after packaging failure
+        uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        if: ${{ failure() && !inputs.rpm-artifact && !inputs.rpm-source-run }}
+        with:
+          name: failed-fedora-44-amd64-${{ github.run_id }}-${{ github.run_attempt }}
+          path: dist/ci-output/fedora-44-amd64/failed-rpms/*
+          if-no-files-found: warn
+          retention-days: 2
 
   host-session:
     needs: [builder, rpms]
@@ -127,12 +175,21 @@ jobs:
       # The RPMs are uploaded with upload-artifact v4 (one zip); only a v4
       # download (Forgejo's build) unpacks them.
       - name: Take this run's RPMs
+        if: ${{ !inputs.rpm-source-run }}
         uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
         with:
           name: ${{ inputs.rpm-artifact || 'fedora-44-amd64' }}
           path: /var/tmp/host-session-e2e/rpms
 
+      - name: Take the exact source-pinned RPMs for VM-only replay
+        if: ${{ inputs.rpm-source-run }}
+        env:
+          RPM_SOURCE_RUN: ${{ inputs.rpm-source-run }}
+          RPM_SOURCE_COMMIT: ${{ inputs.rpm-source-commit }}
+        run: python3 dist/ci/fetch-host-session-rpms.py "$RPM_SOURCE_RUN" "$RPM_SOURCE_COMMIT" "$WORK/rpms"
+
       - name: Record this run's RPMs
+        if: ${{ !inputs.rpm-source-run }}
         env:
           RUN_NUMBER: ${{ github.run_number }}
           RUN_ID: ${{ github.run_id }}

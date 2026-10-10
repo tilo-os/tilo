@@ -759,7 +759,7 @@ async fn send_native_connector_observation(
     events: &mut tokio::sync::mpsc::Receiver<NetEvent>,
     source: iroh::EndpointId,
     fabrics: (
-        &native_fabric::DeviceFabric,
+        &mut native_fabric::DeviceFabric,
         &mut native_fabric::DeviceFabric,
     ),
     owner: &DeviceId,
@@ -771,7 +771,8 @@ async fn send_native_connector_observation(
         .unwrap()
         .display
         .as_ref()
-        .unwrap();
+        .unwrap()
+        .clone();
     send_native_payload(
         command,
         target,
@@ -790,6 +791,54 @@ async fn send_native_connector_observation(
         .1
         .observe_display_connectors(owner, &stamp, outputs)
         .unwrap();
+    let rich_outputs: Vec<_> = display
+        .outputs
+        .iter()
+        .map(|connector| native_fabric::DisplayOutputObservation {
+            connector: connector.connector.clone(),
+            output: settings_store::person_displays::DeviceOutput {
+                id: format!("monitor:{}", connector.connector),
+                name: connector.label.clone(),
+                builtin: false,
+                x: connector.rect.x,
+                y: connector.rect.y,
+                width: connector.rect.width,
+                height: connector.rect.height,
+                mode_width: connector.rect.width,
+                mode_height: connector.rect.height,
+                refresh_mhz: 60_000,
+                scale_milli: connector.scale_milli,
+                connected: true,
+                enabled: true,
+            },
+        })
+        .collect();
+    fabrics
+        .0
+        .observe_display_outputs(owner, &display.stamp, rich_outputs.clone())
+        .unwrap();
+    send_native_payload(
+        command,
+        target,
+        PersonalFabricPayload::DisplayOutputs {
+            stamp: display.stamp.clone(),
+            outputs: rich_outputs.clone(),
+        },
+    )
+    .await;
+    let PersonalFabricPayload::DisplayOutputs { stamp, outputs } =
+        wait_native_payload(events, source).await
+    else {
+        panic!("expected rich native output observation")
+    };
+    fabrics
+        .1
+        .observe_display_outputs(owner, &stamp, outputs)
+        .unwrap();
+    assert_eq!(
+        fabrics.1.display_outputs(owner),
+        Some(rich_outputs.as_slice())
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -824,7 +873,7 @@ async fn native_screen_crossing_reaches_the_two_peer_seat_without_video() {
         endpoint_a,
         &mut events_a,
         endpoint_b,
-        (&target_fabric, &mut source_fabric),
+        (&mut target_fabric, &mut source_fabric),
         &target,
     )
     .await;
@@ -854,7 +903,7 @@ async fn native_screen_crossing_reaches_the_two_peer_seat_without_video() {
         endpoint_b,
         &mut events_b,
         endpoint_a,
-        (&advertised_source, &mut target_fabric),
+        (&mut source_fabric, &mut target_fabric),
         &source,
     )
     .await;

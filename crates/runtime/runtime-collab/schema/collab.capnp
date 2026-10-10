@@ -402,6 +402,20 @@ interface ChannelHandle {
   # is returned. The closed command is bounded to 32 KiB and 20 ms stereo PCM.
   audioOutputCommand @57 (command :Data) -> (reply :Data);
 
+  # Execute a host-approved check only for this actual target worker's retained
+  # accepted invocation. Request has correlation + check ID, never argv/path/env.
+  # Unsupported brokers refuse; clients must not fall back to raw execution.
+  approvedCheck @58 (request :Data) -> (receipt :Data);
+
+  # Resolves once this route's channel keys, or this device's access to
+  # them, may have changed since `after`: 0 at first, then the `change` the
+  # previous call returned. It says only that this route's own channel
+  # changed; the endpoint then asks the workspace identity service for the
+  # keys, which checks the device and the person's role on every answer. An
+  # endpoint holding current keys keeps one call pending instead of asking on
+  # a timer. A host without a channel service answers unimplemented, and the
+  # endpoint asks on a timer as before.
+  channelKeysChanged @59 (after :UInt64) -> (change :UInt64);
 
 }
 
@@ -433,6 +447,8 @@ struct PublishedInvocationObservation {
 # connection/capability goes away.
 interface ActionDirectory {
   query @0 (query :ActionDirectoryQuery) -> (page :ActionDirectoryPage);
+  # An empty `revision` resolves against the directory as it is now; a found
+  # resolution then names that revision in `resolvedRevision`.
   resolve @1 (revision :Text, resource :Text, action :Text)
       -> (resolution :ActionDirectoryResolution);
 }
@@ -495,6 +511,12 @@ struct ActionDirectoryResolution {
     staleRevision @2 :Void;
     unavailable @3 :Void;
   }
+  # For `found`: the revision the owner resolved the row against, which is
+  # the named one or, for an empty revision, the directory as it is now. The
+  # broker binds the admission to it, so a host worker refuses to run the
+  # action once its directory moved on. Empty from an owner built before
+  # this field existed.
+  resolvedRevision @4 :Text;
 }
 
 interface WorkspaceControlHandle {

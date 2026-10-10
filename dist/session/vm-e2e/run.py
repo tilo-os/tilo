@@ -46,6 +46,8 @@ APPS = [("Settings", "so.tilo.settings"), ("Notes", "so.tilo.notes"),
         ("Files", "so.tilo.file-explorer"), ("Terminal", "so.tilo.terminal")]
 SSH_PORT = 2222
 GUEST_USER = "fedora"
+# The throwaway guest account's fixture password, also set by guest.sh.
+GUEST_PASSWORD = "tilo-e2e-password"
 
 
 def log(msg: str) -> None:
@@ -97,7 +99,7 @@ class Qmp:
             elif ch.isupper():
                 self.keys("shift", ch.lower())
             else:
-                self.keys(ch)
+                self.keys({"-": "minus"}.get(ch, ch))
 
     def screendump(self, path: Path) -> None:
         self.call("screendump", filename=str(path), format="png")
@@ -368,6 +370,14 @@ def run_test(args) -> int:
                           "; ".join(problems)):
             return 1
 
+        # Autologin starts the real compositor locked. Authenticate through
+        # its normal PAM-backed lock screen before sending app search input.
+        # Keep lock policy and failed-authentication behavior intact.
+        log("authenticating the throwaway guest account at the lock screen")
+        vm.qmp.type_text(GUEST_PASSWORD)
+        vm.qmp.keys("ret")
+        time.sleep(2)
+
         for n, (name, app_id) in enumerate(apps, start=1):
             cid = f"A{n:02d}"
             log(f"opening {name} through search")
@@ -418,7 +428,7 @@ def run_test(args) -> int:
                        survived_s=round(survived, 1))
             if st.get("compositor_pid") != pid:
                 return 1
-        return 0
+        return 0 if all(check["status"] == "pass" for check in report.checks) else 1
     except (Fail, subprocess.SubprocessError, OSError) as error:
         report.add("H00", "The test ran to completion", False, str(error))
         return 1

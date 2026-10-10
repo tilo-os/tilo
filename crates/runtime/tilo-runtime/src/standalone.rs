@@ -157,6 +157,9 @@ impl Standalone {
                 })),
                 legacy_workspace: Some(Arc::clone(&workspace) as Arc<dyn LegacyWorkspaceProjection>),
                 record_content: Some(joined::record_content(&joined, &root.join(BLOB_SOCKET))),
+                // The service the identity service answers key requests
+                // from: endpoints ask again when it says a channel changed.
+                channel_keys: Some(channel_keys.keys.clone()),
                 ..HostServices::default()
             },
             channels,
@@ -463,6 +466,21 @@ impl ActionHost for RuntimeActionHost {
         self.broker
             .state()
             .action_observe(&on_this_device(caller), id)
+    }
+
+    /// Routed and authorized exactly as [`Self::observe`]: a caller that may
+    /// not observe an invocation may not wait on it either.
+    fn next_change(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<Pending<()>> {
+        if let Some(session) = &self.session {
+            session.check(caller, &self.joined).ok()?;
+            return session.host.next_change(caller, id);
+        }
+        if !self.admitted(caller) {
+            return None;
+        }
+        self.broker
+            .state()
+            .action_next_change_after_now(&on_this_device(caller), id)
     }
 
     fn cancel(

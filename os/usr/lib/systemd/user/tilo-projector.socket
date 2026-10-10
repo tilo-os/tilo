@@ -1,0 +1,16 @@
+[Unit]
+Description=Tilo screen projection broker control socket
+PartOf=tilo-graphical-session.target
+
+[Socket]
+# The shell connects when the projection picker first needs the broker. Owner
+# only: the connection can start streaming the desktop to a receiver.
+ListenStream=%t/tilo-projector/control.sock
+SocketMode=0600
+DirectoryMode=0700
+Backlog=8
+RemoveOnStop=yes
+Service=tilo-projector.service
+
+[Install]
+WantedBy=tilo-graphical-session.target

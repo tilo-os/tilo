@@ -53,7 +53,7 @@ pub enum MessagesEffect {
         attempt: String,
     },
     /// Link a first account without manufacturing a configured account row.
-    #[effect(job, sensitive, cancellable, label = "messages-first-signal")]
+    #[effect(job, sensitive, cancellable, label = "messages-first-account-prepare")]
     BeginFirstEnrollment { service: String },
     /// Open the host's private SIM chooser without granting modem access.
     #[effect(job, sensitive, cancellable, idempotent, label = "messages-first-sms")]
@@ -75,6 +75,9 @@ pub enum MessagesEffect {
         account: String,
         display_name: String,
     },
+    /// Retire an interrupted unpublished attempt and return to service selection.
+    #[effect(view, idempotent, label = "messages-first-reset")]
+    ResetFirstEnrollment,
     /// Interrupt only this account's private provisioning attempt.
     #[effect(view, idempotent, label = "messages-cancel-link")]
     CancelLink,

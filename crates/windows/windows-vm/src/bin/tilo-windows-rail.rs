@@ -176,7 +176,7 @@ fn free_rdp_command(arguments: &[std::ffi::OsString], read_only_drives: &[PathBu
 }
 
 fn runtime_directory() -> Result<PathBuf, String> {
-    xdg_paths::xdg::runtime_dir()
+    tilo_paths::xdg::runtime_dir()
         .ok_or_else(|| "XDG_RUNTIME_DIR is not an absolute path".to_string())
 }
 

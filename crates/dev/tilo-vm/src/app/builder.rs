@@ -6,10 +6,10 @@
 use std::io::BufReader;
 use std::process::{Command, Stdio};
 
-use tilo_vm_protocol::LayerImport;
 use tilo_vm_protocol::LayerSource;
 use tilo_vm_protocol::manifest::Component;
 use tilo_vm_protocol::{AppInstall, AppInstallResult};
+use tilo_vm_protocol::{LayerImport, LayerList, LayerVerify};
 
 use super::{App, Resolved};
 use crate::build;
@@ -56,6 +56,122 @@ fn start_builder(
         })
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum Delivery {
+    Reused(String),
+    Uploaded(String),
+    Invalidated,
+}
+
+fn deliver_layer(
+    remote: &mut Remote,
+    stream: &mut impl std::io::Read,
+    packed: &builderlayer::Packed,
+    component: &str,
+) -> Result<Delivery, CliError> {
+    if !packed.reused {
+        return remote.upload(stream).map(Delivery::Uploaded);
+    }
+    // Require the normal checksum footer, with no unexpected archive DATA.
+    if stream
+        .read(&mut [0u8; 1])
+        .map_err(CliError::io("verify reused layer stream"))?
+        != 0
+    {
+        return Err(CliError::InvalidInput(
+            "reused layer stream contains archive bytes".into(),
+        ));
+    }
+    let hash = packed.layer_hash.as_deref().unwrap_or_default();
+    if verified_layer(remote, hash, component) {
+        Ok(Delivery::Reused(hash.to_owned()))
+    } else {
+        // Cache damage or GC after the offer causes one plain-stream retry.
+        Ok(Delivery::Invalidated)
+    }
+}
+
+fn verified_layer(remote: &mut Remote, hash: &str, component: &str) -> bool {
+    remote
+        .call(LayerVerify {
+            hash: hash.to_owned(),
+        })
+        .is_ok_and(|layer| {
+            layer.hash == hash
+                && layer.provenance.component == component
+                && layer.provenance.target.as_deref()
+                    == Some(format!("{}-unknown-linux-gnu", remote.hello.arch).as_str())
+        })
+}
+
+fn verified_layers(remote: &mut Remote, component: &str) -> Result<Vec<String>, CliError> {
+    let listed = remote.call(LayerList {})?;
+    Ok(listed
+        .into_iter()
+        .filter(|layer| layer.provenance.component == component)
+        .rev()
+        .take(8)
+        .filter(|layer| verified_layer(remote, &layer.hash, component))
+        .map(|layer| layer.hash)
+        .collect())
+}
+
+fn validate_header(
+    packed: &builderlayer::Packed,
+    component: &str,
+    digest: &str,
+    arch: &str,
+    cached: &[String],
+) -> Result<(), CliError> {
+    if packed.component != component
+        || packed.source_digest.as_deref() != Some(digest)
+        || packed.target.as_deref() != Some(format!("{arch}-unknown-linux-gnu").as_str())
+        || (packed.reused
+            && !packed
+                .layer_hash
+                .as_ref()
+                .is_some_and(|hash| cached.contains(hash)))
+    {
+        return Err(CliError::InvalidInput("remote component source, architecture or cache result does not match the requested build".into()));
+    }
+    Ok(())
+}
+
+fn builder_header_error(
+    child: &mut AppBuilder,
+    line: &hypervisor::CommandLine,
+    error: &CliError,
+) -> CliError {
+    let _ = child.0.kill();
+    let status = child
+        .0
+        .wait()
+        .map_or_else(|e| e.to_string(), |s| s.to_string());
+    CliError::CommandFailed {
+        command: line.display(),
+        status,
+        stderr: format!("{error}; the build's output is above"),
+    }
+}
+
+fn builder_succeeded(
+    child: &mut AppBuilder,
+    line: &hypervisor::CommandLine,
+) -> Result<(), CliError> {
+    let status = child
+        .0
+        .wait()
+        .map_err(CliError::io("wait for the remote builder"))?;
+    if !status.success() {
+        return Err(CliError::CommandFailed {
+            command: line.display(),
+            status: status.to_string(),
+            stderr: "the remote builder failed after sending the layer; its output is above".into(),
+        });
+    }
+    Ok(())
+}
+
 impl App {
     /// Build `component` with the remote builder whose command line is
     /// `builder`, and import the layer it streams.
@@ -66,9 +182,20 @@ impl App {
         component: &Component,
         builder: &[String],
     ) -> Result<String, CliError> {
+        self.build_layer_remote_cached(remote, vm, component, builder, true)
+    }
+
+    fn build_layer_remote_cached(
+        &mut self,
+        remote: &mut Remote,
+        vm: &Resolved,
+        component: &Component,
+        builder: &[String],
+        reuse: bool,
+    ) -> Result<String, CliError> {
         let worktree = self.worktree.clone().ok_or(CliError::NotInWorktree)?;
         self.runner.cwd = Some(worktree.root.clone());
-        let metadata = self.cargo_metadata();
+        let metadata = self.cargo_metadata()?;
         let extra = build::dev_features(&metadata, &component.packages);
         let mut provenance = build::source_provenance(&worktree, &component.name, "remote");
         let inputs = crate::source_inputs::Snapshot::create(&worktree, &component.name)?;
@@ -77,9 +204,18 @@ impl App {
             .path()
             .strip_prefix(&worktree.root)
             .map_err(|error| CliError::InvalidInput(error.to_string()))?;
-        let line = builderlayer::remote_command(builder, component, &extra)
+        let cached = if reuse {
+            self.receipt
+                .phase("layer_lookup", || verified_layers(remote, &component.name))?
+        } else {
+            Vec::new()
+        };
+        let mut line = builderlayer::remote_command(builder, component, &extra)
             .arg("--source-inventory")
             .arg(inventory.display().to_string());
+        for hash in &cached {
+            line = line.arg("--cached-layer").arg(hash);
+        }
         if !self.json {
             eprintln!(
                 "tilo-vm: building {} on the remote builder ({}); the layer streams to {} without touching this disk",
@@ -104,49 +240,38 @@ impl App {
                 // The owned builder may still be writing its framed layer.
                 // Close the reader and reap it before returning an error.
                 drop(stream);
-                let _ = child.0.kill();
-                let status = child
-                    .0
-                    .wait()
-                    .map_or_else(|e| e.to_string(), |s| s.to_string());
-                return Err(CliError::CommandFailed {
-                    command: line.display(),
-                    status,
-                    stderr: format!("{error}; the build's output is above"),
-                });
+                return Err(builder_header_error(&mut child, &line, &error));
             }
         };
-        if packed.component != component.name
-            || packed.source_digest.as_deref() != Some(inputs.digest.as_str())
-            || packed.target.as_deref()
-                != Some(format!("{}-unknown-linux-gnu", remote.hello.arch).as_str())
-        {
-            drop(stream);
-            let _ = child.0.kill();
-            let _ = child.0.wait();
-            return Err(CliError::InvalidInput(
-                "remote component source or architecture does not match the requested build".into(),
-            ));
-        }
-        // The build can outlast an idle connection: a fresh one for the upload.
+        validate_header(
+            &packed,
+            &component.name,
+            &inputs.digest,
+            &remote.hello.arch,
+            &cached,
+        )?;
+        // The build can outlast an idle connection: a fresh one for delivery.
         *remote = self.connect(vm)?;
-        let upload = self
-            .receipt
-            .phase("transfer", || remote.upload(&mut stream));
+        let delivered = self.receipt.phase("transfer", || {
+            deliver_layer(remote, &mut stream, &packed, &component.name)
+        });
         drop(stream);
-        let upload = upload?;
-        let status = child
-            .0
-            .wait()
-            .map_err(CliError::io("wait for the remote builder"))?;
-        if !status.success() {
-            return Err(CliError::CommandFailed {
-                command: line.display(),
-                status: status.to_string(),
-                stderr: "the remote builder failed after sending the layer; its output is above"
-                    .into(),
-            });
-        }
+        let delivered = delivered?;
+        builder_succeeded(&mut child, &line)?;
+        let upload = match delivered {
+            Delivery::Reused(hash) => {
+                self.receipt.set("upload", "skipped");
+                self.receipt.set("layer_reused", &hash);
+                return Ok(hash);
+            }
+            Delivery::Invalidated => {
+                self.receipt.set("remote_cache", "invalidated");
+                drop(inputs);
+                return self.build_layer_remote_cached(remote, vm, component, builder, false);
+            }
+            Delivery::Uploaded(upload) => upload,
+        };
+        let expected_hash = packed.layer_hash.clone();
         provenance.cargo_profile = Some(component.profile.clone());
         provenance.features = component.build_features(&extra);
         provenance.target = packed.target;
@@ -157,6 +282,14 @@ impl App {
                 provenance: Box::new(provenance),
             })
         })?;
+        if expected_hash
+            .as_deref()
+            .is_some_and(|hash| hash != imported.hash)
+        {
+            return Err(CliError::InvalidInput(
+                "imported layer content differs from the remote assembler".into(),
+            ));
+        }
         Ok(imported.hash)
     }
 
@@ -244,9 +377,198 @@ impl Drop for AppBuilder {
     }
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 mod tests {
     use super::*;
+
+    const CACHE_PEER: &str = r#"
+import base64,json,sys
+hash,mode,log,protocol=sys.argv[1:]
+print(json.dumps({"tilo_device_admin":{"device":"test","label":"test","route":"direct","via":"test","session":1}}),flush=True)
+received=0
+for line in sys.stdin:
+ r=json.loads(line); m=r['method']
+ with open(log,'a') as f: f.write(m+'\n')
+ result={}; error=None
+ if m=='hello': result={"protocol":int(protocol),"daemon_version":"test","root":"test","arch":"x86_64"}
+ elif m=='layer.list': result=[{"hash":hash,"provenance":{"component":"shell"}}]
+ elif m=='layer.verify':
+  if mode in ('missing','corrupt','old'): error={"code":-32602,"message":mode}
+  else: result={"hash":hash,"provenance":{"component":"other" if mode=='wrong-component' else 'shell',"target":"aarch64-unknown-linux-gnu" if mode=='wrong-arch' else 'x86_64-unknown-linux-gnu'}}
+ elif m=='layer.upload.binary': error={"code":-32602,"message":"unknown optional method","hint":"legacy upload"}
+ elif m=='layer.upload.begin': result={"upload":"fixture"}
+ elif m=='layer.upload.chunk':
+  received+=len(base64.b64decode(r['params']['data'])); result={"received":received}
+ else: raise RuntimeError(m)
+ print(json.dumps({"jsonrpc":"2.0","id":r['id'],"error":error} if error else {"jsonrpc":"2.0","id":r['id'],"result":result}),flush=True)
+"#;
+
+    fn cache_peer(hash: &str, mode: &str, log: &std::path::Path) -> Result<Remote, CliError> {
+        let line = hypervisor::CommandLine::new("python3", &["-c", CACHE_PEER])
+            .arg(hash)
+            .arg(mode)
+            .arg(log.display().to_string())
+            .arg(tilo_vm_protocol::PROTOCOL_VERSION.to_string());
+        Remote::over_peer("test", &line).map(|(remote, _)| remote)
+    }
+
+    fn framed_fixture(
+        tree: &std::path::Path,
+        cached: &[String],
+    ) -> Result<(builderlayer::Packed, Vec<u8>), CliError> {
+        let packed = builderlayer::Packed {
+            component: "shell".into(),
+            target: Some("x86_64-unknown-linux-gnu".into()),
+            source_digest: Some("source-proof".into()),
+            ..builderlayer::Packed::default()
+        };
+        let mut framed = Vec::new();
+        builderlayer::write_layer(tree, packed, cached, &mut framed)?;
+        let mut stream = Stream::new(framed.as_slice());
+        let packed = stream
+            .header(&mut Vec::new())
+            .map_err(CliError::io("fixture layer header"))?;
+        Ok((packed, framed))
+    }
+
+    #[test]
+    fn remote_cache_exact_content_skips_archive_and_upload() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("usr/bin")).unwrap();
+        std::fs::write(dir.path().join("usr/bin/shell"), b"fixture payload").unwrap();
+        let hash = tilo_vm_protocol::layer_hash::tree_hash(dir.path()).unwrap();
+        let (packed, framed) = framed_fixture(dir.path(), std::slice::from_ref(&hash)).unwrap();
+        assert!(packed.reused);
+        assert!(!String::from_utf8_lossy(&framed).contains(builderlayer::DATA));
+        let log = dir.path().join("calls");
+        let mut remote = cache_peer(&hash, "valid", &log).unwrap();
+        assert_eq!(
+            verified_layers(&mut remote, "shell").unwrap(),
+            vec![hash.clone()]
+        );
+        validate_header(
+            &packed,
+            "shell",
+            "source-proof",
+            "x86_64",
+            std::slice::from_ref(&hash),
+        )
+        .unwrap();
+        let mut stream = Stream::new(framed.as_slice());
+        stream.header(&mut Vec::new()).unwrap();
+        assert_eq!(
+            deliver_layer(&mut remote, &mut stream, &packed, "shell").unwrap(),
+            Delivery::Reused(hash)
+        );
+        assert_eq!(
+            std::fs::read_to_string(log).unwrap(),
+            "hello\nlayer.list\nlayer.verify\nlayer.verify\n"
+        );
+    }
+
+    #[test]
+    fn remote_cache_changed_content_streams_normally() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("usr/bin")).unwrap();
+        let file = dir.path().join("usr/bin/shell");
+        std::fs::write(&file, b"old payload").unwrap();
+        let old = tilo_vm_protocol::layer_hash::tree_hash(dir.path()).unwrap();
+        std::fs::write(&file, b"new payload").unwrap();
+        let (packed, framed) = framed_fixture(dir.path(), std::slice::from_ref(&old)).unwrap();
+        assert!(!packed.reused);
+        assert_ne!(packed.layer_hash.as_deref(), Some(old.as_str()));
+        let log = dir.path().join("calls");
+        let mut remote = cache_peer(&old, "valid", &log).unwrap();
+        let mut stream = Stream::new(framed.as_slice());
+        stream.header(&mut Vec::new()).unwrap();
+        assert_eq!(
+            deliver_layer(&mut remote, &mut stream, &packed, "shell").unwrap(),
+            Delivery::Uploaded("fixture".into())
+        );
+        assert!(
+            std::fs::read_to_string(log)
+                .unwrap()
+                .contains("layer.upload.chunk")
+        );
+    }
+
+    #[test]
+    fn remote_cache_invalid_peer_falls_back_and_stale_offer_is_invalidated() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("usr/bin")).unwrap();
+        std::fs::write(dir.path().join("usr/bin/shell"), b"fixture payload").unwrap();
+        let hash = tilo_vm_protocol::layer_hash::tree_hash(dir.path()).unwrap();
+        let (packed, framed) = framed_fixture(dir.path(), std::slice::from_ref(&hash)).unwrap();
+        for mode in ["missing", "corrupt", "old", "wrong-component", "wrong-arch"] {
+            let log = dir.path().join(mode);
+            let mut remote = cache_peer(&hash, mode, &log).unwrap();
+            assert!(verified_layers(&mut remote, "shell").unwrap().is_empty());
+            let mut stream = Stream::new(framed.as_slice());
+            stream.header(&mut Vec::new()).unwrap();
+            assert_eq!(
+                deliver_layer(&mut remote, &mut stream, &packed, "shell").unwrap(),
+                Delivery::Invalidated
+            );
+            assert!(
+                !std::fs::read_to_string(log)
+                    .unwrap()
+                    .contains("layer.upload")
+            );
+        }
+    }
+
+    #[test]
+    fn remote_cache_refuses_foreign_source_architecture_and_unoffered_hash() {
+        let packed = builderlayer::Packed {
+            component: "shell".into(),
+            target: Some("x86_64-unknown-linux-gnu".into()),
+            source_digest: Some("source-proof".into()),
+            layer_hash: Some("a".repeat(64)),
+            reused: true,
+            ..builderlayer::Packed::default()
+        };
+        let offered = vec!["a".repeat(64)];
+        assert!(validate_header(&packed, "shell", "other-source", "x86_64", &offered).is_err());
+        assert!(validate_header(&packed, "shell", "source-proof", "aarch64", &offered).is_err());
+        assert!(
+            validate_header(
+                &packed,
+                "other-component",
+                "source-proof",
+                "x86_64",
+                &offered
+            )
+            .is_err()
+        );
+        assert!(validate_header(&packed, "shell", "source-proof", "x86_64", &[]).is_err());
+    }
+
+    #[test]
+    fn remote_cache_refuses_missing_footer_and_unexpected_archive_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("calls");
+        let mut remote = cache_peer(&"a".repeat(64), "valid", &log).unwrap();
+        let packed = builderlayer::Packed {
+            reused: true,
+            layer_hash: Some("a".repeat(64)),
+            ..builderlayer::Packed::default()
+        };
+        let mut cut = Stream::new(&b""[..]);
+        assert!(deliver_layer(&mut remote, &mut cut, &packed, "shell").is_err());
+        let mut framed = Vec::new();
+        let mut lines = builderlayer::Lines::new(&mut framed);
+        std::io::Write::write_all(&mut lines, b"unexpected archive").unwrap();
+        let (sha, bytes) = lines.finish().unwrap();
+        std::io::Write::write_all(
+            &mut framed,
+            format!("{}{sha} {bytes}\n", builderlayer::END).as_bytes(),
+        )
+        .unwrap();
+        let mut stream = Stream::new(framed.as_slice());
+        assert!(deliver_layer(&mut remote, &mut stream, &packed, "shell").is_err());
+        assert_eq!(std::fs::read_to_string(log).unwrap(), "hello\n");
+    }
 
     #[test]
     fn remote_app_owned_builder_is_reaped_when_delivery_fails() {

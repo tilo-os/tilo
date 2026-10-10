@@ -12,6 +12,11 @@ use cosmic_text::{
 use crate::text_break::OffsetMap;
 use crate::text_selection::{TextAffinity, TextPosition};
 
+#[path = "richtext_paragraphs.rs"]
+mod paragraphs;
+#[cfg(test)]
+pub(crate) use paragraphs::take_prepared_paragraphs;
+
 /// A generic font family the toolkit can resolve from system fonts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Hash)]
 pub enum FontFamily {
@@ -151,6 +156,19 @@ impl RichSpan {
         self.kind = Some(kind);
         self
     }
+
+    /// Whether the run carries no styling of its own: text in the block's
+    /// style, as [`Self::new`] makes it.
+    pub(crate) fn is_unstyled(&self) -> bool {
+        !self.bold
+            && !self.italic
+            && self.size.is_none()
+            && self.family.is_none()
+            && self.color.is_none()
+            && self.background.is_none()
+            && self.baseline == BaselineShift::None
+            && self.kind.is_none()
+    }
 }
 
 /// Horizontal alignment of a block.
@@ -205,12 +223,16 @@ pub struct RichTextLayout {
     fragmentation: crate::text_render::Fragmentation,
 }
 
+#[derive(Clone)]
 struct RichPreparation {
     spans: Vec<RichSpan>,
     style: crate::text_render::TextStyle,
     width: Option<f32>,
     align: TextAlign,
     browser_emoji: bool,
+    /// Built paragraph by paragraph ([`RichTextLayout::shape_paragraphs_reusing_browser`]),
+    /// whose fonts are planned per paragraph, not over the whole text.
+    paragraph_planned: bool,
 }
 
 impl RichPreparation {
@@ -226,7 +248,8 @@ impl RichPreparation {
         !matches!(
             style.hyphenation,
             crate::text_render::Hyphenation::Custom(_)
-        ) && self.spans == spans
+        ) && !self.paragraph_planned
+            && self.spans == spans
             && self.style == *style
             && self.width == width
             && self.align == align
@@ -648,6 +671,7 @@ impl RichTextLayout {
                 width: max_width,
                 align,
                 browser_emoji,
+                paragraph_planned: false,
             }),
             buffer,
             line_starts,
@@ -787,17 +811,6 @@ impl RichTextLayout {
                 .iter()
                 .filter(|r| !r.text.is_empty())
                 .map(|r| {
-                    let run_fam = match r.family {
-                        Some(family) => family.to_cosmic(),
-                        None => style.family.to_cosmic(),
-                    };
-                    let base_run_size = r.size.unwrap_or(size);
-                    // Super/subscript runs shape smaller so they advance narrower.
-                    let run_size = if r.baseline.is_shifted() {
-                        base_run_size * BaselineShift::SCALE
-                    } else {
-                        base_run_size
-                    };
                     let start = cursor;
                     let end = cursor.saturating_add(r.text.len());
                     cursor = end;
@@ -807,29 +820,51 @@ impl RichTextLayout {
                     if r.baseline.is_shifted() {
                         baselines.push((start, end, r.baseline));
                     }
-                    let mut a = style
-                        .cosmic_attrs()
-                        .family(run_fam)
-                        .weight(if r.bold {
-                            Weight::BOLD
-                        } else {
-                            style.effective_weight()
-                        })
-                        .metrics(Metrics::new(run_size, run_size * line_height_mult));
-                    if style.letter_spacing != 0.0 {
-                        a = a.letter_spacing(style.letter_spacing / run_size.max(0.1));
-                    }
-                    if r.italic || style.italic {
-                        a = a.style(Style::Italic);
-                    }
-                    if let Some([cr, cg, cb]) = r.color {
-                        a.color_opt = Some(cosmic_text::Color::rgb(cr, cg, cb));
-                    }
+                    let a = Self::run_attrs(r, style, size, line_height_mult);
                     (offset_map.shape_fragment(&r.text, start), a, r.kind)
                 })
                 .collect()
         };
         (built, backgrounds, baselines)
+    }
+
+    /// The cosmic-text attributes of one span's run in `style`.
+    fn run_attrs<'s>(
+        r: &RichSpan,
+        style: &'s crate::text_render::TextStyle,
+        size: f32,
+        line_height_mult: f32,
+    ) -> Attrs<'s> {
+        let run_fam = match r.family {
+            Some(family) => family.to_cosmic(),
+            None => style.family.to_cosmic(),
+        };
+        let base_run_size = r.size.unwrap_or(size);
+        // Super/subscript runs shape smaller so they advance narrower.
+        let run_size = if r.baseline.is_shifted() {
+            base_run_size * BaselineShift::SCALE
+        } else {
+            base_run_size
+        };
+        let mut a = style
+            .cosmic_attrs()
+            .family(run_fam)
+            .weight(if r.bold {
+                Weight::BOLD
+            } else {
+                style.effective_weight()
+            })
+            .metrics(Metrics::new(run_size, run_size * line_height_mult));
+        if style.letter_spacing != 0.0 {
+            a = a.letter_spacing(style.letter_spacing / run_size.max(0.1));
+        }
+        if r.italic || style.italic {
+            a = a.style(Style::Italic);
+        }
+        if let Some([cr, cg, cb]) = r.color {
+            a.color_opt = Some(cosmic_text::Color::rgb(cr, cg, cb));
+        }
+        a
     }
 
     /// Total laid-out height (at least one line tall).

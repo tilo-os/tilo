@@ -136,6 +136,43 @@ shared allocation experiment had no measurable benefit. Shared-layer stall is
 still unproven: next measure other widget families using the existing list and
 gallery diagnostic workloads before selecting app-specific changes.
 
+### Pointer motion keeps the published tree (TIL-628)
+
+Every input event used to drop the resource cache, and for a framework app
+every mutable record loan (each event dispatch takes one) advanced the bound
+owner's admission generation, which keys the bound resource cache. Each pointer
+move therefore rebuilt the whole publication and reprojected every control's
+availability. Now bare pointer motion (no button held, nothing handled, no
+focus change) keeps the tree when neither the app's document nor any bound
+owner's record moved and no widget reported a presentation change
+(`widget::note_resource_presentation_changed`, which the context menu calls
+when hover opens or closes a nested menu). The bound snapshot is carried to the
+owner's new generation. Hover also skips the pre-dispatch availability
+projection, since hover activates nothing and every frame refreshes
+availability again before it paints. Every other event republishes as before.
+
+`cargo run --release -p tilo-app --features test-support --example
+framework-scaling` mounts a checklist of N tasks (title and checkbox per row) in
+a real `App` and sends 100 `CursorMoved` events through `App::surface_input`.
+Run on an Apple M5 Max, macOS 27, release build. Publication p50 is one full
+`resources_for` of the root:
+
+| Tasks | Resources | Publication p50 | Move p50 before | Publications per 100 moves before | Move p50 after | Publications per 100 moves after |
+|---:|---:|---:|---:|---:|---:|---:|
+| 10 | 11 | 0.010 ms | 0.046 ms | 100 | 0.007 ms | 0 |
+| 250 | 261 | 0.83 ms | 1.08 ms | 100 | 0.091 ms | 0 |
+| 1,000 | 1,251 | 17.5 ms | 12.7 ms | 100 | 0.37 ms | 0 |
+
+With `TILO_PROFILE_RESOURCES=1` at 1,000 tasks, the resource work left per move
+is the two `input_carry` spans: 8 µs before dispatch and 8 µs after it, p50,
+with all 100 decisions `hit`. Before the change each move spent 11.4 ms in
+`bound_discovery` and 0.55 ms in `bound_control_projection`. The 0.37 ms that
+remains is widget dispatch and hit-testing, which also grows with the number of
+rows. Each frame still runs the full availability refresh in
+`draw_frame_content`. With an unchanged tree that refresh hits every cache, but
+discovery still walks the bound owners and projection still visits every
+control.
+
 ## Verified shared-list CPU workload
 
 The `ui-perf perf_scenario --count 1200 --json` list case now checks the real

@@ -17,6 +17,7 @@ tools/windows/gstreamer-licenses/*-LICENSE -text
 # Stored upstream mail patches retain unified-diff context markers.
 os/external-assets/bootc/*.patch whitespace=-blank-at-eol,-blank-at-eof
 scripts/browser/cef-source/*.patch whitespace=-blank-at-eol,-blank-at-eof
+tools/release/fixtures/nemo_descriptor.patch whitespace=-blank-at-eol,-blank-at-eof
 # Pinned seccomp-bpf programs are compared byte for byte by tests.
 *.bpf binary
 

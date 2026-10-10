@@ -19,7 +19,7 @@ pub const NETWORK_WAKE_EVENT: &str = "\u{1}network";
 /// Side-effect boundary for live `NetworkManager` calls. Keeping it narrow makes
 /// the installer's decision logic testable without a radio or system bus.
 pub trait NetworkBackend: Send + Sync {
-    /// Query the system's current connectivity state.
+    /// Check the system's connectivity now.
     ///
     /// # Errors
     ///
@@ -53,7 +53,10 @@ struct RealNetworkBackend;
 
 impl NetworkBackend for RealNetworkBackend {
     fn connectivity(&self) -> Result<ConnectivityState, String> {
-        os_actions::get_connectivity()
+        // Every snapshot here is a deliberate look: the first scan, the
+        // person pressing refresh, or the result of joining a network. Ask
+        // NetworkManager to check again rather than repeat a stale verdict.
+        os_actions::check_connectivity_now()
     }
 
     fn wifi_networks(&self) -> Result<Vec<WifiNetworkInfo>, String> {

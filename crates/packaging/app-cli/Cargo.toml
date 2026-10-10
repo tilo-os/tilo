@@ -40,7 +40,7 @@ tilo-app-package = { path = "../tilo-app-package" }
 runtime-bundle = { path = "../runtime-bundle" }
 clap.workspace = true
 clap_complete.workspace = true
-tilo-xdg-paths = { path = "../../system/xdg-paths" }
+tilo-paths.workspace = true
 hex.workspace = true
 blake3.workspace = true
 serde.workspace = true

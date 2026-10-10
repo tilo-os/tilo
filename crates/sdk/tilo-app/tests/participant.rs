@@ -173,6 +173,7 @@ fn a_grant_of_one_action_reaches_that_action_only() {
             Subject::agent(AGENT),
             Scope::Action {
                 app: TallyApp::ID.to_owned(),
+                resource: "test.tally".to_owned(),
                 action: "bump".to_owned(),
             },
             Verb::Write,
@@ -187,6 +188,13 @@ fn a_grant_of_one_action_reaches_that_action_only() {
         .map(|operation| operation.address.action)
         .collect();
     assert_eq!(actions, ["bump"]);
+    participant
+        .invoke(
+            &tilo_actions::ActionAddress::new("test.tally", "bump"),
+            &serde_json::Map::new(),
+        )
+        .unwrap();
+    assert_eq!(participant.state::<Tally>().unwrap().count, 1);
     let mut arguments = serde_json::Map::new();
     arguments.insert("name".into(), serde_json::json!("guests"));
     assert!(
@@ -197,4 +205,5 @@ fn a_grant_of_one_action_reaches_that_action_only() {
             )
             .is_err()
     );
+    assert_eq!(participant.state::<Tally>().unwrap().count, 1);
 }

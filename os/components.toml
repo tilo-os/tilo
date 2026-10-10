@@ -276,6 +276,7 @@ user_units = ["tilo-ush.service"]
 layer = "desktop-binaries"
 files = [
   { from = "tilo-ush", to = "/usr/libexec/tilo-ush", mode = "0755" },
+  { from = "ush-editor/bash-editor.so", to = "/usr/lib/tilo/ush/bash-editor.so", mode = "0755" },
   { link = "../libexec/tilo-ush", to = "/usr/bin/ush" },
   { from = "@manifest/usr/lib/systemd/user/tilo-ush.service", to = "/usr/lib/systemd/user/tilo-ush.service", mode = "0644" },
   # A Terminal environment on a relay: the pty's far end, and what tells
@@ -333,6 +334,7 @@ features = [
 layer = "direct"
 files = [
   { from = "/usr/lib/tilo-runtime/", to = "/usr/lib/tilo-runtime/", tree = true },
+  { from = "/usr/share/tilo/font-catalogs/", to = "/usr/share/tilo/font-catalogs/", tree = true },
   { from = "runtime-bundle-publisher.hex", to = "/usr/share/tilo/runtime-bundle-publisher.hex", mode = "0644" },
   { from = "browser-runtime-publisher.hex", to = "/usr/share/tilo/browser-runtime-publisher.hex", mode = "0644" },
   { from = "registry-runtime-publisher.hex", to = "/usr/share/tilo/registry-runtime-publisher.hex", mode = "0644" },
@@ -446,6 +448,11 @@ layer = "desktop-binaries"
 files = [
   { from = "tilo-image-trust", to = "/usr/bin/tilo-image-trust", mode = "0755" },
   { from = "tilo-device-key-init", to = "/usr/bin/tilo-device-key-init", mode = "0755" },
+  { from = "@manifest/usr/libexec/tilo-image-trust-staged", to = "/usr/libexec/tilo-image-trust-staged", mode = "0755" },
+  { from = "@manifest/usr/libexec/tilo-verified-update", to = "/usr/libexec/tilo-verified-update", mode = "0755" },
+  { from = "@manifest/usr/libexec/tilo-board-successor.py", to = "/usr/libexec/tilo-board-successor.py", mode = "0755" },
+  { from = "@manifest/dev/hardware_profile.py", to = "/usr/lib/tilo/hardware_profile.py", mode = "0644" },
+  { from = "@asset/cosign-v2.5.2", to = "/usr/libexec/tilo-cosign", mode = "0755" },
 ]
 
 [[component]]

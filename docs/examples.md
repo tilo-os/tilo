@@ -53,6 +53,21 @@ network transport or sign-in on two devices.
 | `graph-screens` | Serialized screens, a Rust component mounted in one, the router. | yes |
 | `qr-code` | A generated visual with alternative text, empty until it has input. | yes |
 
+Inspect one example or read just its embedded source without a repository
+checkout or network access:
+
+```bash
+tilo-app examples shared-checklist
+tilo-app examples shared-checklist --file tests/app.rs --json
+tilo-app examples shared-checklist --file src/lib.rs
+```
+
+The named command lists that example's files and scaffold command. With
+`--file`, human output is the file itself; JSON carries the selected example,
+`file` and `content`. Files come from the installed CLI's embedded examples,
+so the tests and code match the examples that version of `new` copies. Unknown
+paths report the available files.
+
 `tilo-app examples` prints this list (`--json` for scripts, with each
 example's path and whether it is web-capable). The examples that load data or
 compute in the background do it through `ui::background`, which runs on a

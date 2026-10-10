@@ -7,9 +7,7 @@ use chrono::{DateTime, SecondsFormat, Utc};
 /// Parse an RFC 3339 timestamp: `Z` or a `±hh:mm` offset, optional
 /// fractional seconds. `None` for anything else.
 pub fn parse(text: &str) -> Option<SystemTime> {
-    DateTime::parse_from_rfc3339(text.trim())
-        .ok()
-        .map(SystemTime::from)
+    cloud_source::http::parse_rfc3339(text)
 }
 
 /// Format as `YYYY-MM-DDTHH:MM:SS.mmmZ`.

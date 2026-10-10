@@ -609,12 +609,6 @@ impl LaunchRecovery {
         std::thread::current().id() == self.owner
     }
 
-    /// Whether the owners are reachable from this thread.
-    #[must_use]
-    pub fn is_reachable(&self) -> bool {
-        self.here()
-    }
-
     /// How many close reports this recovery carries, on any thread.
     #[must_use]
     pub fn report_count(&self) -> usize {
@@ -826,6 +820,16 @@ fn capture_directory(directory: &std::path::Path, option: &str) -> Result<(), La
     })
 }
 
+/// Whether these arguments run the app in a live native window, rather than
+/// headless, as captures or as an audit.
+#[cfg(feature = "native")]
+fn opens_native_window(args: &LaunchArgs) -> bool {
+    args.headless.is_none()
+        && args.shots.is_none()
+        && args.responsive_matrix.is_none()
+        && !args.native_audit
+}
+
 #[allow(
     clippy::exit,
     reason = "the --headless-drive path reports the harness's pass/fail \
@@ -845,29 +849,27 @@ fn run_parsed(
     {
         return Ok(());
     }
-    if args.headless.is_none()
-        && args.shots.is_none()
-        && args.responsive_matrix.is_none()
-        && !args.native_audit
-        && (spec.runtime_attachment)(&args)
-    {
+    // Attachment can exec the runtime host in this process's place, and marks
+    // the inherited launch guard close-on-exec: it finishes before the
+    // renderer preparation below starts a thread.
+    if opens_native_window(&args) && (spec.runtime_attachment)(&args) {
         attach(spec.app_id).map_err(|error| {
             LaunchError::Operation(format!("native runtime attachment failed: {error}"))
         })?;
     }
-    #[cfg(windows)]
-    let renderer = if args.shots.is_none()
-        && args.responsive_matrix.is_none()
-        && args.headless.is_none()
-        && !args.native_audit
-    {
+    // A window's GPU device and vello's pipelines are prepared on their own
+    // thread while the app constructs, so its first redraw takes them ready
+    // instead of starting them after the compositor's first configure. Never
+    // inside the event loop's `resumed`: see `prepare_native_renderer`.
+    #[cfg(any(windows, target_os = "linux"))]
+    let renderer = if opens_native_window(&args) {
         crate::app::prepare_native_renderer()
     } else {
         None
     };
     match dispatch_definition(spec, &args)? {
         DefinitionDispatch::Native(app) => {
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "linux"))]
             let app = Box::new((*app).with_startup_renderer(renderer));
             (*app).run();
         }
@@ -1170,15 +1172,6 @@ pub const MAX_SHOT_DEVICE_SCALE: u32 = 4;
 /// `--distinct-letters` for the capture this process writes: every capture
 /// theme ([`shot_theme`], [`capture_theme`], [`shot_theme_from_env`]) takes it.
 static CAPTURE_DISTINCT_LETTERS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-
-/// What this process's capture set "Always distinguish similar letters" to
-/// (`--distinct-letters`), `None` outside a capture or without the flag: a
-/// pane that shows the setting's own control renders it as the person's
-/// choice, so the control matches the text around it.
-#[must_use]
-pub fn capture_distinct_letters() -> Option<bool> {
-    CAPTURE_DISTINCT_LETTERS.get().copied()
-}
 
 /// Pin "Always distinguish similar letters" on a capture theme when the
 /// capture asked for it (`--distinct-letters`).
@@ -1631,6 +1624,8 @@ fn parse_text_scale(value: &str) -> Result<f32, LaunchError> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(all(unix, feature = "broker-transport"))]
+    include!("launch/native_construction_owner_tests.rs");
     use super::*;
 
     /// The launcher's environment contract, pointed at a scratch data home.
@@ -1655,6 +1650,16 @@ mod tests {
 
     fn strings(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| (*value).to_owned()).collect()
+    }
+
+    /// `run_parsed` starts the renderer preparation thread (Windows and Linux)
+    /// and the runtime attachment exactly for these arguments.
+    #[test]
+    fn only_a_live_window_prepares_its_renderer_ahead() {
+        let live = parse_args(&strings(&["app"]), &[], &[]).unwrap();
+        assert!(opens_native_window(&live));
+        let capture = parse_args(&strings(&["app", "--shots=/tmp/shot.png"]), &[], &[]).unwrap();
+        assert!(!opens_native_window(&capture));
     }
 
     #[test]

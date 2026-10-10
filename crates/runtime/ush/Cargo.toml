@@ -16,7 +16,10 @@ name = "tilo-ush"
 path = "src/main.rs"
 
 [dependencies]
+getrandom.workspace = true
 tilo-clock = { path = "../../platform/tilo-clock" }
+bounded-command = { path = "../../system/bounded-command" }
+sha2.workspace = true
 runtime-portal = { path = "../runtime-portal" }
 collab-types = { path = "../../collab/collab-types" }
 # The environment record a guest is built from, and the tool builder seam.
@@ -52,7 +55,7 @@ tilo-egress = { path = "../egress" }
 legacy-vm = { path = "../legacy-vm", default-features = false }
 
 anyhow.workspace = true
-tilo-xdg-paths = { path = "../../system/xdg-paths" }
+tilo-paths.workspace = true
 landlock.workspace = true
 libc.workspace = true
 seccompiler.workspace = true

@@ -37,6 +37,8 @@ mpris = ["native", "dep:zbus", "dep:tilo-media"]
 notifications = ["native"]
 
 [dependencies]
+# The authenticated host updates the app process's portable network hints.
+tilo-net = { version = "0.1.0", path = "../../platform/tilo-net", default-features = false }
 # Bounded reads of the host-selected read-only policy projection.
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files", optional = true }
 hex.workspace = true

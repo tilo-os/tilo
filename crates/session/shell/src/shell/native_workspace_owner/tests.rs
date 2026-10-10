@@ -4,7 +4,7 @@ use crate::shell::{persist, state::WorkspaceTree};
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
 use ed25519_dalek::SigningKey;
 use std::{sync::Arc, time::SystemTime};
-use tilo_delivery_protocol::delivery_v3::descriptor::GenerationExpectation;
+use tilo_delivery_protocol::descriptor::GenerationExpectation;
 use tilo_joined_room::testing::{APP, ROOM, raw_fixture, raw_fixture_at};
 use tilo_joined_room::{VerifiedNativeEnrollment, VerifiedNativeEnrollmentIntent};
 use tilo_peer_state::{NeighbourMsg, TransportOrigin, join};
@@ -58,6 +58,60 @@ fn tree_at(path: &std::path::Path) -> WorkspaceTreeHandle {
     assert!(tree.set_room(id, RoomId::parse(ROOM).unwrap()));
     tree.persist_path = Some(path.into());
     tree.shared()
+}
+
+/// Owner publications and state-file encodes this thread made while `run` ran.
+fn publications_and_encodes<T>(run: impl FnOnce() -> T) -> (T, usize, usize) {
+    let publications = PUBLICATIONS_ON_THIS_THREAD.with(std::cell::Cell::get);
+    let encodes = persist::ENCODES_ON_THIS_THREAD.with(std::cell::Cell::get);
+    let value = run();
+    (
+        value,
+        PUBLICATIONS_ON_THIS_THREAD
+            .with(std::cell::Cell::get)
+            .saturating_sub(publications),
+        persist::ENCODES_ON_THIS_THREAD
+            .with(std::cell::Cell::get)
+            .saturating_sub(encodes),
+    )
+}
+
+#[test]
+fn native_owner_publication_encodes_the_state_file_once_and_keeps_the_live_document() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("state.json");
+    let tree = tree_at(&path);
+    let owner = open(tree.clone()).unwrap();
+    let heads_before = tree.write().current_heads();
+    assert!(
+        !heads_before.is_empty(),
+        "the fixture's document has history"
+    );
+    let (intent, bootstrap, _, _, now) = raw_fixture();
+    let (pending, publications, encodes) =
+        publications_and_encodes(|| prepare_enrollment(&owner, &intent, now));
+    let pending = pending.unwrap();
+    assert!(publications > 0, "a pending enrollment is published");
+    assert_eq!(
+        encodes, publications,
+        "each publication encodes the state file once"
+    );
+    let enrollment = tilo_joined_room::testing::finalize(intent, pending, bootstrap).unwrap();
+    let (installed, publications, encodes) =
+        publications_and_encodes(|| owner.install(&enrollment, now));
+    installed.unwrap();
+    assert!(publications > 0, "an install is published");
+    assert_eq!(
+        encodes, publications,
+        "each publication encodes the state file once"
+    );
+    let tree = tree.read();
+    assert!(
+        heads_before
+            .iter()
+            .all(|head| { automerge::ReadDoc::get_change_by_hash(&tree.doc, head).is_some() }),
+        "the installed tree carries the live document's history, not a fresh one"
+    );
 }
 
 #[test]
@@ -340,7 +394,7 @@ fn bootstrap_candidate(
     generation: u64,
     now: SystemTime,
 ) -> join::TransportHint {
-    use tilo_delivery_protocol::delivery_v3::descriptor;
+    use tilo_delivery_protocol::descriptor;
     owner
         .with_current(RoomId::parse(ROOM).unwrap(), |view| {
             let authority = descriptor::DescriptorAuthority {
@@ -374,11 +428,11 @@ fn bootstrap_response(
     pending: &NativeBootstrap,
     hint: &join::TransportHint,
     now: SystemTime,
-) -> tilo_delivery_protocol::delivery_v3::media_wire::BootstrapResponse {
+) -> tilo_delivery_protocol::bootstrap::BootstrapResponse {
     use ed25519_dalek::Signer;
-    use tilo_delivery_protocol::delivery_v3::{descriptor, media_wire};
+    use tilo_delivery_protocol::{bootstrap, descriptor};
     let metadata = descriptor::inspect_persisted_hint(hint, &hint.host).unwrap();
-    let mut response = media_wire::BootstrapResponse {
+    let mut response = bootstrap::BootstrapResponse {
         version: 1,
         request: pending.request().clone(),
         host_certificate: postcard::to_stdvec(&hint.host).unwrap(),
@@ -392,7 +446,7 @@ fn bootstrap_response(
             .unwrap(),
         signature: [[0; 32]; 2],
     };
-    response.signature = media_wire::split_signature(
+    response.signature = bootstrap::split_signature(
         SigningKey::from_bytes(&[61; 32])
             .sign(&response.signing_digest().unwrap())
             .to_bytes(),
@@ -534,10 +588,11 @@ fn native_file_writer_excludes_competing_owner_and_encoded_overflow_preserves_di
     drop(oversized);
     let mut oversized_authority = tree.read().clone();
     // Malformed oversized bytes must be refused before any generic tree clone or publication.
+    // A cap's worth of peer bytes encodes as a third more base64 text than the cap.
     tilo_joined_room::testing::set_stored_peer(
         &mut oversized_authority.native_authority,
         RoomId::parse(ROOM).unwrap(),
-        vec![0; store::MAX_AUTHORITY_BYTES / 2],
+        vec![0; store::MAX_AUTHORITY_BYTES],
     );
     assert!(persist::save_tree_to(&oversized_authority, &path).is_err());
     assert_eq!(std::fs::read(&path).unwrap(), committed);
@@ -670,7 +725,7 @@ pub(crate) fn test_bootstrap_response(
     pending: &NativeBootstrap,
     hint: &join::TransportHint,
     now: SystemTime,
-) -> tilo_delivery_protocol::delivery_v3::media_wire::BootstrapResponse {
+) -> tilo_delivery_protocol::bootstrap::BootstrapResponse {
     bootstrap_response(pending, hint, now)
 }
 fn fresh_slot(

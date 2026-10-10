@@ -24,11 +24,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -61,6 +57,9 @@ pub mod settings;
 mod status_bar;
 #[cfg(test)]
 mod test_support;
+mod text_operations;
+#[cfg(test)]
+mod text_operations_tests;
 
 pub use app::CodeApp;
 pub use effects::CodeEditorEffect;

@@ -36,6 +36,7 @@ use std::rc::Rc;
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
+use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
 use taffy::style_helpers::{length, percent};
@@ -241,62 +242,50 @@ impl Widget for Stack {
             clippy::unwrap_used,
             reason = "every child node was just created in this same tree"
         )]
-        let node = taffy
-            .new_with_children(
-                Style {
-                    display: Display::Flex,
-                    flex_direction: self.direction,
-                    align_items: Some(self.align),
-                    justify_content: Some(self.justify),
-                    gap: Size {
-                        width: length(if row { self.gap } else { 0.0 }),
-                        height: length(if row { 0.0 } else { self.gap }),
-                    },
-                    padding: taffy::Rect {
-                        left: length(self.padding),
-                        right: length(self.padding),
-                        top: length(self.padding),
-                        bottom: length(self.padding),
-                    },
-                    size: Size {
-                        width: match (self.width, self.width_auto) {
-                            (Some(width), _) => length(width),
-                            (None, true) => Dimension::auto(),
-                            (None, false) => percent(1.0_f32),
-                        },
-                        height: if self.fill_height {
-                            percent(1.0_f32)
-                        } else {
-                            Dimension::auto()
-                        },
-                    },
-                    max_size: Size {
-                        width: self.max_width.map_or(Dimension::auto(), length),
-                        height: Dimension::auto(),
-                    },
-                    min_size: Size {
-                        width: Dimension::auto(),
-                        height: self.min_height.map_or(Dimension::auto(), length),
-                    },
-                    flex_grow: if self.grow { 1.0 } else { 0.0 },
-                    flex_shrink: if self.grow { 1.0 } else { 0.0 },
-                    ..Default::default()
+        let style = Style {
+            display: Display::Flex,
+            flex_direction: self.direction,
+            align_items: Some(self.align),
+            justify_content: Some(self.justify),
+            gap: Size {
+                width: length(if row { self.gap } else { 0.0 }),
+                height: length(if row { 0.0 } else { self.gap }),
+            },
+            padding: taffy::Rect {
+                left: length(self.padding),
+                right: length(self.padding),
+                top: length(self.padding),
+                bottom: length(self.padding),
+            },
+            size: Size {
+                width: match (self.width, self.width_auto) {
+                    (Some(width), _) => length(width),
+                    (None, true) => Dimension::auto(),
+                    (None, false) => percent(1.0_f32),
                 },
-                &child_nodes,
-            )
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+                height: if self.fill_height {
+                    percent(1.0_f32)
+                } else {
+                    Dimension::auto()
+                },
+            },
+            max_size: Size {
+                width: self.max_width.map_or(Dimension::auto(), length),
+                height: Dimension::auto(),
+            },
+            min_size: Size {
+                width: Dimension::auto(),
+                height: self.min_height.map_or(Dimension::auto(), length),
+            },
+            flex_grow: if self.grow { 1.0 } else { 0.0 },
+            flex_shrink: if self.grow { 1.0 } else { 0.0 },
+            ..Default::default()
+        };
+        taffy.widget_node(style, &child_nodes, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         let own_origin = Point::new(self.rect.x0, self.rect.y0);
         if let Ok(child_nodes) = taffy.children(node) {
             for (child, &child_node) in self.children.iter_mut().zip(child_nodes.iter()) {
@@ -659,7 +648,7 @@ pub struct GreeterApp {
     direction: Direction,
     rect: Rect,
     /// The composed subtree, rebuilt each `build_layout`.
-    composed: Option<Box<dyn Widget>>,
+    composed: ui::widget::Composed,
     /// Slot holding the winit event-loop proxy, populated by `main.rs`'s
     /// `run_with_setup` once the loop starts. The submit handler reads it
     /// to spawn the background auth worker. Empty in tests / headless
@@ -808,7 +797,7 @@ impl GreeterApp {
             device: DeviceStatus::default(),
             direction: Direction::Column,
             rect: Rect::ZERO,
-            composed: None,
+            composed: ui::widget::Composed::default(),
             proxy: Arc::new(OnceLock::new()),
             viewport_offset: Rc::new(Cell::new((0.0, 0.0))),
             layout_text_scale: 1.0,
@@ -1705,7 +1694,7 @@ impl GreeterApp {
                 || widget.children().into_iter().any(walk)
         }
 
-        self.composed.as_deref().is_some_and(walk)
+        self.composed.element().is_some_and(walk)
     }
 
     /// Environment handed to greetd's `StartSession`. Mirrors the
@@ -2023,9 +2012,7 @@ impl Widget for GreeterApp {
         // Pull local-only passcode edits into the zeroized buffer before
         // taking a sign-in request raised by Enter or the sign-in action in
         // the same event cycle.
-        if let Some(c) = &mut self.composed {
-            c.sync(state, root);
-        }
+        self.composed.sync(state, root);
 
         // Each request is taken before it is acted on, so one activation
         // starts exactly one attempt.
@@ -2056,35 +2043,25 @@ impl Widget for GreeterApp {
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.layout_text_scale = theme.text_scale;
-        let mut composed = self.build_composition(theme);
-        let child = composed.build_layout(taffy, theme, node_map);
-        self.composed = Some(composed);
+        let composition = self.build_composition(theme);
+        let child = self
+            .composed
+            .build_layout(composition, taffy, theme, node_map);
 
         // `new_with_children` only fails when a child belongs to a different
         // tree; `child` was just built in this one above.
-        #[allow(
-            clippy::unwrap_used,
-            reason = "the child node was just created in this same tree"
-        )]
-        let root = taffy
-            .new_with_children(
-                Style {
-                    display: Display::Flex,
-                    flex_direction: FlexDirection::Column,
-                    justify_content: Some(JustifyContent::Center),
-                    align_items: Some(AlignItems::Center),
-                    size: Size {
-                        width: percent(1.0_f32),
-                        height: percent(1.0_f32),
-                    },
-                    ..Default::default()
-                },
-                &[child],
-            )
-            .unwrap();
-
-        node_map.insert(root, std::ptr::from_mut::<dyn Widget>(self));
-        root
+        let style = Style {
+            display: Display::Flex,
+            flex_direction: FlexDirection::Column,
+            justify_content: Some(JustifyContent::Center),
+            align_items: Some(AlignItems::Center),
+            size: Size {
+                width: percent(1.0_f32),
+                height: percent(1.0_f32),
+            },
+            ..Default::default()
+        };
+        taffy.widget_node(style, &[child], node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -2097,12 +2074,7 @@ impl Widget for GreeterApp {
                 .to_bits(),
             self.rect.width() >= 1000.0,
         );
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = ui::widget::placed(layout, origin);
         // The composition depends on the viewport. App and FrameHarness
         // settle this rebuild before painting, including the very first frame
         // and crossings caused by display/text scaling.
@@ -2115,7 +2087,7 @@ impl Widget for GreeterApp {
         if before != after {
             self.dirty_structure = true;
         }
-        if let Some(c) = &mut self.composed
+        if let Some(c) = self.composed.element_mut()
             && let Ok(children) = taffy.children(node)
             && let Some(&child) = children.first()
         {
@@ -2135,7 +2107,7 @@ impl Widget for GreeterApp {
         // and a moving full-screen backdrop re-rasterized the whole display
         // behind every keystroke.
         ui::auth_backdrop::draw(scene, theme, self.rect, BACKDROP_PHASE_SECONDS);
-        if let Some(c) = &mut self.composed {
+        if let Some(c) = self.composed.element_mut() {
             c.draw(scene, transform, text_renderer, theme, presence);
         }
     }
@@ -2185,7 +2157,7 @@ impl Widget for GreeterApp {
         let escape_pressed = pressed(NamedKey::Escape);
 
         // Delegate to the composed tree.
-        if let Some(c) = &mut self.composed
+        if let Some(c) = self.composed.element_mut()
             && let Ok(children) = ctx.taffy.children(ctx.node_id)
             && let Some(&child) = children.first()
         {
@@ -2212,35 +2184,27 @@ impl Widget for GreeterApp {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        self.composed
-            .as_ref()
-            .map(|c| c.as_ref() as &dyn Widget)
-            .into_iter()
-            .collect()
+        self.composed.children()
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.composed
-            .as_mut()
-            .map(|c| c.as_mut() as &mut (dyn Widget + '_))
-            .into_iter()
-            .collect()
+        self.composed.children_mut()
     }
 
     fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
-        if let Some(c) = &self.composed {
-            visitor(c.as_ref());
+        if let Some(c) = self.composed.element() {
+            visitor(c);
         }
     }
 
     fn needs_redraw(&self) -> bool {
-        self.composed.as_ref().is_some_and(|c| c.needs_redraw())
+        self.composed.element().is_some_and(Widget::needs_redraw)
     }
 
     /// The still backdrop never changes between rebuilds, so what the
     /// controls report is the whole change — never the whole screen.
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
-        if let Some(c) = &self.composed {
+        if let Some(c) = self.composed.element() {
             c.collect_damage(regions);
         }
     }
@@ -2248,10 +2212,7 @@ impl Widget for GreeterApp {
     fn take_structure_dirty(&mut self) -> bool {
         let mine = self.dirty_structure;
         self.dirty_structure = false;
-        let child = self
-            .composed
-            .as_mut()
-            .is_some_and(|c| c.take_structure_dirty());
+        let child = self.composed.take_structure_dirty();
         mine || child
     }
 
@@ -2261,7 +2222,10 @@ impl Widget for GreeterApp {
     /// session rebuilds leave it `false` so focus + caret are preserved.
     fn take_focus_reset(&mut self) -> bool {
         let mine = std::mem::take(&mut self.focus_reset_pending);
-        let child = self.composed.as_mut().is_some_and(|c| c.take_focus_reset());
+        let child = self
+            .composed
+            .element_mut()
+            .is_some_and(Widget::take_focus_reset);
         mine || child
     }
 
@@ -2319,7 +2283,7 @@ impl Widget for GreeterApp {
 
     /// The controls' own deadlines, and the next minute for the clock.
     fn next_wake_deadline(&self) -> Option<Instant> {
-        let child = self.composed.as_ref().and_then(|c| c.next_wake_deadline());
+        let child = self.composed.element().and_then(Widget::next_wake_deadline);
         let clock = (!self.clock_pinned).then(|| next_minute(Instant::now()));
         match (child, clock) {
             (Some(a), Some(b)) => Some(a.min(b)),
@@ -2329,8 +2293,8 @@ impl Widget for GreeterApp {
 
     fn wants_pointer_capture(&self) -> bool {
         self.composed
-            .as_ref()
-            .is_some_and(|c| c.wants_pointer_capture())
+            .element()
+            .is_some_and(Widget::wants_pointer_capture)
     }
 
     fn name(&self) -> &'static str {
@@ -2439,19 +2403,12 @@ mod tests {
     }
 
     fn key_event(key: Key, text: Option<&str>) -> WindowEvent {
-        use winit::keyboard::{KeyLocation, NativeKeyCode, PhysicalKey};
-
         // winit intentionally keeps the platform-specific key field private;
         // these are the same inert placeholders used by ui::App's key tests.
-        let mut event: KeyEvent = unsafe { std::mem::zeroed() };
-        event.logical_key = key;
-        event.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-        event.location = KeyLocation::Standard;
-        event.state = ElementState::Pressed;
-        event.repeat = false;
-        event.text = text.map(Into::into);
+        let event =
+            ui::synthetic_input::key_event(key, text.map(Into::into), ElementState::Pressed);
         WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             event,
             is_synthetic: false,
         }
@@ -2495,10 +2452,10 @@ mod tests {
     /// does, then let the greeter take what it reported.
     fn press(app: &mut GreeterApp, doc: &mut AutoCommit, id: &str) {
         app.sync(doc, &automerge::ROOT);
-        app.composed = Some(app.build_composition(&Theme::dark()));
+        app.composed.replace(app.build_composition(&Theme::dark()));
         let control = app
             .composed
-            .as_deref_mut()
+            .element_mut()
             .and_then(|composed| find_mut(composed, id))
             .unwrap_or_else(|| panic!("{id} is on the screen"));
         assert!(
@@ -2539,22 +2496,11 @@ mod tests {
         app.apply_layout(&taffy, node, Point::ZERO);
         set_focus_by_id(app, focused);
 
-        let mut handled = false;
-        let mut focus_target = None;
-        app.handle_event(
-            event,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::default(),
-                state: ui::widget::Edits::lend(state),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-        handled
+        ui::testing::Dispatch::new()
+            .doc(state)
+            .layout(&taffy, node)
+            .send(app, event)
+            .handled
     }
 
     /// How a widget identifies itself in a tree dump: its `test_id` when it
@@ -2721,21 +2667,10 @@ mod tests {
         }
 
         fn deliver(&self, app: &mut GreeterApp, doc: &mut AutoCommit, event: &WindowEvent) {
-            let mut handled = false;
-            let mut focus_target = None;
-            app.handle_event(
-                event,
-                &mut ui::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &winit::event::Modifiers::default(),
-                    state: ui::widget::Edits::lend(doc),
-                    path: &automerge::ROOT,
-                    handled: &mut handled,
-                    focus_target: &mut focus_target,
-                    node_id: self.node,
-                    taffy: &self.taffy,
-                },
-            );
+            ui::testing::Dispatch::new()
+                .doc(doc)
+                .layout(&self.taffy, self.node)
+                .send(app, event);
         }
     }
 
@@ -3643,7 +3578,7 @@ mod tests {
             // paint; replacing it is a separate whole-renderer invalidation.
             paint(&mut app, &theme, &mut laid.text);
             Widget::mark_drawn(&mut app);
-            let card = app.composed.as_deref().expect("composed");
+            let card = app.composed.element().expect("composed");
             let row = find(card, "greeter.password")
                 .map(Widget::get_rect)
                 .expect("passcode field")
@@ -3729,7 +3664,7 @@ mod tests {
                 let theme = Theme::dark().with_text_scale(scale);
                 layout_at_with_theme(&mut app, viewport, &theme);
                 let screen = Rect::new(0.0, 0.0, f64::from(viewport.0), f64::from(viewport.1));
-                let card = app.composed.as_deref().expect("composed");
+                let card = app.composed.element().expect("composed");
                 for id in [
                     "greeter.password",
                     "greeter.password_reveal",
@@ -3811,7 +3746,7 @@ mod tests {
         ] {
             let mut app = GreeterApp::for_shot(scenario);
             layout_at_with_theme(&mut app, (1280.0, 800.0), &Theme::dark());
-            assert!(app.composed.is_some(), "{scenario:?} composes");
+            assert!(app.composed.element().is_some(), "{scenario:?} composes");
         }
     }
 
@@ -3819,7 +3754,7 @@ mod tests {
     fn the_time_is_the_hero_and_the_clock_wakes_once_a_minute() {
         let mut app = GreeterApp::for_shot(AuthScenario::Personal);
         layout_at_with_theme(&mut app, (1472.0, 920.0), &Theme::dark());
-        let card = app.composed.as_deref().expect("composed");
+        let card = app.composed.element().expect("composed");
         let clock = rect_for(card, "greeter.clock").expect("the time is shown");
         let name = rect_for(card, "greeter.welcome").expect("the person is named");
         let field = rect_for(card, "greeter.password").expect("the passcode field");

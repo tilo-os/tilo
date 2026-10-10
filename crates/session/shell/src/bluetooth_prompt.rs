@@ -22,6 +22,7 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, PoisonError};
+use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
 use crate::bluetooth::PairingPromptHandle;
@@ -60,8 +61,7 @@ pub struct PairingPromptView {
     /// view state, never written to a document.
     clicked: Rc<Clicked>,
     structure_dirty: bool,
-    composed: Option<Box<dyn Widget>>,
-    rect: Rect,
+    composed: ui::widget::Composed,
 }
 
 impl PairingPromptView {
@@ -72,8 +72,7 @@ impl PairingPromptView {
             answer: None,
             clicked: Rc::default(),
             structure_dirty: false,
-            composed: None,
-            rect: Rect::ZERO,
+            composed: ui::widget::Composed::default(),
         }
     }
 
@@ -105,8 +104,8 @@ impl PairingPromptView {
     /// Where the dialog card is on screen: the area a capture withholds.
     pub fn card_rect(&self) -> Option<Rect> {
         self.composed
-            .as_ref()
-            .map(|composed| composed.get_rect())
+            .element()
+            .map(Widget::get_rect)
             .filter(|rect| rect.area() > 0.0)
     }
 
@@ -375,9 +374,7 @@ impl Widget for PairingPromptView {
         } else if accepted {
             self.answer = Some(self.accepted());
         }
-        if let Some(c) = &mut self.composed {
-            c.sync(state, root);
-        }
+        self.composed.sync(state, root);
     }
 
     fn build_layout(
@@ -386,9 +383,10 @@ impl Widget for PairingPromptView {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let mut composed = self.build_composition(theme);
-        let child = composed.build_layout(taffy, theme, node_map);
-        self.composed = Some(composed);
+        let composition = self.build_composition(theme);
+        let child = self
+            .composed
+            .build_layout(composition, taffy, theme, node_map);
         if let Ok(mut cs) = taffy.style(child).cloned() {
             cs.size.width = taffy::Dimension::length(DIALOG_WIDTH);
             cs.size.height = taffy::Dimension::auto();
@@ -407,25 +405,11 @@ impl Widget for PairingPromptView {
             },
             ..Default::default()
         };
-        let node = taffy.new_with_children(style, &[child]).unwrap_or(child);
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_node(style, &[child], node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
-        if let Some(c) = &mut self.composed
-            && let Ok(children) = taffy.children(node)
-            && let Some(&cn) = children.first()
-        {
-            c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
-        }
+        self.composed.apply_layout(taffy, node, origin);
     }
 
     fn draw(
@@ -443,9 +427,9 @@ impl Widget for PairingPromptView {
             transform,
             theme.tokens.colors.surfaces.scrim.with_alpha(SCRIM_ALPHA),
             None,
-            &self.rect,
+            &self.composed.rect(),
         );
-        if let Some(c) = &mut self.composed {
+        if let Some(c) = self.composed.element_mut() {
             c.draw(scene, transform, text_renderer, theme, presence);
         }
     }
@@ -456,7 +440,7 @@ impl Widget for PairingPromptView {
             *ctx.handled = true;
             return;
         }
-        if let Some(c) = &mut self.composed
+        if let Some(c) = self.composed.element_mut()
             && let Ok(children) = ctx.taffy.children(ctx.node_id)
             && let Some(&cn) = children.first()
         {
@@ -471,19 +455,11 @@ impl Widget for PairingPromptView {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        self.composed
-            .as_ref()
-            .map(std::convert::AsRef::as_ref)
-            .into_iter()
-            .collect()
+        self.composed.children()
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.composed
-            .as_mut()
-            .map(|c| c.as_mut() as &mut (dyn Widget + '_))
-            .into_iter()
-            .collect()
+        self.composed.children_mut()
     }
 
     fn name(&self) -> &'static str {
@@ -495,7 +471,7 @@ impl Widget for PairingPromptView {
     }
 
     fn get_rect(&self) -> Rect {
-        self.rect
+        self.composed.rect()
     }
 
     /// Tab stays inside the question until it is answered.
@@ -513,17 +489,14 @@ impl Widget for PairingPromptView {
             AccessNode::new(Role::Dialog)
                 .with_name(self.title())
                 .with_description(description)
-                .with_bounds(self.card_rect().unwrap_or(self.rect))
+                .with_bounds(self.card_rect().unwrap_or_else(|| self.composed.rect()))
                 .with_state(AccessState::new().modal(true).protected(true)),
         )
     }
 
     fn take_structure_dirty(&mut self) -> bool {
         let own = std::mem::take(&mut self.structure_dirty);
-        let child = self
-            .composed
-            .as_mut()
-            .is_some_and(|c| c.take_structure_dirty());
+        let child = self.composed.take_structure_dirty();
         own || child
     }
 }

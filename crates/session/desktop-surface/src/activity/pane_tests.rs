@@ -26,6 +26,123 @@ mod tests {
     use tilo_automerge::ApplyIncoming as _;
     use ui::widget::op_class_is_revertible;
 
+    #[derive(Clone)]
+    struct NativeTree(WorkspaceTree);
+    impl std::ops::Deref for NativeTree {
+        type Target = tilo_desktop_model::DesktopTree;
+        fn deref(&self) -> &Self::Target {
+            &self.0
+        }
+    }
+    impl std::ops::DerefMut for NativeTree {
+        fn deref_mut(&mut self) -> &mut Self::Target {
+            &mut self.0
+        }
+    }
+    impl crate::activity::ActivityTree for NativeTree {
+        fn document(&self) -> &automerge::AutoCommit {
+            &self.0.doc
+        }
+        fn document_mut(&mut self) -> &mut automerge::AutoCommit {
+            &mut self.0.doc
+        }
+        fn resync_activity_cache(&mut self) -> Result<(), String> {
+            self.0.resync_cache_from_doc();
+            Ok(())
+        }
+        fn native_manual_tasks(&self, _: WorkspaceId) -> bool {
+            true
+        }
+    }
+
+    #[test]
+    fn native_manual_draft_defers_owner_write_and_closes_only_after_completion() {
+        let mut tree = NativeTree(WorkspaceTree::bootstrap_default());
+        let mut pane = native_pane();
+        pane.open_task_composer(&tree);
+        pane.task_draft = "Review mapped receipt".into();
+        tree.0
+            .doc
+            .put(automerge::ROOT, "pending_projection_edit", true)
+            .unwrap();
+        let blocked = pane.create_task_from_draft(&mut tree);
+        assert!(blocked.task_refused);
+        assert!(blocked.create_native_manual.is_none());
+        assert!(!blocked.task_changed);
+        assert!(pane.task_compose_open);
+        assert_eq!(pane.task_draft, "Review mapped receipt");
+        tree.0.doc.commit();
+        let outcome = pane.create_task_from_draft(&mut tree);
+        assert!(outcome.handled);
+        assert!(!outcome.task_changed);
+        let draft = outcome.create_native_manual.unwrap();
+        assert_eq!(draft.workspace, tree.active);
+        assert_eq!(
+            draft.room,
+            tree.active_workspace().unwrap().room.to_string()
+        );
+        assert_eq!(draft.title, "Review mapped receipt");
+        assert!(tree.active_workspace().unwrap().tasks.is_empty());
+        assert!(pane.task_compose_open);
+        assert_eq!(pane.task_draft, "Review mapped receipt");
+        let workspace = tree.active;
+        let id = tree
+            .0
+            .create_workspace_task(
+                workspace,
+                draft.title,
+                draft.actor,
+                None,
+                WorkspaceTaskRoute::Manual,
+                None,
+            )
+            .unwrap();
+        pane.complete_native_manual_task(id.clone(), &mut tree);
+        assert!(!pane.task_compose_open);
+        assert_eq!(pane.selected_task.as_deref(), Some(id.as_str()));
+    }
+
+    #[test]
+    fn native_managed_draft_defers_without_cache_fallback_or_premature_completion() {
+        let mut tree = NativeTree(WorkspaceTree::bootstrap_default());
+        let mut pane = native_pane();
+        pane.open_task_composer(&tree);
+        pane.task_draft = "Inspect operator evidence".into();
+        for route in [WorkspaceTaskRoute::Model, WorkspaceTaskRoute::RulesOnly] {
+            pane.task_route = route;
+            pane.task_agent = None;
+            let missing = pane.create_task_from_draft(&mut tree);
+            assert!(missing.task_refused);
+            assert!(missing.create_native_managed.is_none());
+            assert!(pane.task_compose_open);
+            pane.task_agent = Some("scribe".into());
+            let outcome = pane.create_task_from_draft(&mut tree);
+            assert!(outcome.create_native_manual.is_none());
+            assert!(!outcome.task_changed);
+            let request = outcome.create_native_managed.unwrap();
+            assert_eq!(request.assigned_agent, "scribe");
+            assert_eq!(request.route, route);
+            assert_eq!(request.person_draft.title, "Inspect operator evidence");
+            assert_eq!(
+                request.person_draft.room,
+                tree.active_workspace().unwrap().room.to_string()
+            );
+            assert!(tree.active_workspace().unwrap().tasks.is_empty());
+            assert!(pane.task_compose_open);
+            assert!(pane.selected_task.is_none());
+        }
+        tree.0
+            .doc
+            .put(automerge::ROOT, "pending_projection_edit", true)
+            .unwrap();
+        let blocked = pane.create_task_from_draft(&mut tree);
+        assert!(blocked.task_refused);
+        assert!(blocked.create_native_managed.is_none());
+        assert!(pane.task_compose_open);
+        assert_eq!(pane.task_draft, "Inspect operator evidence");
+        assert!(tree.active_workspace().unwrap().tasks.is_empty());
+    }
+
     /// HIG §9.5 rest edges: the sheet's Panel border on its Panel ground,
     /// and the derived edge of every card class the sheet paints (lift-floor
     /// chips and group cards, the base-filled replay canvas) must register
@@ -114,6 +231,67 @@ mod tests {
         tree.seed_doc_from_cache();
         tree.doc.set_actor(reader);
         (tree, ws_id, user)
+    }
+
+    #[test]
+    fn a_workspace_switch_reads_only_its_own_change_and_derives_the_same_history() {
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let first = tree.active;
+        let second = tree.append_empty_workspace("Second");
+        tree.commit_room_change();
+        let mut pane = native_pane();
+        pane.refresh(&mut tree);
+        let reads = || {
+            (
+                ROOM_CHANGE_READS.with(Cell::get),
+                crate::activity::replay::REPLAY_CHECKPOINT_READS.with(Cell::get),
+            )
+        };
+        for n in 0..12 {
+            tree.set_active(if n % 2 == 0 { second } else { first });
+            tree.commit_room_change();
+            let (diffs, forks) = reads();
+            pane.refresh(&mut tree);
+            let (diffs_after, forks_after) = reads();
+            // Each switch is one change: re-reading the room's whole history
+            // made a switch's first frame O(history).
+            assert_eq!(
+                diffs_after - diffs,
+                1,
+                "switch {n} diffs only its own change"
+            );
+            // The first visit to "Second" also checkpoints the change that
+            // created it; after that a switch forks for its own entry alone.
+            if n >= 1 {
+                assert!(
+                    forks_after - forks <= 1,
+                    "switch {n} forks the document at most for its own checkpoint"
+                );
+            }
+        }
+
+        // What the incremental refreshes derived is what one refresh of the
+        // whole history derives.
+        let mut fresh = native_pane();
+        fresh.refresh(&mut tree);
+        assert_eq!(
+            format!("{:?}", pane.derived),
+            format!("{:?}", fresh.derived),
+            "the feed rows and their workspaces"
+        );
+        let frames = |pane: &RoomActivityPane| {
+            pane.replay_frames
+                .iter()
+                .map(|frame| {
+                    format!(
+                        "{:?} {} {:?}",
+                        frame.entry_id, frame.summary, frame.workspaces
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        assert!(!frames(&pane).is_empty(), "the switches are replayable");
+        assert_eq!(frames(&pane), frames(&fresh), "the replay checkpoints");
     }
 
     #[test]
@@ -312,6 +490,111 @@ mod tests {
         pane.timeline.set_selection(Some((selected, selected)));
         pane.explorer_pane = ExplorerPane::Details;
         (tree, records, pane, record)
+    }
+
+    /// A persisted record that is not open here is read from disk once:
+    /// later refreshes reuse what was read until the record's revision moves.
+    #[test]
+    fn agent_runs_are_not_reloaded_from_disk_when_unchanged() {
+        struct CountingDisk {
+            documents: std::collections::BTreeMap<RecordId, Vec<u8>>,
+            revision: std::cell::Cell<u64>,
+            loads: std::cell::Cell<usize>,
+        }
+        impl crate::activity::index::PersistedRecordHistory for CountingDisk {
+            fn load_record(&self, id: &RecordId) -> Option<automerge::AutoCommit> {
+                self.loads.set(self.loads.get().saturating_add(1));
+                automerge::AutoCommit::load(self.documents.get(id)?).ok()
+            }
+            fn revision(&self, _id: &RecordId) -> Option<u64> {
+                Some(self.revision.get())
+            }
+        }
+
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let room = tree.desktop.active_workspace().expect("workspace").room;
+        let record = RecordId::for_file("campaign-brief.qdoc");
+        let kind = ui::RecordKind::new("document");
+        let agent = ActorId::from(b"writing-agent".as_slice());
+        let agent_hex = agent.to_hex_string();
+        let mut doc = automerge::AutoCommit::new();
+        ui::record::init(&mut doc, &record, &kind, &room.to_string());
+        doc.set_actor(agent);
+        doc.put(automerge::ROOT, "intro", "A concrete opening")
+            .unwrap();
+        let context = ui::tilo_actions::ActionContext::for_resource(
+            "Rewrite opening",
+            record.as_str(),
+            "document",
+            "Campaign brief",
+        )
+        .with_app("org.tilo.Writer", "Writer")
+        .with_group("agent-run:cold", "Rewrite the opening", "agent-run");
+        doc.commit_with(
+            CommitOptions::default()
+                .with_time(20)
+                .with_message(context.change_message().unwrap()),
+        );
+        let change = ui::latest_run_by(&mut doc, &agent_hex).expect("agent change");
+        ui::record_run_with_details(
+            &mut doc,
+            "Rewrite the opening",
+            Some(&agent_hex),
+            None,
+            Some("Rewrite the opening"),
+            None,
+            &[ui::RunStep {
+                app: "org.tilo.Writer".to_string(),
+                record: record.to_string(),
+                run: change,
+                summary: "Rewrote the opening".to_string(),
+            }],
+        )
+        .expect("task receipt");
+        tilo_resource::history::commit_stamped_at(&mut doc, 21);
+        tree.desktop
+            .room_records_held
+            .entry(room)
+            .or_default()
+            .insert(record.to_string(), kind.to_string());
+        let disk = CountingDisk {
+            documents: [(record.clone(), doc.save())].into_iter().collect(),
+            revision: std::cell::Cell::new(1),
+            loads: std::cell::Cell::new(0),
+        };
+        let records = RecordStore::in_memory();
+        let held_run = |pane: &RoomActivityPane| {
+            pane.agent_runs.iter().any(|indexed| {
+                indexed.source_record.as_ref() == Some(&record)
+                    && indexed.run.label == "Rewrite the opening"
+            })
+        };
+
+        let mut pane = native_pane();
+        pane.refresh(&mut tree);
+        pane.refresh_records_with_local(&mut tree, &records, &disk);
+        let first = disk.loads.get();
+        assert!(first > 0, "the record is read from disk");
+        assert!(held_run(&pane), "its run is read from the persisted record");
+
+        for _ in 0..3 {
+            pane.refresh(&mut tree);
+            pane.refresh_records_with_local(&mut tree, &records, &disk);
+        }
+        assert_eq!(
+            disk.loads.get(),
+            first,
+            "an unchanged record is not read from disk again"
+        );
+        assert!(held_run(&pane), "the run is still listed");
+
+        disk.revision.set(2);
+        pane.refresh_records_with_local(&mut tree, &records, &disk);
+        assert!(
+            disk.loads.get() > first,
+            "a record whose revision moved is read again"
+        );
+        assert!(held_run(&pane));
     }
 
     #[test]
@@ -867,6 +1150,51 @@ mod tests {
     }
 
     #[test]
+    fn task_center_resolves_creator_without_cursor_color_and_preserves_identity() {
+        let (mut tree, workspace, _) = busy_room();
+        let creator = "abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd";
+        tree.workspaces
+            .iter_mut()
+            .find(|room| room.id == workspace)
+            .unwrap()
+            .collaborators
+            .push(tilo_desktop_model::Collaborator::new(
+                creator,
+                "Ada Lovelace",
+            ));
+        tree.seed_doc_from_cache();
+        tree.create_workspace_task(
+            workspace,
+            "Review receipt",
+            creator,
+            None,
+            WorkspaceTaskRoute::Manual,
+            None,
+        )
+        .unwrap();
+        let mut pane = native_pane();
+        pane.set_view(ActivityView::Tasks);
+        pane.refresh(&mut tree);
+        let task = pane.tasks.first().unwrap();
+        let creator_label = pane.task_creator_label(task);
+        assert_eq!(creator_label, "Ada Lovelace");
+        assert!(task_assignee_label(task, &creator_label).contains("Ada Lovelace"));
+        let snapshot = format!("{:?}", pane.accessibility_snapshot());
+        assert!(snapshot.contains("Unassigned · created by Ada Lovelace"));
+        assert_eq!(task.created_by, creator);
+        assert_eq!(task.audit.first().unwrap().actor, creator);
+        let mut unidentified = task.clone();
+        unidentified.created_by =
+            "0123456789012345678901234567890123456789012345678901234567890123".into();
+        assert_eq!(
+            pane.task_creator_label(&unidentified),
+            "Unknown collaborator · 01234567"
+        );
+        unidentified.created_by = pane.local_user();
+        assert_eq!(pane.task_creator_label(&unidentified), "You");
+    }
+
+    #[test]
     fn task_center_presents_agent_principals_without_leaking_wire_ids() {
         let event_time = SystemTime::UNIX_EPOCH
             .checked_add(Duration::from_secs(42))
@@ -888,9 +1216,9 @@ mod tests {
             }],
         };
 
-        let byline = task_assignee_label(&task);
+        let byline = task_assignee_label(&task, "ada");
         let audit = task_audit_line(&task.audit[0], event_time, event_time);
-        let accessible = task_accessibility_description(&task, event_time);
+        let accessible = task_accessibility_description(&task, event_time, "ada");
 
         assert_eq!(byline, "Agent · scribe");
         assert!(audit.starts_with("scribe · Agent · Reviewed section 2"));
@@ -1396,14 +1724,7 @@ mod tests {
         tree.adopt_ownerless_workspaces(&user);
         let ws_id = tree.desktop.active;
 
-        let week_ago = SystemTime::now() - Duration::from_secs(604_800);
-        let week_ago_secs = i64::try_from(
-            week_ago
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap()
-                .as_secs(),
-        )
-        .unwrap();
+        let week_ago_secs = i64::try_from(ui::time::try_unix_now().unwrap() - 604_800).unwrap();
         let last_week = CapOverride::grant(
             Subject::app("files"),
             Scope::FsPath("/home/quinten/last-week".to_string()),
@@ -2202,39 +2523,16 @@ mod tests {
     // widget — proving the whole chain, not just `apply_name`.
     // -----------------------------------------------------------------
 
-    fn cursor_moved(x: f64, y: f64) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: winit::dpi::PhysicalPosition::new(x, y),
-        }
-    }
+    use ui::synthetic_input::cursor_moved;
 
-    fn mouse_press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: winit::event::ElementState::Pressed,
-            button: winit::event::MouseButton::Left,
-        }
-    }
+    use ui::synthetic_input::mouse_press;
 
     fn key_press(logical_key: winit::keyboard::Key) -> WindowEvent {
-        // SAFETY: as in `ui`'s own widget tests — every pub field of `KeyEvent`
-        // tolerates the all-zero bit pattern, and winit 0.30 keeps
-        // `KeyEventExtra` crate-private so a struct literal is unavailable.
-        let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = logical_key;
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = winit::event::ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = None;
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        }
+        ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
+            logical_key,
+            None,
+            winit::event::ElementState::Pressed,
+        ))
     }
 
     /// Paint the sheet so the rects the click handler reads off the last frame
@@ -3231,6 +3529,180 @@ mod tests {
             "materializing and moving a seam must preserve every atomic action"
         );
     }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one room, one labelled kind of change per step, each compared with a fresh pane"
+    )]
+    fn incremental_refresh_matches_full_replay_for_feed_undo_and_attribution() {
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let home = tree.active;
+        let second = tree.append_empty_workspace("Second");
+        tree.commit_room_change();
+        let mut pane = native_pane();
+        pane.refresh(&mut tree);
+
+        // A collaborator's device on the same room, kept in sync by hand.
+        let mut peer = tree.clone();
+        peer.doc.set_actor(ActorId::from(b"bea-device".as_slice()));
+        let receipt = || {
+            tilo_actions::ActionContext::for_resource(
+                "Export",
+                "document:brief",
+                "document",
+                "Release brief",
+            )
+            .with_app("org.tilo.Writer", "Writer")
+        };
+
+        // Every kind of row the steps make, once, before reads are counted:
+        // the first row of a kind can load a catalogue, which moves the
+        // i18n revision, and the log then rightly reads its window again in
+        // the new words.
+        let heads = tree.doc.get_heads();
+        assert!(peer.append_workspace_effect_receipt(
+            home,
+            tilo_actions::InvocationId::new(),
+            "bea",
+            receipt(),
+            tilo_actions::EffectReceiptStatus::Succeeded,
+        ));
+        tree.apply_changes(&peer.export_changes_since(&heads))
+            .expect("the peer's change merges");
+        pane.refresh(&mut tree);
+        native_pane().refresh(&mut tree.clone());
+        // The catalogues those rows loaded were added after this refresh
+        // read the log; the next change reads it under them.
+        tree.set_active(second);
+        tree.commit_room_change();
+        pane.refresh(&mut tree);
+        tree.set_active(home);
+        tree.commit_room_change();
+        pane.refresh(&mut tree);
+
+        let mut next_tab = 92_000_u64;
+        for step in 0..24_u32 {
+            // The peer has everything this device has before either acts.
+            let peer_heads = peer.doc.get_heads();
+            peer.apply_changes(&tree.export_changes_since(&peer_heads))
+                .expect("the peer catches up");
+            let synced = tree.doc.get_heads();
+            let kind = match step % 6 {
+                0 => {
+                    tree.set_active(second);
+                    tree.commit_room_change();
+                    "switch away"
+                }
+                1 => {
+                    next_tab += 1;
+                    // Home has a window group to open the tab in.
+                    tree.set_active(home);
+                    assert!(tree.doc_append_tab_to_first_group_of_active_workspace(
+                        next_tab,
+                        format!("Tab {next_tab}"),
+                        b"{}".to_vec(),
+                    ));
+                    tree.commit_room_change();
+                    "open a tab"
+                }
+                2 => {
+                    // The peer acts while this device switches back: two
+                    // concurrent changes, merged in either order.
+                    assert!(peer.append_workspace_effect_receipt(
+                        home,
+                        tilo_actions::InvocationId::new(),
+                        "bea",
+                        receipt(),
+                        tilo_actions::EffectReceiptStatus::Succeeded,
+                    ));
+                    tree.set_active(home);
+                    tree.commit_room_change();
+                    let theirs = peer.export_changes_since(&synced);
+                    tree.apply_changes(&theirs)
+                        .expect("the peer's change merges");
+                    "a peer's receipt, merged"
+                }
+                3 => {
+                    next_tab += 1;
+                    assert!(peer.doc_append_tab_to_first_group_of_active_workspace(
+                        next_tab,
+                        format!("Bea's tab {next_tab}"),
+                        b"{}".to_vec(),
+                    ));
+                    peer.commit_room_change();
+                    let theirs = peer.export_changes_since(&synced);
+                    tree.apply_changes(&theirs).expect("the peer's tab merges");
+                    "a peer's tab"
+                }
+                4 => {
+                    tree.set_active(second);
+                    tree.commit_room_change();
+                    tree.set_active(home);
+                    tree.commit_room_change();
+                    "two switches between refreshes"
+                }
+                _ => "nothing new",
+            };
+            let appended = tree.doc.get_changes(&synced).len();
+            let read = pane.history_log.changes_read();
+            let catalogue = ui::I18nManager::revision();
+            pane.refresh(&mut tree);
+            assert_eq!(
+                pane.history_log.changes_read() - read,
+                appended,
+                "step {step} ({kind}): the refresh reads only the appended changes \
+                 (i18n revision {catalogue} -> {})",
+                ui::I18nManager::revision()
+            );
+
+            // What a pane that reads the whole log once derives.
+            let mut fresh = native_pane();
+            let mut fresh_tree = tree.clone();
+            fresh.refresh(&mut fresh_tree);
+            assert_eq!(
+                format!("{:?}", pane.derived),
+                format!("{:?}", fresh.derived),
+                "step {step} ({kind}): rows, summaries, authors and workspaces"
+            );
+            assert_eq!(
+                format!("{:?}", pane.timeline.entries()),
+                format!("{:?}", fresh.timeline.entries()),
+                "step {step} ({kind}): the feed"
+            );
+            let frames = |pane: &RoomActivityPane| {
+                pane.replay_frames
+                    .iter()
+                    .map(|frame| {
+                        format!(
+                            "{:?} {} {:?} {:?}",
+                            frame.entry_id, frame.summary, frame.author, frame.workspaces
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(
+                frames(&pane),
+                frames(&fresh),
+                "step {step} ({kind}): replay"
+            );
+            // Undo and restore address a row by the document's heads at it.
+            for (entry, _) in &pane.derived {
+                assert_eq!(
+                    pane.history_log.heads_for_entry(&entry.id),
+                    ui::heads_for_entry(&mut tree.doc, &entry.id),
+                    "step {step} ({kind}): the heads behind {:?}",
+                    entry.summary
+                );
+            }
+        }
+        assert!(
+            pane.derived
+                .iter()
+                .any(|(entry, _)| entry.author.name.contains("bea")),
+            "the peer's receipt is attributed to the peer"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -3429,13 +3901,8 @@ mod task_review_tests {
         ] {
             for (size, width, height) in [("normal", 1600, 900), ("compact", 560, 560)] {
                 let (mut tree, mut pane, host) = review_fixture();
-                host.snapshot.borrow_mut().sampled_at_secs = i64::try_from(
-                    SystemTime::now()
-                        .duration_since(ui::time::UNIX_EPOCH)
-                        .unwrap()
-                        .as_secs(),
-                )
-                .unwrap();
+                host.snapshot.borrow_mut().sampled_at_secs =
+                    i64::try_from(ui::time::try_unix_now().unwrap()).unwrap();
                 pane.refresh(&mut tree);
                 pane.layout_window(Rect::new(-560.0, 0.0, 0.0, 560.0));
                 paint_header_fixture(&mut pane, &Theme::light());

@@ -296,36 +296,6 @@ impl SiteControls {
     pub fn open_command(&self, information: bool) -> impl FnMut() + 'static {
         self.command(Pending::Open(information))
     }
-    /// Review fixture: the panel open on a secure page with the status the
-    /// engine would report for it.
-    pub(crate) fn stage_for_review(&mut self, information: bool, url: &str) {
-        self.navigation(url);
-        self.open = true;
-        self.information = information;
-        self.status = Some(SiteStatus {
-            request_id: 1,
-            origin: origin(url).unwrap_or_default(),
-            generation: 2,
-            blocked: 14,
-            global_enabled: true,
-            excepted: false,
-            effective: true,
-            security: "secure".into(),
-            certificate_status: 0,
-            tls_version: 6,
-            content_status: 0,
-            subject: url::Url::parse(url)
-                .ok()
-                .and_then(|url| url.host_str().map(str::to_owned))
-                .unwrap_or_default(),
-            issuer: "DigiCert".into(),
-            expires: 13_437_613_041_000_000.0,
-            permissions: ["camera", "microphone", "location", "notifications"]
-                .into_iter()
-                .map(|name| (name.into(), "ask".into()))
-                .collect(),
-        });
-    }
     pub fn launcher(&self) -> Button {
         Button::icon_only("browser.site.info", Icon::Info, "Site information")
             .tooltip("Connection, permissions and stored data")
@@ -729,7 +699,6 @@ mod tests {
             assert!(done.height() > 0.0);
             assert!(scroll.get_rect().contains(done.center()));
             let mut doc = automerge::AutoCommit::new();
-            let mut handled;
             let mut focus = None;
             for event in [
                 winit::event::WindowEvent::CursorMoved {
@@ -747,20 +716,12 @@ mod tests {
                     button: winit::event::MouseButton::Left,
                 },
             ] {
-                handled = false;
-                panel.handle_event(
-                    &event,
-                    &mut ui::widget::EventCtx {
-                        scale_factor: 1.0,
-                        modifiers: &winit::event::Modifiers::default(),
-                        state: ui::widget::Edits::lend(&mut doc),
-                        path: &automerge::ROOT,
-                        handled: &mut handled,
-                        focus_target: &mut focus,
-                        node_id: node,
-                        taffy: &tree,
-                    },
-                );
+                focus = ui::testing::Dispatch::new()
+                    .doc(&mut doc)
+                    .layout(&tree, node)
+                    .focus_target(focus)
+                    .send(&mut *panel, &event)
+                    .focus_target;
             }
             let intent = ui::widget::controls::take_control_invocation(panel.as_mut())
                 .expect("pointer emits the Done operation");

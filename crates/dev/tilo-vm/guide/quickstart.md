@@ -21,6 +21,13 @@ watch it in virt-manager (File > Add Connection > QEMU/KVM user session).
 `vm create` needs a forge token (`FORGEJO_TOKEN`, or an fgj or tea login) to
 download the disk; `tilo-vm guide platforms` covers the rest.
 
+For libvirt, QEMU and WHPX, creation selects and records an unused host SSH
+forwarding port starting at 2222. It checks registered VMs and local TCP bind
+availability. `--ssh-port PORT` requests an exact port and refuses a busy one
+before creating VM files. This is a preflight check, not a reservation: another
+process can take the port before the VM starts. Creating an already registered
+VM remains a no-op and keeps its existing port.
+
 A board, a laptop or another real machine that runs a Tilo dev image is
 registered instead: `tilo-vm vm add <name> --ssh root@<address>`, or as its
 owner's account, `--ssh <user>@<address> --key <file>` (`tilo-vm guide

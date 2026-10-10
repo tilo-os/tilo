@@ -6,9 +6,11 @@
 //! then runs [`COMPOSITE_SHADER_SOURCE`] into an HDR scanout target in place
 //! of the plain SDR → PQ encode.
 
+use settings_store::hardware::OutputTransform;
 use vello::peniko::ImageData;
 use vello::wgpu;
 
+use super::orientation::shader_code;
 use crate::shell::color_pipeline::sanitize_sdr_white_nits;
 use crate::shell::hdr_surface::{
     COMPOSITE_SHADER_SOURCE, HdrLayer, HdrTexelFormat, MAX_HDR_LAYERS,
@@ -20,6 +22,8 @@ const GPU_LAYER_ENTRIES: usize = 4;
 const LAYER_BYTES: usize = 112;
 /// Bytes of the shader's `Params`.
 const PARAMS_BYTES: usize = 16 + GPU_LAYER_ENTRIES * LAYER_BYTES;
+/// Byte offset of `Params.orientation`, after `sdr_white_nits` and `layer_count`.
+const ORIENTATION_OFFSET: u64 = 8;
 
 /// One layer image vello draws: black in the first render, its channel
 /// colour in the second.
@@ -396,8 +400,20 @@ impl HdrCompositor {
         Some(texture)
     }
 
+    /// How the next [`Self::encode`] turns the output against its surface: the shader's
+    /// `Params.orientation`, after the parameters [`Self::prepare`] wrote. Takes effect with
+    /// the next submission on the queue.
+    pub fn set_orientation(&self, orientation: OutputTransform) {
+        self.queue.write_buffer(
+            &self.params,
+            ORIENTATION_OFFSET,
+            &shader_code(orientation).to_le_bytes(),
+        );
+    }
+
     /// Composite `first` (vello's render with the layers black) and the
-    /// prepared second render into `target`, encoded as PQ BT.2020.
+    /// prepared second render into `target`, encoded as PQ BT.2020 and turned by
+    /// [`Self::set_orientation`].
     pub fn encode(
         &self,
         encoder: &mut wgpu::CommandEncoder,
@@ -565,6 +581,7 @@ fn params_bytes(sdr_white_nits: f32, layers: &[HdrLayer]) -> Vec<u8> {
     }
     bytes.extend_from_slice(&sdr_white_nits.to_le_bytes());
     bytes.extend_from_slice(&u32::try_from(count).unwrap_or(0).to_le_bytes());
+    // `orientation` (normal until `set_orientation`) and padding.
     bytes.extend_from_slice(&[0; 8]);
     let mut push = |values: [f32; 4]| {
         for value in values {

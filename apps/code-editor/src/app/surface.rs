@@ -20,12 +20,34 @@ const ROW_LIMIT: usize = actions::EAGER_RESOURCE_SNAPSHOT_LIMIT;
 const SHELL_ANSWER: ui::time::Duration = ui::time::Duration::from_millis(1500);
 
 impl CodeApp {
+    fn answer_text_read(
+        effect: &CodeEditorEffect,
+        cx: &EffectCx<CodeEditor, Self>,
+    ) -> Option<EffectAnswer> {
+        let answer = || match effect {
+            CodeEditorEffect::ReadText {
+                file,
+                start_chars,
+                max_chars,
+            } => {
+                let document = cx.document().ok_or("current document is unavailable")?;
+                crate::text_operations::read(&document, file, *start_chars, *max_chars)
+                    .map(Effected::value)
+            }
+            _ => Err("effect is not a text read".into()),
+        };
+        matches!(effect, CodeEditorEffect::ReadText { .. }).then(answer)
+    }
+
     /// Answer one of the published effects.
     pub(crate) fn answer_effect(
         &mut self,
         effect: CodeEditorEffect,
         cx: &mut EffectCx<CodeEditor, Self>,
     ) -> EffectAnswer {
+        if let Some(answer) = Self::answer_text_read(&effect, cx) {
+            return answer;
+        }
         if let Some(command) = effect.command() {
             return self.answer_command(command, cx);
         }
@@ -301,7 +323,18 @@ impl CodeApp {
         )
         .effect(&CodeEditorEffect::Open {
             file: item.resource_id.clone(),
-        });
+        })
+        .operation(
+            CodeEditorEffect::ReadText {
+                file: item.resource_id.clone(),
+                start_chars: 0,
+                max_chars: 1024,
+            }
+            .bound_asking(&["start_chars", "max_chars"]),
+        );
+        row = row.operation(crate::text_operations::snapshot_spec(
+            item.resource_id.clone(),
+        ));
         if self
             .session
             .buffer_of(node)

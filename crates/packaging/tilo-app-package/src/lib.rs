@@ -17,6 +17,8 @@
 //!   [`BlobSink`] edges — see [`blobs`].
 //! - [`chunks`] — the payload objects (`<blob>.blob`, `<blob>.chunks`) that
 //!   complete a thin package, chunked and verified with bounded memory.
+//! - [`compressed`] — the zstd twins packages and payload objects travel
+//!   as, decompressed with a bound before they are verified (native only).
 //! - [`PackageMeta`] — the signed root, manifest and collection with every
 //!   hash link checked. See [`package`].
 //! - [`pack()`], [`unpack()`], [`verify()`] and the [`tapp`] archive codec
@@ -38,11 +40,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -50,6 +48,9 @@
 
 pub mod blobs;
 pub mod chunks;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod compressed;
+pub mod continuity_schema;
 pub mod desktop;
 pub mod id;
 pub mod image;
@@ -63,7 +64,6 @@ pub mod unpack;
 pub mod validate;
 pub mod verify;
 pub mod version;
-pub mod web;
 
 pub use blobs::{
     BlobFetcher, BlobHash, BlobSink, BlobSource, Collection, CollectionDecodeError, DiscardBlobs,

@@ -80,18 +80,22 @@ pub enum PermissionProfileOperation {
         subject: String,
         expires_unix: u64,
     },
-    /// Let application `app` use `target_app`'s `action` here.
+    /// Let application `app` use `action` on `target_app`'s resource
+    /// `resource` here, and nothing else of `target_app`.
     GrantAppAction {
         app: String,
         target_app: String,
+        resource: String,
         action: String,
         /// `session` or `always`.
         lifetime: String,
     },
-    /// Take back every grant letting `app` use `target_app`'s `action`.
+    /// Take back every grant letting `app` use `action` on `target_app`'s
+    /// resource `resource`.
     RevokeAppAction {
         app: String,
         target_app: String,
+        resource: String,
         action: String,
     },
 }
@@ -146,7 +150,7 @@ pub fn permission_profile_resource_with_access(
     };
 
     let mut root = tilo_actions::Resource::new(
-        format!("workspace.permissions:{}", ws.room),
+        tilo_desktop_model::governance_resource_id(&ws.room),
         "workspace.permissions",
         t_args(
             "workspace-settings-roles-resource",
@@ -192,7 +196,7 @@ pub fn permission_profile_resource_with_access(
                                 "oneOf": [
                                     {"const": "Workspace"},
                                     {"type": "object", "required": ["App"], "properties": {"App": {"type": "string"}}, "additionalProperties": false},
-                                    {"type": "object", "required": ["Action"], "properties": {"Action": {"type": "object", "required": ["app", "action"], "properties": {"app": {"type": "string"}, "action": {"type": "string"}}, "additionalProperties": false}}, "additionalProperties": false},
+                                    {"type": "object", "required": ["Action"], "properties": {"Action": {"type": "object", "required": ["app", "resource", "action"], "properties": {"app": {"type": "string"}, "resource": {"type": "string"}, "action": {"type": "string"}}, "additionalProperties": false}}, "additionalProperties": false},
                                     {"type": "object", "required": ["FsPath"], "properties": {"FsPath": {"type": "string"}}, "additionalProperties": false},
                                     {"type": "object", "required": ["FsRecord"], "properties": {"FsRecord": {"type": "string"}}, "additionalProperties": false},
                                     {"type": "object", "required": ["ResourceType"], "properties": {"ResourceType": {"type": "string"}}, "additionalProperties": false},
@@ -290,6 +294,11 @@ pub fn permission_profile_resource_with_access(
                 ParamType::Text,
                 "Package id of the application that publishes the action",
             ),
+            ActionParam::required_owned(
+                "resource",
+                ParamType::Text,
+                "Id of the resource that publishes the action",
+            ),
             ActionParam::required_owned("action", ParamType::Text, "The action's id"),
         ]
     };
@@ -310,6 +319,7 @@ pub fn permission_profile_resource_with_access(
                 encoded_profile_operation(&PermissionProfileOperation::GrantAppAction {
                     app: arguments.text("app").unwrap_or_default().to_string(),
                     target_app: arguments.text("target_app").unwrap_or_default().to_string(),
+                    resource: arguments.text("resource").unwrap_or_default().to_string(),
                     action: arguments.text("action").unwrap_or_default().to_string(),
                     lifetime: arguments.text("lifetime").unwrap_or_default().to_string(),
                 })
@@ -330,6 +340,7 @@ pub fn permission_profile_resource_with_access(
                 encoded_profile_operation(&PermissionProfileOperation::RevokeAppAction {
                     app: arguments.text("app").unwrap_or_default().to_string(),
                     target_app: arguments.text("target_app").unwrap_or_default().to_string(),
+                    resource: arguments.text("resource").unwrap_or_default().to_string(),
                     action: arguments.text("action").unwrap_or_default().to_string(),
                 })
             },
@@ -341,11 +352,7 @@ pub fn permission_profile_resource_with_access(
     for profile in &ws.permission_profiles {
         let profile_name = profile.name.clone();
         let mut resource = tilo_actions::Resource::new(
-            format!(
-                "workspace.permission-profile:{}:{}",
-                ws.room,
-                hex::encode(&blake3::hash(profile_name.as_bytes()).as_bytes()[..12])
-            ),
+            tilo_desktop_model::permission_profile_resource_id(&ws.room, &profile_name),
             "workspace.permission-profile",
             profile.name.clone(),
         );
@@ -1503,11 +1510,30 @@ fn scope_phrase(scope: &Scope, object: bool, apps: &dyn AppDirectory) -> String 
         },
         Scope::NetHost(host) if host == "*" => ("workspace-settings-scope-any-host", Vec::new()),
         Scope::NetHost(host) => ("workspace-settings-scope-host", vec![("host", host.into())]),
-        Scope::Action { app, action } => {
+        Scope::Action {
+            app,
+            resource,
+            action,
+        } => {
             let name = app_display_name(apps, app);
             (
                 "workspace-settings-scope-action",
-                vec![("action", action.into()), ("app", name.into())],
+                vec![
+                    ("action", action.into()),
+                    ("resource", resource.into()),
+                    ("app", name.into()),
+                ],
+            )
+        }
+        Scope::ActionOnKind { app, kind, action } => {
+            let name = app_display_name(apps, app);
+            (
+                "workspace-settings-scope-action-on-kind",
+                vec![
+                    ("action", action.into()),
+                    ("kind", kind.into()),
+                    ("app", name.into()),
+                ],
             )
         }
         Scope::ResourceType(kind) => (
@@ -1579,7 +1605,7 @@ pub fn capability_allows(cap: &CapOverride, apps: &dyn AppDirectory) -> String {
         (Scope::Device(_), Verb::Write | Verb::Admin) => "workspace-settings-allows-control",
         (Scope::Device(_), _) => "workspace-settings-allows-use",
         (Scope::NetHost(_), _) => "workspace-settings-allows-reach",
-        (Scope::Action { .. }, _) => "workspace-settings-allows-run",
+        (Scope::Action { .. } | Scope::ActionOnKind { .. }, _) => "workspace-settings-allows-run",
         (_, Verb::Admin) => "workspace-settings-allows-administer",
         (_, Verb::Write) => "workspace-settings-allows-edit",
         (_, Verb::Comment) => "workspace-settings-allows-comment",
@@ -1700,8 +1726,9 @@ enum GrantTarget {
     Device(&'static str),
     AnyHost,
     WorkspaceFiles,
-    Action {
-        app: &'static str,
+    /// One of the workspace's own governance actions, on the resource the
+    /// workspace publishes them on.
+    GovernanceAction {
         action: &'static str,
     },
 }
@@ -1761,16 +1788,14 @@ static GRANT_CHOICES: &[GrantChoice] = &[
     },
     GrantChoice {
         label_key: "workspace-settings-grant-create-roles",
-        target: GrantTarget::Action {
-            app: tilo_desktop_model::WORKSPACE_GOVERNANCE_APP_ID,
+        target: GrantTarget::GovernanceAction {
             action: tilo_desktop_model::PROFILE_SAVE_ACTION_ID,
         },
         verb: Verb::Admin,
     },
     GrantChoice {
         label_key: "workspace-settings-grant-assign-roles",
-        target: GrantTarget::Action {
-            app: tilo_desktop_model::WORKSPACE_GOVERNANCE_APP_ID,
+        target: GrantTarget::GovernanceAction {
             action: tilo_desktop_model::PROFILE_ASSIGN_ACTION_ID,
         },
         verb: Verb::Admin,
@@ -1903,8 +1928,9 @@ pub fn draft_capability(ws: &Workspace, draft: &GrantDraft) -> Option<CapOverrid
         GrantTarget::Device(d) => Scope::Device(d.to_string()),
         GrantTarget::AnyHost => Scope::NetHost("*".to_string()),
         GrantTarget::WorkspaceFiles => Scope::FsPath(WORKSPACE_FILES_PATH.to_string()),
-        GrantTarget::Action { app, action } => Scope::Action {
-            app: app.to_string(),
+        GrantTarget::GovernanceAction { action } => Scope::Action {
+            app: tilo_desktop_model::WORKSPACE_GOVERNANCE_APP_ID.to_string(),
+            resource: tilo_desktop_model::governance_resource_id(&ws.room),
             action: action.to_string(),
         },
     };
@@ -2170,16 +2196,6 @@ impl AgentAuthorityPreset {
             Self::Contributor => "workspace-settings-preset-contributor",
             Self::Operator => "workspace-settings-preset-operator",
             Self::Custom => "workspace-settings-preset-custom",
-        })
-    }
-
-    /// Plain-language preview shown before the user grants a surface.
-    pub fn review_hint(self) -> String {
-        t(match self {
-            Self::Observer => "workspace-settings-preset-observer-hint",
-            Self::Contributor => "workspace-settings-preset-contributor-hint",
-            Self::Operator => "workspace-settings-preset-operator-hint",
-            Self::Custom => "workspace-settings-preset-custom-hint",
         })
     }
 
@@ -4706,6 +4722,7 @@ mod members_pane_tests {
                 rules: vec![collab_types::PermissionProfileRule::grant(
                     Scope::Action {
                         app: "org.tilo.Builds".into(),
+                        resource: "builds.release".into(),
                         action: "release.approve".into(),
                     },
                     Verb::Write,
@@ -4738,7 +4755,11 @@ mod members_pane_tests {
             "name": "Notes opener",
             "description": "Can open notes but cannot edit them",
             "rules": [{
-                "scope": {"Action": {"app": "so.tilo.notes", "action": "note.open"}},
+                "scope": {"Action": {
+                    "app": "so.tilo.notes",
+                    "resource": "notes.page:1",
+                    "action": "note.open"
+                }},
                 "effect": "Grant",
                 "verb": "Read"
             }]
@@ -4757,6 +4778,7 @@ mod members_pane_tests {
                 if rules == vec![collab_types::PermissionProfileRule::grant(
                     Scope::Action {
                         app: "so.tilo.notes".into(),
+                        resource: "notes.page:1".into(),
                         action: "note.open".into(),
                     },
                     Verb::Read,
@@ -5276,6 +5298,7 @@ mod permissions_pane_tests {
                 Scope::NetHost("example.com".into()),
                 Scope::Action {
                     app: "notes".into(),
+                    resource: "notes.page:1".into(),
                     action: "export".into(),
                 },
                 Scope::ResourceType(ArtifactKind::Note),
@@ -5507,8 +5530,13 @@ mod permissions_pane_tests {
                         Scope::NetHost(h) => ResourceRef::NetHost(h.clone()),
                         Scope::FsPath(p) => ResourceRef::FsPath(p.clone()),
                         Scope::Workspace => ResourceRef::Workspace,
-                        Scope::Action { app, action } => ResourceRef::Action {
+                        Scope::Action {
+                            app,
+                            resource,
+                            action,
+                        } => ResourceRef::Action {
                             app: app.clone(),
+                            resource: resource.clone(),
                             action: action.clone(),
                         },
                         other => panic!("unexpected scope in the grant table: {other:?}"),

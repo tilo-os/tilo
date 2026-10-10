@@ -1182,9 +1182,7 @@ impl Widget for InertPart {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy.leaf_node(Style::default());
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_leaf(Style::default(), node_map, self)
     }
 
     fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
@@ -1461,14 +1459,6 @@ impl NavShell {
         self
     }
 
-    /// How many items the sidebar holds, after its title (a quiet count, as
-    /// `SectionHeader::count`).
-    #[must_use]
-    pub fn sidebar_count(mut self, count: usize) -> Self {
-        self.set_count(Column::Sidebar, Some(count));
-        self
-    }
-
     /// How many items the overview lists, after its title.
     #[must_use]
     pub fn overview_count(mut self, count: usize) -> Self {
@@ -1698,24 +1688,9 @@ impl NavShell {
         self.set_title(Column::Inspector, title.into());
     }
 
-    /// Show or clear the count after the sidebar's title.
-    pub fn set_sidebar_count(&mut self, count: Option<usize>) {
-        self.set_count(Column::Sidebar, count);
-    }
-
-    /// Show or clear the count after the overview's title.
-    pub fn set_overview_count(&mut self, count: Option<usize>) {
-        self.set_count(Column::Overview, count);
-    }
-
     /// Show or clear the count after the content's title.
     pub fn set_content_count(&mut self, count: Option<usize>) {
         self.set_count(Column::Content, count);
-    }
-
-    /// Show or clear the count after the inspector's title.
-    pub fn set_inspector_count(&mut self, count: Option<usize>) {
-        self.set_count(Column::Inspector, count);
     }
 
     /// Whether the content's page stack can go back, for an app that keeps
@@ -1920,15 +1895,6 @@ impl NavShell {
         let slot = match at_mut(&mut self.pending.bodies, Column::Content) {
             Some(Staged(pending)) => pending.as_deref_mut(),
             None => Some(self.content.as_mut()),
-        };
-        downcast(slot)
-    }
-
-    /// The inspector as the widget the app gave it.
-    pub fn inspector_mut<T: Widget + 'static>(&mut self) -> Option<&mut T> {
-        let slot = match at_mut(&mut self.pending.bodies, Column::Inspector) {
-            Some(Staged(pending)) => pending.as_deref_mut(),
-            None => self.inspector.as_deref_mut(),
         };
         downcast(slot)
     }
@@ -3357,18 +3323,14 @@ impl Widget for NavShell {
         self.built = true;
         self.structure_dirty = false;
         self.invalidation.invalidate();
-        let node = taffy.parent_node(
-            Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
-                ..Default::default()
+        let style = Style {
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::percent(1.0),
             },
-            &nodes,
-        );
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+            ..Default::default()
+        };
+        taffy.widget_node(style, &nodes, node_map, self)
     }
 
     fn manual_layout_policy(&self) -> Option<ManualPolicy> {
@@ -3380,13 +3342,7 @@ impl Widget for NavShell {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         self.refresh_geometry();
         self.reconcile_size_class();
         self.refresh_geometry();
@@ -3720,6 +3676,13 @@ impl WindowHeader for NavShell {
 }
 
 impl crate::widget::controls::ActionControls for NavShell {
+    fn action_control_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
+        let mut bindings = Vec::new();
+        self.for_each_child(&mut |child| {
+            bindings.extend(crate::widget::controls::action_control_bindings(child));
+        });
+        bindings
+    }
     fn install_control_custody(
         &mut self,
         domain: &crate::ControlDomain,

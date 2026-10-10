@@ -337,33 +337,6 @@ impl Hydrator {
         result
     }
 
-    /// Revalidate that a peer still serves this exact, content-addressed blob.
-    /// The bytes are discarded; this is the last online check before local GC.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the connection fails, the peer doesn't serve the blob, or the check times out.
-    pub async fn verify_remote_copy(&self, hash: Hash, peer: EndpointAddr) -> Result<()> {
-        tokio::time::timeout(Duration::from_secs(20), async {
-            let conn = self.blob_connection(&peer).await?;
-            let mut result = iroh_blobs::get::request::get_blob(conn, hash);
-            while let Some(item) = result.next().await {
-                match item {
-                    iroh_blobs::get::request::GetBlobItem::Done(_) => {
-                        return Ok::<_, anyhow::Error>(());
-                    }
-                    iroh_blobs::get::request::GetBlobItem::Error(error) => {
-                        return Err(anyhow!(error));
-                    }
-                    iroh_blobs::get::request::GetBlobItem::Item(_) => {}
-                }
-            }
-            Err(anyhow!("remote durability stream ended early"))
-        })
-        .await
-        .map_err(|_| anyhow!("remote durability check timed out"))?
-    }
-
     /// # Errors
     ///
     /// Returns an error if `hash` is absent locally and no known peer can serve it.

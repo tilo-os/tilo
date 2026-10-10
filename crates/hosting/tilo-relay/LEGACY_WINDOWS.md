@@ -89,4 +89,4 @@ node --test crates/browser/tilo-browser-runtime/web/legacy-windows.test.mjs crat
 The viewer/reassembly/input mapping reuses pre-deletion PR #541 implementation
 from commits `7578bc4de6` and `47a326a69d`; framing is now in
 `tilo-relay-protocol`, and delivery uses `tilo-moq`/the current relay rather than
-`delivery_v3` or a second transport control plane.
+a second transport control plane.

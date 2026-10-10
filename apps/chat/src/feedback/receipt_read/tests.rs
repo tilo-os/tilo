@@ -351,3 +351,87 @@ fn mounted_triage_observes_live_write_permission_and_keeps_attributed_task_refer
         report
     );
 }
+
+#[test]
+fn mounted_feedback_status_reads_attributed_triage_with_view_permission() {
+    let mut fixture = mounted_fixture("maintainer");
+    for status in ["investigating", "resolved"] {
+        let address = ui::bound_dispatch::BoundActionAddress {
+            instance_id: 42,
+            address: tilo_actions::ActionAddress::new(
+                format!("chat.feedback:{}", fixture.submission.id),
+                "triage",
+            ),
+        };
+        fixture
+            .frame
+            .invoke_bound_action(
+                &address,
+                serde_json::json!({"update":{"status":status}})
+                    .as_object()
+                    .unwrap(),
+            )
+            .unwrap()
+            .completed()
+            .unwrap();
+    }
+    let reference = tilo_reference::ResourceRef::ranged(
+        "tasks.task",
+        "fixture-task",
+        "Fixture task",
+        tilo_reference::Span::chars(1, 4),
+    );
+    fixture
+        .frame
+        .invoke_bound_action(
+            &ui::bound_dispatch::BoundActionAddress {
+                instance_id: 42,
+                address: tilo_actions::ActionAddress::new(
+                    format!("chat.feedback:{}", fixture.submission.id),
+                    "triage",
+                ),
+            },
+            serde_json::json!({"update":{"status":"task","reference":reference}})
+                .as_object()
+                .unwrap(),
+        )
+        .unwrap()
+        .completed()
+        .unwrap();
+    fixture.frame.flush_component_records().unwrap();
+    maintainer_role(&fixture, ui::permissions::Role::Viewer);
+    let address = ui::bound_dispatch::BoundActionAddress {
+        instance_id: 42,
+        address: tilo_actions::ActionAddress::new(
+            format!("chat.feedback:{}", fixture.submission.id),
+            "read-feedback-status",
+        ),
+    };
+    let output = fixture
+        .frame
+        .invoke_bound_action(&address, &serde_json::Map::new())
+        .expect("a returning viewer must be able to read triage through the public door")
+        .completed()
+        .unwrap();
+    let value = output.value.unwrap();
+    assert_eq!(value["content"]["receipt"]["id"], fixture.submission.id);
+    assert_eq!(
+        value["content"]["receipt"]["digest"],
+        fixture.submission.digest().unwrap()
+    );
+    assert_eq!(value["content"]["triage"].as_array().unwrap().len(), 3);
+    assert_eq!(value["content"]["earlierEntries"], 0);
+    assert_eq!(
+        value["content"]["triage"][0]["update"]["status"],
+        "investigating"
+    );
+    assert_eq!(
+        value["content"]["triage"][1]["update"]["status"],
+        "resolved"
+    );
+    assert_eq!(value["content"]["triage"][1]["author"], "maintainer");
+    assert_eq!(
+        value["content"]["triage"][2]["update"]["reference"],
+        serde_json::to_value(reference).unwrap()
+    );
+}

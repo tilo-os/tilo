@@ -19,7 +19,7 @@ fn original(peer: &StatePeer, policy: &RoomMediaV1, complete: bool) -> Result<()
                     policy,
                     &route.app,
                     &route.record,
-                    &document.doc,
+                    &*document.doc,
                 )
                 .map_err(err)?;
             }

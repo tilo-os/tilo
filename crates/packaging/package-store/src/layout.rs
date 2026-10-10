@@ -180,7 +180,7 @@ pub fn default_user_root() -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os("TILO_APPS_DATA_DIR") {
         return Some(PathBuf::from(dir));
     }
-    Some(xdg_paths::xdg::data_home()?.join("tilo-apps"))
+    Some(tilo_paths::xdg::data_home()?.join("tilo-apps"))
 }
 
 /// Whether this session was handed an app store of its own.

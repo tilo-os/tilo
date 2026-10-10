@@ -277,10 +277,6 @@ impl DropZone {
         }
     }
 
-    pub fn is_drag_over(&self) -> bool {
-        self.drag_over
-    }
-
     fn face(&self) -> DropZoneFace<'_> {
         let mut face = DropZoneFace::new(&self.title)
             .icon(self.icon)
@@ -394,14 +390,7 @@ impl Widget for DropZone {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        let rect = Rect::from_origin_size(
-            (
-                origin.x + f64::from(l.location.x),
-                origin.y + f64::from(l.location.y),
-            ),
-            (f64::from(l.size.width), f64::from(l.size.height)),
-        );
+        let rect = crate::widget::layout_rect(taffy, node, origin);
         if rect != self.rect {
             self.dirty = true;
         }

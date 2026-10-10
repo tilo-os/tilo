@@ -16,6 +16,7 @@ pub mod device_actions;
 pub mod disk;
 pub mod doctor;
 pub mod error;
+mod forwarded_port;
 pub mod guide;
 pub mod host;
 pub mod hypervisor;

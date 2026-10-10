@@ -250,13 +250,6 @@ impl Matcher {
         }
     }
 
-    pub fn proto_label(&self) -> String {
-        match self {
-            Matcher::Service(s) => ServiceCatalog::proto_of(s).to_string(),
-            Matcher::Port { proto, .. } => proto.label().to_string(),
-        }
-    }
-
     /// What the rule matches as people read it: the service's name, or
     /// the port (range); the protocol has a column of its own.
     pub fn title(&self) -> String {
@@ -272,10 +265,6 @@ impl Matcher {
             Matcher::Service(s) => ServiceCatalog::proto_title(ServiceCatalog::proto_of(s)),
             Matcher::Port { proto, .. } => proto.title(),
         }
-    }
-
-    pub fn is_service(&self) -> bool {
-        matches!(self, Matcher::Service(_))
     }
 }
 

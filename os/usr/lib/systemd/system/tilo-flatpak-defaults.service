@@ -1,0 +1,37 @@
+[Unit]
+Description=Initialize shipped Flatpak defaults before first login
+After=local-fs.target flatpak-add-fedora-repos.service
+Before=greetd.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Listing as root initializes new predefined remotes, including on upgrades.
+# Flatpak's xa.applied-remotes history preserves later disable/removal choices.
+# This uses the shipped descriptor and embedded signing key, without network.
+ExecStart=/usr/bin/flatpak remotes --system --columns=name
+TimeoutStartSec=30
+StateDirectory=flatpak
+StateDirectoryMode=0755
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/flatpak
+PrivateNetwork=yes
+PrivateTmp=yes
+PrivateDevices=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+LockPersonality=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_UNIX
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

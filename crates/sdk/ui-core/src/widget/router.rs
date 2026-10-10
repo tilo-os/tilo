@@ -215,13 +215,6 @@ impl RouteHandle {
         }))
     }
 
-    pub fn back_action(&self) -> impl FnMut() + use<> {
-        let handle = self.clone();
-        move || {
-            let _ = handle.back();
-        }
-    }
-
     fn require_known(&self, route: &str) -> Result<(), RouteError> {
         if self.knows(route) {
             Ok(())
@@ -404,28 +397,18 @@ impl Widget for Router {
     ) -> NodeId {
         self.theme = theme.clone();
         let child = self.child.build_layout(taffy, theme, node_map);
-        let node = taffy.parent_node(
-            Style {
-                size: taffy::Size {
-                    width: percent(1.0_f32),
-                    height: percent(1.0_f32),
-                },
-                ..Default::default()
+        let style = Style {
+            size: taffy::Size {
+                width: percent(1.0_f32),
+                height: percent(1.0_f32),
             },
-            &[child],
-        );
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+            ..Default::default()
+        };
+        taffy.widget_node(style, &[child], node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x + layout.size.width),
-            origin.y + f64::from(layout.location.y + layout.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         if let Ok(children) = taffy.children(node)
             && let Some(child) = children.first()
         {
