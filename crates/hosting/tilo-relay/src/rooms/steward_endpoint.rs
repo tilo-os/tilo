@@ -37,6 +37,10 @@ impl Rooms {
     ///
     /// Refuses a refused decision, and a channel that does not exist when
     /// `create` is false.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the room stays locked from the decision until its keys are read"
+    )]
     pub(crate) async fn steward_endpoint_keys(
         &self,
         route: &DocumentRoute,
