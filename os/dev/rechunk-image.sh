@@ -94,14 +94,23 @@ docker buildx build --builder "$builder" --progress=plain \
   --file "$TILO_OS_DIR/Containerfile.rechunk" --target rechunked \
   --build-context "rootfs=$context" \
   --build-context "github-assets=$TILO_OS_DIR/external-assets/cache" \
+  --build-context "tilo-scripts=$TILO_OS_DIR/scripts" \
   --build-arg "SOURCE_DATE_EPOCH=$epoch" \
   --build-arg "TILO_RECHUNK_MAX_LAYERS=$max_layers" \
   --output "type=local,dest=$work/out" \
   "$work/context" >&2
-msg "chunkah wrote $(find "$work/out/image/blobs" -type f | wc -l) blobs in $(( $(date +%s) - started ))s"
-[ -z "$report" ] || cp -- "$work/out/components.json" "${report%.json}-components.json"
+msg "chunkah wrote $(find "$work/out" -path '*/blobs/sha256/*' -type f | wc -l) blobs in $(( $(date +%s) - started ))s"
 
 finish=(--raw "$raw" --chunked "$work/out/image" --name "$name")
+if [ -n "$report" ]; then
+  cp -- "$work/out/components.json" "${report%.json}-components.json"
+fi
+# Trees with layers of their own (os/scripts/rechunk-chunkah.py).
+for tree in "$work"/out/trees/*/; do
+  [ -d "$tree/image" ] || continue
+  finish+=(--extra "${tree%/}/image")
+  [ -z "$report" ] || cp -- "$tree/components.json" "${report%.json}-$(basename "$tree")-components.json"
+done
 [ -z "$report" ] || finish+=(--report "$report")
 [ -z "$archive" ] || finish+=(--archive "$archive")
 digest="$(python3 "$TILO_OS_DIR/scripts/oci-rechunk.py" finish "${finish[@]}" | tail -n1)"

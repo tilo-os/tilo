@@ -50,21 +50,21 @@ RUN --network=none \
     && command -v rpm
 
 # The raw image arrives as the named build context `rootfs` (a registry image or
-# an OCI layout). `--prune /sysroot/` drops the base's ostree repository, which
-# bootc's composefs backend never deploys, and keeps the directory. The epoch
-# caps the time of files no package owns (a package's files are capped at its
-# build time), so it must be the same for two builds that should share layers.
+# an OCI layout). os/scripts/rechunk-chunkah.py runs chunkah over it, with
+# /sysroot's contents pruned (the base's ostree repository, which bootc's
+# composefs backend never deploys), and gives trees that change on their own
+# schedule (Proton and the Steam runtime) layers of their own. The epoch caps
+# the time of files no package owns (a package's files are capped at its build
+# time), so it must be the same for two builds that should share layers.
 FROM chunkah AS rechunk
 ARG SOURCE_DATE_EPOCH
 ARG TILO_RECHUNK_MAX_LAYERS=128
+COPY --from=tilo-scripts /rechunk-chunkah.py /usr/local/libexec/tilo-rechunk-chunkah
 RUN --network=none \
     --mount=type=bind,from=rootfs,source=/,target=/rootfs,rw \
     --mount=type=tmpfs,target=/tmp \
-    { [ "${SOURCE_DATE_EPOCH:-0}" -gt 0 ] || { echo 'SOURCE_DATE_EPOCH must be a positive epoch' >&2; exit 1; }; } \
-    && mkdir /out \
-    && SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" chunkah build --rootfs /rootfs \
-         --prune /sysroot/ --max-layers "$TILO_RECHUNK_MAX_LAYERS" --compressed \
-         --write-manifest-to /out/components.json --output oci:/out/image
+    SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" \
+      python3 -B /usr/local/libexec/tilo-rechunk-chunkah /rootfs /out "$TILO_RECHUNK_MAX_LAYERS"
 
 FROM scratch AS rechunked
 COPY --from=rechunk /out/ /

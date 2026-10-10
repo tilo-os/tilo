@@ -9,6 +9,7 @@ import importlib.util
 import io
 import json
 import shutil
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -30,6 +31,7 @@ def load(name: str, path: Path):
 
 rechunk = load("oci_rechunk", SCRIPTS / "oci-rechunk.py")
 archive_ref = load("oci_archive_ref", SCRIPTS / "oci-archive-ref.py")
+runner = load("rechunk_chunkah", SCRIPTS / "rechunk-chunkah.py")
 
 NAME = "registry.tilo.so/tilo/tilo-ci:pr-1-abcdef0-x86_64"
 CAP = b"\x01\x00\x00\x02\x00\x10\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
@@ -287,6 +289,69 @@ class Rechunk(unittest.TestCase):
         with tarfile.open(fileobj=io.BytesIO(rechunk.directory_layer(tree)), mode="r") as archive:
             names = [member.name for member in archive]
         self.assertEqual(names, ["sysroot", "var"])
+
+    def test_a_tree_chunked_on_its_own_joins_the_main_layout(self) -> None:
+        # The main run pruned the fonts; their own run kept only them and the
+        # directories above them.
+        layers = chunked_layers()
+        fonts = [item for item in layers[1] if item[0] == "usr/share/fonts/sans.ttf"]
+        layers[1] = [item for item in layers[1] if item[0] != "usr/share/fonts/sans.ttf"]
+        root = self.work / "chunked"
+        layout(root, layers, config_body={"Labels": {}})
+        tree = self.work / "tree"
+        layout(tree, [[entry("usr", "dir", mtime=70), entry("usr/share", "dir", mtime=70),
+                       entry("usr/share/fonts", "dir", mtime=70, xattrs={"user.pinned": b"1"}), *fonts]],
+               config_body={"Labels": {}})
+        self.assertEqual(rechunk.merge_layouts(root, [tree]), 1)
+        _, report = self.finish(root)
+        self.assertEqual(report["problems"], 0)
+        self.assertEqual(report["chunked_layers"], 4)
+        image = rechunk.image_size.layout_image(root, None)
+        self.assertEqual(len(image.config["history"]), 4)
+        self.assertEqual(rechunk.replay(image).nodes["usr/share/fonts/sans.ttf"].sha,
+                         hashlib.sha256(b"glyphs").hexdigest())
+
+    def test_a_tree_run_prunes_everything_beside_its_ancestors(self) -> None:
+        rootfs = self.work / "rootfs"
+        for path in ("usr/lib/tilo/windows-runners/proton", "usr/lib/tilo/fonts", "usr/lib/sysimage/rpm",
+                     "usr/bin", "etc", "sysroot/ostree"):
+            (rootfs / path).mkdir(parents=True)
+        (rootfs / "usr/lib/libz.so.1").write_text("z")
+        self.assertEqual(runner.outside(rootfs, "/usr/lib/tilo/windows-runners"), [
+            "/etc", "/sysroot", "/usr/bin", "/usr/lib/libz.so.1", "/usr/lib/sysimage", "/usr/lib/tilo/fonts"])
+
+    def test_the_runner_gives_present_trees_their_own_run(self) -> None:
+        rootfs = self.work / "rootfs"
+        (rootfs / "usr/lib/tilo/windows-runners").mkdir(parents=True)
+        (rootfs / "etc").mkdir()
+        calls = self.work / "calls"
+        fake = self.work / "bin"
+        fake.mkdir()
+        (fake / "chunkah").write_text(
+            "#!/bin/sh\n"
+            f"printf '%s\\n' \"$*\" >> {calls}\n"
+            "while [ $# -gt 0 ]; do\n"
+            "  case $1 in --output) mkdir -p \"${2#oci:}\";; --write-manifest-to) echo {} > \"$2\";; esac\n"
+            "  shift\n"
+            "done\n")
+        (fake / "chunkah").chmod(0o755)
+        environment = {"PATH": f"{fake}:/usr/bin:/bin", "SOURCE_DATE_EPOCH": "1700000000"}
+        out = self.work / "out"
+        subprocess.run([sys.executable, str(SCRIPTS / "rechunk-chunkah.py"), str(rootfs), str(out), "128"],
+                       check=True, env=environment)
+        main, tree = calls.read_text().splitlines()
+        self.assertIn("--max-layers 128", main)
+        self.assertIn("--prune /sysroot/ --prune /usr/lib/tilo/windows-runners/", main)
+        self.assertIn("--max-layers 16", tree)
+        self.assertIn("--prune /etc", tree)
+        self.assertTrue((out / "image").is_dir() and (out / "components.json").is_file())
+        self.assertTrue((out / "trees" / "windows-runners" / "image").is_dir())
+        # No epoch, no run: two builds must share it to share layers.
+        failed = subprocess.run([sys.executable, str(SCRIPTS / "rechunk-chunkah.py"), str(rootfs),
+                                 str(self.work / "out2"), "128"], env={"PATH": environment["PATH"]},
+                                capture_output=True, text=True)
+        self.assertNotEqual(failed.returncode, 0)
+        self.assertIn("SOURCE_DATE_EPOCH", failed.stderr)
 
     def test_opaque_root_and_replaced_directory(self) -> None:
         tree = rechunk.Tree()
