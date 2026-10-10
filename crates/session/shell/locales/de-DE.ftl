@@ -2523,3 +2523,5 @@ activity-task-approve-run = Ausführung freigeben
 device-fabric-error-input-operation-unavailable = Die Eingabesteuerung ist beschäftigt. Versuche es erneut.
 device-fabric-error-input-decline-unavailable = Deine abgelehnten Eingabegeräte konnten nicht gelesen werden.
 device-fabric-error-input-decline-save-failed = Die Eingabesteuerung wurde widerrufen, aber die Ablehnung konnte nicht gespeichert werden. Automatische Eingabe bleibt deaktiviert.
+
+device-fabric-error-input-sequence-exhausted = Die Eingabesequenz ist ausgeschöpft. Fordere eine neue Steuerungsberechtigung an.
