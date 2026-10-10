@@ -122,7 +122,7 @@ pub use action::{
     ActionCx, ActionRef, Binds, Invoke, Mapped, Operation, Outcome, Refusal, Stamped,
 };
 pub use child::{child_resource_id, publish_child};
-pub use collection::{Collection, Id};
+pub use collection::{Collection, Id, Membership};
 pub use delta::{Delta, Path, Touch, Touched, Tracker};
 pub use effect::{Answers, Effect, EffectDecl, NoEffect};
 pub use group::{ActionGroup, GROUP, GROUP_PARAM};
