@@ -571,9 +571,19 @@ fn generic_edit_schema(ops: &[(String, serde_json::Value)]) -> serde_json::Value
             .get_mut("properties")
             .and_then(serde_json::Value::as_object_mut)
     {
+        // A field type's own vocabulary (rich text's) can outweigh the
+        // whole listing: it is summarised by its operations and their
+        // arguments, and checked when the edit applies.
         let alternatives = ops
             .into_iter()
-            .map(|(path, schema)| crate::schema::describe(schema, &format!("An edit of `{path}`")))
+            .map(|(path, schema)| {
+                serde_json::json!({
+                    "description": format!(
+                        "An edit of `{path}` in its own vocabulary, one of: {}",
+                        crate::schema::summary(&schema)
+                    ),
+                })
+            })
             .collect();
         properties.insert("rich".into(), crate::schema::one_of(alternatives));
     }

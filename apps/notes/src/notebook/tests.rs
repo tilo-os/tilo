@@ -563,3 +563,46 @@ fn the_notebook_publishes_notes_as_items_and_reads_as_its_content() {
     assert!(hits.iter().any(|hit| hit.title == "Alpha"));
     assert!(hits.iter().any(|hit| hit.text == "Second line"));
 }
+
+/// The field-edit listing stays small with a rich-text body in every note:
+/// the body's vocabulary is named by its operations rather than copied, and
+/// an agent still builds a rich edit of a note's body from the listing.
+#[test]
+fn an_agent_edits_a_note_body_from_a_compact_field_edit_listing() {
+    let mut notebook = Replica::<Notebook>::new();
+    let id = note(&mut notebook, "Plan", None);
+    write(
+        &mut notebook,
+        &id,
+        &[BlockContent::paragraph("b1", "the plan")],
+    );
+    let published = notebook.published().unwrap();
+    let spec = published
+        .actions
+        .iter()
+        .find(|spec| spec.id == ui::tilo_resource::FIELD_EDIT)
+        .unwrap();
+    let params = serde_json::to_string(&spec.params()).unwrap();
+    assert!(
+        params.len() < 16 * 1024,
+        "{} bytes of field-edit params",
+        params.len()
+    );
+    let schema = spec.params()[0].schema.as_deref().unwrap().clone();
+    let text = schema.to_string();
+    assert!(
+        text.contains("`pages.*.body`") && text.contains("SpliceText"),
+        "{text}"
+    );
+
+    let block = page(&notebook, &id).blocks()[0].id.clone();
+    let edit = serde_json::json!({
+        "path": [{"field": "pages"}, {"item": id.as_str()}, {"field": "body"}],
+        "op": "rich",
+        "rich": {"SpliceText": {"region": "Body", "block": block, "at": 0, "del": 0, "ins": "Read "}},
+    });
+    tilo_actions::validate_json_schema(&edit, &schema).expect("the edit fits the listing");
+    let edit: Edit<Notebook> = serde_json::from_value(edit).unwrap();
+    self::edit(&mut notebook, &edit).unwrap();
+    assert_eq!(texts(&notebook, &id), ["Read the plan"]);
+}

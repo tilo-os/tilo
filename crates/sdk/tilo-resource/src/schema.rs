@@ -642,6 +642,86 @@ pub fn record_action_schema<R: crate::Resource>() -> Value {
     ])
 }
 
+/// A vocabulary's schema in a line: each alternative of an enum by its name
+/// and its arguments (`Name {a, b?}`; `?` marks an optional one), or by the
+/// value it takes.
+#[must_use]
+pub fn summary(schema: &Value) -> String {
+    let alternatives = schema
+        .get("oneOf")
+        .or_else(|| schema.get("anyOf"))
+        .and_then(Value::as_array)
+        .map_or_else(
+            || vec![schema],
+            |alternatives| alternatives.iter().collect(),
+        );
+    alternatives
+        .into_iter()
+        .filter_map(summarise_alternative)
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+fn summarise_alternative(schema: &Value) -> Option<String> {
+    if let Some(value) = schema.get("const") {
+        return Some(
+            value
+                .as_str()
+                .map_or_else(|| value.to_string(), str::to_owned),
+        );
+    }
+    if let Some(values) = schema.get("enum").and_then(Value::as_array) {
+        return Some(
+            values
+                .iter()
+                .map(|value| {
+                    value
+                        .as_str()
+                        .map_or_else(|| value.to_string(), str::to_owned)
+                })
+                .collect::<Vec<_>>()
+                .join(" | "),
+        );
+    }
+    let properties = schema.get("properties")?.as_object()?;
+    // An externally tagged variant: one property, its name, holding its
+    // arguments.
+    if let [(name, inner)] = properties.iter().collect::<Vec<_>>().as_slice() {
+        let arguments = arguments_of(inner);
+        return Some(if arguments.is_empty() {
+            (*name).clone()
+        } else {
+            format!("{name} {{{arguments}}}")
+        });
+    }
+    Some(format!("{{{}}}", arguments_of(schema)))
+}
+
+fn arguments_of(schema: &Value) -> String {
+    let required: Vec<&str> = schema
+        .get("required")
+        .and_then(Value::as_array)
+        .map(|names| names.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    schema
+        .get("properties")
+        .and_then(Value::as_object)
+        .map(|properties| {
+            properties
+                .keys()
+                .map(|name| {
+                    if required.contains(&name.as_str()) {
+                        name.clone()
+                    } else {
+                        format!("{name}?")
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
