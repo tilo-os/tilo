@@ -3,7 +3,8 @@
 The real FeatherPad editor and Qt's standard `QPlainTextEdit` and `QTextEdit`
 pass the full recorded-speech
 journey without a GTK adapter or clipboard/key insertion fallback. Native
-`QLineEdit` separately proves the same speech and editing assertions. This
+`QLineEdit` now passes the combined speech, editing and protected-field journey;
+an editable `QComboBox` passes through its actual inner `QLineEdit` too. This
 broadens toolkit coverage; it does not qualify every third-party application,
 X11, Flatpak, physical microphone, language or device.
 
@@ -84,6 +85,37 @@ repository process. Physical microphone access, new persistent permissions,
 paid APIs, production signed-model admission and deployment remain distinct
 from these already authorized public recorded-audio tests and source delivery.
 The exact bookmark identity of "phonnon 2" remains unverified.
+
+The subsequent current-source qualification at
+`cb51d4b11a9ca80e16abd775162677b2bdb4da04` reproduces the original combined
+single-line failure before correcting its premise. Qt's
+[platform acceptance code](https://github.com/qt/qtbase/blob/v6.11.2/src/gui/kernel/qinputmethod.cpp#L329-L351)
+separates a widget's `ImEnabled` query from platform acceptance and can reject
+hidden input. Native field focus is therefore not equivalent to the compositor's
+text-input-active flag. The corrected journey requires actual `FocusIn`, the
+exact protected hint integer, and matching keyboard, routed keyboard and
+text-input surfaces. It preserves the no-consent, no-recorder and no-worker
+assertions and adds a working ordinary-field control after all protected
+refusals. It does not claim a causal explanation for each inactive protected
+field. The historical failure and its fresh reproduction remain failed archives.
+
+| Current-source native field | Recorded insertion | Whole scoped run | Result |
+| --- | --- | --- | --- |
+| QLineEdit, corrected combined journey | 26.137 s | 49.709 s | Full journey passes |
+| Editable QComboBox, actual QLineEdit child | 27.472 s | 51.939 s | Full composite journey passes |
+
+Both use the same pinned public German recording and Small Q5_1 model, with zero
+normalized word errors out of 18 reference words. The source-pinned production
+compositor, worker and ephemeral witness were remotely rebuilt; exact binary
+identities are in each new manifest. The signed Qt runtime was privately restored
+after builder eviction, without installing or activating anything. The observed
+scoped memory peaks are 1,069,142,016 and 1,333,760,000 bytes respectively under
+the same two-CPU, 3-GiB, zero-swap and 256-task controls. The full editing, cancel,
+repeat and two-window retirement assertions still run before the strengthened
+privacy assertions. All three exact owned qualification containers are confirmed
+absent, and each full log verifies capture, witness and namespace cleanup.
+These receipts qualify a standard composite control; they do not qualify every
+custom editor, physical microphone, language or device.
 
 [Ledger](dictation-qt-native-evidence.json) ·
 [Full historical fixtures](../../tools/release/fixtures/qt_dictation_20261010/README.md)
