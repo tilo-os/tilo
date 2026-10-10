@@ -647,6 +647,16 @@ mounted. A build leaves its version's directory in one rename before any file
 is deleted, so a collection stopped halfway never leaves a build a launch
 would pick. Nothing runs on a timer.
 
+A launch holds what it runs on from before it looks at it until its sandbox
+exits: a shared `flock` on `.launches/<version>` in the runtime root for each
+per-user runtime build, and on `leases/<package id>` in the app store for its
+payload tree. Removal takes the same file exclusively without waiting, so an
+app opened while it is being updated keeps the build it chose, payload and
+runtime, and the collection after the launch ends takes them. A launcher that
+dies releases its holds with its descriptors. The app host's own installs and
+removals run the same collection as `tilo-install`, which also removes the
+staging a crashed install left in the store's `tmp/`.
+
 `prune-storage --dry-run --keep-releases N --keep-prereleases M` lists the
 published versions that policy drops and what pruning deletes once they are
 gone, without changing anything.

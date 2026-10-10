@@ -664,6 +664,7 @@ def idle_empty(ctx, res):
         ctx.write("R01-shell-smaps.json", json.dumps(smaps, indent=1))
         res.metrics["shell_anon_rss_mib"] = smaps["anon_rss_mib"]
         ctx.record("memory.shell_anon_mib.empty", "MiB", [smaps["anon_rss_mib"]])
+        _record_shell_shm(ctx, res, smaps)
     # What the idle RAM is made of, every user's processes and cgroups.
     try:
         fp = footprint(ctx)
@@ -673,6 +674,18 @@ def idle_empty(ctx, res):
         write_footprint(ctx, "R01-footprint.json", fp, m["guest_ram_used_mib"])
         res.metrics["footprint_mib"] = _footprint_summary(fp, m["guest_ram_used_mib"])
     expect(not problems, "; ".join(problems))
+
+
+def _record_shell_shm(ctx, res, smaps: dict, variant: str = "") -> None:
+    """`memory.compositor_memfd_mib{.variant}`: shmem allocated to the memfds the
+    compositor holds open, mapped or not, with the per-name split in the metrics."""
+    suffix = f".{variant}" if variant else ""
+    by_name = smaps["shm_by_name"]
+    res.metrics[f"shell_shm_by_name{suffix}"] = by_name
+    ctx.record(f"memory.compositor_memfd_mib{suffix}", "MiB",
+               [round(sum(v["allocated_mib"] for v in by_name.values()), 1)],
+               what="shmem allocated to the compositor's open memfds and /dev/shm files",
+               largest=next(iter(by_name), None))
 
 
 def _footprint_summary(fp: dict, ram_mib: float) -> dict:
@@ -742,9 +755,12 @@ def mem(ctx, res):
     expect(m["shell"], "no compositor process found")
     problems, unobserved = [], []
     try:
-        ctx.write("R03-shell-smaps.json", json.dumps(core.shell_memory(ctx, m["shell"]["pid"]), indent=1))
+        smaps = core.shell_memory(ctx, m["shell"]["pid"])
     except core.Unobservable as e:
         unobserved.append(str(e))
+    else:
+        ctx.write("R03-shell-smaps.json", json.dumps(smaps, indent=1))
+        _record_shell_shm(ctx, res, smaps, "four_apps")
     if m["shell"]["anon_rss_mb"] > b["shell_anon_mb"]:
         problems.append(f"compositor anonymous RSS {m['shell']['anon_rss_mb']} MB > {b['shell_anon_mb']} MB")
     big = [p for p in m["procs"] if p["comm"] != "shell" and (p["anon_rss_mb"] or 0) > b["process_anon_mb"]]
@@ -783,12 +799,69 @@ def mem(ctx, res):
         write_footprint(ctx, "R03-footprint-after-close.json", after, ram, "after_close")
         ctx.record("idle.ram_mib.after_close", "MiB", [ram], what="guest MemTotal - MemAvailable")
         res.metrics["after_close_mib"] = _footprint_summary(after, ram)
+        try:
+            smaps = core.shell_memory(ctx, m["shell"]["pid"])
+        except core.Unobservable as e:
+            unobserved.append(f"the compositor's memory after the apps closed: {e}")
+        else:
+            ctx.write("R03-shell-smaps-after-close.json", json.dumps(smaps, indent=1))
+            _record_shell_shm(ctx, res, smaps, "after_close")
+        # The renderer's own account: its atlas and buffers as they grew and shrank, and
+        # each trim's release of freed device memory.
+        ctx.write("R03-renderer-memory.log", ctx.vm.exec(
+            f'grep -a -E "RENDERER-MEMORY|DEVICE-MEMORY" "{core.SESSION_LOG}"; true', check=False))
+    try:
+        res.metrics["disk"] = record_disk(ctx)
+    except core.Unobservable as e:
+        unobserved.append(f"per-user disk use: {e}")
     expect(not problems, "; ".join(problems + unobserved))
     if unobserved:
         raise core.Unobservable("; ".join(unobserved))
 
 
 AFTER_CLOSE_SETTLE_S = 5
+
+# The slot user's per-user runtime builds and app store, in bytes: what downloaded
+# runtimes and apps hold on disk once collection after each change ran (TIL-748,
+# TIL-753). A build is a directory under tilo-runtime whose name has no leading dot.
+DISK = r"""
+data=${XDG_DATA_HOME:-$HOME/.local/share}
+for d in tilo-runtime tilo-apps; do
+  if [ -d "$data/$d" ]; then echo "$d $(du -sb "$data/$d" | cut -f1)"; else echo "$d 0"; fi
+done
+if [ -d "$data/tilo-runtime" ]; then
+  echo "builds $(find "$data/tilo-runtime" -mindepth 1 -maxdepth 1 -type d ! -name '.*' | wc -l)"
+else
+  echo "builds 0"
+fi
+"""
+
+
+def parse_disk(text: str) -> dict:
+    """`DISK` output -> {"runtime_bytes", "app_store_bytes", "runtime_builds"}."""
+    values = {}
+    for line in text.splitlines():
+        f = line.split()
+        if len(f) == 2 and f[1].isdigit():
+            values[f[0]] = int(f[1])
+    missing = {"tilo-runtime", "tilo-apps", "builds"} - values.keys()
+    if missing:
+        raise core.Unobservable(f"per-user disk use not reported for {sorted(missing)}: {text[-200:]!r}")
+    return {"runtime_bytes": values["tilo-runtime"], "app_store_bytes": values["tilo-apps"],
+            "runtime_builds": values["builds"]}
+
+
+def record_disk(ctx) -> dict:
+    """`disk.runtime_mib.per_user`, `disk.app_store_mib.per_user` and
+    `disk.runtime_builds.per_user`: the slot user's downloaded runtimes and apps."""
+    disk = parse_disk(ctx.vm.exec(DISK))
+    ctx.record("disk.runtime_mib.per_user", "MiB", [round(disk["runtime_bytes"] / 2**20, 1)],
+               what="du of $XDG_DATA_HOME/tilo-runtime", builds=disk["runtime_builds"])
+    ctx.record("disk.app_store_mib.per_user", "MiB", [round(disk["app_store_bytes"] / 2**20, 1)],
+               what="du of $XDG_DATA_HOME/tilo-apps")
+    ctx.record("disk.runtime_builds.per_user", "count", [disk["runtime_builds"]],
+               what="runtime builds under $XDG_DATA_HOME/tilo-runtime")
+    return disk
 
 
 def _footprint_after_close(ctx) -> dict:

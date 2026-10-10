@@ -16,10 +16,18 @@
 //! client often destroys several surfaces in a row) and runs at most once per
 //! [`MIN_INTERVAL`]. Between requests the thread sleeps on a condition
 //! variable, so an idle session never wakes for it.
+//!
+//! The same trim returns what a software GPU freed (TIL-731). Lavapipe keeps
+//! every page of device memory a closed window's textures touched in a memfd
+//! until something punches it out; a renderer on lavapipe registers its
+//! device with [`register_device`], and each trim hands the device's free
+//! ranges back to the kernel (`crate::shell::render::software_gpu_memory`).
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Condvar, Mutex, OnceLock, PoisonError};
+use std::sync::{Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
+
+use vello::wgpu;
 
 /// Quiet time after the last request before trimming.
 const SETTLE: Duration = Duration::from_secs(1);
@@ -80,6 +88,40 @@ struct Trimmer {
 static TRIMMER: OnceLock<Option<&'static Trimmer>> = OnceLock::new();
 static TRIMS: AtomicU64 = AtomicU64::new(0);
 
+/// Software-GPU devices whose freed memory each trim returns, by registration.
+static DEVICES: Mutex<Vec<(u64, wgpu::Device)>> = Mutex::new(Vec::new());
+static NEXT_DEVICE: AtomicU64 = AtomicU64::new(0);
+
+/// A device's place among those each trim returns freed GPU memory for;
+/// dropping it takes the device off the list.
+#[derive(Debug)]
+pub struct DeviceRegistration(u64);
+
+impl Drop for DeviceRegistration {
+    fn drop(&mut self) {
+        devices().retain(|(id, _)| *id != self.0);
+    }
+}
+
+fn devices() -> MutexGuard<'static, Vec<(u64, wgpu::Device)>> {
+    DEVICES.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Have every trim return what `device` freed, while the registration lives.
+/// Only a software rasteriser keeps freed device memory, so a device on any
+/// other adapter is not registered.
+pub fn register_device(
+    adapter: &wgpu::AdapterInfo,
+    device: &wgpu::Device,
+) -> Option<DeviceRegistration> {
+    if adapter.device_type != wgpu::DeviceType::Cpu || !supported() {
+        return None;
+    }
+    let id = NEXT_DEVICE.fetch_add(1, Ordering::Relaxed);
+    devices().push((id, device.clone()));
+    Some(DeviceRegistration(id))
+}
+
 /// Ask for freed heap to be returned soon: a window closed, or something
 /// else released a lot at once. Cheap and non-blocking on the caller's
 /// thread; any number of requests within a few seconds make one trim.
@@ -93,6 +135,23 @@ pub fn request() {
         .unwrap_or_else(PoisonError::into_inner)
         .request(Instant::now());
     trimmer.wake.notify_one();
+}
+
+/// Windows closed so far in this process; see [`window_closed`].
+static WINDOWS_CLOSED: AtomicU64 = AtomicU64::new(0);
+
+/// A window closed: its frames are gone for good. Renderers bring their
+/// image atlas down within their next few frames
+/// ([`windows_closed`]), and a trim returns what they and the window freed.
+pub fn window_closed() {
+    WINDOWS_CLOSED.fetch_add(1, Ordering::AcqRel);
+    request();
+}
+
+/// Windows closed so far, for a renderer to tell whether one closed since
+/// its last frame.
+pub fn windows_closed() -> u64 {
+    WINDOWS_CLOSED.load(Ordering::Acquire)
 }
 
 /// Trims run so far in this process.
@@ -199,6 +258,33 @@ fn trim() {
         rss_anon_after_kib = ?rss_anon_kib(),
         "returned freed heap to the kernel"
     );
+    release_device_memory();
+}
+
+/// Return what each registered software-GPU device freed (TIL-731).
+fn release_device_memory() {
+    const MIB: u64 = 1 << 20;
+    let registered: Vec<wgpu::Device> =
+        devices().iter().map(|(_, device)| device.clone()).collect();
+    for device in registered {
+        let start = Instant::now();
+        #[cfg(target_os = "linux")]
+        if let Some(released) =
+            crate::shell::render::software_gpu_memory::release_freed_memory(&device)
+        {
+            // A measurement line for the session log, like WORKSPACE-SWITCH.
+            eprintln!(
+                "DEVICE-MEMORY released_mib={} before_mib={} after_mib={} allocations={} elapsed_ms={}",
+                released.bytes() / MIB,
+                released.before_bytes / MIB,
+                released.after_bytes / MIB,
+                released.allocations,
+                start.elapsed().as_millis(),
+            );
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = (device, start);
+    }
 }
 
 /// This process's anonymous resident memory, in KiB, for the log line.

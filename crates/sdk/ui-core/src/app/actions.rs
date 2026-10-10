@@ -266,7 +266,7 @@ impl App {
             resources.extend(
                 snapshots
                     .into_iter()
-                    .flat_map(|snapshot| snapshot.resources),
+                    .flat_map(|snapshot| snapshot.into_resources()),
             );
         }
         if let Ok(legacy) = crate::bound_dispatch::legacy_document::legacy_resources(
@@ -378,7 +378,7 @@ impl App {
             resources.extend(
                 snapshots
                     .into_iter()
-                    .flat_map(|snapshot| snapshot.resources),
+                    .flat_map(|snapshot| snapshot.into_resources()),
             );
         }
         if let Ok(legacy) = crate::bound_dispatch::legacy_document::legacy_resources(
@@ -590,7 +590,7 @@ impl App {
             let violations = crate::bound_dispatch::bound_contract_violations(
                 self.root_widget.as_mut(),
                 &component.binding,
-                &component.resources,
+                component.resources(),
             );
             if !matches!(&violations, Ok(Some(found)) if found.is_empty()) {
                 // Never silent: a contract violation withdraws the whole
@@ -611,19 +611,16 @@ impl App {
                     .first(&("component", &violations))
                 {
                     tracing::error!(
-                        resources = component.resources.len(),
+                        resources = component.resources().len(),
                         %violations,
                         "refusing to publish a component surface that fails action contract validation"
                     );
                 }
                 continue;
             }
-            for resource in component.resources {
-                if let Ok(resource) = self
-                    .actions
-                    .bound_publication
-                    .project(&component.binding, resource)
-                {
+            let binding = component.binding.clone();
+            for resource in component.into_resources() {
+                if let Ok(resource) = self.actions.bound_publication.project(&binding, resource) {
                     resources.push(resource);
                 }
             }
@@ -1910,7 +1907,7 @@ impl App {
                 .iter()
                 .filter(|snapshot| snapshot.binding.same_component(&target.binding))
                 .find_map(|snapshot| {
-                    tilo_actions::door::resolve(&snapshot.resources, &target.address.address)
+                    tilo_actions::door::resolve(snapshot.resources(), &target.address.address)
                 })
                 .map_or(tilo_actions::PermissionRequirement::None, |spec| {
                     spec.permission_for_argument(argument)
@@ -1976,7 +1973,7 @@ impl App {
         let mut candidates = snapshots
             .iter()
             .filter(|snapshot| snapshot.binding.same_component(binding))
-            .flat_map(|snapshot| &snapshot.resources)
+            .flat_map(|snapshot| snapshot.resources().iter())
             .filter(|resource| {
                 resource.actions.iter().any(|spec| {
                     spec.id == action && spec.kind == tilo_actions::OperationKind::Document
@@ -2320,7 +2317,6 @@ impl App {
             argument,
             confirmation_satisfied: confirmed,
             broker_admitted,
-            confirmation_evidence: evidence,
             invocation,
             ambient_context: ambient,
             scope,
@@ -2332,42 +2328,24 @@ impl App {
         if broker_admitted {
             self.require_bound_broker_route(&target.binding)?;
         }
-        let snapshots = crate::bound_dispatch::discover_bound_resources(
-            self.root_widget.as_ref(),
-            &self.state.doc,
-            Some(&target.address.address),
-        )
-        .map_err(|error| crate::bound_dispatch::BoundActionError::Dispatch(error).into_door())?;
-        let snapshot = snapshots
-            .iter()
-            .find(|snapshot| snapshot.binding.same_component(&target.binding))
-            .ok_or_else(|| tilo_actions::DoorError::Unknown(target.address.address.clone()))?;
-        let (arguments, _, spec) = crate::bound_dispatch::resolve_resource_invocation(
-            &snapshot.resources,
-            &target.address.address,
-            argument,
-            None,
-            confirmed,
-        )?;
-        let kind = spec.kind;
-        if !broker_admitted
-            && Self::bound_invocation_needs_broker(
-                kind,
-                spec,
-                invocation,
-                broker_delivery.is_some(),
-                self.collaboration.manager.is_connected(),
-            )
-        {
-            return self.route_bound_invocation_to_broker(
-                target,
-                &snapshot.resources,
-                arguments.as_ref(),
-                argument,
-                evidence,
-                broker_delivery,
-            );
-        }
+        // The door resolves the action once and asks here, before anything
+        // runs, whether it goes through the broker instead. Resolving it a
+        // second time for that question built the whole published tree twice
+        // per keystroke into a bound field (TIL-751).
+        let has_delivery = broker_delivery.is_some();
+        let connected = self.collaboration.manager.is_connected();
+        let resolved = std::cell::Cell::new(None);
+        let route = |spec: &tilo_actions::ActionSpec| {
+            resolved.set(Some(spec.kind));
+            !broker_admitted
+                && Self::bound_invocation_needs_broker(
+                    spec.kind,
+                    spec,
+                    invocation,
+                    has_delivery,
+                    connected,
+                )
+        };
         let id = invocation.unwrap_or_default();
         let started = crate::bound_dispatch::invoke_resource_action(
             self.root_widget.as_mut(),
@@ -2384,9 +2362,21 @@ impl App {
                 source_invocation: broker_admitted.then_some(invocation).flatten(),
                 ambient,
                 scope,
+                route: Some(&route),
             },
-        )
-        .map_err(crate::bound_dispatch::BoundActionError::into_door);
+        );
+        if matches!(
+            started,
+            Err(crate::bound_dispatch::BoundActionError::Rerouted)
+        ) {
+            return self.route_resolved_invocation_to_broker(target, request, broker_delivery);
+        }
+        let started = started.map_err(crate::bound_dispatch::BoundActionError::into_door);
+        // Refused before the door resolved the action: nothing ran, as when
+        // an unknown or unconfirmed action is refused before delivery.
+        let Some(kind) = resolved.get() else {
+            return started;
+        };
         // A post-delivery fault retains canonical writes and must still refresh
         // the host projection. Generation is advanced by the checked frame.
         self.needs_sync = true;
@@ -2405,6 +2395,44 @@ impl App {
             }
         }
         Ok(started)
+    }
+
+    /// Route through the broker an invocation the door resolved as one that
+    /// runs there ([`crate::bound_dispatch::BoundActionError::Rerouted`]):
+    /// the component's published resources are discovered and the broker
+    /// is asked under the component's alias, exactly as before the door
+    /// decided the route. Nothing ran locally.
+    fn route_resolved_invocation_to_broker(
+        &mut self,
+        target: &crate::bound_dispatch::BoundActionTarget,
+        request: &ResourceInvocation<'_>,
+        broker_delivery: Option<&mut dyn FnMut(CollabRequest)>,
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+        let snapshots = crate::bound_dispatch::discover_bound_resources(
+            self.root_widget.as_ref(),
+            &self.state.doc,
+            Some(&target.address.address),
+        )
+        .map_err(|error| crate::bound_dispatch::BoundActionError::Dispatch(error).into_door())?;
+        let snapshot = snapshots
+            .iter()
+            .find(|snapshot| snapshot.binding.same_component(&target.binding))
+            .ok_or_else(|| tilo_actions::DoorError::Unknown(target.address.address.clone()))?;
+        let (arguments, _, _) = crate::bound_dispatch::resolve_resource_invocation(
+            snapshot.resources(),
+            &target.address.address,
+            request.argument,
+            None,
+            request.confirmation_satisfied,
+        )?;
+        self.route_bound_invocation_to_broker(
+            target,
+            snapshot.resources(),
+            arguments.as_ref(),
+            request.argument,
+            request.confirmation_evidence,
+            broker_delivery,
+        )
     }
 
     fn invoke_resource_action(
@@ -4376,7 +4404,7 @@ impl App {
             if let Some(snapshot) = bound
                 .iter_mut()
                 .find(|snapshot| snapshot.binding.same_component(&target.binding))
-                && tilo_actions::door::resolve(&snapshot.resources, &target.address.address)
+                && tilo_actions::door::resolve(snapshot.resources(), &target.address.address)
                     .is_none()
                 && let Ok(Some(resource)) = crate::bound_dispatch::resolve_component_resource(
                     self.root_widget.as_mut(),
@@ -4386,7 +4414,7 @@ impl App {
                     &target.address.address.action,
                 )
             {
-                snapshot.resources.push(resource);
+                snapshot.extend([resource]);
             }
         }
         if let Some(palette) = self.actions.action_palette.as_mut() {

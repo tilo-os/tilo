@@ -177,25 +177,44 @@ enum Next {
     Datagram(moq_net::Datagram),
     Group(Box<moq_net::group::Consumer>),
     End,
+    Abort(moq_net::Error),
+    Unused,
 }
 
 async fn next(track: &mut moq_net::track::Subscriber) -> Next {
     moq_net::kio::wait(|waiter| {
-        if let Poll::Ready(datagram) = track.poll_recv_datagram(waiter) {
-            return Poll::Ready(match datagram {
-                Ok(Some(datagram)) => Next::Datagram(datagram),
-                _ => Next::End,
-            });
+        let datagram = track.poll_recv_datagram(waiter);
+        match datagram {
+            Poll::Ready(Ok(Some(datagram))) => return Poll::Ready(Next::Datagram(datagram)),
+            Poll::Ready(Err(error)) => return Poll::Ready(Next::Abort(error)),
+            _ => {}
         }
-        if let Poll::Ready(group) = track.poll_recv_group(waiter) {
-            return Poll::Ready(match group {
-                Ok(Some(group)) => Next::Group(Box::new(group)),
-                _ => Next::End,
-            });
+        let group = track.poll_recv_group(waiter);
+        match group {
+            Poll::Ready(Ok(Some(group))) => return Poll::Ready(Next::Group(Box::new(group))),
+            Poll::Ready(Err(error)) => return Poll::Ready(Next::Abort(error)),
+            _ => {}
+        }
+        if matches!(datagram, Poll::Ready(Ok(None))) && matches!(group, Poll::Ready(Ok(None))) {
+            return Poll::Ready(Next::End);
         }
         Poll::Pending
     })
     .await
+}
+
+/// SUBSCRIBE can exchange consumer handles. Match the shared relay's existing
+/// unused-demand grace; the caller then closes atomically with demand.
+async fn unused(output: &moq_net::track::Producer) {
+    loop {
+        if output.unused().await.is_err() {
+            return;
+        }
+        tokio::time::sleep(crate::live::UNUSED_GRACE).await;
+        if !output.is_used() {
+            return;
+        }
+    }
 }
 
 async fn copy(
@@ -205,10 +224,13 @@ async fn copy(
 ) {
     let mut groups: VecDeque<Task> = VecDeque::new();
     let mut rebundler = voice::Rebundler::default();
+    let watched = output.clone();
+    let idle = unused(&watched);
+    tokio::pin!(idle);
     loop {
         let next = tokio::select! {
             next = next(input) => next,
-            _ = output.unused() => Next::End,
+            () = &mut idle => Next::Unused,
         };
         match next {
             Next::Datagram(datagram) => {
@@ -236,9 +258,41 @@ async fn copy(
                 }
             }
             Next::End => break,
+            Next::Abort(error) => {
+                let _ = output.abort(error);
+                return;
+            }
+            Next::Unused => match output.abort_unused(moq_net::Error::Cancel) {
+                Ok(()) => return,
+                Err(active) => {
+                    output = active;
+                    idle.set(unused(&watched));
+                }
+            },
         }
     }
-    drop(groups);
+    // A finished upstream track can still carry cached groups whose copying
+    // tasks have not run. Await them before publishing a clean final boundary.
+    while let Some(mut group) = groups.pop_front() {
+        loop {
+            tokio::select! {
+                result = group.wait() => {
+                    if result.is_err() {
+                        let _ = output.abort(moq_net::Error::Cancel);
+                        return;
+                    }
+                    break;
+                }
+                () = &mut idle => match output.abort_unused(moq_net::Error::Cancel) {
+                    Ok(()) => return,
+                    Err(active) => {
+                        output = active;
+                        idle.set(unused(&watched));
+                    }
+                },
+            }
+        }
+    }
     let _ = output.finish();
 }
 
@@ -259,5 +313,174 @@ async fn copy_group(mut input: moq_net::group::Consumer, mut output: moq_net::gr
                 return;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn unused_video_cancels_even_while_source_groups_arrive() {
+        let result: Result<(), Box<dyn std::error::Error>> = async {
+            let (origin, _origin_task) =
+                OriginTask::produce(origin_config(1024 * 1024, Duration::from_secs(2)));
+            let broadcast = origin.create_broadcast("unused")?;
+            let input = broadcast.create_track("video", None)?;
+            let mut reader = input.consume().subscribe(None).await?;
+            let output = broadcast.create_track("copy", None)?;
+            let access = output.clone();
+            let copying = copy(&mut reader, output, None);
+            tokio::pin!(copying);
+            let pending = std::future::poll_fn(|cx| {
+                Poll::Ready(std::future::Future::poll(copying.as_mut(), cx).is_pending())
+            })
+            .await;
+            assert!(pending, "the existing unused grace must cover handoff");
+            tokio::time::advance(crate::live::UNUSED_GRACE / 2).await;
+            let mut group = input.append_group()?;
+            group.write_frame(
+                moq_net::Timestamp::ZERO,
+                bytes::Bytes::from_static(b"frame"),
+            )?;
+            group.finish()?;
+            let pending = std::future::poll_fn(|cx| {
+                Poll::Ready(std::future::Future::poll(copying.as_mut(), cx).is_pending())
+            })
+            .await;
+            assert!(pending);
+            tokio::time::advance(crate::live::UNUSED_GRACE / 2).await;
+            let ended = std::future::poll_fn(|cx| {
+                Poll::Ready(std::future::Future::poll(copying.as_mut(), cx).is_ready())
+            })
+            .await;
+            assert!(ended, "source traffic must not renew unused demand");
+            assert!(matches!(access.closed().await, moq_net::Error::Cancel));
+            Ok(())
+        }
+        .await;
+        assert!(result.is_ok(), "{result:?}");
+    }
+
+    #[tokio::test]
+    async fn upstream_abort_is_not_a_clean_empty_video() {
+        let result: Result<(), Box<dyn std::error::Error>> = async {
+            let (origin, _origin_task) =
+                OriginTask::produce(origin_config(1024 * 1024, Duration::from_secs(2)));
+            let broadcast = origin.create_broadcast("abort")?;
+            let input = broadcast.create_track("video", None)?;
+            let mut reader = input.consume().subscribe(None).await?;
+            let output = broadcast.create_track("copy", None)?;
+            let mut viewer = output.consume().subscribe(None).await?;
+            input.abort(moq_net::Error::ProtocolViolation)?;
+            let task = tokio::spawn(async move { copy(&mut reader, output, None).await });
+            let result =
+                tilo_test_env::within("the mirrored upstream failure", viewer.recv_group()).await;
+            assert!(
+                matches!(result, Err(moq_net::Error::ProtocolViolation)),
+                "the original upstream error must remain observable"
+            );
+            task.await?;
+            Ok(())
+        }
+        .await;
+        assert!(result.is_ok(), "{result:?}");
+    }
+
+    #[tokio::test]
+    async fn subscriber_handoff_does_not_end_an_open_video() {
+        let result: Result<(), Box<dyn std::error::Error>> = async {
+        let (origin, _origin_task) =
+            OriginTask::produce(origin_config(1024 * 1024, Duration::from_secs(2)));
+        let broadcast = origin.create_broadcast("handoff")?;
+        let input = broadcast.create_track("video", None)?;
+        let mut reader = input.consume().subscribe(None).await?;
+        let output = broadcast.create_track("copy", None)?;
+        let access = output.clone();
+        // SUBSCRIBE exchanges consumer handles; the accepted producer is alive
+        // while the replacement subscriber has not yet attached.
+        let previous = output.consume();
+        drop(previous);
+        let copying = copy(&mut reader, output, None);
+        tokio::pin!(copying);
+        let pending = std::future::poll_fn(|cx| {
+            Poll::Ready(std::future::Future::poll(copying.as_mut(), cx).is_pending())
+        })
+        .await;
+        assert!(
+            pending,
+            "an open video must survive the subscription handle exchange"
+        );
+        let mut viewer = access.consume().subscribe(None).await?;
+        let mut group = input.append_group()?;
+        group.write_frame(
+            moq_net::Timestamp::ZERO,
+            bytes::Bytes::from_static(b"keyframe"),
+        )?;
+        for frame in [b"reference-1".as_slice(), b"reference-2".as_slice()] {
+            group.write_frame(moq_net::Timestamp::ZERO, bytes::Bytes::from_static(frame))?;
+        }
+        group.finish()?;
+        let receive = async {
+            let mut group = viewer.recv_group().await?.ok_or(moq_net::Error::Closed)?;
+            let frame = group.read_frame().await?.ok_or(moq_net::Error::Closed)?;
+            assert_eq!(frame.payload, bytes::Bytes::from_static(b"keyframe"));
+            for expected in [b"reference-1".as_slice(), b"reference-2".as_slice()] {
+                let frame = group.read_frame().await?.ok_or(moq_net::Error::Closed)?;
+                assert_eq!(frame.payload, bytes::Bytes::from_static(expected));
+            }
+            Ok::<(), moq_net::Error>(())
+        };
+        tokio::select! {
+            () = &mut copying => return Err("mirror ended before the replacement subscriber read".into()),
+            result = tilo_test_env::within("the replacement subscriber keyframe", receive) => result?,
+        }
+        Ok(())
+        }.await;
+        assert!(result.is_ok(), "{result:?}");
+    }
+
+    #[tokio::test]
+    async fn completed_cached_group_reaches_mirrored_track() {
+        let result: Result<(), Box<dyn std::error::Error>> = async {
+            let (origin, _origin_task) =
+                OriginTask::produce(origin_config(1024 * 1024, Duration::from_secs(2)));
+            let broadcast = origin.create_broadcast("cached")?;
+            let input = broadcast.create_track("video", None)?;
+            let mut group = input.append_group()?;
+            group.write_frame(
+                moq_net::Timestamp::ZERO,
+                bytes::Bytes::from_static(b"keyframe"),
+            )?;
+            for frame in [b"reference-1".as_slice(), b"reference-2".as_slice()] {
+                group.write_frame(moq_net::Timestamp::ZERO, bytes::Bytes::from_static(frame))?;
+            }
+            group.finish()?;
+            input.finish()?;
+            let mut reader = input.consume().subscribe(None).await?;
+            let output = broadcast.create_track("copy", None)?;
+            let mut viewer = output.consume().subscribe(None).await?;
+            let task = tokio::spawn(async move { copy(&mut reader, output, None).await });
+            let group =
+                tilo_test_env::within("the cached mirrored group", viewer.recv_group()).await?;
+            let Some(mut group) = group else {
+                return Err("mirror ended before the cached group".into());
+            };
+            let frame = tilo_test_env::within("the cached mirrored frame", group.read_frame())
+                .await?
+                .ok_or("mirror ended before the cached keyframe")?;
+            assert_eq!(frame.payload, bytes::Bytes::from_static(b"keyframe"));
+            for expected in [b"reference-1".as_slice(), b"reference-2".as_slice()] {
+                let frame = tilo_test_env::within("a cached reference frame", group.read_frame())
+                    .await?
+                    .ok_or("mirror ended before a cached reference frame")?;
+                assert_eq!(frame.payload, bytes::Bytes::from_static(expected));
+            }
+            assert!(group.read_frame().await?.is_none());
+            task.await?;
+            Ok(())
+        }
+        .await;
+        assert!(result.is_ok(), "{result:?}");
     }
 }

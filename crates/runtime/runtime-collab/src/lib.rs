@@ -767,6 +767,51 @@ impl NearbyTransferReply {
 }
 
 #[cfg(feature = "client")]
+fn wire_failure(message: String) -> NotAvailable {
+    NotAvailable::Capnp(capnp::Error::failed(message))
+}
+
+/// Encode one `what` control command, refusing it when it is invalid or
+/// larger than `max_bytes`.
+#[cfg(feature = "client")]
+fn encode_bounded_command<C: serde::Serialize>(
+    what: &str,
+    command: &C,
+    valid: bool,
+    max_bytes: usize,
+) -> Result<Vec<u8>, NotAvailable> {
+    if !valid {
+        return Err(wire_failure(format!("invalid {what} command")));
+    }
+    let command_json = serde_json::to_vec(command)
+        .map_err(|error| wire_failure(format!("encode {what} command: {error}")))?;
+    if command_json.len() > max_bytes {
+        return Err(wire_failure(format!("{what} command exceeds wire bound")));
+    }
+    Ok(command_json)
+}
+
+/// Decode one `what` control reply, refusing it when it is larger than
+/// `max_bytes` or fails its own validity check.
+#[cfg(feature = "client")]
+fn decode_bounded_reply<R: serde::de::DeserializeOwned>(
+    what: &str,
+    bytes: &[u8],
+    max_bytes: usize,
+    valid: impl FnOnce(&R) -> bool,
+) -> Result<R, NotAvailable> {
+    if bytes.len() > max_bytes {
+        return Err(wire_failure(format!("{what} reply exceeds wire bound")));
+    }
+    let decoded: R = serde_json::from_slice(bytes)
+        .map_err(|error| wire_failure(format!("decode {what} reply: {error}")))?;
+    if !valid(&decoded) {
+        return Err(wire_failure(format!("invalid {what} reply")));
+    }
+    Ok(decoded)
+}
+
+#[cfg(feature = "client")]
 impl ChannelHandle {
     /// Send PCM or controls to this launched application's output-only service.
     ///
@@ -889,42 +934,22 @@ impl ChannelHandle {
         app_id: &str,
         command: &NearbyTransferCommand,
     ) -> Result<NearbyTransferReply, NotAvailable> {
-        if !command.valid() {
-            return Err(NotAvailable::Capnp(capnp::Error::failed(
-                "invalid nearby transfer command".into(),
-            )));
-        }
-        let command_json = serde_json::to_vec(command).map_err(|error| {
-            NotAvailable::Capnp(capnp::Error::failed(format!(
-                "encode nearby transfer command: {error}"
-            )))
-        })?;
-        if command_json.len() > MAX_NEARBY_TRANSFER_WIRE_BYTES {
-            return Err(NotAvailable::Capnp(capnp::Error::failed(
-                "nearby transfer command exceeds wire bound".into(),
-            )));
-        }
+        let command_json = encode_bounded_command(
+            "nearby transfer",
+            command,
+            command.valid(),
+            MAX_NEARBY_TRANSFER_WIRE_BYTES,
+        )?;
         let mut request = self.inner.nearby_transfer_command_request();
         request.get().set_app_id(app_id);
         request.get().set_command_json(&command_json);
         let reply = request.send().promise.await?;
-        let bytes = reply.get()?.get_reply_json()?;
-        if bytes.len() > MAX_NEARBY_TRANSFER_WIRE_BYTES {
-            return Err(NotAvailable::Capnp(capnp::Error::failed(
-                "nearby transfer reply exceeds wire bound".into(),
-            )));
-        }
-        let decoded: NearbyTransferReply = serde_json::from_slice(bytes).map_err(|error| {
-            NotAvailable::Capnp(capnp::Error::failed(format!(
-                "decode nearby transfer reply: {error}"
-            )))
-        })?;
-        if !decoded.valid() {
-            return Err(NotAvailable::Capnp(capnp::Error::failed(
-                "invalid nearby transfer reply".into(),
-            )));
-        }
-        Ok(decoded)
+        decode_bounded_reply(
+            "nearby transfer",
+            reply.get()?.get_reply_json()?,
+            MAX_NEARBY_TRANSFER_WIRE_BYTES,
+            NearbyTransferReply::valid,
+        )
     }
 
     /// Run a bounded local Files command under its original invocation, if any.
@@ -971,42 +996,22 @@ impl ChannelHandle {
         app_id: &str,
         command: &WifiContinuityCommand,
     ) -> Result<WifiContinuityReply, NotAvailable> {
-        if !command.valid() {
-            return Err(NotAvailable::Capnp(capnp::Error::failed(
-                "invalid Wi-Fi continuity command".into(),
-            )));
-        }
-        let command_json = serde_json::to_vec(command).map_err(|error| {
-            NotAvailable::Capnp(capnp::Error::failed(format!(
-                "encode Wi-Fi continuity command: {error}"
-            )))
-        })?;
-        if command_json.len() > MAX_WIFI_CONTINUITY_WIRE_BYTES {
-            return Err(NotAvailable::Capnp(capnp::Error::failed(
-                "Wi-Fi continuity command exceeds wire bound".into(),
-            )));
-        }
+        let command_json = encode_bounded_command(
+            "Wi-Fi continuity",
+            command,
+            command.valid(),
+            MAX_WIFI_CONTINUITY_WIRE_BYTES,
+        )?;
         let mut request = self.inner.wifi_continuity_command_request();
         request.get().set_app_id(app_id);
         request.get().set_command_json(&command_json);
         let reply = request.send().promise.await?;
-        let bytes = reply.get()?.get_reply_json()?;
-        if bytes.len() > MAX_WIFI_CONTINUITY_WIRE_BYTES {
-            return Err(NotAvailable::Capnp(capnp::Error::failed(
-                "Wi-Fi continuity reply exceeds wire bound".into(),
-            )));
-        }
-        let decoded: WifiContinuityReply = serde_json::from_slice(bytes).map_err(|error| {
-            NotAvailable::Capnp(capnp::Error::failed(format!(
-                "decode Wi-Fi continuity reply: {error}"
-            )))
-        })?;
-        if !decoded.valid() {
-            return Err(NotAvailable::Capnp(capnp::Error::failed(
-                "invalid Wi-Fi continuity reply".into(),
-            )));
-        }
-        Ok(decoded)
+        decode_bounded_reply(
+            "Wi-Fi continuity",
+            reply.get()?.get_reply_json()?,
+            MAX_WIFI_CONTINUITY_WIRE_BYTES,
+            WifiContinuityReply::valid,
+        )
     }
 
     /// Ask the shell's speaker-group authority from the authenticated
@@ -1021,29 +1026,18 @@ impl ChannelHandle {
         app_id: &str,
         command: &SpeakerCommand,
     ) -> Result<SpeakerReply, NotAvailable> {
-        let failed = |message: String| NotAvailable::Capnp(capnp::Error::failed(message));
-        if !command.valid() {
-            return Err(failed("invalid speaker command".into()));
-        }
-        let command_json = serde_json::to_vec(command)
-            .map_err(|error| failed(format!("encode speaker command: {error}")))?;
-        if command_json.len() > MAX_SPEAKER_WIRE_BYTES {
-            return Err(failed("speaker command exceeds wire bound".into()));
-        }
+        let command_json =
+            encode_bounded_command("speaker", command, command.valid(), MAX_SPEAKER_WIRE_BYTES)?;
         let mut request = self.inner.speaker_command_request();
         request.get().set_app_id(app_id);
         request.get().set_command_json(&command_json);
         let reply = request.send().promise.await?;
-        let bytes = reply.get()?.get_reply_json()?;
-        if bytes.len() > MAX_SPEAKER_WIRE_BYTES {
-            return Err(failed("speaker reply exceeds wire bound".into()));
-        }
-        let decoded: SpeakerReply = serde_json::from_slice(bytes)
-            .map_err(|error| failed(format!("decode speaker reply: {error}")))?;
-        if !decoded.valid() {
-            return Err(failed("invalid speaker reply".into()));
-        }
-        Ok(decoded)
+        decode_bounded_reply(
+            "speaker",
+            reply.get()?.get_reply_json()?,
+            MAX_SPEAKER_WIRE_BYTES,
+            SpeakerReply::valid,
+        )
     }
 
     /// Subscribe to lifecycle edges addressed to this exact application

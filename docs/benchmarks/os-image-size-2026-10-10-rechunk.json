@@ -2422,5 +2422,33 @@
     }
    ]
   }
+ ],
+ "updates": [
+  {
+   "label": "one-app-rechunked",
+   "image": "registry.tilo.so/tilo/tilo-ci@sha256:21a87449f0ab70ea825fcbdcf758cc9c66df39d7de3a3c4b3c23245ffa190e57",
+   "revision": "824e3c20e1ba4f8abd2a7afef1889c577ada29b8",
+   "change": "apps/calculator HISTORY_CAP 64 -> 65 on main 8e6975576c",
+   "from": "registry.tilo.so/tilo/tilo-ci@sha256:b4be25b7dd657edc3eb4c5b8aeeff3e4e627c9aea560993172eb85890876f784",
+   "from_revision": "8e6975576c58101fe2302809a9be01b3eed486f5",
+   "layers": 145,
+   "new_layers": 7,
+   "bytes": 215178773,
+   "compressed": 4255777576,
+   "share": 0.0506
+  },
+  {
+   "label": "one-app-layered",
+   "image": "registry.tilo.so/tilo/tilo-ci@sha256:423047fc264593fd6a2b87f9534e28be3d4da228099e1a39e1c0d2b237c0aab5",
+   "revision": "824e3c20e1ba4f8abd2a7afef1889c577ada29b8",
+   "change": "apps/calculator HISTORY_CAP 64 -> 65 on main 8e6975576c",
+   "from": "registry.tilo.so/tilo/tilo-ci@sha256:046f7fa83fc823631e29018063899417983e2482d1cfacb40f6d5233e0aef2c4",
+   "from_revision": "8e6975576c58101fe2302809a9be01b3eed486f5",
+   "layers": 187,
+   "new_layers": 118,
+   "bytes": 3689501680,
+   "compressed": 4712401208,
+   "share": 0.7829
+  }
  ]
 }

@@ -8,26 +8,24 @@
 use crate::widget::ModelPath;
 use std::collections::HashMap;
 use std::f64::consts::{FRAC_PI_2, TAU};
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Arc, BezPath, Point, Rect, RoundedRect, Shape, Stroke};
+use vello::kurbo::{Affine, Arc, BezPath, Point, Rect, Shape, Stroke};
 use vello::peniko::{Color, Fill};
 use winit::event::WindowEvent;
 
 use crate::a11y::{AccessNode, AccessState, Role};
-use crate::color_compat::ColorCompat;
+use crate::paint::with_alpha;
 use crate::presence::PresenceCtx;
-use crate::text_render::{TextRenderer, TextWeight};
+use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
+use crate::widget::Widget;
+use crate::widget::chart_labels::format_compact;
 use crate::widget::chart_navigation::{
-    ChartNavAction, ChartTouchTracker, InteractiveChart, handle_chart_event, moved_index,
+    ChartNavAction, ChartTouchTracker, InteractiveChart, chart_leaf, handle_chart_event,
+    moved_index,
 };
-use crate::widget::{TaffyTreeExt, Widget};
 
-fn alpha(color: Color, value: u8) -> Color {
-    Color::from_rgba8(color.r(), color.g(), color.b(), value)
-}
 fn polar(center: Point, radius: f64, angle: f64) -> Point {
     Point::new(
         angle.cos().mul_add(radius, center.x),
@@ -323,7 +321,7 @@ impl ChordChart {
         for geom in order {
             let label = self.node(&geom.id).map_or("", |n| n.label.as_str());
             let label = if self.style.show_values {
-                format!("{label} {}", format_value(geom.value))
+                format!("{label} {}", format_compact(geom.value))
             } else {
                 label.to_owned()
             };
@@ -453,25 +451,7 @@ impl InteractiveChart for ChordChart {
 }
 
 impl Widget for ChordChart {
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
-        map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let style = Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::length(self.height),
-            },
-            ..Default::default()
-        };
-        taffy.widget_leaf(style, map, self)
-    }
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = crate::widget::placed(&l, origin);
-    }
+    chart_leaf!();
     #[allow(
         clippy::too_many_lines,
         reason = "weighted allocation, ribbons, arcs, labels and inspector share chord geometry"
@@ -597,7 +577,7 @@ impl Widget for ChordChart {
             scene.fill(
                 Fill::NonZero,
                 transform,
-                alpha(
+                with_alpha(
                     geom.color,
                     if hovered {
                         self.style.hover_alpha
@@ -639,7 +619,7 @@ impl Widget for ChordChart {
                             self.node_geometry
                                 .iter()
                                 .find(|g| g.id == *id)
-                                .map_or_else(String::new, |g| format_value(g.value))
+                                .map_or_else(String::new, |g| format_compact(g.value))
                         } else {
                             n.detail.clone()
                         },
@@ -649,51 +629,23 @@ impl Widget for ChordChart {
                     (
                         format!("{} → {}", l.source, l.target),
                         if l.detail.is_empty() {
-                            format_value(l.value)
+                            format_compact(l.value)
                         } else {
-                            format!("{} · {}", format_value(l.value), l.detail)
+                            format!("{} · {}", format_compact(l.value), l.detail)
                         },
                     )
                 }),
             }
             .unwrap_or_default();
-            let (a, _) = tr.measure_style(&label, None, &theme.text(TextRole::Caption));
-            let (b, _) = tr.measure_style(&detail, None, &theme.text(TextRole::Caption));
-            let width = f64::from(a.max(b)).max(150.0) + 28.0;
-            let x = (self.pointer.x + 16.0)
-                .min(self.rect.x1 - width - 8.0)
-                .max(self.rect.x0 + 8.0);
-            let y = (self.pointer.y + 16.0)
-                .min(self.rect.y1 - 72.0)
-                .max(self.rect.y0 + 8.0);
-            let tip = RoundedRect::from_rect(
-                Rect::new(x, y, x + width, y + 64.0),
-                f64::from(theme.tokens.radii.control),
-            );
-            scene.fill(
-                Fill::NonZero,
+            crate::widget::chart_labels::draw_tooltip(
+                scene,
                 transform,
-                theme.tokens.colors.surfaces.overlay,
-                None,
-                &tip,
-            );
-            tr.draw_style(
-                scene,
-                &label,
-                theme.tokens.colors.text_primary,
-                transform * Affine::translate((x + 14.0, y + 11.0)),
-                None,
-                &theme
-                    .text(TextRole::Label)
-                    .with_weight(TextWeight::Semibold),
-            );
-            tr.draw_style(
-                scene,
-                &detail,
-                theme.tokens.colors.text_dim,
-                transform * Affine::translate((x + 14.0, y + 37.0)),
-                None,
-                &theme.text(TextRole::Caption),
+                tr,
+                theme,
+                self.pointer,
+                self.rect,
+                150.0,
+                (&label, &detail),
             );
         }
     }
@@ -728,7 +680,7 @@ impl Widget for ChordChart {
                             .with_action_target(format!("link:{}", l.id))
                             .with_name(format!("{} to {}", l.source, l.target))
                             .with_description(if l.detail.is_empty() {
-                                format_value(l.value)
+                                format_compact(l.value)
                             } else {
                                 l.detail.clone()
                             })
@@ -768,25 +720,8 @@ impl Widget for ChordChart {
     fn name(&self) -> &'static str {
         "ChordChart"
     }
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
     fn is_focusable(&self) -> bool {
         true
-    }
-    fn is_layout_dirty(&self) -> bool {
-        self.rect == Rect::ZERO
-    }
-}
-fn format_value(v: f64) -> String {
-    if v.abs() >= 1_000_000.0 {
-        format!("{:.1}M", v / 1_000_000.0)
-    } else if v.abs() >= 1_000.0 {
-        format!("{:.1}K", v / 1_000.0)
-    } else if v.fract().abs() < 0.001 {
-        format!("{v:.0}")
-    } else {
-        format!("{v:.1}")
     }
 }
 

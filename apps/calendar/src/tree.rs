@@ -150,43 +150,19 @@ fn invalid_arguments(reason: impl Into<String>) -> EncodedAction {
     }
 }
 
-/// A sparse update of one event, built from the arguments it is invoked
-/// with; a malformed request is refused before it becomes an action.
-fn event_update_spec<F>(
+/// A sparse update of one event or task, built from the arguments it is
+/// invoked with; a malformed request is refused before it becomes an action.
+fn update_spec<D, F>(
     id: &str,
     label: &str,
     placeholder: &str,
     params: Vec<ActionParam>,
-    data: EventData,
+    data: D,
     update: F,
 ) -> ActionSpec
 where
-    F: Fn(&EventData, &ActionArgs) -> Result<CalendarAction, String> + Send + Sync + 'static,
-{
-    ActionSpec::typed(
-        id,
-        label,
-        placeholder,
-        ExecutionLocus::ClientLocal,
-        params,
-        move |args| match update(&data, args) {
-            Ok(action) => encode(&action),
-            Err(reason) => invalid_arguments(reason),
-        },
-    )
-}
-
-/// The task counterpart to [`event_update_spec`].
-fn task_update_spec<F>(
-    id: &str,
-    label: &str,
-    placeholder: &str,
-    params: Vec<ActionParam>,
-    data: TaskData,
-    update: F,
-) -> ActionSpec
-where
-    F: Fn(&TaskData, &ActionArgs) -> Result<CalendarAction, String> + Send + Sync + 'static,
+    D: Send + Sync + 'static,
+    F: Fn(&D, &ActionArgs) -> Result<CalendarAction, String> + Send + Sync + 'static,
 {
     ActionSpec::typed(
         id,
@@ -348,7 +324,7 @@ fn event_resource(ev: &EventResource) -> Option<Resource> {
         event_label(&ev.data),
     );
     child = child.with_action(open_spec(event_resource_id(parsed_id)));
-    child = child.with_action(event_update_spec(
+    child = child.with_action(update_spec(
         "edit",
         "Rename event",
         "event title…",
@@ -371,7 +347,7 @@ fn event_resource(ev: &EventResource) -> Option<Resource> {
             ))
         },
     ));
-    child = child.with_action(event_update_spec(
+    child = child.with_action(update_spec(
         "set-location",
         "Set location",
         "location, room, or meeting link…",
@@ -394,7 +370,7 @@ fn event_resource(ev: &EventResource) -> Option<Resource> {
             ))
         },
     ));
-    child = child.with_action(event_update_spec(
+    child = child.with_action(update_spec(
         "set-start",
         "Set start time",
         "YYYY-MM-DDTHH:MM",
@@ -423,7 +399,7 @@ fn event_resource(ev: &EventResource) -> Option<Resource> {
             ))
         },
     ));
-    child = child.with_action(event_update_spec(
+    child = child.with_action(update_spec(
         "set-end",
         "Set end time",
         "YYYY-MM-DDTHH:MM",
@@ -452,7 +428,7 @@ fn event_resource(ev: &EventResource) -> Option<Resource> {
             ))
         },
     ));
-    child = child.with_action(event_update_spec(
+    child = child.with_action(update_spec(
         "set-all-day",
         "Set all-day",
         "true or false",
@@ -472,7 +448,7 @@ fn event_resource(ev: &EventResource) -> Option<Resource> {
             ))
         },
     ));
-    child = child.with_action(event_update_spec(
+    child = child.with_action(update_spec(
         "set-repeat",
         "Set repeat",
         "none / daily / weekdays / weekly / monthly / yearly",
@@ -493,7 +469,7 @@ fn event_resource(ev: &EventResource) -> Option<Resource> {
             ))
         },
     ));
-    child = child.with_action(event_update_spec(
+    child = child.with_action(update_spec(
         "set-repeat-interval",
         "Set repeat interval",
         "positive interval",
@@ -517,7 +493,7 @@ fn event_resource(ev: &EventResource) -> Option<Resource> {
             ))
         },
     ));
-    child = child.with_action(event_update_spec(
+    child = child.with_action(update_spec(
         "set-repeat-until",
         "Set repeat end date",
         "YYYY-MM-DD, or empty",
@@ -541,7 +517,7 @@ fn event_resource(ev: &EventResource) -> Option<Resource> {
             ))
         },
     ));
-    child = child.with_action(event_update_spec(
+    child = child.with_action(update_spec(
         "set-repeat-count",
         "Set occurrence count",
         "0 clears the limit",
@@ -565,7 +541,7 @@ fn event_resource(ev: &EventResource) -> Option<Resource> {
             ))
         },
     ));
-    child = child.with_action(event_update_spec(
+    child = child.with_action(update_spec(
         "set-timezone",
         "Set time zone",
         "IANA time zone or floating",
@@ -635,7 +611,7 @@ fn event_resource(ev: &EventResource) -> Option<Resource> {
             })
         },
     ));
-    child = child.with_action(event_update_spec(
+    child = child.with_action(update_spec(
         "set-reminder",
         "Set reminder",
         "none / 10 / 30 / 60",
@@ -665,7 +641,7 @@ fn event_resource(ev: &EventResource) -> Option<Resource> {
             ))
         },
     ));
-    child = child.with_action(event_update_spec(
+    child = child.with_action(update_spec(
         "set-color",
         "Set color",
         "indigo / emerald / amber / red / blue / violet / slate",
@@ -687,7 +663,7 @@ fn event_resource(ev: &EventResource) -> Option<Resource> {
             ))
         },
     ));
-    child = child.with_action(event_update_spec(
+    child = child.with_action(update_spec(
         "move-to-project",
         "Move to project",
         "project destination",
@@ -713,7 +689,7 @@ fn event_resource(ev: &EventResource) -> Option<Resource> {
             ))
         },
     ));
-    child = child.with_action(event_update_spec(
+    child = child.with_action(update_spec(
         "move-to-calendar",
         "Move to calendar",
         "calendar destination",
@@ -762,7 +738,7 @@ fn event_resource(ev: &EventResource) -> Option<Resource> {
             "calendar.reminder",
             format!("{} minutes before", ev.data.reminder),
         )
-        .with_action(event_update_spec(
+        .with_action(update_spec(
             "set-minutes-before",
             "Set reminder time",
             "10 / 30 / 60",
@@ -950,7 +926,7 @@ fn task_resource(tk: &TaskResource) -> Option<Resource> {
             toggle_label,
             &set_task_done_action(id.clone(), !tk.data.done),
         ));
-    child = child.with_action(task_update_spec(
+    child = child.with_action(update_spec(
         "edit",
         "Rename task",
         "task title…",
@@ -973,7 +949,7 @@ fn task_resource(tk: &TaskResource) -> Option<Resource> {
             ))
         },
     ));
-    child = child.with_action(task_update_spec(
+    child = child.with_action(update_spec(
         "set-due",
         "Set due date",
         "YYYY-MM-DD or none",
@@ -1000,7 +976,7 @@ fn task_resource(tk: &TaskResource) -> Option<Resource> {
             ))
         },
     ));
-    child = child.with_action(task_update_spec(
+    child = child.with_action(update_spec(
         "set-priority",
         "Set priority",
         "none / p1 / p2 / p3",
@@ -1026,7 +1002,7 @@ fn task_resource(tk: &TaskResource) -> Option<Resource> {
             ))
         },
     ));
-    child = child.with_action(task_update_spec(
+    child = child.with_action(update_spec(
         "move-to-project",
         "Move to project",
         "project destination",

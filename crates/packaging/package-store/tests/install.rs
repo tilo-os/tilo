@@ -456,6 +456,146 @@ fn orphaned_trees_go_unless_a_running_app_has_them_mounted() {
     assert!(collected.removed.is_empty(), "{collected:?}");
 }
 
+fn nothing_mounted() -> package_store::mounts::InUse {
+    package_store::mounts::InUse::Known(package_store::mounts::Mounts::default())
+}
+
+#[test]
+fn a_leased_payload_outlives_its_update_and_goes_after_release() {
+    let identity = SigningIdentity::generate();
+    let (_p1, v1) = package(&identity, "so.tilo.a", "1.0.0", &v1_files());
+    let (_p2, v2) = package(&identity, "so.tilo.a", "2.0.0", &v2_files());
+    let root = scratch();
+    let store = PackageStore::at(root.path());
+    store
+        .install(full_tapp(&v1).as_slice(), admit_all, None)
+        .unwrap();
+    let old = store
+        .registry()
+        .unwrap()
+        .find("so.tilo.a")
+        .cloned()
+        .unwrap();
+    // A launch chose v1 and has not mounted it yet when the update lands.
+    let launch = package_store::lease::hold_payload_in(store.layout(), &old.payload_root)
+        .unwrap()
+        .expect("a tree of this store is leased");
+    store
+        .install(full_tapp(&v2).as_slice(), admit_all, None)
+        .unwrap();
+    assert!(
+        package_store::integrity::verify(&old, &old.payload_root)
+            .unwrap()
+            .is_intact(),
+        "the launch still finds the whole tree it chose"
+    );
+    let collected = store.collect_orphans(&nothing_mounted()).unwrap();
+    assert_eq!(collected.kept_in_use, vec![old.payload_root.clone()]);
+    assert!(old.payload_root.exists());
+    // A launcher that ends, however it ends, releases the tree.
+    drop(launch);
+    let collected = store.collect_orphans(&nothing_mounted()).unwrap();
+    assert!(!old.payload_root.exists(), "{collected:?}");
+    assert!(!old.manifest_path.exists());
+    assert!(
+        !store
+            .layout()
+            .lease(package_store::layout::parse_id_hex(&old.package_id_hex).unwrap())
+            .exists(),
+        "the lease file goes with its tree"
+    );
+    assert!(
+        std::fs::read_dir(store.layout().tmp())
+            .unwrap()
+            .next()
+            .is_none(),
+        "nothing is left in staging"
+    );
+    let current = store
+        .registry()
+        .unwrap()
+        .find("so.tilo.a")
+        .cloned()
+        .unwrap();
+    assert!(
+        package_store::integrity::verify(&current, &current.payload_root)
+            .unwrap()
+            .is_intact()
+    );
+}
+
+#[test]
+fn an_unheld_update_retires_the_old_tree_at_once() {
+    let identity = SigningIdentity::generate();
+    let (_p1, v1) = package(&identity, "so.tilo.a", "1.0.0", &v1_files());
+    let (_p2, v2) = package(&identity, "so.tilo.a", "2.0.0", &v2_files());
+    let root = scratch();
+    let store = PackageStore::at(root.path());
+    store
+        .install(full_tapp(&v1).as_slice(), admit_all, None)
+        .unwrap();
+    let old = store
+        .registry()
+        .unwrap()
+        .find("so.tilo.a")
+        .cloned()
+        .unwrap();
+    // A launch that came and went leaves its lease file behind.
+    drop(package_store::lease::hold_payload_in(store.layout(), &old.payload_root).unwrap());
+    store
+        .install(full_tapp(&v2).as_slice(), admit_all, None)
+        .unwrap();
+    assert!(!old.payload_root.exists());
+    assert!(!old.manifest_path.exists());
+}
+
+#[test]
+fn abandoned_staging_is_swept_and_held_replaced_trees_stay() {
+    let identity = SigningIdentity::generate();
+    let (_p1, v1) = package(&identity, "so.tilo.a", "1.0.0", &v1_files());
+    let root = scratch();
+    let store = PackageStore::at(root.path());
+    store
+        .install(full_tapp(&v1).as_slice(), admit_all, None)
+        .unwrap();
+    let row = store
+        .registry()
+        .unwrap()
+        .find("so.tilo.a")
+        .cloned()
+        .unwrap();
+    let tmp = store.layout().tmp();
+    // What an install killed midway leaves: a half-written tree and a
+    // content-store temporary.
+    let crashed = tmp.join(format!("{}.tree.4242.17", row.package_id_hex));
+    std::fs::create_dir_all(crashed.join("bin")).unwrap();
+    std::fs::write(crashed.join("bin/app"), bytes(9, 700)).unwrap();
+    std::fs::write(tmp.join(".tmpAbC123"), bytes(8, 300)).unwrap();
+    // A reinstall of the same build replaced the tree while a launch held
+    // it: the copy the launch may have mounted waits in staging.
+    let replaced = tmp.join(format!("{}.retired-tree.4243.18", row.package_id_hex));
+    std::fs::create_dir_all(replaced.join("bin")).unwrap();
+    std::fs::write(replaced.join("bin/app"), bytes(7, 500)).unwrap();
+    let launch = package_store::lease::hold_payload_in(store.layout(), &row.payload_root)
+        .unwrap()
+        .unwrap();
+    let collected = store.collect_orphans(&nothing_mounted()).unwrap();
+    assert_eq!(collected.staging_bytes, 1000, "{collected:?}");
+    assert!(!crashed.exists());
+    assert!(!tmp.join(".tmpAbC123").exists());
+    assert!(replaced.join("bin/app").exists(), "a held copy stays");
+    drop(launch);
+    let collected = store.collect_orphans(&nothing_mounted()).unwrap();
+    assert_eq!(collected.staging_bytes, 500, "{collected:?}");
+    assert!(!replaced.exists());
+    assert!(
+        package_store::integrity::verify(&row, &row.payload_root)
+            .unwrap()
+            .is_intact(),
+        "the installed tree is untouched"
+    );
+}
+
 #[test]
 fn explicit_cohort_install_preserves_held_packages_and_existing_pins() {
     let identity = SigningIdentity::generate();
