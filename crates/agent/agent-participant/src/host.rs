@@ -419,6 +419,13 @@ mod tests {
             use tilo_test_env::idle;
             let (kept, keeper) = idle::spawned_thread("agent-host", || host.keep());
             kept.unwrap();
+            // Its first write (a synced file and a rename) is work, not
+            // idling: measure once it is done.
+            let first = host.state_file();
+            assert!(
+                within(Duration::from_secs(5), || first.exists()),
+                "the first state was not written"
+            );
             idle::assert_stays_asleep(&keeper, "agent host with nothing to write");
             let window = Duration::from_secs(2);
             let before = idle::context_switches(&keeper);
