@@ -475,12 +475,11 @@ impl<T: Model> Model for Collection<T> {
                 key: Some(order(doc).map_err(|error| error.at(key))?),
                 item: read_key::<T>(doc, &entry, VALUE).map_err(|error| error.at(key))?,
             };
-            match position.and_then(|position| self.items.get_mut(position)) {
-                Some(existing) => *existing = fresh,
-                None => {
-                    self.items.push(fresh);
-                    self.moved();
-                }
+            if let Some(existing) = position.and_then(|position| self.items.get_mut(position)) {
+                *existing = fresh;
+            } else {
+                self.items.push(fresh);
+                self.moved();
             }
             reorder = true;
         }

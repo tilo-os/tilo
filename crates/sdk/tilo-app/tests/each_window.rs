@@ -106,7 +106,7 @@ impl ResourceApp for Window {
     }
 }
 
-fn task_row(row: &mut ViewCx<Checklist, Task>) -> Element {
+fn task_row(row: &ViewCx<Checklist, Task>) -> Element {
     let Some(id) = row.item().cloned() else {
         return Box::new(Column::new());
     };
