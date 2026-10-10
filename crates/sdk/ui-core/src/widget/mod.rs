@@ -2676,6 +2676,23 @@ pub trait TaffyTreeExt {
         node
     }
 
+    /// [`Self::widget_leaf`] for a leaf that fills its parent's box: a
+    /// canvas, viewport or overlay that sizes and lays out its own content.
+    fn fill_leaf(
+        &mut self,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+        widget: &mut (dyn Widget + 'static),
+    ) -> NodeId {
+        let style = taffy::Style {
+            size: taffy::Size {
+                width: taffy::Dimension::percent(1.0),
+                height: taffy::Dimension::percent(1.0),
+            },
+            ..Default::default()
+        };
+        self.widget_leaf(style, node_map, widget)
+    }
+
     /// Insert a parent node over `children` for `widget` and register it in
     /// `node_map`: how a container's `build_layout` ends.
     fn widget_node(
