@@ -64,6 +64,18 @@ impl Row<'_> {
         self.control(Box::new(toggle))
     }
 
+    /// A toggle showing `on`, making each flip the edit `edit` builds of the
+    /// section's field `field` (one entry of a map).
+    pub fn toggle_edit<T: Section, V: 'static>(
+        self,
+        on: &LocalState<bool>,
+        field: Path<T, V>,
+        edit: impl Fn(bool) -> ui::tilo_resource::Edit<T> + Send + Sync + 'static,
+    ) -> El {
+        let toggle = self.cx.bind_edit(self.toggle_widget(on), field, edit);
+        self.control(Box::new(toggle))
+    }
+
     /// A toggle showing `on`, invoking `effect` with each flip.
     pub fn toggle_effect(
         self,
