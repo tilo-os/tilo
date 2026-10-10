@@ -285,6 +285,54 @@ class Resuming(unittest.TestCase):
             stream.read()
 
 
+class TokenRegistry(unittest.TestCase):
+    """A registry that wants a pull token and redirects blobs to a store that
+    refuses a second authorization, as registry.tilo.so does inside CI."""
+
+    def test_the_token_is_not_carried_to_the_blob_store(self) -> None:
+        import http.server
+        import threading
+
+        body = b"layer bytes" * 100
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *args) -> None:
+                pass
+
+            def reply(self, code: int, data: bytes = b"", headers: dict | None = None) -> None:
+                self.send_response(code)
+                for name, value in (headers or {}).items():
+                    self.send_header(name, value)
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def do_GET(self) -> None:
+                port = self.server.server_address[1]
+                authorized = self.headers.get("Authorization") == "Bearer t0ken"
+                if self.path.startswith("/token"):
+                    self.reply(200, b'{"token": "t0ken"}')
+                elif self.path.startswith("/v2/tilo/x/blobs/") and not authorized:
+                    self.reply(401, headers={"WWW-Authenticate":
+                                             f'Bearer realm="http://127.0.0.1:{port}/token",service="r"'})
+                elif self.path.startswith("/v2/tilo/x/blobs/"):
+                    self.reply(307, headers={"Location": f"http://127.0.0.1:{port}/store/blob"})
+                elif self.path == "/store/blob" and self.headers.get("Authorization"):
+                    self.reply(400, b"only one auth mechanism allowed")
+                elif self.path == "/store/blob":
+                    self.reply(200, body)
+                else:
+                    self.reply(404)
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.shutdown)
+        registry = image_size.Registry(f"127.0.0.1:{server.server_address[1]}", "tilo/x", scheme="http")
+        with registry.blob("sha256:" + "0" * 64) as stream:
+            self.assertEqual(stream.read(), body)
+        self.assertEqual(registry.token, "t0ken")
+
+
 class Capabilities(unittest.TestCase):
     def test_rich_dependencies_name_their_capabilities(self) -> None:
         self.assertEqual(image_size.capabilities("python(abi)"), {"python(abi)"})

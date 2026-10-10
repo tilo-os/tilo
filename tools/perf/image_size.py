@@ -99,22 +99,25 @@ TOP = 30
 class Registry:
     """Anonymous (or bearer-token) reads from an OCI distribution registry."""
 
-    def __init__(self, host: str, repository: str) -> None:
-        self.host, self.repository = host, repository
+    def __init__(self, host: str, repository: str, scheme: str = "https") -> None:
+        self.host, self.repository, self.scheme = host, repository, scheme
         self.token: str | None = None
 
     def open(self, path: str, accept: str | None = None, start: int = 0) -> IO[bytes]:
-        url = f"https://{self.host}/v2/{self.repository}/{path}"
+        url = f"{self.scheme}://{self.host}/v2/{self.repository}/{path}"
         for attempt in range(2):
             headers = {"User-Agent": "tilo-image-size/1"}
             if accept:
                 headers["Accept"] = accept
-            if self.token:
-                headers["Authorization"] = f"Bearer {self.token}"
             if start:
                 headers["Range"] = f"bytes={start}-"
+            request = urllib.request.Request(url, headers=headers)
+            if self.token:
+                # Not carried across the registry's redirect to its blob store,
+                # which refuses a second authorization (HTTP 400).
+                request.add_unredirected_header("Authorization", f"Bearer {self.token}")
             try:
-                reply = urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=120)
+                reply = urllib.request.urlopen(request, timeout=120)
                 if start and reply.status != 206:
                     reply.close()
                     raise ValueError(f"{url}: the registry ignored a resumed range request")
