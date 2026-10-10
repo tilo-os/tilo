@@ -873,6 +873,11 @@ fn run_parsed(
     } else {
         None
     };
+    // The font database likewise, so the app's first text renderer finds
+    // the catalog verified and the fonts read.
+    if opens_native_window(&args) {
+        prepare_font_database_beside();
+    }
     match dispatch_definition(spec, &args)? {
         DefinitionDispatch::Native(app) => {
             #[cfg(any(windows, target_os = "linux"))]
@@ -902,6 +907,28 @@ fn run_parsed(
         }
     }
     Ok(())
+}
+
+/// Start building the process's font database on its own thread
+/// (`text_render::prepare_font_database`): only the database, so it neither
+/// shapes text nor touches the GPU the renderer preparation is opening.
+#[cfg(feature = "native")]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "native launch: the font database loads on its own thread while the app constructs"
+)]
+fn prepare_font_database_beside() {
+    if let Err(error) = std::thread::Builder::new()
+        .name("font-database-prepare".into())
+        .spawn(|| {
+            tilo_startup_metrics::span(
+                "font-database-prepare",
+                crate::text_render::prepare_font_database,
+            );
+        })
+    {
+        tracing::warn!(%error, "could not prepare the font database in parallel");
+    }
 }
 
 #[cfg(feature = "native")]
