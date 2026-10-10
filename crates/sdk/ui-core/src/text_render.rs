@@ -227,7 +227,7 @@ pub fn configured_font_system() -> FontSystem {
 /// renderer now, and throw the font system away: a native launch runs this
 /// in the background from process start, so the main thread's first
 /// renderer finds the catalog verified and every font file read instead of
-/// doing both itself (TIL-775). The database is a process-wide `OnceLock`, so
+/// doing both itself. The database is a process-wide `OnceLock`, so
 /// a renderer asked for meanwhile waits for this one: nothing is loaded
 /// twice, and it is the database the main thread would have built.
 pub fn prepare_font_database() {
