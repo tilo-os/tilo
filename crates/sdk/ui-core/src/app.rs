@@ -4488,7 +4488,7 @@ pub(crate) mod ordinary_confirmation_tests {
             assert_ne!(entry.after, entry.before);
             assert_eq!(entry.author.as_ref(), Some(&author));
             let committed = state.doc.get_heads();
-            assert!(state.undo_for_author(&author, None, None).is_some());
+            assert!(state.undo_as(Some(&author), None, None, None).is_some());
             assert!(
                 state
                     .doc

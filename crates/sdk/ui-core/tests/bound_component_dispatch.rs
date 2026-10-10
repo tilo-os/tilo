@@ -2457,7 +2457,7 @@ fn driver_controls_resolve_bound_targets_to_their_record_owner() {
                     Some(&author)
                 );
                 assert!(history.next_undo_in(doc, &author, 12).is_none());
-                history.undo_in(doc, &author, 11, None, None).unwrap();
+                history.undo_in(doc, &author, 11, None, None, None).unwrap();
                 assert!(history.next_undo_in(doc, &author, 11).is_none());
                 assert_eq!(
                     doc.get(automerge::ROOT, "body")

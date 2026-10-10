@@ -1455,6 +1455,7 @@ fn legacy_restores_use_the_actual_owner_and_preserve_custody() {
                                     doc,
                                     Some(&crate::collaboration::local_user_id()),
                                     None,
+                                    None,
                                     None
                                 )
                                 .is_some()

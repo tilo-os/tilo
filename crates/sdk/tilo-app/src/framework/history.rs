@@ -68,38 +68,9 @@ fn limit(steps: Option<u32>, default: usize) -> usize {
     steps.map_or(default, |steps| usize::try_from(steps).unwrap_or(1))
 }
 
-impl tilo_actions::Action for HistoryEdit {
-    fn apply(&self, doc: &mut tilo_actions::Doc) -> Result<(), ActionError> {
-        match self {
-            Self::Undo { steps, run, by, to } => {
-                let (scope, default) = match run {
-                    Some(run) => (Scope::Run(run.clone()), usize::MAX),
-                    None => (
-                        by.as_ref().map_or_else(
-                            || Scope::invoking(doc),
-                            |author| Scope::Invoker(author.clone()),
-                        ),
-                        1,
-                    ),
-                };
-                match to {
-                    Some(to) => steps::resolve(doc, to)
-                        .and_then(|heads| steps::undo_since(doc, &scope, &heads).map(drop)),
-                    None => steps::undo(doc, &scope, limit(*steps, default)).map(drop),
-                }
-            }
-            Self::Redo { steps } => {
-                let scope = Scope::invoking(doc);
-                steps::redo(doc, &scope, limit(*steps, 1)).map(drop)
-            }
-            Self::Restore { version, ids } => steps::resolve(doc, version).and_then(|heads| {
-                steps::restore(doc, &heads, ids.as_deref().unwrap_or_default()).map(drop)
-            }),
-            Self::Checkpoint { name } => steps::checkpoint(doc, name),
-        }
-        .map_err(ActionError::Refused)
-    }
-
+impl HistoryEdit {
+    /// A checkpoint is housekeeping; any other move through history is a
+    /// step of its own.
     fn change_kind(&self) -> ChangeKind {
         match self {
             Self::Checkpoint { .. } => ChangeKind::Housekeeping,
@@ -107,12 +78,6 @@ impl tilo_actions::Action for HistoryEdit {
         }
     }
 
-    fn describe(&self, doc: &tilo_actions::Doc) -> Option<tilo_actions::Described> {
-        Some(self.described(doc))
-    }
-}
-
-impl HistoryEdit {
     /// What history records this step through history did: for an undo of
     /// one step, the step it takes back.
     fn described(&self, doc: &tilo_actions::Doc) -> tilo_actions::Described {
@@ -247,9 +212,14 @@ fn edit(
         label,
         ExecutionLocus::ClientLocal,
         params,
-        move |args| match build(args) {
-            Ok(edit) => EncodedAction::encode(EDIT_TYPE, &edit)
-                .unwrap_or_else(|error| invalid(&error.to_string())),
+        // Decoded by the resource's own history edit, which applies it.
+        move |args| match build(args)
+            .and_then(|edit| serde_json::to_vec(&edit).map_err(|error| error.to_string()))
+        {
+            Ok(payload) => EncodedAction {
+                type_id: EDIT_TYPE.to_owned(),
+                payload,
+            },
             Err(reason) => invalid(&reason),
         },
     )
@@ -857,100 +827,88 @@ impl HistoryEdit {
         doc: &mut tilo_actions::Doc,
         register: fn(&mut tilo_actions::ActionRegistry),
     ) -> Result<(), ActionError> {
-        if let HistoryEdit::Redo { steps: count } = self {
-            let scope = Scope::invoking(doc);
-            let registry = tilo_actions::ActionRegistry::with(register);
-            let mut original = doc.fork();
-            return steps::redo_with(doc, &scope, limit(*count, 1), |version| {
-                if tilo_actions::executor::verified_compensation(
-                    &mut original,
-                    version.hash,
-                    &registry,
-                )
-                .map_err(|error| error.to_string())?
-                .is_none()
-                {
-                    return Ok(None);
-                }
-                let recorded = version
-                    .context
-                    .as_ref()
-                    .and_then(|context| context.action.as_ref())
-                    .ok_or("verified redo action absent")?;
-                let action = registry
-                    .decode(recorded)
-                    .map_err(|error| error.to_string())?;
-                let restoration = action
-                    .redo_encoded(&original)
-                    .ok_or("redo requires the recorded outside operation's declared restoration")?;
-                let restoration = registry
-                    .decode(&restoration)
-                    .map_err(|error| error.to_string())?;
-                if restoration.locus() != ExecutionLocus::ClientLocal {
-                    return Err("history restoration requires another execution locus".into());
-                }
-                Ok(Some(steps::UndoCompensation {
-                    action: restoration,
-                    requires_settlement: action.inverse_requires_settlement(),
-                }))
-            })
-            .map(drop)
-            .map_err(ActionError::Refused);
-        }
-        let HistoryEdit::Undo {
-            steps: count,
-            run,
-            by,
-            to,
-        } = self
-        else {
-            return tilo_actions::Action::apply(self, doc);
-        };
-        let (scope, default) = match run {
-            Some(run) => (Scope::Run(run.clone()), usize::MAX),
-            None => (
-                by.as_ref().map_or_else(
-                    || Scope::invoking(doc),
-                    |author| Scope::Invoker(author.clone()),
-                ),
-                1,
-            ),
-        };
         let registry = tilo_actions::ActionRegistry::with(register);
         let mut original = doc.fork();
-        let compensate = |version: &Version| {
-            let Some(action) = tilo_actions::executor::verified_compensation(
-                &mut original,
-                version.hash,
-                &registry,
-            )
-            .map_err(|error| error.to_string())?
-            else {
-                return Ok(None);
-            };
-            if action.locus() != ExecutionLocus::ClientLocal {
-                return Err("history compensation requires another execution locus".into());
+        match self {
+            Self::Undo { steps, run, by, to } => {
+                let (scope, default) = match run {
+                    Some(run) => (Scope::Run(run.clone()), usize::MAX),
+                    None => (
+                        by.as_ref().map_or_else(
+                            || Scope::invoking(doc),
+                            |author| Scope::Invoker(author.clone()),
+                        ),
+                        1,
+                    ),
+                };
+                let compensate = |version: &Version| inverse(&mut original, &registry, version);
+                match to {
+                    Some(to) => steps::resolve(doc, to)
+                        .and_then(|heads| steps::undo_since(doc, &scope, &heads, compensate)),
+                    None => steps::undo(doc, &scope, limit(*steps, default), compensate),
+                }
+                .map(drop)
             }
-            let requires_settlement = version
-                .context
-                .as_ref()
-                .and_then(|context| context.action.as_ref())
-                .map(|original| registry.decode(original))
-                .transpose()
-                .map_err(|error| error.to_string())?
-                .is_some_and(|original| original.inverse_requires_settlement());
-            Ok(Some(steps::UndoCompensation {
-                action,
-                requires_settlement,
-            }))
-        };
-        match to {
-            Some(to) => steps::resolve(doc, to)
-                .and_then(|heads| steps::undo_since_with(doc, &scope, &heads, compensate)),
-            None => steps::undo_with(doc, &scope, limit(*count, default), compensate),
+            Self::Redo { steps } => {
+                let scope = Scope::invoking(doc);
+                steps::redo(doc, &scope, limit(*steps, 1), |version| {
+                    restoration(&mut original, &registry, version)
+                })
+                .map(drop)
+            }
+            Self::Restore { version, ids } => steps::resolve(doc, version).and_then(|heads| {
+                steps::restore(doc, &heads, ids.as_deref().unwrap_or_default()).map(drop)
+            }),
+            Self::Checkpoint { name } => steps::checkpoint(doc, name),
         }
-        .map(drop)
         .map_err(ActionError::Refused)
+    }
+}
+
+/// A step's verified inverse, when it recorded one: replaying its action at
+/// its own state reproduces it, so the inverse is the canonical one.
+fn inverse(
+    original: &mut tilo_actions::Doc,
+    registry: &tilo_actions::ActionRegistry,
+    version: &Version,
+) -> Result<Option<steps::Inverse>, String> {
+    let Some(action) =
+        tilo_actions::executor::verified_compensation(original, version.hash, registry)
+            .map_err(|error| error.to_string())?
+    else {
+        return Ok(None);
+    };
+    local(action).map(Some)
+}
+
+/// How a redo brings back an outside step: its verified action, run again.
+fn restoration(
+    original: &mut tilo_actions::Doc,
+    registry: &tilo_actions::ActionRegistry,
+    version: &Version,
+) -> Result<Option<steps::Inverse>, String> {
+    if inverse(original, registry, version)?.is_none() {
+        return Ok(None);
+    }
+    let recorded = version
+        .context
+        .as_ref()
+        .and_then(|context| context.action.as_ref())
+        .ok_or("verified redo action absent")?;
+    local(
+        registry
+            .decode(recorded)
+            .map_err(|error| error.to_string())?,
+    )
+    .map(Some)
+}
+
+/// History applies only actions it may run here.
+fn local(action: steps::Inverse) -> Result<steps::Inverse, String> {
+    if action.locus() == ExecutionLocus::ClientLocal {
+        Ok(action)
+    } else {
+        Err("history compensation requires another execution locus".into())
     }
 }
 

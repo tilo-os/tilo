@@ -1854,7 +1854,7 @@ fn deep_owned_state_restore_stamps_once_undoes_and_refuses_without_action_inner(
         Some("target")
     );
     state
-        .undo_as(Some(&UserId("ada".into())), None, None)
+        .undo_as(Some(&UserId("ada".into())), None, None, None)
         .unwrap();
     assert_eq!(
         string_at(&state.doc, &deepest, "leaf").as_deref(),

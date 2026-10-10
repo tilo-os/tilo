@@ -2036,7 +2036,9 @@ impl FrameHarness {
             .flatten()
             .is_some()
         } else {
-            self.state.undo_as(Some(&author), None, None).is_some()
+            self.state
+                .undo_as(Some(&author), None, None, None)
+                .is_some()
         };
         if done {
             self.relayout();
@@ -2084,7 +2086,9 @@ impl FrameHarness {
             .flatten()
             .is_some()
         } else {
-            self.state.redo_as(Some(&author), None, None).is_some()
+            self.state
+                .redo_as(Some(&author), None, None, None)
+                .is_some()
         };
         if done {
             self.relayout();
@@ -13295,7 +13299,10 @@ mod prepared_driver_tests {
             driver
                 .state
                 .commit_action_authored_with_context(None, None, Some(author()), None);
-            driver.state.undo_as(Some(&author()), None, None).unwrap();
+            driver
+                .state
+                .undo_as(Some(&author()), None, None, None)
+                .unwrap();
             driver.relayout();
             let outer_baseline = driver.state.undo_status(Some(&author()));
             assert!(!outer_baseline.can_undo && outer_baseline.can_redo);

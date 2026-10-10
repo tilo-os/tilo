@@ -128,9 +128,9 @@ pub use envelope::ActionEnvelope;
 pub use executor::{
     ActionTransport, CompensatingScope, Dispatched, EntryReader, HostDecision, LocalTransport,
     UNDONE_KEY, Verified, apply_local, apply_local_by, apply_local_with_context,
-    await_compensation, current_step, dispatch, dispatch_by, dispatch_by_with_context,
-    dispatch_with_context, entry_message, entry_of, invoking_context, open_step, replay,
-    settle_compensation, verify_change,
+    await_compensation, await_settlement, current_step, dispatch, dispatch_by,
+    dispatch_by_with_context, dispatch_with_context, entry_message, entry_of, invoking_context,
+    open_step, replay, settle_compensation, verify_change,
 };
 pub use framework::FrameworkChange;
 pub use interaction::{

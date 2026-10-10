@@ -343,7 +343,9 @@ fn bound_edits_are_one_owned_history_entry_each() {
             .unwrap();
         f.records
             .with_history(&checkout.id, |doc, history| {
-                history.undo_in(doc, &f.author, 11, None, None).unwrap();
+                history
+                    .undo_in(doc, &f.author, 11, None, None, None)
+                    .unwrap();
                 assert_eq!(
                     read::page_block_snapshots(doc, page)
                         .iter()
@@ -560,7 +562,9 @@ fn bound_undo_is_per_instance_and_retypes_once() {
                     assert_eq!(last.author.as_ref(), Some(&f.author));
                     assert_eq!(last.instance_id, Some(instance));
                 }
-                history.undo_in(doc, &f.author, 11, None, None).unwrap();
+                history
+                    .undo_in(doc, &f.author, 11, None, None, None)
+                    .unwrap();
                 assert!(!read::list_tag_assignments(doc).contains(&(f.root, f.tag)));
                 assert_eq!(
                     read::list_pages(doc)
@@ -571,10 +575,16 @@ fn bound_undo_is_per_instance_and_retypes_once() {
                     "A title"
                 );
                 assert_eq!(read::page_block_snapshots(doc, f.child)[0].1, "B text");
-                history.undo_in(doc, &f.author, 12, None, None).unwrap();
+                history
+                    .undo_in(doc, &f.author, 12, None, None, None)
+                    .unwrap();
                 assert_eq!(read::page_block_snapshots(doc, f.child)[0].1, original.1);
-                history.redo_in(doc, &f.author, 11, None, None).unwrap();
-                history.redo_in(doc, &f.author, 12, None, None).unwrap();
+                history
+                    .redo_in(doc, &f.author, 11, None, None, None)
+                    .unwrap();
+                history
+                    .redo_in(doc, &f.author, 12, None, None, None)
+                    .unwrap();
                 assert!(read::list_tag_assignments(doc).contains(&(f.root, f.tag)));
                 assert_eq!(read::page_block_snapshots(doc, f.child)[0].1, "B text");
             })
@@ -582,7 +592,9 @@ fn bound_undo_is_per_instance_and_retypes_once() {
         // A's redo remains available after B creates a new action.
         f.records
             .with_history(&checkout.id, |doc, history| {
-                history.undo_in(doc, &f.author, 11, None, None).unwrap();
+                history
+                    .undo_in(doc, &f.author, 11, None, None, None)
+                    .unwrap();
             })
             .unwrap();
         invoke_with(
@@ -594,7 +606,9 @@ fn bound_undo_is_per_instance_and_retypes_once() {
         );
         f.records
             .with_history(&checkout.id, |doc, history| {
-                history.redo_in(doc, &f.author, 11, None, None).unwrap();
+                history
+                    .redo_in(doc, &f.author, 11, None, None, None)
+                    .unwrap();
                 assert!(read::list_tag_assignments(doc).contains(&(f.root, f.tag)));
                 assert_eq!(
                     read::list_pages(doc)
@@ -692,7 +706,9 @@ fn bound_undo_is_per_instance_and_retypes_once() {
         f.records
             .with_history(&checkout.id, |doc, history| {
                 assert_eq!(history.revision(), 1);
-                history.undo_in(doc, &f.author, 11, None, None).unwrap();
+                history
+                    .undo_in(doc, &f.author, 11, None, None, None)
+                    .unwrap();
                 assert_eq!(content(doc), before);
                 assert!(history.next_undo_in(doc, &f.author, 11).is_none());
             })
@@ -971,7 +987,9 @@ fn peer_mounts_and_rejected_deltas_keep_owners_and_the_empty_cta() {
                 assert_eq!(pending.instance_id, Some(11));
                 assert_eq!(pending.author.as_ref(), Some(&f.author));
                 assert_eq!(pending.before, before.0);
-                history.undo_in(doc, &f.author, 11, None, None).unwrap();
+                history
+                    .undo_in(doc, &f.author, 11, None, None, None)
+                    .unwrap();
                 assert_eq!(read::page_block_snapshots(doc, f.root)[0].1, original);
                 assert_eq!(
                     read::list_pages(doc)
@@ -1347,7 +1365,9 @@ fn page_tree_bound_action_preserves_rich_bodies_owned_undo_and_revocation() {
         .unwrap();
     f.records
         .with_history(&checkout.id, |doc, history| {
-            history.undo_in(doc, &f.author, 11, None, None).unwrap();
+            history
+                .undo_in(doc, &f.author, 11, None, None, None)
+                .unwrap();
             assert_eq!(content(doc), before);
             assert!(history.next_undo_in(doc, &f.author, 11).is_none());
         })

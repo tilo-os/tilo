@@ -819,7 +819,11 @@ fn prepared_runners_share_factory_view_action_and_palette_behaviour() {
             );
             host.records
                 .with_history(&checkout.id, |doc, history| {
-                    assert!(history.undo_in(doc, &author(), 11, None, None).is_some());
+                    assert!(
+                        history
+                            .undo_in(doc, &author(), 11, None, None, None)
+                            .is_some()
+                    );
                     assert!(history.next_undo_in(doc, &author(), 11).is_none());
                 })
                 .unwrap();

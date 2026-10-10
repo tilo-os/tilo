@@ -297,25 +297,6 @@ pub fn pending_compensations(doc: &AutoCommit) -> Vec<ChangeHash> {
         .collect()
 }
 
-/// Whether an unresolved outside compensation is a restoration. This value
-/// describes history only; it grants no permission to perform native I/O.
-pub fn compensation_is_redo(doc: &AutoCommit, hash: ChangeHash) -> bool {
-    doc.get(automerge::ROOT, format!("{UNDONE_KEY}{hash}"))
-        .ok()
-        .flatten()
-        .and_then(|(value, _)| value.as_i64())
-        .is_some_and(|attempt| attempt > 0)
-}
-
-/// Mark an outside inverse completed after its admitted settlement verifies
-/// the actual host receipt. Pending attempts themselves remain history steps.
-///
-/// # Errors
-/// Refuses an absent, completed or invalid pending compensation marker.
-pub fn settle_compensation(doc: &mut AutoCommit, hash: ChangeHash) -> Result<(), String> {
-    tilo_actions::settle_compensation(doc, &hash.to_string()).map_err(|error| error.to_string())
-}
-
 /// The changes `undo` would take back for `scope`, newest first: its steps
 /// that are in effect, at most `limit` of them. The changes of one gesture
 /// (the keystrokes of a word) are one step.
@@ -599,103 +580,30 @@ fn revert(doc: &mut AutoCommit, targets: &[Version], verb: &str) -> Result<(), S
     Ok(())
 }
 
+/// The verified inverse action of a step, when it has one (it queued an
+/// outside consequence): applied instead of reverting its patches. Supplied
+/// by the caller's registry; it carries no authority of its own.
+pub type Inverse = Box<dyn tilo_actions::Action>;
+
 /// Take back `scope`'s last `limit` steps that are in effect, as one new
-/// change in `doc`'s open transaction. Returns the steps, newest first.
-/// On a refusal some of it may already be written: the caller discards the
-/// transaction, as the action executor does for a refused action.
+/// change in `doc`'s open transaction: each through the inverse `compensate`
+/// gives for it, else by reverting its patches. Returns the steps, newest
+/// first. On a refusal some of it may already be written: the caller
+/// discards the transaction, as the action executor does for a refused
+/// action.
 ///
 /// # Errors
-/// Says why nothing was undone: there is nothing of the scope's to undo, or
-/// somebody else has since changed what a step touched.
-pub fn undo(doc: &mut AutoCommit, scope: &Scope, limit: usize) -> Result<Vec<Version>, String> {
-    let targets = undo_targets(doc, scope, limit);
-    take_back(doc, scope, targets)
-}
-
-/// A verified inverse and whether its outside consequence must settle first.
-#[derive(Debug)]
-pub struct UndoCompensation {
-    /// The original registered action's verified inverse.
-    pub action: Box<dyn tilo_actions::Action>,
-    /// Completion remains unconfirmed until the admitted outside receipt.
-    pub requires_settlement: bool,
-}
-
-/// Take back the caller's steps, using a registered document compensation
-/// where one exists and normal selective patches for other changes.
-/// The callback supplies no authority: it runs within the current Undo action.
-///
-/// # Errors
-/// As [`undo`], or when a recorded compensation cannot be applied.
-pub fn undo_with(
+/// Says why nothing was undone: there is nothing of the scope's to undo,
+/// somebody else has since changed what a step touched, or an inverse
+/// cannot be applied.
+pub fn undo(
     doc: &mut AutoCommit,
     scope: &Scope,
     limit: usize,
-    compensate: impl FnMut(&Version) -> Result<Option<UndoCompensation>, String>,
+    compensate: impl FnMut(&Version) -> Result<Option<Inverse>, String>,
 ) -> Result<Vec<Version>, String> {
     let targets = undo_targets(doc, scope, limit);
-    take_back_with(doc, scope, targets, compensate)
-}
-
-fn take_back_with(
-    doc: &mut AutoCommit,
-    scope: &Scope,
-    targets: Vec<Version>,
-    mut compensate: impl FnMut(&Version) -> Result<Option<UndoCompensation>, String>,
-) -> Result<Vec<Version>, String> {
-    if targets.is_empty() {
-        return Err(nothing_to_undo(doc, scope));
-    }
-    // Preparing every inversion before writing preserves one open Undo
-    // transaction. Reading history between writes would auto-commit a
-    // partial Undo and make Redo restore only the final step.
-    let mut actions = Vec::new();
-    let mut pending = HashSet::new();
-    let mut patches = Vec::new();
-    for target in &targets {
-        match compensate(target)? {
-            Some(compensation) => {
-                if compensation.requires_settlement {
-                    pending.insert(target.hash);
-                }
-                actions.push((target.hash, compensation.action));
-            }
-            None => patches.push(target.clone()),
-        }
-    }
-    if !patches.is_empty() {
-        revert(doc, &patches, "undo")?;
-    }
-    for (hash, action) in actions {
-        // An outside consequence the inverse queues settles the step.
-        let compensating = tilo_actions::CompensatingScope::enter(vec![hash.to_string()]);
-        action.apply(doc).map_err(|error| error.to_string())?;
-        if compensating.awaited() {
-            pending.insert(hash);
-        }
-    }
-    for target in &targets {
-        let key = format!("{UNDONE_KEY}{}", target.hash);
-        let marker = if pending.contains(&target.hash) {
-            // Each retry writes a distinct deterministic pending marker. It
-            // remains an Undo step, but the original is in effect until the
-            // current admitted consequence confirms its host receipt.
-            let attempt = doc
-                .get(automerge::ROOT, &key)
-                .map_err(|error| error.to_string())?
-                .and_then(|(value, _)| value.as_i64())
-                .filter(|value| *value < 0)
-                .unwrap_or(0)
-                .checked_sub(1)
-                .ok_or("undo settlement attempts exceed the budget")?;
-            ScalarValue::Int(attempt)
-        } else {
-            ScalarValue::Boolean(true)
-        };
-        doc.put(automerge::ROOT, key, marker)
-            .map_err(|error| error.to_string())?;
-    }
-    Ok(targets)
+    take_back(doc, scope, targets, compensate)
 }
 
 /// Take back every step of `scope`'s in effect made after the version
@@ -708,29 +616,7 @@ pub fn undo_since(
     doc: &mut AutoCommit,
     scope: &Scope,
     heads: &[ChangeHash],
-) -> Result<Vec<Version>, String> {
-    let since: HashSet<ChangeHash> = doc
-        .get_changes(heads)
-        .iter()
-        .map(|change| change.hash())
-        .collect();
-    let targets: Vec<Version> = undo_targets(doc, scope, usize::MAX)
-        .into_iter()
-        .filter(|version| since.contains(&version.hash))
-        .collect();
-    take_back(doc, scope, targets)
-}
-
-/// Take back steps after a version through the same compensation door as
-/// [`undo_with`].
-///
-/// # Errors
-/// As [`undo_with`].
-pub fn undo_since_with(
-    doc: &mut AutoCommit,
-    scope: &Scope,
-    heads: &[ChangeHash],
-    compensate: impl FnMut(&Version) -> Result<Option<UndoCompensation>, String>,
+    compensate: impl FnMut(&Version) -> Result<Option<Inverse>, String>,
 ) -> Result<Vec<Version>, String> {
     let since: HashSet<ChangeHash> = doc
         .get_changes(heads)
@@ -741,47 +627,83 @@ pub fn undo_since_with(
         .into_iter()
         .filter(|version| since.contains(&version.hash))
         .collect();
-    take_back_with(doc, scope, targets, compensate)
+    take_back(doc, scope, targets, compensate)
 }
 
 fn take_back(
     doc: &mut AutoCommit,
     scope: &Scope,
     targets: Vec<Version>,
+    mut compensate: impl FnMut(&Version) -> Result<Option<Inverse>, String>,
 ) -> Result<Vec<Version>, String> {
     if targets.is_empty() {
         return Err(nothing_to_undo(doc, scope));
     }
-    revert(doc, &targets, "undo")?;
+    // Preparing every inversion before writing preserves one open Undo
+    // transaction. Reading history between writes would auto-commit a
+    // partial Undo and make Redo restore only the final step.
+    let mut actions = Vec::new();
+    let mut patches = Vec::new();
     for target in &targets {
-        let key = format!("{UNDONE_KEY}{}", target.hash);
-        doc.put(automerge::ROOT, key, ScalarValue::Boolean(true))
+        match compensate(target)? {
+            Some(action) => actions.push((target.hash, action)),
+            None => patches.push(target.clone()),
+        }
+    }
+    if !patches.is_empty() {
+        revert(doc, &patches, "undo")?;
+    }
+    let pending = apply_awaiting(doc, actions)?;
+    for target in &targets {
+        if pending.contains(&target.hash) {
+            // The step stays in effect until the outside consequence its
+            // inverse queued confirms it.
+            tilo_actions::await_settlement(doc, &target.hash.to_string(), false)
+                .map_err(|error| error.to_string())?;
+        } else {
+            doc.put(
+                automerge::ROOT,
+                format!("{UNDONE_KEY}{}", target.hash),
+                ScalarValue::Boolean(true),
+            )
             .map_err(|error| error.to_string())?;
+        }
     }
     Ok(targets)
 }
 
-/// Bring back the last `limit` undos of `scope`, as one new change.
-/// Returns the undo changes it reverted, newest first.
-///
-/// # Errors
-/// Says why nothing was redone: no undo of the scope's is in effect, or a
-/// newer step of its own came after it.
-pub fn redo(doc: &mut AutoCommit, scope: &Scope, limit: usize) -> Result<Vec<Version>, String> {
-    redo_checked(doc, scope, limit, |_| Ok(()))
+/// Apply each step's inverse (or restoration) inside a scope naming the
+/// step: the steps whose action queued an outside consequence that settles
+/// them.
+fn apply_awaiting(
+    doc: &mut AutoCommit,
+    actions: Vec<(ChangeHash, Inverse)>,
+) -> Result<HashSet<ChangeHash>, String> {
+    let mut awaited = HashSet::new();
+    for (hash, action) in actions {
+        let compensating = tilo_actions::CompensatingScope::enter(vec![hash.to_string()]);
+        action.apply(doc).map_err(|error| error.to_string())?;
+        if compensating.awaited() {
+            awaited.insert(hash);
+        }
+    }
+    Ok(awaited)
 }
 
-/// Bring back undos only after checking every original step they would
-/// restore. An outside operation must not be acknowledged by patching its
-/// document receipt alone. The check runs before any redo writes.
+/// Bring back the last `limit` undos of `scope`, as one new change: an
+/// outside step through the action `restore` gives for it (its recorded
+/// action, run again), any other by reverting the undo. A positive pending
+/// marker keeps such a step undone until its restoration settles. Returns
+/// the undo changes it brought back, newest first.
 ///
 /// # Errors
-/// As [`redo`], or when a target cannot be restored through document patches.
-pub fn redo_checked(
+/// Says why nothing was redone: no undo of the scope's is in effect, a
+/// newer step of its own came after it, or a restoration cannot be applied.
+pub fn redo(
     doc: &mut AutoCommit,
     scope: &Scope,
     limit: usize,
-    mut check: impl FnMut(&Version) -> Result<(), String>,
+    mut restore: impl FnMut(&Version) -> Result<Option<Inverse>, String>,
 ) -> Result<Vec<Version>, String> {
     let targets = redo_targets(doc, scope, limit);
     if targets.is_empty() {
@@ -789,37 +711,6 @@ pub fn redo_checked(
             "{} nothing to redo: redo brings back an undo only while no newer step of the same author follows it.",
             scope.subject(*scope == Scope::invoking(doc))
         ));
-    }
-    let versions = tilo_resource::history::versions(doc);
-    for target in &targets {
-        if let Kind::Undo(originals) = kind_of(doc, target) {
-            for original in originals {
-                let version = versions
-                    .iter()
-                    .find(|version| version.hash.to_string() == original)
-                    .ok_or("redo cannot resolve its original step")?;
-                check(version)?;
-            }
-        }
-    }
-    revert(doc, &targets, "redo")?;
-    Ok(targets)
-}
-
-/// Restore declared outside operations through their verified action instead
-/// of reverting their document receipt. A positive pending marker keeps the
-/// original undone until its fresh admitted native restoration settles.
-/// # Errors
-/// As [`redo`], including unverifiable or unavailable outside restorations.
-pub fn redo_with(
-    doc: &mut AutoCommit,
-    scope: &Scope,
-    limit: usize,
-    mut restore: impl FnMut(&Version) -> Result<Option<UndoCompensation>, String>,
-) -> Result<Vec<Version>, String> {
-    let targets = redo_targets(doc, scope, limit);
-    if targets.is_empty() {
-        return Err("nothing to redo while no newer own step follows the Undo".into());
     }
     let versions = tilo_resource::history::versions(doc);
     let mut patches = Vec::new();
@@ -836,10 +727,10 @@ pub fn redo_with(
                 .iter()
                 .find(|version| version.hash.to_string() == hash)
                 .ok_or("redo cannot resolve its original step")?;
-            if let Some(compensation) = restore(original)? {
+            if let Some(action) = restore(original)? {
                 outside = true;
-                actions.push((original.hash, compensation.action));
-                originals.push((original.hash, compensation.requires_settlement));
+                actions.push((original.hash, action));
+                originals.push(original.hash);
             } else {
                 ordinary = true;
             }
@@ -856,30 +747,13 @@ pub fn redo_with(
     if !patches.is_empty() {
         revert(doc, &patches, "redo")?;
     }
-    let mut awaited = HashSet::new();
-    for (hash, action) in actions {
-        let compensating = tilo_actions::CompensatingScope::enter(vec![hash.to_string()]);
-        action.apply(doc).map_err(|error| error.to_string())?;
-        if compensating.awaited() {
-            awaited.insert(hash);
-        }
-    }
-    for (hash, pending) in originals {
-        let pending = pending || awaited.contains(&hash);
-        let key = format!("{UNDONE_KEY}{hash}");
-        if pending {
-            let attempt = doc
-                .get(automerge::ROOT, &key)
-                .map_err(|error| error.to_string())?
-                .and_then(|(value, _)| value.as_i64())
-                .filter(|attempt| *attempt > 0)
-                .unwrap_or(0)
-                .checked_add(1)
-                .ok_or("redo settlement attempts exceed the budget")?;
-            doc.put(automerge::ROOT, key, ScalarValue::Int(attempt))
+    let awaited = apply_awaiting(doc, actions)?;
+    for hash in originals {
+        if awaited.contains(&hash) {
+            tilo_actions::await_settlement(doc, &hash.to_string(), true)
                 .map_err(|error| error.to_string())?;
         } else {
-            doc.delete(automerge::ROOT, key)
+            doc.delete(automerge::ROOT, format!("{UNDONE_KEY}{hash}"))
                 .map_err(|error| error.to_string())?;
         }
     }

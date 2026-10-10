@@ -3560,22 +3560,16 @@ impl CallbackBinding {
                 .as_mut()
                 .ok_or(BoundDispatchError::Record(RecordOpenError::Busy))?;
             let entry = match request {
-                crate::undo::UndoRequest::Undo => frame.history.undo_in_with_registry(
-                    doc,
-                    &self.author,
-                    self.instance_id,
-                    None,
-                    None,
-                    registry,
-                ),
-                crate::undo::UndoRequest::Redo => frame.history.redo_in_with_registry(
-                    doc,
-                    &self.author,
-                    self.instance_id,
-                    None,
-                    None,
-                    registry,
-                ),
+                crate::undo::UndoRequest::Undo => {
+                    frame
+                        .history
+                        .undo_in(doc, &self.author, self.instance_id, None, None, registry)
+                }
+                crate::undo::UndoRequest::Redo => {
+                    frame
+                        .history
+                        .redo_in(doc, &self.author, self.instance_id, None, None, registry)
+                }
             };
             frame.state.pending = Some(PendingRecordAction::new(self, doc.get_heads()));
             Ok(entry)
@@ -4617,8 +4611,12 @@ pub(crate) fn legacy_history_request(
                 history.commit_action_authored(doc, None, None, Some(author.clone()));
             }
             let result = match request {
-                crate::undo::UndoRequest::Undo => history.undo_as(doc, Some(author), None, None),
-                crate::undo::UndoRequest::Redo => history.redo_as(doc, Some(author), None, None),
+                crate::undo::UndoRequest::Undo => {
+                    history.undo_as(doc, Some(author), None, None, None)
+                }
+                crate::undo::UndoRequest::Redo => {
+                    history.redo_as(doc, Some(author), None, None, None)
+                }
             };
             if result.is_some() {
                 state.generation = Some(next);
