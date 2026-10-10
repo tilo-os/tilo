@@ -5327,7 +5327,7 @@ impl FrameHarness {
             match crate::bound_dispatch::bound_contract_violations(
                 self.root.as_mut(),
                 &component.binding,
-                &component.resources,
+                component.resources(),
             ) {
                 Ok(Some(found)) => violations.extend(found),
                 Ok(None) => violations.push(tilo_actions::ContractViolation {
@@ -5977,7 +5977,7 @@ impl FrameHarness {
                 .iter()
                 .filter(|snapshot| snapshot.binding.instance_id == address.instance_id)
                 .find_map(|snapshot| {
-                    tilo_actions::door::resolve(&snapshot.resources, &address.address)
+                    tilo_actions::door::resolve(snapshot.resources(), &address.address)
                         .map(|spec| spec.permission_for_json(arguments))
                 })
         })
@@ -6072,7 +6072,7 @@ impl FrameHarness {
         .map_err(|error| crate::bound_dispatch::BoundActionError::Dispatch(error).into_door())?
         .into_iter()
         .filter(|snapshot| instance.is_none_or(|instance| snapshot.binding.instance_id == instance))
-        .flat_map(|snapshot| snapshot.resources)
+        .flat_map(|snapshot| snapshot.into_resources())
         .collect::<Vec<_>>();
         // The app's own resolution of `id` is a top-level entry and wins over
         // the summary its eager tree may hold (a channel without its messages).
@@ -6102,9 +6102,10 @@ impl FrameHarness {
             .into_iter()
             .filter(|s| instance.is_none_or(|id| s.binding.instance_id == id))
             .flat_map(|s| {
-                s.resources.into_iter().map(move |r| {
+                let binding = s.binding.clone();
+                s.into_resources().into_iter().map(move |r| {
                     self.bound_publication
-                        .project(&s.binding, r)
+                        .project(&binding, r)
                         .map_err(crate::bound_dispatch::BoundActionError::into_door)
                 })
             })
@@ -6194,6 +6195,7 @@ impl FrameHarness {
                 source_invocation: broker_admitted.then_some(invocation),
                 ambient,
                 scope: None,
+                route: None,
             },
         )?;
         if matches!(started, crate::widget::ResourceOperationStart::Accepted) {
@@ -6397,6 +6399,7 @@ impl FrameHarness {
                 source_invocation: None,
                 ambient: acting.as_ref().and_then(|acting| acting.context.as_ref()),
                 scope: None,
+                route: None,
             },
         )
         .map_err(crate::bound_dispatch::BoundActionError::into_door);
@@ -6744,6 +6747,7 @@ impl FrameHarness {
                         source_invocation: None,
                         ambient: None,
                         scope: None,
+                        route: None,
                     },
                 )
                 .map_err(crate::bound_dispatch::BoundActionError::into_door)?;
@@ -8087,6 +8091,7 @@ impl FrameHarness {
                 source_invocation: None,
                 ambient: None,
                 scope: None,
+                route: None,
             },
         )
         .map_err(crate::bound_dispatch::BoundActionError::into_door)?;

@@ -406,7 +406,10 @@ def run_render(ctx: RunContext) -> list[record.Record]:
     call([sys.executable, "scripts/perf/render_bench.py", "timing", ctx.bins["ui-perf"],
           ctx.bins["redraw_bench"], "--env-json", ctx.env_json, "--out", ctx.dir, "--records", records],
          ctx.dir / "bench.log", ctx.repo)
-    return record.read(records)
+    opening = ctx.dir / "framework-open.log"
+    call([ctx.bins["framework-scaling"], "5000,50000", "open"], opening, ctx.repo)
+    return record.read(records) + adapters.framework_open(
+        [opening.read_text(encoding="utf-8", errors="replace")], ctx.env)
 
 
 IDLE_WAKEUPS_TEST = "idle_wakeups::an_idle_desktop_with_two_apps_stays_within_its_wakeup_budget"
@@ -444,8 +447,11 @@ GROUPS: dict[str, Group] = {group.name: group for group in (
           {"shell": "target/release/shell"}, {}, {}, run_agent),
     Group("render", "release", "lavapipe",
           (("cargo", "build", "--locked", "--release", "-p", "ui-examples", "--example", "ui-perf"),
-           ("cargo", "build", "--locked", "--release", "-p", "shell", "--example", "redraw_bench")),
-          {"ui-perf": "target/release/examples/ui-perf", "redraw_bench": "target/release/examples/redraw_bench"},
+           ("cargo", "build", "--locked", "--release", "-p", "shell", "--example", "redraw_bench"),
+           ("cargo", "build", "--locked", "--release", "-p", "tilo-app", "--features", "test-support",
+            "--example", "framework-scaling")),
+          {"ui-perf": "target/release/examples/ui-perf", "redraw_bench": "target/release/examples/redraw_bench",
+           "framework-scaling": "target/release/examples/framework-scaling"},
           {}, {}, run_render),
     Group("wakeups", "dev", "lavapipe", (),
           {"shell": "target/debug/shell"},

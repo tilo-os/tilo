@@ -7,6 +7,7 @@
     )
 )]
 
+mod session_supervisor;
 mod workspace_startup;
 
 use anyhow::{Context, Result, bail};
@@ -2075,10 +2076,15 @@ async fn serve(
             let Ok(client) = client else {
                 return;
             };
-            let mut interval = tokio::time::interval(Duration::from_secs(5));
+            // Delivers at once whatever is pending, then sleeps until
+            // something is enqueued. What could not be delivered (the
+            // recipient's devices offline) is retried with backoff from
+            // 5 s to a minute, and at once when a new delivery arrives
+            // (TIL-750: an empty outbox no longer wakes every 5 s).
+            let mut retry = NAMED_DELIVERY_RETRY;
             loop {
-                interval.tick().await;
                 let now = unix_now_ms();
+                let mut undelivered = false;
                 for entry in outbox.pending_at(now) {
                     let mut delivered = None;
                     for device in &entry.recipient_devices {
@@ -2098,8 +2104,19 @@ async fn serve(
                             break;
                         }
                     }
+                    undelivered |= delivered.is_none();
                     let _ =
                         outbox.record_attempt(entry.envelope.invite.id, delivered, unix_now_ms());
+                }
+                if undelivered {
+                    tokio::select! {
+                        () = tokio::time::sleep(retry) => {}
+                        () = outbox.arrival() => {}
+                    }
+                    retry = retry.saturating_mul(2).min(NAMED_DELIVERY_RETRY_MAX);
+                } else {
+                    retry = NAMED_DELIVERY_RETRY;
+                    outbox.arrival().await;
                 }
             }
         })
@@ -2137,9 +2154,7 @@ async fn serve(
         },
     )
     .await?;
-    if let Some(p) = &np {
-        persist_now(&namespace, p); // final flush
-    }
+    final_flush(persist, &namespace, np.as_deref()).await;
     if let Some(task) = named_delivery_task {
         task.abort();
     }
@@ -2157,9 +2172,6 @@ async fn serve(
     }
     if let Some(socket) = content_socket {
         let _ = std::fs::remove_file(socket);
-    }
-    if let Some(h) = persist {
-        h.abort();
     }
     if let Some(task) = share_task {
         task.abort();
@@ -2387,12 +2399,7 @@ async fn mount(
         },
     )
     .await?;
-    if let Some(p) = &np {
-        persist_now(&namespace, p);
-    }
-    if let Some(h) = persist {
-        h.abort();
-    }
+    final_flush(persist, &namespace, np.as_deref()).await;
     drop(workspace);
     Ok(())
 }
@@ -2759,12 +2766,34 @@ async fn recipient_service(
 
     let named_mounts = Arc::clone(&mounts);
     let named_inbox = Arc::clone(&inbox);
+    // Mounts every accepted envelope at once, and restarts a named mount
+    // whose child died. While every one is running the restart pass backs
+    // off from 2 s to a minute; one that had to start a mount (or was woken
+    // by a new envelope) goes back to 2 s (TIL-750: it used to run every
+    // 2 s for the life of the service).
     let named_mount_task = tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(2));
+        let mut every = NAMED_MOUNT_REPAIR;
         loop {
-            interval.tick().await;
+            let mut started = false;
             for envelope in named_inbox.entries_at(unix_now_ms()) {
-                let _ = named_mounts.start_named(&envelope);
+                let key = RecordSubscriptionKey {
+                    workspace_id: envelope.invite.workspace_id,
+                    record_id: envelope.invite.record_id,
+                };
+                if named_mounts.is_running(key).unwrap_or(false) {
+                    continue;
+                }
+                // A start that fails is retried on the backed-off pass.
+                started |= named_mounts.start_named(&envelope).is_ok();
+            }
+            every = if started {
+                NAMED_MOUNT_REPAIR
+            } else {
+                every.saturating_mul(2).min(NAMED_MOUNT_REPAIR_MAX)
+            };
+            tokio::select! {
+                () = tokio::time::sleep(every) => {}
+                () = named_inbox.arrival() => every = NAMED_MOUNT_REPAIR,
             }
         }
     });
@@ -3358,9 +3387,9 @@ fn restore_peer_sync_states(namespace: &mut Namespace, path: &Path) {
     }
 }
 
-/// Writes the sync progress beside the namespace document. Encoded under
-/// the namespace lock, written outside it.
-fn persist_peer_sync_states(namespace: &Arc<Mutex<Namespace>>, path: &Path) {
+/// Writes the sync progress beside the namespace document, returning
+/// whether it did. Encoded under the namespace lock, written outside it.
+fn persist_peer_sync_states(namespace: &Arc<Mutex<Namespace>>, path: &Path) -> bool {
     let bytes = namespace
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -3370,7 +3399,9 @@ fn persist_peer_sync_states(namespace: &Arc<Mutex<Namespace>>, path: &Path) {
             "sync progress persist to {} failed: {error}",
             path.display()
         );
+        return false;
     }
+    true
 }
 
 fn report_namespace_recovery(path: &Path, recovery: Option<&fs::durable_backup::RecoveryEvidence>) {
@@ -3385,63 +3416,56 @@ fn report_namespace_recovery(path: &Path, recovery: Option<&fs::durable_backup::
     }
 }
 
-/// Persist the namespace to disk every few seconds.
-/// Persists the namespace once it settles after a change. Signed records
-/// are durable the moment they are published; a namespace persisted only
-/// every few seconds could lose the placements of records a crash left
-/// published, which a restart then reads as deletions. A change is saved
-/// after 500 ms without further changes, or after 3 s of continuous ones,
-/// so a burst is one save and an intermediate state of it is rarely one.
-/// Checking the document's heads is cheap; an idle namespace costs nothing.
+/// Persists the namespace whenever it changes and settles
+/// ([`fs::namespace_persist`]): the document when its heads moved, the sync
+/// progress beside it when that moved, in that order. Nothing runs while
+/// the namespace is idle. Progress is skipped while the document's write
+/// fails, so it never runs ahead of the document on disk (progress naming
+/// heads the document lacks is dropped at load anyway; this only saves the
+/// write).
 fn spawn_persist(namespace: Arc<Mutex<Namespace>>, path: PathBuf) -> tokio::task::JoinHandle<()> {
-    const QUIET: Duration = Duration::from_millis(500);
-    const MAX_DELAY: Duration = Duration::from_secs(3);
     let progress_path = peer_sync_path(&path);
-    tokio::spawn(async move {
-        let mut persisted = None;
-        let mut seen = None;
-        let mut seen_at = tokio::time::Instant::now();
-        let mut dirty_since: Option<tokio::time::Instant> = None;
-        let mut progress_persisted = None;
-        let mut progress_written_at = tokio::time::Instant::now();
-        loop {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            let (heads, progress) = {
-                let mut namespace = namespace
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                (namespace.heads(), namespace.peer_sync_generation())
-            };
-            let now = tokio::time::Instant::now();
-            // Sync progress changes when an exchange agrees on new heads;
-            // an idle exchange leaves it, and so the file, alone. Written
-            // at most every `MAX_DELAY`, whether or not the document is:
-            // progress ahead of the persisted document names heads it lacks
-            // and is dropped at load, progress behind it resumes from
-            // further back. Losing the newest costs one fuller exchange.
-            if progress_persisted != Some(progress)
-                && now.duration_since(progress_written_at) >= MAX_DELAY
-            {
-                persist_peer_sync_states(&namespace, &progress_path);
-                progress_persisted = Some(progress);
-                progress_written_at = now;
-            }
-            if seen.as_ref() != Some(&heads) {
-                seen = Some(heads.clone());
-                seen_at = now;
-            }
-            if persisted.as_ref() == Some(&heads) {
-                dirty_since = None;
-                continue;
-            }
-            let since = *dirty_since.get_or_insert(now);
-            if now.duration_since(seen_at) >= QUIET || now.duration_since(since) >= MAX_DELAY {
-                persist_now(&namespace, &path);
-                persisted = Some(heads);
-                dirty_since = None;
-            }
+    fs::namespace_persist::spawn_persister(namespace, move |namespace, pending| {
+        let mut failed = fs::namespace_persist::Pending::default();
+        if pending.document
+            && let Err(error) = persist_namespace_generation(namespace, &path)
+        {
+            eprintln!("namespace persist to {} failed: {error}", path.display());
+            failed.document = true;
         }
+        if pending.progress {
+            failed.progress =
+                failed.document || !persist_peer_sync_states(namespace, &progress_path);
+        }
+        failed
     })
+}
+
+/// First retry of a named-share delivery whose recipient was unreachable.
+const NAMED_DELIVERY_RETRY: Duration = Duration::from_secs(5);
+/// Longest wait between retries of an undelivered named share.
+const NAMED_DELIVERY_RETRY_MAX: Duration = Duration::from_secs(60);
+/// The recipient service's restart pass right after it started a mount.
+const NAMED_MOUNT_REPAIR: Duration = Duration::from_secs(2);
+/// Longest wait between restart passes while every named mount runs.
+const NAMED_MOUNT_REPAIR_MAX: Duration = Duration::from_secs(60);
+
+/// The last write of a mount, on shutdown and unmount: stops its persister
+/// (waiting, so the two never write at once), then writes the document and
+/// the sync progress as they are now.
+async fn final_flush(
+    persister: Option<tokio::task::JoinHandle<()>>,
+    namespace: &Arc<Mutex<Namespace>>,
+    path: Option<&Path>,
+) {
+    if let Some(persister) = persister {
+        persister.abort();
+        let _ = persister.await;
+    }
+    if let Some(path) = path {
+        persist_now(namespace, path);
+        persist_peer_sync_states(namespace, &peer_sync_path(path));
+    }
 }
 
 /// Open a joiner's namespace: load any persisted copy, then merge the
@@ -3770,10 +3794,12 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
     }
 
     let mp = mount_point.clone();
-    let (unmount_tx, unmount_rx) = std::sync::mpsc::channel::<()>();
+    let (unmount_tx, session_events) = std::sync::mpsc::channel();
+    let session_ended = unmount_tx.clone();
     // Keep the BackgroundSession under a supervisor instead of immediately
     // consuming it in `join()`: a rebind must unmount the old FUSE session and
-    // wait for its worker before this process can return to systemd.
+    // wait for its worker before this process can return to systemd. The
+    // supervisor sleeps until one of the two happens (TIL-750).
     let mut mount_task = tokio::task::spawn_blocking(move || {
         let session = fuser::spawn_mount(fs, &mp, &config)?;
         if signal_recipient_ready {
@@ -3781,18 +3807,7 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
             println!("{}", fs::recipient_mount::RECIPIENT_MOUNT_READY_LINE);
             std::io::stdout().flush()?;
         }
-        loop {
-            if session.guard.is_finished() {
-                return session.join();
-            }
-            match unmount_rx.recv_timeout(Duration::from_millis(50)) {
-                Ok(()) => return session.umount_and_join(),
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
-                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                    return session.join();
-                }
-            }
-        }
+        session_supervisor::supervise(session, &session_events, session_ended)
     });
     println!("Mounting QuickFS at {}", mount_point.display());
 
@@ -3808,7 +3823,7 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
         },
         _ = tokio::signal::ctrl_c() => {
             println!("Interrupted, exiting...");
-            let _ = unmount_tx.send(());
+            let _ = unmount_tx.send(session_supervisor::SessionEvent::Unmount);
             let _ = (&mut mount_task).await;
             MountOutcome::Unmounted
         },
@@ -3819,7 +3834,7 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
             }
         } => {
             println!("Content peer registration requested a clean workspace rebind.");
-            let _ = unmount_tx.send(());
+            let _ = unmount_tx.send(session_supervisor::SessionEvent::Unmount);
             let _ = (&mut mount_task).await;
             MountOutcome::RebindRequested
         },
@@ -3911,32 +3926,28 @@ async fn run_native(
     })
     .await??;
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-    let mut health = tokio::time::interval(Duration::from_secs(1));
-    let outcome = loop {
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => {
-                println!("Interrupted, exiting...");
-                break MountOutcome::Unmounted;
+    // Every way out is an event: nothing here wakes until one happens.
+    let outcome = tokio::select! {
+        _ = tokio::signal::ctrl_c() => {
+            println!("Interrupted, exiting...");
+            MountOutcome::Unmounted
+        }
+        _ = terminate.recv() => {
+            println!("Terminated, exiting...");
+            MountOutcome::Unmounted
+        }
+        () = async {
+            match rebind.as_mut() {
+                Some(receiver) => { let _ = receiver.recv().await; }
+                None => std::future::pending::<()>().await,
             }
-            _ = terminate.recv() => {
-                println!("Terminated, exiting...");
-                break MountOutcome::Unmounted;
-            }
-            () = async {
-                match rebind.as_mut() {
-                    Some(receiver) => { let _ = receiver.recv().await; }
-                    None => std::future::pending::<()>().await,
-                }
-            } => {
-                println!("Content peer registration requested a clean workspace rebind.");
-                break MountOutcome::RebindRequested;
-            }
-            _ = health.tick() => {
-                if plane.is_finished() {
-                    eprintln!("the native data plane stopped");
-                    break MountOutcome::Unmounted;
-                }
-            }
+        } => {
+            println!("Content peer registration requested a clean workspace rebind.");
+            MountOutcome::RebindRequested
+        }
+        () = plane.finished() => {
+            eprintln!("the native data plane stopped");
+            MountOutcome::Unmounted
         }
     };
     tokio::task::spawn_blocking(move || plane.stop()).await??;

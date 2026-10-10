@@ -54,7 +54,7 @@ fn locus_scope_with(
         .iter()
         .find(|s| s.binding.same_component(&target.binding))
         .unwrap()
-        .resources
+        .resources()
         .iter()
         .find(|r| r.id.as_str() == "bound:probe")
         .unwrap();

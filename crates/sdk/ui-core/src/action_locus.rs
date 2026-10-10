@@ -18,7 +18,7 @@ pub(crate) fn draw_action_presence(
     viewport: vello::kurbo::Rect,
     surface: &str,
     now: crate::time::Instant,
-) {
+) -> bool {
     presence.clear_agent_marker_surface(surface);
     let mut resolved = Vec::new();
     for interaction in presence.visible_interactions(now) {
@@ -50,7 +50,7 @@ pub(crate) fn draw_action_presence(
         presence.draw_agent_action_marker(paint, &interaction, bounds, viewport, surface, now);
         resolved.push(interaction.invocation);
     }
-    presence.draw_interactions_excluding(
+    let rail_painted = presence.draw_interactions_excluding(
         paint.scene,
         paint.transform,
         viewport,
@@ -59,6 +59,7 @@ pub(crate) fn draw_action_presence(
         now,
         &resolved,
     );
+    !resolved.is_empty() || rail_painted
 }
 
 /// One visible expression of a domain action in the retained UI. The action

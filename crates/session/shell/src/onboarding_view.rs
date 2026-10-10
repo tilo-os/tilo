@@ -6320,36 +6320,35 @@ mod tests {
             );
 
             let mut focus = None;
-            let mut handled = false;
-            view.handle_event(
-                &pointer_event(label_point),
-                &mut ui::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &Modifiers::default(),
-                    state: ui::widget::Edits::lend(&mut document),
-                    path: &automerge::ROOT,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: node,
-                    taffy: &taffy,
-                },
-            );
-            handled = false;
-            view.handle_event(
-                &mouse_press(),
-                &mut ui::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &Modifiers::default(),
-                    state: ui::widget::Edits::lend(&mut document),
-                    path: &automerge::ROOT,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: node,
-                    taffy: &taffy,
-                },
-            );
-            assert!(handled, "the label-area pointer press is handled");
-            assert_eq!(focus, Some(row_node), "the exact checkbox takes focus");
+            for event in [pointer_event(label_point), mouse_press()] {
+                let mut handled = false;
+                view.handle_event(
+                    &event,
+                    &mut ui::widget::EventCtx {
+                        scale_factor: 1.0,
+                        modifiers: &Modifiers::default(),
+                        state: ui::widget::Edits::lend(&mut document),
+                        path: &automerge::ROOT,
+                        handled: &mut handled,
+                        focus_target: &mut focus,
+                        node_id: node,
+                        taffy: &taffy,
+                    },
+                );
+                if matches!(event, WindowEvent::CursorMoved { .. }) {
+                    assert!(
+                        !handled,
+                        "hover movement must remain available to sibling controls"
+                    );
+                } else {
+                    assert!(handled, "the labelled checkbox row must handle {event:?}");
+                    assert_eq!(
+                        focus,
+                        Some(row_node),
+                        "the label press must focus the acknowledgement checkbox"
+                    );
+                }
+            }
             view.settle(
                 &mut ui::widget::Edits::lend(&mut document),
                 &automerge::ROOT,
@@ -6429,7 +6428,12 @@ mod tests {
                         taffy: &taffy,
                     },
                 );
-                if !matches!(event, WindowEvent::CursorMoved { .. }) {
+                if matches!(event, WindowEvent::CursorMoved { .. }) {
+                    assert!(
+                        !handled,
+                        "hover movement must remain available to sibling controls"
+                    );
+                } else {
                     assert!(
                         handled,
                         "the backup continuation button must handle {event:?}"

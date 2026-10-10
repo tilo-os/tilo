@@ -260,6 +260,13 @@ impl ScrollRegion {
         })
     }
 
+    /// Whether a bar's thumb is being dragged: the host keeps the pointer
+    /// captured until it is released (`Widget::wants_pointer_capture`).
+    #[must_use]
+    pub fn is_dragging(&self) -> bool {
+        self.vbar.is_dragging() || self.hbar.is_dragging()
+    }
+
     fn held(&self, theme: &Theme) -> bool {
         theme.reduce_motion
             || self.pointer_near

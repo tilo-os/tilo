@@ -99,7 +99,7 @@ mod surface;
 #[cfg(all(any(windows, target_os = "linux"), feature = "native"))]
 pub(crate) use native_runner::prepare_native_renderer;
 #[cfg(feature = "native")]
-pub use surface::AppSurface;
+pub use surface::{AppSurface, SurfaceDamage};
 #[cfg(feature = "native")]
 mod embedded;
 #[cfg(feature = "native")]
@@ -2170,6 +2170,23 @@ impl App {
             .map(|(rect, label, _)| (rect, label))
     }
 
+    /// Where in the app the pointer would raise a tooltip: the centre of the
+    /// topmost, then leftmost, laid-out control that shows one there, in the
+    /// app's logical coordinates. For a test that hovers it.
+    #[cfg(all(feature = "native", any(test, feature = "test-support")))]
+    pub fn tooltip_region_for_test(&self) -> Option<Point> {
+        self.layout
+            .node_map
+            .keys()
+            .filter_map(|&node| {
+                let centre = self
+                    .inspect_node(node, |widget| widget.get_rect().center())
+                    .ok()?;
+                self.tooltip_target_at(centre).map(|_| centre)
+            })
+            .min_by(|a, b| a.y.total_cmp(&b.y).then(a.x.total_cmp(&b.x)))
+    }
+
     /// [`Self::tooltip_target_at`] with the side of its control the
     /// tooltip prefers.
     #[cfg(feature = "native")]
@@ -2471,6 +2488,7 @@ impl App {
         // without dispatching through its potentially invalid pointer, so a
         // replacement control at the same id still receives set_focus(true).
         self.focused_node = None;
+        self.layout.rebuilds = self.layout.rebuilds.wrapping_add(1);
         self.layout.taffy = TaffyTree::new();
         self.component_close_reports.extend(
             crate::component_lifecycle::take_component_close_reports(self.root_widget.as_mut()),

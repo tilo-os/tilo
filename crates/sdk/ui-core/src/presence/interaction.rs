@@ -804,12 +804,13 @@ impl PresenceCtx {
         theme: &Theme,
         now: Instant,
         resolved: &[InvocationId],
-    ) {
+    ) -> bool {
         let entries = self.visible_entries_excluding(now, resolved);
         let placements = self.interaction_card_layout_excluding(viewport, now, theme, resolved);
         for (entry, placement) in entries.iter().zip(&placements) {
             self.draw_interaction_card(scene, transform, text_renderer, theme, entry, placement);
         }
+        !entries.is_empty() && !placements.is_empty()
     }
 
     /// Draw the generic rail only for semantic work explicitly owned by one

@@ -289,7 +289,8 @@ impl PrintersArea {
             } else {
                 Arc::new(SamplePrintService)
             };
-            let mut model = PrintersModel::new(self.cx.clone(), service);
+            let mut model =
+                PrintersModel::new(self.cx.clone(), service, !self.cx.reaches_devices());
             model.request_refresh();
             Rc::new(std::cell::RefCell::new(model))
         })
@@ -401,6 +402,7 @@ fn cancellable(job: &PrintJob) -> bool {
 pub struct PrintersModel {
     cx: PaneCx,
     service: Arc<dyn PrintService>,
+    sample: bool,
     printers: Vec<PrinterQueue>,
     jobs: Vec<PrintJob>,
     discovered: Vec<DiscoveredPrinter>,
@@ -423,10 +425,11 @@ struct PrinterSnapshot {
 }
 
 impl PrintersModel {
-    fn new(cx: PaneCx, service: Arc<dyn PrintService>) -> Self {
+    fn new(cx: PaneCx, service: Arc<dyn PrintService>, sample: bool) -> Self {
         Self {
             cx,
             service,
+            sample,
             printers: Vec::new(),
             jobs: Vec::new(),
             discovered: Vec::new(),
@@ -442,6 +445,16 @@ impl PrintersModel {
 
     pub(crate) fn request_refresh(&mut self) {
         if self.refresh_rx.is_some() {
+            return;
+        }
+        // Capture and test snapshots are already in memory. Publishing their
+        // rows must not depend on whether an OS worker has been scheduled.
+        if self.sample {
+            self.adopt_snapshot(PrinterSnapshot {
+                printers: self.service.queues(),
+                jobs: self.service.jobs(),
+                scanners: self.service.scanners(),
+            });
             return;
         }
         let service = self.service.clone();
@@ -490,17 +503,21 @@ impl PrintersModel {
         }
     }
 
+    fn adopt_snapshot(&mut self, result: PrinterSnapshot) {
+        self.last_refresh = ui::time::now();
+        self.read_errors = PrinterReadErrors {
+            printers: adopt(result.printers, &mut self.printers),
+            jobs: adopt(result.jobs, &mut self.jobs),
+            scanners: adopt(result.scanners, &mut self.scanners),
+        };
+        self.changed = true;
+    }
+
     fn poll_background(&mut self) {
         if let Some(result) = self.refresh_rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
             self.refresh_rx = None;
 
-            self.last_refresh = ui::time::now();
-            self.read_errors = PrinterReadErrors {
-                printers: adopt(result.printers, &mut self.printers),
-                jobs: adopt(result.jobs, &mut self.jobs),
-                scanners: adopt(result.scanners, &mut self.scanners),
-            };
-            self.changed = true;
+            self.adopt_snapshot(result);
         }
         if let Some(result) = self.discover_rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
             self.discover_rx = None;
@@ -970,6 +987,24 @@ fn job_state_label(state: JobState) -> String {
 mod tests {
     use super::*;
     use std::sync::Mutex;
+
+    #[test]
+    fn sample_area_rows_do_not_wait_for_workers() {
+        let profile = tempfile::tempdir().unwrap();
+        let area = PrintersArea::new(&PaneCx::in_file(profile.path().join("settings.json")));
+        assert_eq!(
+            area.rows().len(),
+            2,
+            "printer and job rows publish on the first read"
+        );
+        let model = area.model().borrow();
+        assert!(
+            model.refresh_rx.is_none(),
+            "sample rows are ready when the area reads"
+        );
+        assert_eq!(model.printers.len(), 1);
+        assert_eq!(model.jobs.len(), 1);
+    }
 
     struct RecordingService {
         calls: Mutex<Vec<String>>,

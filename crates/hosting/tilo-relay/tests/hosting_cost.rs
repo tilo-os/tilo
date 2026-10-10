@@ -4,9 +4,11 @@
 //! Automerge change, `StatePeer::publish_incremental`, the host retention
 //! classifier, `RelayCoeditSession::publish_retained_delta` on a real
 //! `RelayClient`, and the relay's authenticated ingress, retention and
-//! fan-out. Two subscribers read the frames the relay actually writes them:
-//! one on `tilo-relay/4`, which predates compact state, and one on
-//! `tilo-relay/5`. Afterwards the test walks the relay's state root.
+//! fan-out. Three subscribers read the frames the relay actually writes them:
+//! one on `tilo-relay/4`, which predates compact state, one on
+//! `tilo-relay/5`, and one on `tilo-relay/7`, whose deltas arrive coded
+//! against the previous one (TIL-755) and are rebuilt by the production
+//! session reader. Afterwards the test walks the relay's state root.
 //!
 //! It prints one `HOSTING_COST key=value …` line for the cost model (TIL-625).
 //! It gates only deterministic byte counts, as DEVELOPMENT.md "Performance
@@ -33,11 +35,16 @@
 )]
 
 use std::path::Path;
+use std::pin::Pin;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::task::{Context, Poll};
 use std::time::{Instant, SystemTime};
 
 use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, transaction::Transactable};
 use tilo_delivery_protocol::transport_v2::{
-    ALPN_COMPACT_STATE_V1, ALPN_SIGNED_ACTIONS_V1, EnvelopeV2, decode, encode_state,
+    ALPN_CODED_DELTA_V1, ALPN_COMPACT_STATE_V1, ALPN_SIGNED_ACTIONS_V1, EnvelopeV2, SessionReader,
+    StateFraming, decode, encode_state,
 };
 use tilo_peer_state::{SeedDocument, SeedState, StatePeer, seed_room, transport::Retention};
 use tilo_relay::{Envelope, Inbound, RelayClient, RelayCoeditSession};
@@ -64,6 +71,134 @@ const DOCUMENT_CHARS: usize = 10_000;
 const BUDGET_COMPACT_FRAME_P50_BYTES: u64 = 484;
 /// Ceiling for the largest such frame: measured 489 B on Linux CI, plus 10 %.
 const BUDGET_COMPACT_FRAME_MAX_BYTES: u64 = 538;
+/// Ceiling for the median keystroke frame on `tilo-relay/7`, coded against
+/// the author's previous keystroke on the same document (TIL-755). Measured
+/// on Linux CI: 157 B against 482 B on `tilo-relay/5`, plus 15 %.
+const BUDGET_CODED_FRAME_P50_BYTES: u64 = 181;
+
+/// A stream that counts the bytes read through it.
+struct Counted<R> {
+    inner: R,
+    read: Arc<AtomicU64>,
+}
+
+impl<R: tokio::io::AsyncRead + Unpin> tokio::io::AsyncRead for Counted<R> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        let before = buf.filled().len();
+        let polled = Pin::new(&mut self.inner).poll_read(cx, buf);
+        let read = buf.filled().len() - before;
+        self.read.fetch_add(read as u64, Ordering::Relaxed);
+        polled
+    }
+}
+
+/// A subscriber reading through the production session reader on
+/// `tilo-relay/7`, which rebuilds coded deltas, and counting the bytes the
+/// relay wrote for each.
+struct CodedSubscriber {
+    _endpoint: iroh::Endpoint,
+    _connection: iroh::endpoint::Connection,
+    _send: iroh::endpoint::SendStream,
+    reader: SessionReader<Counted<iroh::endpoint::RecvStream>>,
+    read: Arc<AtomicU64>,
+}
+
+impl CodedSubscriber {
+    async fn open(relay: &TestRelay, device: &TestDevice) -> Self {
+        let (endpoint, connection, send, recv) =
+            subscribe(relay, device, ALPN_CODED_DELTA_V1).await;
+        let read = Arc::new(AtomicU64::new(0));
+        let mut subscriber = Self {
+            _endpoint: endpoint,
+            _connection: connection,
+            _send: send,
+            reader: SessionReader::framed(
+                Counted {
+                    inner: recv,
+                    read: read.clone(),
+                },
+                StateFraming::CodedDelta,
+            ),
+            read,
+        };
+        tilo_test_env::within("the subscription to be ready", async {
+            while !matches!(
+                subscriber.reader.read_next().await.unwrap(),
+                Some(EnvelopeV2::State(Envelope::Ready { .. }))
+            ) {}
+        })
+        .await;
+        subscriber
+    }
+
+    /// The next delta as the session reader returns it, and the bytes its
+    /// frame took on the wire.
+    async fn delta(&mut self) -> (usize, EnvelopeV2) {
+        tilo_test_env::within("the keystroke's coded delta", async {
+            loop {
+                let before = self.read.load(Ordering::Relaxed);
+                let frame = self.reader.read_next().await.unwrap().unwrap();
+                if matches!(frame, EnvelopeV2::State(Envelope::Delta { .. })) {
+                    let wire = self.read.load(Ordering::Relaxed) - before;
+                    return (wire as usize, frame);
+                }
+            }
+        })
+        .await
+    }
+}
+
+/// Dial the relay on `alpn` as `device`, authenticate and subscribe.
+async fn subscribe(
+    relay: &TestRelay,
+    device: &TestDevice,
+    alpn: &[u8],
+) -> (
+    iroh::Endpoint,
+    iroh::endpoint::Connection,
+    iroh::endpoint::SendStream,
+    iroh::endpoint::RecvStream,
+) {
+    let endpoint = client_endpoint().await;
+    let connection = endpoint
+        .connect(relay.relay.node_addr(), alpn)
+        .await
+        .unwrap();
+    let (mut send, mut recv) = connection.open_bi().await.unwrap();
+    let hello = tilo_relay::auth::Hello {
+        cert: device.cert.clone(),
+        client_nonce: [7; 32],
+    };
+    tilo_relay::frame::write_frame(&mut send, &postcard::to_allocvec(&hello).unwrap())
+        .await
+        .unwrap();
+    let ack: tilo_relay::auth::HelloAck = postcard::from_bytes(
+        &tilo_relay::frame::read_frame(&mut recv, tilo_relay::transport::MAX_FRAME_BYTES)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let ack2 = tilo_relay::auth::build_hello_ack2(&device.sk, &ack.server_nonce);
+    tilo_relay::frame::write_frame(&mut send, &postcard::to_allocvec(&ack2).unwrap())
+        .await
+        .unwrap();
+    send.write_all(
+        &encode_state(
+            &Envelope::Subscribe {
+                workspace_id: WORKSPACE,
+            },
+            true,
+        )
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+    (endpoint, connection, send, recv)
+}
 
 /// A raw subscriber on one ALPN, reading the exact bytes the relay writes.
 struct RawSubscriber {
@@ -75,40 +210,7 @@ struct RawSubscriber {
 
 impl RawSubscriber {
     async fn open(relay: &TestRelay, device: &TestDevice, alpn: &[u8]) -> Self {
-        let endpoint = client_endpoint().await;
-        let connection = endpoint
-            .connect(relay.relay.node_addr(), alpn)
-            .await
-            .unwrap();
-        let (mut send, mut recv) = connection.open_bi().await.unwrap();
-        let hello = tilo_relay::auth::Hello {
-            cert: device.cert.clone(),
-            client_nonce: [7; 32],
-        };
-        tilo_relay::frame::write_frame(&mut send, &postcard::to_allocvec(&hello).unwrap())
-            .await
-            .unwrap();
-        let ack: tilo_relay::auth::HelloAck = postcard::from_bytes(
-            &tilo_relay::frame::read_frame(&mut recv, tilo_relay::transport::MAX_FRAME_BYTES)
-                .await
-                .unwrap(),
-        )
-        .unwrap();
-        let ack2 = tilo_relay::auth::build_hello_ack2(&device.sk, &ack.server_nonce);
-        tilo_relay::frame::write_frame(&mut send, &postcard::to_allocvec(&ack2).unwrap())
-            .await
-            .unwrap();
-        send.write_all(
-            &encode_state(
-                &Envelope::Subscribe {
-                    workspace_id: WORKSPACE,
-                },
-                true,
-            )
-            .unwrap(),
-        )
-        .await
-        .unwrap();
+        let (endpoint, connection, send, recv) = subscribe(relay, device, alpn).await;
         let mut subscriber = Self {
             _endpoint: endpoint,
             _connection: connection,
@@ -266,10 +368,12 @@ async fn one_keystroke_costs_the_host_bounded_bytes_on_the_wire_and_disk() {
     let author = user.enrol("laptop", DeviceCapabilities::primary());
     let older = user.enrol("tilo-relay/4 peer", DeviceCapabilities::member());
     let current = user.enrol("tilo-relay/5 peer", DeviceCapabilities::member());
+    let coding = user.enrol("tilo-relay/7 peer", DeviceCapabilities::member());
     let members = [
         author.device_pubkey(),
         older.device_pubkey(),
         current.device_pubkey(),
+        coding.device_pubkey(),
     ];
     let relay = Box::pin(spawn_relay(
         &user,
@@ -285,6 +389,7 @@ async fn one_keystroke_costs_the_host_bounded_bytes_on_the_wire_and_disk() {
         author.cert.clone(),
         older.cert.clone(),
         current.cert.clone(),
+        coding.cert.clone(),
     ];
     let mut owner = StatePeer::new(
         ROOM,
@@ -324,6 +429,7 @@ async fn one_keystroke_costs_the_host_bounded_bytes_on_the_wire_and_disk() {
 
     let mut old_peer = RawSubscriber::open(&relay, &older, ALPN_SIGNED_ACTIONS_V1).await;
     let mut new_peer = RawSubscriber::open(&relay, &current, ALPN_COMPACT_STATE_V1).await;
+    let mut coded_peer = CodedSubscriber::open(&relay, &coding).await;
     // The publisher dials the newest protocol, as the shell does.
     let publisher = RelayCoeditSession::join(
         RelayClient::connect_v2_to_enrolled_home_peer(
@@ -359,6 +465,7 @@ async fn one_keystroke_costs_the_host_bounded_bytes_on_the_wire_and_disk() {
     let mut stored_frame_bytes = Vec::with_capacity(KEYSTROKES);
     let mut old_frame_bytes = Vec::with_capacity(KEYSTROKES);
     let mut new_frame_bytes = Vec::with_capacity(KEYSTROKES);
+    let mut coded_frame_bytes = Vec::with_capacity(KEYSTROKES);
     let mut delivery_us = Vec::with_capacity(KEYSTROKES);
     let mut warm = None;
     for keystroke in 0..KEYSTROKES {
@@ -384,6 +491,7 @@ async fn one_keystroke_costs_the_host_bounded_bytes_on_the_wire_and_disk() {
         publisher.publish_retained_delta(channel, body).unwrap();
         let (old_len, old_frame) = old_peer.delta().await;
         let (new_len, new_frame) = new_peer.delta().await;
+        let (coded_len, coded_frame) = coded_peer.delta().await;
         delivery_us.push(sent.elapsed().as_micros() as u64);
 
         // An older peer gets the full envelope it knows; a current one the
@@ -405,6 +513,18 @@ async fn one_keystroke_costs_the_host_bounded_bytes_on_the_wire_and_disk() {
             received,
             "both peers receive the same delta"
         );
+        let mut rebuilt = delta_fields(coded_frame);
+        assert_eq!(
+            rebuilt.signature,
+            Some([0; 64]),
+            "the reader returns a coded delta as the state value"
+        );
+        rebuilt.signature = None;
+        assert_eq!(
+            rebuilt, received,
+            "a coded delta rebuilds the same delta byte for byte"
+        );
+        coded_frame_bytes.push(coded_len as u64);
         assert_eq!(old_len - new_len, 66, "the compact frame drops 66 bytes");
         payload_bytes.push(received.delta.len() as u64);
         let stored = tilo_relay::transport::encode(&Envelope::Delta {
@@ -429,7 +549,11 @@ async fn one_keystroke_costs_the_host_bounded_bytes_on_the_wire_and_disk() {
     // subscribers read: live fan-out in total and for this room, and the
     // compact subscriber's own session.
     let egress_after = metrics.snapshot();
-    let wire_bytes: u64 = old_frame_bytes.iter().chain(&new_frame_bytes).sum();
+    let wire_bytes: u64 = old_frame_bytes
+        .iter()
+        .chain(&new_frame_bytes)
+        .chain(&coded_frame_bytes)
+        .sum();
     assert_eq!(
         egress_after.bytes_sent_live - egress_before.bytes_sent_live,
         wire_bytes,
@@ -476,6 +600,7 @@ async fn one_keystroke_costs_the_host_bounded_bytes_on_the_wire_and_disk() {
     let stored_frame_bytes = sorted(stored_frame_bytes);
     let old_frame_bytes = sorted(old_frame_bytes);
     let new_frame_bytes = sorted(new_frame_bytes);
+    let coded_frame_bytes = sorted(coded_frame_bytes);
     let delivery_us = sorted(delivery_us);
     let keystrokes = KEYSTROKES as u64;
     println!(
@@ -483,7 +608,8 @@ async fn one_keystroke_costs_the_host_bounded_bytes_on_the_wire_and_disk() {
          automerge_change_bytes_p50={change} neighbour_msg_bytes_p50={message} \
          coedit_payload_bytes_p50={payload} stored_frame_bytes_p50={stored} \
          frame_bytes_relay4_p50={old} frame_bytes_relay5_p50={new} \
-         frame_bytes_relay5_max={new_max} retained_files={retained_files} \
+         frame_bytes_relay5_max={new_max} frame_bytes_relay7_p50={coded} \
+         frame_bytes_relay7_max={coded_max} retained_files={retained_files} \
          retained_bytes_per_keystroke={retained_per} other_bytes_growth={growth} \
          delivery_us_p50={p50} delivery_us_p99={p99}",
         routes = ROUTES.len(),
@@ -494,6 +620,8 @@ async fn one_keystroke_costs_the_host_bounded_bytes_on_the_wire_and_disk() {
         old = percentile(&old_frame_bytes, 50),
         new = percentile(&new_frame_bytes, 50),
         new_max = percentile(&new_frame_bytes, 100),
+        coded = percentile(&coded_frame_bytes, 50),
+        coded_max = percentile(&coded_frame_bytes, 100),
         retained_files = after.retained_files,
         retained_per = after.retained_bytes / keystrokes,
         growth = after.other_bytes - warm.other_bytes,
@@ -515,6 +643,16 @@ async fn one_keystroke_costs_the_host_bounded_bytes_on_the_wire_and_disk() {
         new_max <= BUDGET_COMPACT_FRAME_MAX_BYTES,
         "the largest keystroke frame is {new_max} B, over the \
          {BUDGET_COMPACT_FRAME_MAX_BYTES} B budget",
+    );
+    let coded_p50 = percentile(&coded_frame_bytes, 50);
+    assert!(
+        coded_p50 <= BUDGET_CODED_FRAME_P50_BYTES,
+        "the median coded keystroke frame is {coded_p50} B, over the \
+         {BUDGET_CODED_FRAME_P50_BYTES} B budget",
+    );
+    assert!(
+        percentile(&coded_frame_bytes, 100) <= new_max + 16,
+        "a coded frame never costs more than a few bytes over the compact one",
     );
     let change_max = percentile(&change_bytes, 100);
     assert!(

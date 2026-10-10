@@ -66,7 +66,7 @@ impl PublicationGeometry<'_> {
             .iter()
             .find(|snapshot| snapshot.binding.same_component(&target.binding))?;
         let mut result = Vec::new();
-        self.visit(self.root, target, &snapshot.resources, &mut result);
+        self.visit(self.root, target, snapshot.resources(), &mut result);
         if result.len() == 1 {
             result.pop().flatten()
         } else {

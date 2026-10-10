@@ -241,6 +241,7 @@ pub mod host_operation {
     };
 }
 pub mod host_palette;
+pub mod published;
 pub mod reader_hud;
 pub mod record;
 pub mod remote_actions;

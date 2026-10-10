@@ -31,6 +31,22 @@ const EDGE_STROKE_WIDTH: f64 = 1.0;
 /// the focused surface reads as lit rather than fenced.
 const FOCUS_EDGE_STROKE_WIDTH: f64 = 1.6;
 
+/// Four bands along `rect`'s outline that hold every pixel of an edge drawn
+/// around it at corner `radius`: the edge reaches its widest stroke outside
+/// the outline, and its rounded corners curve up to `radius` inside it.
+/// One more pixel each way covers antialiasing.
+fn edge_bands(rect: Rect, radius: f64) -> [Rect; 4] {
+    let outside = FOCUS_EDGE_STROKE_WIDTH.max(EDGE_STROKE_WIDTH) + 1.0;
+    let inside = radius.max(0.0) + outside;
+    let outer = rect.inflate(outside, outside);
+    [
+        Rect::new(outer.x0, outer.y0, outer.x1, rect.y0 + inside),
+        Rect::new(outer.x0, rect.y1 - inside, outer.x1, outer.y1),
+        Rect::new(outer.x0, outer.y0, rect.x0 + inside, outer.y1),
+        Rect::new(rect.x1 - inside, outer.y0, outer.x1, outer.y1),
+    ]
+}
+
 /// `kurbo::Affine` composition is plain f64 matrix math with no panic
 /// path; `arithmetic_side_effects` flags the `*` operator overload anyway.
 #[allow(
@@ -2798,7 +2814,16 @@ impl TileHost {
             self.draw_clipped_content(scene, transform, tr, theme, presence, &shape);
         });
         scene.pop_layer();
-        self.draw_edge(scene, transform, theme, radius);
+        // The edge, and the focus ring it becomes, is a band along the
+        // tile's outline: four damage bands, not the tile they surround.
+        let edge = crate::scene_parts::PartKey::new("ui.tile-edge", ());
+        let bounds = edge_bands(self.rect, radius)
+            .into_iter()
+            .map(|band| transform.transform_rect_bbox(band))
+            .collect();
+        crate::scene_parts::part(scene, edge, bounds, |scene| {
+            self.draw_edge(scene, transform, theme, radius);
+        });
     }
 
     /// The tile's content inside its clip: the opening card, the app (or a

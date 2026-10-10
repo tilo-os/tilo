@@ -738,6 +738,7 @@ pub struct ChromeState {
     /// and toggles the focused client's `xdg_toplevel` fullscreen state,
     /// which only it holds the protocol handles for.
     fullscreen_toggle_requested: bool,
+    topbar_editor_requested: bool,
     /// Compositor-only remaining paints after overview / workspace switch
     /// (W16). The host's crossfade demand still clears when the curve
     /// settles — this count is not `needs_animation_frame`.
@@ -904,6 +905,7 @@ impl ChromeState {
             close_surface_requests: Vec::new(),
             window_transfers: super::window_transfer::WindowTransfers::default(),
             fullscreen_toggle_requested: false,
+            topbar_editor_requested: false,
             transition_paints_remaining: 0,
             shortcut_action_requests: Vec::new(),
             cancel_tab_drag_requested: false,
@@ -1067,6 +1069,15 @@ impl ChromeState {
     pub fn request_fullscreen_toggle(&mut self) {
         self.fullscreen_toggle_requested = true;
         self.bump();
+    }
+
+    pub fn request_topbar_editor(&mut self) {
+        self.topbar_editor_requested = true;
+        self.bump();
+    }
+
+    pub fn take_topbar_editor_request(&mut self) -> bool {
+        std::mem::take(&mut self.topbar_editor_requested)
     }
 
     pub fn take_fullscreen_toggle_request(&mut self) -> bool {

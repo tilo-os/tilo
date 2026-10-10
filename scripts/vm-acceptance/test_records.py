@@ -301,6 +301,26 @@ class Gates(unittest.TestCase):
                          ["[anon]", "[heap]", "/memfd:wayland-shm (deleted)"])
         self.assertEqual(m["top_anon_mappings"][0]["anon_kib"], 262144)
 
+    def test_the_compositor_breakdown_names_its_shmem_by_fd(self):
+        text = "\n".join([
+            "S VmRSS: 600000", "S RssAnon: 256000", "S RssShmem: 167936",
+            "F\t31\t492830720 600000 512\t\t/memfd:allocation fd (deleted)",
+            "F\t40\t4194304 8192 512\t\t/memfd:wayland-shm (deleted)",
+            "F\t41\t4194304 4096 512\t\t/memfd:wayland-shm (deleted)",
+            "F\t12\t0 0 4096\tdrm-driver=virtio_gpu drm-total-memory=33_MiB \t/dev/dri/card0",
+            "F\t50\t- - -\tsize=8294400 exp_name=udmabuf \tanon_inode:dmabuf",
+            "PAGE-MONITOR no",
+        ])
+        m = resources.core.parse_shell_memory(text)
+        self.assertEqual(list(m["shm_by_name"]), ["allocation fd", "wayland-shm"])
+        self.assertEqual(m["shm_by_name"]["allocation fd"],
+                         {"count": 1, "size_mib": 470.0, "allocated_mib": 293.0})
+        self.assertEqual(m["shm_by_name"]["wayland-shm"]["count"], 2)
+        drm = next(f for f in m["shm_fds"] if f["kind"] == "drm")
+        self.assertEqual(drm["fdinfo"], {"drm-driver": "virtio_gpu", "drm-total-memory": "33_MiB"})
+        dmabuf = next(f for f in m["shm_fds"] if f["kind"] == "dmabuf")
+        self.assertEqual((dmabuf["allocated_bytes"], dmabuf["fdinfo"]["size"]), (None, "8294400"))
+
     def test_an_unreadable_compositor_breakdown_is_unobservable(self):
         class Vm:
             def root_exec(self, script):

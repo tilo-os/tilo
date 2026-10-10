@@ -127,6 +127,31 @@ fn wait(service: &NativeTaskReview, invocation: uuid::Uuid) -> Result<(), String
     }
 }
 #[test]
+fn native_review_last_handle_releases_the_owner_and_state_writer_before_returning() {
+    let (directory, owner, _room, _, _) = native_workspace_owner::test_enrolled_owner();
+    let witness = owner.downgrade();
+    let review = NativeTaskReview::new(native_workspace_owner::tree_of(&owner), None).unwrap();
+    let retained = review.clone();
+    drop(owner);
+    crate::shell::persist::wait_for_saves();
+    drop(review);
+    assert!(
+        witness.upgrade().is_some(),
+        "a retained review handle must keep its native worker owner alive"
+    );
+    drop(retained);
+    assert!(
+        witness.upgrade().is_none(),
+        "the final review handle must finish its worker before returning"
+    );
+    let path = directory.path().join("state.json");
+    let mut restored = crate::shell::persist::load_tree_from(&path).unwrap();
+    restored.persist_path = Some(path);
+    let reopened = native_workspace_owner::open(restored.shared()).unwrap();
+    assert!(reopened.health().is_ok());
+}
+
+#[test]
 fn native_review_preserves_authorship_and_refuses_stale_or_foreign_commands() {
     let (_directory, owner, room, _, _) = native_workspace_owner::test_enrolled_owner();
     admit(&owner, room);
@@ -546,7 +571,7 @@ fn native_review_stop_retains_the_exact_run_until_agent_acknowledges() {
     let control = &state.controls[&task_id];
     assert_eq!(control.active_run.as_ref().unwrap().epoch, 1);
     assert_eq!(control.cancellation.as_ref().unwrap().run_epoch, 1);
-    review.shutdown();
+    drop(review);
 }
 
 fn pending_task(
@@ -661,7 +686,7 @@ fn native_review_pending_cancel_refuses_amended_instruction_frontier() {
         owner.workspace_task_snapshot(room).unwrap().tasks[0].status,
         crate::shell::state::WorkspaceTaskStatus::Cancelled
     );
-    review.shutdown();
+    drop(review);
 }
 
 fn acknowledge_cancellation(
@@ -762,7 +787,7 @@ fn native_cancel_keeps_pending_instructions_and_survives_actual_state_reopen() {
         1
     );
     acknowledge_cancellation(&owner, room, &task_id);
-    review.shutdown();
+    drop(review);
     drop(owner);
     crate::shell::persist::wait_for_saves();
     let path = directory.path().join("state.json");

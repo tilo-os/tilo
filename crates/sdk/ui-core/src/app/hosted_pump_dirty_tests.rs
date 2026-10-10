@@ -871,7 +871,9 @@ mod input_publication {
     /// input can move: a press switches its tab without marking the event
     /// handled; hovering past x = 500 opens a menu, reported as a
     /// presentation change; motion with a button held drags, unreported;
-    /// hovering below y = 500 writes the document.
+    /// hovering below y = 500 writes the document. Releasing `t` switches
+    /// its tab and marks the release handled; releasing `w` writes the
+    /// document; releasing any other key changes nothing.
     struct InputProbe {
         calls: Rc<Cell<usize>>,
         tab: usize,
@@ -912,6 +914,16 @@ mod input_publication {
                         crate::widget::note_resource_presentation_changed();
                     }
                     if position.y > 500.0 {
+                        ctx.state.document_mut().put(ROOT, "hovered", true).unwrap();
+                    }
+                }
+                WindowEvent::KeyboardInput { event, .. }
+                    if event.state == ElementState::Released =>
+                {
+                    if event.logical_key == winit::keyboard::Key::Character("t".into()) {
+                        self.tab += 1;
+                        *ctx.handled = true;
+                    } else if event.logical_key == winit::keyboard::Key::Character("w".into()) {
                         ctx.state.document_mut().put(ROOT, "hovered", true).unwrap();
                     }
                 }
@@ -999,6 +1011,17 @@ mod input_publication {
         );
     }
 
+    fn release(app: &mut App, key: &str) {
+        app.surface_input(
+            &Surface,
+            crate::synthetic_input::key_input(
+                &winit::keyboard::Key::Character(key.into()),
+                ElementState::Released,
+            ),
+            false,
+        );
+    }
+
     /// The probe's label in the tree an agent reads now, with no frame or
     /// sync in between.
     fn published(app: &App) -> String {
@@ -1079,5 +1102,41 @@ mod input_publication {
             "tab 1 menu false drag Some(50.0) hovered false",
             "released, motion is hover again"
         );
+    }
+
+    /// Every keystroke ends in a release. One that nothing consumed and that
+    /// moved nothing keeps the tree its press published (TIL-751).
+    #[test]
+    fn key_release_without_state_change_does_not_regenerate_declarations() {
+        let (mut app, calls) = app();
+        assert_eq!(published(&app), "tab 0 menu false drag None hovered false");
+        let generation = app.actions.resource_generation.get();
+        let before = calls.get();
+        for _ in 0..100 {
+            release(&mut app, "k");
+        }
+        let regenerated = calls.get() - before;
+        assert!(
+            regenerated <= 1,
+            "100 key releases regenerated declarations {regenerated} times"
+        );
+        assert_eq!(app.actions.resource_generation.get(), generation);
+        assert_eq!(published(&app), "tab 0 menu false drag None hovered false");
+    }
+
+    #[test]
+    fn consumed_key_release_still_republishes() {
+        let (mut app, _) = app();
+        assert_eq!(published(&app), "tab 0 menu false drag None hovered false");
+        release(&mut app, "t");
+        assert_eq!(published(&app), "tab 1 menu false drag None hovered false");
+    }
+
+    #[test]
+    fn key_release_that_edits_the_document_republishes() {
+        let (mut app, _) = app();
+        assert_eq!(published(&app), "tab 0 menu false drag None hovered false");
+        release(&mut app, "w");
+        assert_eq!(published(&app), "tab 0 menu false drag None hovered true");
     }
 }

@@ -21,6 +21,9 @@ automerge.workspace = true
 
 [dev-dependencies]
 tilo-automerge = { path = ".", features = ["heap-probe"] }
+# The unpatched release the fork is taken from: tests/map_apply.rs checks the
+# fork applies changes exactly as it does.
+upstream-automerge = { package = "automerge", version = "=0.12.0" }
 
 [lints]
 workspace = true

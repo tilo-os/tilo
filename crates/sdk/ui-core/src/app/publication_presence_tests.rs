@@ -96,12 +96,12 @@ fn mounted(count: usize) -> (ProbeHost, App, SemanticInteraction) {
     .unwrap();
     let snapshot = snapshots
         .iter()
-        .find(|snapshot| !snapshot.resources.is_empty())
+        .find(|snapshot| !snapshot.resources().is_empty())
         .unwrap();
     let resource = app
         .actions
         .bound_publication
-        .project(&snapshot.binding, snapshot.resources[0].clone())
+        .project(&snapshot.binding, snapshot.resources()[0].clone())
         .unwrap();
     app.set_presence_broadcast_scope(Some(crate::presence::PresenceKey::Workspace {
         id: "room-a".into(),
@@ -167,6 +167,78 @@ fn paint(
     let surface = app.presence_ctx().agent_marker_surface_key("primary");
     app.presence_ctx()
         .agent_marker_targets(&surface, crate::time::now())
+}
+
+#[test]
+fn painted_agent_presence_repaints_its_appearance_and_retirement_only() {
+    let (_host, mut app, interaction) = mounted(1);
+    let mut damage = SurfaceDamage::default();
+    let mut scene = Scene::new();
+    app.surface_frame_with_damage(&Surface, &mut scene, &mut damage);
+    damage.take();
+    scene.reset();
+    app.surface_frame_with_damage(&Surface, &mut scene, &mut damage);
+    assert!(
+        damage.take().is_some(),
+        "settled widgets have bounded damage"
+    );
+
+    app.presence_ctx_mut()
+        .apply_interaction(interaction)
+        .expect("authenticated Agent interaction");
+    scene.reset();
+    app.surface_frame_with_damage(&Surface, &mut scene, &mut damage);
+    assert_eq!(damage.repainted(), Some("presence marks"));
+    assert!(
+        damage.take().is_none(),
+        "the painted marker is above widgets"
+    );
+    let surface = app.presence_ctx().agent_marker_surface_key("primary");
+    assert_eq!(
+        app.presence_ctx()
+            .agent_marker_targets(&surface, crate::time::now())
+            .len(),
+        1
+    );
+    assert!(draw_agent_action_presence(
+        &mut app,
+        &mut Scene::new(),
+        Affine::IDENTITY,
+        KurboRect::new(0.0, 0.0, 640.0, 480.0),
+        crate::time::now(),
+    ));
+
+    assert!(
+        app.presence_ctx_mut()
+            .prune_interactions(crate::time::now() + crate::time::Duration::from_secs(60))
+    );
+    assert!(!draw_agent_action_presence(
+        &mut app,
+        &mut Scene::new(),
+        Affine::IDENTITY,
+        KurboRect::new(0.0, 0.0, 640.0, 480.0),
+        crate::time::now(),
+    ));
+    scene.reset();
+    app.surface_frame_with_damage(&Surface, &mut scene, &mut damage);
+    assert!(
+        app.presence_ctx()
+            .agent_marker_targets(&surface, crate::time::now())
+            .is_empty()
+    );
+    assert_eq!(damage.repainted(), Some("presence marks"));
+    assert!(
+        damage.take().is_none(),
+        "retirement erases the previous marker"
+    );
+
+    scene.reset();
+    app.surface_frame_with_damage(&Surface, &mut scene, &mut damage);
+    assert_eq!(damage.repainted(), None);
+    assert!(
+        damage.take().is_some(),
+        "idle frames return to bounded damage"
+    );
 }
 
 #[test]

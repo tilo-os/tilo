@@ -62,7 +62,26 @@ pub struct EmbeddedApp {
     painted_parts: RefCell<Option<crate::scene_parts::SectionParts>>,
     /// The app's background work woke it since its last frame.
     woken: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Tells this app's damage hints from every other source's.
+    source: u64,
+    /// Where the app's frames changed since `painted` was last replaced.
+    damage: super::SurfaceDamage,
+    /// How `painted` differs from what was painted before it: the
+    /// generations it went from and to, and where it changed in the app's
+    /// own coordinates, `None` when it cannot say.
+    painted_damage: PaintedDamage,
 }
+
+/// How an embedded app's painted scene differs from the one before it.
+#[derive(Default)]
+struct PaintedDamage {
+    from: u64,
+    to: u64,
+    rects: Option<Vec<KurboRect>>,
+}
+
+/// Hands out each embedded app's [`crate::scene_parts::DamageHint::source`].
+static NEXT_SOURCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 impl EmbeddedApp {
     /// Show `app` in a region of a host's scene. `wake` is told when the
@@ -100,12 +119,31 @@ impl EmbeddedApp {
             painted: RefCell::new(Scene::new()),
             painted_parts: RefCell::new(None),
             woken,
+            source: NEXT_SOURCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            damage: super::SurfaceDamage::default(),
+            painted_damage: PaintedDamage::default(),
         })
     }
 
     /// The app shown.
     pub fn app(&self) -> &App {
         &self.app
+    }
+
+    /// What the last painted frame handed its host, for a test reading why a
+    /// change repainted more than it should: the generations, the damage
+    /// (or none), why the app last repainted whole, and its tooltip.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn damage_report_for_test(&self) -> String {
+        format!(
+            "{}->{} damage={:?} repainted={:?} tooltip={:?} tooltip_pending={}",
+            self.painted_damage.from,
+            self.painted_damage.to,
+            self.painted_damage.rects,
+            self.damage.repainted(),
+            self.app.input.tooltip_host.visible(),
+            self.app.input.tooltip_host.needs_frame(),
+        )
     }
 
     /// The app shown, to drive it.
@@ -247,12 +285,14 @@ impl Widget for EmbeddedApp {
             // A frame whose sync or layout leaves more to settle runs again
             // at once, so what the host paints is the app at rest.
             let mut again = true;
+            let from = self.painted_damage.to;
             for _ in 0..SETTLE_FRAMES {
                 // The app's own damage parts travel with its scene, so a
                 // host that tracks parts repaints a caret, not the tile.
                 let (settling, parts) = crate::scene_parts::record(&mut painted, |painted| {
                     painted.reset();
-                    self.app.surface_frame(&self.region, painted)
+                    self.app
+                        .surface_frame_with_damage(&self.region, painted, &mut self.damage)
                 });
                 again = settling;
                 *painted_parts = parts;
@@ -260,17 +300,41 @@ impl Widget for EmbeddedApp {
                     break;
                 }
             }
+            // The frames just run changed only where their damage says,
+            // from what was painted before them.
+            self.painted_damage = PaintedDamage {
+                from,
+                to: from.wrapping_add(1),
+                rects: self.damage.take(),
+            };
             // What the host's accessibility walk reads of the app.
             let _ = self.app.refresh_semantic_tree();
             self.wants_frame
                 .set(again || self.region.redraw.replace(false));
         }
-        crate::scene_parts::append(
-            scene,
-            &painted,
-            painted_parts.as_ref(),
-            Some(transform * Affine::translate((self.rect.x0, self.rect.y0))),
-        );
+        let placement = transform * Affine::translate((self.rect.x0, self.rect.y0));
+        // A host comparing this frame with one that painted the generation
+        // before repaints only the app's damage; any other change to the
+        // app (it moved, it repainted whole, frames were skipped) repaints
+        // the part around it.
+        let hint = self
+            .painted_damage
+            .rects
+            .as_ref()
+            .map(|rects| crate::scene_parts::DamageHint {
+                source: self.source,
+                from: self.painted_damage.from,
+                to: self.painted_damage.to,
+                placement,
+                rects: rects
+                    .iter()
+                    .map(|rect| placement.transform_rect_bbox(*rect).inflate(1.0, 1.0))
+                    .collect(),
+            });
+        let key = crate::scene_parts::PartKey::new("ui.embedded-app", ());
+        crate::scene_parts::hinted(scene, key, hint, |scene| {
+            crate::scene_parts::append(scene, &painted, painted_parts.as_ref(), Some(placement));
+        });
     }
 
     /// A due wake deadline is serviced here, on the host's pump, as a window
@@ -720,6 +784,128 @@ mod theme_repaint_tests {
             &PresenceCtx::empty(),
         );
         scene.encoding().draw_data.clone()
+    }
+
+    /// Paint `tile` into a section tracked for damage parts, as the shell
+    /// paints its tiles, and return the section with its parts.
+    fn paint_tracked(
+        tile: &mut EmbeddedApp,
+        theme: &Theme,
+    ) -> (Box<Scene>, crate::scene_parts::SectionParts) {
+        let recording = crate::scene_parts::Recording::begin();
+        let mut scene = Box::new(Scene::new());
+        crate::scene_parts::track(&scene);
+        tile.draw(
+            &mut scene,
+            Affine::translate((40.0, 20.0)),
+            &mut TextRenderer::new(),
+            theme,
+            &PresenceCtx::empty(),
+        );
+        let parts = recording
+            .finish()
+            .of(&scene)
+            .expect("the tile's parts are well nested");
+        (scene, parts)
+    }
+
+    #[test]
+    fn a_tooltip_in_an_embedded_app_damages_its_chip_not_the_app() {
+        let app = App::new_with_controlled_inputs(
+            crate::state::State::new(),
+            Box::new(crate::widget::Button::new("probe", "Probe").tooltip("Probe the tile")),
+        );
+        let mut tile = EmbeddedApp::new(app, |_| {}).unwrap();
+        let theme = Theme::light();
+        layout(&mut tile, &theme);
+        for _ in 0..4 {
+            let _ = paint_tracked(&mut tile, &theme);
+        }
+        let region = KurboRect::new(40.0, 20.0, 340.0, 120.0);
+        let button = tile.app.root_widget.get_rect();
+        // The pointer arrives over the button and its hover is painted.
+        let at = button.center();
+        let moved = WindowEvent::CursorMoved {
+            device_id: winit::event::DeviceId::dummy(),
+            position: winit::dpi::PhysicalPosition::new(at.x, at.y),
+        };
+        tile.app.surface_input(&tile.region, moved, false);
+        tile.wants_frame.set(true);
+        let hovered = paint_tracked(&mut tile, &theme);
+        assert!(
+            tile.app.input.tooltip_host.needs_frame(),
+            "the button's tooltip is pending over {button:?}"
+        );
+        // It rests: the tooltip shows, and only it changes.
+        std::thread::sleep(
+            crate::widget::tooltip::HOVER_DWELL + crate::time::Duration::from_millis(50),
+        );
+        tile.wants_frame.set(true);
+        let shown = paint_tracked(&mut tile, &theme);
+        assert!(
+            tile.app.input.tooltip_host.visible().is_some(),
+            "the tooltip shows"
+        );
+        let damage = crate::scene_parts::damage(&hovered.0, &hovered.1, &shown.0, &shown.1)
+            .expect("the tooltip is proven");
+        let chip = tile.damage_report_for_test();
+        assert!(!damage.is_empty(), "the tooltip is repainted");
+        let repainted: f64 = damage.iter().map(|rect| rect.area()).sum();
+        assert!(
+            repainted < region.area(),
+            "{damage:?} repaints the tooltip ({chip:?}), not the app's {region:?}"
+        );
+    }
+
+    #[test]
+    fn an_embedded_frame_hands_its_widget_damage_to_the_host() {
+        let label = std::rc::Rc::new(std::cell::RefCell::new("before".to_owned()));
+        let source = std::rc::Rc::clone(&label);
+        let app = App::new_with_controlled_inputs(
+            crate::state::State::new(),
+            Box::new(crate::widget::Text::dynamic(move || {
+                source.borrow().clone()
+            })),
+        );
+        let mut tile = EmbeddedApp::new(app, |_| {}).unwrap();
+        let theme = Theme::light();
+        layout(&mut tile, &theme);
+        let mut previous = paint_tracked(&mut tile, &theme);
+        for _ in 0..4 {
+            previous = paint_tracked(&mut tile, &theme);
+            if !tile.needs_redraw() {
+                break;
+            }
+        }
+        let region = KurboRect::new(40.0, 20.0, 340.0, 120.0);
+        // A frame that changed nothing hands over no damage, and the host
+        // finds none.
+        tile.wants_frame.set(true);
+        let idle = paint_tracked(&mut tile, &theme);
+        assert_eq!(tile.painted_damage.rects, Some(Vec::new()));
+        assert_eq!(
+            crate::scene_parts::damage(&previous.0, &previous.1, &idle.0, &idle.1),
+            Ok(Vec::new())
+        );
+        // A changed label is the widget's damage, not more than the region.
+        *label.borrow_mut() = "after".to_owned();
+        tile.app.needs_sync = true;
+        tile.wants_frame.set(true);
+        let changed = paint_tracked(&mut tile, &theme);
+        let damage = crate::scene_parts::damage(&idle.0, &idle.1, &changed.0, &changed.1)
+            .expect("the change is proven");
+        assert!(!damage.is_empty(), "the new label is repainted");
+        assert!(
+            damage
+                .iter()
+                .all(|rect| region.inflate(1.0, 1.0).union(*rect) == region.inflate(1.0, 1.0)),
+            "{damage:?} stays in the app's region {region:?}"
+        );
+        assert_eq!(
+            tile.painted_damage.from + 1,
+            tile.painted_damage.to,
+            "the painted generation follows the one before"
+        );
     }
 
     #[test]
