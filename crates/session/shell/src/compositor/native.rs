@@ -13432,8 +13432,15 @@ fn spawn_auto_brightness_worker(settings: settings_store::live::LiveSettings) {
                 } else {
                     controller.reset();
                 }
-                snapshot = settings
-                    .wait_for_change(snapshot.generation, std::time::Duration::from_secs(2));
+                snapshot = if enabled {
+                    // The sensor is read every 2 s while the setting is on, and
+                    // the idle dim's hold (`backlight_held`) ends with no
+                    // settings write, so it is looked at again on that cadence.
+                    settings.wait_for_change(snapshot.generation, std::time::Duration::from_secs(2))
+                } else {
+                    // Off: nothing to do until the settings change.
+                    settings.wait_for_next(snapshot.generation)
+                };
             }
         });
 }
@@ -13457,6 +13464,31 @@ mod tests {
         native_consent_fixture_root, run_isolated_native_consent_test,
         wait_for_local_session_worker_teardown,
     };
+
+    /// Automatic brightness is off by default, so on almost every desktop its
+    /// worker has nothing to do: it waits for a settings change instead of
+    /// waking every 2 s (TIL-690 measured 0.5 wakeups/s on an idle desktop).
+    #[test]
+    fn auto_brightness_worker_sleeps_while_the_setting_is_off() {
+        let source = std::sync::Arc::new(settings_store::HostDocument::new(
+            serde_json::Map::new(),
+            |_| Ok(()),
+        ));
+        let settings = settings_store::live::LiveSettings::start_from(source, || {});
+        // The kernel's 15-byte name of `tilo-auto-brightness`.
+        let ((), tid) = tilo_test_env::idle::spawned_thread("tilo-auto-brigh", || {
+            spawn_auto_brightness_worker(settings.clone());
+        });
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let settled = tilo_test_env::idle::context_switches(&tid);
+        // Longer than the 2 s cadence it used to wake on even when off.
+        std::thread::sleep(std::time::Duration::from_millis(2500));
+        let woke = tilo_test_env::idle::context_switches(&tid).saturating_sub(settled);
+        assert_eq!(
+            woke, 0,
+            "the disabled auto-brightness worker woke {woke} times in 2.5 s"
+        );
+    }
 
     #[test]
     fn explicit_display_wake_restores_backend_and_presenter_without_unlock_or_input() {
