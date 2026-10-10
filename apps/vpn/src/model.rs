@@ -150,22 +150,6 @@ impl Connection {
     }
 }
 
-/// Build an empty connection draft without inventing network configuration.
-///
-/// A draft is not ready to activate until a complete provider configuration is
-/// imported and validated. In particular, this function never guesses an
-/// address, resolver, route, peer identity, or credential.
-pub fn draft_connection(name: &str, kind: ConnKind) -> Connection {
-    let name = if name.trim().is_empty() {
-        format!("New {}", kind.long_name())
-    } else {
-        name.trim().to_string()
-    };
-    let mut c = Connection::new(&name, kind);
-    c.last_used = "Never".to_string();
-    c
-}
-
 /// One shared tunnel profile: what a person's devices agree on. Its id is
 /// the collaborative uuid the profile was imported under.
 #[derive(Model, Default, Clone, Debug, PartialEq)]

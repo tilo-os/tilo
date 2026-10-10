@@ -93,42 +93,6 @@ impl<W: Widget> Harness<W> {
         self.text.text_scale()
     }
 
-    /// Measure `s` with the frame's own renderer, exactly as a `Text` child
-    /// would, so a test can compare a laid-out rect against the metric that
-    /// produced it.
-    pub fn measure_text(&mut self, s: &str, size: f32, max_w: Option<f32>) -> (f32, f32) {
-        self.text.measure(s, size, max_w)
-    }
-
-    /// Every laid-out rect under the widget with `id`, depth-first, paired with
-    /// its depth below that widget (the widget itself is depth 0). Lets a test
-    /// prove composition geometry — "each text line ends before the next
-    /// starts" — on the real measured tree rather than on a helper's estimate.
-    pub fn subtree_rects(&self, id: &str) -> Vec<(usize, Option<String>, Rect)> {
-        fn find<'a>(w: &'a dyn Widget, id: &str) -> Option<&'a dyn Widget> {
-            if w.test_id() == Some(id) {
-                return Some(w);
-            }
-            for c in w.children() {
-                if let Some(f) = find(c, id) {
-                    return Some(f);
-                }
-            }
-            None
-        }
-        fn walk(w: &dyn Widget, depth: usize, out: &mut Vec<(usize, Option<String>, Rect)>) {
-            out.push((depth, w.test_id().map(str::to_owned), w.get_rect()));
-            for c in w.children() {
-                walk(c, depth.saturating_add(1), out);
-            }
-        }
-        let mut out = Vec::new();
-        if let Some(w) = find(&self.app, id) {
-            walk(w, 0, &mut out);
-        }
-        out
-    }
-
     /// Run one full layout frame (sync + build + compute + apply). Called after
     /// every event that dirties the structure so rects reflect the new tree.
     #[allow(
@@ -251,16 +215,6 @@ impl<W: Widget> Harness<W> {
         }
     }
 
-    /// The taffy node of the first widget with `test_id == id` (via `node_map`).
-    fn node_by_id(&self, id: &str) -> Option<NodeId> {
-        for (node, ptr) in &self.node_map {
-            if unsafe { (**ptr).test_id() } == Some(id) {
-                return Some(*node);
-            }
-        }
-        None
-    }
-
     /// Click the centre of the widget addressed by `id` (move → press →
     /// release) **without** a relayout afterwards, and report whether the click
     /// asked `ui::App` to move keyboard focus to that same widget. This is the
@@ -273,31 +227,6 @@ impl<W: Widget> Harness<W> {
               failure and must fail loudly here, not be swallowed by a \
               production-safety Result the harness has no caller to check"
     )]
-    pub fn click_focuses(&mut self, id: &str) -> bool {
-        let r = self
-            .rect_by_id(id)
-            .unwrap_or_else(|| panic!("no widget with test_id {id:?} in the laid-out tree"));
-        let target = self.node_by_id(id);
-        let p = r.center();
-        let pos = PhysicalPosition::new(p.x, p.y);
-        let dev = DeviceId::dummy();
-        self.last_focus = None;
-        self.dispatch(&WindowEvent::CursorMoved {
-            device_id: dev,
-            position: pos,
-        });
-        self.dispatch(&WindowEvent::MouseInput {
-            device_id: dev,
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        });
-        self.dispatch(&WindowEvent::MouseInput {
-            device_id: dev,
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        });
-        target.is_some() && self.last_focus == target
-    }
 
     /// Scroll with a wheel notch over the point `at` (a negative `lines` scrolls
     /// content up, revealing what's below), then relayout — the real wheel path

@@ -21,10 +21,12 @@ use uuid::Uuid;
 
 use crate::actions::{
     ContactsEffect, MAX_CONTEXT_DUPLICATE_RESOURCES, MergeField, duplicate_candidate,
-    duplicate_candidates, ordered_groups, reviewed_merge_contact, split_name,
+    duplicate_candidates, reviewed_merge_contact, split_name,
 };
 use crate::app::ContactsApp;
-use crate::model::{Birthday, Contact, ContactId, Labeled, normalize_text, sample_contacts};
+use crate::model::{
+    Birthday, Contact, ContactId, Labeled, normalize_text, ordered_groups, sample_contacts,
+};
 
 /// The address book.
 #[derive(Model, Clone, Debug, Default, PartialEq)]

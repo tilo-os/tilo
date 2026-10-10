@@ -25,6 +25,32 @@ pub fn group_names_equal(left: &str, right: &str) -> bool {
     normalize_text(left.trim()) == normalize_text(right.trim())
 }
 
+/// One deterministic display spelling for every logical group of
+/// `contacts`, in the order of their identity. The key is the same
+/// NFC/case-folded identity filtering and resource addressing use; choosing
+/// the lexical spelling makes separate peers publish the same label even
+/// when Automerge projects rows in a different order.
+pub fn ordered_groups(contacts: &[Contact]) -> Vec<String> {
+    let mut groups = std::collections::BTreeMap::<String, String>::new();
+    for contact in contacts {
+        for entry in &contact.groups {
+            let name = entry.value.trim();
+            if name.is_empty() {
+                continue;
+            }
+            groups
+                .entry(normalize_text(name))
+                .and_modify(|existing| {
+                    if name < existing.as_str() {
+                        *existing = name.to_string();
+                    }
+                })
+                .or_insert_with(|| name.to_string());
+        }
+    }
+    groups.into_values().collect()
+}
+
 /// Stable identifier for a single contact record. Backs every
 /// cross-reference and the CRDT map key.
 pub type ContactId = Uuid;
@@ -585,33 +611,10 @@ impl ContactStore {
         self.contacts.len() != before
     }
 
-    /// Every distinct group across all contacts, sorted alphabetically.
+    /// Every distinct group across all contacts, sorted alphabetically
+    /// ([`ordered_groups`]).
     pub fn all_groups(&self) -> Vec<String> {
-        let mut set: Vec<String> = Vec::new();
-        for c in &self.contacts {
-            for g in &c.groups {
-                let g = g.value.trim();
-                if g.is_empty() {
-                    continue;
-                }
-                if let Some(existing) = set.iter_mut().find(|x| group_names_equal(x, g)) {
-                    // CRDT/map arrival order is not a presentation contract.
-                    // Pick one deterministic spelling for equivalent Unicode
-                    // group names so separate peers expose the same filter.
-                    if g < existing.as_str() {
-                        *existing = g.to_string();
-                    }
-                } else {
-                    set.push(g.to_string());
-                }
-            }
-        }
-        set.sort_by(|left, right| {
-            normalize_text(left)
-                .cmp(&normalize_text(right))
-                .then_with(|| left.cmp(right))
-        });
-        set
+        ordered_groups(&self.contacts)
     }
 
     /// Ids of the contacts that pass `query` (cross-field) and the

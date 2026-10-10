@@ -632,10 +632,6 @@ impl Library {
         self.articles.values().filter(|a| a.starred).count()
     }
 
-    pub fn total_articles(&self) -> usize {
-        self.articles.len()
-    }
-
     // --- filtering -------------------------------------------------------
 
     /// Does an article match the active filter?

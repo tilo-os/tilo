@@ -464,12 +464,6 @@ impl Core {
         self.pending_query_at.map(|at| at + GEOCODE_DEBOUNCE)
     }
 
-    /// Whether a geocode debounce is armed (so the app keeps pumping frames
-    /// until it fires).
-    pub fn debounce_pending(&self) -> bool {
-        self.pending_query_at.is_some()
-    }
-
     /// Whether the city list holds the pointer and the keyboard right now:
     /// a place is being added, its menu is open, or a row is being dragged.
     /// The forecast beside it takes no input meanwhile, so a key typed into
