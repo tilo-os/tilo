@@ -4351,7 +4351,6 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
- "trash",
  "unic-langid",
  "uuid",
  "wire-frame",
