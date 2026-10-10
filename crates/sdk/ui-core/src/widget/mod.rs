@@ -144,6 +144,100 @@ pub fn semantic_action_bindings(
     bindings
 }
 
+/// A laid-out box placed at `origin`, in absolute coordinates.
+pub fn placed(layout: &taffy::Layout, origin: vello::kurbo::Point) -> vello::kurbo::Rect {
+    vello::kurbo::Rect::from_origin_size(
+        (
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+        ),
+        (f64::from(layout.size.width), f64::from(layout.size.height)),
+    )
+}
+
+/// `node`'s laid-out box placed at `origin`: what `apply_layout` stores as a
+/// leaf's rect. A node missing from the tree is an empty box at `origin`.
+pub fn layout_rect(
+    taffy: &TaffyTree<()>,
+    node: NodeId,
+    origin: vello::kurbo::Point,
+) -> vello::kurbo::Rect {
+    placed(&taffy.layout(node).copied().unwrap_or_default(), origin)
+}
+
+/// What a gated, presence-publishing widget draws over itself once drawn:
+/// the denied-permission scrim, then the focus ring of the first peer on it.
+pub(crate) fn draw_gate_and_peer_focus(
+    widget: &(impl Widget + ?Sized),
+    scene: &mut Scene,
+    transform: Affine,
+    theme: &Theme,
+    presence: &PresenceCtx,
+    permissions: &crate::permissions::PermissionContext,
+) {
+    let rect = widget.get_rect();
+    if let Some(scope) = crate::permissions::capability::permission_scope(widget)
+        && !permissions.check(&scope)
+    {
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            crate::tokens::colors::PERMISSION_DENIED_SCRIM,
+            None,
+            &rect,
+        );
+    }
+    if let Some(key) = crate::presence::capability::presence_key(widget)
+        && let Some(user) = presence.here.get(&key).and_then(|peers| peers.first())
+    {
+        presence.draw_peer_focus(scene, theme, user, rect);
+    }
+}
+
+/// The whole `draw_with_presence` of a gated, presence-publishing leaf:
+/// culled off-viewport, drawn, then overlaid by [`draw_gate_and_peer_focus`].
+pub(crate) fn draw_gated_leaf(
+    widget: &mut (impl Widget + ?Sized),
+    scene: &mut Scene,
+    transform: Affine,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+    presence: &PresenceCtx,
+    permissions: &crate::permissions::PermissionContext,
+) {
+    if presence.should_cull(widget.get_rect()) {
+        return;
+    }
+    widget.draw(scene, transform, text_renderer, theme, presence);
+    draw_gate_and_peer_focus(widget, scene, transform, theme, presence, permissions);
+}
+
+/// Hand `event` to the widgets a virtualizing container has mounted: the
+/// first one holding pointer capture gets it alone, otherwise each laid-out
+/// widget sees it, topmost first, until one handles it.
+pub(crate) fn route_to_mounted<T>(
+    mounted: &mut [T],
+    parts: fn(&mut T) -> (&mut Element, Option<NodeId>),
+    event: &WindowEvent,
+    ctx: &mut EventCtx<'_>,
+) {
+    if let Some((widget, Some(node))) = mounted
+        .iter_mut()
+        .map(parts)
+        .find(|(widget, _)| widget.wants_pointer_capture())
+    {
+        widget.handle_event(event, &mut ctx.reborrow(ctx.path, node));
+        return;
+    }
+    for (widget, node) in mounted.iter_mut().rev().map(parts) {
+        let Some(node) = node else { continue };
+        widget.handle_event(event, &mut ctx.reborrow(ctx.path, node));
+        if *ctx.handled {
+            break;
+        }
+    }
+}
+
 /// Collect resources from every retained widget without requiring container
 /// authors to remember to forward their children's declarations. Resource
 /// ownership stays local to the widget that implements it; composition is a
@@ -813,6 +907,27 @@ pub(crate) fn settle_mark(doc: &AutoCommit) -> (Vec<automerge::ChangeHash>, usiz
     (doc.base_heads(), doc.pending_ops())
 }
 
+thread_local! {
+    static RESOURCE_PRESENTATION_EPOCH: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Tell the host that what a widget presents to the resource surface (the
+/// resources, actions or semantic controls it declares) changed on input it
+/// did not mark handled and without a document edit: hovering a menu row
+/// that opens a nested menu. The host keeps the published resource tree
+/// across bare pointer motion, so such a widget must call this or the tree
+/// agents and assistive technology read would go stale. Clicks, keys and
+/// any handled event already republish.
+pub fn note_resource_presentation_changed() {
+    RESOURCE_PRESENTATION_EPOCH.with(|epoch| epoch.set(epoch.get().wrapping_add(1)));
+}
+
+/// How many times [`note_resource_presentation_changed`] ran on this thread.
+#[cfg(feature = "native")]
+pub(crate) fn resource_presentation_epoch() -> u64 {
+    RESOURCE_PRESENTATION_EPOCH.with(std::cell::Cell::get)
+}
+
 /// Host services associated with one retained widget event dispatch.
 pub struct EventCtx<'a> {
     pub scale_factor: f64,
@@ -1193,7 +1308,11 @@ pub trait Widget {
     /// across the retained tree and refuses to publish an action whose type has
     /// no handler, preventing a catalogue entry that can only fail at runtime.
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[]
+        if crate::undo::has_deferred_local_history(self) {
+            &[crate::undo::EDIT_OPERATION]
+        } else {
+            &[]
+        }
     }
 
     fn resource_operation_handlers(&self) -> HashSet<String> {
@@ -1559,6 +1678,44 @@ pub trait Widget {
         true
     }
 
+    /// This field needs a host that consumes deferred receipts. Ordinary native
+    /// Wayland windows must not advertise it until they have that delivery path.
+    fn ime_requires_deferred_ack(&self) -> bool {
+        let caret = self.ime_cursor_rect();
+        let mut required = false;
+        self.for_each_child(&mut |child| {
+            if child.ime_cursor_rect() == caret && child.ime_purpose().is_some() {
+                required |= child.ime_requires_deferred_ack();
+            }
+        });
+        required
+    }
+
+    /// Begin one bounded deferred session after explicit host consent, preserving
+    /// the existing original-field fingerprint. This grants no microphone access.
+    fn start_deferred_text(&mut self) -> Option<crate::webview::text_input::Receipt> {
+        let caret = self.ime_cursor_rect()?;
+        for child in self.children_mut() {
+            if child.ime_cursor_rect() == Some(caret) && child.ime_purpose().is_some() {
+                return child.start_deferred_text();
+            }
+        }
+        None
+    }
+
+    /// A private asynchronous final. None leaves ordinary synchronous IME dispatch
+    /// to the host. A receipt binds this original field and must be acknowledged
+    /// before the host releases its private recovery transcript.
+    fn commit_deferred_text(&mut self, text: &str) -> Option<crate::webview::text_input::Receipt> {
+        let caret = self.ime_cursor_rect()?;
+        for child in self.children_mut() {
+            if child.ime_cursor_rect() == Some(caret) && child.ime_purpose().is_some() {
+                return child.commit_deferred_text(text);
+            }
+        }
+        None
+    }
+
     /// The focused widget wants platform text input (Wayland
     /// `text-input-v3`, native IMEs elsewhere). `None` is intentionally the
     /// default: enabling an IME for buttons, canvas tools or games makes the
@@ -1572,6 +1729,26 @@ pub trait Widget {
     /// toolkit boundary.
     fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
         None
+    }
+
+    /// Whether the original focused editor accepts line feeds as text. This is
+    /// field policy, never inferred from a multiline accessibility presentation.
+    /// Wrappers inherit only one unambiguous child at their active IME caret.
+    fn ime_multiline(&self) -> bool {
+        let Some(caret) = self.ime_cursor_rect() else {
+            return false;
+        };
+        let mut matching = 0_usize;
+        let mut multiline = false;
+        self.for_each_child(&mut |child| {
+            if child.ime_cursor_rect() == Some(caret)
+                && child.ime_purpose() == Some(winit::window::ImePurpose::Normal)
+            {
+                matching = matching.saturating_add(1);
+                multiline = child.ime_multiline();
+            }
+        });
+        matching == 1 && multiline
     }
 
     /// Opaque local invalidation of deferred input, including selection edits
@@ -1868,6 +2045,9 @@ pub trait Widget {
         doc: &mut crate::widget::Edits<'_>,
         path: &ObjId,
     ) -> Result<Option<ResourceOperationStart>, String> {
+        if let Some(started) = crate::undo::start_local_history(self, op)? {
+            return Ok(Some(started));
+        }
         start_in_children(self, op, doc, path)
     }
 
@@ -1892,6 +2072,11 @@ pub trait Widget {
         doc: &AutoCommit,
         path: &ObjId,
     ) -> Option<tilo_actions::InvocationUpdate> {
+        if let Some(update) =
+            crate::undo::poll_local_history(self, invocation, cancellation_requested)
+        {
+            return Some(update);
+        }
         for child in self.children_mut() {
             if let Some(update) =
                 child.poll_resource_operation(invocation, cancellation_requested, doc, path)
@@ -2468,6 +2653,50 @@ pub trait TaffyTreeExt {
 
     /// Insert a parent whose child ids were built in this same tree.
     fn parent_node(&mut self, style: taffy::Style, children: &[NodeId]) -> NodeId;
+
+    /// Insert a leaf node for `widget` and register it in `node_map`: the
+    /// whole of a leaf widget's `build_layout`.
+    fn widget_leaf(
+        &mut self,
+        style: taffy::Style,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+        widget: &mut (dyn Widget + 'static),
+    ) -> NodeId {
+        let node = self.leaf_node(style);
+        node_map.insert(node, std::ptr::from_mut(widget));
+        node
+    }
+
+    /// Insert a parent node over `children` for `widget` and register it in
+    /// `node_map`: how a container's `build_layout` ends.
+    fn widget_node(
+        &mut self,
+        style: taffy::Style,
+        children: &[NodeId],
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+        widget: &mut (dyn Widget + 'static),
+    ) -> NodeId {
+        let node = self.parent_node(style, children);
+        node_map.insert(node, std::ptr::from_mut(widget));
+        node
+    }
+
+    /// Insert a flex parent that fills its own parent around one child: the
+    /// root node of a window that hosts a single widget tree.
+    fn fill_node(&mut self, child: NodeId) -> NodeId {
+        self.parent_node(
+            taffy::Style {
+                display: taffy::Display::Flex,
+                flex_grow: 1.0,
+                size: taffy::Size {
+                    width: taffy::Dimension::percent(1.0),
+                    height: taffy::Dimension::percent(1.0),
+                },
+                ..Default::default()
+            },
+            &[child],
+        )
+    }
 }
 
 impl TaffyTreeExt for TaffyTree<()> {
@@ -2486,6 +2715,8 @@ pub type Element = Box<dyn Widget>;
 
 pub mod binding;
 pub mod capability;
+mod composed;
+pub use composed::Composed;
 pub mod controls;
 pub mod decorator;
 pub mod document_effects;
@@ -2495,7 +2726,7 @@ pub use decorator::Decorator;
 pub(crate) mod layout;
 pub use layout::{
     AuthoredExtent, ExtentSizing, WidgetLayoutError, compute_widget_layout, insets, insets_all,
-    insets_xy, text_control_height,
+    insets_xy, layout_clip, text_control_height, with_layout_clip,
 };
 
 mod button;

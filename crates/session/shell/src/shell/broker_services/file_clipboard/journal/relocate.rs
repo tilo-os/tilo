@@ -66,7 +66,7 @@ impl Mover<'_> {
             }
             return Ok(directory);
         }
-        let trash = xdg_paths::data_dir()
+        let trash = tilo_paths::data_dir()
             .ok_or("home Trash unavailable")?
             .join("Trash/files");
         if path == trash {

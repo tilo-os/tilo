@@ -73,6 +73,7 @@ fn request() -> InvokeRequest {
         context: None,
         confirmation: None,
         revision: None,
+        wait_ms: None,
     }
 }
 
@@ -554,6 +555,7 @@ fn continuation_fixture() -> (
         Subject::agent("scribe"),
         Scope::Action {
             app: "so.tilo.test".into(),
+            resource: "test:block-a".into(),
             action: "erase".into(),
         },
         Effect::Restrict,

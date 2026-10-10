@@ -7,14 +7,16 @@
 //! other method from a client whose version differs, so an old CLI never
 //! half-drives a new daemon.
 //!
-//! Layer bytes travel as base64 chunks ([`LayerUploadChunk`]) so the stream
-//! stays line-oriented JSON and a truncated upload is detectable.
+//! Layer bytes prefer an optional bounded binary substream ([`LayerUploadBinary`])
+//! with count and SHA-256 verification. Older protocol-8 peers retain base64
+//! chunks ([`LayerUploadChunk`]); all other operations remain ordered JSON-RPC.
 //!
 //! Long jobs that stream output (in-VM builds, CI layer extraction) do not
 //! use the RPC loop: `tilo-vm` runs `ssh <vm> tilo-vmd build` (or
 //! `ci-layer`) with a [`BuildJob`] or [`CiJob`] on stdin. The job's own
 //! output streams on stderr and its outcome is one [`JobLine`] on stdout.
 
+pub mod binary;
 pub mod client;
 pub mod disk_unlock;
 pub mod display;
@@ -34,7 +36,7 @@ pub use input::{Button, InputAction, Stick};
 pub use manifest::{ComponentInfo, Manifest, Scope};
 
 /// Bumped on any incompatible change to a request, response or semantics.
-pub const PROTOCOL_VERSION: u32 = 8;
+pub const PROTOCOL_VERSION: u32 = 9;
 
 /// Where in-VM builds keep one synced source tree per host worktree; its
 /// `target/` is the worktree's own, evictable build dir.
@@ -128,6 +130,8 @@ pub enum Request {
     SlotShow(SlotShow),
     #[serde(rename = "layer.upload.begin")]
     LayerUploadBegin(LayerUploadBegin),
+    #[serde(rename = "layer.upload.binary")]
+    LayerUploadBinary(LayerUploadBinary),
     #[serde(rename = "layer.upload.chunk")]
     LayerUploadChunk(LayerUploadChunk),
     #[serde(rename = "layer.import")]
@@ -179,6 +183,7 @@ impl Request {
             Self::SlotRm(_) => "slot.rm",
             Self::SlotShow(_) => "slot.show",
             Self::LayerUploadBegin(_) => "layer.upload.begin",
+            Self::LayerUploadBinary(_) => "layer.upload.binary",
             Self::LayerUploadChunk(_) => "layer.upload.chunk",
             Self::LayerImport(_) => "layer.import",
             Self::LayerList(_) => "layer.list",
@@ -226,6 +231,7 @@ call! {
     SlotRm => SlotRmResult,
     SlotShow => SlotShowResult,
     LayerUploadBegin => LayerUploadBeginResult,
+    LayerUploadBinary => LayerUploadBeginResult,
     LayerUploadChunk => LayerUploadChunkResult,
     LayerImport => LayerImportResult,
     LayerList => Vec<LayerInfo>,
@@ -300,6 +306,13 @@ pub struct SlotShow {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LayerUploadBegin {}
+
+/// Optional protocol-8 upgrade: ready response, bounded binary frames, then
+/// a same-id byte-count response. Use `Client::upload` after explicit transport
+/// opt-in; a bare RPC call cannot perform the substream. Older peers reject it
+/// before consuming bytes.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LayerUploadBinary {}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LayerUploadChunk {

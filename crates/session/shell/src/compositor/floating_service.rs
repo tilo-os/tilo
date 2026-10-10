@@ -17,6 +17,7 @@ use std::time::Duration;
 use launcher::services::SHELL_UI_LAUNCH_PROTOCOL;
 use ui::floating_surface::{
     FLOATING_SURFACE_SERVICE, FloatingSurfaceClientMessage, FloatingSurfaceHostMessage,
+    HostNetworkStatus,
 };
 
 const MAX_FRAME_BYTES: usize = 1024 * 1024;
@@ -30,6 +31,7 @@ pub enum FloatingServiceEvent {
     Connected {
         connection: u64,
         app_id: String,
+        network_status_allowed: bool,
     },
     Message {
         connection: u64,
@@ -46,11 +48,27 @@ pub enum FloatingServiceEvent {
 struct LauncherHandshake {
     protocol: u16,
     app_id: String,
+    #[serde(default)]
+    network_status_allowed: bool,
+}
+
+/// The service owns shutdown even when a reply sender is held by a worker.
+struct ConnectionWriter {
+    sender: mpsc::Sender<Vec<u8>>,
+    socket: UnixStream,
+}
+
+impl Drop for ConnectionWriter {
+    fn drop(&mut self) {
+        let _ = self.socket.shutdown(std::net::Shutdown::Both);
+        // An empty buffer is an internal shutdown marker, never a wire frame.
+        let _ = self.sender.send(Vec::new());
+    }
 }
 
 pub struct FloatingSurfaceService {
     events: mpsc::Receiver<FloatingServiceEvent>,
-    writers: Arc<Mutex<HashMap<u64, mpsc::Sender<Vec<u8>>>>>,
+    writers: Arc<Mutex<HashMap<u64, ConnectionWriter>>>,
     stop: Arc<std::sync::atomic::AtomicBool>,
     acceptor: Option<std::thread::JoinHandle<()>>,
     path: PathBuf,
@@ -90,9 +108,12 @@ impl FloatingSurfaceService {
                             let connection = next_id.fetch_add(1, Ordering::Relaxed);
                             let tx = event_tx.clone();
                             let writers = Arc::clone(&thread_writers);
+                            let stop = Arc::clone(&thread_stop);
                             let _ = std::thread::Builder::new()
                                 .name(format!("tilo-shell-ui-{connection}"))
-                                .spawn(move || serve_connection(connection, stream, tx, writers));
+                                .spawn(move || {
+                                    serve_connection(connection, stream, tx, writers, stop);
+                                });
                         }
                         Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
                         Err(error) => {
@@ -124,7 +145,11 @@ impl FloatingSurfaceService {
     }
 
     pub fn reply_writer(&self, connection: u64) -> Option<mpsc::Sender<Vec<u8>>> {
-        self.writers.lock().ok()?.get(&connection).cloned()
+        self.writers
+            .lock()
+            .ok()?
+            .get(&connection)
+            .map(|writer| writer.sender.clone())
     }
 
     pub fn send(&self, connection: u64, message: &FloatingSurfaceHostMessage) {
@@ -136,7 +161,7 @@ impl FloatingSurfaceService {
             .writers
             .lock()
             .ok()
-            .and_then(|writers| writers.get(&connection).cloned());
+            .and_then(|writers| writers.get(&connection).map(|writer| writer.sender.clone()));
         let failed = writer.is_some_and(|writer| writer.send(frame).is_err());
         if failed && let Ok(mut writers) = self.writers.lock() {
             writers.remove(&connection);
@@ -159,7 +184,7 @@ impl FloatingSurfaceService {
             .map(|writers| {
                 writers
                     .iter()
-                    .map(|(connection, writer)| (*connection, writer.clone()))
+                    .map(|(connection, writer)| (*connection, writer.sender.clone()))
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
@@ -189,6 +214,9 @@ impl Drop for FloatingSurfaceService {
         {
             let _ = acceptor.join();
         }
+        if let Ok(mut writers) = self.writers.lock() {
+            writers.clear();
+        }
         let _ = std::fs::remove_file(&self.path);
     }
 }
@@ -203,7 +231,8 @@ fn serve_connection(
     connection: u64,
     stream: UnixStream,
     events: mpsc::Sender<FloatingServiceEvent>,
-    writers: Arc<Mutex<HashMap<u64, mpsc::Sender<Vec<u8>>>>>,
+    writers: Arc<Mutex<HashMap<u64, ConnectionWriter>>>,
+    stop: Arc<std::sync::atomic::AtomicBool>,
 ) {
     let Ok(mut writer) = stream.try_clone() else {
         return;
@@ -223,7 +252,19 @@ fn serve_connection(
     }
     let (write_tx, write_rx) = mpsc::channel::<Vec<u8>>();
     if let Ok(mut open) = writers.lock() {
-        open.insert(connection, write_tx);
+        if stop.load(Ordering::Acquire) {
+            return;
+        }
+        let Ok(socket) = reader.get_ref().try_clone() else {
+            return;
+        };
+        open.insert(
+            connection,
+            ConnectionWriter {
+                sender: write_tx,
+                socket,
+            },
+        );
     } else {
         return;
     }
@@ -231,6 +272,9 @@ fn serve_connection(
         .name(format!("tilo-shell-ui-writer-{connection}"))
         .spawn(move || {
             for frame in write_rx {
+                if frame.is_empty() {
+                    break;
+                }
                 if writer
                     .write_all(&frame)
                     .and_then(|()| writer.flush())
@@ -242,6 +286,7 @@ fn serve_connection(
         });
     let app_id = handshake.app_id;
     let _ = events.send(FloatingServiceEvent::Connected {
+        network_status_allowed: handshake.network_status_allowed,
         connection,
         app_id: app_id.clone(),
     });
@@ -284,19 +329,21 @@ fn serve_connection(
 /// when that changes.
 #[derive(Debug, Default)]
 pub struct AppearanceDelivery {
-    told: HashMap<u64, (String, Option<DeliveredAppearance>)>,
+    told: HashMap<u64, (String, bool, Option<DeliveredAppearance>)>,
 }
 
 #[derive(Debug)]
 struct DeliveredAppearance {
     window: ui::WindowAppearance,
     theme: ui::theme::ThemeDocument,
+    network: Option<HostNetworkStatus>,
 }
 
 impl AppearanceDelivery {
     /// `app_id` connected on `connection`; it has been told nothing yet.
-    pub fn connected(&mut self, connection: u64, app_id: &str) {
-        self.told.insert(connection, (app_id.to_owned(), None));
+    pub fn connected(&mut self, connection: u64, app_id: &str, network_allowed: bool) {
+        self.told
+            .insert(connection, (app_id.to_owned(), network_allowed, None));
     }
 
     pub fn disconnected(&mut self, connection: u64) {
@@ -309,21 +356,26 @@ impl AppearanceDelivery {
         &mut self,
         appearance_of: impl Fn(&str) -> ui::WindowAppearance,
         theme: &ui::Theme,
+        network: HostNetworkStatus,
         mut send: impl FnMut(u64, &FloatingSurfaceHostMessage),
     ) {
-        for (connection, (app_id, told)) in &mut self.told {
+        for (connection, (app_id, network_allowed, told)) in &mut self.told {
+            let network = network_allowed.then_some(network);
             let appearance = appearance_of(app_id);
-            if told
-                .as_ref()
-                .is_none_or(|last| last.window != appearance || last.theme != theme.document)
-            {
-                send(
-                    *connection,
-                    &FloatingSurfaceHostMessage::appearance_with_theme(&appearance, theme),
-                );
+            if told.as_ref().is_none_or(|last| {
+                last.window != appearance || last.theme != theme.document || last.network != network
+            }) {
+                let mut message =
+                    FloatingSurfaceHostMessage::appearance_with_theme(&appearance, theme);
+                if let FloatingSurfaceHostMessage::Appearance { network_status, .. } = &mut message
+                {
+                    *network_status = network;
+                }
+                send(*connection, &message);
                 *told = Some(DeliveredAppearance {
                     window: appearance,
                     theme: theme.document.clone(),
+                    network,
                 });
             }
         }
@@ -378,19 +430,30 @@ mod tests {
             if app == "so.tilo.notes" { notes } else { files }
         };
         let mut delivery = AppearanceDelivery::default();
-        delivery.connected(1, "so.tilo.notes");
-        delivery.connected(2, "so.tilo.files");
+        delivery.connected(1, "so.tilo.notes", false);
+        delivery.connected(2, "so.tilo.files", false);
+        let network = HostNetworkStatus::default();
         let mut sent = Vec::new();
-        delivery.publish(appearance_of, &ui::Theme::dark(), |connection, message| {
-            sent.push((connection, message.window_appearance()));
-        });
+        delivery.publish(
+            appearance_of,
+            &ui::Theme::dark(),
+            network,
+            |connection, message| {
+                sent.push((connection, message.window_appearance()));
+            },
+        );
         sent.sort_by_key(|(connection, _)| *connection);
         assert_eq!(sent, vec![(1, Some(warm)), (2, Some(grey))]);
 
         let mut palettes = Vec::new();
-        delivery.publish(appearance_of, &ui::Theme::light(), |connection, message| {
-            palettes.push((connection, message.configured_theme().unwrap().document));
-        });
+        delivery.publish(
+            appearance_of,
+            &ui::Theme::light(),
+            network,
+            |connection, message| {
+                palettes.push((connection, message.configured_theme().unwrap().document));
+            },
+        );
         palettes.sort_by_key(|(connection, _)| *connection);
         assert_eq!(
             palettes,
@@ -400,33 +463,53 @@ mod tests {
             ]
         );
         palettes.clear();
-        delivery.publish(appearance_of, &ui::Theme::light(), |connection, message| {
-            palettes.push((connection, message.configured_theme().unwrap().document));
-        });
+        delivery.publish(
+            appearance_of,
+            &ui::Theme::light(),
+            network,
+            |connection, message| {
+                palettes.push((connection, message.configured_theme().unwrap().document));
+            },
+        );
         assert!(
             palettes.is_empty(),
             "an unchanged palette is not sent every frame"
         );
-        delivery.publish(appearance_of, &ui::Theme::dark(), |_, _| {});
+        delivery.publish(appearance_of, &ui::Theme::dark(), network, |_, _| {});
 
         sent.clear();
-        delivery.publish(appearance_of, &ui::Theme::dark(), |connection, message| {
-            sent.push((connection, message.window_appearance()));
-        });
+        delivery.publish(
+            appearance_of,
+            &ui::Theme::dark(),
+            network,
+            |connection, message| {
+                sent.push((connection, message.window_appearance()));
+            },
+        );
         assert!(sent.is_empty(), "nothing changed, nothing is said");
 
         rooms.set((grey, grey));
-        delivery.publish(appearance_of, &ui::Theme::dark(), |connection, message| {
-            sent.push((connection, message.window_appearance()));
-        });
+        delivery.publish(
+            appearance_of,
+            &ui::Theme::dark(),
+            network,
+            |connection, message| {
+                sent.push((connection, message.window_appearance()));
+            },
+        );
         assert_eq!(sent, vec![(1, Some(grey))], "only the window that moved");
 
         sent.clear();
         delivery.disconnected(1);
         rooms.set((warm, warm));
-        delivery.publish(appearance_of, &ui::Theme::dark(), |connection, message| {
-            sent.push((connection, message.window_appearance()));
-        });
+        delivery.publish(
+            appearance_of,
+            &ui::Theme::dark(),
+            network,
+            |connection, message| {
+                sent.push((connection, message.window_appearance()));
+            },
+        );
         assert_eq!(
             sent,
             vec![(2, Some(warm))],
@@ -465,6 +548,86 @@ mod tests {
     }
 
     #[test]
+    fn network_delivery_preserves_unknown_and_permissions_without_personal_metadata() {
+        let legacy: LauncherHandshake =
+            serde_json::from_str(r#"{"protocol":1,"app_id":"so.tilo.notes"}"#).unwrap();
+        assert!(!legacy.network_status_allowed);
+        let mut delivery = AppearanceDelivery::default();
+        delivery.connected(1, "so.tilo.notes", true);
+        delivery.connected(2, "so.tilo.files", false);
+        let theme = ui::Theme::dark();
+        let mut sent = Vec::new();
+        delivery.publish(
+            |_| ui::WindowAppearance::default(),
+            &theme,
+            HostNetworkStatus::default(),
+            |id, message| sent.push((id, serde_json::to_value(message).unwrap())),
+        );
+        let allowed = &sent.iter().find(|(id, _)| *id == 1).unwrap().1;
+        assert_eq!(
+            allowed["network_status"],
+            serde_json::json!({"available":null,"metered":null})
+        );
+        assert!(
+            sent.iter()
+                .find(|(id, _)| *id == 2)
+                .unwrap()
+                .1
+                .get("network_status")
+                .is_none()
+        );
+        for metered in [Some(true), Some(false), None] {
+            sent.clear();
+            let network = HostNetworkStatus {
+                available: Some(true),
+                metered,
+            };
+            delivery.publish(
+                |_| ui::WindowAppearance::default(),
+                &theme,
+                network,
+                |id, message| sent.push((id, serde_json::to_value(message).unwrap())),
+            );
+            assert_eq!(
+                sent.len(),
+                1,
+                "a network-denied app receives no status transition"
+            );
+            assert_eq!(sent[0].0, 1);
+            assert_eq!(
+                sent[0].1["network_status"],
+                serde_json::json!({"available":true,"metered":metered})
+            );
+            sent.clear();
+            delivery.publish(
+                |_| ui::WindowAppearance::default(),
+                &theme,
+                network,
+                |id, message| sent.push((id, serde_json::to_value(message).unwrap())),
+            );
+            assert!(
+                sent.is_empty(),
+                "idle/deduplicated status does not send another frame"
+            );
+        }
+        delivery.disconnected(1);
+        sent.clear();
+        delivery.publish(
+            |_| ui::WindowAppearance::default(),
+            &theme,
+            HostNetworkStatus {
+                available: Some(false),
+                metered: None,
+            },
+            |id, message| sent.push((id, serde_json::to_value(message).unwrap())),
+        );
+        assert!(
+            sent.is_empty(),
+            "disconnected/denied clients receive nothing"
+        );
+    }
+
+    #[test]
     #[serial_test::serial(process_env)]
     fn authenticated_terminal_receives_owner_selection_on_its_existing_lifecycle_connection() {
         let runtime = tempfile::tempdir().unwrap();
@@ -479,10 +642,12 @@ mod tests {
         launcher::services::authenticate_shell_ui_bind(
             &resolved,
             crate::shell::host_shell_allow::TERMINAL_APP_ID,
+            &launcher::netgate::EgressDecision::Blocked,
         )
         .unwrap();
-        let FloatingServiceEvent::Connected { connection, app_id } =
-            service.events.recv_timeout(Duration::from_secs(2)).unwrap()
+        let FloatingServiceEvent::Connected {
+            connection, app_id, ..
+        } = service.events.recv_timeout(Duration::from_secs(2)).unwrap()
         else {
             panic!("expected authenticated Terminal connection");
         };
@@ -532,11 +697,15 @@ mod tests {
         )]);
         let resolved = launcher::services::resolve_service_binds(&declared, false)
             .expect("resolve the real launch descriptor");
-        launcher::services::authenticate_shell_ui_bind(&resolved, "so.tilo.chat")
-            .expect("write the production launcher handshake");
+        launcher::services::authenticate_shell_ui_bind(
+            &resolved,
+            "so.tilo.chat",
+            &launcher::netgate::EgressDecision::Unrestricted,
+        )
+        .expect("write the production launcher handshake");
         assert!(matches!(
             service.events.recv_timeout(Duration::from_secs(2)),
-            Ok(FloatingServiceEvent::Connected { app_id, .. }) if app_id == "so.tilo.chat"
+            Ok(FloatingServiceEvent::Connected { app_id, network_status_allowed: true, .. }) if app_id == "so.tilo.chat"
         ));
         // SAFETY: resolved owns this host descriptor until its explicit drop
         // below. The temporary borrow only clones it into a separately owned
@@ -596,7 +765,15 @@ mod tests {
             let (tx, rx) = mpsc::channel();
             let writers = Arc::new(Mutex::new(HashMap::new()));
             let observed = Arc::clone(&writers);
-            let worker = std::thread::spawn(move || serve_connection(1, server, tx, writers));
+            let worker = std::thread::spawn(move || {
+                serve_connection(
+                    1,
+                    server,
+                    tx,
+                    writers,
+                    Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                );
+            });
             let mut frame =
                 serde_json::to_vec(&serde_json::json!({"protocol": protocol, "app_id": app_id}))
                     .expect("serialize invalid handshake");
@@ -645,11 +822,10 @@ mod tests {
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set("XDG_RUNTIME_DIR", runtime.path());
 
-        let (service, acceptor) =
-            crate::idle_thread_probe::spawned_thread("tilo-shell-ui-a", || {
-                FloatingSurfaceService::start().expect("start floating service")
-            });
-        crate::idle_thread_probe::assert_stays_asleep(&acceptor, "shell-ui acceptor");
+        let (service, acceptor) = tilo_test_env::idle::spawned_thread("tilo-shell-ui-a", || {
+            FloatingSurfaceService::start().expect("start floating service")
+        });
+        tilo_test_env::idle::assert_stays_asleep(&acceptor, "shell-ui acceptor");
         UnixStream::connect(launcher::services::socket_for(FLOATING_SURFACE_SERVICE))
             .expect("still accepts clients");
         drop(service);

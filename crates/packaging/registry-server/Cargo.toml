@@ -23,7 +23,7 @@ path = "src/main.rs"
 [dependencies]
 tilo-advisory-lock = { path = "../../system/advisory-lock" }
 tilo-clock = { path = "../../platform/tilo-clock" }
-tilo-xdg-paths = { path = "../../system/xdg-paths" }
+tilo-paths.workspace = true
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 tilo-files = { path = "../../platform/tilo-files" }
 registry-types = { path = "../registry-types" }

@@ -48,11 +48,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -89,3 +85,6 @@ pub use resource::{Settings, SettingsShell, parse_settings_uri};
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
     ui::framework::definition::<SettingsShell>()
 }
+
+#[cfg(test)]
+mod cpu_profile;

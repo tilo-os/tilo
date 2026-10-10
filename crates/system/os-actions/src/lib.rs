@@ -28,11 +28,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -107,15 +103,15 @@ pub use network::{
     HOTSPOT_PROFILE, HotspotBand, HotspotClient, HotspotConfiguration, IpConfiguration, LinkKind,
     LinkStatus, MacPolicy, MeteredPolicy, ProxyConfiguration, RadioState, SavedNetworkProfile,
     VpnConnectionInfo, WifiNetworkInfo, WifiSecurity, WiredInfo, captive_portal_uri,
-    configure_connection_policy, configure_connection_policy_patch, configure_hotspot,
-    configure_ipv4, connect_enterprise_wifi, connect_wifi, connection_diagnostics,
-    connection_profile_settings, create_mobile_profile, delete_vpn_connection,
-    delete_vpn_connection_uuid, disconnect_wifi, forget_network_profile, get_connectivity,
-    get_link_status, get_radio_state, get_wifi, get_wired, import_vpn_config, inspect_certificate,
-    list_hotspot_clients, list_saved_network_profiles, list_vpn_connections, list_wifi_networks,
-    portable_wifi_profile_secret, set_airplane_mode, set_hotspot, set_mobile_broadband,
-    set_network_autoconnect, set_vpn_connection, set_vpn_connection_uuid, set_wifi, set_wired,
-    wifi_from_radios,
+    check_connectivity_now, configure_connection_policy, configure_connection_policy_patch,
+    configure_hotspot, configure_ipv4, connect_enterprise_wifi, connect_wifi,
+    connection_diagnostics, connection_profile_settings, create_mobile_profile,
+    delete_vpn_connection, delete_vpn_connection_uuid, disconnect_wifi, forget_network_profile,
+    get_connectivity, get_link_status, get_radio_state, get_wifi, get_wired, import_vpn_config,
+    inspect_certificate, link_status_from_state, list_hotspot_clients, list_saved_network_profiles,
+    list_vpn_connections, list_wifi_networks, portable_wifi_profile_secret, set_airplane_mode,
+    set_hotspot, set_mobile_broadband, set_network_autoconnect, set_vpn_connection,
+    set_vpn_connection_uuid, set_wifi, set_wired, wifi_from_radios, wireless_link_quality_pct,
 };
 pub use orientation::{
     AccelSample, DeviceOrientation, OrientationTracker, RotationControl, has_accelerometer,

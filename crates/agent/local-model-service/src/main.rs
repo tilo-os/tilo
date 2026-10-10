@@ -1089,7 +1089,10 @@ fn paths(cli: &Cli) -> Result<(PathBuf, PathBuf, PathBuf), String> {
         return Err("path overrides are forbidden for the privileged model manager".into());
     }
     Ok((
-        cli.root.clone().unwrap_or_else(user_model_root),
+        cli.root
+            .clone()
+            .or_else(user_model_root)
+            .ok_or("no data home for the model store: set HOME or pass --root")?,
         cli.catalog.clone().unwrap_or_else(|| {
             PathBuf::from("/usr/share/tilo/system-extensions/local-model-catalog.json")
         }),

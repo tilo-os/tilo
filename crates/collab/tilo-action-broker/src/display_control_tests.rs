@@ -231,9 +231,9 @@ async fn display_rpc_preserves_original_published_caller_and_refuses_missing_or_
                         resource_label: "Displays".into(),
                         action_label: "Identify".into(),
                         description: None,
-                        operation_kind: "view".into(),
-                        params_json: "[]".into(),
-                        contract_json: serde_json::to_string(&contract).unwrap(),
+                        operation_kind: tilo_actions::OperationKind::View,
+                        params: Vec::new(),
+                        contract,
                         input: runtime_collab::ExportedInput::None,
                         view: None,
                     }],
@@ -482,9 +482,9 @@ async fn native_person_display_rpc_keeps_original_owner_and_rejects_agent_contin
                         resource_label: "Displays".into(),
                         action_label: "Identify".into(),
                         description: None,
-                        operation_kind: "view".into(),
-                        params_json: "[]".into(),
-                        contract_json: serde_json::to_string(&contract).unwrap(),
+                        operation_kind: tilo_actions::OperationKind::View,
+                        params: Vec::new(),
+                        contract,
                         input: runtime_collab::ExportedInput::None,
                         view: None,
                     }],
@@ -509,6 +509,7 @@ async fn native_person_display_rpc_keeps_original_owner_and_rejects_agent_contin
                 context: None,
                 confirmation: None,
                 revision: None,
+                wait_ms: None,
             };
             // The previous normal host door really admitted this action but
             // supplied no original custody. The generic door still cannot

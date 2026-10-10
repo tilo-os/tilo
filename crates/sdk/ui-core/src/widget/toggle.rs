@@ -5,14 +5,37 @@ use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::binding::{BoxedBinding, Pulled};
-use crate::widget::{ActionEmitter, ControlBindingKind, ControlBindingMetadata};
+use crate::widget::{ActionEmitter, ControlBindingMetadata};
 use crate::widget::{AppModel, ModelPath};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
-type BoolChangeCallback = Box<dyn FnMut(bool)>;
+pub(super) type BoolChangeCallback = Box<dyn FnMut(bool)>;
+
+/// Flip a two-state control the way a click does: through its action when it
+/// has one, else through its binding. `on_change` hears the new value only
+/// when no action owns it.
+pub(super) fn commit_flip(
+    checked: &mut bool,
+    action: &mut Option<ActionEmitter<bool>>,
+    binding: &mut Option<BoxedBinding<bool>>,
+    on_change: &mut Option<BoolChangeCallback>,
+) {
+    let flipped = !*checked;
+    if let Some(action) = action {
+        let _ = action.emit(flipped);
+    } else if let Some(binding) = binding {
+        binding.publish(&flipped);
+    }
+    *checked = flipped;
+    if action.is_none()
+        && let Some(callback) = on_change.as_mut()
+    {
+        callback(flipped);
+    }
+}
 
 /// `is_hovered`, `is_checked`, `is_focused` and `enabled` are four
 /// independent state axes (pointer, CRDT-synced value, keyboard focus,
@@ -127,18 +150,12 @@ impl Toggle {
     }
 
     fn commit_user_toggle(&mut self, _state: &AppModel, _root: &ModelPath) {
-        let checked = !self.is_checked;
-        if let Some(action) = &mut self.action {
-            let _ = action.emit(checked);
-        } else if let Some(binding) = &mut self.binding {
-            binding.publish(&checked);
-        }
-        self.is_checked = checked;
-        if self.action.is_none()
-            && let Some(callback) = self.on_change.as_mut()
-        {
-            callback(checked);
-        }
+        commit_flip(
+            &mut self.is_checked,
+            &mut self.action,
+            &mut self.binding,
+            &mut self.on_change,
+        );
     }
 
     #[must_use]
@@ -518,7 +535,7 @@ impl Widget for Toggle {
         )]
         let (track_w, track_h) = (track_w as f32, track_h as f32);
         let target = self.interaction.minimum_target();
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: Dimension::length(track_w.max(target)),
                 height: Dimension::length(track_h.max(target)),
@@ -529,19 +546,13 @@ impl Widget for Toggle {
             // squeezed it to zero width beside a stretching text field.
             flex_shrink: 0.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = crate::widget::placed(&layout, origin);
     }
 
     fn draw(
@@ -668,42 +679,21 @@ impl Widget for Toggle {
         presence: &crate::presence::PresenceCtx,
         permissions: &crate::permissions::PermissionContext,
     ) {
-        if presence.should_cull(self.get_rect()) {
-            return;
-        }
-        self.draw(scene, transform, text_renderer, theme, presence);
-
-        if let Some(scope) = crate::permissions::capability::permission_scope(self)
-            && !permissions.check(&scope)
-        {
-            let overlay = crate::tokens::colors::PERMISSION_DENIED_SCRIM;
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                overlay,
-                None,
-                &self.rect,
-            );
-        }
-
-        if let Some(key) = crate::presence::capability::presence_key(self)
-            && let Some(peers) = presence.here.get(&key)
-            && let Some(user) = peers.first()
-        {
-            presence.draw_peer_focus(scene, theme, user, self.rect);
-        }
+        crate::widget::draw_gated_leaf(
+            self,
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            presence,
+            permissions,
+        );
     }
 }
 
 impl crate::presence::capability::PublishesPresence for Toggle {
     fn presence_key(&self) -> Option<PresenceKey> {
-        if self.presence_path.is_empty() {
-            None
-        } else {
-            Some(PresenceKey::Widget {
-                path: self.presence_path.clone(),
-            })
-        }
+        PresenceKey::widget(&self.presence_path)
     }
 }
 
@@ -714,52 +704,21 @@ impl crate::permissions::capability::PermissionGated for Toggle {
 }
 
 impl crate::widget::controls::ActionControls for Toggle {
-    fn install_control_custody(
-        &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
-    ) {
-        if let Some(action) = &mut self.action {
-            let _ = action.install_custody(domain, attachment);
-        }
-    }
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.action.as_mut().and_then(ActionEmitter::take)
-    }
+    crate::widget::controls::optional_emitter_controls!();
     fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
-        let control_id = self.test_id().unwrap_or("toggle");
-        if let Some(action) = &self.action {
-            vec![action.metadata(control_id)]
-        } else if let Some(key) = self.binding.as_ref().and_then(|b| b.document_key()) {
-            vec![ControlBindingMetadata {
-                control_id: control_id.to_string(),
-                kind: ControlBindingKind::CollaborativeDocument(key.to_owned()),
-            }]
-        } else if self.on_change.is_some() {
-            vec![ControlBindingMetadata {
-                control_id: control_id.to_string(),
-                kind: ControlBindingKind::LegacyCallback,
-            }]
-        } else {
-            vec![ControlBindingMetadata {
-                control_id: control_id.to_string(),
-                kind: ControlBindingKind::SemanticAction(control_id.to_string()),
-            }]
-        }
-    }
-    fn refresh_control_action_availability(
-        &mut self,
-        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
-    ) {
-        if let Some(action) = &mut self.action {
-            action.refresh_availability(allowed);
-        }
+        crate::widget::controls::value_control_bindings(
+            self.test_id().unwrap_or("toggle"),
+            self.action.as_ref(),
+            self.binding.as_ref().and_then(|b| b.document_key()),
+            self.on_change.is_some(),
+        )
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::Dispatch;
     use crate::widget::Widget;
     use automerge::{AutoCommit, ReadDoc, transaction::Transactable};
 
@@ -1092,8 +1051,6 @@ mod tests {
 
         // Case `disabled_toggle_does_not_toggle`.
         {
-            use winit::event::DeviceId;
-
             let mut t = Toggle::new("id", "on").with_enabled(false);
 
             let mut tree = TaffyTree::<()>::new();
@@ -1110,46 +1067,27 @@ mod tests {
             .unwrap();
             t.apply_layout(&tree, node, Point::ZERO);
 
-            let device: DeviceId = unsafe { std::mem::zeroed() };
+            let device = winit::event::DeviceId::dummy();
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
-            let mods = winit::event::Modifiers::default();
-            let mut focus = None;
-            let mut handled = false;
-
-            t.handle_event(
+            let mut sender = Dispatch::new().doc(&mut doc).layout(&tree, node);
+            let moved = sender.send(
+                &mut t,
                 &WindowEvent::CursorMoved {
                     device_id: device,
                     position: (10.0, 10.0).into(),
                 },
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &mods,
-                    state: crate::widget::Edits::lend(&mut doc),
-                    path: &root,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: node,
-                    taffy: &tree,
-                },
             );
-            t.handle_event(
+            let pressed = sender.send(
+                &mut t,
                 &WindowEvent::MouseInput {
                     device_id: device,
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                 },
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &mods,
-                    state: crate::widget::Edits::lend(&mut doc),
-                    path: &root,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: node,
-                    taffy: &tree,
-                },
             );
+            let focus = pressed.focus_target.or(moved.focus_target);
+            let handled = moved.handled || pressed.handled;
 
             assert!(focus.is_none(), "disabled toggle must not request focus");
             assert!(!handled, "disabled toggle must not swallow input");
@@ -1217,7 +1155,6 @@ mod tests {
     /// its neighbour must still reach the neighbour.
     #[test]
     fn a_hover_change_leaves_the_move_for_the_next_control() {
-        use winit::event::DeviceId;
         let mut t = Toggle::new("id", "on");
         let mut tree = TaffyTree::<()>::new();
         let mut node_map = std::collections::HashMap::new();
@@ -1225,29 +1162,18 @@ mod tests {
         tree.compute_layout(node, taffy::prelude::TaffyMaxContent::MAX_CONTENT)
             .unwrap();
         t.apply_layout(&tree, node, Point::ZERO);
-        let device: DeviceId = unsafe { std::mem::zeroed() };
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let mods = winit::event::Modifiers::default();
-        let mut focus = None;
+        let device = winit::event::DeviceId::dummy();
+        let mut sender = Dispatch::new().layout(&tree, node);
         for position in [(10.0, 10.0), (500.0, 10.0)] {
-            let mut handled = false;
-            t.handle_event(
-                &WindowEvent::CursorMoved {
-                    device_id: device,
-                    position: position.into(),
-                },
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &mods,
-                    state: crate::widget::Edits::lend(&mut doc),
-                    path: &root,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: node,
-                    taffy: &tree,
-                },
-            );
+            let handled = sender
+                .send(
+                    &mut t,
+                    &WindowEvent::CursorMoved {
+                        device_id: device,
+                        position: position.into(),
+                    },
+                )
+                .handled;
             assert!(!handled, "a move to {position:?} is not consumed");
         }
         assert!(!t.is_hovered);

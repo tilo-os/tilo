@@ -334,7 +334,7 @@ pub fn apply_setup_handoff(
             },
             &profile.user.full_name,
             label,
-            now_ns(),
+            ui::time::unix_now_ns(),
         )
         .map_err(|error| error.to_string())?;
     }
@@ -509,14 +509,6 @@ fn nm_keyfile_value(value: &str) -> String {
         escaped.push(ch);
     }
     escaped
-}
-
-fn now_ns() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |duration| {
-            u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
-        })
 }
 
 fn write_wifi_connection(root: &Path, ssid: &str, psk: &str) -> Result<(), String> {
@@ -783,7 +775,9 @@ mod tests {
         assert!(!media.contains("correct-horse"));
         assert!(!media.contains("orange-pi"));
         let paths = tilo_user_identity::IdentityPaths::under(dir.path().join("var/lib/tilo"));
-        assert!(tilo_user_identity::joined_device_is_ready(&paths, now_ns()).unwrap());
+        assert!(
+            tilo_user_identity::joined_device_is_ready(&paths, ui::time::unix_now_ns()).unwrap()
+        );
         assert!(!paths.user_privkey.exists());
         let cert = tilo_user_identity::persist::read_device_cert(&paths.device_cert).unwrap();
         assert_ne!(

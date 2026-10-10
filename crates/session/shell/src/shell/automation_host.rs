@@ -52,13 +52,15 @@ pub struct DocumentShare {
 }
 
 /// Document `record`'s share of run `run`: the band from its first to its
-/// last change grouped under the run. `None` when the run did not change it.
-pub fn document_share(run: RunId, record: &str, doc: &mut AutoCommit) -> Option<DocumentShare> {
+/// last committed change grouped under the run. `None` when the run did not
+/// change it. Reads through a shared reference, so a transaction still open
+/// in the document stays its producer's.
+pub fn document_share(run: RunId, record: &str, doc: &AutoCommit) -> Option<DocumentShare> {
     let mut first: Option<(i64, String)> = None;
     let mut last = None;
     let mut app = String::new();
     let mut labels: Vec<String> = Vec::new();
-    for version in tilo_resource::history::versions(doc) {
+    for version in tilo_resource::history::committed_versions(doc) {
         let Some(context) = made_by_run(version.message.as_deref(), run) else {
             continue;
         };
@@ -178,12 +180,12 @@ mod tests {
         untouched.commit();
 
         assert_eq!(
-            document_share(run, "file:untouched", &mut untouched),
+            document_share(run, "file:untouched", &untouched),
             None,
             "a document the run did not change is no step"
         );
         let steps = ordered_steps(
-            document_share(run, "file:notes", &mut notes)
+            document_share(run, "file:notes", &notes)
                 .into_iter()
                 .collect(),
         );

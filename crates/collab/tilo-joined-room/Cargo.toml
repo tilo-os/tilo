@@ -15,6 +15,8 @@ test-support = ["dep:iroh-base"]
 tilo-files = { path = "../../platform/tilo-files" }
 tilo-content = { path = "../../system/content" }
 automerge.workspace = true
+# Byte fields of the owner record are base64 text in its JSON file.
+base64.workspace = true
 # Scoped owner admission decodes untrusted app mutations only in workers.
 tilo-automerge-isolate.workspace = true
 blake3.workspace = true
@@ -35,8 +37,9 @@ tilo-desktop-model = { path = "../../session/desktop-model" }
 tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
 tilo-peer-state = { path = "../tilo-peer-state" }
 tilo-actions = { path = "../actions" }
-# The join client an enrollment redeems its invitation over.
-tilo-relay = { path = "../../hosting/tilo-relay" }
+# The join client an enrollment redeems its invitation over, and the relay
+# session a joined room syncs through.
+tilo-relay-session = { path = "../../hosting/tilo-relay-session" }
 tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
 tilo-user-identity = { path = "../tilo-user-identity" }
 # The relay voice carrier a call participation authorizes.
@@ -49,6 +52,8 @@ uuid.workspace = true
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+# The governed-room acceptance test runs against a real relay.
+tilo-relay = { path = "../../hosting/tilo-relay" }
 tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
 # Seals the writes a keyless owner keeps, as an SDK app and its key holder do.
 channel-crypto = { path = "../channel-crypto" }

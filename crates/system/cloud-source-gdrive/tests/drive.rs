@@ -428,10 +428,12 @@ fn pinned_reads_come_from_the_revision_itself() {
 #[test]
 fn rate_limits_carry_backoff_hints() {
     let (server, source) = setup();
+    // Drive sends no `Retry-After` with a 403 rate limit, and no delay is
+    // invented for it: the backoff is the daemon's choice.
     server.inject(FakeFault::UserRateLimited);
     assert!(matches!(
         source.list(&source.root()),
-        Err(Error::RateLimited { retry_after: Some(d) }) if d == Duration::from_secs(1)
+        Err(Error::RateLimited { retry_after: None })
     ));
     server.inject(FakeFault::TooManyRequests);
     assert!(matches!(

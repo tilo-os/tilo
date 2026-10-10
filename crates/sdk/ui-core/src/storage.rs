@@ -14,7 +14,7 @@
 //! Code with a [`HostContext`] uses its methods, which are scoped to the app
 //! the host prepared. Code without one (a model loading its preferences
 //! before the first frame) names the app or section itself. The older
-//! entry points (`settings_store`, `xdg-paths`, `tilo_files::native::atomic`, `app-state`
+//! entry points (`settings_store`, `tilo-paths`, `tilo_files::native::atomic`, `app-state`
 //! from an app) are internals of these; apps other than Settings, which owns
 //! the settings document, have no use for them.
 //!

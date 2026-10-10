@@ -109,11 +109,6 @@ impl Sidebar {
         self.mode() == Mode::Overlay && self.drawer.is_open()
     }
 
-    /// Open the sidebar in whichever presentation the next layout picks.
-    pub(crate) fn open_after_layout(&mut self) {
-        self.open_after_layout = true;
-    }
-
     pub(crate) fn set_open(&mut self, open: bool) {
         if open {
             self.drawer.open();

@@ -8,7 +8,8 @@ fn main() -> std::process::ExitCode {
     linux_main::run()
 }
 
-#[cfg(all(test, target_os = "macos"))]
+#[cfg(test)]
+#[cfg(target_os = "macos")]
 mod macos_tests {
     #![allow(clippy::unwrap_used, clippy::panic, reason = "test assertions")]
     use shell::compositor::macos::{Options, prepare};

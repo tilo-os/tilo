@@ -709,12 +709,6 @@ impl EnvironmentHost {
         self.sessions().contains_key(session)
     }
 
-    /// The member owning `session`, when it runs here.
-    #[must_use]
-    pub fn session_owner(&self, session: &SessionId) -> Option<MemberIdentity> {
-        self.sessions().get(session).map(|slot| slot.owner)
-    }
-
     /// The member's most recently opened live session here, and the
     /// workspace it belongs to: what a legacy launch from their guest is
     /// made from.
@@ -725,12 +719,6 @@ impl EnvironmentHost {
             .filter(|slot| slot.owner.user == *user && !slot.lock().ended)
             .max_by_key(|slot| slot.opened_at)
             .map(|slot| (slot.record.workspace_id, slot.id))
-    }
-
-    /// The record `session` was opened from, when it runs here.
-    #[must_use]
-    pub fn session_record(&self, session: &SessionId) -> Option<EnvironmentRecordRef> {
-        self.sessions().get(session).map(|slot| slot.record.clone())
     }
 
     fn member_context(&self, member: MemberIdentity) -> MemberContext {
@@ -914,14 +902,6 @@ impl EnvironmentHost {
                 }
             }
         })
-    }
-
-    /// End every session (worker shutdown).
-    pub fn terminate_all(&self) {
-        let slots: Vec<Arc<Slot>> = self.sessions().values().cloned().collect();
-        for slot in slots {
-            slot.control.terminate();
-        }
     }
 
     /// Serve one environment stream for `member`: open or re-attach, then

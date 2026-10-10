@@ -81,7 +81,7 @@ struct LogicalFile {
     path: String,
     logical_bytes: u64,
     hash: Option<Hash>,
-    record_id: collab_types::FileRecordId,
+    record_id: fs_protocol::FileRecordId,
     mtime: u64,
 }
 
@@ -144,7 +144,7 @@ impl StorageAuthority {
         file: LogicalFile,
         dirty: &HashSet<u64>,
         records: &[RecordAvailability],
-        plans: &HashMap<collab_types::FileRecordId, Option<EvictionPlan>>,
+        plans: &HashMap<fs_protocol::FileRecordId, Option<EvictionPlan>>,
     ) -> FileBlobs {
         let LogicalFile {
             identity,
@@ -342,7 +342,7 @@ impl StorageAuthority {
     )]
     async fn enqueue_canonical_eviction(
         &self,
-        record_id: collab_types::FileRecordId,
+        record_id: fs_protocol::FileRecordId,
         expected_hash: Hash,
         identity: String,
         inode: u64,
@@ -397,7 +397,7 @@ impl StorageAuthority {
 
     async fn observe_once(
         &self,
-        record_id: collab_types::FileRecordId,
+        record_id: fs_protocol::FileRecordId,
         request_id: EvictionRequestId,
     ) -> Result<bool> {
         self.coordinator()?
@@ -405,7 +405,7 @@ impl StorageAuthority {
             .await
     }
 
-    fn spawn_observer(&self, record_id: collab_types::FileRecordId, request_id: EvictionRequestId) {
+    fn spawn_observer(&self, record_id: fs_protocol::FileRecordId, request_id: EvictionRequestId) {
         if let Ok(coordinator) = self.coordinator() {
             coordinator.spawn_observer(record_id, request_id);
         }
@@ -440,7 +440,7 @@ fn app_from_path(path: &str) -> Option<String> {
     }
 }
 
-fn effective_pinned(records: &[RecordAvailability], record_id: collab_types::FileRecordId) -> bool {
+fn effective_pinned(records: &[RecordAvailability], record_id: fs_protocol::FileRecordId) -> bool {
     let mut current = Some(record_id);
     let mut remaining = records.len().saturating_add(1);
     while let Some(record_id) = current {
@@ -494,7 +494,7 @@ fn snapshot_candidate_ids(
     dirty: &HashSet<u64>,
     records: &[RecordAvailability],
     now: u64,
-) -> Vec<collab_types::FileRecordId> {
+) -> Vec<fs_protocol::FileRecordId> {
     logical
         .iter()
         .filter(|file| {
@@ -521,7 +521,7 @@ fn validate_live_eviction_token<Stage>(
     dirty: &HashMap<u64, Stage>,
     identity: &str,
     inode: u64,
-    record_id: collab_types::FileRecordId,
+    record_id: fs_protocol::FileRecordId,
     expected_hash: Hash,
 ) -> Result<()> {
     if dirty.contains_key(&inode) {
@@ -622,15 +622,15 @@ mod tests {
         }
         // Phase `broken_or_cyclic_policy_ancestry_is_pinned_fail_closed`.
         {
-            let record = collab_types::FileRecordId::new();
-            let missing_parent = collab_types::FileRecordId::new();
+            let record = fs_protocol::FileRecordId::new();
+            let missing_parent = fs_protocol::FileRecordId::new();
             let mut row = RecordAvailability::new(record, crate::availability::RecordKind::File);
             row.parent = Some(missing_parent);
             assert!(effective_pinned(&[row], record));
         }
         // Phase `snapshot_candidates_skip_rows_that_cannot_be_reclaimed`.
         {
-            let record_id = collab_types::FileRecordId::new();
+            let record_id = fs_protocol::FileRecordId::new();
             let logical = vec![LogicalFile {
                 identity: "candidate".into(),
                 inode: 7,
@@ -644,7 +644,7 @@ mod tests {
             dirty.insert(7);
             let mut record =
                 RecordAvailability::new(record_id, crate::availability::RecordKind::File);
-            record.current_version = Some(collab_types::FileVersionId::new());
+            record.current_version = Some(fs_protocol::FileVersionId::new());
             assert!(snapshot_candidate_ids(&logical, &dirty, &[record], unix_now_ms()).is_empty());
         }
     }

@@ -1,0 +1,2514 @@
+{
+  "schema": 1,
+  "reviewed_on": "2026-10-08",
+  "purpose": "Existing licensed V8 public single-threaded embedding, source-only compiled resident speech experiment",
+  "bundle": {
+    "v8-review": {
+      "bytes": 43616,
+      "sha256": "57d9f72c883564ab3ede749f405ae842c22952394dda6f7a997a3adbc4f0095f"
+    },
+    "whistle_v8_review.cpp": {
+      "bytes": 6146,
+      "sha256": "e648eb0991b836a6235e6519ea1fe95dc814b17dfd4d107f73b61a253c26919c"
+    },
+    "whistle_v8_review.js": {
+      "bytes": 5774,
+      "sha256": "8fb57382d19affb0041cfc9349b848ab7a7a449f7feebe686ed817654fe8bde0"
+    },
+    "libnode.so.127": {
+      "bytes": 82887704,
+      "sha256": "53b4783fd1d9633b35653f0f710de4d8daa917a809d57249fb688957d263418e"
+    },
+    "libuv.so.1": {
+      "bytes": 246088,
+      "sha256": "8012ffc10b069d6ddf5fe3aef67cf3493c9798bc56bd0a3c1a03630f3fa2aa67"
+    },
+    "node-LICENSE": {
+      "bytes": 145485,
+      "sha256": "c738ae413cf561f174e34f6961f8ca458aae2369a73640dda6234c629b98bcc4"
+    },
+    "libuv-LICENSE": {
+      "bytes": 1079,
+      "sha256": "16de0c32b265cb7d46a6d3bd614f259dd4d693a5e26b3407b04aae8d73041f0c"
+    },
+    "needle.wasm": {
+      "bytes": 923348,
+      "sha256": "c43f48e11f302087250d1e406024956781cd2f02595a5e343b3d7ddd5ef707fa"
+    },
+    "runtime-LICENSE": {
+      "bytes": 11358,
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    "whistle.cact": {
+      "bytes": 16919407,
+      "sha256": "b6e02f048568ac5d01a2042556c658061e699acbc0aa2a1439f52f3d461dffeb"
+    },
+    "model-LICENSE": {
+      "bytes": 11358,
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    }
+  },
+  "runtime": {
+    "existing_image": {
+      "Id": "22fe706b9bed2c57181b8f7e4ac27d52f122565ab1a984fb72db61c3ecadd8ad",
+      "RepoDigests": [
+        "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c"
+      ]
+    },
+    "node_version": "22.23.1",
+    "v8_version": "12.4.254.21-node.56",
+    "headers": {
+      "url": "https://nodejs.org/download/release/v22.23.1/node-v22.23.1-headers.tar.gz",
+      "bytes": 9944384,
+      "sha256": "caf38d839815df92000b41b756056f575140f38f1d8c0cbef97448c33eb7d7b2",
+      "files": 97,
+      "expanded_bytes": 939186,
+      "headers_only": true,
+      "notice": "Existing nodejs22-libs combined LICENSE retained",
+      "installed": false
+    },
+    "public_api": "v8::platform::NewSingleThreadedDefaultPlatform with --single-threaded",
+    "source": "https://raw.githubusercontent.com/nodejs/node/v22.23.1/deps/v8/include/libplatform/libplatform.h",
+    "licenses": "Existing combined nodejs22-libs and libuv notices retained; no binary redistributed or installed",
+    "configuration": {
+      "pointer_compression": false,
+      "sandbox_build": false,
+      "existing_configuration_modified": false,
+      "trap_handler_enabled": false,
+      "bounds_checks": "Inline WebAssembly bounds checks retained; trap-handler activation not requested",
+      "new_dependency": false
+    }
+  },
+  "adapter": {
+    "files": {
+      "whistle_v8_review.cpp": {
+        "bytes": 6146,
+        "sha256": "e648eb0991b836a6235e6519ea1fe95dc814b17dfd4d107f73b61a253c26919c"
+      },
+      "whistle_v8_review.js": {
+        "bytes": 5774,
+        "sha256": "8fb57382d19affb0041cfc9349b848ab7a7a449f7feebe686ed817654fe8bde0"
+      },
+      "v8-review": {
+        "bytes": 43616,
+        "sha256": "57d9f72c883564ab3ede749f405ae842c22952394dda6f7a997a3adbc4f0095f"
+      }
+    },
+    "native_adapter_compile_seconds": 0.8524175979982829,
+    "compiler": "g++ (GCC) 16.2.1 20260819 (Red Hat 16.2.1-2)",
+    "command": [
+      "g++",
+      "-std=c++20",
+      "-O2",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-isystem",
+      "${BUILD_ROOT}/target/dictation-whistle-v8-public-20261008-9868/headers",
+      "${BUILD_ROOT}/target/dictation-whistle-v8-public-20261008-9868/whistle_v8_review.cpp",
+      "${BUILD_ROOT}/target/dictation-whistle-v8-public-20261008-9868/libnode.so.127",
+      "-Wl,-rpath,$ORIGIN",
+      "-Wl,-rpath-link,${BUILD_ROOT}/target/dictation-whistle-v8-public-20261008-9868",
+      "-pthread",
+      "-o",
+      "${BUILD_ROOT}/target/dictation-whistle-v8-public-20261008-9868/v8-review"
+    ],
+    "installed": false
+  },
+  "budgets": {
+    "address_space_bytes": 1073741824,
+    "virtual_headroom_bytes": 1006632960,
+    "native_threads": 2,
+    "observer_seconds": 180,
+    "scope_memory_max_bytes": 1342177280,
+    "scope_memory_high_bytes": 1207959552,
+    "swap_max": 0,
+    "cpu_quota": "200%",
+    "cpu_affinity_count": 2,
+    "tasks_max": 64,
+    "scope_runtime_seconds": 240,
+    "wasm_linear_memory_bytes": 536870912,
+    "network": false,
+    "home": false,
+    "microphone": false,
+    "limits_relaxed": false,
+    "interpreter_fuel_per_call": null,
+    "v8_heap_bytes": 67108864,
+    "v8_code_range_bytes": 33554432,
+    "native_limit_changed": false,
+    "execution_stop": "Existing native 180-second observer; Wasmi-specific instruction fuel is not an interface of V8"
+  },
+  "qualification": {
+    "dataset": "google/fleurs",
+    "revision": "70bb2e84b976b7e960aa89f1c648e09c59f894dd",
+    "previously_exposed_development_cases": true,
+    "scoring": "Existing NFKC/casefold/punctuation-to-space only, no accent/numeric/reference-aware cleanup",
+    "first_matched_word": "Post-hoc whitespace opening normalized with NFKC/casefold/apostrophe canonicalization and outer punctuation trim; not a runtime policy",
+    "measurement_scope_sha256": "e6639be8d9d6f2215fca3a0c95cbb8d8c17de25e1324b8960585f686865db732",
+    "observer": "Unchanged probe_asr_candidate.observe(max_threads=2,capture_lines=True); exact existing scope.admitted_scope()"
+  },
+  "cases": [
+    {
+      "case": "fr_fr-0",
+      "fixture": {
+        "fixture_sha256": "f76c0a92ca39d2533aa105ac5794b08f004e15a3ff5ba32f4ba4995f45cd22fd",
+        "input_pcm_sha256": "b51c375f229dcadd9cc3bd85551afa0ee1b26a26d2831af4f718da248820454e",
+        "input_float_sha256": "1880ea67d02e318d898e6ac3fd627127e7cf4097e3ec444074764d2163d66a7d",
+        "audio_seconds": 10.2
+      },
+      "reference": "L’accident a eu lieu en terrain montagneux, et il semblerait que cela ait été causé par un incendie malveillant.",
+      "load": {
+        "compile_seconds": 1.1157601719999999,
+        "initialize_load_seconds": 0.020532289000000148,
+        "v8_backend": "existing public single-threaded platform",
+        "resident": true
+      },
+      "accuracy": {
+        "final": "L'accident a eu lieu en terrain montagneux et il semblerait que cela ait été causé par un incendie malveillant.",
+        "word_errors": 0,
+        "reference_words": 20
+      },
+      "latency": {
+        "first_lexical_seconds": 2.183503825,
+        "first_hypothesis": "Merci.",
+        "first_matched_reference_word_seconds_posthoc": 3.18692723,
+        "first_committed_word_seconds": 4.319637779000001,
+        "stream_completion_seconds": 11.897443588,
+        "tail_seconds": 1.6974435880000005
+      },
+      "resources": {
+        "exit": 0,
+        "guarded": null,
+        "memory_peak": {
+          "VmPeak": 742536,
+          "VmSize": 742284,
+          "VmHWM": 199216,
+          "VmRSS": 196232,
+          "Threads": 1
+        },
+        "cpu_seconds": 7.239999999999999,
+        "wall_seconds": 13.085822704997554,
+        "scope_peak_bytes": 181841920,
+        "scope_before": {
+          "low": 0,
+          "high": 0,
+          "max": 0,
+          "oom": 0,
+          "oom_kill": 0,
+          "oom_group_kill": 0,
+          "sock_throttled": 0
+        },
+        "scope_after": {
+          "low": 0,
+          "high": 0,
+          "max": 0,
+          "oom": 0,
+          "oom_kill": 0,
+          "oom_group_kill": 0,
+          "sock_throttled": 0
+        }
+      },
+      "stream": [
+        {
+          "kind": "draft",
+          "wall_seconds": 2.183503825,
+          "decode_seconds": 0.18337105300000012,
+          "result": {
+            "text": "",
+            "words": [],
+            "pending": "Merci.",
+            "language": "fr",
+            "received": 2,
+            "pass_ms": 182.9
+          }
+        },
+        {
+          "kind": "draft",
+          "wall_seconds": 3.18692723,
+          "decode_seconds": 0.18679004300000024,
+          "result": {
+            "text": "",
+            "words": [],
+            "pending": "L'accident a...",
+            "language": "fr",
+            "received": 3,
+            "pass_ms": 186.6
+          }
+        },
+        {
+          "kind": "draft",
+          "wall_seconds": 4.319637779000001,
+          "decode_seconds": 0.3194325659999997,
+          "result": {
+            "text": "L'accident",
+            "words": [
+              {
+                "word": "L'accident",
+                "start": 2.32,
+                "end": 2.8,
+                "probability": 0.992
+              }
+            ],
+            "pending": "a eu lieu en terrain.",
+            "language": "fr",
+            "received": 4,
+            "pass_ms": 319.3
+          }
+        },
+        {
+          "kind": "draft",
+          "wall_seconds": 5.421235696,
+          "decode_seconds": 0.42094645700000033,
+          "result": {
+            "text": "a eu lieu en",
+            "words": [
+              {
+                "word": "a",
+                "start": 2.8,
+                "end": 3.12,
+                "probability": 0.996
+              },
+              {
+                "word": "eu",
+                "start": 3.12,
+                "end": 3.28,
+                "probability": 0.998
+              },
+              {
+                "word": "lieu",
+                "start": 3.28,
+                "end": 3.52,
+                "probability": 0.999
+              },
+              {
+                "word": "en",
+                "start": 3.52,
+                "end": 3.76,
+                "probability": 0.977
+              }
+            ],
+            "pending": "terrain montagneux.",
+            "language": "fr",
+            "received": 5,
+            "pass_ms": 420.9
+          }
+        },
+        {
+          "kind": "draft",
+          "wall_seconds": 6.703109981,
+          "decode_seconds": 0.7027816269999994,
+          "result": {
+            "text": "terrain",
+            "words": [
+              {
+                "word": "terrain",
+                "start": 3.76,
+                "end": 4.08,
+                "probability": 0.697
+              }
+            ],
+            "pending": "montagneux, et il semblerait que ce soit.",
+            "language": "fr",
+            "received": 6,
+            "pass_ms": 702.7
+          }
+        },
+        {
+          "kind": "draft",
+          "wall_seconds": 7.694128762,
+          "decode_seconds": 0.693740201999999,
+          "result": {
+            "text": "",
+            "words": [],
+            "pending": "montagneux et il semblerait que cela ait été causé.",
+            "language": "fr",
+            "received": 7,
+            "pass_ms": 693.7
+          }
+        },
+        {
+          "kind": "draft",
+          "wall_seconds": 8.798690013,
+          "decode_seconds": 0.7982782579999999,
+          "result": {
+            "text": "montagneux et il semblerait que cela ait été",
+            "words": [
+              {
+                "word": "montagneux",
+                "start": 4.08,
+                "end": 4.96,
+                "probability": 0.927
+              },
+              {
+                "word": "et",
+                "start": 4.96,
+                "end": 5.12,
+                "probability": 0.399
+              },
+              {
+                "word": "il",
+                "start": 5.12,
+                "end": 5.28,
+                "probability": 0.813
+              },
+              {
+                "word": "semblerait",
+                "start": 5.28,
+                "end": 5.76,
+                "probability": 0.97
+              },
+              {
+                "word": "que",
+                "start": 5.76,
+                "end": 5.92,
+                "probability": 1
+              },
+              {
+                "word": "cela",
+                "start": 5.92,
+                "end": 6.24,
+                "probability": 0.998
+              },
+              {
+                "word": "ait",
+                "start": 6.24,
+                "end": 6.48,
+                "probability": 0.734
+              },
+              {
+                "word": "été",
+                "start": 6.48,
+                "end": 6.8,
+                "probability": 1
+              }
+            ],
+            "pending": "causé par un incendie.",
+            "language": "fr",
+            "received": 8,
+            "pass_ms": 798.2
+          }
+        },
+        {
+          "kind": "draft",
+          "wall_seconds": 9.897736971,
+          "decode_seconds": 0.8972780200000017,
+          "result": {
+            "text": "causé par un",
+            "words": [
+              {
+                "word": "causé",
+                "start": 6.8,
+                "end": 7.28,
+                "probability": 0.993
+              },
+              {
+                "word": "par",
+                "start": 7.28,
+                "end": 7.52,
+                "probability": 0.987
+              },
+              {
+                "word": "un",
+                "start": 7.52,
+                "end": 7.68,
+                "probability": 0.989
+              }
+            ],
+            "pending": "incendie malveillant.",
+            "language": "fr",
+            "received": 9,
+            "pass_ms": 897.2
+          }
+        },
+        {
+          "kind": "draft",
+          "wall_seconds": 10.943851142,
+          "decode_seconds": 0.9433114749999998,
+          "result": {
+            "text": "incendie malveillant.",
+            "words": [
+              {
+                "word": "incendie",
+                "start": 7.68,
+                "end": 8.16,
+                "probability": 0.974
+              },
+              {
+                "word": "malveillant.",
+                "start": 8.16,
+                "end": 8.8,
+                "probability": 0.986
+              }
+            ],
+            "pending": "",
+            "language": "fr",
+            "received": 10,
+            "pass_ms": 943.3
+          }
+        },
+        {
+          "kind": "draft",
+          "wall_seconds": 11.897314266,
+          "decode_seconds": 0.9533411919999999,
+          "result": {
+            "text": "",
+            "words": [],
+            "pending": "",
+            "language": "fr",
+            "received": 10.2,
+            "pass_ms": 953.3
+          }
+        },
+        {
+          "kind": "done",
+          "wall_seconds": 11.897443588,
+          "decode_seconds": 2.1950000000714454e-05,
+          "result": {
+            "text": "",
+            "words": [],
+            "pending": "",
+            "language": "fr",
+            "received": 10.2,
+            "pass_ms": 0
+          }
+        }
+      ]
+    },
+    {
+      "case": "en_us-0",
+      "fixture": {
+        "fixture_sha256": "b438b60eb4e9fddbcaa303e27070c2458c3daac42f0b08d5d8622c47335d24f7",
+        "input_pcm_sha256": "0529d921fe2b0e39200728e68b214e57d76ebd08f39ae06e4caafe642c897388",
+        "input_float_sha256": "18999ea7a4c22600b7565020bacec2c32eea27e63d18a6c16f1acb84ffe8dcfb",
+        "audio_seconds": 10.56
+      },
+      "reference": "However, due to the slow communication channels, styles in the west could lag behind by 25 to 30 year.",
+      "load": {
+        "compile_seconds": 0.9758758479999999,
+        "initialize_load_seconds": 0.020446112000000016,
+        "v8_backend": "existing public single-threaded platform",
+        "resident": true
+      },
+      "accuracy": {
+        "final": "However, due to the slow communication channels, styles in the west could lag behind by twenty five to thirty years.",
+        "word_errors": 4,
+        "reference_words": 19
+      },
+      "latency": {
+        "first_lexical_seconds": 2.1169254310000003,
+        "first_hypothesis": "However,",
+        "first_matched_reference_word_seconds_posthoc": 2.1169254310000003,
+        "first_committed_word_seconds": 3.2360196650000006,
+        "stream_completion_seconds": 11.52713877,
+        "tail_seconds": 0.96713877
+      },
+      "resources": {
+        "exit": 0,
+        "guarded": null,
+        "memory_peak": {
+          "VmPeak": 742584,
+          "VmSize": 742076,
+          "VmHWM": 199412,
+          "VmRSS": 196312,
+          "Threads": 1
+        },
+        "cpu_seconds": 5.9799999999999995,
+        "wall_seconds": 12.56815939900116,
+        "scope_peak_bytes": 176943104,
+        "scope_before": {
+          "low": 0,
+          "high": 0,
+          "max": 0,
+          "oom": 0,
+          "oom_kill": 0,
+          "oom_group_kill": 0,
+          "sock_throttled": 0
+        },
+        "scope_after": {
+          "low": 0,
+          "high": 0,
+          "max": 0,
+          "oom": 0,
+          "oom_kill": 0,
+          "oom_group_kill": 0,
+          "sock_throttled": 0
+        }
+      },
+      "stream": [
+        {
+          "kind": "draft",
+          "wall_seconds": 2.1169254310000003,
+          "decode_seconds": 0.11684320399999981,
+          "result": {
+            "text": "",
+            "words": [],
+            "pending": "However,",
+            "language": "en",
+            "received": 2,
+            "pass_ms": 116.6
+          }
+        },
+        {
+          "kind": "draft",
+          "wall_seconds": 3.2360196650000006,
+          "decode_seconds": 0.23587353300000036,
+          "result": {
+            "text": "However,",
+            "words": [
+              {
+                "word": "However,",
+                "start": 1.12,
+                "end": 1.6,
+                "probability": 0.999
+              }
+            ],
+            "pending": "due to the slow communication,",
+            "language": "en",
+            "received": 3,
+            "pass_ms": 235.8
+          }
+        },
+        {
+          "kind": "draft",
+          "wall_seconds": 4.307515735,
+          "decode_seconds": 0.3073091689999998,
+          "result": {
+            "text": "due to the slow",
+            "words": [
+              {
+                "word": "due",
+                "start": 2.16,
+                "end": 2.24,
+                "probability": 0.997
+              },
+              {
+                "word": "to",
+                "start": 2.24,
+                "end": 2.4,
+                "probability": 1
+              },
+              {
+                "word": "the",
+                "start": 2.4,
+                "end": 2.48,
+                "probability": 0.999
+              },
+              {
+                "word": "slow",
+                "start": 2.48,
+                "end": 2.72,
+                "probability": 0.909
+              }
+            ],
+            "pending": "communication channels,",
+            "language": "en",
+            "received": 4,
+            "pass_ms": 307.3
+          }
+        },
+        {
+          "kind": "draft",
+          "wall_seconds": 5.38362243,
+          "decode_seconds": 0.3833562800000001,
+          "result": {
+            "text": "communication channels,",
+            "words": [
+              {
+                "word": "communication",
+                "start": 2.72,
+                "end": 3.44,
+                "probability": 0.989
+              },
+              {
+                "word": "channels,",
+                "start": 3.44,
+                "end": 4,
+                "probability": 0.993
+              }
+            ],
+            "pending": "styles",
+            "language": "en",
+            "received": 5,
+            "pass_ms": 383.3
+          }
+        },
+        {
+          "kind": "draft",
+          "wall_seconds": 6.558336243,
+          "decode_seconds": 0.558005509,
+          "result": {
+            "text": "styles",
+            "words": [
+              {
+                "word": "styles",
+                "start": 4.56,
+                "end": 5.04,
+                "probability": 0.967
+              }
+            ],
+            "pending": "in the West could",
+            "language": "en",
+            "received": 6,
+            "pass_ms": 558
+          }
+        },
+        {
+          "kind": "draft",
+          "wall_seconds": 7.535568096,
+          "decode_seconds": 0.5351737679999999,
+          "result": {
+            "text": "in the",
+            "words": [
+              {
+                "word": "in",
+                "start": 5.04,
+                "end": 5.36,
+                "probability": 0.992
+              },
+              {
+                "word": "the",
+                "start": 5.36,
+                "end": 5.52,
+                "probability": 0.999
+              }
+            ],
+            "pending": "west could lag behind.",
+            "language": "en",
+            "received": 7,
+            "pass_ms": 535.1
+          }
+        },
+        {
+          "kind": "draft",
+          "wall_seconds": 8.596564712000001,
+          "decode_seconds": 0.5961104299999995,
+          "result": {
+            "text": "",
+            "words": [],
+            "pending": "West could lag behind by 25.",
+            "language": "en",
+            "received": 8,
+            "pass_ms": 596.1
+          }
+        },
+        {
+          "kind": "draft",
+          "wall_seconds": 9.713545041,
+          "decode_seconds": 0.7130284949999997,
+          "result": {
+            "text": "",
+            "words": [],
+            "pending": "west could lag behind by 25 to 30 years.",
+            "language": "en",
+            "received": 9,
+            "pass_ms": 713
+          }
+        },
+        {
+          "kind": "draft",
+          "wall_seconds": 10.754099094,
+          "decode_seconds": 0.7535152840000006,
+          "result": {
+            "text": "west could lag behind by",
+            "words": [
+              {
+                "word": "west",
+                "start": 5.52,
+                "end": 5.76,
+                "probability": 0.498
+              },
+              {
+                "word": "could",
+                "start": 5.76,
+                "end": 6.08,
+                "probability": 0.995
+              },
+              {
+                "word": "lag",
+                "start": 6.08,
+                "end": 6.32,
+                "probability": 0.998
+              },
+              {
+                "word": "behind",
+                "start": 6.32,
+                "end": 6.96,
+                "probability": 0.993
+              },
+              {
+                "word": "by",
+                "start": 6.96,
+                "end": 7.36,
+                "probability": 0.985
+              }
+            ],
+            "pending": "twenty five to thirty years.",
+            "language": "en",
+            "received": 10,
+            "pass_ms": 753.5
+          }
+        },
+        {
+          "kind": "draft",
+          "wall_seconds": 11.527010428,
+          "decode_seconds": 0.7727929820000004,
+          "result": {
+            "text": "twenty five to thirty years.",
+            "words": [
+              {
+                "word": "twenty",
+                "start": 7.36,
+                "end": 7.68,
+                "probability": 0.877
+              },
+              {
+                "word": "five",
+                "start": 7.68,
+                "end": 8,
+                "probability": 0.988
+              },
+              {
+                "word": "to",
+                "start": 8,
+                "end": 8.24,
+                "probability": 0.982
+              },
+              {
+                "word": "thirty",
+                "start": 8.24,
+                "end": 8.48,
+                "probability": 0.999
+              },
+              {
+                "word": "years.",
+                "start": 8.48,
+                "end": 8.72,
+                "probability": 0.999
+              }
+            ],
+            "pending": "",
+            "language": "en",
+            "received": 10.56,
+            "pass_ms": 772.8
+          }
+        },
+        {
+          "kind": "done",
+          "wall_seconds": 11.52713877,
+          "decode_seconds": 1.72099999993236e-05,
+          "result": {
+            "text": "",
+            "words": [],
+            "pending": "",
+            "language": "en",
+            "received": 10.56,
+            "pass_ms": 0
+          }
+        }
+      ]
+    },
+    {
+      "case": "de_de-0",
+      "fixture": {
+        "fixture_sha256": "cc46d12f9faf44a694e709c8bcf04028e686e6b4c1deefe3ac6dbd821a970630",
+        "input_pcm_sha256": "fe4d2a3b4113fb327094d0628ff7ed07e40726c1ab20564d01d3a745cba349b0",
+        "input_float_sha256": "619cd4412154d1a750505101b90f5708468fa4d66fcbdcd89168d126b4fb9bff",
+        "audio_seconds": 17.94
+      },
+      "reference": "Für die besten Aussichten auf Hongkong sollten Sie die Insel verlassen und zum gegenüberliegenden Ufer von Kowloon fahren.",
+      "load": {
+        "compile_seconds": 0.99037641,
+        "initialize_load_seconds": 0.020324559999999936,
+        "v8_backend": "existing public single-threaded platform",
+        "resident": true
+      },
+      "accuracy": {
+        "final": "Vielen Dank. Für die besten Aussichten auf Franconk sollten sie die Insel verlassen und zum Gegenüberle in den Ufer von Korlum fahren.",
+        "word_errors": 7,
+        "reference_words": 18
+      },
+      "latency": {
+        "first_lexical_seconds": 2.1665276890000005,
+        "first_hypothesis": "Vielen Dank.",
+        "first_matched_reference_word_seconds_posthoc": 5.275372168,
+        "first_committed_word_seconds": 3.22966948,
+        "stream_completion_seconds": 20.187167314,
+        "tail_seconds": 2.2471673139999986
+      },
+      "resources": {
+        "exit": 0,
+        "guarded": null,
+        "memory_peak": {
+          "VmPeak": 743472,
+          "VmSize": 742964,
+          "VmHWM": 207172,
+          "VmRSS": 207172,
+          "Threads": 1
+        },
+        "cpu_seconds": 13.860000000000001,
+        "wall_seconds": 21.243002458002593,
+        "scope_peak_bytes": 185749504,
+        "scope_before": {
+          "low": 0,
+          "high": 0,
+          "max": 0,
+          "oom": 0,
+          "oom_kill": 0,
+          "oom_group_kill": 0,
+          "sock_throttled": 0
+        },
+        "scope_after": {
+          "low": 0,
+          "high": 0,
+          "max": 0,
+          "oom": 0,
+          "oom_kill": 0,
+          "oom_group_kill": 0,
+          "sock_throttled": 0
+        }
+      },
+      "stream": [
+        {
+          "kind": "draft",
+          "wall_seconds": 2.1665276890000005,
+          "decode_seconds": 0.16642443100000026,
+          "result": {
+            "text": "",
+            "words": [],
+            "pending": "Vielen Dank.",
+            "language": "de",
+            "received": 2,
+            "pass_ms": 166.1
+          }
+        },
+        {
+          "kind": "draft",
+          "wall_seconds": 3.22966948,
+          "decode_seconds": 0.22951384799999985,
+          "result": {
+            "text": "Vielen Dank.",
+            "words": [
+              {
+                "word": "Vielen",
+                "start": 0,
+                "end": 0.08,
+                "probability": 0.938
+              },
+              {
+                "word": "Dank.",
+                "start": 0.08,
+                "end": 0.32,
+                "probability": 1
+              }
+            ],
+            "pending": "",
+            "language": "de",
+            "received": 3,
+            "pass_ms": 229.3
+          }
+        },
+        {
+          "kind": "draft",
+          "wall_seconds": 4.270537828,
+          "decode_seconds": 0.2703142920000001,
+          "result": {
+            "text": "",
+            "words": [],
+            "pending": "",
+            "language": "de",
+            "received": 4,
+            "pass_ms": 270.2
+          }
+        },
+        {
+          "kind": "draft",
+          "wall_seconds": 5.275372168,
+          "decode_seconds": 0.27509546799999995,
+          "result": {
+            "text": "",
+            "words": [],
+            "pending": "Für die beste...",
+            "language": "de",
+            "received": 5,
+            "pass_ms": 275.1
+          }
+        },
+        {
+          "kind": "draft",
+          "wall_seconds": 6.3705605489999995,
+          "decode_seconds": 0.37022457499999994,
+          "result": {
+            "text": "Für die",
+            "words": [
+              {
+                "word": "Für",
+                "start": 4.24,
+                "end": 4.48,
+                "probability": 0.976
+              },
+              {
+                "word": "die",
+                "start": 4.48,
+                "end": 4.64,
+                "probability": 0.998
+              }
+            ],
+            "pending": "besten Aussichten.",
+            "language": "de",
+            "received": 6,
+            "pass_ms": 370.2
+          }
+        },
+        {
+          "kind": "draft",
+          "wall_seconds": 7.452254620000001,
+          "decode_seconds": 0.4518450820000002,
+          "result": {
+            "text": "besten",
+            "words": [
+              {
+                "word": "besten",
+                "start": 4.64,
+                "end": 5.2,
+                "probability": 0.947
+              }
+            ],
+            "pending": "Aussichten auf Franconk.",
+            "language": "de",
+            "received": 7,
+            "pass_ms": 451.8
+          }
+        },
+        {
+          "kind": "draft",
+          "wall_seconds": 8.563314648,
+          "decode_seconds": 0.5628496749999989,
+          "result": {
+            "text": "Aussichten auf",
+            "words": [
+              {
+                "word": "Aussichten",
+                "start": 5.2,
+                "end": 5.84,
+                "probability": 0.972
+              },
+              {
+                "word": "auf",
+                "start": 5.84,
+                "end": 6.24,
+                "probability": 0.98
+              }
+            ],
+            "pending": "Franconk sollten sie die",
+            "language": "de",
+            "received": 8,
+            "pass_ms": 562.8
+          }
+        },
+        {
+          "kind": "draft",
+          "wall_seconds": 9.672949390000001,
+          "decode_seconds": 0.6724299229999993,
+          "result": {
+            "text": "Franconk sollten sie die",
+            "words": [
+              {
+                "word": "Franconk",
+                "start": 6.24,
+                "end": 7.12,
+                "probability": 0.59
+              },
+              {
+                "word": "sollten",
+                "start": 7.12,
+                "end": 7.6,
+                "probability": 0.986
+              },
+              {
+                "word": "sie",
+                "start": 7.6,
+                "end": 7.84,
+                "probability": 0.806
+              },
+              {
+                "word": "die",
+                "start": 7.84,
+                "end": 8,
+                "probability": 1
+              }
+            ],
+            "pending": "Insel verlassen.",
+            "language": "de",
+            "received": 9,
+            "pass_ms": 672.4
+          }
+        },
+        {
+          "kind": "draft",
+          "wall_seconds": 10.831259999,
+          "decode_seconds": 0.8306725579999998,
+          "result": {
+            "text": "Insel",
+            "words": [
+              {
+                "word": "Insel",
+                "start": 8,
+                "end": 8.4,
+                "probability": 0.991
+              }
+            ],
+            "pending": "verlassen und zum Gejährigen.",
+            "language": "de",
+            "received": 10,
+            "pass_ms": 830.6
+          }
+        },
+        {
+          "kind": "draft",
+          "wall_seconds": 11.906565094000001,
+          "decode_seconds": 0.9059199390000003,
+          "result": {
+            "text": "verlassen und zum",
+            "words": [
+              {
+                "word": "verlassen",
+                "start": 8.4,
+                "end": 9.04,
+                "probability": 0.999
+              },
+              {
+                "word": "und",
+                "start": 9.04,
+                "end": 9.52,
+                "probability": 0.995
+              },
+              {
+                "word": "zum",
+                "start": 9.52,
+                "end": 9.76,
+                "probability": 0.989
+              }
+            ],
+            "pending": "Gegenüber liegenden.",
+            "language": "de",
+            "received": 11,
+            "pass_ms": 905.9
+          }
+        },
+        {
+          "kind": "draft",
+          "wall_seconds": 12.949996302,
+          "decode_seconds": 0.9492886630000008,
+          "result": {
+            "text": "",
+            "words": [],
+            "pending": "Gegenüberle in den Ufer.",
+            "language": "de",
+            "received": 12,
+            "pass_ms": 949.3
+          }
+        },
+        {
+          "kind": "draft",
+          "wall_seconds": 14.059559773,
+          "decode_seconds": 1.0587862500000007,
+          "result": {
+            "text": "Gegenüberle in den",
+            "words": [
+              {
+                "word": "Gegenüberle",
+                "start": 9.76,
+                "end": 10.64,
+                "probability": 0.765
+              },
+              {
+                "word": "in",
+                "start": 10.64,
+                "end": 10.8,
+                "probability": 0.802
+              },
+              {
+                "word": "den",
+                "start": 10.8,
+                "end": 11.12,
+                "probability": 0.994
+              }
+            ],
+            "pending": "Ufer von Corlum.",
+            "language": "de",
+            "received": 13,
+            "pass_ms": 1058.7
+          }
+        },
+        {
+          "kind": "draft",
+          "wall_seconds": 15.204738075,
+          "decode_seconds": 1.1450586909999991,
+          "result": {
+            "text": "Ufer von",
+            "words": [
+              {
+                "word": "Ufer",
+                "start": 11.12,
+                "end": 11.52,
+                "probability": 0.87
+              },
+              {
+                "word": "von",
+                "start": 11.52,
+                "end": 12.4,
+                "probability": 0.97
+              }
+            ],
+            "pending": "Korlum fahren.",
+            "language": "de",
+            "received": 14.06,
+            "pass_ms": 1145
+          }
+        },
+        {
+          "kind": "draft",
+          "wall_seconds": 16.395052832999998,
+          "decode_seconds": 1.1902012860000006,
+          "result": {
+            "text": "Korlum fahren.",
+            "words": [
+              {
+                "word": "Korlum",
+                "start": 12.4,
+                "end": 13.2,
+                "probability": 0.659
+              },
+              {
+                "word": "fahren.",
+                "start": 13.2,
+                "end": 13.76,
+                "probability": 0.93
+              }
+            ],
+            "pending": "",
+            "language": "de",
+            "received": 15.2,
+            "pass_ms": 1190.2
+          }
+        },
+        {
+          "kind": "draft",
+          "wall_seconds": 17.62164985,
+          "decode_seconds": 1.2264800859999987,
+          "result": {
+            "text": "",
+            "words": [],
+            "pending": "",
+            "language": "de",
+            "received": 16.4,
+            "pass_ms": 1226.4
+          }
+        },
+        {
+          "kind": "draft",
+          "wall_seconds": 18.889255272,
+          "decode_seconds": 1.2673738599999993,
+          "result": {
+            "text": "",
+            "words": [],
+            "pending": "",
+            "language": "de",
+            "received": 17.62,
+            "pass_ms": 1267.4
+          }
+        },
+        {
+          "kind": "draft",
+          "wall_seconds": 20.187036983,
+          "decode_seconds": 1.2976793690000008,
+          "result": {
+            "text": "",
+            "words": [],
+            "pending": "",
+            "language": "de",
+            "received": 17.94,
+            "pass_ms": 1297.7
+          }
+        },
+        {
+          "kind": "done",
+          "wall_seconds": 20.187167314,
+          "decode_seconds": 2.152999999793792e-05,
+          "result": {
+            "text": "",
+            "words": [],
+            "pending": "",
+            "language": "de",
+            "received": 17.94,
+            "pass_ms": 0
+          }
+        }
+      ],
+      "names": {
+        "cue": [],
+        "recognized": []
+      }
+    },
+    {
+      "case": "es_419-0",
+      "fixture": {
+        "fixture_sha256": "95df54f13e862069293afca618669316d194c1b4c6601eb808b501c86292b527",
+        "input_pcm_sha256": "e2b9e95c2670346bb4ef3e8161cd427576fc450c355109b9fb161380efdecbc7",
+        "input_float_sha256": "3d5006f24a2501337c98d339789c70fc27d0f4db01246379ad8d5f681cfec24f",
+        "audio_seconds": 12.84
+      },
+      "reference": "Se recomienda enfáticamente a los viajeros que se informen sobre cualquier riesgo de clima extremo en el área que visitan, dado que ello puede afectar sus planes de viaje.",
+      "load": {
+        "compile_seconds": 0.991709165,
+        "initialize_load_seconds": 0.020271109999999926,
+        "v8_backend": "existing public single-threaded platform",
+        "resident": true
+      },
+      "accuracy": {
+        "final": "Se recomienda enfáticamente a los viajeros que se informen sobre cualquier riesgo del clima extremo en el área que visitan, dado que ello pueda afectar sus planes de viaje.",
+        "word_errors": 2,
+        "reference_words": 29
+      },
+      "latency": {
+        "first_lexical_seconds": 2.163879378,
+        "first_hypothesis": "Gracias.",
+        "first_matched_reference_word_seconds_posthoc": 3.2103116510000005,
+        "first_committed_word_seconds": 4.397045106,
+        "stream_completion_seconds": 15.161183789,
+        "tail_seconds": 2.321183789000001
+      },
+      "resources": {
+        "exit": 0,
+        "guarded": null,
+        "memory_peak": {
+          "VmPeak": 742864,
+          "VmSize": 742612,
+          "VmHWM": 199844,
+          "VmRSS": 199844,
+          "Threads": 1
+        },
+        "cpu_seconds": 10.73,
+        "wall_seconds": 16.21721987699857,
+        "scope_peak_bytes": 178290688,
+        "scope_before": {
+          "low": 0,
+          "high": 0,
+          "max": 0,
+          "oom": 0,
+          "oom_kill": 0,
+          "oom_group_kill": 0,
+          "sock_throttled": 0
+        },
+        "scope_after": {
+          "low": 0,
+          "high": 0,
+          "max": 0,
+          "oom": 0,
+          "oom_kill": 0,
+          "oom_group_kill": 0,
+          "sock_throttled": 0
+        }
+      },
+      "stream": [
+        {
+          "kind": "draft",
+          "wall_seconds": 2.163879378,
+          "decode_seconds": 0.16377328000000002,
+          "result": {
+            "text": "",
+            "words": [],
+            "pending": "Gracias.",
+            "language": "es",
+            "received": 2,
+            "pass_ms": 163.4
+          }
+        },
+        {
+          "kind": "draft",
+          "wall_seconds": 3.2103116510000005,
+          "decode_seconds": 0.21014943900000027,
+          "result": {
+            "text": "",
+            "words": [],
+            "pending": "Se recomienda en",
+            "language": "es",
+            "received": 3,
+            "pass_ms": 210
+          }
+        },
+        {
+          "kind": "draft",
+          "wall_seconds": 4.397045106,
+          "decode_seconds": 0.3968231700000002,
+          "result": {
+            "text": "Se recomienda",
+            "words": [
+              {
+                "word": "Se",
+                "start": 2,
+                "end": 2.24,
+                "probability": 0.993
+              },
+              {
+                "word": "recomienda",
+                "start": 2.24,
+                "end": 2.8,
+                "probability": 0.997
+              }
+            ],
+            "pending": "enfáticamente a los viajes.",
+            "language": "es",
+            "received": 4,
+            "pass_ms": 396.7
+          }
+        },
+        {
+          "kind": "draft",
+          "wall_seconds": 5.50098021,
+          "decode_seconds": 0.5006985199999994,
+          "result": {
+            "text": "enfáticamente a los",
+            "words": [
+              {
+                "word": "enfáticamente",
+                "start": 2.8,
+                "end": 3.68,
+                "probability": 0.98
+              },
+              {
+                "word": "a",
+                "start": 3.68,
+                "end": 3.76,
+                "probability": 0.995
+              },
+              {
+                "word": "los",
+                "start": 3.76,
+                "end": 3.92,
+                "probability": 0.998
+              }
+            ],
+            "pending": "viajeros que se informan.",
+            "language": "es",
+            "received": 5,
+            "pass_ms": 500.7
+          }
+        },
+        {
+          "kind": "draft",
+          "wall_seconds": 6.75058521,
+          "decode_seconds": 0.7502479359999992,
+          "result": {
+            "text": "viajeros que se",
+            "words": [
+              {
+                "word": "viajeros",
+                "start": 3.92,
+                "end": 4.4,
+                "probability": 0.974
+              },
+              {
+                "word": "que",
+                "start": 4.4,
+                "end": 4.56,
+                "probability": 0.999
+              },
+              {
+                "word": "se",
+                "start": 4.56,
+                "end": 4.72,
+                "probability": 0.999
+              }
+            ],
+            "pending": "informen sobre cuál es el problema.",
+            "language": "es",
+            "received": 6,
+            "pass_ms": 750.2
+          }
+        },
+        {
+          "kind": "draft",
+          "wall_seconds": 7.746798558,
+          "decode_seconds": 0.7463912100000005,
+          "result": {
+            "text": "informen sobre",
+            "words": [
+              {
+                "word": "informen",
+                "start": 4.72,
+                "end": 5.28,
+                "probability": 0.919
+              },
+              {
+                "word": "sobre",
+                "start": 5.28,
+                "end": 5.84,
+                "probability": 0.999
+              }
+            ],
+            "pending": "cualquier riesgo del clima.",
+            "language": "es",
+            "received": 7,
+            "pass_ms": 746.4
+          }
+        },
+        {
+          "kind": "draft",
+          "wall_seconds": 8.810976621,
+          "decode_seconds": 0.8105166789999991,
+          "result": {
+            "text": "cualquier riesgo del",
+            "words": [
+              {
+                "word": "cualquier",
+                "start": 5.84,
+                "end": 6.24,
+                "probability": 1
+              },
+              {
+                "word": "riesgo",
+                "start": 6.24,
+                "end": 6.64,
+                "probability": 0.871
+              },
+              {
+                "word": "del",
+                "start": 6.64,
+                "end": 6.8,
+                "probability": 0.965
+              }
+            ],
+            "pending": "clima extremo.",
+            "language": "es",
+            "received": 8,
+            "pass_ms": 810.5
+          }
+        },
+        {
+          "kind": "draft",
+          "wall_seconds": 9.989033584,
+          "decode_seconds": 0.9885128880000007,
+          "result": {
+            "text": "clima",
+            "words": [
+              {
+                "word": "clima",
+                "start": 6.8,
+                "end": 7.2,
+                "probability": 0.997
+              }
+            ],
+            "pending": "extremo en el área que visita.",
+            "language": "es",
+            "received": 9,
+            "pass_ms": 988.5
+          }
+        },
+        {
+          "kind": "draft",
+          "wall_seconds": 11.078711059,
+          "decode_seconds": 1.0781371489999998,
+          "result": {
+            "text": "extremo en el área que",
+            "words": [
+              {
+                "word": "extremo",
+                "start": 7.2,
+                "end": 7.84,
+                "probability": 0.999
+              },
+              {
+                "word": "en",
+                "start": 7.84,
+                "end": 8.16,
+                "probability": 0.993
+              },
+              {
+                "word": "el",
+                "start": 8.16,
+                "end": 8.32,
+                "probability": 0.999
+              },
+              {
+                "word": "área",
+                "start": 8.32,
+                "end": 8.64,
+                "probability": 0.999
+              },
+              {
+                "word": "que",
+                "start": 8.64,
+                "end": 8.72,
+                "probability": 0.999
+              }
+            ],
+            "pending": "visitan,",
+            "language": "es",
+            "received": 10,
+            "pass_ms": 1078.1
+          }
+        },
+        {
+          "kind": "draft",
+          "wall_seconds": 12.352504735,
+          "decode_seconds": 1.2736697439999993,
+          "result": {
+            "text": "visitan,",
+            "words": [
+              {
+                "word": "visitan,",
+                "start": 8.72,
+                "end": 9.28,
+                "probability": 0.974
+              }
+            ],
+            "pending": "dado que ello pueda afectar su...",
+            "language": "es",
+            "received": 11.08,
+            "pass_ms": 1273.6
+          }
+        },
+        {
+          "kind": "draft",
+          "wall_seconds": 13.746765448,
+          "decode_seconds": 1.3941512019999998,
+          "result": {
+            "text": "dado que ello pueda afectar",
+            "words": [
+              {
+                "word": "dado",
+                "start": 9.52,
+                "end": 9.76,
+                "probability": 0.985
+              },
+              {
+                "word": "que",
+                "start": 9.76,
+                "end": 9.92,
+                "probability": 1
+              },
+              {
+                "word": "ello",
+                "start": 9.92,
+                "end": 10.24,
+                "probability": 0.951
+              },
+              {
+                "word": "pueda",
+                "start": 10.24,
+                "end": 10.48,
+                "probability": 0.936
+              },
+              {
+                "word": "afectar",
+                "start": 10.48,
+                "end": 10.88,
+                "probability": 0.999
+              }
+            ],
+            "pending": "sus planes de viaje.",
+            "language": "es",
+            "received": 12.35,
+            "pass_ms": 1394.1
+          }
+        },
+        {
+          "kind": "draft",
+          "wall_seconds": 15.161032678,
+          "decode_seconds": 1.4141380590000008,
+          "result": {
+            "text": "sus planes de viaje.",
+            "words": [
+              {
+                "word": "sus",
+                "start": 10.88,
+                "end": 11.12,
+                "probability": 0.979
+              },
+              {
+                "word": "planes",
+                "start": 11.12,
+                "end": 11.44,
+                "probability": 0.999
+              },
+              {
+                "word": "de",
+                "start": 11.44,
+                "end": 11.6,
+                "probability": 1
+              },
+              {
+                "word": "viaje.",
+                "start": 11.6,
+                "end": 12,
+                "probability": 0.999
+              }
+            ],
+            "pending": "",
+            "language": "es",
+            "received": 12.84,
+            "pass_ms": 1414.1
+          }
+        },
+        {
+          "kind": "done",
+          "wall_seconds": 15.161183789,
+          "decode_seconds": 2.0129999999340953e-05,
+          "result": {
+            "text": "",
+            "words": [],
+            "pending": "",
+            "language": "es",
+            "received": 12.84,
+            "pass_ms": 0
+          }
+        }
+      ]
+    },
+    {
+      "case": "de_de-0-names",
+      "fixture": {
+        "fixture_sha256": "cc46d12f9faf44a694e709c8bcf04028e686e6b4c1deefe3ac6dbd821a970630",
+        "input_pcm_sha256": "fe4d2a3b4113fb327094d0628ff7ed07e40726c1ab20564d01d3a745cba349b0",
+        "input_float_sha256": "619cd4412154d1a750505101b90f5708468fa4d66fcbdcd89168d126b4fb9bff",
+        "audio_seconds": 17.94
+      },
+      "reference": "Für die besten Aussichten auf Hongkong sollten Sie die Insel verlassen und zum gegenüberliegenden Ufer von Kowloon fahren.",
+      "load": {
+        "compile_seconds": 0.972588879,
+        "initialize_load_seconds": 0.020301910000000034,
+        "v8_backend": "existing public single-threaded platform",
+        "resident": true
+      },
+      "accuracy": {
+        "final": "Vielen Dank. Für die besten Aussichten auf Hongkong sollten Sie die Insel verlassen und zum Gegenüberle in den Ufer von Korlum fahren.",
+        "word_errors": 6,
+        "reference_words": 18
+      },
+      "latency": {
+        "first_lexical_seconds": 2.1646505769999997,
+        "first_hypothesis": "Vielen Dank.",
+        "first_matched_reference_word_seconds_posthoc": 5.27294573,
+        "first_committed_word_seconds": 3.216645306,
+        "stream_completion_seconds": 20.26030153,
+        "tail_seconds": 2.3203015299999983
+      },
+      "resources": {
+        "exit": 0,
+        "guarded": null,
+        "memory_peak": {
+          "VmPeak": 729236,
+          "VmSize": 728728,
+          "VmHWM": 200288,
+          "VmRSS": 198628,
+          "Threads": 1
+        },
+        "cpu_seconds": 13.92,
+        "wall_seconds": 21.298250512998493,
+        "scope_peak_bytes": 179617792,
+        "scope_before": {
+          "low": 0,
+          "high": 0,
+          "max": 0,
+          "oom": 0,
+          "oom_kill": 0,
+          "oom_group_kill": 0,
+          "sock_throttled": 0
+        },
+        "scope_after": {
+          "low": 0,
+          "high": 0,
+          "max": 0,
+          "oom": 0,
+          "oom_kill": 0,
+          "oom_group_kill": 0,
+          "sock_throttled": 0
+        }
+      },
+      "stream": [
+        {
+          "kind": "draft",
+          "wall_seconds": 2.1646505769999997,
+          "decode_seconds": 0.16455984899999976,
+          "result": {
+            "text": "",
+            "words": [],
+            "pending": "Vielen Dank.",
+            "language": "de",
+            "received": 2,
+            "pass_ms": 164.3
+          }
+        },
+        {
+          "kind": "draft",
+          "wall_seconds": 3.216645306,
+          "decode_seconds": 0.21650106400000002,
+          "result": {
+            "text": "Vielen Dank.",
+            "words": [
+              {
+                "word": "Vielen",
+                "start": 0,
+                "end": 0.08,
+                "probability": 0.938
+              },
+              {
+                "word": "Dank.",
+                "start": 0.08,
+                "end": 0.32,
+                "probability": 1
+              }
+            ],
+            "pending": "",
+            "language": "de",
+            "received": 3,
+            "pass_ms": 216.4
+          }
+        },
+        {
+          "kind": "draft",
+          "wall_seconds": 4.268277111,
+          "decode_seconds": 0.26807050499999985,
+          "result": {
+            "text": "",
+            "words": [],
+            "pending": "",
+            "language": "de",
+            "received": 4,
+            "pass_ms": 268
+          }
+        },
+        {
+          "kind": "draft",
+          "wall_seconds": 5.27294573,
+          "decode_seconds": 0.27267712,
+          "result": {
+            "text": "",
+            "words": [],
+            "pending": "Für die beste...",
+            "language": "de",
+            "received": 5,
+            "pass_ms": 272.7
+          }
+        },
+        {
+          "kind": "draft",
+          "wall_seconds": 6.3675719939999995,
+          "decode_seconds": 0.3672407400000006,
+          "result": {
+            "text": "Für die",
+            "words": [
+              {
+                "word": "Für",
+                "start": 4.24,
+                "end": 4.48,
+                "probability": 0.976
+              },
+              {
+                "word": "die",
+                "start": 4.48,
+                "end": 4.64,
+                "probability": 0.998
+              }
+            ],
+            "pending": "besten Aussichten.",
+            "language": "de",
+            "received": 6,
+            "pass_ms": 367.2
+          }
+        },
+        {
+          "kind": "draft",
+          "wall_seconds": 7.459322793999999,
+          "decode_seconds": 0.4589295050000004,
+          "result": {
+            "text": "besten",
+            "words": [
+              {
+                "word": "besten",
+                "start": 4.64,
+                "end": 5.2,
+                "probability": 0.947
+              }
+            ],
+            "pending": "Aussichten auf Hongkong",
+            "language": "de",
+            "received": 7,
+            "pass_ms": 458.9
+          }
+        },
+        {
+          "kind": "draft",
+          "wall_seconds": 8.584179816,
+          "decode_seconds": 0.5837239830000005,
+          "result": {
+            "text": "Aussichten auf Hongkong",
+            "words": [
+              {
+                "word": "Aussichten",
+                "start": 5.2,
+                "end": 5.84,
+                "probability": 0.972
+              },
+              {
+                "word": "auf",
+                "start": 5.84,
+                "end": 6.24,
+                "probability": 0.98
+              },
+              {
+                "word": "Hongkong",
+                "start": 6.24,
+                "end": 6.88,
+                "probability": 0.682
+              }
+            ],
+            "pending": "sollten Sie die",
+            "language": "de",
+            "received": 8,
+            "pass_ms": 583.7
+          }
+        },
+        {
+          "kind": "draft",
+          "wall_seconds": 9.682408463000002,
+          "decode_seconds": 0.681892006,
+          "result": {
+            "text": "sollten Sie die",
+            "words": [
+              {
+                "word": "sollten",
+                "start": 6.88,
+                "end": 7.6,
+                "probability": 0.993
+              },
+              {
+                "word": "Sie",
+                "start": 7.6,
+                "end": 7.84,
+                "probability": 0.762
+              },
+              {
+                "word": "die",
+                "start": 7.84,
+                "end": 8,
+                "probability": 1
+              }
+            ],
+            "pending": "Insel verlassen.",
+            "language": "de",
+            "received": 9,
+            "pass_ms": 681.9
+          }
+        },
+        {
+          "kind": "draft",
+          "wall_seconds": 10.825084256,
+          "decode_seconds": 0.8244978549999988,
+          "result": {
+            "text": "Insel",
+            "words": [
+              {
+                "word": "Insel",
+                "start": 8,
+                "end": 8.4,
+                "probability": 0.993
+              }
+            ],
+            "pending": "verlassen und zum Gegebenenfalls.",
+            "language": "de",
+            "received": 10,
+            "pass_ms": 824.5
+          }
+        },
+        {
+          "kind": "draft",
+          "wall_seconds": 11.903031982,
+          "decode_seconds": 0.9023860369999994,
+          "result": {
+            "text": "verlassen und zum",
+            "words": [
+              {
+                "word": "verlassen",
+                "start": 8.4,
+                "end": 9.04,
+                "probability": 0.999
+              },
+              {
+                "word": "und",
+                "start": 9.04,
+                "end": 9.52,
+                "probability": 0.995
+              },
+              {
+                "word": "zum",
+                "start": 9.52,
+                "end": 9.76,
+                "probability": 0.99
+              }
+            ],
+            "pending": "Gegenüber liegenden.",
+            "language": "de",
+            "received": 11,
+            "pass_ms": 902.4
+          }
+        },
+        {
+          "kind": "draft",
+          "wall_seconds": 12.957495001000002,
+          "decode_seconds": 0.9567863620000008,
+          "result": {
+            "text": "",
+            "words": [],
+            "pending": "Gegenüberle in den Ufer.",
+            "language": "de",
+            "received": 12,
+            "pass_ms": 956.8
+          }
+        },
+        {
+          "kind": "draft",
+          "wall_seconds": 14.067713749000001,
+          "decode_seconds": 1.066941506000001,
+          "result": {
+            "text": "Gegenüberle in den",
+            "words": [
+              {
+                "word": "Gegenüberle",
+                "start": 9.76,
+                "end": 10.64,
+                "probability": 0.774
+              },
+              {
+                "word": "in",
+                "start": 10.64,
+                "end": 10.8,
+                "probability": 0.796
+              },
+              {
+                "word": "den",
+                "start": 10.8,
+                "end": 11.12,
+                "probability": 0.994
+              }
+            ],
+            "pending": "Ufer von Korlum.",
+            "language": "de",
+            "received": 13,
+            "pass_ms": 1066.9
+          }
+        },
+        {
+          "kind": "draft",
+          "wall_seconds": 15.220442171000002,
+          "decode_seconds": 1.1526062899999996,
+          "result": {
+            "text": "Ufer von",
+            "words": [
+              {
+                "word": "Ufer",
+                "start": 11.12,
+                "end": 11.52,
+                "probability": 0.885
+              },
+              {
+                "word": "von",
+                "start": 11.52,
+                "end": 12.4,
+                "probability": 0.972
+              }
+            ],
+            "pending": "Korlum fahren.",
+            "language": "de",
+            "received": 14.07,
+            "pass_ms": 1152.6
+          }
+        },
+        {
+          "kind": "draft",
+          "wall_seconds": 16.421300584,
+          "decode_seconds": 1.2007486509999978,
+          "result": {
+            "text": "Korlum fahren.",
+            "words": [
+              {
+                "word": "Korlum",
+                "start": 12.4,
+                "end": 13.2,
+                "probability": 0.719
+              },
+              {
+                "word": "fahren.",
+                "start": 13.2,
+                "end": 13.76,
+                "probability": 0.934
+              }
+            ],
+            "pending": "",
+            "language": "de",
+            "received": 15.22,
+            "pass_ms": 1200.7
+          }
+        },
+        {
+          "kind": "draft",
+          "wall_seconds": 17.671795594000002,
+          "decode_seconds": 1.2503780089999985,
+          "result": {
+            "text": "",
+            "words": [],
+            "pending": "",
+            "language": "de",
+            "received": 16.42,
+            "pass_ms": 1250.3
+          }
+        },
+        {
+          "kind": "draft",
+          "wall_seconds": 18.954352464,
+          "decode_seconds": 1.2823299570000017,
+          "result": {
+            "text": "",
+            "words": [],
+            "pending": "",
+            "language": "de",
+            "received": 17.67,
+            "pass_ms": 1282.3
+          }
+        },
+        {
+          "kind": "draft",
+          "wall_seconds": 20.260172829000002,
+          "decode_seconds": 1.3057154840000003,
+          "result": {
+            "text": "",
+            "words": [],
+            "pending": "",
+            "language": "de",
+            "received": 17.94,
+            "pass_ms": 1305.7
+          }
+        },
+        {
+          "kind": "done",
+          "wall_seconds": 20.26030153,
+          "decode_seconds": 2.1820000000616346e-05,
+          "result": {
+            "text": "",
+            "words": [],
+            "pending": "",
+            "language": "de",
+            "received": 17.94,
+            "pass_ms": 0
+          }
+        }
+      ],
+      "names": {
+        "cue": [
+          "Hongkong",
+          "Kowloon"
+        ],
+        "recognized": [
+          "Hongkong"
+        ]
+      }
+    }
+  ],
+  "interpreter_comparison": {
+    "identical_model_sha256": "b6e02f048568ac5d01a2042556c658061e699acbc0aa2a1439f52f3d461dffeb",
+    "identical_module_sha256": "c43f48e11f302087250d1e406024956781cd2f02595a5e343b3d7ddd5ef707fa",
+    "identical_float_sha256": "1880ea67d02e318d898e6ac3fd627127e7cf4097e3ec444074764d2163d66a7d",
+    "source_pacing": "Same first-2s/then-1s source-clock policy with catch-up after decoder backpressure; resulting call boundaries differ with runtime speed",
+    "baseline": {
+      "clock": "Source-paced first audio; model load reported separately",
+      "load_ms": 143.348917,
+      "first_lexical_draft_seconds": 6.468566972,
+      "first_draft": "Merci.",
+      "first_reference_word_draft_seconds": 22.027964137,
+      "first_committed_word_seconds": 46.054940973,
+      "final_seconds": 46.055190816,
+      "end_of_audio_to_final_seconds": 35.855190816000004
+    },
+    "compiled": {
+      "first_lexical_seconds": 2.183503825,
+      "first_hypothesis": "Merci.",
+      "first_matched_reference_word_seconds_posthoc": 3.18692723,
+      "first_committed_word_seconds": 4.319637779000001,
+      "stream_completion_seconds": 11.897443588,
+      "tail_seconds": 1.6974435880000005
+    },
+    "compile_seconds": 1.1157601719999999,
+    "initialize_load_seconds": 0.020532289000000148,
+    "native_cpu_baseline_seconds": 43.93,
+    "native_cpu_compiled_seconds": 7.239999999999999
+  },
+  "retained_reservation_controls": {
+    "initial": {
+      "memory_peak": {
+        "VmPeak": 980232,
+        "VmSize": 979724,
+        "VmHWM": 200044,
+        "VmRSS": 200044,
+        "Threads": 1
+      },
+      "cpu_seconds": 7.22,
+      "wall_seconds": 13.039990062003199
+    },
+    "old_heap_only_lowered_to64MiB": {
+      "memory_peak": {
+        "VmPeak": 980232,
+        "VmSize": 979724,
+        "VmHWM": 199536,
+        "VmRSS": 198916,
+        "Threads": 1
+      },
+      "cpu_seconds": 7.26,
+      "wall_seconds": 13.032838637998793
+    },
+    "outcome": "Lowering only old-space heap did not reduce virtual peak. Public total-heap/code-range constraints reduced peak from 980232 to 742536 KiB on the French case; original external guards unchanged"
+  },
+  "not_run": [
+    "microphone or account access",
+    "production activation/deployment",
+    "physical laptop/older-device/ARM",
+    "production worker transport integration",
+    "resident silence/cancellation/repeat",
+    "new unseen audio",
+    "Arabic or Mandarin (outside this model supported languages)"
+  ],
+  "decision": "Compiled backend is viable under existing review resource limits; model accuracy, committed early German hallucination and missed Kowloon prevent default qualification",
+  "reproducible_harness": {
+    "source": "tools/release/qualify_whistle_v8_scope.py",
+    "sha256": "06225f0fb8d308ba0c62774914105eb508bcc5569181927935d6e333619f3736",
+    "positive": {
+      "exit": 0,
+      "guarded": null,
+      "memory_peak": {
+        "VmPeak": 742536,
+        "VmSize": 742028,
+        "VmHWM": 199276,
+        "VmRSS": 199276,
+        "Threads": 1
+      },
+      "cpu_seconds": 7.14,
+      "wall_seconds": 12.986551994996262,
+      "scope_peak_bytes": 179687424,
+      "scope_before": {
+        "low": 0,
+        "high": 0,
+        "max": 0,
+        "oom": 0,
+        "oom_kill": 0,
+        "oom_group_kill": 0,
+        "sock_throttled": 0
+      },
+      "scope_after": {
+        "low": 0,
+        "high": 0,
+        "max": 0,
+        "oom": 0,
+        "oom_kill": 0,
+        "oom_group_kill": 0,
+        "sock_throttled": 0
+      },
+      "scope_script_sha256": "06225f0fb8d308ba0c62774914105eb508bcc5569181927935d6e333619f3736",
+      "ledger_sha256": "a73ca99076daf40ff10c13a351384cd4f72b8c0ce00d07f4bfe3c83ed7b322dd"
+    },
+    "stream": [
+      {
+        "kind": "draft",
+        "wall_seconds": 2.1832599569999998,
+        "decode_seconds": 0.18313531900000024,
+        "result": {
+          "text": "",
+          "words": [],
+          "pending": "Merci.",
+          "language": "fr",
+          "received": 2,
+          "pass_ms": 182.7
+        }
+      },
+      {
+        "kind": "draft",
+        "wall_seconds": 3.1864381479999997,
+        "decode_seconds": 0.18629859600000032,
+        "result": {
+          "text": "",
+          "words": [],
+          "pending": "L'accident a...",
+          "language": "fr",
+          "received": 3,
+          "pass_ms": 186.1
+        }
+      },
+      {
+        "kind": "draft",
+        "wall_seconds": 4.318333193,
+        "decode_seconds": 0.31813957800000026,
+        "result": {
+          "text": "L'accident",
+          "words": [
+            {
+              "word": "L'accident",
+              "start": 2.32,
+              "end": 2.8,
+              "probability": 0.992
+            }
+          ],
+          "pending": "a eu lieu en terrain.",
+          "language": "fr",
+          "received": 4,
+          "pass_ms": 318
+        }
+      },
+      {
+        "kind": "draft",
+        "wall_seconds": 5.423722415,
+        "decode_seconds": 0.42344553499999993,
+        "result": {
+          "text": "a eu lieu en",
+          "words": [
+            {
+              "word": "a",
+              "start": 2.8,
+              "end": 3.12,
+              "probability": 0.996
+            },
+            {
+              "word": "eu",
+              "start": 3.12,
+              "end": 3.28,
+              "probability": 0.998
+            },
+            {
+              "word": "lieu",
+              "start": 3.28,
+              "end": 3.52,
+              "probability": 0.999
+            },
+            {
+              "word": "en",
+              "start": 3.52,
+              "end": 3.76,
+              "probability": 0.977
+            }
+          ],
+          "pending": "terrain montagneux.",
+          "language": "fr",
+          "received": 5,
+          "pass_ms": 423.4
+        }
+      },
+      {
+        "kind": "draft",
+        "wall_seconds": 6.701380577,
+        "decode_seconds": 0.7010476829999996,
+        "result": {
+          "text": "terrain",
+          "words": [
+            {
+              "word": "terrain",
+              "start": 3.76,
+              "end": 4.08,
+              "probability": 0.697
+            }
+          ],
+          "pending": "montagneux, et il semblerait que ce soit.",
+          "language": "fr",
+          "received": 6,
+          "pass_ms": 701
+        }
+      },
+      {
+        "kind": "draft",
+        "wall_seconds": 7.6926237660000005,
+        "decode_seconds": 0.6922300079999992,
+        "result": {
+          "text": "",
+          "words": [],
+          "pending": "montagneux et il semblerait que cela ait été causé.",
+          "language": "fr",
+          "received": 7,
+          "pass_ms": 692.2
+        }
+      },
+      {
+        "kind": "draft",
+        "wall_seconds": 8.811065012,
+        "decode_seconds": 0.8106094600000002,
+        "result": {
+          "text": "",
+          "words": [],
+          "pending": "montagneux. Il semblerait que cela ait été causé par un incendie.",
+          "language": "fr",
+          "received": 8,
+          "pass_ms": 810.6
+        }
+      },
+      {
+        "kind": "draft",
+        "wall_seconds": 9.898085286,
+        "decode_seconds": 0.8975677900000001,
+        "result": {
+          "text": "",
+          "words": [],
+          "pending": "montagneux, il semblerait que cela ait été causé par un incendie malveillant.",
+          "language": "fr",
+          "received": 9,
+          "pass_ms": 897.5
+        }
+      },
+      {
+        "kind": "draft",
+        "wall_seconds": 10.945906856,
+        "decode_seconds": 0.945322066000001,
+        "result": {
+          "text": "montagneux,",
+          "words": [
+            {
+              "word": "montagneux,",
+              "start": 4.08,
+              "end": 4.8,
+              "probability": 0.926
+            }
+          ],
+          "pending": "et il semblerait que cela ait été causé par un incendie malveillant.",
+          "language": "fr",
+          "received": 10,
+          "pass_ms": 945.3
+        }
+      },
+      {
+        "kind": "draft",
+        "wall_seconds": 11.902991701,
+        "decode_seconds": 0.9569800940000004,
+        "result": {
+          "text": "et il semblerait que cela ait été causé par un incendie malveillant.",
+          "words": [
+            {
+              "word": "et",
+              "start": 5.04,
+              "end": 5.2,
+              "probability": 0.594
+            },
+            {
+              "word": "il",
+              "start": 5.2,
+              "end": 5.28,
+              "probability": 0.847
+            },
+            {
+              "word": "semblerait",
+              "start": 5.28,
+              "end": 5.84,
+              "probability": 0.965
+            },
+            {
+              "word": "que",
+              "start": 5.84,
+              "end": 5.92,
+              "probability": 0.999
+            },
+            {
+              "word": "cela",
+              "start": 5.92,
+              "end": 6.24,
+              "probability": 0.993
+            },
+            {
+              "word": "ait",
+              "start": 6.24,
+              "end": 6.48,
+              "probability": 0.706
+            },
+            {
+              "word": "été",
+              "start": 6.48,
+              "end": 6.8,
+              "probability": 1
+            },
+            {
+              "word": "causé",
+              "start": 6.8,
+              "end": 7.28,
+              "probability": 0.992
+            },
+            {
+              "word": "par",
+              "start": 7.28,
+              "end": 7.52,
+              "probability": 0.985
+            },
+            {
+              "word": "un",
+              "start": 7.52,
+              "end": 7.68,
+              "probability": 0.989
+            },
+            {
+              "word": "incendie",
+              "start": 7.68,
+              "end": 8.16,
+              "probability": 0.976
+            },
+            {
+              "word": "malveillant.",
+              "start": 8.16,
+              "end": 8.8,
+              "probability": 0.986
+            }
+          ],
+          "pending": "",
+          "language": "fr",
+          "received": 10.2,
+          "pass_ms": 957
+        }
+      },
+      {
+        "kind": "done",
+        "wall_seconds": 11.903165763,
+        "decode_seconds": 1.81399999998888e-05,
+        "result": {
+          "text": "",
+          "words": [],
+          "pending": "",
+          "language": "fr",
+          "received": 10.2,
+          "pass_ms": 0
+        }
+      }
+    ],
+    "authentication_controls": [
+      {
+        "control": "corrupted private host-glue copy",
+        "exit": 1,
+        "before_decoder": true
+      },
+      {
+        "control": "same-size corrupted private host-glue copy",
+        "exit": 1,
+        "before_decoder": true
+      }
+    ],
+    "setup_failure_retained": "First private closure lacked summarize_speech_benchmark; import failed before decoder. Closure corrected and same harness completed the French stream.",
+    "owned_services": {
+      "count": 11,
+      "all": "inactive"
+    }
+  },
+  "execution_environment_normalization": {
+    "description": "Portable view of the original committed receipt. Only execution-environment tokens in strings are normalized; measurements, transcripts, artifact hashes, outcome values and failure kinds retain their original values. Original bytes remain in the cited Git blob.",
+    "original_commit": "a7306895e056155ca8e221b37031af23ff0f82f0",
+    "original_git_blob": "fcfbb509609c4474de3bfaac96ed3f7a7f5cff98",
+    "original_sha256": "05b263dec3a73ba403bf5b515458f7467614d7fd4ae5c0460461d35ae414c959",
+    "original_path": "docs/architecture/dictation-whistle-v8-review.json",
+    "normalized_string_fields": [
+      "$.adapter.command[7]",
+      "$.adapter.command[8]",
+      "$.adapter.command[9]",
+      "$.adapter.command[11]",
+      "$.adapter.command[14]"
+    ]
+  }
+}

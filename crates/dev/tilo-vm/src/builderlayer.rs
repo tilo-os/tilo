@@ -52,6 +52,9 @@ pub struct Packed {
     /// An explicit cache result; its framed stream must contain zero archive bytes.
     #[serde(default)]
     pub reused: bool,
+    /// Raw bounded chunks instead of base64 data lines.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub binary: bool,
 }
 
 /// The remote builder's `run` that builds and streams `component`'s layer:
@@ -95,7 +98,7 @@ pub fn remote_command(builder: &[String], component: &Component, extra: &[String
 /// # Errors
 /// An unknown component, a failed build or installer, I/O.
 pub fn pack(name: &str, profile: &str, extra: &[String]) -> Result<(), CliError> {
-    pack_with_source(name, profile, extra, None, &[])
+    pack_with_source(name, profile, extra, None, &[], false)
 }
 
 pub(crate) fn pack_with_source(
@@ -104,6 +107,7 @@ pub(crate) fn pack_with_source(
     extra: &[String],
     inventory: Option<&Path>,
     cached: &[String],
+    binary: bool,
 ) -> Result<(), CliError> {
     if cached.len() > 8 || cached.iter().any(|hash| !valid_hash(hash)) {
         return Err(CliError::InvalidInput(
@@ -188,6 +192,7 @@ pub(crate) fn pack_with_source(
     let facts = build::first_elf(&tree).unwrap_or_default();
     let packed = Packed {
         component: component.name,
+        binary,
         target: facts.target,
         toolchain: facts.toolchain,
         source_digest,
@@ -219,6 +224,16 @@ pub(crate) fn write_layer(
     let header =
         serde_json::to_string(&packed).map_err(|e| CliError::InvalidInput(e.to_string()))?;
     writeln!(out, "{BEGIN}{header}").map_err(CliError::io("write the layer"))?;
+    if packed.binary {
+        let mut binary = tilo_vm_protocol::binary::Encoder::new(out);
+        if !packed.reused {
+            build::pack_into(tree, &mut binary)?;
+        }
+        binary
+            .finish()
+            .map_err(CliError::io("write binary layer"))?;
+        return Ok(());
+    }
     let mut lines = Lines::new(out);
     if !packed.reused {
         build::pack_into(tree, &mut lines)?;
@@ -250,7 +265,7 @@ pub(crate) fn run_to_stderr(command: &mut Command) -> Result<(), CliError> {
 }
 
 /// Bytes written as [`DATA`] lines, hashed and counted on the way.
-pub(crate) struct Lines<'a, W: Write> {
+pub struct Lines<'a, W: Write> {
     out: &'a mut W,
     pending: Vec<u8>,
     hasher: Sha256,
@@ -258,7 +273,8 @@ pub(crate) struct Lines<'a, W: Write> {
 }
 
 impl<'a, W: Write> Lines<'a, W> {
-    pub(crate) fn new(out: &'a mut W) -> Self {
+    #[must_use]
+    pub fn new(out: &'a mut W) -> Self {
         Self {
             out,
             pending: Vec::with_capacity(LINE_BYTES),
@@ -279,7 +295,10 @@ impl<'a, W: Write> Lines<'a, W> {
         Ok(())
     }
 
-    pub(crate) fn finish(mut self) -> std::io::Result<(String, u64)> {
+    /// Finish the legacy builder frames with their archive digest.
+    /// # Errors
+    /// An output write failure.
+    pub fn finish(mut self) -> std::io::Result<(String, u64)> {
         self.emit()?;
         Ok((hex::encode(self.hasher.finalize()), self.bytes))
     }
@@ -313,6 +332,7 @@ pub struct Stream<R: BufRead> {
     hasher: Sha256,
     bytes: u64,
     done: bool,
+    binary: Option<tilo_vm_protocol::binary::Decoder>,
 }
 
 impl<R: BufRead> Stream<R> {
@@ -324,6 +344,7 @@ impl<R: BufRead> Stream<R> {
             hasher: Sha256::new(),
             bytes: 0,
             done: false,
+            binary: None,
         }
     }
 
@@ -350,7 +371,12 @@ impl<R: BufRead> Stream<R> {
                 ));
             }
             if let Some(json) = line.trim_end().strip_prefix(BEGIN) {
-                return serde_json::from_str(json).map_err(std::io::Error::other);
+                let value: serde_json::Value =
+                    serde_json::from_str(json).map_err(std::io::Error::other)?;
+                if value.get("binary").and_then(serde_json::Value::as_bool) == Some(true) {
+                    self.binary = Some(tilo_vm_protocol::binary::Decoder::default());
+                }
+                return serde_json::from_value(value).map_err(std::io::Error::other);
             }
             passthrough.write_all(line.as_bytes())?;
         }
@@ -359,6 +385,12 @@ impl<R: BufRead> Stream<R> {
 
 impl<R: BufRead> Read for Stream<R> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if let Some(binary) = &mut self.binary {
+            return binary.read(&mut self.input, buf);
+        }
+        if buf.is_empty() {
+            return Ok(0);
+        }
         while self.at >= self.decoded.len() {
             if self.done {
                 return Ok(0);
@@ -481,5 +513,36 @@ mod tests {
             line.display(),
             "env BUILDER=arm remote-cargo --on-builder run --locked -p tilo-vm --bin tilo-vm -- layer-pack --component shell --profile release --features shell/dev-overrides"
         );
+    }
+}
+
+#[cfg(test)]
+mod binary_tests {
+    use super::*;
+    #[test]
+    fn binary_builder_footer_is_checked_before_eof() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("usr/bin")).unwrap();
+        std::fs::write(dir.path().join("usr/bin/probe"), vec![71; 2 << 20]).unwrap();
+        let mut framed = Vec::new();
+        write_layer(
+            dir.path(),
+            Packed {
+                binary: true,
+                ..Packed::default()
+            },
+            &[],
+            &mut framed,
+        )
+        .unwrap();
+        let mut stream = Stream::new(framed.as_slice());
+        assert!(stream.header(&mut Vec::new()).unwrap().binary);
+        let mut archive = Vec::new();
+        stream.read_to_end(&mut archive).unwrap();
+        assert!(archive.len() > 2 << 20);
+        *framed.last_mut().unwrap() ^= 1;
+        let mut stream = Stream::new(framed.as_slice());
+        stream.header(&mut Vec::new()).unwrap();
+        assert!(stream.read_to_end(&mut Vec::new()).is_err());
     }
 }

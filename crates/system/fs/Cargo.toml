@@ -29,14 +29,17 @@ filesystem = [
     "dep:iroh-gossip",
     "dep:automerge",
     "dep:tilo-automerge",
+    "dep:tilo-automerge-isolate",
     "dep:tilo-doc",
     "dep:tilo-doc-codecs",
     "dep:tilo-content",
     "dep:collab-types",
+    "dep:fs-protocol",
     "dep:ed25519-dalek",
     "dep:tilo-thumbnail",
     "dep:tilo-user-identity",
     "dep:tilo-power-mgmt",
+    "dep:tilo-nm",
     "document-media",
     "dep:libc",
     "dep:serde_bytes",
@@ -63,6 +66,11 @@ filesystem = [
 [[bin]]
 name = "fs"
 path = "src/main.rs"
+required-features = ["filesystem"]
+
+[[test]]
+name = "workspace_startup"
+path = "tests/workspace_startup.rs"
 required-features = ["filesystem"]
 
 [[test]]
@@ -111,7 +119,6 @@ path = "tests/cloud_mount.rs"
 required-features = ["filesystem"]
 
 [dependencies]
-bounded-command = { version = "0.1.0", path = "../bounded-command" }
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 anyhow.workspace = true
 bytes.workspace = true
@@ -128,10 +135,13 @@ ref-cast = { workspace = true }
 iroh-gossip = { workspace = true, optional = true }
 automerge = { workspace = true, optional = true }
 tilo-automerge = { workspace = true, optional = true }
+# Conflict members can come from peers: the qdoc merge decodes them only here.
+tilo-automerge-isolate = { version = "0.1.0", path = "../../doc/tilo-automerge-isolate", optional = true }
 tilo-doc = { version = "0.1.0", path = "../../doc/tilo-doc", optional = true }
 tilo-content = { version = "0.1.0", path = "../content", optional = true, features = ["device"] }
 tilo-doc-codecs = { version = "0.1.0", path = "../../doc/tilo-doc-codecs", optional = true, default-features = false, features = ["markdown", "html", "rtf", "docx", "odt"] }
 collab-types = { version = "0.1.0", path = "../../collab/collab-types", optional = true }
+fs-protocol = { version = "0.1.0", path = "../fs-protocol", optional = true }
 getrandom = { workspace = true, optional = true }
 ed25519-dalek = { workspace = true, optional = true }
 # The shared thumbnail generator + content-addressed cache. Default features
@@ -146,6 +156,9 @@ tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 tilo-user-identity = { version = "0.1.0", path = "../../collab/tilo-user-identity", optional = true }
 # Bus-free, production battery/AC sampling for speculative-hydration policy.
 tilo-power-mgmt = { version = "0.1.0", path = "../power", default-features = false, optional = true }
+# NetworkManager's connectivity and primary-connection metering, followed by
+# signal, for the same policy.
+tilo-nm = { version = "0.1.0", path = "../tilo-nm", optional = true }
 runtime-fs = { version = "0.1.0", path = "../../runtime/runtime-fs", optional = true }
 libc = { workspace = true, optional = true }
 moka.workspace = true

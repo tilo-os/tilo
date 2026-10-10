@@ -26,6 +26,33 @@ const LAUNCHABLE_PROVIDER: &str = "launch";
 /// the action and its invocation stream.
 const DELIVERY_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Threads the delivery runtime may use to call the host's launcher, which
+/// blocks while it starts the app. Further launches queue behind them.
+const LAUNCH_CALLS: usize = 4;
+
+/// The runtime every launch-then-deliver waits on: one worker for all of
+/// them, since a wait is an event, never a thread, plus a bounded pool for
+/// the blocking launcher calls. It runs beside the broker, never on its
+/// local set, and starts on first use.
+///
+/// # Errors
+///
+/// Why the runtime could not start; remembered, so every launch reports it.
+pub(super) fn delivery_runtime() -> Result<&'static tokio::runtime::Runtime, String> {
+    static RUNTIME: std::sync::OnceLock<Result<tokio::runtime::Runtime, String>> =
+        std::sync::OnceLock::new();
+    RUNTIME
+        .get_or_init(|| {
+            tilo_rt::daemon("tilo-launch")
+                .workers(1)
+                .max_blocking(LAUNCH_CALLS)
+                .build()
+                .map_err(|error| error.to_string())
+        })
+        .as_ref()
+        .map_err(Clone::clone)
+}
+
 /// `(app_id, cluster_id, record_id)`: one retained surface.
 type SurfaceKey = (String, String, String);
 
@@ -477,6 +504,7 @@ mod tests {
                 context: None,
                 confirmation,
                 revision: None,
+                wait_ms: None,
             },
         )
         .wait_timeout(tilo_test_env::hang_bound())
@@ -658,6 +686,201 @@ mod tests {
             ),
             other => panic!("expected a timeout, got {other:?}"),
         }
+    }
+
+    /// Stand in for a launcher whose app comes up only later, when the
+    /// test publishes it; each launch is recorded.
+    fn app_comes_up_later(state: &Arc<CapnpBrokerState>) -> Arc<Mutex<Vec<String>>> {
+        let launches = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&launches);
+        state.launchable.replace_launcher_for_test(
+            Arc::new(move |app_id, _| {
+                recorded.lock().expect("launches").push(app_id.to_string());
+                Ok(())
+            }),
+            tilo_test_env::hang_bound(),
+        );
+        launches
+    }
+
+    /// Invoke `action` on `provider` from its own thread, as a caller that
+    /// waits for the admission does.
+    fn invoke_in_background(
+        state: &Arc<CapnpBrokerState>,
+        caller: &Caller,
+        provider: &str,
+        action: &'static str,
+    ) -> std::thread::JoinHandle<Result<tilo_actions::remote::InvocationReceipt, ActionHostError>>
+    {
+        let state = Arc::clone(state);
+        let caller = caller.clone();
+        let provider = provider.to_string();
+        std::thread::spawn(move || invoke(&state, &caller, &provider, action, None))
+    }
+
+    /// Wait until `waiters` launches have started and are each parked on
+    /// the broker's publisher-change signal.
+    fn wait_for_parked_launches(
+        state: &Arc<CapnpBrokerState>,
+        launches: &Arc<Mutex<Vec<String>>>,
+        waiters: usize,
+    ) {
+        tilo_test_env::wait_until("each launch to wait for its app to publish", || {
+            launches.lock().expect("launches").len() == waiters
+                && state.surface_changes.receiver_count() == waiters
+        });
+    }
+
+    /// A launch waits on the broker's publication signal, not on a timer:
+    /// while the app is still starting, the waiting invocation holds a
+    /// receiver of that signal, and the app publishing its action and
+    /// opening its stream admits the invocation. The delivery timeout is the
+    /// hang bound, so nothing but the publication can end the wait in time.
+    #[test]
+    fn launch_then_deliver_wakes_on_publication_without_polling() {
+        let (state, room) = broker(&workspace());
+        state.launchable.retain(&surface(7, &room));
+        let launches = app_comes_up_later(&state);
+        let owner = Caller::local_person("owner").in_room(&room);
+        let provider = offered_provider(&state, &owner, "new-window").expect("offered");
+
+        let invoking = invoke_in_background(&state, &owner, &provider, "new-window");
+        wait_for_parked_launches(&state, &launches, 1);
+        let mut stream = state.capture_invocations_for_test(8);
+        state.replace_published_surfaces_for_test(vec![surface(8, &room)]);
+
+        invoking
+            .join()
+            .expect("invoking thread")
+            .expect("admitted once the app publishes");
+        assert_eq!(
+            stream.try_recv().expect("delivered to the app").action,
+            "new-window"
+        );
+        tilo_test_env::wait_until("the finished wait to drop its receiver", || {
+            state.surface_changes.receiver_count() == 0
+        });
+    }
+
+    /// Readiness needs both the action and the invocation stream, and the
+    /// app may offer them in either order; the wait wakes on each and
+    /// delivers once both exist, never before.
+    #[test]
+    fn launch_then_deliver_handles_publish_before_subscribe_and_reverse() {
+        for surface_first in [true, false] {
+            let (state, room) = broker(&workspace());
+            state.launchable.retain(&surface(7, &room));
+            let launches = app_comes_up_later(&state);
+            let owner = Caller::local_person("owner").in_room(&room);
+            let provider = offered_provider(&state, &owner, "new-window").expect("offered");
+
+            let invoking = invoke_in_background(&state, &owner, &provider, "new-window");
+            wait_for_parked_launches(&state, &launches, 1);
+            let mut stream = if surface_first {
+                state.replace_published_surfaces_for_test(vec![surface(8, &room)]);
+                assert!(
+                    !invoking.is_finished(),
+                    "an action without an invocation stream is not delivered"
+                );
+                state.capture_invocations_for_test(8)
+            } else {
+                let stream = state.capture_invocations_for_test(8);
+                assert!(
+                    !invoking.is_finished(),
+                    "a stream without the action is not delivered"
+                );
+                state.replace_published_surfaces_for_test(vec![surface(8, &room)]);
+                stream
+            };
+
+            invoking
+                .join()
+                .expect("invoking thread")
+                .unwrap_or_else(|error| {
+                    panic!("surface first: {surface_first}: not admitted: {error:?}")
+                });
+            assert_eq!(
+                stream.try_recv().expect("delivered to the app").action,
+                "new-window"
+            );
+            assert_eq!(launches.lock().expect("launches").len(), 1);
+        }
+    }
+
+    /// Many invocations of a closed app wait at once without a thread
+    /// each: every one parks on the same signal, and one publication
+    /// admits them all.
+    #[test]
+    fn concurrent_launch_waiters_all_wake_on_one_publication() {
+        const WAITERS: usize = 16;
+        let (state, room) = broker(&workspace());
+        state.launchable.retain(&surface(7, &room));
+        let launches = app_comes_up_later(&state);
+        let owner = Caller::local_person("owner").in_room(&room);
+        let provider = offered_provider(&state, &owner, "new-window").expect("offered");
+
+        let invoking = (0..WAITERS)
+            .map(|_| invoke_in_background(&state, &owner, &provider, "new-window"))
+            .collect::<Vec<_>>();
+        wait_for_parked_launches(&state, &launches, WAITERS);
+        let mut stream = state.capture_invocations_for_test(8);
+        state.replace_published_surfaces_for_test(vec![surface(8, &room)]);
+
+        for invocation in invoking {
+            invocation
+                .join()
+                .expect("invoking thread")
+                .expect("every waiter is admitted");
+        }
+        let mut delivered = 0_usize;
+        while let Ok(envelope) = stream.try_recv() {
+            assert_eq!(envelope.action, "new-window");
+            delivered = delivered.saturating_add(1);
+        }
+        assert_eq!(delivered, WAITERS);
+    }
+
+    /// A caller that drops its answer while the app is still starting ends
+    /// the wait then — long before the delivery timeout — and the app that
+    /// comes up afterwards receives nothing.
+    #[test]
+    fn launch_then_deliver_stops_when_caller_abandons() {
+        let (state, room) = broker(&workspace());
+        state.launchable.retain(&surface(7, &room));
+        let launches = app_comes_up_later(&state);
+        let owner = Caller::local_person("owner").in_room(&room);
+        let provider = offered_provider(&state, &owner, "new-window").expect("offered");
+
+        let answer = state.action_invoke(
+            &owner,
+            None,
+            None,
+            &InvokeRequest {
+                on_behalf_of: None,
+                invocation: tilo_actions::InvocationId::new(),
+                target: RemoteActionTarget {
+                    provider,
+                    address: tilo_actions::ActionAddress::new("files.app", "new-window"),
+                },
+                argument: InvokeArgument::None,
+                context: None,
+                confirmation: None,
+                revision: None,
+                wait_ms: None,
+            },
+        );
+        wait_for_parked_launches(&state, &launches, 1);
+        drop(answer);
+        tilo_test_env::wait_until("the abandoned wait to end", || {
+            state.surface_changes.receiver_count() == 0
+        });
+
+        let mut stream = state.capture_invocations_for_test(8);
+        state.replace_published_surfaces_for_test(vec![surface(8, &room)]);
+        assert!(
+            stream.try_recv().is_err(),
+            "an abandoned invocation is not delivered"
+        );
     }
 
     #[test]

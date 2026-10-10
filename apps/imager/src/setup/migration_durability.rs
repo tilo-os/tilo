@@ -194,7 +194,8 @@ pub(super) fn readable_directory(file: &File) -> io::Result<File> {
     cap_primitives::fs::open(file, std::path::Path::new("."), &options)
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 mod tests {
     use super::*;
     #[test]

@@ -157,16 +157,6 @@ pub trait ActivityHost {
         HashMap::new()
     }
     fn save_departures(&self, _departures: &HashMap<u64, WorkspaceDeparture>) {}
-    /// Record work the host finished outside the room document, such as a
-    /// shortcut run, as runs in `doc`, reading the changed documents from
-    /// `records`. Returns whether it wrote to `doc`.
-    fn record_finished_runs(
-        &self,
-        _doc: &mut AutoCommit,
-        _records: &ui::record::RecordStore,
-    ) -> bool {
-        false
-    }
     fn mutations_available(&self) -> bool {
         false
     }

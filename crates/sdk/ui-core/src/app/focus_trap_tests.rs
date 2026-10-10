@@ -1,4 +1,5 @@
 use super::*;
+use crate::widget::TaffyTreeExt;
 use crate::widget::modal_dialog::ModalDialog;
 use crate::widget::{AppModel, ModelPath};
 use crate::widget::{Button, Widget};
@@ -31,11 +32,7 @@ impl Widget for TwoKids {
             .iter_mut()
             .map(|c| c.build_layout(taffy, theme, node_map))
             .collect();
-        let node = taffy
-            .new_with_children(taffy::Style::default(), &kids)
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_node(taffy::Style::default(), &kids, node_map, self)
     }
     fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
     fn draw(
@@ -104,11 +101,7 @@ impl Widget for ModalHost {
             .map(|c| c.build_layout(taffy, theme, node_map))
             .collect();
         kids.push(self.modal.build_layout(taffy, theme, node_map));
-        let node = taffy
-            .new_with_children(taffy::Style::default(), &kids)
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_node(taffy::Style::default(), &kids, node_map, self)
     }
     fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
     fn draw(

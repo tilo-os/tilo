@@ -5,8 +5,9 @@
 //! channel the moment it completes, so one slow feed never holds up the
 //! others. The widget drains results during its `sync` pass and folds them
 //! into the store + CRDT. HTTP feeds go through `tilo_net` + feed-rs;
-//! `gemini://` feeds go through a raw TLS socket (TOFU, desktop only) and the
-//! gemtext parser. Parsing runs on the CPU pool, not on the runtime thread.
+//! `gemini://` feeds go through a raw TLS socket (desktop only) and the
+//! gemtext parser, trusting the server certificate on first use: the first
+//! fetch pins it on the feed and every later fetch must present the same one. Parsing runs on the CPU pool, not on the runtime thread.
 //! In a page, feeds whose sites do not allow cross-origin reads go through
 //! the host's fetch proxy when it offers one.
 //!
@@ -31,6 +32,8 @@ pub enum FetchRequest {
         feed_id: Id,
         url: String,
         kind: FeedKind,
+        /// The feed's [`Feed::certificate_pin`]; the server must match it.
+        certificate_pin: Option<String>,
     },
     /// Resolve a brand-new subscription URL: discover the feed metadata
     /// and its initial articles.
@@ -45,6 +48,9 @@ pub enum FetchResult {
         feed_id: Id,
         title: Option<String>,
         articles: Vec<Article>,
+        /// The certificate a gemini server presented, for a feed to pin on
+        /// its first fetch.
+        certificate_pin: Option<String>,
     },
     /// A newly-discovered feed and its initial articles.
     Subscribed { feed: Feed, articles: Vec<Article> },
@@ -170,36 +176,48 @@ fn http_client() -> Option<&'static tilo_net::Client> {
 
 async fn handle(client: Option<&tilo_net::Client>, req: FetchRequest) -> FetchResult {
     match req {
-        FetchRequest::Refresh { feed_id, url, kind } => {
-            match fetch_feed(client, &url, kind).await {
-                Ok((title, articles)) => {
-                    let articles = articles
-                        .into_iter()
-                        .map(|mut a| {
-                            a.feed_id = feed_id;
-                            a
-                        })
-                        .collect();
-                    FetchResult::Articles {
-                        feed_id,
-                        title,
-                        articles,
-                    }
+        FetchRequest::Refresh {
+            feed_id,
+            url,
+            kind,
+            certificate_pin,
+        } => match fetch_feed(client, &url, kind, certificate_pin.as_deref()).await {
+            Ok(Fetched {
+                title,
+                articles,
+                certificate_pin,
+            }) => {
+                let articles = articles
+                    .into_iter()
+                    .map(|mut a| {
+                        a.feed_id = feed_id;
+                        a
+                    })
+                    .collect();
+                FetchResult::Articles {
+                    feed_id,
+                    title,
+                    articles,
+                    certificate_pin,
                 }
-                Err(e) => FetchResult::Failed {
-                    feed_id: Some(feed_id),
-                    message: e,
-                },
             }
-        }
+            Err(e) => FetchResult::Failed {
+                feed_id: Some(feed_id),
+                message: e,
+            },
+        },
         FetchRequest::Subscribe { url, folder } => {
             let kind = if url.starts_with("gemini://") {
                 FeedKind::Gemini
             } else {
                 FeedKind::Rss
             };
-            match fetch_feed(client, &url, kind).await {
-                Ok((title, articles)) => {
+            match fetch_feed(client, &url, kind, None).await {
+                Ok(Fetched {
+                    title,
+                    articles,
+                    certificate_pin,
+                }) => {
                     let feed_id = Uuid::new_v4();
                     let site_url = derive_site_url(&url);
                     let feed = Feed {
@@ -210,6 +228,7 @@ async fn handle(client: Option<&tilo_net::Client>, req: FetchRequest) -> FetchRe
                         folder,
                         order: 0,
                         kind,
+                        certificate_pin,
                     };
                     let articles = articles
                         .into_iter()
@@ -229,14 +248,24 @@ async fn handle(client: Option<&tilo_net::Client>, req: FetchRequest) -> FetchRe
     }
 }
 
-/// Fetch + parse a feed, returning (title, articles).
+/// What one fetch found.
+struct Fetched {
+    title: Option<String>,
+    articles: Vec<Article>,
+    /// The certificate a gemini server presented; `None` over HTTP.
+    certificate_pin: Option<String>,
+}
+
+/// Fetch + parse a feed. A gemini server must present `certificate_pin`
+/// when the feed has one.
 async fn fetch_feed(
     client: Option<&tilo_net::Client>,
     url: &str,
     kind: FeedKind,
-) -> Result<(Option<String>, Vec<Article>), String> {
+    certificate_pin: Option<&str>,
+) -> Result<Fetched, String> {
     if kind == FeedKind::Gemini || url.starts_with("gemini://") {
-        return fetch_gemini(url).await;
+        return fetch_gemini(url, certificate_pin).await;
     }
     let client = client.ok_or("no http client")?;
     let resp = client
@@ -251,9 +280,14 @@ async fn fetch_feed(
         .bytes_limited(MAX_FEED_BYTES)
         .await
         .map_err(|e| format!("body: {e}"))?;
-    ui::rt::cpu(move || parse_http_feed(&bytes))
+    let (title, articles) = ui::rt::cpu(move || parse_http_feed(&bytes))
         .await
-        .map_err(|e| format!("parse: {e}"))?
+        .map_err(|e| format!("parse: {e}"))??;
+    Ok(Fetched {
+        title,
+        articles,
+        certificate_pin: None,
+    })
 }
 
 /// The largest feed or gemini page read; bigger answers are refused.
@@ -346,8 +380,8 @@ pub(crate) fn derive_site_url(feed_url: &str) -> String {
 // Gemini (gemini://, port 1965, TOFU)
 // =====================================================================
 
-async fn fetch_gemini(url: &str) -> Result<(Option<String>, Vec<Article>), String> {
-    let body = gemini_request(url).await?;
+async fn fetch_gemini(url: &str, certificate_pin: Option<&str>) -> Result<Fetched, String> {
+    let (body, presented) = gemini_request(url, certificate_pin).await?;
     let (body, blocks) = ui::rt::cpu(move || {
         let blocks = gemtext::to_blocks(&body);
         (body, blocks)
@@ -373,10 +407,35 @@ async fn fetch_gemini(url: &str) -> Result<(Option<String>, Vec<Article>), Strin
         starred: false,
         tags: Vec::new(),
     };
-    Ok((title, vec![article]))
+    Ok(Fetched {
+        title,
+        articles: vec![article],
+        certificate_pin: Some(presented),
+    })
 }
 
-async fn gemini_request(url: &str) -> Result<String, String> {
+/// The pin of the certificate `host` presented (BLAKE3 of its DER, hex),
+/// or why it is refused: there is none, or it is not the `expected` pin.
+fn check_certificate(
+    host: &str,
+    der: Option<&[u8]>,
+    expected: Option<&str>,
+) -> Result<String, String> {
+    let presented = blake3::hash(der.ok_or("the server presented no certificate")?)
+        .to_hex()
+        .to_string();
+    if expected.is_some_and(|expected| expected != presented) {
+        return Err(format!(
+            "{host} presented a different certificate than when you subscribed; \
+             someone may be impersonating it"
+        ));
+    }
+    Ok(presented)
+}
+
+/// Request `url` and return its body with the pin of the certificate the
+/// server presented, refusing a server whose certificate is not `expected`.
+async fn gemini_request(url: &str, expected: Option<&str>) -> Result<(String, String), String> {
     use tilo_net::sockets::{TlsStream, Trust};
 
     let rest = url.strip_prefix("gemini://").unwrap_or(url);
@@ -388,12 +447,13 @@ async fn gemini_request(url: &str) -> Result<String, String> {
     };
 
     // Gemini servers overwhelmingly use self-signed certificates, so the
-    // protocol relies on trust on first use rather than a CA chain. Any
-    // certificate is accepted; a production reader would pin
-    // `peer_certificate()` on first contact.
+    // protocol relies on trust on first use rather than a CA chain: any
+    // certificate completes the handshake, and the pin decides whether this
+    // is the server the feed was subscribed to. Nothing is sent before that.
     let mut tls = TlsStream::connect(&host_only, port, Trust::AnyCertificate)
         .await
         .map_err(|e| format!("connect: {e}"))?;
+    let presented = check_certificate(&host_only, tls.peer_certificate().as_deref(), expected)?;
 
     let request = format!("{url}\r\n");
     tls.write_all(request.as_bytes())
@@ -417,7 +477,10 @@ async fn gemini_request(url: &str) -> Result<String, String> {
     if !status.starts_with('2') {
         return Err(format!("gemini status {header}"));
     }
-    Ok(text.get(nl + 2..).unwrap_or_default().to_string())
+    Ok((
+        text.get(nl + 2..).unwrap_or_default().to_string(),
+        presented,
+    ))
 }
 
 #[cfg(test)]
@@ -439,6 +502,19 @@ mod tests {
             );
         }
 
+        // --- phase: a gemini server must present the pinned certificate ---
+        {
+            let pin = check_certificate("example.org", Some(b"cert"), None).unwrap();
+            assert_eq!(pin, blake3::hash(b"cert").to_hex().as_str());
+            assert_eq!(
+                check_certificate("example.org", Some(b"cert"), Some(&pin)),
+                Ok(pin.clone())
+            );
+            let refused = check_certificate("example.org", Some(b"other"), Some(&pin));
+            assert!(refused.is_err_and(|e| e.contains("different certificate")));
+            assert!(check_certificate("example.org", None, None).is_err());
+        }
+
         // --- phase: worker_send_is_nonblocking_and_poll_drains ---
         {
             fn worker_send_is_nonblocking_and_poll_drains() {
@@ -450,6 +526,7 @@ mod tests {
                         feed_id: Uuid::new_v4(),
                         url: "https://example.invalid/feed.xml".into(),
                         kind: FeedKind::Rss,
+                        certificate_pin: None,
                     });
                 }
                 // 50 enqueues with bogus URLs return in well under a frame budget,
@@ -467,6 +544,7 @@ mod tests {
                         feed_id: fid,
                         title: Some("T".into()),
                         articles: vec![],
+                        certificate_pin: None,
                     })
                     .unwrap();
                 let drained = w.poll();

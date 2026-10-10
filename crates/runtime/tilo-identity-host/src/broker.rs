@@ -26,6 +26,11 @@ use wire_frame::FrameError;
 
 use tilo_desktop_model::{RoomId, Workspace};
 
+/// The resource an app's device-signature request names. A signature is
+/// asked for one of the app's own actions, so a grant letting an app sign
+/// names this resource and that action.
+pub const DEVICE_SIGNATURE_RESOURCE: &str = "identity.device-signature";
+
 /// The committed workspaces the broker authorizes each request against.
 pub trait WorkspaceMembership: Send + Sync + 'static {
     /// Run `read` over the workspace whose room is `room`, when this host has it.
@@ -307,6 +312,7 @@ fn sign(
         let actor = Actor::app(app_id);
         let resource = ResourceRef::Action {
             app: app_id.to_string(),
+            resource: DEVICE_SIGNATURE_RESOURCE.to_string(),
             action: action.to_string(),
         };
         decide_capability(
@@ -482,8 +488,19 @@ fn channel_keys(
         Ok(None) => return Response::Denied("no identity selected for this workspace".into()),
         Err(error) => return Response::Error(error.to_string()),
     };
-    if let Err(error) = require_trusted_current_device(&profile) {
-        return Response::Denied(error.to_string());
+    // The same trust check as signing, served from memory while none of the
+    // files it reads changed (`join_proof`): one `stat` of each instead of
+    // reading the device key and certificate. A changed, unreadable or
+    // just-written file, a revocation included, is checked again from disk;
+    // a refusal is never remembered. No key leaves the check.
+    match crate::join_proof::trusted_current_join_proof(route.workspace_id) {
+        Ok(trusted) if trusted.certificate.user_public_key == profile.user_public_key => {}
+        Ok(_) => {
+            return Response::Denied(
+                "this device certificate does not belong to the selected identity".into(),
+            );
+        }
+        Err(error) => return Response::Denied(error.to_string()),
     }
     let principal_id =
         Principal::person_from_key(Ed25519PublicKey::from_bytes(profile.user_public_key))
@@ -552,7 +569,9 @@ fn require_trusted_current_device(
             "this device certificate does not belong to the selected identity and device",
         ));
     }
-    let fleet = crate::device_fleet::DeviceFleetStore::from_env()?.load(&profile.id)?;
+    // Served from memory only while the fleet files are unchanged, so a
+    // revocation is seen by the very next call.
+    let fleet = crate::device_fleet::DeviceFleetStore::from_env()?.load_cached(&profile.id)?;
     if fleet.is_revoked(&device_key) {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
@@ -741,6 +760,7 @@ mod tests {
                     Subject::app("so.tilo.notes"),
                     Scope::Action {
                         app: "so.tilo.notes".into(),
+                        resource: DEVICE_SIGNATURE_RESOURCE.into(),
                         action: "document.save".into(),
                     },
                     Verb::Write,
@@ -1019,6 +1039,7 @@ mod tests {
             Subject::app("so.tilo.notes"),
             Scope::Action {
                 app: "so.tilo.notes".into(),
+                resource: DEVICE_SIGNATURE_RESOURCE.into(),
                 action: "document.save".into(),
             },
             Verb::Write,
@@ -1150,6 +1171,91 @@ mod tests {
         );
         let mut byte = [0];
         assert_eq!(partial.read(&mut byte).unwrap(), 0);
+    }
+
+    /// A channel service holding keys for every route.
+    struct ReadyChannels;
+    impl ChannelKeySource for ReadyChannels {
+        fn access(
+            &self,
+            _room: RoomId,
+            _channel: collab_types::ChannelId,
+            _known_generation: u64,
+        ) -> Option<Result<ChannelKeys, String>> {
+            Some(Ok((
+                runtime_identity::wire::ChannelAccess::Ready,
+                1,
+                vec![1, 2, 3],
+            )))
+        }
+    }
+
+    /// Answering an app's key request checks this device's trust from the
+    /// identity files while they are unchanged without reading them again,
+    /// and still refuses keys on the very next request after a revocation.
+    #[test]
+    fn channel_keys_trust_check_reads_identity_files_once_and_sees_revocation() {
+        let fixture = crate::join_proof::tests::Fixture::new();
+        let room = RoomId::parse(&fixture.room).expect("room");
+        let app_id = "so.tilo.notes";
+        let profile = crate::registry::selected_identity_profile(&fixture.room)
+            .expect("registry")
+            .expect("profile");
+        let mut workspace = Workspace::new(WorkspaceId(1), "Room");
+        workspace.room = room;
+        workspace.set_owner(profile.principal_id());
+        let mut tree = WorkspaceTree::default();
+        tree.desktop.workspaces.push(workspace);
+        let tree = tree.shared();
+        let ask = || {
+            channel_keys(
+                &tree,
+                &ReadyChannels,
+                &ChannelKeyRoute {
+                    bound_room: &room,
+                    bound_app_id: app_id,
+                    workspace_id: &fixture.room,
+                    app_id,
+                    record_id: "note",
+                },
+                0,
+            )
+        };
+        let fleet_loads = crate::device_fleet::loads_on_this_thread();
+        let derived = crate::join_proof::tests::mints(|| {
+            for _ in 0..3 {
+                assert!(matches!(ask(), Response::ChannelKeys { .. }));
+            }
+        });
+        assert_eq!(
+            derived, 1,
+            "the identity files are read for the first answer only"
+        );
+        assert!(
+            crate::device_fleet::loads_on_this_thread().saturating_sub(fleet_loads) <= 1,
+            "the fleet is read at most once"
+        );
+
+        let device = trusted_current_device(&fixture.room)
+            .expect("trusted device")
+            .0
+            .verifying_key()
+            .to_bytes();
+        fixture
+            .store()
+            .revoke(
+                &fixture.identity_id,
+                device,
+                tilo_user_identity::RevocationReason::Lost,
+                crate::join_proof::tests::proof_issued_at(&fixture).saturating_add(1),
+            )
+            .expect("revoke");
+        assert!(
+            matches!(ask(), Response::Denied(_)),
+            "a revoked device gets no keys on the next request"
+        );
+        fixture.settle();
+        assert!(matches!(ask(), Response::Denied(_)), "nor once it settles");
     }
 
     #[cfg(target_os = "linux")]

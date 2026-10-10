@@ -28,8 +28,8 @@ Run `tilo-app --help` to see every command. Each one accepts `--json` and then
 writes exactly one JSON document to stdout, so scripts and agents can drive the
 tool as well as people can.
 
-For one task at a time, run `tilo-app guide`: `start`, `actions`, `verify` and
-`publish` are short workflows embedded in the CLI, available offline and
+For one task at a time, run `tilo-app guide`: `start`, `actions`, `collaborate`,
+`permissions`, `network`, `verify` and `publish` are short workflows embedded in the CLI, available offline and
 outside an app directory. `tilo-app guide actions --json` returns only that
 guide, without searching or reading the full manual.
 

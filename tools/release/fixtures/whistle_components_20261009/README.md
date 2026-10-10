@@ -1,0 +1,7 @@
+# Recorded Whistle component controls — 9 October 2026
+
+These are historical, hardware-isolated driver snapshots and raw direct-control logs, not an installer or a current-head launcher. Results and binary/source/model/audio hashes are in `docs/architecture/dictation-component-profile-evidence.json`. The r1 component profile refused mismatching binaries before running; r2 uses a normal matching four-binary rebuild at c403ee7bf5f2660abadc20726697a5d810632ae1. Never relax identity assertions to reuse old results. A rerun needs a matching build, newly recorded exact source and binary guards, and fresh output identifiers.
+
+The pinned Apache-2.0 Cactus Compute Whistle and CC-BY-4.0 Google FLEURS development fixtures reuse the custody and attribution recorded in `dictation-whistle-compositor-evidence.json`. No model, runtime executable or audio data is distributed here. No physical microphone or persistent installation was used.
+
+Component RSS sums count shared mappings repeatedly and peaks occur at different times. Model/runtime share one worker process; these measurements do not separate their allocations. Direct German controls preserve erroneous transcripts with auto and explicit de. The French r2 profile preserves editor behavior but has 15% raw WER, versus the earlier distinct 0% control. No accuracy or preview-latency improvement is asserted. The exact-silence improvement is verified through both the actual AOT worker and production recognition tests.

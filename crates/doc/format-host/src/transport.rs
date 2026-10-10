@@ -12,11 +12,12 @@ use crate::format_router_capnp::format_router;
 use crate::router::Router;
 use crate::service::FormatRouterService;
 
-pub fn default_socket_path() -> PathBuf {
-    let base = xdg_paths::xdg::runtime_dir().unwrap_or_else(std::env::temp_dir);
-    base.join("tilo")
-        .join("services")
-        .join("format-router.sock")
+pub fn default_socket_path() -> Option<PathBuf> {
+    tilo_paths::xdg::runtime_dir().map(|base| {
+        base.join("tilo")
+            .join("services")
+            .join("format-router.sock")
+    })
 }
 
 /// Bind the Unix socket, accept connections, and serve capnp RPC. Returns the

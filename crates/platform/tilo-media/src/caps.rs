@@ -1,5 +1,6 @@
 //! What this crate can do on the running target.
 
+pub use tilo_platform_caps::Availability;
 /// A capability of this crate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Feature {
@@ -21,13 +22,6 @@ pub enum Feature {
     /// The system audio graph: devices, per-app streams and routing
     /// ([`crate::audio`]).
     AudioGraph,
-}
-
-/// Whether a feature works on this target.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Availability {
-    Available,
-    Unsupported(&'static str),
 }
 
 const NO_DECODE: &str = "built without the `decode` feature";
@@ -91,14 +85,6 @@ pub const CAPABILITIES: &[(Feature, [Availability; 3])] = &[
     ),
 ];
 
-fn column() -> usize {
-    if cfg!(target_family = "wasm") {
-        2
-    } else {
-        usize::from(cfg!(target_os = "macos"))
-    }
-}
-
 /// Whether `feature` works on the running target, in this build.
 #[must_use]
 pub fn availability(feature: Feature) -> Availability {
@@ -118,7 +104,7 @@ pub fn availability(feature: Feature) -> Availability {
     CAPABILITIES
         .iter()
         .find(|(f, _)| *f == feature)
-        .and_then(|(_, row)| row.get(column()).copied())
+        .and_then(|(_, row)| row.get(tilo_platform_caps::COLUMN).copied())
         .unwrap_or(Availability::Unsupported("unknown feature"))
 }
 
@@ -153,7 +139,7 @@ mod tests {
             CAPABILITIES
                 .iter()
                 .find(|(f, _)| *f == Feature::AudioGraph)
-                .map(|(_, row)| row[column()])
+                .map(|(_, row)| row[tilo_platform_caps::COLUMN])
                 .unwrap()
         );
     }

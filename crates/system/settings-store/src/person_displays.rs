@@ -486,6 +486,52 @@ pub struct Layout {
 }
 
 impl Layout {
+    /// Resolve the observed device desktop origins until an explicit shared
+    /// arrangement has placed that device. Shell and Settings use this bridge
+    /// so unarranged outputs retain the same checked coordinates in both.
+    pub fn resolve_at_device_origins(
+        devices: &[PersonDevice],
+        arrangement: &Arrangement,
+        origins: &BTreeMap<String, (i32, i32)>,
+    ) -> Self {
+        let mut observed = arrangement.clone();
+        for device in devices {
+            if device.outputs.iter().any(|output| {
+                observed
+                    .entry(&device.device, &output.id)
+                    .is_some_and(|entry| entry.placed)
+            }) {
+                continue;
+            }
+            let Some(&(x, y)) = origins.get(&device.device) else {
+                continue;
+            };
+            let Some(output) = device.outputs.iter().find(|output| output.active()) else {
+                continue;
+            };
+            let mut anchor = observed
+                .entry(&device.device, &output.id)
+                .cloned()
+                .unwrap_or_else(|| ArrangedDisplay {
+                    device: device.device.clone(),
+                    output: output.id.clone(),
+                    enabled: true,
+                    order: i64::try_from(observed.displays.len()).unwrap_or(0),
+                    placed: false,
+                    x: 0,
+                    y: 0,
+                    rev: 0,
+                });
+            anchor.placed = true;
+            anchor.x = x.saturating_add(output.x);
+            anchor.y = y.saturating_add(output.y);
+            observed
+                .displays
+                .retain(|entry| !(entry.device == anchor.device && entry.output == anchor.output));
+            observed.displays.push(anchor);
+        }
+        Self::resolve(devices, &observed)
+    }
     /// Place every active output of `devices` per `arrangement`.
     ///
     /// A device's outputs keep their own desktop's relative layout. The

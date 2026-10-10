@@ -246,6 +246,7 @@ impl Drop for Service {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .owner = None;
+        self.0.changes.ring();
     }
 }
 
@@ -517,6 +518,12 @@ impl Inner {
 }
 
 impl Reader {
+    /// Compare opaque binding identity without reading dictionary contents.
+    /// A same-person logout/login still issues a different binding epoch.
+    pub fn same_binding(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner) && self.epoch == other.epoch
+    }
+
     fn owner(&self, binding: &Binding) -> io::Result<[u8; 32]> {
         if binding.epoch != self.epoch {
             return Err(denied());

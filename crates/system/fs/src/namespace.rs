@@ -15,7 +15,7 @@ use std::time::{Duration, UNIX_EPOCH};
 use automerge::sync::SyncDoc;
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
-use collab_types::{
+use fs_protocol::{
     ContentRevisionV1, FILE_BINDING_VERSION, FileActor, FileBindingV1, FileMutationParticipantRole,
     FileMutationTransaction, FileNameV1, FileNodeKind, FileRecordId,
 };
@@ -35,6 +35,9 @@ const CONTENT_REVISION_KEY: &str = "content_revision_v1";
 const RECORD_ID_MIGRATION_DOMAIN: &[u8] = b"tilo.collaborative-fs.namespace-record-id.v1";
 
 pub const MAX_LIVE_RECORD_BLOB_SCAN: usize = 100_000;
+/// Most peer devices a namespace remembers sync progress with. An exchange
+/// with a device beyond it starts from a full sync, as a first one does.
+const MAX_PEER_SYNC_STATES: usize = 1024;
 
 mod changesets;
 mod leases;
@@ -156,6 +159,41 @@ pub struct Entry {
     pub size: u64,
     pub mtime: u64,
     pub author: String,
+}
+
+/// The fields of an [`Entry`] that serve FUSE attributes and content reads.
+#[derive(Clone, Copy, Debug)]
+struct NodeMeta {
+    record_id: FileRecordId,
+    kind: NodeKind,
+    hash: Option<Hash>,
+    size: u64,
+    mtime: u64,
+}
+
+/// What [`Namespace::inode_view`] is asked for.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct InodeQuery {
+    /// Also describe an inode no longer reachable from the root, as a kernel
+    /// handle opened before its unlink or replacement may.
+    pub unlinked: bool,
+    /// Build the inode's absolute path, for the ACL check.
+    pub path: bool,
+}
+
+/// One inode as a single FUSE request sees it, read under one namespace
+/// lock. See [`Namespace::inode_view`].
+#[derive(Clone, Debug)]
+pub(crate) struct InodeView {
+    pub attr: FileAttr,
+    pub hash: Option<Hash>,
+    /// Reachable from the root, as [`Namespace::getattr`] requires.
+    pub live: bool,
+    /// The absolute path, when asked for and the inode is live.
+    pub path: Option<String>,
+    /// A CRDT-backed document whose bytes are its export: a codec under the
+    /// legacy content authority.
+    pub document: bool,
 }
 
 /// One authoritative, path-current row in the namespace-owned record index.
@@ -341,10 +379,50 @@ pub struct Namespace {
     /// regenerates its changes from the op set (a pass over the document),
     /// so one per changed file is quadratic in a changeset.
     incremental_batch: Option<(Vec<automerge::ChangeHash>, Vec<u8>)>,
+    /// Per peer device (its certified key): the heads the last completed
+    /// sync exchange with it agreed both sides hold, as an encoded
+    /// [`automerge::sync::State`]. Without them every exchange would start
+    /// by summarising the document's whole history.
+    peer_sync_states: HashMap<[u8; 32], Vec<u8>>,
+    /// Bytes of every sync message this namespace generated.
+    #[cfg(test)]
+    sync_bytes_generated: usize,
     #[cfg(test)]
     record_index_rebuilds: u64,
+    /// Changes whenever the verified (signed) content projection changes:
+    /// that state lives beside the document, so its heads alone miss it.
+    /// Drawn from a process-wide counter so no two instances share a value.
+    verified_generation: u64,
+    /// Changes whenever changes another replica made are merged into the
+    /// document. Concurrent edits, and so content conflicts, can only arrive
+    /// that way: this replica's own changes are causally ordered. Drawn from
+    /// the same process-wide counter as `verified_generation`.
+    merge_generation: u64,
+    /// Calls of [`crate::conflict::detect`] on this namespace.
+    #[cfg(test)]
+    conflict_scans: std::sync::Arc<std::sync::atomic::AtomicU64>,
     #[cfg(test)]
     record_index_page_reads: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    #[cfg(test)]
+    node_entry_reads: std::sync::Arc<std::sync::atomic::AtomicU64>,
+}
+
+/// Source of `Namespace::verified_generation` values.
+static NEXT_VERIFIED_GENERATION: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(1);
+
+fn next_verified_generation() -> u64 {
+    NEXT_VERIFIED_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Cheap fingerprint of everything a [`Namespace`] projects: the document
+/// heads plus the generation of the verified content projection beside it.
+/// Equal tokens mean no node, path, hash or content revision changed, so a
+/// background reconciler can skip a pass without walking the namespace.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NamespaceChangeToken {
+    heads: Vec<automerge::ChangeHash>,
+    verified_generation: u64,
 }
 
 fn hash_to_hex(h: &Hash) -> String {
@@ -437,10 +515,19 @@ impl Namespace {
             record_ids_complete: false,
             resolved_heads: None,
             incremental_batch: None,
+            peer_sync_states: HashMap::new(),
+            #[cfg(test)]
+            sync_bytes_generated: 0,
             #[cfg(test)]
             record_index_rebuilds: 0,
+            verified_generation: next_verified_generation(),
+            merge_generation: next_verified_generation(),
+            #[cfg(test)]
+            conflict_scans: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             #[cfg(test)]
             record_index_page_reads: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            #[cfg(test)]
+            node_entry_reads: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
         };
         ns.ino_to_id.insert(ROOT_INO, ROOT_ID.to_string());
         ns.id_to_ino.insert(ROOT_ID.to_string(), ROOT_INO);
@@ -496,10 +583,19 @@ impl Namespace {
             record_ids_complete: false,
             resolved_heads: None,
             incremental_batch: None,
+            peer_sync_states: HashMap::new(),
+            #[cfg(test)]
+            sync_bytes_generated: 0,
             #[cfg(test)]
             record_index_rebuilds: 0,
+            verified_generation: next_verified_generation(),
+            merge_generation: next_verified_generation(),
+            #[cfg(test)]
+            conflict_scans: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             #[cfg(test)]
             record_index_page_reads: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            #[cfg(test)]
+            node_entry_reads: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
         };
         ns.ino_to_id.insert(ROOT_INO, ROOT_ID.to_string());
         ns.id_to_ino.insert(ROOT_ID.to_string(), ROOT_INO);
@@ -558,6 +654,7 @@ impl Namespace {
         }
         self.content_authority = ContentAuthority::SignedRecords;
         self.verified_records.clear();
+        self.verified_generation = next_verified_generation();
     }
 
     /// Install a content tuple that has already passed record-repository
@@ -584,6 +681,7 @@ impl Namespace {
                 thumbnail,
             },
         );
+        self.verified_generation = next_verified_generation();
         true
     }
 
@@ -653,7 +751,9 @@ impl Namespace {
     ///
     /// Returns an error if `data` is not a valid incremental automerge change set for this document.
     pub fn apply_incremental(&mut self, data: &[u8]) -> Result<(), automerge::AutomergeError> {
+        let before = self.doc.get_heads();
         self.doc.load_incoming(data)?;
+        self.note_merge(&before);
         self.ensure_record_ids();
         self.rebuild_record_index();
         Ok(())
@@ -694,7 +794,9 @@ impl Namespace {
     ///
     /// Returns an error if `other`'s document cannot be merged into this one.
     pub fn merge_doc(&mut self, other: &mut Namespace) -> Result<(), automerge::AutomergeError> {
+        let before = self.doc.get_heads();
         self.doc.merge_incoming(&mut other.doc)?;
+        self.note_merge(&before);
         self.ensure_record_ids();
         self.rebuild_record_index();
         Ok(())
@@ -709,7 +811,9 @@ impl Namespace {
         &mut self,
         data: &[u8],
     ) -> Result<Vec<u8>, automerge::AutomergeError> {
+        let before = self.doc.get_heads();
         self.doc.load_incoming(data)?;
+        self.note_merge(&before);
         self.ensure_record_ids();
         let _ = self.doc.save_incremental();
         self.resolve();
@@ -725,7 +829,9 @@ impl Namespace {
         data: &[u8],
     ) -> Result<Vec<u8>, automerge::AutomergeError> {
         let mut other = AutoCommit::load(data)?;
+        let before = self.doc.get_heads();
         self.doc.merge_incoming(&mut other)?;
+        self.note_merge(&before);
         self.ensure_record_ids();
         let _ = self.doc.save_incremental();
         self.resolve();
@@ -733,11 +839,99 @@ impl Namespace {
         Ok(self.doc.save_incremental())
     }
 
+    /// Moves [`Self::merge_generation`] on when a merge since `before`
+    /// brought changes.
+    fn note_merge(&mut self, before: &[automerge::ChangeHash]) {
+        if self.doc.get_heads() != before {
+            self.merge_generation = next_verified_generation();
+        }
+    }
+
+    /// Changes whenever changes another replica made were merged in, and
+    /// only then: equal values mean no new content conflict can have
+    /// arrived, so a reconciler can skip [`crate::conflict::detect`].
+    #[must_use]
+    pub fn merge_generation(&self) -> u64 {
+        self.merge_generation
+    }
+
+    /// Counts a [`crate::conflict::detect`] scan.
+    #[cfg(test)]
+    pub(crate) fn note_conflict_scan(&self) {
+        self.conflict_scans
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Calls of [`crate::conflict::detect`] on this namespace.
+    #[cfg(test)]
+    pub(crate) fn conflict_scans(&self) -> u64 {
+        self.conflict_scans
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// The sync state an exchange with the device `peer` begins at: where
+    /// the last exchange completed with it ([`Self::finish_sync_with`])
+    /// left off, so an idle exchange summarises only the changes since
+    /// rather than the document's whole history. A device this namespace
+    /// has completed no exchange with, or whose agreed heads this document
+    /// does not hold, gets a fresh state and so a full sync. A peer that
+    /// lost what it agreed to is caught by Automerge itself: it answers
+    /// with a reset, and the exchange falls back to a full sync.
+    pub fn begin_sync_with(&mut self, peer: &[u8; 32]) -> automerge::sync::State {
+        let resumed = self
+            .peer_sync_states
+            .get(peer)
+            .and_then(|encoded| automerge::sync::State::decode(encoded).ok());
+        match resumed {
+            Some(state)
+                if state
+                    .shared_heads
+                    .iter()
+                    .all(|hash| self.doc.get_change_meta_by_hash(hash).is_some()) =>
+            {
+                state
+            }
+            Some(_) => {
+                self.peer_sync_states.remove(peer);
+                automerge::sync::State::new()
+            }
+            None => automerge::sync::State::new(),
+        }
+    }
+
+    /// Remembers where a completed exchange with the device `peer` left
+    /// off, for [`Self::begin_sync_with`]. Only the heads both sides hold
+    /// persist ([`automerge::sync::State::encode`]); everything else in
+    /// `state` belongs to that one exchange.
+    pub fn finish_sync_with(&mut self, peer: [u8; 32], state: &automerge::sync::State) {
+        if !self.peer_sync_states.contains_key(&peer)
+            && self.peer_sync_states.len() >= MAX_PEER_SYNC_STATES
+            && let Some(evicted) = self.peer_sync_states.keys().next().copied()
+        {
+            self.peer_sync_states.remove(&evicted);
+        }
+        self.peer_sync_states.insert(peer, state.encode());
+    }
+
     pub fn sync_generate(&mut self, state: &mut automerge::sync::State) -> Option<Vec<u8>> {
-        self.doc
+        let message = self
+            .doc
             .sync()
             .generate_sync_message(state)
-            .map(automerge::sync::Message::encode)
+            .map(automerge::sync::Message::encode);
+        #[cfg(test)]
+        {
+            self.sync_bytes_generated = self
+                .sync_bytes_generated
+                .saturating_add(message.as_ref().map_or(0, Vec::len));
+        }
+        message
+    }
+
+    /// Bytes of every sync message this namespace has generated.
+    #[cfg(test)]
+    pub(crate) fn sync_bytes_generated(&self) -> usize {
+        self.sync_bytes_generated
     }
 
     /// # Errors
@@ -754,6 +948,7 @@ impl Namespace {
         // Most sync rounds carry heads and bloom filters, not changes; the
         // indexes are rebuilt only when the document actually changed.
         if self.doc.get_heads() != before {
+            self.merge_generation = next_verified_generation();
             self.ensure_record_ids();
             self.rebuild_record_index();
         }
@@ -1034,6 +1229,15 @@ impl Namespace {
             .load(std::sync::atomic::Ordering::Relaxed)
     }
 
+    /// Calls of [`Self::entry_for_node`]: a whole-namespace walk makes one
+    /// per live node, so a test can prove a pass did not walk.
+    #[cfg(test)]
+    #[must_use]
+    pub fn node_entry_read_count(&self) -> u64 {
+        self.node_entry_reads
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     fn deterministic_record_id(&self, id: &str) -> FileRecordId {
         let mut hasher = blake3::Hasher::new();
         hasher.update(RECORD_ID_MIGRATION_DOMAIN);
@@ -1167,28 +1371,52 @@ impl Namespace {
 
     fn entry(&self, id: &str) -> Option<Entry> {
         let obj = self.node(id)?;
-        let record_id = self.record_id_for_id(id)?;
-        let revision = self.content_revision_for_id(id);
+        let meta = self.node_meta_at(id, &obj)?;
         Some(Entry {
             id: id.to_string(),
-            record_id,
+            record_id: meta.record_id,
             parent: read_str(&self.doc, &obj, "parent").unwrap_or_default(),
             name: read_name(&self.doc, &obj, "name").unwrap_or_default(),
-            kind: NodeKind::from_str(&read_str(&self.doc, &obj, "kind").unwrap_or_default()),
+            kind: meta.kind,
+            hash: meta.hash,
+            size: meta.size,
+            mtime: meta.mtime,
+            author: read_str(&self.doc, &obj, "author").unwrap_or_default(),
+        })
+    }
+
+    /// The fields of [`Self::entry`] a FUSE request needs, read from the
+    /// node once: no parent, name or author strings, and the record id and
+    /// content revision resolved without looking the node up again.
+    fn node_meta(&self, id: &str) -> Option<NodeMeta> {
+        self.node_meta_at(id, &self.node(id)?)
+    }
+
+    /// [`Self::node_meta`] of the node object `obj` for `id`. A node with no
+    /// record id has no entry, exactly as [`Self::entry`] requires.
+    fn node_meta_at(&self, id: &str, obj: &ObjId) -> Option<NodeMeta> {
+        let record_id = if id == ROOT_ID {
+            self.record_id_for_id(id)?
+        } else {
+            FileRecordId(Uuid::parse_str(&read_str(&self.doc, obj, RECORD_ID_KEY)?).ok()?)
+        };
+        let revision = self.content_revision_of(obj, record_id);
+        Some(NodeMeta {
+            record_id,
+            kind: NodeKind::from_str(&read_str(&self.doc, obj, "kind").unwrap_or_default()),
             hash: match (self.content_authority, revision) {
                 (_, Some(revision)) => revision.content_hash.map(|hash| Hash::from(hash.0)),
                 (ContentAuthority::SignedRecords, None) => None,
                 (ContentAuthority::LegacyNamespace, None) => {
-                    read_str(&self.doc, &obj, "hash").and_then(|h| hash_from_hex(&h))
+                    read_str(&self.doc, obj, "hash").and_then(|h| hash_from_hex(&h))
                 }
             },
             size: match (self.content_authority, revision) {
                 (_, Some(revision)) => revision.byte_len,
                 (ContentAuthority::SignedRecords, None) => 0,
-                (ContentAuthority::LegacyNamespace, None) => read_u64(&self.doc, &obj, "size"),
+                (ContentAuthority::LegacyNamespace, None) => read_u64(&self.doc, obj, "size"),
             },
-            mtime: read_u64(&self.doc, &obj, "mtime"),
-            author: read_str(&self.doc, &obj, "author").unwrap_or_default(),
+            mtime: read_u64(&self.doc, obj, "mtime"),
         })
     }
 
@@ -1435,7 +1663,7 @@ impl Namespace {
         transaction: &FileMutationTransaction,
     ) -> Result<Option<Vec<u8>>, TransactionProjectionError> {
         match transaction.manifest.operation {
-            collab_types::FileMutationOperation::RestoreContent { prior_revision, .. } => {
+            fs_protocol::FileMutationOperation::RestoreContent { prior_revision, .. } => {
                 transaction
                     .verify()
                     .map_err(|_| TransactionProjectionError::InvalidTransaction)?;
@@ -1462,10 +1690,10 @@ impl Namespace {
                 }
                 Ok(Some(self.save_incremental()))
             }
-            collab_types::FileMutationOperation::ReplacementRename { .. } => {
+            fs_protocol::FileMutationOperation::ReplacementRename { .. } => {
                 self.apply_replacement_transaction(transaction)
             }
-            collab_types::FileMutationOperation::KeepBothContentConflict { .. } => {
+            fs_protocol::FileMutationOperation::KeepBothContentConflict { .. } => {
                 let mut candidate = self.clone();
                 let delta = candidate.apply_keep_both_transaction_in_place(transaction)?;
                 if delta.is_some() {
@@ -1474,7 +1702,7 @@ impl Namespace {
                 }
                 Ok(delta)
             }
-            collab_types::FileMutationOperation::MergeContentConflict { .. } => {
+            fs_protocol::FileMutationOperation::MergeContentConflict { .. } => {
                 let mut candidate = self.clone();
                 let delta = candidate.apply_merge_transaction_in_place(transaction)?;
                 if delta.is_some() {
@@ -1500,7 +1728,7 @@ impl Namespace {
         transaction
             .verify()
             .map_err(|_| TransactionProjectionError::InvalidTransaction)?;
-        let collab_types::FileMutationOperation::MergeContentConflict {
+        let fs_protocol::FileMutationOperation::MergeContentConflict {
             source_record,
             parent_record,
             source_name,
@@ -1557,7 +1785,7 @@ impl Namespace {
         transaction
             .verify()
             .map_err(|_| TransactionProjectionError::InvalidTransaction)?;
-        let collab_types::FileMutationOperation::MergeContentConflict {
+        let fs_protocol::FileMutationOperation::MergeContentConflict {
             source_record,
             parent_record,
             source_name,
@@ -1620,7 +1848,7 @@ impl Namespace {
         transaction
             .verify()
             .map_err(|_| TransactionProjectionError::InvalidTransaction)?;
-        let collab_types::FileMutationOperation::KeepBothContentConflict {
+        let fs_protocol::FileMutationOperation::KeepBothContentConflict {
             source_record,
             sibling_record,
             parent_record,
@@ -1700,7 +1928,7 @@ impl Namespace {
         transaction
             .verify()
             .map_err(|_| TransactionProjectionError::InvalidTransaction)?;
-        let collab_types::FileMutationOperation::KeepBothContentConflict {
+        let fs_protocol::FileMutationOperation::KeepBothContentConflict {
             source_record,
             sibling_record,
             parent_record,
@@ -1800,7 +2028,7 @@ impl Namespace {
         transaction
             .verify()
             .map_err(|_| TransactionProjectionError::InvalidTransaction)?;
-        let collab_types::FileMutationOperation::ReplacementRename {
+        let fs_protocol::FileMutationOperation::ReplacementRename {
             source_parent,
             source_name,
             destination_parent,
@@ -1929,6 +2157,26 @@ impl Namespace {
                 .map(|projection| projection.revision);
         }
         self.raw_content_revision_for_id(id)
+    }
+
+    /// [`Self::content_revision_for_id`] for a node whose object and record
+    /// id the caller has already read.
+    fn content_revision_of(
+        &self,
+        obj: &ObjId,
+        record_id: FileRecordId,
+    ) -> Option<ContentRevisionV1> {
+        if self.content_authority == ContentAuthority::SignedRecords {
+            return self
+                .verified_records
+                .get(&record_id)
+                .map(|projection| projection.revision);
+        }
+        let revision = match self.doc.get(obj, CONTENT_REVISION_KEY) {
+            Ok(Some((Value::Scalar(value), _))) => revision_from_scalar(value.as_ref())?,
+            _ => return None,
+        };
+        (revision.record_id == record_id).then_some(revision)
     }
 
     fn raw_content_revision_for_id(&self, id: &str) -> Option<ContentRevisionV1> {
@@ -2161,27 +2409,27 @@ impl Namespace {
     }
 
     pub fn getattr(&self, ino: u64) -> Option<FileAttr> {
-        let id = self.ino_to_id.get(&ino)?.clone();
+        let id = self.ino_to_id.get(&ino)?;
         if id == ROOT_ID {
             return Some(Self::attr_for(ROOT_INO, NodeKind::Dir, 0, 0));
         }
-        if !self.reaches_root(&id) {
+        if !self.reaches_root(id) {
             return None;
         }
-        let e = self.entry(&id)?;
-        Some(Self::attr_for(ino, e.kind, e.size, e.mtime))
+        let meta = self.node_meta(id)?;
+        Some(Self::attr_for(ino, meta.kind, meta.size, meta.mtime))
     }
 
     /// Attribute lookup for a kernel file handle whose directory entry has
     /// since been unlinked or replaced. Path lookup must continue using
     /// [`Self::getattr`]; only an already-open handle may reach this view.
     pub(crate) fn getattr_including_unlinked(&self, ino: u64) -> Option<FileAttr> {
-        let id = self.ino_to_id.get(&ino)?.clone();
+        let id = self.ino_to_id.get(&ino)?;
         if id == ROOT_ID {
             return Some(Self::attr_for(ROOT_INO, NodeKind::Dir, 0, 0));
         }
-        let entry = self.entry(&id)?;
-        Some(Self::attr_for(ino, entry.kind, entry.size, entry.mtime))
+        let meta = self.node_meta(id)?;
+        Some(Self::attr_for(ino, meta.kind, meta.size, meta.mtime))
     }
 
     /// [`Self::getattr`] and [`Self::hash_for`] of a live node, reading it
@@ -2194,8 +2442,51 @@ impl Namespace {
         if !self.reaches_root(id) {
             return None;
         }
-        let e = self.entry(id)?;
-        Some((Self::attr_for(ino, e.kind, e.size, e.mtime), e.hash))
+        let meta = self.node_meta(id)?;
+        Some((
+            Self::attr_for(ino, meta.kind, meta.size, meta.mtime),
+            meta.hash,
+        ))
+    }
+
+    /// Everything one FUSE request asks about `ino`, read in one pass so the
+    /// caller takes the namespace lock once: what [`Self::getattr`] (or,
+    /// with `unlinked`, [`Self::getattr_including_unlinked`]),
+    /// [`Self::hash_for`], [`Self::path_for`] and [`Self::document_codec`]
+    /// would each answer. The path is only built when `query.path` asks for
+    /// it — a mount without an ACL never looks at it.
+    ///
+    /// `None` when [`Self::getattr`] is `None` and either `unlinked` is not
+    /// set or the inode is unknown.
+    pub(crate) fn inode_view(&self, ino: u64, query: InodeQuery) -> Option<InodeView> {
+        let id = self.ino_to_id.get(&ino)?;
+        if id == ROOT_ID {
+            return Some(InodeView {
+                attr: Self::attr_for(ROOT_INO, NodeKind::Dir, 0, 0),
+                hash: None,
+                live: true,
+                path: query.path.then(|| "/".to_string()),
+                document: false,
+            });
+        }
+        let live = self.reaches_root(id);
+        if !live && !query.unlinked {
+            return None;
+        }
+        let obj = self.node(id)?;
+        let meta = self.node_meta_at(id, &obj)?;
+        Some(InodeView {
+            attr: Self::attr_for(ino, meta.kind, meta.size, meta.mtime),
+            hash: meta.hash,
+            live,
+            path: if live && query.path {
+                self.path_for_id(id)
+            } else {
+                None
+            },
+            document: self.content_authority == ContentAuthority::LegacyNamespace
+                && read_str(&self.doc, &obj, "codec").is_some(),
+        })
     }
 
     /// The inode and kind of `parent_ino`'s live child `name`: what
@@ -2215,9 +2506,9 @@ impl Namespace {
     pub fn lookup(&mut self, parent_ino: u64, name: impl AsRef<[u8]>) -> Option<FileAttr> {
         let parent_id = self.ino_to_id.get(&parent_ino)?.clone();
         let child = self.child_named(&parent_id, name)?;
-        let e = self.entry(&child)?;
+        let meta = self.node_meta(&child)?;
         let ino = self.ino_for_id(&child);
-        Some(Self::attr_for(ino, e.kind, e.size, e.mtime))
+        Some(Self::attr_for(ino, meta.kind, meta.size, meta.mtime))
     }
 
     pub fn readdir(&mut self, ino: u64) -> Option<Vec<(u64, FileType, FileNameV1)>> {
@@ -2259,7 +2550,7 @@ impl Namespace {
 
     pub fn hash_for(&self, ino: u64) -> Option<Hash> {
         let id = self.ino_to_id.get(&ino)?;
-        self.entry(id)?.hash
+        self.node_meta(id)?.hash
     }
 
     /// `None` only if the document's node map itself has become unwritable
@@ -2590,6 +2881,17 @@ impl Namespace {
         self.doc.get_heads()
     }
 
+    /// O(heads): a token that changes whenever anything this namespace
+    /// projects changes — document edits (local or remote) and verified
+    /// content installs alike. Background reconcilers compare it instead of
+    /// walking every node to discover that nothing happened.
+    pub fn change_token(&mut self) -> NamespaceChangeToken {
+        NamespaceChangeToken {
+            heads: self.doc.get_heads(),
+            verified_generation: self.verified_generation,
+        }
+    }
+
     /// Whether the document file `ino` (its node: codec and content) changed
     /// between namespace heads `before` and `after`. The diff walks only
     /// that node's objects, so a change to another file costs little and
@@ -2659,19 +2961,6 @@ impl Namespace {
     ) -> bool {
         self.with_doc_mut(ino, |d| d.splice_text(block_id, idx, del, ins))
             .is_some()
-    }
-
-    pub fn document_blocks(&self, ino: u64) -> Vec<String> {
-        let Some(id) = self.ino_to_id.get(&ino) else {
-            return Vec::new();
-        };
-        let Some(root) = self.document_root(id) else {
-            return Vec::new();
-        };
-        match tilo_doc::model::open(&self.doc, &root) {
-            Ok(c) => tilo_doc::model::blocks_in_order(&self.doc, &c),
-            Err(_) => Vec::new(),
-        }
     }
 
     pub fn document_block_text(&self, ino: u64, block_id: &str) -> Option<String> {
@@ -2933,7 +3222,27 @@ impl Namespace {
     pub fn directly_trashed(&self) -> Vec<String> {
         self.doc
             .keys(&self.nodes)
-            .filter(|id| self.parent_of(id).as_deref() == Some(TRASH_ID))
+            .filter(|id| self.is_directly_trashed(id))
+            .collect()
+    }
+
+    /// Whether `id` itself was moved to the trash, not just an ancestor.
+    pub fn is_directly_trashed(&self, id: &str) -> bool {
+        self.parent_of(id).as_deref() == Some(TRASH_ID)
+    }
+
+    /// Up to `limit` node ids, live or not, in key order, starting after
+    /// `after` (at the first when `None`). Seeking to `after` is a search,
+    /// not a walk, so a caller can visit every node in bounded steps and
+    /// release the namespace lock between them.
+    pub fn node_ids_after(&self, after: Option<&str>, limit: usize) -> Vec<String> {
+        let start = after.map_or(std::ops::Bound::Unbounded, |id| {
+            std::ops::Bound::Excluded(id.to_string())
+        });
+        self.doc
+            .map_range(&self.nodes, (start, std::ops::Bound::Unbounded))
+            .take(limit)
+            .map(|item| item.key.into_owned())
             .collect()
     }
 
@@ -3091,6 +3400,9 @@ impl Namespace {
     /// Stable entry lookup used by the storage authority.  It intentionally
     /// exposes logical metadata, never an underlying host path.
     pub fn entry_for_node(&self, id: &str) -> Option<Entry> {
+        #[cfg(test)]
+        self.node_entry_reads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.entry(id).filter(|_| self.reaches_root(id))
     }
 
@@ -3392,12 +3704,12 @@ mod tests {
         // This scenario intentionally covers every durable phase and replay of a
         // two-record replacement transaction in one linear assertion trace.
         {
-            use collab_types::{
+            use ed25519_dalek::SigningKey;
+            use fs_protocol::{
                 ContentHash, FILE_MUTATION_TRANSACTION_VERSION, FileMutationOperation,
                 FileMutationParticipant, FileMutationTransactionManifest, FileProvenance,
                 FileVersionId, FileVersionV1,
             };
-            use ed25519_dalek::SigningKey;
             use getrandom::{SysRng, rand_core::UnwrapErr};
 
             let mut ns = Namespace::new("a").unwrap();
@@ -3419,7 +3731,7 @@ mod tests {
                 assert!(ns.set_content_revision(
                     ino,
                     &ContentRevisionV1 {
-                        schema_version: collab_types::CONTENT_REVISION_VERSION,
+                        schema_version: fs_protocol::CONTENT_REVISION_VERSION,
                         record_id,
                         version_id,
                         content_hash: Some(ContentHash([byte; 32])),
@@ -3464,7 +3776,7 @@ mod tests {
                         observed_at_ms: 2,
                     },
                     proposed_content_revision: Some(ContentRevisionV1 {
-                        schema_version: collab_types::CONTENT_REVISION_VERSION,
+                        schema_version: fs_protocol::CONTENT_REVISION_VERSION,
                         record_id,
                         version_id: version.id,
                         content_hash: version.content_hash,
@@ -3492,7 +3804,7 @@ mod tests {
                 ),
             ];
             participants.sort_by_key(|participant| participant.record_id);
-            let transaction = collab_types::FileMutationTransaction::signed(
+            let transaction = fs_protocol::FileMutationTransaction::signed(
                 FileMutationTransactionManifest {
                     schema_version: FILE_MUTATION_TRANSACTION_VERSION,
                     transaction_id: Uuid::new_v4(),
@@ -3540,12 +3852,12 @@ mod tests {
             assert!(ns.live_paths_for_blob(h(1)).is_empty());
 
             let revision = ContentRevisionV1 {
-                schema_version: collab_types::CONTENT_REVISION_VERSION,
+                schema_version: fs_protocol::CONTENT_REVISION_VERSION,
                 record_id,
-                version_id: collab_types::FileVersionId::new(),
-                content_hash: Some(collab_types::ContentHash([3; 32])),
+                version_id: fs_protocol::FileVersionId::new(),
+                content_hash: Some(fs_protocol::ContentHash([3; 32])),
                 byte_len: 3,
-                metadata_hash: collab_types::ContentHash([4; 32]),
+                metadata_hash: fs_protocol::ContentHash([4; 32]),
             };
             assert!(ns.install_verified_content_revision(revision));
             assert!(ns.install_verified_thumbnail(record_id, Some(h(4))));
@@ -3555,8 +3867,8 @@ mod tests {
             ns.set_field(&id, "size", 999_u64);
             ns.set_field(&id, "thumb", hash_to_hex(&h(9)));
             let mut forged = revision;
-            forged.version_id = collab_types::FileVersionId::new();
-            forged.content_hash = Some(collab_types::ContentHash([9; 32]));
+            forged.version_id = fs_protocol::FileVersionId::new();
+            forged.content_hash = Some(fs_protocol::ContentHash([9; 32]));
             forged.byte_len = 999;
             ns.set_field(
                 &id,
@@ -3591,12 +3903,12 @@ mod tests {
             );
             ns.enable_signed_content_authority();
             let revision = ContentRevisionV1 {
-                schema_version: collab_types::CONTENT_REVISION_VERSION,
+                schema_version: fs_protocol::CONTENT_REVISION_VERSION,
                 record_id,
-                version_id: collab_types::FileVersionId::new(),
-                content_hash: Some(collab_types::ContentHash([3; 32])),
+                version_id: fs_protocol::FileVersionId::new(),
+                content_hash: Some(fs_protocol::ContentHash([3; 32])),
                 byte_len: 3,
-                metadata_hash: collab_types::ContentHash([4; 32]),
+                metadata_hash: fs_protocol::ContentHash([4; 32]),
             };
             assert!(!ns.install_verified_content_revision(revision));
             assert_eq!(ns.hash_for(first), None);
@@ -3796,20 +4108,20 @@ mod tests {
             let mut b = Namespace::from_bytes("b", &bytes).unwrap();
             let bino = b.lookup(ROOT_INO, "atomic.bin").unwrap().ino.0;
             let revision_a = ContentRevisionV1 {
-                schema_version: collab_types::CONTENT_REVISION_VERSION,
+                schema_version: fs_protocol::CONTENT_REVISION_VERSION,
                 record_id,
-                version_id: collab_types::FileVersionId::new(),
-                content_hash: Some(collab_types::ContentHash([10; 32])),
+                version_id: fs_protocol::FileVersionId::new(),
+                content_hash: Some(fs_protocol::ContentHash([10; 32])),
                 byte_len: 10,
-                metadata_hash: collab_types::ContentHash([11; 32]),
+                metadata_hash: fs_protocol::ContentHash([11; 32]),
             };
             let revision_b = ContentRevisionV1 {
-                schema_version: collab_types::CONTENT_REVISION_VERSION,
+                schema_version: fs_protocol::CONTENT_REVISION_VERSION,
                 record_id,
-                version_id: collab_types::FileVersionId::new(),
-                content_hash: Some(collab_types::ContentHash([20; 32])),
+                version_id: fs_protocol::FileVersionId::new(),
+                content_hash: Some(fs_protocol::ContentHash([20; 32])),
                 byte_len: 20,
-                metadata_hash: collab_types::ContentHash([21; 32]),
+                metadata_hash: fs_protocol::ContentHash([21; 32]),
             };
             assert!(a.set_content_revision(ino, &revision_a, 2));
             assert!(b.set_content_revision(bino, &revision_b, 2));
@@ -3836,12 +4148,12 @@ mod tests {
                 .create_file(ROOT_INO, "compat.bin", Some(&h(1)), 1, 1)
                 .unwrap();
             let revision = ContentRevisionV1 {
-                schema_version: collab_types::CONTENT_REVISION_VERSION,
+                schema_version: fs_protocol::CONTENT_REVISION_VERSION,
                 record_id: ns.record_id_for(ino).unwrap(),
-                version_id: collab_types::FileVersionId::new(),
+                version_id: fs_protocol::FileVersionId::new(),
                 content_hash: None,
                 byte_len: 0,
-                metadata_hash: collab_types::ContentHash([7; 32]),
+                metadata_hash: fs_protocol::ContentHash([7; 32]),
             };
             assert!(ns.set_content_revision(ino, &revision, 2));
             assert_eq!(ns.hash_for(ino), None, "None must not resurrect the mirror");
@@ -4276,6 +4588,220 @@ mod tests {
         assert_eq!(ns.tree.children, rebuilt.tree.children);
         assert_eq!(ns.record_index_digest, rebuilt.record_index_digest);
         assert_eq!(ns.record_index_revision, rebuilt.record_index_revision);
+    }
+
+    /// `inode_view` is the one-lock read FUSE `read` and `getattr` are served
+    /// from. It must answer exactly what the separate accessors it replaced
+    /// answer, through remote renames, moves, content changes and deletes
+    /// applied by the production merge path.
+    #[test]
+    fn inode_view_matches_the_separate_accessors_after_remote_apply() {
+        let mut source = Namespace::new("source").unwrap();
+        let dir = source.create_dir(ROOT_INO, "dir", 1).unwrap();
+        source
+            .create_file(dir, "a.txt", Some(&h(1)), 10, 1)
+            .unwrap();
+        let b = source
+            .create_file(ROOT_INO, "b.txt", Some(&h(2)), 20, 1)
+            .unwrap();
+        let gone = source
+            .create_file(ROOT_INO, "gone.txt", Some(&h(3)), 30, 1)
+            .unwrap();
+        source
+            .create_document(ROOT_INO, "note.md", "md", 1)
+            .unwrap();
+        let mut peer = Namespace::from_bytes("peer", &source.save()).unwrap();
+        let peer_dir = peer.lookup(ROOT_INO, "dir").unwrap().ino.0;
+        let peer_a = peer.lookup(peer_dir, "a.txt").unwrap().ino.0;
+        let peer_b = peer.lookup(ROOT_INO, "b.txt").unwrap().ino.0;
+        let peer_gone = peer.lookup(ROOT_INO, "gone.txt").unwrap().ino.0;
+        let peer_note = peer.lookup(ROOT_INO, "note.md").unwrap().ino.0;
+        let inos = [
+            ROOT_INO, peer_dir, peer_a, peer_b, peer_gone, peer_note, 9_999,
+        ];
+        for ino in inos {
+            assert_view_matches_accessors(&peer, ino);
+        }
+
+        assert!(source.rename(dir, "a.txt", ROOT_INO, "moved.txt", 2));
+        assert!(source.set_content(b, Some(&h(4)), 40, 2));
+        assert!(source.remove(gone));
+        peer.apply_remote_and_resolve(&source.save_incremental())
+            .unwrap();
+        for ino in inos {
+            assert_view_matches_accessors(&peer, ino);
+        }
+
+        let live = InodeQuery {
+            unlinked: false,
+            path: true,
+        };
+        let moved = peer.inode_view(peer_a, live).unwrap();
+        assert_eq!(moved.path.as_deref(), Some("/moved.txt"));
+        let changed = peer.inode_view(peer_b, live).unwrap();
+        assert_eq!((changed.hash, changed.attr.size), (Some(h(4)), 40));
+        assert!(peer.inode_view(peer_gone, live).is_none());
+        let retained = peer
+            .inode_view(
+                peer_gone,
+                InodeQuery {
+                    unlinked: true,
+                    path: true,
+                },
+            )
+            .unwrap();
+        assert!(!retained.live);
+        assert_eq!(retained.path, None, "a trashed inode has no live path");
+        let note = peer.inode_view(peer_note, live).unwrap();
+        assert!(note.document);
+    }
+
+    fn assert_view_matches_accessors(ns: &Namespace, ino: u64) {
+        for unlinked in [false, true] {
+            for path in [false, true] {
+                let view = ns.inode_view(ino, InodeQuery { unlinked, path });
+                let attr = if unlinked {
+                    ns.getattr_including_unlinked(ino)
+                } else {
+                    ns.getattr(ino)
+                };
+                assert_eq!(view.as_ref().map(|v| v.attr), attr, "attr of {ino}");
+                let Some(view) = view else {
+                    continue;
+                };
+                assert_eq!(view.live, ns.getattr(ino).is_some(), "liveness of {ino}");
+                assert_eq!(view.hash, ns.hash_for(ino), "hash of {ino}");
+                let expected_path = if path { ns.path_for(ino) } else { None };
+                assert_eq!(view.path, expected_path, "path of {ino}");
+                assert_eq!(
+                    view.document,
+                    ns.document_codec(ino).is_some()
+                        && ns.content_authority() == ContentAuthority::LegacyNamespace,
+                    "document of {ino}"
+                );
+            }
+        }
+    }
+
+    const CLIENT: [u8; 32] = [1; 32];
+    const SERVER: [u8; 32] = [2; 32];
+
+    /// One exchange as a session runs it (the client writes, the server
+    /// answers, until neither has anything to send), each side beginning
+    /// where its last completed exchange with the other left off. Returns
+    /// the sync bytes both sides generated.
+    fn exchange(client: &mut Namespace, server: &mut Namespace) -> usize {
+        let before = client
+            .sync_bytes_generated()
+            .saturating_add(server.sync_bytes_generated());
+        let mut client_state = client.begin_sync_with(&SERVER);
+        let mut server_state = server.begin_sync_with(&CLIENT);
+        let mut completed = false;
+        for _ in 0..64 {
+            let message = client.sync_generate(&mut client_state);
+            if let Some(message) = &message {
+                server.sync_receive(&mut server_state, message).unwrap();
+            }
+            let reply = server.sync_generate(&mut server_state);
+            if let Some(reply) = &reply {
+                client.sync_receive(&mut client_state, reply).unwrap();
+            }
+            if message.is_none() && reply.is_none() {
+                completed = true;
+                break;
+            }
+        }
+        assert!(completed, "the exchange completes");
+        client.finish_sync_with(SERVER, &client_state);
+        server.finish_sync_with(CLIENT, &server_state);
+        client
+            .sync_bytes_generated()
+            .saturating_add(server.sync_bytes_generated())
+            .saturating_sub(before)
+    }
+
+    fn converged(a: &mut Namespace, b: &mut Namespace) -> bool {
+        a.heads() == b.heads()
+    }
+
+    /// Resuming from the agreed heads never costs convergence: heads this
+    /// document does not hold are not resumed from, and a peer that lost
+    /// what it agreed to (restarted from an older copy, without its own
+    /// record of the exchange) still receives everything.
+    #[test]
+    fn unknown_or_lost_agreed_heads_fall_back_to_a_full_sync() {
+        let mut host = Namespace::new("host").unwrap();
+        host.create_file(ROOT_INO, "base", Some(&h(1)), 1, 1)
+            .unwrap();
+        let mut device = Namespace::from_bytes("device", &host.save()).unwrap();
+        exchange(&mut device, &mut host);
+        assert_eq!(
+            device.begin_sync_with(&SERVER).shared_heads,
+            host.heads(),
+            "a completed exchange is resumed from"
+        );
+
+        // Phase `heads_this_document_does_not_hold_are_not_resumed_from`.
+        let mut unknown = automerge::sync::State::new();
+        unknown.shared_heads = vec![automerge::ChangeHash([7; 32])];
+        device.finish_sync_with(SERVER, &unknown);
+        assert!(
+            device.begin_sync_with(&SERVER).shared_heads.is_empty(),
+            "unknown agreed heads start a full sync"
+        );
+        host.create_file(ROOT_INO, "after-unknown", Some(&h(2)), 1, 2)
+            .unwrap();
+        exchange(&mut device, &mut host);
+        assert!(device.lookup(ROOT_INO, "after-unknown").is_some());
+        assert!(converged(&mut device, &mut host));
+
+        // Phase `a_peer_restarted_from_an_older_copy_receives_everything`.
+        let older = host.save();
+        host.create_file(ROOT_INO, "lost-by-host", Some(&h(3)), 1, 3)
+            .unwrap();
+        exchange(&mut device, &mut host);
+        assert!(device.lookup(ROOT_INO, "lost-by-host").is_some());
+        let mut host = Namespace::from_bytes("host", &older).unwrap();
+        device
+            .create_file(ROOT_INO, "from-device", Some(&h(4)), 1, 4)
+            .unwrap();
+        exchange(&mut device, &mut host);
+        assert!(
+            host.lookup(ROOT_INO, "lost-by-host").is_some(),
+            "what the peer lost comes back"
+        );
+        assert!(host.lookup(ROOT_INO, "from-device").is_some());
+        assert!(converged(&mut device, &mut host));
+
+        // Phase `a_restarted_peer_with_its_document_converges_both_ways`.
+        let mut host = Namespace::from_bytes("host", &host.save()).unwrap();
+        host.create_file(ROOT_INO, "after-restart", Some(&h(5)), 1, 5)
+            .unwrap();
+        device
+            .create_file(ROOT_INO, "while-host-restarted", Some(&h(6)), 1, 5)
+            .unwrap();
+        exchange(&mut device, &mut host);
+        assert!(device.lookup(ROOT_INO, "after-restart").is_some());
+        assert!(host.lookup(ROOT_INO, "while-host-restarted").is_some());
+        assert!(converged(&mut device, &mut host));
+
+        // Phase `an_idle_exchange_after_the_fallbacks_is_small_again`.
+        let idle = exchange(&mut device, &mut host);
+        assert!(idle < 512, "an idle exchange resumes once more ({idle} B)");
+    }
+
+    /// The peers a namespace remembers are bounded; one beyond the bound
+    /// displaces another, which simply syncs in full next time.
+    #[test]
+    fn remembered_sync_progress_is_bounded() {
+        let mut ns = Namespace::new("bounded").unwrap();
+        let state = automerge::sync::State::new();
+        for peer in 0..=MAX_PEER_SYNC_STATES {
+            let mut key = [0_u8; 32];
+            key[..8].copy_from_slice(&u64::try_from(peer).unwrap().to_le_bytes());
+            ns.finish_sync_with(key, &state);
+        }
+        assert_eq!(ns.peer_sync_states.len(), MAX_PEER_SYNC_STATES);
     }
 
     // test-only helper to merge using a fresh loaded copy
