@@ -138,8 +138,10 @@ impl DamageHint {
     /// content: the same source placed in the same place, painting the
     /// generation that follows the one `previous` painted.
     fn follows(&self, previous: &Self) -> Option<&[Rect]> {
-        (self.source == previous.source
-            && self.from == previous.to
+        // The generation this one was measured from is the one painted then.
+        let next_generation = previous.to == self.from;
+        (next_generation
+            && self.source == previous.source
             && self.placement == previous.placement
             && !self.rects.is_empty())
         .then_some(self.rects.as_slice())

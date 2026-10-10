@@ -915,7 +915,7 @@ impl SurfaceDamage {
     /// Where the frames since the last take changed, or `None` when they
     /// must be repainted whole.
     pub fn take(&mut self) -> Option<Vec<KurboRect>> {
-        std::mem::replace(&mut self.pending, Some(Vec::new()))
+        self.pending.replace(Vec::new())
     }
 
     /// Why the last frame repainted the surface whole, or `None` when its
