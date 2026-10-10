@@ -53,6 +53,11 @@ fn native_message_test_directory() -> action_directory::Client {
         placeholder: String::new(),
         wants_content: false,
     };
+    descriptor.params = vec![tilo_actions::ActionParam::required(
+        tilo_actions::PROMPTED_PARAM,
+        tilo_actions::ParamType::Text,
+        "Message",
+    )];
     descriptor.semantic_identity = Some(runtime_collab::ExportedResourceSemanticIdentity {
         kind: "chat.agent".into(),
         key: "chat.person:scribe".into(),
