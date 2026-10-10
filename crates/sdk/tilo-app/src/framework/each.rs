@@ -100,6 +100,19 @@ impl<R: Resource> RowView<R> {
     }
 }
 
+/// Which rows a list builds.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Builds {
+    /// No row was built yet, so it is not known whether rows read their
+    /// local state from outside.
+    Unknown,
+    /// The rows it mounts, each the first time.
+    OnMount,
+    /// Every row: one reads its local state from outside the row, so all
+    /// of them may.
+    Every,
+}
+
 /// What the tree pushed down to the list last, for rows built later.
 #[derive(Default)]
 struct Pushed {
@@ -171,11 +184,7 @@ pub struct Each<R: Resource> {
     built: u64,
     /// The membership of the collection `rows` follows, when it has one.
     membership: Option<Membership>,
-    /// Whether every row is built: one reads its local state from outside
-    /// the row, so all of them may.
-    eager: bool,
-    /// Whether a row was ever built, which tells whether rows are eager.
-    probed: bool,
+    builds: Builds,
     pushed: Pushed,
     /// Indices into `rows` of the mounted rows, ascending.
     mounted: Vec<usize>,
@@ -216,8 +225,7 @@ impl<R: Resource> Each<R> {
             build,
             rows: Vec::new(),
             membership: None,
-            eager: false,
-            probed: false,
+            builds: Builds::Unknown,
             pushed: Pushed::default(),
             mounted: Vec::new(),
             tops: Vec::new(),
@@ -301,9 +309,9 @@ impl<R: Resource> Each<R> {
         if !still_mounted.eq(was_mounted.iter()) {
             self.structure_dirty = true;
         }
-        if self.eager {
+        if self.builds == Builds::Every {
             self.build_all();
-        } else if !self.probed && !self.rows.is_empty() {
+        } else if self.builds == Builds::Unknown && !self.rows.is_empty() {
             // Whether rows read their local state from outside, which
             // makes every row's view part of the published tree.
             self.ensure_built(0);
@@ -315,7 +323,7 @@ impl<R: Resource> Each<R> {
 
     /// Build the row at `index` if it is not built yet, from the state as
     /// it is now. A row that reads its local state from outside makes the
-    /// list eager: every row is built.
+    /// list build every row.
     fn ensure_built(&mut self, index: usize) {
         let revision = self.live.revision();
         let Some(row) = self.rows.get_mut(index) else {
@@ -336,10 +344,11 @@ impl<R: Resource> Each<R> {
             widget,
             node: None,
         }));
-        self.probed = true;
-        if reads_unmounted && !self.eager {
-            self.eager = true;
+        if reads_unmounted && self.builds != Builds::Every {
+            self.builds = Builds::Every;
             self.build_all();
+        } else if self.builds == Builds::Unknown {
+            self.builds = Builds::OnMount;
         }
     }
 
@@ -356,7 +365,7 @@ impl<R: Resource> Each<R> {
     fn follow_rows(&mut self) {
         let revision = self.live.revision();
         let state = self.live.get();
-        if self.eager {
+        if self.builds == Builds::Every {
             for view in self.rows.iter_mut().filter_map(|row| row.view.as_mut()) {
                 if view.node.is_some() || view.followers.read_unmounted() {
                     view.follow(&state, revision);
@@ -364,7 +373,8 @@ impl<R: Resource> Each<R> {
             }
             return;
         }
-        // Only an eager list holds rows that follow while unmounted.
+        // Only a list that builds every row holds rows that follow while
+        // unmounted.
         for &index in &self.mounted {
             if let Some(view) = self.rows.get_mut(index).and_then(|row| row.view.as_mut()) {
                 view.follow(&state, revision);

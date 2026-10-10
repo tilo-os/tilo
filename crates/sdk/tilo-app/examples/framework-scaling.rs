@@ -356,7 +356,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     println!("\ntasks  open to first frame p50  allocations  heap held  heap per task");
     for (tasks, (open_ms, allocations, held)) in opens {
-        let per_task = held.saturating_sub(empty) / usize::try_from(tasks.max(1))?;
+        let per_task = held
+            .saturating_sub(empty)
+            .checked_div(usize::try_from(tasks)?)
+            .unwrap_or_default();
         println!("{tasks:>5}  {open_ms:>20.3} ms  {allocations:>11}  {held:>9}  {per_task:>11} B");
     }
     Ok(())

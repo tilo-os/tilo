@@ -120,6 +120,10 @@ impl<R: Resource> Bindings<R> {
     }
 }
 
+/// The collection a list built by [`ViewCx::each`] follows, read from what
+/// its scope reads; shared by the list and each of its rows.
+type Items<T, I> = Rc<dyn Fn(&T) -> &Collection<I>>;
+
 /// Projects the resource state onto the value a view scope reads: the whole
 /// state at the root, one item inside an [`Each`] row.
 pub(crate) type Focus<R, T> = Rc<dyn for<'a> Fn(&'a <R as Resource>::State) -> Option<&'a T>>;
@@ -620,7 +624,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         items: impl Fn(&T) -> &Collection<I> + 'static,
         row: impl Fn(&mut ViewCx<R, I>) -> Element + 'static,
     ) -> Each<R> {
-        let items: Rc<dyn Fn(&T) -> &Collection<I>> = Rc::new(items);
+        let items: Items<T, I> = Rc::new(items);
         let focus = Rc::clone(&self.focus);
         let collection = Rc::clone(&items);
         let ids: super::each::Ids<R> = Box::new(move |state, visit| match (focus)(state) {
