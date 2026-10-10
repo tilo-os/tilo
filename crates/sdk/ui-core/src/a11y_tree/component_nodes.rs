@@ -31,8 +31,7 @@ enum Source {
 /// and their bound targets come from the resource tree and the component's
 /// identity alone. So while the component hands over the same tree they are
 /// exactly what a rebuild would produce, and a tree that shares all
-/// but a few subtrees with the last changes the nodes of those subtrees only
-///.
+/// but a few subtrees with the last changes the nodes of those subtrees only.
 pub(super) struct ComponentNodes {
     source: Source,
     binding: CallbackBinding,

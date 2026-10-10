@@ -222,8 +222,7 @@ pub fn save_status(path: &Path, status: &FullReplicaStatus) -> Result<()> {
 /// replica left behind when it exited ([`replica_is_running`]). The kernel
 /// releases it however the process ends, crash included.
 ///
-/// This replaces restamping the status every second to keep it recent
-///: the replica now writes its status only when the status
+/// This replaces restamping the status every second to keep it recent: the replica now writes its status only when the status
 /// changes, and sleeps in between.
 #[derive(Debug)]
 pub struct ReplicaLiveness {

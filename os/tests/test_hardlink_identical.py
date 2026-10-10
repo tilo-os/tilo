@@ -55,8 +55,7 @@ class HardlinkIdenticalTest(unittest.TestCase):
         self.assertEqual(executable.stat().st_mode & 0o777, 0o755)
 
     def test_names_that_already_shared_an_inode_move_together(self):
-        # The font catalog's three names are one inode before this runs
-        #; merging a fourth identical file must not split them.
+        # The font catalog's three names are one inode before this runs; merging a fourth identical file must not split them.
         catalog = write(self.root / "runtime/lib/fonts/Noto.ttf", b"font" * 500)
         os.link(catalog, self.root / "share-fonts-Noto.ttf")
         stray = write(self.root / "aaa/Noto.ttf", b"font" * 500)

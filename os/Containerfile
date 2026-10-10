@@ -1109,8 +1109,7 @@ RUN --mount=type=cache,id=tilo-font-artifacts,target=/var/cache/tilo-font-artifa
 # so the source remains reviewable. It needs Pillow, which the frozen snapshot
 # carries through systemd-ukify, and fc-match to find the catalog's Noto Sans,
 # mounted where the rootfs carries it. Rendering here rather than in the rootfs
-# keeps Pillow out of the image and a theme edit out of its package layer
-#; rootfs-base copies /out/tilo.
+# keeps Pillow out of the image and a theme edit out of its package layer; rootfs-base copies /out/tilo.
 FROM ${BASE_REF} AS plymouth-assets
 # Buildah leaves the rpms mount out of the layer cache key; this ARG keys it on RPMS_REF.
 ARG RPMS_REF
@@ -2982,8 +2981,7 @@ RUN case "${TILO_GENERATION}" in \
 # The env-runtime the store preinstalls (the builder's install-env-runtime.sh)
 # is built from the same frozen RPM snapshot as this rootfs, so most of its
 # files are byte-identical to the host's /usr; but the store is its own layer,
-# which no hard link can reach across, and every pull carried those bytes twice
-#. Here, on the rootfs's packages, a copy of the store leaves them out
+# which no hard link can reach across, and every pull carried those bytes twice. Here, on the rootfs's packages, a copy of the store leaves them out
 # and names the host file for each in the image's host-sources; package-store
 # imports them from there, every byte checked against the image's signed hash.
 # The rootfs's final RUN checks each named host file again, after the last

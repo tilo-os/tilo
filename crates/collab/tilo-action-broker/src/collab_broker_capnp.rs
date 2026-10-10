@@ -7116,8 +7116,7 @@ impl CapnpBrokerState {
         Ok(())
     }
 
-    /// Re-check every membership surface and native context subscriber
-    ///, and register with
+    /// Re-check every membership surface and native context subscriber, and register with
     /// [`tilo_identity_host::policy_change::wake_at`] the first instant at
     /// which a time-bound input they read (a capability's expiry, a
     /// subscriber certificate's validity) changes the answer. Returns whether

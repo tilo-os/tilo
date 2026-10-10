@@ -226,8 +226,7 @@ fn a_shared_forest_derives_exactly_what_a_fresh_tree_does_after_any_edit() {
 }
 
 /// An edit to one item of a long list changes that item's semantic node and
-/// reports it alone; every other node is kept as it was, not rebuilt
-///.
+/// reports it alone; every other node is kept as it was, not rebuilt.
 #[test]
 fn an_item_edit_updates_that_items_semantic_node_only() {
     use crate::published::{SharedChildren, SharedResource};
