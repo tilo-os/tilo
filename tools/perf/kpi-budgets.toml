@@ -707,6 +707,18 @@ p50 = 2.4
 enforce = true
 source = "relay_load: workspace-store fsyncs per committed delta (store::fsyncs)"
 
+# Directory entries listed per committed edit (TIL-742): a delta's commit
+# used to list its lineage's whole active generation, so this grew with the
+# document's history, 163 per edit at p50 and 313 by the tenth minute
+# (Perf / scheduled run 92268). The tail index answers from memory: 0.000 in
+# every window after (run 92278). It is deterministic, so the ceiling sits
+# just above zero: an edit that lists its history again fails at once.
+[kpi."hosting.relay.store_listed_entries_per_edit.n100"]
+unit = "count"
+p50 = 1.0
+enforce = true
+source = "relay_load: directory entries retention listed per committed delta (store::listed_entries)"
+
 # Not met on AWS: egress at $0.09/GB is $0.00099 of the measured $0.00113.
 [kpi."hosting.relay.cost_usd_per_collab_hour.aws-t4g-small.n100"]
 unit = "usd"
