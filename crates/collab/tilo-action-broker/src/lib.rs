@@ -11,7 +11,6 @@ pub mod collab_outbound;
 pub mod collab_presence;
 pub mod collaboration_admin;
 pub mod peer_actions;
-pub mod policy;
 pub mod policy_schedule;
 pub mod published_authorization;
 pub mod record_content;

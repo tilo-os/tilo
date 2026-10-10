@@ -1315,8 +1315,7 @@ impl CalendarApp {
     /// The last invocation an on-screen affordance submitted, for the tests
     /// that check a control and its published action build the same edit.
     #[cfg(test)]
-    #[allow(dead_code, reason = "test helper")]
-    pub(crate) fn last_dispatched(&self) -> Option<ui::tilo_resource::Invoke<Calendar>> {
+    fn last_dispatched(&self) -> Option<ui::tilo_resource::Invoke<Calendar>> {
         self.last_dispatched.borrow().clone()
     }
 

@@ -155,11 +155,12 @@ fn prepare(f: &Fixture) -> DurableInvocation {
         invocation: key.invocation,
         output: tilo_actions::ActionOutput::default(),
     };
-    let mut receipt = crate::policy::redacted_effect_receipt(
+    let mut receipt = tilo_desktop_model::WorkspaceEffectReceipt::redacted(
         key.invocation,
         &actor,
         context,
         tilo_actions::EffectReceiptStatus::Succeeded,
+        tilo_clock::unix_now_i64(),
     );
     receipt.completed_at = 100;
     let request = OwnerCommitRequest {

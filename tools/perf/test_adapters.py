@@ -245,6 +245,7 @@ def load_report(collaborators: int = 100, minutes: int = 2) -> dict:
     kpis = {kpi: {"unit": unit, "samples": [value] * minutes} for kpi, (unit, value) in per_minute.items()}
     kpis["hosting.relay.fanout_ms"] = {"unit": "ms", "samples": [4.0, 6.0, 30.0]}
     kpis["hosting.relay.store_fsyncs_per_edit"] = {"unit": "count", "samples": [2.1] * minutes}
+    kpis["hosting.relay.store_listed_entries_per_edit"] = {"unit": "count", "samples": [0.0] * minutes}
     return {"collaborators": collaborators, "rooms": collaborators // 4, "room_size": 4, "window_s": 60,
             "windows": minutes, "relay_idle_rss_mib": 20.0, "edits": 6000, "presence": 36000,
             "undelivered_edits": 0, "kpis": kpis}

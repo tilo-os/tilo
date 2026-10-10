@@ -1116,32 +1116,6 @@ impl WordProcessor {
         let _ = self.apply_rich(state, action);
     }
 
-    /// The tracked-change ids present in the document, sorted by their anchored
-    /// `(block-order, start)` body position (earliest first). Falls back to the
-    /// canonical id order for changes whose anchoring mark is gone.
-    #[allow(
-        dead_code,
-        reason = "review navigation helper kept beside Accept/Reject until wired"
-    )]
-    fn changes_in_doc_order(&self, state: &AutoCommit) -> Vec<String> {
-        let Some(c) = self.containers.as_ref() else {
-            return Vec::new();
-        };
-        let block_order = self.ordered_blocks(state);
-        let pos = |bid: &str| {
-            block_order
-                .iter()
-                .position(|b| b == bid)
-                .unwrap_or(usize::MAX)
-        };
-        let mut ids = tilo_doc::model::change_ids(state, c);
-        ids.sort_by_key(|id| {
-            tilo_doc::model::change_range(state, c, id)
-                .map_or((usize::MAX, usize::MAX), |(b, s, _)| (pos(&b), s))
-        });
-        ids
-    }
-
     /// Whether a named boolean run mark covers the whole of `ranges`.
     fn mark_over_ranges(
         &self,
@@ -2044,35 +2018,6 @@ impl WordProcessor {
                 region: self.action_region(),
                 blocks: vec![block.to_string()],
             }
-        };
-        let _ = self.apply_rich(state, action);
-    }
-
-    #[allow(
-        dead_code,
-        reason = "clear-mark helper kept for region edits not yet on RichTextAction"
-    )]
-    fn region_remove_mark(
-        &self,
-        state: &mut ui::widget::Edits<'_>,
-        block: &str,
-        start: usize,
-        end: usize,
-        name: &str,
-    ) {
-        if start >= end {
-            return;
-        }
-        let action = crate::actions::RichTextAction::SetMark {
-            region: self.action_region(),
-            spans: vec![crate::actions::Span {
-                block: block.to_string(),
-                start,
-                end,
-            }],
-            name: name.to_string(),
-            value: None,
-            also_clear: Vec::new(),
         };
         let _ = self.apply_rich(state, action);
     }

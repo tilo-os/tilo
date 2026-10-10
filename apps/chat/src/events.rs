@@ -345,11 +345,7 @@ impl ChatApp {
             self.hit_at(self.last_mouse).filter(|hit| {
                 matches!(
                     hit,
-                    Hit::CallParticipantsToggle
-                        | Hit::CallMute
-                        | Hit::CallShareScreen
-                        | Hit::CallExpand
-                        | Hit::CallLeave
+                    Hit::CallParticipantsToggle | Hit::CallMute | Hit::CallExpand | Hit::CallLeave
                 )
             })
         };
@@ -945,9 +941,6 @@ impl ChatApp {
                 ) {
                     self.media_error = Some(error);
                 }
-            }
-            Hit::CallShareScreen => {
-                self.media_error = Some("This call supports microphone audio only".into());
             }
             Hit::CallExpand => {
                 self.call.expanded = !self.call.expanded;
@@ -4980,42 +4973,10 @@ mod tests {
         assert_eq!(doc.save(), before);
     }
 
-    // --- screen share (portal seam + presentation stage) ----------------
-
-    /// A host grant of a `PipeWire` stream.
-    fn granted(node_id: u32) -> ui::capture::ScreenCaptureOutcome {
-        ui::capture::ScreenCaptureOutcome::Granted(ui::capture::ScreenCaptureGrant {
-            stream: ui::capture::CaptureStream::PipeWire { node_id },
-            size: Some((1280, 720)),
-        })
-    }
-    #[test]
-    fn voice_profile_rejects_screen_share_even_with_a_portal_source() {
-        let (mut app, mut doc) = app_with_doc();
-        app.on_hit(
-            Hit::Channel("c_huddle".into()),
-            &mut ui::widget::Edits::lend(&mut doc),
-        );
-        app.land(&mut doc);
-        app.reload(&doc);
-        let before = doc.save();
-        // The host is deliberately ready to grant a source, so only the voice
-        // profile can be responsible for refusing capture.
-        let (services, recorder) = ui::host::HostServices::recording();
-        let _host = ui::host::enter(&services);
-        recorder.respond_to_screen_capture(granted(42));
-        app.on_hit(Hit::CallShareScreen, &mut ui::widget::Edits::lend(&mut doc));
-        assert!(!app.sharing_screen() && app.call.audio_only && !app.call.deafened);
-        assert!(app.media_error.is_some());
-        assert!(
-            recorder.screen_capture_requests().is_empty(),
-            "a voice-only call never asks the host for a screen source"
-        );
-        assert_eq!(doc.save(), before);
-    }
+    // --- call controls under reduced permissions ------------------------
 
     #[test]
-    fn unsupported_capture_controls_are_absent_and_leave_remains_available_after_downgrade() {
+    fn leave_remains_available_after_downgrade() {
         use ui::permissions::{PermissionContext, Role};
         let (mut app, mut doc) = app_with_doc();
         app.on_hit(
@@ -5029,35 +4990,8 @@ mod tests {
             model::ME,
             Role::Viewer,
         ));
-        let (_, controls) = app.overlay_controls_layout();
-        assert!(
-            controls
-                .iter()
-                .all(|(_, _, _, _, hit, _)| !matches!(hit, Hit::CallShareScreen))
-        );
-        app.on_hit(Hit::CallShareScreen, &mut ui::widget::Edits::lend(&mut doc));
-        assert!(!app.sharing_screen());
         app.on_hit(Hit::CallLeave, &mut ui::widget::Edits::lend(&mut doc));
         assert!(!app.call.active);
-    }
-
-    #[test]
-    fn expanded_controls_do_not_advertise_screen_capture() {
-        let (mut app, mut doc) = app_with_doc();
-        app.on_hit(
-            Hit::Channel("c_huddle".into()),
-            &mut ui::widget::Edits::lend(&mut doc),
-        );
-        app.land(&mut doc);
-        app.reload(&doc);
-        app.on_hit(Hit::CallExpand, &mut ui::widget::Edits::lend(&mut doc));
-        let (_, buttons) = app.overlay_controls_layout();
-        assert!(
-            buttons
-                .iter()
-                .all(|(_, _, _, _, h, _)| !matches!(h, Hit::CallShareScreen)),
-            "screen capture stays absent until a real production PipeWire producer exists"
-        );
     }
 
     // --- header Call button (was unreachable without a voice channel) ---
