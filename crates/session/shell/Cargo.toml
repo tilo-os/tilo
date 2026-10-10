@@ -14,7 +14,7 @@ signal-profile-native-test = []
 netns-e2e = []
 # Integration-only native broker fixtures. This forwards the shared broker's
 # equally gated fixture entry point; ordinary shell spawning never selects it.
-test-support = ["tilo-action-broker/test-support"]
+test-support = ["tilo-action-broker/test-support", "dep:tilo-net", "ui/test-support"]
 # When set, the hosted-mode compositor (`shell --backend winit`) binds
 # the TILO_TEST_CONTROL Unix socket the same way the headless backend
 # does. A background thread reads JSON commands and injects equivalent
@@ -47,7 +47,17 @@ dev-overrides = ["tilo-identity-host/throwaway-test-identity"]
 # independent of `dev-overrides`; desktop and OS images never enable it.
 agent-control = []
 
+[[bin]]
+name = "network-boundary-fixture"
+path = "tests/fixtures/network-boundary.rs"
+test = false
+bench = false
+required-features = ["test-support"]
+
 [dependencies]
+# Read the app SDK snapshot only in the owned native boundary fixture.
+tilo-net = { path = "../../platform/tilo-net", optional = true }
+
 agent-provider-config = { path = "../../agent/provider-config" }
 fnv.workspace = true
 tilo-advisory-lock = { path = "../../system/advisory-lock" }
@@ -69,7 +79,7 @@ tempfile.workspace = true
 # One owner for ~/.config/tilo/settings.json.
 settings-store = { path = "../../system/settings-store", features = ["watch"] }
 notify.workspace = true
-tilo-xdg-paths = { path = "../../system/xdg-paths" }
+tilo-paths.workspace = true
 # Where the control sockets live, shared with the `tilo-control` client.
 tilo-control = { path = "../control-cli" }
 # The emoji picker's catalogue, search, skin tones and recents.
@@ -90,10 +100,12 @@ tokio = { workspace = true, features = ["full"] }
 tilo-rt.workspace = true
 
 serde.workspace = true
-serde_json.workspace = true
+# `raw_value`: the control socket splices a tree serialised once into its reply.
+serde_json = { workspace = true, features = ["raw_value"] }
 toml.workspace = true
 tracing.workspace = true
-tracing-subscriber.workspace = true
+# `env-filter`: RUST_LOG plus the always-on launch-latency target (linux_main).
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
 zeroize.workspace = true
 # Every sealing construction (per-device envelopes, the portal store) goes
 # through the reviewed tilo-seal crate.
@@ -392,6 +404,7 @@ signal-hook-registry = "1.4.8"
 pipewire = "0.10.1"
 smithay-client-toolkit = "0.20.0"
 wayland-client.workspace = true
+wayland-scanner = "0.31.11"
 # The stand-in text input that lets the input method reach the shell's own
 # fields (`compositor::shell_text_input`).
 wayland-protocols = { version = "0.32.12", features = ["client", "unstable"] }

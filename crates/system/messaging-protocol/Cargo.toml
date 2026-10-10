@@ -44,7 +44,7 @@ tokio-tungstenite = { version = "=0.28.0", default-features = false, features = 
 messages = { path = "../../../apps/messages" }
 ui = { package = "tilo-app", path = "../../sdk/tilo-app", features = ["test-support"] }
 tempfile.workspace = true
-tokio = { workspace = true, features = ["macros", "rt"] }
+tokio = { workspace = true, features = ["macros", "rt", "test-util"] }
 
 [lints]
 workspace = true

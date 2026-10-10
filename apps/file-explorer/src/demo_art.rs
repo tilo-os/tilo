@@ -318,11 +318,6 @@ fn png(img: image::RgbaImage) -> Vec<u8> {
     out
 }
 
-/// [`scene_image`] as PNG bytes.
-pub fn scene_png(width: u32, height: u32, kind: u8) -> Vec<u8> {
-    png(scene_image(width, height, kind))
-}
-
 /// [`cover_image`] as PNG bytes.
 pub fn cover_png(width: u32, height: u32) -> Vec<u8> {
     png(cover_image(width, height))

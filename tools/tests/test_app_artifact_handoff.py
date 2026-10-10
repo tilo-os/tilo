@@ -53,6 +53,23 @@ with open(os.environ['FIXTURE_CARGO_LOG'], 'a') as log:
     log.write(json.dumps({'args': sys.argv[1:], 'flags': actual}) + '\\n')
 """)
         self.write("bin/rustc", "#!/bin/sh\nprintf '%s\\n' \"$FIXTURE_STDLIB\"\n")
+        self.write("tools/font-catalog.py", """#!/usr/bin/env python3
+import os, pathlib, sys
+a = sys.argv[1:]
+assert a[-2:] == ['--scope', 'product']
+if a[0] == 'prepare':
+    if os.environ.get('FIXTURE_INVALID_FONTS'):
+        raise SystemExit('invalid product font catalog')
+    out = pathlib.Path(a[2]); out.mkdir(parents=True)
+    (out/'manifest.toml').write_text('fixture product manifest')
+    (out/'fixture.ttf').write_bytes(b'product font payload')
+elif a[0] == 'verify':
+    root = pathlib.Path(a[1])
+    assert (root/'manifest.toml').read_text() == 'fixture product manifest'
+    assert (root/'fixture.ttf').read_bytes() == b'product font payload'
+else:
+    raise SystemExit('unexpected font fixture invocation')
+""")
         self.write("bin/uname", "#!/bin/sh\nprintf '%s\\n' \"$FIXTURE_ARCH\"\n")
         self.write("stdlib/libstd-fixture.so", "\x7fELF fixture standard library")
         self.write("native/libc.so.6", "\x7fELF fixture native dependency")
@@ -110,7 +127,10 @@ elif a[0] == 'build':
     for index, argument in enumerate(a):
         if argument == '--include':
             source = pathlib.Path(a[index+1])
-            shutil.copyfile(source, out/'lib'/source.name)
+            if source.is_dir():
+                shutil.copytree(source, out/'lib'/source.name)
+            else:
+                shutil.copyfile(source, out/'lib'/source.name)
     pathlib.Path(a[a.index('--version-out')+1]).write_text(version + '\\n')
 elif a[0] == 'verify':
     assert (pathlib.Path(a[1])/'bundle.toml').is_file()
@@ -344,6 +364,35 @@ exit 99
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("default SDK keyboard library is missing", result.stderr)
         self.assertFalse(list((self.root / "dist/app-release/tapp").glob("*.tapp")))
+
+    def test_partial_release_carries_its_verified_sdk_fonts(self):
+        for arch in ('x86_64', 'aarch64'):
+            with self.subTest(architecture=arch):
+                self.env['FIXTURE_ARCH'] = arch
+                self.command('bash', 'dist/apps/package-apps.sh')
+                fonts = next((self.root / 'dist/app-release/runtime/tilo-runtime').glob('*/lib/fonts'))
+                self.assertEqual((fonts / 'fixture.ttf').read_bytes(), b'product font payload')
+                with tarfile.open(self.root / f'dist/app-release/tilo-apps-{arch}.tar.gz') as archive:
+                    self.assertTrue(any(name.endswith('/lib/fonts/fixture.ttf') for name in archive.getnames()))
+
+    def test_invalid_product_fonts_stop_before_signing_app_packages(self):
+        self.env.update(FIXTURE_ARCH='aarch64', FIXTURE_INVALID_FONTS='1')
+        result = subprocess.run(['bash', 'dist/apps/package-apps.sh'], cwd=self.root,
+                                env=self.env, text=True, capture_output=True, timeout=60)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('invalid product font catalog', result.stderr)
+        self.assertFalse(list((self.root / 'dist/app-release/tapp').glob('*.tapp')))
+
+    def test_dropped_product_fonts_stop_before_signing_app_packages(self):
+        self.env['FIXTURE_ARCH'] = 'aarch64'
+        tool = self.root / 'target/release/tilo-runtime-bundle'
+        tool.write_text(tool.read_text().replace(
+            "shutil.copytree(source, out/'lib'/source.name)", 'pass'))
+        result = subprocess.run(['bash', 'dist/apps/package-apps.sh'], cwd=self.root,
+                                env=self.env, text=True, capture_output=True, timeout=60)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('signed SDK is missing its verified product font catalog', result.stderr)
+        self.assertFalse(list((self.root / 'dist/app-release/tapp').glob('*.tapp')))
 
 
 if __name__ == "__main__":

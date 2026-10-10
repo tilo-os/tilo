@@ -247,6 +247,14 @@ impl super::App {
         })
     }
 
+    /// A native model pass acknowledges only wakes preceding this drain.
+    /// Later worker completions retain their pending bit for the idle pass.
+    #[cfg(feature = "native")]
+    pub(super) fn update_native_model(&mut self) -> bool {
+        self.needs_sync |= self.take_hosted_wakes().is_some_and(|(_, sync)| sync);
+        self.update_model()
+    }
+
     pub(super) fn update_model(&mut self) -> bool {
         if !self.root_widget.update(&self.state.doc, &self.state.root) {
             return false;
@@ -311,8 +319,23 @@ impl super::App {
         changed
     }
 
+    #[cfg(feature = "native")]
+    pub(super) fn service_native_idle_model(&mut self) -> IdleModelProgress {
+        let mut changed = self.service_idle_model().changed;
+        // Hidden windows may not receive frame callbacks. Only an unconsumed
+        // model wake advances their owner; presentation notifications stay on
+        // the redraw path. Prepare the checked owner exactly as a frame does.
+        if self.take_hosted_wakes().is_some_and(|(_, sync)| sync) {
+            changed |= self.swap_requested_component() | self.record_tick();
+            changed |= self.update_model();
+            changed |= self.sync_model(true);
+        }
+        IdleModelProgress { changed }
+    }
+
     pub(super) fn service_idle_model(&mut self) -> IdleModelProgress {
-        let changed = self.service_local_control_history();
+        let history_changed = self.refresh_local_undo_discovery();
+        let changed = self.service_local_control_history() || history_changed;
         // This is local writer progress, never a durable owner receipt. The
         // existing scoped publication barrier still gates terminal success.
         #[cfg(feature = "native")]

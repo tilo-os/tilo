@@ -58,11 +58,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -72,6 +68,8 @@
 pub mod agents;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod app_serving;
+#[cfg(not(target_arch = "wasm32"))]
+mod authority_epoch;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod certification;
 #[cfg(not(target_arch = "wasm32"))]
@@ -97,6 +95,8 @@ pub mod environment_routing;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod environment_tools;
 #[cfg(not(target_arch = "wasm32"))]
+mod handshake;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod legacy_host;
 #[cfg(target_os = "linux")]
 pub mod legacy_route;
@@ -113,6 +113,8 @@ mod persistence;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod relay_offers;
 #[cfg(not(target_arch = "wasm32"))]
+mod room_access;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod room_records;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod rooms;
@@ -126,8 +128,11 @@ pub mod workspace;
 mod workspace_io;
 pub mod workspace_join;
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 tilo_automerge_isolate::test_worker!();
+#[cfg(all(test, feature = "agents"))]
+tilo_agent_participant::app_worker!();
 
 // The records and wire messages shared with relay clients live in
 // `tilo-relay-protocol`, the frame codec in `tilo-relay-client`, and the
@@ -178,9 +183,8 @@ pub use config::{CheckpointPrefixRecovery, PeerRelayConfig, RelayConfig, Workspa
 pub use daemon::{Relay, RelayError, RelayHandle};
 pub use home_peer::{HomePeerRegistration, home_peer_registry_path, valid_home_peer_label};
 pub use mesh::{
-    ComputeAccelerator, DeviceMeshProfile, DeviceRole, Placement, PlacementRequest,
-    PowerAvailability, RemoteControlRoute, ReplicationIntent, ReplicationResource,
-    ServerAdvertisement, ServiceCapabilities, Workload, place, route_remote_control,
+    ComputeAccelerator, DeviceMeshProfile, DeviceRole, PowerAvailability, ReplicationIntent,
+    ReplicationResource, ServerAdvertisement, ServiceCapabilities,
 };
 pub use policy::TrustPolicy;
 pub use process_lease::ProcessLease;

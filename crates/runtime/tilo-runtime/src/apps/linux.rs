@@ -86,7 +86,7 @@ fn wayland_socket() -> Result<PathBuf, String> {
     let socket = if display.is_absolute() {
         display
     } else {
-        xdg_paths::xdg::runtime_dir()
+        tilo_paths::xdg::runtime_dir()
             .ok_or("refusing to launch: the Wayland display has no runtime directory")?
             .join(display)
     };

@@ -9,7 +9,7 @@ mod files_clipboard_tests {
     use tilo_actions::remote::{Pending, PendingPoll};
 
     struct RetiredOwner {
-        tree: std::sync::Weak<parking_lot::RwLock<crate::shell::state::WorkspaceTree>>,
+        tree: crate::shell::state::WeakWorkspaceTreeHandle,
         runtime: crate::shell::native_workspace_owner::NativeStateWitness,
         broker: std::sync::Weak<tilo_action_broker::collab_broker_capnp::CapnpBrokerState>,
     }
@@ -421,6 +421,7 @@ mod files_clipboard_tests {
                 context: None,
                 confirmation: None,
                 revision: None,
+                wait_ms: None,
             });
             let (job, receipt) = self.wait(pending).unwrap();
             assert_eq!(receipt.invocation, invocation);
@@ -479,6 +480,7 @@ mod files_clipboard_tests {
                 context: None,
                 confirmation: None,
                 revision: None,
+                wait_ms: None,
             }));
             let Message::Receipt(result) = self.wait(pending).unwrap() else {
                 panic!("the actual agent must receive its invocation receipt");
@@ -495,7 +497,7 @@ mod files_clipboard_tests {
                 .checked_add(std::time::Duration::from_secs(5))
                 .expect("bounded test deadline");
             loop {
-                let pending = agent.request(Message::Observe { invocation });
+                let pending = agent.request(Message::observe(invocation));
                 let Message::Update { state, .. } = self.wait(pending).unwrap() else {
                     panic!("the actual agent must observe its own invocation");
                 };
@@ -1305,7 +1307,7 @@ mod files_clipboard_tests {
             .unwrap();
         let tree = fixture.session.workspace_tree();
         let probe = RetiredOwner {
-            tree: std::sync::Arc::downgrade(&tree),
+            tree: tree.downgrade(),
             runtime: tree.read().native_runtime.authority_witness(),
             broker: std::sync::Arc::downgrade(fixture.broker.state()),
         };
@@ -1454,7 +1456,7 @@ mod files_clipboard_tests {
         fixture.session.workspace_tree().write().workspaces[0].grant_app(
             APP,
             &Capability::Filesystem {
-                path: xdg_paths::data_dir().expect("isolated user data root"),
+                path: tilo_paths::data_dir().expect("isolated user data root"),
                 mode: FsMode::ReadWrite,
                 scope: GRANT_SESSION,
             },
@@ -1483,7 +1485,7 @@ mod files_clipboard_tests {
         )
         .unwrap();
         fixture.succeeds(1, "undo");
-        let root = xdg_paths::data_dir().unwrap().join("Trash/files");
+        let root = tilo_paths::data_dir().unwrap().join("Trash/files");
         let entries = std::fs::read_dir(root)
             .unwrap()
             .map(|entry| entry.unwrap().path())
@@ -2130,7 +2132,7 @@ mod files_clipboard_tests {
     ) {
         grant_native_trash(fixture);
         fixture.succeeds(1, "open-trash");
-        let retained = std::fs::read_dir(xdg_paths::data_dir().unwrap().join("Trash/files"))
+        let retained = std::fs::read_dir(tilo_paths::data_dir().unwrap().join("Trash/files"))
             .unwrap()
             .map(|entry| entry.unwrap().path())
             .collect::<Vec<_>>();

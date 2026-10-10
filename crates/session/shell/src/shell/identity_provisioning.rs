@@ -10,8 +10,6 @@
 //! Intentionally thin: cryptographic logic stays in
 //! `threshold-identity`, visual logic stays in `ui`.
 
-use getrandom::{SysRng, rand_core::UnwrapErr};
-use rand_core::Rng;
 use serde::{Deserialize, Serialize};
 use std::fs::OpenOptions;
 use std::io::{self, Read};
@@ -440,9 +438,7 @@ fn serve_pairing_request(
             // Expiry is decided by the trusted authority clock. Letting the
             // remote bearer supply this timestamp would make an expired
             // capability redeemable simply by replaying an older time.
-            let now = SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .map_or(u64::MAX, |duration| duration.as_secs());
+            let now = tilo_clock::try_unix_now().unwrap_or(u64::MAX);
             let secret =
                 ui::widget::identity_flow::InviteRedemptionAuthority::at(&**authority_root)
                     .and_then(|authority| authority.redeem(&capability, now))
@@ -490,6 +486,42 @@ pub fn host_identity_root(
     Ok(base.join("tilo"))
 }
 
+/// Paths shared by the host Files service and its native clients.
+fn host_files_environment(
+    home: Option<std::ffi::OsString>,
+    state_home: Option<std::ffi::OsString>,
+    runtime_dir: Option<std::ffi::OsString>,
+) -> io::Result<Vec<(&'static str, PathBuf)>> {
+    let state = match state_home.filter(|value| !value.is_empty()) {
+        Some(value) => PathBuf::from(value),
+        None => PathBuf::from(
+            home.ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "HOME is unavailable"))?,
+        )
+        .join(".local/state"),
+    };
+    let runtime = PathBuf::from(runtime_dir.ok_or_else(|| {
+        io::Error::new(io::ErrorKind::NotFound, "XDG_RUNTIME_DIR is unavailable")
+    })?);
+    if !state.is_absolute() || !runtime.is_absolute() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "host Files directories must be absolute",
+        ));
+    }
+    let cache = state.join("tilo/files");
+    let runtime = runtime.join("tilo/files-workspace");
+    Ok(vec![
+        ("TILO_FS_CONTENT_PEER_CACHE_DIR", cache.clone()),
+        ("TILO_WORKSPACE_ROOTS", cache.join("mount")),
+        ("TILO_AUTHORITY_SOCKET_DIR", runtime.clone()),
+        ("TILO_FS_BLOB_SOCKET", runtime.join("fs-blobs.sock")),
+        (
+            "TILO_FS_AUTHORITY_PUBLISHER",
+            PathBuf::from("/usr/bin/tilo-relay-admin"),
+        ),
+    ])
+}
+
 /// Select the per-user identity tree for a host-installed desktop session.
 ///
 /// Must run while process startup is still single-threaded. The environment
@@ -515,6 +547,17 @@ pub fn configure_host_identity_root() -> io::Result<PathBuf> {
             io::ErrorKind::InvalidInput,
             "TILO_IDENTITY_ROOT must be absolute",
         ));
+    }
+    let files_environment = host_files_environment(
+        std::env::var_os("HOME"),
+        std::env::var_os("XDG_STATE_HOME"),
+        std::env::var_os("XDG_RUNTIME_DIR"),
+    )?;
+    for (name, value) in files_environment {
+        if std::env::var_os(name).is_none_or(|existing| existing.is_empty()) {
+            // SAFETY: same single-threaded startup contract as the identity root.
+            unsafe { std::env::set_var(name, value) };
+        }
     }
     prepare_private_host_identity_tree(&root)?;
     // SAFETY: `main` calls this before it starts the warm-up thread or any
@@ -780,29 +823,6 @@ pub fn pairing_channel_at(
     }))
 }
 
-/// Create a private, bounded broker spool under the runtime identity root.
-/// The returned handle can be dropped and reopened with [`pairing_channel_at`]
-/// by another process; protocol state is not owned by the UI lifetime.
-///
-/// # Errors
-///
-/// Returns an error when the identity root is unavailable or the durable
-/// pairing protocol cannot be initialized.
-pub fn new_pairing_channel() -> Result<SharedPairingChannel, IdentityFlowError> {
-    let root = std::env::var_os("TILO_IDENTITY_ROOT")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .ok_or_else(|| {
-            IdentityFlowError::Io(io::Error::new(
-                io::ErrorKind::NotFound,
-                "pairing broker unavailable: TILO_IDENTITY_ROOT is not configured",
-            ))
-        })?;
-    let mut id = [0u8; 16];
-    UnwrapErr(SysRng).fill_bytes(&mut id);
-    pairing_channel_at(root.join("pairing-broker").join(hex::encode(id)))
-}
-
 /// Start the long-lived invite broker when the administrator has provided a
 /// reachable bind/advertise pair. With neither variable set the feature is
 /// honestly unavailable; a half-configuration is rejected.
@@ -874,6 +894,7 @@ pub fn start_configured_invite_broker() -> io::Result<Option<PairingBrokerServer
 #[cfg(test)]
 mod tests {
     use super::*;
+    use getrandom::{SysRng, rand_core::UnwrapErr};
     use std::time::SystemTime;
     use threshold_identity::ThresholdIdentity;
     use ui::widget::identity_flow::MemoryIdentityStore;
@@ -994,6 +1015,33 @@ mod tests {
         host_identity_root_never_depends_on_the_working_directory();
         #[cfg(unix)]
         host_identity_tree_is_private_and_refuses_a_symlink_root();
+    }
+
+    #[test]
+    fn host_files_paths_match_the_user_service() {
+        let environment = host_files_environment(
+            Some("/home/alice".into()),
+            None,
+            Some("/run/user/1000".into()),
+        )
+        .unwrap();
+        assert_eq!(
+            environment[0].1,
+            PathBuf::from("/home/alice/.local/state/tilo/files")
+        );
+        assert_eq!(environment[1].1, environment[0].1.join("mount"));
+        assert_eq!(
+            environment[2].1,
+            PathBuf::from("/run/user/1000/tilo/files-workspace")
+        );
+        assert_eq!(environment[3].1, environment[2].1.join("fs-blobs.sock"));
+        let custom =
+            host_files_environment(None, Some("/state".into()), Some("/runtime".into())).unwrap();
+        assert_eq!(custom[0].1, PathBuf::from("/state/tilo/files"));
+        assert!(
+            host_files_environment(None, Some("relative".into()), Some("/runtime".into())).is_err()
+        );
+        assert!(host_files_environment(Some("/home/alice".into()), None, None).is_err());
     }
 
     #[test]

@@ -251,10 +251,7 @@ fn an_open_on_a_record_shows_that_record_in_a_new_selected_window() {
 
 #[test]
 fn every_room_change_carries_the_time_it_was_made() {
-    let before = web_time::SystemTime::now()
-        .duration_since(web_time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs() as i64;
+    let before = ui::time::try_unix_now().unwrap() as i64;
     let mut desktop = LocalDesktop::new(
         ROOM,
         "Visitor",

@@ -104,7 +104,7 @@ pub struct ApprovalRequest {
     /// Exclusive expiry in Unix-epoch nanoseconds.
     pub expires_at_ns: u64,
     /// Requester-device Ed25519 signature over the canonical request.
-    #[serde(with = "serde_bytes_64")]
+    #[serde(with = "crate::cert::serde_bytes_64")]
     pub signature: [u8; 64],
 }
 
@@ -219,7 +219,7 @@ pub struct DeviceApproval {
     /// Decision time in Unix-epoch nanoseconds.
     pub decided_at_ns: u64,
     /// Approver-device Ed25519 signature over the canonical response.
-    #[serde(with = "serde_bytes_64")]
+    #[serde(with = "crate::cert::serde_bytes_64")]
     pub signature: [u8; 64],
 }
 
@@ -383,22 +383,6 @@ pub enum ApprovalError {
     /// Canonical wire encoding failed.
     #[error("device-approval canonical encoding failed: {0}")]
     Canonical(#[from] CanonicalError),
-}
-
-mod serde_bytes_64 {
-    use serde::{Deserialize, Deserializer, Serialize as _, Serializer};
-
-    pub fn serialize<S: Serializer>(bytes: &[u8; 64], serializer: S) -> Result<S::Ok, S::Error> {
-        serde_bytes::Bytes::new(bytes).serialize(serializer)
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<[u8; 64], D::Error> {
-        let bytes = serde_bytes::ByteBuf::deserialize(deserializer)?;
-        bytes
-            .into_vec()
-            .try_into()
-            .map_err(|value: Vec<u8>| serde::de::Error::invalid_length(value.len(), &"64 bytes"))
-    }
 }
 
 #[cfg(test)]

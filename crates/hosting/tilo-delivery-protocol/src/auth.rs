@@ -1,0 +1,1362 @@
+//! Mutually signed delivery transcript and opaque verified sessions.
+//!
+//! This is not an ingress or a signed-bootstrap verifier. Callers supply an
+//! independently authority-validated binding, enforce TLS/origin policy, and
+//! inject the current native roster/role authority. No transport, stream or
+//! durable admission is opened by these primitives.
+
+use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
+use rand::Rng as _;
+use serde::{Deserialize, Serialize};
+use tilo_user_identity::{DeviceCert, RevocationList, verify_device_cert_at};
+
+/// Delivery protocol major version, bound into every descriptor and transcript.
+pub const VERSION: u16 = 3;
+/// Maximum encoded authentication payload, including all routing fields.
+pub const MAX_AUTH_BYTES: usize = 8 * 1024;
+
+const DOMAIN: &[u8] = b"tilo-delivery-v3\0";
+const SESSION_NS: u64 = 15 * 60 * 1_000_000_000;
+const MAX_ORIGIN_BYTES: usize = 2048;
+
+/// Closed carrier values, canonically encoded as Postcard enum indices 0 and 1.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Carrier {
+    /// Reliable WebTransport streams.
+    WebTransport,
+    /// HTTPS binary streaming or long polling.
+    Https,
+}
+
+/// Scope pinned independently of any untrusted proof or URL.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Binding {
+    /// Native certified workspace identifier.
+    pub workspace: u64,
+    /// Workspace authority root.
+    pub workspace_root: [u8; 32],
+    /// Certified participant device.
+    pub device: [u8; 32],
+    /// Root certifying the participant device.
+    pub device_root: [u8; 32],
+    /// Exact certified host device pin.
+    pub host: [u8; 32],
+    /// Root certifying that host.
+    pub host_root: [u8; 32],
+    /// Exact authorized HTTPS origin/audience, with no credentials or path.
+    #[serde(deserialize_with = "bounded_origin")]
+    pub origin: String,
+    /// Authority-validated bootstrap generation.
+    pub descriptor_generation: u64,
+    /// Digest of the exact authority-validated signed descriptor.
+    pub descriptor_digest: [u8; 32],
+    /// Current host process boot identifier; old sessions cannot cross a reboot.
+    pub server_boot_id: [u8; 16],
+    /// Carrier being authenticated.
+    pub carrier: Carrier,
+    /// Requested capability bits; feature identifiers are supplied by policy.
+    pub requested_capabilities: u64,
+    /// Requested bits required for this session to be usable.
+    pub mandatory_capabilities: u64,
+}
+
+/// Client-pinned bootstrap/identity scope, deliberately without a server boot
+/// identifier. The fresh host-signed challenge authenticates that identifier.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClientScope {
+    /// Native certified workspace identifier.
+    pub workspace: u64,
+    /// Workspace authority root.
+    pub workspace_root: [u8; 32],
+    /// Locally enrolled device identity.
+    pub device: [u8; 32],
+    /// Root certifying that device.
+    pub device_root: [u8; 32],
+    /// Exact host pin from the authority-validated descriptor.
+    pub host: [u8; 32],
+    /// Root certifying the pinned host.
+    pub host_root: [u8; 32],
+    /// Exact authorized HTTPS origin/audience.
+    pub origin: String,
+    /// Authority-validated descriptor generation.
+    pub descriptor_generation: u64,
+    /// Digest of the exact authority-validated signed descriptor.
+    pub descriptor_digest: [u8; 32],
+    /// Locally selected carrier for this attempt.
+    pub carrier: Carrier,
+    /// Locally requested capability bits.
+    pub requested_capabilities: u64,
+    /// Locally required capability bits.
+    pub mandatory_capabilities: u64,
+}
+impl From<&Binding> for ClientScope {
+    /// Derive from an independently trusted binding, never an incoming proof.
+    fn from(binding: &Binding) -> Self {
+        Self {
+            workspace: binding.workspace,
+            workspace_root: binding.workspace_root,
+            device: binding.device,
+            device_root: binding.device_root,
+            host: binding.host,
+            host_root: binding.host_root,
+            origin: binding.origin.clone(),
+            descriptor_generation: binding.descriptor_generation,
+            descriptor_digest: binding.descriptor_digest,
+            carrier: binding.carrier,
+            requested_capabilities: binding.requested_capabilities,
+            mandatory_capabilities: binding.mandatory_capabilities,
+        }
+    }
+}
+impl ClientScope {
+    fn bind_boot(&self, server_boot_id: [u8; 16]) -> Binding {
+        Binding {
+            workspace: self.workspace,
+            workspace_root: self.workspace_root,
+            device: self.device,
+            device_root: self.device_root,
+            host: self.host,
+            host_root: self.host_root,
+            origin: self.origin.clone(),
+            descriptor_generation: self.descriptor_generation,
+            descriptor_digest: self.descriptor_digest,
+            server_boot_id,
+            carrier: self.carrier,
+            requested_capabilities: self.requested_capabilities,
+            mandatory_capabilities: self.mandatory_capabilities,
+        }
+    }
+}
+
+/// Full canonical signed transcript. This is an untrusted wire value.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Transcript {
+    /// Must equal delivery protocol major 3.
+    pub protocol: u16,
+    /// Every identity/audience/generation/capability scope value.
+    pub binding: Binding,
+    /// Fresh 32-byte nonce generated by the client.
+    pub client_nonce: [u8; 32],
+    /// Fresh 32-byte nonce generated by the server challenge.
+    pub server_nonce: [u8; 32],
+    /// Fresh random identifier for this authenticated attempt.
+    pub session_id: [u8; 16],
+    /// Requested capabilities granted within current supported/allowed policy.
+    pub negotiated_capabilities: u64,
+    /// Host-issued wall-clock timestamp in nanoseconds.
+    pub issued_at_ns: u64,
+    /// No later than certificate expiry or 15 minutes after issue.
+    pub expires_at_ns: u64,
+}
+impl Transcript {
+    /// Canonical bounded bytes; encoding does not authenticate this value.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AuthError` if the value violates its wire bounds or cannot be serialized.
+    pub fn encode(&self) -> Result<Vec<u8>, AuthError> {
+        encode(self)
+    }
+}
+
+/// Server-authored challenge, still untrusted until `verify_server` succeeds.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServerProof {
+    /// Exact transcript proposed by the host.
+    pub transcript: Transcript,
+    /// Host signature over the server-role digest of the complete transcript.
+    #[serde(with = "signature_bytes")]
+    pub signature: [u8; 64],
+}
+impl ServerProof {
+    /// Bounded canonical proof bytes for the `ServerHello` frame.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AuthError` if the value violates its wire bounds or cannot be serialized.
+    pub fn encode(&self) -> Result<Vec<u8>, AuthError> {
+        encode(self)
+    }
+    /// Decode only canonical, complete, bounded wire values; not authentication.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AuthError` if the input is not a canonical encoding within this type's bounds.
+    pub fn decode(bytes: &[u8]) -> Result<Self, AuthError> {
+        decode(bytes)
+    }
+}
+
+/// Client response bound to the server's retained challenge.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClientProof {
+    /// Identifies the one server challenge this proof answers.
+    pub session_id: [u8; 16],
+    /// Device signature over the device-role digest of the full transcript.
+    #[serde(with = "signature_bytes")]
+    pub signature: [u8; 64],
+}
+impl ClientProof {
+    /// Bounded canonical proof bytes for the `ClientProof` frame.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AuthError` if the value violates its wire bounds or cannot be serialized.
+    pub fn encode(&self) -> Result<Vec<u8>, AuthError> {
+        encode(self)
+    }
+    /// Decode only canonical, complete, bounded wire values; not authentication.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AuthError` if the input is not a canonical encoding within this type's bounds.
+    pub fn decode(bytes: &[u8]) -> Result<Self, AuthError> {
+        decode(bytes)
+    }
+}
+
+/// Supported and allowed capability masks from the trusted adapter policy.
+#[derive(Clone, Copy)]
+pub struct CapabilityPolicy {
+    /// Bits implemented by this protocol endpoint.
+    pub supported: u64,
+    /// Bits allowed by the current descriptor/host policy.
+    pub allowed: u64,
+}
+
+/// Current exact certificates and their authority-owned revocation views.
+#[derive(Clone, Copy)]
+pub struct Credentials<'a> {
+    /// Participant's current admitted certificate.
+    pub device: &'a DeviceCert,
+    /// Current certificate for the independently pinned host.
+    pub host: &'a DeviceCert,
+    /// Verified revocations applicable to the participant's root.
+    pub device_revocations: &'a RevocationList,
+    /// Verified revocations applicable to the host's root.
+    pub host_revocations: &'a RevocationList,
+}
+
+/// Injected live native authorization; certificate validity alone is insufficient.
+pub trait Authority {
+    /// Require exact current roster certificates and an admitted role for this
+    /// workspace/host. Implement under the native owner's admission boundary;
+    /// a cached historical retention proof cannot satisfy this contract.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the value fails validation or verification.
+    fn authorize(
+        &self,
+        binding: &Binding,
+        device: &DeviceCert,
+        host: &DeviceCert,
+        now_ns: u64,
+    ) -> Result<(), AuthError>;
+}
+
+/// Server-owned admission expectations, including the current server boot.
+/// Never reconstruct this binding from an incoming client proof.
+pub struct VerificationContext<'a> {
+    /// Authority-validated bootstrap and locally expected participant identity.
+    pub binding: &'a Binding,
+    /// Current downward-only capability policy.
+    pub capabilities: CapabilityPolicy,
+    /// Current certificates and revocations.
+    pub credentials: Credentials<'a>,
+    /// Mandatory live roster/role check.
+    pub authority: &'a dyn Authority,
+    /// Current wall clock in nanoseconds.
+    pub now_ns: u64,
+}
+
+/// Client expectations obtained from authority-validated bootstrap and local
+/// identity/custody. No optional or unchecked boot pin is present in this type.
+pub struct ClientExpectations<'a> {
+    /// Independently pinned scope; boot is authenticated by the fresh challenge.
+    pub scope: ClientScope,
+    /// Current supported and descriptor-allowed capability policy.
+    pub capabilities: CapabilityPolicy,
+    /// Current certificates and verified revocation views.
+    pub credentials: Credentials<'a>,
+    /// Mandatory current roster/role authority.
+    pub authority: &'a dyn Authority,
+    /// Current wall clock in nanoseconds.
+    pub now_ns: u64,
+}
+
+/// Single-use server challenge; neither cloneable nor deserializable.
+/// Ingress must bound pending challenges and retain each until completion/expiry.
+pub struct Challenge {
+    proof: ServerProof,
+}
+impl Challenge {
+    /// Check current authorization and issue a fresh mutually scoped challenge.
+    /// The host signing key must match the independently certified host pin.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AuthError` if the inputs violate this operation's bounds or invariants.
+    pub fn issue(
+        context: &VerificationContext<'_>,
+        client_nonce: [u8; 32],
+        host_key: &SigningKey,
+    ) -> Result<(Self, ServerProof), AuthError> {
+        if host_key.verifying_key().to_bytes() != context.binding.host {
+            return Err(AuthError::KeyMismatch);
+        }
+        let mut server_nonce = [0; 32];
+        let mut session_id = [0; 16];
+        rand::rng().fill_bytes(&mut server_nonce);
+        rand::rng().fill_bytes(&mut session_id);
+        let transcript = Transcript {
+            protocol: VERSION,
+            binding: context.binding.clone(),
+            client_nonce,
+            server_nonce,
+            session_id,
+            negotiated_capabilities: negotiate(context.binding, context.capabilities)?,
+            issued_at_ns: context.now_ns,
+            expires_at_ns: expiry_limit(context.now_ns, &context.credentials)?,
+        };
+        validate(&transcript, context)?;
+        let signature = sign_transcript(&transcript, Role::Server, host_key)?;
+        let proof = ServerProof {
+            transcript,
+            signature,
+        };
+        Ok((
+            Self {
+                proof: proof.clone(),
+            },
+            proof,
+        ))
+    }
+
+    /// Consume the challenge on success or failure; recheck current authority
+    /// and both proofs before constructing the opaque verified session.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AuthError` if the inputs violate this operation's bounds or invariants.
+    pub fn finish(
+        self,
+        client: &ClientProof,
+        context: &VerificationContext<'_>,
+    ) -> Result<VerifiedSession, AuthError> {
+        let transcript = &self.proof.transcript;
+        validate(transcript, context)?;
+        if client.session_id != transcript.session_id {
+            return Err(AuthError::Scope);
+        }
+        verify_signature(
+            transcript,
+            Role::Server,
+            &context.binding.host,
+            &self.proof.signature,
+        )?;
+        verify_signature(
+            transcript,
+            Role::Device,
+            &context.binding.device,
+            &client.signature,
+        )?;
+        Ok(VerifiedSession {
+            transcript: self.proof.transcript,
+            device: context.credentials.device.clone(),
+            host: context.credentials.host.clone(),
+        })
+    }
+}
+
+/// Host proof verified against the local nonce and independently pinned scope.
+/// It is not an admitted server session and does not open application streams.
+pub struct VerifiedHost {
+    transcript: Transcript,
+}
+impl VerifiedHost {
+    /// Sign the verified full transcript with the exact enrolled device key.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AuthError` if the value fails validation or verification.
+    pub fn client_proof(self, device_key: &SigningKey) -> Result<ClientProof, AuthError> {
+        if device_key.verifying_key().to_bytes() != self.transcript.binding.device {
+            return Err(AuthError::KeyMismatch);
+        }
+        Ok(ClientProof {
+            session_id: self.transcript.session_id,
+            signature: sign_transcript(&self.transcript, Role::Device, device_key)?,
+        })
+    }
+}
+
+/// Verify a host proof without relying on TLS alone or any legacy nonce domain.
+/// The caller must independently verify TLS and bootstrap authority first.
+///
+/// # Errors
+///
+/// Returns `AuthError` if the value fails validation or verification.
+pub fn verify_server(
+    expected: &ClientExpectations<'_>,
+    expected_client_nonce: [u8; 32],
+    proof: &ServerProof,
+) -> Result<VerifiedHost, AuthError> {
+    // Only boot comes from the proposed transcript. All other scope fields
+    // remain independently pinned, and the signature below authenticates boot
+    // together with the fresh client nonce before any VerifiedHost is returned.
+    let binding = expected
+        .scope
+        .bind_boot(proof.transcript.binding.server_boot_id);
+    let context = VerificationContext {
+        binding: &binding,
+        capabilities: expected.capabilities,
+        credentials: expected.credentials,
+        authority: expected.authority,
+        now_ns: expected.now_ns,
+    };
+    validate_scope_and_authority(&proof.transcript, &context)?;
+    // The host may support fewer optional bits than this client. Its signed
+    // choice must remain inside local policy and include every mandatory bit.
+    let available = negotiate(&binding, expected.capabilities)?;
+    let selected = proof.transcript.negotiated_capabilities;
+    if selected & !available != 0 || binding.mandatory_capabilities & !selected != 0 {
+        return Err(AuthError::UnsupportedCapabilities);
+    }
+    if proof.transcript.client_nonce != expected_client_nonce {
+        return Err(AuthError::Scope);
+    }
+    verify_signature(
+        &proof.transcript,
+        Role::Server,
+        &context.binding.host,
+        &proof.signature,
+    )?;
+    Ok(VerifiedHost {
+        transcript: proof.transcript.clone(),
+    })
+}
+
+/// Opaque evidence of completed mutual proof and live authorization.
+/// No public constructor, Deserialize, Default, or mutable identity access.
+/// Ingress must still bind lanes and revalidate before admission/replay.
+pub struct VerifiedSession {
+    transcript: Transcript,
+    device: DeviceCert,
+    host: DeviceCert,
+}
+impl VerifiedSession {
+    /// Exact authenticated scope, independent of any incoming payload source.
+    pub fn binding(&self) -> &Binding {
+        &self.transcript.binding
+    }
+    /// Certificate whose key supplied the verified client proof.
+    pub fn device_certificate(&self) -> &DeviceCert {
+        &self.device
+    }
+    /// Certificate for the independently pinned, proved host.
+    pub fn host_certificate(&self) -> &DeviceCert {
+        &self.host
+    }
+    /// Authenticated connection/session identifier.
+    pub fn session_id(&self) -> [u8; 16] {
+        self.transcript.session_id
+    }
+    /// Granted supported and policy-allowed capability bits.
+    pub fn capabilities(&self) -> u64 {
+        self.transcript.negotiated_capabilities
+    }
+    /// Absolute session expiry; never a durable-save receipt.
+    pub fn expires_at_ns(&self) -> u64 {
+        self.transcript.expires_at_ns
+    }
+    /// Fail after expiry, revocation, certificate/roster changes or boot/scope
+    /// replacement. Call under the actual admission/replay owner's boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AuthError` if the value fails validation or verification.
+    pub fn revalidate(&self, context: &VerificationContext<'_>) -> Result<(), AuthError> {
+        if &self.device != context.credentials.device || &self.host != context.credentials.host {
+            return Err(AuthError::Scope);
+        }
+        validate(&self.transcript, context)
+    }
+}
+
+/// Closed authentication errors; callers must not downgrade identity failures.
+#[derive(Debug, thiserror::Error)]
+pub enum AuthError {
+    /// Unsupported protocol major.
+    #[error("unsupported delivery version {0}")]
+    UnsupportedVersion(u16),
+    /// Required capabilities are unsupported, forbidden or not requested.
+    #[error("unsupported mandatory delivery capabilities")]
+    UnsupportedCapabilities,
+    /// Malformed binding, nonce, origin or lifetime.
+    #[error("invalid delivery authentication binding")]
+    InvalidBinding,
+    /// Incoming scope differs from independently trusted expectations.
+    #[error("delivery authentication scope mismatch")]
+    Scope,
+    /// Signing key differs from the certified role key.
+    #[error("delivery signing key mismatch")]
+    KeyMismatch,
+    /// Certificate signature/time validation failed.
+    #[error("delivery certificate: {0}")]
+    Certificate(#[from] tilo_user_identity::DeviceCertError),
+    /// A currently known verified revocation applies.
+    #[error("delivery device revoked")]
+    Revoked,
+    /// Server certificate cannot act as a host.
+    #[error("delivery server is not host-capable")]
+    HostRequired,
+    /// Native roster or role denies current access.
+    #[error("delivery authority denied access")]
+    PolicyDenied,
+    /// Transcript is expired or not yet issued.
+    #[error("delivery session expired or not yet valid")]
+    Expired,
+    /// Role-separated full-transcript signature is invalid.
+    #[error("invalid delivery transcript signature")]
+    Signature,
+    /// Invalid, truncated, oversized or noncanonical authentication encoding.
+    #[error("invalid delivery authentication encoding")]
+    Codec,
+}
+
+#[derive(Clone, Copy)]
+enum Role {
+    Server,
+    Device,
+}
+
+fn negotiate(binding: &Binding, policy: CapabilityPolicy) -> Result<u64, AuthError> {
+    let negotiated = binding.requested_capabilities & policy.supported & policy.allowed;
+    if binding.mandatory_capabilities & !binding.requested_capabilities != 0
+        || binding.mandatory_capabilities & !negotiated != 0
+    {
+        return Err(AuthError::UnsupportedCapabilities);
+    }
+    Ok(negotiated)
+}
+
+fn expiry_limit(issued: u64, credentials: &Credentials<'_>) -> Result<u64, AuthError> {
+    let mut expiry = issued
+        .checked_add(SESSION_NS)
+        .ok_or(AuthError::InvalidBinding)?;
+    for cert in [credentials.device, credentials.host] {
+        if let Some(cert_expiry) = cert.expires_at_ns {
+            expiry = expiry.min(cert_expiry);
+        }
+    }
+    Ok(expiry)
+}
+
+fn validate(transcript: &Transcript, context: &VerificationContext<'_>) -> Result<(), AuthError> {
+    validate_scope_and_authority(transcript, context)?;
+    // Server issuance, final admission and revalidation require the exact
+    // selection under the server's own current policy.
+    if transcript.negotiated_capabilities != negotiate(&transcript.binding, context.capabilities)? {
+        return Err(AuthError::Scope);
+    }
+    Ok(())
+}
+
+fn validate_scope_and_authority(
+    transcript: &Transcript,
+    context: &VerificationContext<'_>,
+) -> Result<(), AuthError> {
+    if transcript.protocol != VERSION {
+        return Err(AuthError::UnsupportedVersion(transcript.protocol));
+    }
+    let binding = &transcript.binding;
+    validate_origin(&binding.origin)?;
+    if binding.workspace == 0
+        || binding.workspace_root == [0; 32]
+        || binding.server_boot_id == [0; 16]
+        || transcript.client_nonce == [0; 32]
+        || transcript.server_nonce == [0; 32]
+        || transcript.session_id == [0; 16]
+    {
+        return Err(AuthError::InvalidBinding);
+    }
+    if binding != context.binding {
+        return Err(AuthError::Scope);
+    }
+    if transcript.issued_at_ns > context.now_ns || context.now_ns >= transcript.expires_at_ns {
+        return Err(AuthError::Expired);
+    }
+    if transcript.expires_at_ns > expiry_limit(transcript.issued_at_ns, &context.credentials)? {
+        return Err(AuthError::InvalidBinding);
+    }
+    let credentials = &context.credentials;
+    if credentials.device.device_public_key != binding.device
+        || credentials.device.user_public_key != binding.device_root
+        || credentials.host.device_public_key != binding.host
+        || credentials.host.user_public_key != binding.host_root
+    {
+        return Err(AuthError::Scope);
+    }
+    verify_device_cert_at(credentials.device, context.now_ns)?;
+    verify_device_cert_at(credentials.host, context.now_ns)?;
+    if !credentials.host.capabilities.can_act_as_host {
+        return Err(AuthError::HostRequired);
+    }
+    if credentials.device_revocations.is_revoked(&binding.device)
+        || credentials.host_revocations.is_revoked(&binding.host)
+    {
+        return Err(AuthError::Revoked);
+    }
+    context.authority.authorize(
+        binding,
+        credentials.device,
+        credentials.host,
+        context.now_ns,
+    )
+}
+
+fn digest(transcript: &Transcript, role: Role) -> Result<[u8; 32], AuthError> {
+    let bytes = transcript.encode()?;
+    let mut hash = blake3::Hasher::new();
+    hash.update(DOMAIN);
+    hash.update(&[match role {
+        Role::Server => 0,
+        Role::Device => 1,
+    }]);
+    hash.update(&bytes);
+    Ok(*hash.finalize().as_bytes())
+}
+fn sign_transcript(
+    transcript: &Transcript,
+    role: Role,
+    key: &SigningKey,
+) -> Result<[u8; 64], AuthError> {
+    Ok(key.sign(&digest(transcript, role)?).to_bytes())
+}
+fn verify_signature(
+    transcript: &Transcript,
+    role: Role,
+    key: &[u8; 32],
+    signature: &[u8; 64],
+) -> Result<(), AuthError> {
+    let key = VerifyingKey::from_bytes(key).map_err(|_| AuthError::Signature)?;
+    key.verify_strict(
+        &digest(transcript, role)?,
+        &ed25519_dalek::Signature::from_bytes(signature),
+    )
+    .map_err(|_| AuthError::Signature)
+}
+
+fn encode<T: Serialize>(value: &T) -> Result<Vec<u8>, AuthError> {
+    let mut buffer = [0; MAX_AUTH_BYTES];
+    postcard::to_slice(value, &mut buffer)
+        .map(|bytes| bytes.to_vec())
+        .map_err(|_| AuthError::Codec)
+}
+fn decode<T: for<'de> Deserialize<'de> + Serialize>(bytes: &[u8]) -> Result<T, AuthError> {
+    if bytes.len() > MAX_AUTH_BYTES {
+        return Err(AuthError::Codec);
+    }
+    let (value, rest): (T, _) = postcard::take_from_bytes(bytes).map_err(|_| AuthError::Codec)?;
+    if !rest.is_empty() || encode(&value)? != bytes {
+        return Err(AuthError::Codec);
+    }
+    Ok(value)
+}
+fn bounded_origin<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
+    let origin = <&str>::deserialize(deserializer)?;
+    validate_origin(origin).map_err(serde::de::Error::custom)?;
+    Ok(origin.to_owned())
+}
+fn validate_origin(origin: &str) -> Result<(), AuthError> {
+    if origin.len() > MAX_ORIGIN_BYTES || !origin.is_ascii() {
+        return Err(AuthError::InvalidBinding);
+    }
+    let authority = origin
+        .strip_prefix("https://")
+        .ok_or(AuthError::InvalidBinding)?;
+    if authority.is_empty()
+        || authority.bytes().any(|b| {
+            b.is_ascii_whitespace()
+                || b.is_ascii_control()
+                || matches!(b, b'/' | b'\\' | b'?' | b'#' | b'@')
+        })
+    {
+        return Err(AuthError::InvalidBinding);
+    }
+    let (host, port) = if let Some(ipv6) = authority.strip_prefix('[') {
+        let (host, suffix) = ipv6.split_once(']').ok_or(AuthError::InvalidBinding)?;
+        host.parse::<std::net::Ipv6Addr>()
+            .map_err(|_| AuthError::InvalidBinding)?;
+        let port = if suffix.is_empty() {
+            None
+        } else {
+            Some(suffix.strip_prefix(':').ok_or(AuthError::InvalidBinding)?)
+        };
+        (None, port)
+    } else {
+        let (host, port) = authority
+            .rsplit_once(':')
+            .map_or((authority, None), |(host, port)| (host, Some(port)));
+        (Some(host), port)
+    };
+    if let Some(host) = host
+        && (host.len() > 253
+            || host.split('.').any(|part| {
+                part.is_empty()
+                    || part.len() > 63
+                    || part.starts_with('-')
+                    || part.ends_with('-')
+                    || !part
+                        .bytes()
+                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+            }))
+    {
+        return Err(AuthError::InvalidBinding);
+    }
+    if let Some(port) = port
+        && (port.is_empty()
+            || !port.bytes().all(|b| b.is_ascii_digit())
+            || port.parse::<u16>().ok().as_ref().is_none_or(|p| *p == 0))
+    {
+        return Err(AuthError::InvalidBinding);
+    }
+    Ok(())
+}
+
+mod signature_bytes {
+    use serde::{Deserialize, Deserializer, Serializer};
+    pub fn serialize<S: Serializer>(
+        signature: &[u8; 64],
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serializer.serialize_bytes(signature)
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<[u8; 64], D::Error> {
+        let bytes = <&[u8]>::deserialize(deserializer)?;
+        bytes
+            .try_into()
+            .map_err(|_| serde::de::Error::custom("delivery signature must contain 64 bytes"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+    use tilo_user_identity::{
+        DeviceCapabilities, RevocationEntry, RevocationReason, sign_device_cert,
+        sign_revocation_entry,
+    };
+
+    struct Fixture {
+        binding: Binding,
+        root: ed25519_dalek::SigningKey,
+        device_key: ed25519_dalek::SigningKey,
+        host_key: ed25519_dalek::SigningKey,
+        device: DeviceCert,
+        host: DeviceCert,
+        device_revocations: RevocationList,
+        host_revocations: RevocationList,
+        admitted: Cell<bool>,
+        now: u64,
+    }
+    impl Authority for Fixture {
+        fn authorize(
+            &self,
+            binding: &Binding,
+            device: &DeviceCert,
+            host: &DeviceCert,
+            _: u64,
+        ) -> Result<(), AuthError> {
+            if !self.admitted.get()
+                || binding.workspace != 7
+                || device != &self.device
+                || host != &self.host
+            {
+                return Err(AuthError::PolicyDenied);
+            }
+            Ok(())
+        }
+    }
+    impl Fixture {
+        fn new() -> Self {
+            let root = ed25519_dalek::SigningKey::from_bytes(&[10; 32]);
+            let device_key = ed25519_dalek::SigningKey::from_bytes(&[11; 32]);
+            let host_key = ed25519_dalek::SigningKey::from_bytes(&[12; 32]);
+            let cert = |key: &ed25519_dalek::SigningKey, capabilities| {
+                let mut cert = DeviceCert {
+                    user_public_key: root.verifying_key().to_bytes(),
+                    device_public_key: key.verifying_key().to_bytes(),
+                    device_label: "v3-test".into(),
+                    capabilities,
+                    issued_at_ns: 1,
+                    expires_at_ns: None,
+                    signature: [0; 64],
+                };
+                sign_device_cert(&mut cert, &root).unwrap();
+                cert
+            };
+            let device = cert(&device_key, DeviceCapabilities::primary());
+            let host = cert(&host_key, DeviceCapabilities::host());
+            let binding = Binding {
+                workspace: 7,
+                workspace_root: root.verifying_key().to_bytes(),
+                device: device.device_public_key,
+                device_root: device.user_public_key,
+                host: host.device_public_key,
+                host_root: host.user_public_key,
+                origin: "https://example.test".into(),
+                descriptor_generation: 1,
+                descriptor_digest: [8; 32],
+                server_boot_id: [1; 16],
+                carrier: Carrier::WebTransport,
+                requested_capabilities: 3,
+                mandatory_capabilities: 1,
+            };
+            Self {
+                binding,
+                root,
+                device_key,
+                host_key,
+                device,
+                host,
+                device_revocations: RevocationList::new(),
+                host_revocations: RevocationList::new(),
+                admitted: Cell::new(true),
+                now: 100,
+            }
+        }
+        fn context(&self) -> VerificationContext<'_> {
+            VerificationContext {
+                binding: &self.binding,
+                capabilities: CapabilityPolicy {
+                    supported: 3,
+                    allowed: 3,
+                },
+                credentials: Credentials {
+                    device: &self.device,
+                    host: &self.host,
+                    device_revocations: &self.device_revocations,
+                    host_revocations: &self.host_revocations,
+                },
+                authority: self,
+                now_ns: self.now,
+            }
+        }
+        fn client_context(&self) -> ClientExpectations<'_> {
+            let server = self.context();
+            ClientExpectations {
+                scope: ClientScope::from(&self.binding),
+                capabilities: server.capabilities,
+                credentials: server.credentials,
+                authority: self,
+                now_ns: self.now,
+            }
+        }
+        fn issue(&self) -> (Challenge, ServerProof) {
+            Challenge::issue(&self.context(), [2; 32], &self.host_key).unwrap()
+        }
+        fn revoke(&mut self, host: bool) {
+            let mut entry = RevocationEntry {
+                user_public_key: self.root.verifying_key().to_bytes(),
+                revoked_device_public_key: if host {
+                    self.host.device_public_key
+                } else {
+                    self.device.device_public_key
+                },
+                revoked_at_ns: self.now,
+                reason: RevocationReason::Retired,
+                signature: [0; 64],
+            };
+            sign_revocation_entry(&mut entry, &self.root).unwrap();
+            if host {
+                self.host_revocations.insert(entry).unwrap();
+            } else {
+                self.device_revocations.insert(entry).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn mutual_proof_produces_exact_certified_session_and_caps_lifetime() {
+        let mut f = Fixture::new();
+        f.device.expires_at_ns = Some(1_000);
+        sign_device_cert(&mut f.device, &f.root).unwrap();
+        let (challenge, server) = f.issue();
+        assert_eq!(server.transcript.expires_at_ns, 1_000);
+        let host = verify_server(&f.client_context(), [2; 32], &server).unwrap();
+        let client = host.client_proof(&f.device_key).unwrap();
+        let session = challenge.finish(&client, &f.context()).unwrap();
+        assert_eq!(session.binding(), &f.binding);
+        assert_eq!(session.device_certificate(), &f.device);
+        assert_eq!(session.expires_at_ns(), 1_000);
+        session.revalidate(&f.context()).unwrap();
+        let f = Fixture::new();
+        assert_eq!(f.issue().1.transcript.expires_at_ns, 900_000_000_100);
+    }
+
+    #[test]
+    fn every_transcript_field_is_covered_by_both_signature_roles() {
+        let f = Fixture::new();
+        let (_, server) = f.issue();
+        let device_signature =
+            sign_transcript(&server.transcript, Role::Device, &f.device_key).unwrap();
+        for field in 0..20 {
+            let mut transcript = server.transcript.clone();
+            match field {
+                0 => transcript.protocol = 4,
+                1 => transcript.client_nonce[0] ^= 1,
+                2 => transcript.server_nonce[0] ^= 1,
+                3 => transcript.binding.workspace += 1,
+                4 => transcript.binding.workspace_root[0] ^= 1,
+                5 => transcript.binding.device[0] ^= 1,
+                6 => transcript.binding.device_root[0] ^= 1,
+                7 => transcript.binding.host[0] ^= 1,
+                8 => transcript.binding.host_root[0] ^= 1,
+                9 => transcript.binding.origin = "https://other.test".into(),
+                10 => transcript.binding.descriptor_generation += 1,
+                11 => transcript.binding.server_boot_id[0] ^= 1,
+                12 => transcript.session_id[0] ^= 1,
+                13 => transcript.binding.carrier = Carrier::Https,
+                14 => transcript.binding.requested_capabilities ^= 4,
+                15 => transcript.binding.mandatory_capabilities ^= 2,
+                16 => transcript.negotiated_capabilities ^= 2,
+                17 => transcript.issued_at_ns += 1,
+                18 => transcript.expires_at_ns -= 1,
+                _ => transcript.binding.descriptor_digest[0] ^= 1,
+            }
+            assert!(
+                verify_signature(
+                    &transcript,
+                    Role::Server,
+                    &f.host.device_public_key,
+                    &server.signature
+                )
+                .is_err(),
+                "server field {field}"
+            );
+            assert!(
+                verify_signature(
+                    &transcript,
+                    Role::Device,
+                    &f.device.device_public_key,
+                    &device_signature
+                )
+                .is_err(),
+                "device field {field}"
+            );
+        }
+    }
+
+    #[test]
+    fn pin_scope_nonce_and_fresh_challenge_replay_are_rejected() {
+        let f = Fixture::new();
+        let (first, server) = f.issue();
+        assert!(verify_server(&f.client_context(), [3; 32], &server).is_err());
+        for field in 0..10 {
+            let mut binding = f.binding.clone();
+            match field {
+                0 => binding.workspace = 8,
+                1 => binding.workspace_root[0] ^= 1,
+                2 => binding.device[0] ^= 1,
+                3 => binding.device_root[0] ^= 1,
+                4 => binding.host[0] ^= 1,
+                5 => binding.host_root[0] ^= 1,
+                6 => binding.origin = "https://other.test".into(),
+                7 => binding.descriptor_generation += 1,
+                8 => binding.descriptor_digest[0] ^= 1,
+                _ => binding.carrier = Carrier::Https,
+            }
+            let mut context = f.client_context();
+            context.scope = ClientScope::from(&binding);
+            assert!(verify_server(&context, [2; 32], &server).is_err());
+        }
+        let client = verify_server(&f.client_context(), [2; 32], &server)
+            .unwrap()
+            .client_proof(&f.device_key)
+            .unwrap();
+        let (second, different) = f.issue();
+        assert_ne!(
+            server.transcript.server_nonce,
+            different.transcript.server_nonce
+        );
+        assert_ne!(
+            server.transcript.session_id,
+            different.transcript.session_id
+        );
+        assert!(second.finish(&client, &f.context()).is_err());
+        first.finish(&client, &f.context()).unwrap();
+    }
+
+    #[test]
+    fn first_contact_authenticates_signed_boot_and_restart_fences_old_proofs() {
+        let mut f = Fixture::new();
+        let initial_scope = ClientScope::from(&f.binding);
+        let (old_challenge, old_server) = f.issue();
+        let old_client = verify_server(&f.client_context(), [2; 32], &old_server)
+            .unwrap()
+            .client_proof(&f.device_key)
+            .unwrap();
+        // No server boot field exists in the client expectations.
+        f.binding.server_boot_id = [9; 16];
+        let (new_challenge, new_server) =
+            Challenge::issue(&f.context(), [3; 32], &f.host_key).unwrap();
+        let mut expected = f.client_context();
+        expected.scope = initial_scope;
+        assert!(verify_server(&expected, [3; 32], &old_server).is_err());
+        let new_client = verify_server(&expected, [3; 32], &new_server)
+            .unwrap()
+            .client_proof(&f.device_key)
+            .unwrap();
+        assert!(old_challenge.finish(&old_client, &f.context()).is_err());
+        let (other_challenge, _) = Challenge::issue(&f.context(), [3; 32], &f.host_key).unwrap();
+        assert!(other_challenge.finish(&old_client, &f.context()).is_err());
+        let session = new_challenge.finish(&new_client, &f.context()).unwrap();
+        assert_eq!(session.binding().server_boot_id, [9; 16]);
+    }
+
+    #[test]
+    fn reflected_and_legacy_nonce_signatures_do_not_authenticate_v3() {
+        let f = Fixture::new();
+        let (challenge, mut server) = f.issue();
+        let reflection = ClientProof {
+            session_id: server.transcript.session_id,
+            signature: server.signature,
+        };
+        assert!(challenge.finish(&reflection, &f.context()).is_err());
+        server.signature = tilo_relay_protocol::auth::build_hello_ack(
+            f.host.clone(),
+            &f.host_key,
+            server.transcript.server_nonce,
+            &server.transcript.client_nonce,
+        )
+        .sig_over_client_nonce;
+        assert!(verify_server(&f.client_context(), [2; 32], &server).is_err());
+        assert!(Challenge::issue(&f.context(), [2; 32], &f.device_key).is_err());
+        let (_, server) = f.issue();
+        assert!(
+            verify_server(&f.client_context(), [2; 32], &server)
+                .unwrap()
+                .client_proof(&f.host_key)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn authority_and_revocations_are_rechecked_at_final_admission() {
+        for host in [false, true] {
+            let mut f = Fixture::new();
+            let (challenge, server) = f.issue();
+            let client = verify_server(&f.client_context(), [2; 32], &server)
+                .unwrap()
+                .client_proof(&f.device_key)
+                .unwrap();
+            f.revoke(host);
+            assert!(matches!(
+                challenge.finish(&client, &f.context()),
+                Err(AuthError::Revoked)
+            ));
+        }
+        let f = Fixture::new();
+        let (challenge, server) = f.issue();
+        let client = verify_server(&f.client_context(), [2; 32], &server)
+            .unwrap()
+            .client_proof(&f.device_key)
+            .unwrap();
+        f.admitted.set(false);
+        assert!(matches!(
+            challenge.finish(&client, &f.context()),
+            Err(AuthError::PolicyDenied)
+        ));
+    }
+
+    #[test]
+    fn expired_or_non_host_certificates_and_expired_sessions_fail() {
+        let mut f = Fixture::new();
+        f.host.capabilities = DeviceCapabilities::primary();
+        sign_device_cert(&mut f.host, &f.root).unwrap();
+        assert!(matches!(
+            Challenge::issue(&f.context(), [2; 32], &f.host_key),
+            Err(AuthError::HostRequired)
+        ));
+        f.host.capabilities = DeviceCapabilities::host();
+        f.host.expires_at_ns = Some(50);
+        sign_device_cert(&mut f.host, &f.root).unwrap();
+        assert!(Challenge::issue(&f.context(), [2; 32], &f.host_key).is_err());
+        let mut f = Fixture::new();
+        let (challenge, server) = f.issue();
+        let client = verify_server(&f.client_context(), [2; 32], &server)
+            .unwrap()
+            .client_proof(&f.device_key)
+            .unwrap();
+        f.now = server.transcript.expires_at_ns;
+        assert!(matches!(
+            challenge.finish(&client, &f.context()),
+            Err(AuthError::Expired)
+        ));
+    }
+
+    #[test]
+    fn mandatory_unknown_capabilities_fail_but_optional_bits_negotiate_down() {
+        let mut f = Fixture::new();
+        f.binding.requested_capabilities = 7;
+        assert_eq!(f.issue().1.transcript.negotiated_capabilities, 3);
+        f.binding.mandatory_capabilities = 4;
+        assert!(matches!(
+            Challenge::issue(&f.context(), [2; 32], &f.host_key),
+            Err(AuthError::UnsupportedCapabilities)
+        ));
+        f.binding.mandatory_capabilities = 8;
+        assert!(Challenge::issue(&f.context(), [2; 32], &f.host_key).is_err());
+        let f = Fixture::new();
+        let (_, mut server) = f.issue();
+        server.transcript.protocol = 4;
+        assert!(matches!(
+            verify_server(&f.client_context(), [2; 32], &server),
+            Err(AuthError::UnsupportedVersion(4))
+        ));
+    }
+
+    #[test]
+    fn asymmetric_optional_capabilities_complete_mutual_handshake() {
+        let mut f = Fixture::new();
+        f.binding.requested_capabilities = 7;
+        let (challenge, server) = f.issue();
+        let mut expected = f.client_context();
+        expected.capabilities = CapabilityPolicy {
+            supported: 7,
+            allowed: 7,
+        };
+        assert_eq!(server.transcript.negotiated_capabilities, 3);
+        let client = verify_server(&expected, [2; 32], &server)
+            .unwrap()
+            .client_proof(&f.device_key)
+            .unwrap();
+        let session = challenge.finish(&client, &f.context()).unwrap();
+        assert_eq!(session.capabilities(), 3);
+        session.revalidate(&f.context()).unwrap();
+        // Server-owned policy still requires its exact intersection at admission.
+        let mut changed_server = f.context();
+        changed_server.capabilities = CapabilityPolicy {
+            supported: 7,
+            allowed: 7,
+        };
+        assert!(matches!(
+            session.revalidate(&changed_server),
+            Err(AuthError::Scope)
+        ));
+    }
+
+    /// `MULTI_GROUP_REPLAY_V1` compatibility matrix: the optional transcript
+    /// extension is granted only when both sides know it; either old side
+    /// yields exactly the descriptor product contract (one group per page).
+    #[test]
+    fn multi_group_extension_negotiates_only_between_new_peers() {
+        const KNOWN: u64 = super::super::capabilities::KNOWN_DATA;
+        use super::super::capabilities::{
+            MULTI_GROUP_REPLAY_V1, PRODUCT_DATA_V1, client_allowed, handshake_policy, page_bounds,
+        };
+        let descriptor = PRODUCT_DATA_V1;
+        let new_client = (
+            handshake_policy(descriptor),
+            KNOWN,
+            client_allowed(descriptor),
+        );
+        let old_client = (descriptor, descriptor, descriptor);
+        for ((requested, supported, allowed), host, expected) in [
+            (
+                new_client,
+                handshake_policy(descriptor),
+                descriptor | MULTI_GROUP_REPLAY_V1,
+            ),
+            (new_client, descriptor, descriptor),
+            (old_client, handshake_policy(descriptor), descriptor),
+            (old_client, descriptor, descriptor),
+        ] {
+            let mut f = Fixture::new();
+            f.binding.requested_capabilities = requested;
+            f.binding.mandatory_capabilities = descriptor;
+            let mut server_context = f.context();
+            server_context.capabilities = CapabilityPolicy {
+                supported: host,
+                allowed: host,
+            };
+            let (challenge, server) =
+                Challenge::issue(&server_context, [2; 32], &f.host_key).unwrap();
+            assert_eq!(server.transcript.negotiated_capabilities, expected);
+            let mut client = f.client_context();
+            client.capabilities = CapabilityPolicy { supported, allowed };
+            let proof = verify_server(&client, [2; 32], &server)
+                .unwrap()
+                .client_proof(&f.device_key)
+                .unwrap();
+            let session = challenge.finish(&proof, &server_context).unwrap();
+            assert_eq!(session.capabilities(), expected);
+            let groups = page_bounds(session.capabilities()).0;
+            assert_eq!(groups > 1, expected & MULTI_GROUP_REPLAY_V1 != 0);
+        }
+    }
+
+    #[test]
+    fn signed_capabilities_cannot_omit_mandatory_or_escalate_client_scope() {
+        for (requested, supported, allowed, granted) in [
+            (7, 7, 7, 2), // Missing mandatory bit 1.
+            (7, 3, 7, 5), // Locally unsupported bit 4.
+            (7, 7, 3, 5), // Locally forbidden bit 4.
+            (3, 7, 7, 5), // Unrequested bit 4.
+        ] {
+            let mut f = Fixture::new();
+            f.binding.requested_capabilities = requested;
+            let (_, mut server) = f.issue();
+            server.transcript.negotiated_capabilities = granted;
+            server.signature =
+                sign_transcript(&server.transcript, Role::Server, &f.host_key).unwrap();
+            let mut expected = f.client_context();
+            expected.capabilities = CapabilityPolicy { supported, allowed };
+            assert!(
+                verify_server(&expected, [2; 32], &server).is_err(),
+                "request={requested}, supported={supported}, allowed={allowed}, granted={granted}"
+            );
+        }
+    }
+
+    #[test]
+    fn asymmetric_capability_acceptance_still_rejects_role_reflection() {
+        let mut f = Fixture::new();
+        f.binding.requested_capabilities = 7;
+        let (_, mut server) = f.issue();
+        server.signature = sign_transcript(&server.transcript, Role::Device, &f.host_key).unwrap();
+        let mut expected = f.client_context();
+        expected.capabilities = CapabilityPolicy {
+            supported: 7,
+            allowed: 7,
+        };
+        assert!(matches!(
+            verify_server(&expected, [2; 32], &server),
+            Err(AuthError::Signature)
+        ));
+    }
+
+    #[test]
+    fn exact_https_origin_validation_rejects_credentials_paths_and_ambiguous_hosts() {
+        let mut f = Fixture::new();
+        for origin in [
+            "http://example.test",
+            "https://user@example.test",
+            "https://example.test/",
+            "https://example.test?q=1",
+            "https://example.test#x",
+            "https://example.test\\evil",
+            "https://example.test:0",
+            "https://example.test:65536",
+            "https://EXAMPLE.test",
+            "https://a..test",
+            "https://a.test\n",
+        ] {
+            f.binding.origin = origin.into();
+            assert!(
+                Challenge::issue(&f.context(), [2; 32], &f.host_key).is_err(),
+                "{origin:?}"
+            );
+        }
+        for origin in [
+            "https://example.test",
+            "https://localhost:8443",
+            "https://[::1]:443",
+        ] {
+            f.binding.origin = origin.into();
+            f.issue();
+        }
+    }
+
+    #[test]
+    fn bounded_canonical_wire_roundtrip_rejects_truncation_trailing_and_overlong_varints() {
+        let f = Fixture::new();
+        let (_, server) = f.issue();
+        let bytes = server.encode().unwrap();
+        assert_eq!(ServerProof::decode(&bytes).unwrap(), server);
+        for end in 0..bytes.len() {
+            assert!(ServerProof::decode(&bytes[..end]).is_err());
+        }
+        let mut trailing = bytes.clone();
+        trailing.push(0);
+        assert!(ServerProof::decode(&trailing).is_err());
+        let mut overlong = bytes;
+        overlong.splice(0..1, [0x83, 0]);
+        assert!(ServerProof::decode(&overlong).is_err());
+        assert!(ServerProof::decode(&vec![0; 8193]).is_err());
+        let client = verify_server(&f.client_context(), [2; 32], &server)
+            .unwrap()
+            .client_proof(&f.device_key)
+            .unwrap();
+        assert_eq!(
+            ClientProof::decode(&client.encode().unwrap()).unwrap(),
+            client
+        );
+        let mut invalid_signature = client.encode().unwrap();
+        invalid_signature[16] = 65;
+        invalid_signature.push(0);
+        assert!(ClientProof::decode(&invalid_signature).is_err());
+    }
+
+    #[test]
+    fn verified_session_revalidation_rejects_changed_boot_and_removed_member() {
+        let f = Fixture::new();
+        let (challenge, server) = f.issue();
+        let proof = verify_server(&f.client_context(), [2; 32], &server)
+            .unwrap()
+            .client_proof(&f.device_key)
+            .unwrap();
+        let session = challenge.finish(&proof, &f.context()).unwrap();
+        let mut binding = f.binding.clone();
+        binding.server_boot_id = [9; 16];
+        let mut context = f.context();
+        context.binding = &binding;
+        assert!(session.revalidate(&context).is_err());
+        f.admitted.set(false);
+        assert!(session.revalidate(&f.context()).is_err());
+    }
+
+    #[test]
+    fn canonical_transcript_matches_independent_postcard_wire_fixture() {
+        let transcript = Transcript {
+            protocol: 3,
+            binding: Binding {
+                workspace: 7,
+                workspace_root: [1; 32],
+                device: [2; 32],
+                device_root: [3; 32],
+                host: [4; 32],
+                host_root: [5; 32],
+                origin: "https://example.test".into(),
+                descriptor_generation: 9,
+                descriptor_digest: [10; 32],
+                server_boot_id: [6; 16],
+                carrier: Carrier::WebTransport,
+                requested_capabilities: 3,
+                mandatory_capabilities: 1,
+            },
+            client_nonce: [7; 32],
+            server_nonce: [8; 32],
+            session_id: [9; 16],
+            negotiated_capabilities: 3,
+            issued_at_ns: 10,
+            expires_at_ns: 20,
+        };
+        let golden = hex::decode("0307010101010101010101010101010101010101010101010101010101010101010102020202020202020202020202020202020202020202020202020202020202020303030303030303030303030303030303030303030303030303030303030303040404040404040404040404040404040404040404040404040404040404040405050505050505050505050505050505050505050505050505050505050505051468747470733a2f2f6578616d706c652e74657374090a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a060606060606060606060606060606060003010707070707070707070707070707070707070707070707070707070707070707080808080808080808080808080808080808080808080808080808080808080809090909090909090909090909090909030a14").unwrap();
+        assert_eq!(transcript.encode().unwrap(), golden);
+        let mut preimage = b"tilo-delivery-v3\0".to_vec();
+        preimage.push(0);
+        preimage.extend_from_slice(&golden);
+        assert_eq!(
+            digest(&transcript, Role::Server).unwrap(),
+            *blake3::hash(&preimage).as_bytes()
+        );
+        assert_ne!(
+            digest(&transcript, Role::Server).unwrap(),
+            digest(&transcript, Role::Device).unwrap()
+        );
+    }
+}

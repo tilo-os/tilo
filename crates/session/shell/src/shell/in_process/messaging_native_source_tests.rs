@@ -1293,7 +1293,7 @@ fn exercise_verified_enrollment_profile(include_ram: bool) {
     // Existing host fixture APIs isolate both paths and secret backend. This
     // exercises the production custody contract, never the user's OS keyring.
     let rig = Rig::new();
-    let _paths = xdg_paths::scope_profile(rig.root.path().join("isolated-profile-owner"));
+    let _paths = tilo_paths::scope_profile(rig.root.path().join("isolated-profile-owner"));
     let _secrets = tilo_secrets::scope_thread(tilo_secrets::memory_backend());
     let lifecycle = LocalSessionAuthority::new();
     lifecycle.lifecycle().publish_native_state(false, false);

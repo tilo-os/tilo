@@ -10,7 +10,7 @@ hex.workspace = true
 bounded-command = { path = "../bounded-command" }
 libc.workspace = true
 postcard = { workspace = true, features = ["alloc"] }
-tilo-xdg-paths = { path = "../xdg-paths" }
+tilo-paths.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

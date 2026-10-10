@@ -19,8 +19,10 @@
 //!   carries them to browsers, and the input members send back;
 //! - [`web`] — the browser carriers: HTTPS routes and the live grant;
 //! - [`rooms`] — governed rooms over HTTPS: administration and joining;
+//! - [`room_operator`] — the JSON-lines protocol between the public-room
+//!   service and each `tilo-relay room` child it runs;
 //! - [`mesh`] — device roles, service capabilities, replication intents and
-//!   the deterministic placement / remote-control routing over them;
+//!   the server advertisements compute admission checks;
 //! - [`config`] and [`policy`] — the on-disk `relay.toml` schema;
 //! - [`home_peer`] — the registry record written after enrolling an
 //!   always-on peer;
@@ -36,16 +38,6 @@
 
 #![deny(rust_2018_idioms)]
 #![warn(missing_docs)]
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        clippy::panic,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
 
 pub mod agents;
 pub mod auth;
@@ -61,6 +53,7 @@ pub mod metrics;
 pub mod policy;
 pub mod process_lease;
 pub mod retention;
+pub mod room_operator;
 pub mod rooms;
 mod sig64;
 pub mod transport;
@@ -74,9 +67,8 @@ pub use home_peer::{
     home_peer_registry_path, valid_home_peer_label,
 };
 pub use mesh::{
-    ComputeAccelerator, DeviceKey, DeviceMeshProfile, DeviceRole, Placement, PlacementRequest,
-    PowerAvailability, RemoteControlRoute, ReplicationIntent, ReplicationResource,
-    ServerAdvertisement, ServiceCapabilities, Workload, place, route_remote_control,
+    ComputeAccelerator, DeviceKey, DeviceMeshProfile, DeviceRole, PowerAvailability,
+    ReplicationIntent, ReplicationResource, ServerAdvertisement, ServiceCapabilities,
 };
 pub use metrics::MetricsSnapshot;
 pub use policy::TrustPolicy;

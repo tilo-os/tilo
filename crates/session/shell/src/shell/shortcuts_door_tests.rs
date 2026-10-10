@@ -188,7 +188,7 @@ fn spawn_broker(
     let membership = tree.shared();
     let broker = crate::shell::collab_broker::spawn_native_harness(
         path.to_path_buf(),
-        std::sync::Arc::clone(&membership),
+        membership.clone(),
         [
             FIXTURE_HANDLE,
             SHORTCUTS_HANDLE,
@@ -217,13 +217,12 @@ fn exported(
         resource_label: "Inbox".into(),
         action_label: label.into(),
         description: None,
-        operation_kind: OperationKind::Document.as_str().to_string(),
-        params_json: serde_json::to_string(&params).expect("params JSON"),
-        contract_json: serde_json::to_string(&ActionContract {
+        operation_kind: OperationKind::Document,
+        params: params.to_vec(),
+        contract: ActionContract {
             result,
             ..ActionContract::default()
-        })
-        .expect("contract JSON"),
+        },
         view: None,
         input: ExportedInput::None,
     }
@@ -284,11 +283,10 @@ impl FixtureApp {
                     ResultSpec::None,
                 ),
                 ExportedAction {
-                    contract_json: serde_json::to_string(&ActionContract {
+                    contract: ActionContract {
                         confirmation: tilo_actions::ConfirmationPolicy::Confirm,
                         ..ActionContract::default()
-                    })
-                    .expect("contract JSON"),
+                    },
                     ..exported("archive", "Archive inbox", &[], ResultSpec::None)
                 },
                 ExportedAction {
@@ -507,6 +505,7 @@ impl Door {
                 context: None,
                 confirmation: None,
                 revision: None,
+                wait_ms: None,
             },
         ))?;
         Ok((invocation, receipt.status))
@@ -918,8 +917,6 @@ fn press(
                 height: AvailableSpace::Definite(800.0),
             },
             |known, available, node_id, _, _| match node_map.get(&node_id) {
-                // SAFETY: the pointers were registered by this layout pass
-                // and the widgets outlive it.
                 Some(&widget) => unsafe { (*widget).measure(known, available, &mut text) },
                 None => Size::ZERO,
             },
@@ -927,15 +924,7 @@ fn press(
         .unwrap();
     host.apply_layout(&taffy, child, vello::kurbo::Point::ORIGIN);
 
-    // winit's `KeyEvent` carries a private platform field, so the struct is
-    // zero-initialised and every public field overwritten.
-    let mut event: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-    event.logical_key = key;
-    event.physical_key =
-        winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-    event.location = winit::keyboard::KeyLocation::Standard;
-    event.state = winit::event::ElementState::Pressed;
-    event.repeat = false;
+    let mut event = ui::synthetic_input::key_event(key, None, winit::event::ElementState::Pressed);
     // A plain character key also carries the text it types.
     if modifiers.is_empty()
         && let winit::keyboard::Key::Character(text) = &event.logical_key
@@ -943,26 +932,15 @@ fn press(
         event.text = Some(text.clone());
     }
     let event = winit::event::WindowEvent::KeyboardInput {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         event,
         is_synthetic: false,
     };
-    let mut doc = AutoCommit::new();
-    let mut handled = false;
-    let mut focus = None;
-    host.handle_event(
-        &event,
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &winit::event::Modifiers::from(modifiers),
-            state: ui::widget::Edits::lend(&mut doc),
-            path: &automerge::ROOT,
-            handled: &mut handled,
-            focus_target: &mut focus,
-            node_id: child,
-            taffy: &taffy,
-        },
-    );
+    let handled = ui::testing::Dispatch::new()
+        .modifiers(modifiers)
+        .layout(&taffy, child)
+        .send(host, &event)
+        .handled;
     assert!(handled, "the shell took the chord");
 }
 
@@ -976,10 +954,8 @@ fn a_chord_pressed_in_the_shell_runs_the_shortcut_saved_with_it() {
     door.save_as(&session, &triggered_draft("from-keys", vec![chord]))
         .expect("the shortcut is saved with its keyboard trigger");
 
-    let (mut host, _chrome) = crate::shell::build_tilo_overlay_host_with_handle(
-        std::sync::Arc::clone(&door.membership),
-        false,
-    );
+    let (mut host, _chrome) =
+        crate::shell::build_tilo_overlay_host_with_handle(door.membership.clone(), false);
     host.set_shortcut_config(settings_store::hardware::ShortcutConfig::default())
         .expect("the built-in shortcut table is valid");
     host.attach_app_action_broker(door.broker.app_action_broker().expect("the action broker"));
@@ -1474,6 +1450,7 @@ impl AppConnection {
                 context: None,
                 confirmation: None,
                 revision: None,
+                wait_ms: None,
             }),
             |message| {
                 matches!(
@@ -1941,6 +1918,7 @@ fn always_allowing_records_a_grant_that_asks_no_more_until_revoked() {
                     context: None,
                     confirmation,
                     revision: None,
+                    wait_ms: None,
                 },
             ),
         )
@@ -2013,10 +1991,8 @@ fn with_nobody_present_the_call_is_refused_without_asking() {
 /// A compositor session sharing the door's workspaces and broker, and the
 /// person it acts for.
 fn session_host(door: &Door) -> crate::shell::overlay_host::ShellOverlayHost {
-    let (mut host, _chrome) = crate::shell::build_tilo_overlay_host_with_handle(
-        std::sync::Arc::clone(&door.membership),
-        false,
-    );
+    let (mut host, _chrome) =
+        crate::shell::build_tilo_overlay_host_with_handle(door.membership.clone(), false);
     host.set_shortcut_config(settings_store::hardware::ShortcutConfig::default())
         .expect("the built-in shortcut table is valid");
     host.attach_app_action_broker(door.broker.app_action_broker().expect("the action broker"));

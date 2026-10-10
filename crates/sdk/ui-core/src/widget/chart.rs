@@ -277,12 +277,6 @@ impl TrendStyle {
     };
 
     #[must_use]
-    pub fn with_line_width(mut self, width: f64) -> Self {
-        self.line_width = width;
-        self
-    }
-
-    #[must_use]
     pub fn with_fill(mut self, fill: TrendFill) -> Self {
         self.fill = fill;
         self
@@ -291,12 +285,6 @@ impl TrendStyle {
     #[must_use]
     pub fn with_curve(mut self, curve: TrendCurve) -> Self {
         self.curve = curve;
-        self
-    }
-
-    #[must_use]
-    pub fn with_baseline_overhang(mut self, overhang: f64) -> Self {
-        self.baseline_overhang = overhang;
         self
     }
 
@@ -787,12 +775,6 @@ impl ChartStyle {
         self.header = false;
         self
     }
-
-    #[must_use]
-    pub fn with_title_weight(mut self, weight: TextWeight) -> Self {
-        self.title_weight = weight;
-        self
-    }
 }
 
 impl Widget for Chart {
@@ -802,25 +784,18 @@ impl Widget for Chart {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: Dimension::percent(1.0),
                 height: Dimension::length(self.height),
             },
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
     }
 
     fn draw(
@@ -986,26 +961,19 @@ impl Widget for Sparkline {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: Dimension::length(self.width),
                 height: Dimension::length(self.height),
             },
             flex_shrink: 0.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
     }
 
     fn draw(

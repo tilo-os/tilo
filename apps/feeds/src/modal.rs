@@ -140,35 +140,24 @@ impl Widget for ModalBody {
             children.push(node);
             node
         });
-        let node = taffy.parent_node(
-            Style {
-                display: taffy::Display::Flex,
-                flex_direction: taffy::FlexDirection::Column,
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::auto(),
-                },
-                gap: Size {
-                    width: taffy::LengthPercentage::length(0.0),
-                    height: taffy::LengthPercentage::length(theme.tokens.spacing.rhythm.section),
-                },
-                ..Default::default()
+        let style = Style {
+            display: taffy::Display::Flex,
+            flex_direction: taffy::FlexDirection::Column,
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::auto(),
             },
-            &children,
-        );
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+            gap: Size {
+                width: taffy::LengthPercentage::length(0.0),
+                height: taffy::LengthPercentage::length(theme.tokens.spacing.rhythm.section),
+            },
+            ..Default::default()
+        };
+        taffy.widget_node(style, &children, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::from_origin_size(
-            (
-                origin.x + f64::from(l.location.x),
-                origin.y + f64::from(l.location.y),
-            ),
-            (f64::from(l.size.width), f64::from(l.size.height)),
-        );
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         let inner = self.rect.origin();
         if let Some(node) = self.caption_node {
             self.caption.apply_layout(taffy, node, inner);

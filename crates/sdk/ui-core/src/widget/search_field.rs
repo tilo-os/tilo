@@ -562,41 +562,31 @@ impl Widget for SearchField {
         // A fluid control: it asks for the row's width and, when the row
         // overflows, it is the item that gives — never the fixed targets
         // beside it. At its narrowest it is the magnifier icon button.
-        let node = taffy.parent_node(
-            Style {
-                display: taffy::Display::Flex,
-                align_items: Some(taffy::AlignItems::Center),
-                flex_shrink: 1.0,
-                min_size: taffy::Size {
-                    width: length(height as f32),
-                    height: taffy::Dimension::auto(),
-                },
-                padding: taffy::Rect {
-                    left: length(ICON_GUTTER as f32),
-                    right: length(self.trailing_gutter() as f32),
-                    top: length(0.0_f32),
-                    bottom: length(0.0_f32),
-                },
-                size: taffy::Size {
-                    width: percent(1.0_f32),
-                    height: length(height as f32),
-                },
-                ..Default::default()
+        let style = Style {
+            display: taffy::Display::Flex,
+            align_items: Some(taffy::AlignItems::Center),
+            flex_shrink: 1.0,
+            min_size: taffy::Size {
+                width: length(height as f32),
+                height: taffy::Dimension::auto(),
             },
-            &[child],
-        );
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+            padding: taffy::Rect {
+                left: length(ICON_GUTTER as f32),
+                right: length(self.trailing_gutter() as f32),
+                top: length(0.0_f32),
+                bottom: length(0.0_f32),
+            },
+            size: taffy::Size {
+                width: percent(1.0_f32),
+                height: length(height as f32),
+            },
+            ..Default::default()
+        };
+        taffy.widget_node(style, &[child], node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         if let Some(&child_node) = taffy.children(node).unwrap_or_default().first() {
             self.input
                 .apply_layout(taffy, child_node, Point::new(self.rect.x0, self.rect.y0));
@@ -962,31 +952,21 @@ impl Widget for Filtered {
         }
         self.field_node = Some(field);
         self.content_node = Some(content);
-        let node = taffy.parent_node(
-            Style {
-                display: taffy::Display::Flex,
-                flex_direction: taffy::FlexDirection::Column,
-                flex_grow: 1.0,
-                size: taffy::Size {
-                    width: percent(1.0_f32),
-                    height: percent(1.0_f32),
-                },
-                ..Default::default()
+        let style = Style {
+            display: taffy::Display::Flex,
+            flex_direction: taffy::FlexDirection::Column,
+            flex_grow: 1.0,
+            size: taffy::Size {
+                width: percent(1.0_f32),
+                height: percent(1.0_f32),
             },
-            &[band, content],
-        );
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+            ..Default::default()
+        };
+        taffy.widget_node(style, &[band, content], node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         let inner = Point::new(self.rect.x0, self.rect.y0);
         if let Some(field) = self.field_node {
             let band = taffy.parent(field);
@@ -1093,7 +1073,7 @@ pub(crate) fn observed_language(field: &SearchField) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use automerge::AutoCommit;
+    use crate::testing::Dispatch;
 
     fn ctx_event(
         field: &mut SearchField,
@@ -1101,24 +1081,8 @@ mod tests {
         node: NodeId,
         event: &WindowEvent,
     ) -> (bool, Option<NodeId>) {
-        let mut handled = false;
-        let mut focus = None;
-        let mut doc = AutoCommit::new();
-        let mods = winit::event::Modifiers::default();
-        field.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &mods,
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy,
-            },
-        );
-        (handled, focus)
+        let sent = Dispatch::new().layout(taffy, node).send(field, event);
+        (sent.handled, sent.focus_target)
     }
 
     fn move_to(point: Point) -> WindowEvent {
@@ -1128,28 +1092,14 @@ mod tests {
         }
     }
 
-    fn press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
+    use crate::synthetic_input::mouse_press;
 
     pub(crate) fn key(named: NamedKey) -> WindowEvent {
-        use winit::keyboard::{KeyLocation, NativeKeyCode, PhysicalKey};
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Named(named);
-        ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-        ev.location = KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = None;
-        WindowEvent::KeyboardInput {
-            device_id: winit::event::DeviceId::dummy(),
-            event: ev,
-            is_synthetic: false,
-        }
+        crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
+            Key::Named(named),
+            None,
+            ElementState::Pressed,
+        ))
     }
 
     #[allow(
@@ -1227,7 +1177,7 @@ mod tests {
         let target = sf.clear_rect().center();
         assert!(target.x > 0.0);
         let _ = ctx_event(&mut sf, &taffy, node, &move_to(target));
-        let (handled, _) = ctx_event(&mut sf, &taffy, node, &press());
+        let (handled, _) = ctx_event(&mut sf, &taffy, node, &mouse_press());
         assert!(handled);
         assert!(sf.is_empty());
         assert_eq!(sf.take_dirty().as_deref(), Some(""));
@@ -1241,7 +1191,7 @@ mod tests {
         assert!(sf.collapsed(&Theme::dark()));
         draw(&mut sf);
         let _ = ctx_event(&mut sf, &taffy, node, &move_to(Point::new(10.0, 10.0)));
-        let (_, focus) = ctx_event(&mut sf, &taffy, node, &press());
+        let (_, focus) = ctx_event(&mut sf, &taffy, node, &mouse_press());
         let input_node = taffy.children(node).unwrap()[0];
         assert_eq!(focus, Some(input_node), "the icon button focuses the field");
         sf.input.set_focus(true);
@@ -1290,7 +1240,7 @@ mod tests {
         assert_ne!(sf.escalate_rect, Rect::ZERO, "Search everywhere shows");
         let target = sf.escalate_rect.center();
         let _ = ctx_event(&mut sf, &taffy, node, &move_to(target));
-        let (handled, _) = ctx_event(&mut sf, &taffy, node, &press());
+        let (handled, _) = ctx_event(&mut sf, &taffy, node, &mouse_press());
         assert!(handled);
         assert!(take_control_invocation(&mut sf).is_some());
         sf.set_count(Some(FilterCount::new(3, 12)));
@@ -1319,7 +1269,7 @@ mod tests {
         draw(&mut sf);
         let target = sf.scope_token_rect.center();
         let _ = ctx_event(&mut sf, &taffy, node, &move_to(target));
-        let (handled, _) = ctx_event(&mut sf, &taffy, node, &press());
+        let (handled, _) = ctx_event(&mut sf, &taffy, node, &mouse_press());
         assert!(handled);
         assert!(sf.take_scope_cleared());
     }

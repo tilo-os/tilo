@@ -4,6 +4,7 @@ use crate::page;
 use crate::page::Frame;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use ui::widget::TaffyTreeExt;
 
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -15,16 +16,11 @@ use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::TextKind;
 use ui::a11y::Politeness;
 use ui::icons::Icon;
-use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{
     Button, ButtonRole, Column, ControlSize, ListRow, ProgressBar, Property, PropertyList, Row,
     Section, SectionHeader, Spacer, Text, ToggleGroup, Widget, toggle_group::Segment,
 };
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
-use winit::event::WindowEvent;
 
 use super::desktop_continuation::{self, ChoiceMode, Continuation};
 use super::folders;
@@ -184,8 +180,7 @@ pub struct ImportApp {
     commands: CommandSink,
     status: String,
     status_is_error: bool,
-    composed: Option<Box<dyn Widget>>,
-    rect: Rect,
+    composed: ui::widget::Composed,
     structure_dirty: bool,
     expanded_details: HashSet<usize>,
     shot_temp: Option<tempfile::TempDir>,
@@ -255,8 +250,7 @@ impl ImportApp {
             commands: Rc::new(RefCell::new(Vec::new())),
             status: format!("Folder imports are unavailable: {error}"),
             status_is_error: true,
-            composed: None,
-            rect: Rect::ZERO,
+            composed: ui::widget::Composed::default(),
             structure_dirty: true,
             expanded_details: HashSet::new(),
             shot_temp: None,
@@ -607,8 +601,7 @@ impl ImportApp {
             commands: Rc::new(RefCell::new(Vec::new())),
             status,
             status_is_error: false,
-            composed: None,
-            rect: Rect::ZERO,
+            composed: ui::widget::Composed::default(),
             structure_dirty: true,
             expanded_details: HashSet::new(),
             shot_temp: None,
@@ -1290,10 +1283,8 @@ impl ImportApp {
         let id = format!(
             "{}-{}-{}",
             std::process::id(),
-            ui::time::wall()
-                .duration_since(ui::time::UNIX_EPOCH)
-                .map_err(|_| "system time is before the Unix epoch".to_string())?
-                .as_nanos(),
+            ui::time::try_unix_now_ns()
+                .ok_or_else(|| "system time is before the Unix epoch".to_string())?,
             NEXT_OPERATION.fetch_add(1, Ordering::Relaxed)
         );
         let journal = store.root().join(format!("{id}.journal"));
@@ -2729,15 +2720,13 @@ impl Widget for ImportApp {
         self.poll_background();
         self.drain_commands();
         self.answer_job();
-        if let Some(composed) = &mut self.composed {
-            composed.sync(state, path);
-        }
+        self.composed.sync(state, path);
     }
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         let mut changed = self.poll_background() || self.drain_commands();
         self.answer_job();
-        if let Some(composed) = &mut self.composed {
+        if let Some(composed) = self.composed.element_mut() {
             changed |= composed.update(state, path);
         }
         changed
@@ -2749,87 +2738,26 @@ impl Widget for ImportApp {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let mut composed = self.build_composition();
-        let child = composed.build_layout(taffy, theme, node_map);
-        self.composed = Some(composed);
-        let node = taffy
-            .new_with_children(
-                Style {
-                    display: taffy::Display::Flex,
-                    flex_direction: taffy::FlexDirection::Column,
-                    size: Size {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::percent(1.0),
-                    },
-                    ..Default::default()
-                },
-                &[child],
-            )
-            .unwrap_or(child);
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let composition = self.build_composition();
+        let child = self
+            .composed
+            .build_layout(composition, taffy, theme, node_map);
+        let style = Style {
+            display: taffy::Display::Flex,
+            flex_direction: taffy::FlexDirection::Column,
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::percent(1.0),
+            },
+            ..Default::default()
+        };
+        taffy.widget_node(style, &[child], node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x + layout.size.width),
-            origin.y + f64::from(layout.location.y + layout.size.height),
-        );
-        if let Some(composed) = &mut self.composed
-            && let Ok(children) = taffy.children(node)
-            && let Some(&child) = children.first()
-        {
-            composed.apply_layout(taffy, child, Point::new(self.rect.x0, self.rect.y0));
-        }
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        if let Some(composed) = &mut self.composed {
-            composed.draw(scene, transform, text_renderer, theme, presence);
-        }
-    }
-
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        if let Some(composed) = &mut self.composed
-            && let Ok(children) = ctx.taffy.children(ctx.node_id)
-            && let Some(&child) = children.first()
-        {
-            composed.handle_event(event, &mut ctx.reborrow(ctx.path, child));
-        }
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        self.composed
-            .as_ref()
-            .map(|child| child.as_ref() as &dyn Widget)
-            .into_iter()
-            .collect()
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.composed
-            .as_mut()
-            .map(|child| child.as_mut() as &mut (dyn Widget + '_))
-            .into_iter()
-            .collect()
-    }
+    ui::forward_to_composed!(composed);
 
     fn name(&self) -> &'static str {
         "ImportApp"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 
     fn needs_idle_sync(&self) -> bool {
@@ -2845,11 +2773,7 @@ impl Widget for ImportApp {
     }
 
     fn take_structure_dirty(&mut self) -> bool {
-        std::mem::take(&mut self.structure_dirty)
-            || self
-                .composed
-                .as_mut()
-                .is_some_and(|child| child.take_structure_dirty())
+        std::mem::take(&mut self.structure_dirty) || self.composed.take_structure_dirty()
     }
 }
 

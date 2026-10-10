@@ -1,6 +1,6 @@
 //! Inert private storage only. Nothing here constructs live disclosure authority.
 use super::{
-    Deserialize, DurableInvocation, File, InvocationId, InvocationJournal, InvocationKey,
+    Deserialize, DurableInvocation, InvocationId, InvocationJournal, InvocationKey,
     InvocationUpdate, Read, Serialize,
 };
 use serde::de::{DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
@@ -351,6 +351,12 @@ struct Row {
     guarded_read: Option<Requirement>,
     #[serde(default, deserialize_with = "prepared_present")]
     prepared_effect: Option<super::PreparedEffect>,
+    #[serde(default, deserialize_with = "digest_present")]
+    request_digest: Option<Digest>,
+}
+// Like the other optional members, absent only through #[serde(default)].
+fn digest_present<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Digest>, D::Error> {
+    Digest::deserialize(d).map(Some)
 }
 fn prepared_present<'de, D: serde::Deserializer<'de>>(
     d: D,
@@ -439,6 +445,7 @@ impl<'de> Deserialize<'de> for DurableInvocation {
         Ok(Self {
             key: row.key,
             intent: row.intent,
+            request_digest: row.request_digest,
             wire_id: row.wire_id,
             update,
             uncertain: row.uncertain,
@@ -454,7 +461,8 @@ impl Serialize for DurableInvocation {
             "DurableInvocation",
             6_usize
                 .saturating_add(usize::from(self.guarded.is_some()))
-                .saturating_add(usize::from(self.prepared_effect.is_some())),
+                .saturating_add(usize::from(self.prepared_effect.is_some()))
+                .saturating_add(usize::from(self.request_digest.is_some())),
         )?;
         row.serialize_field("key", &self.key)?;
         row.serialize_field("intent", &self.intent)?;
@@ -471,6 +479,9 @@ impl Serialize for DurableInvocation {
         }
         if let Some(prepared) = &self.prepared_effect {
             row.serialize_field("prepared_effect", prepared)?;
+        }
+        if let Some(digest) = &self.request_digest {
+            row.serialize_field("request_digest", digest)?;
         }
         row.end()
     }
@@ -524,6 +535,7 @@ impl<'de> Deserialize<'de> for Field {
                     "message" => 2048,
                     "retryable" => 4096,
                     "prepared_effect" => 8192,
+                    "record" => 16384,
                     _ => 0,
                 }))
             }
@@ -577,6 +589,13 @@ impl<'de> Visitor<'de> for Probe {
                         kind: 1,
                     })?;
                 }
+                // An appended entry carries one row, bounded like a snapshot's.
+                (0, 16384) => {
+                    map.next_value_seed(Seed {
+                        position: self.position.clone(),
+                        kind: 2,
+                    })?;
+                }
                 (2, 2) => {
                     if present {
                         return Err(A::Error::duplicate_field("guarded_read"));
@@ -619,7 +638,8 @@ impl<'de> Visitor<'de> for Probe {
         Ok(malformed)
     }
 }
-pub(super) fn preflight(reader: &mut File) -> Result<(), String> {
+/// Checks one encoded snapshot, or one appended entry, before owned decoding.
+pub(super) fn preflight(reader: &mut impl Read) -> Result<(), String> {
     let position = Rc::new(Cell::new(0));
     let reader = Count {
         reader: BufReader::new(reader.take(InvocationJournal::MAX_BYTES)),

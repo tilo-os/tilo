@@ -31,12 +31,15 @@ pub enum QsLevel {
 
 /// A `WiFi` entry in the drill-in list. `signal` is a strength bucket
 /// `[0, 4]` (mapped to bar-count); `secure` shows the lock icon;
-/// `connected` flags the active-radio dot.
+/// `connected` flags the active-radio dot. `security` is the scanned
+/// authentication mode, which decides whether a passphrase may be shared
+/// with the person's other devices without scanning again.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WifiNetwork {
     pub ssid: String,
     pub signal: u8,
     pub secure: bool,
+    pub security: os_actions::WifiSecurity,
     pub connected: bool,
 }
 
@@ -88,6 +91,30 @@ pub struct BtDevice {
     pub address: String,
     pub battery: u8,
     pub connected: bool,
+}
+
+/// What a key does in a drill-in pane's list.
+#[derive(Clone, Copy)]
+pub(crate) enum PaneKey {
+    /// Move focus to the previous row when `true`, the next one otherwise.
+    Focus(bool),
+    /// Use the focused row.
+    Activate,
+}
+
+impl PaneKey {
+    /// Tab moves along `backwards`, arrows move regardless of it, Enter and
+    /// Space activate. Any other key is not the pane's.
+    pub(crate) fn of(logical_key: &winit::keyboard::Key, backwards: bool) -> Option<Self> {
+        use winit::keyboard::{Key, NamedKey};
+        match logical_key {
+            Key::Named(NamedKey::Tab) => Some(Self::Focus(backwards)),
+            Key::Named(NamedKey::ArrowUp | NamedKey::ArrowLeft) => Some(Self::Focus(true)),
+            Key::Named(NamedKey::ArrowDown | NamedKey::ArrowRight) => Some(Self::Focus(false)),
+            Key::Named(NamedKey::Enter | NamedKey::Space) => Some(Self::Activate),
+            _ => None,
+        }
+    }
 }
 
 /// The three canonical profiles `powerprofilesctl` exposes on Linux.

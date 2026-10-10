@@ -66,8 +66,8 @@ const DESKTOP_PHASES: &[&str] = &[
 /// The autostart directories of the current environment, most important first.
 pub fn autostart_dirs() -> Vec<PathBuf> {
     autostart_dirs_from(
-        xdg_paths::xdg::config_home().as_deref(),
-        &xdg_paths::xdg::config_dirs(),
+        tilo_paths::xdg::config_home().as_deref(),
+        &tilo_paths::xdg::config_dirs(),
     )
 }
 
@@ -170,7 +170,7 @@ pub trait AutostartProbe {
 
 /// `if-exists`/`unless-exists` against the real `$XDG_CONFIG_HOME`.
 pub fn config_file_exists(relative: &str) -> bool {
-    xdg_paths::xdg::config_home()
+    tilo_paths::xdg::config_home()
         .is_some_and(|home| home.join(relative.trim_start_matches('/')).exists())
 }
 

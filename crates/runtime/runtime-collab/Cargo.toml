@@ -31,6 +31,9 @@ settings-host = ["client", "dep:settings-store"]
 
 [dependencies]
 collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
+# The typed action vocabulary the exported surface and directory rows hold;
+# only this crate's codec turns it into wire text.
+tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
 runtime-portal = { version = "0.1.0", path = "../runtime-portal", optional = true }
 capnp = { workspace = true, optional = true }
 capnp-rpc = { workspace = true, optional = true }
@@ -48,6 +51,9 @@ tilo-test-env = { path = "../../dev/test-env" }
 
 [target.'cfg(unix)'.dev-dependencies]
 libc.workspace = true
+
+[target.'cfg(windows)'.dev-dependencies]
+tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 
 [[test]]
 name = "it"

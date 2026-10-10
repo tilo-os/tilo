@@ -15,7 +15,7 @@
 //! `_exit`, on memory prepared before the fork.
 
 use std::io::{self, Read};
-use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::process::CommandExt;
 use std::process::Command;
 
@@ -189,16 +189,6 @@ impl Netns {
     /// A process in the namespaces.
     pub fn pid(&self) -> libc::pid_t {
         self.pid
-    }
-
-    pub fn user_fd(&self) -> BorrowedFd<'_> {
-        use std::os::fd::AsFd;
-        self.user.as_fd()
-    }
-
-    pub fn net_fd(&self) -> BorrowedFd<'_> {
-        use std::os::fd::AsFd;
-        self.net.as_fd()
     }
 
     /// Make `cmd` start inside both namespaces. The process keeps its uid;

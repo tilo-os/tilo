@@ -1090,11 +1090,6 @@ impl Session {
     pub fn active_buffer(&self) -> Option<&OpenBuffer> {
         self.buffer.as_ref()
     }
-
-    /// Mutable access to the active buffer.
-    pub fn active_buffer_mut(&mut self) -> Option<&mut OpenBuffer> {
-        self.buffer.as_mut()
-    }
 }
 
 #[cfg(test)]

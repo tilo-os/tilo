@@ -25,14 +25,13 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use automerge::{AutoCommit, ObjId};
+use automerge::AutoCommit;
 use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::Color;
-use winit::dpi::PhysicalPosition;
-use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
-use winit::keyboard::{Key, KeyLocation, NamedKey, PhysicalKey};
+use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
+use winit::keyboard::{Key, NamedKey};
 
 use shell::shell::build_tilo_overlay_host_with_inputs;
 use shell::shell::hosted_inputs::HostedTileInputs;
@@ -50,6 +49,11 @@ use ui::widget::{
     WindowWidth,
 };
 
+use ui::synthetic_input::{
+    cursor_moved, key_press, mouse_input, mouse_press, mouse_release, named_key,
+};
+
+use crate::support::host::{Layout, dispatch, dispatch_in, lay_out};
 use crate::support::offscreen::OffscreenRenderer;
 use crate::support::snapshot::{SnapshotAssertion, pinned_golden_path};
 
@@ -106,25 +110,15 @@ fn try_new_renderer(w: u32, h: u32) -> Option<OffscreenRenderer> {
     .ok()
 }
 
-/// `taffy` + `node_map` intentionally outlive `root` via the same lifetime
-/// so re-renders after mutation can reuse them.
+/// `taffy` intentionally outlives each event so re-renders after mutation
+/// can reuse it.
 struct Harness {
     root: Box<dyn Widget>,
     taffy: TaffyTree<()>,
-    // Kept alive so the raw `*mut dyn Widget` pointers `build_layout` stashed
-    // stay valid; read indirectly via the measure closures during re-layout.
-    #[allow(
-        dead_code,
-        reason = "the raw widget pointers must stay owned for later measure closures even though the field is not read directly"
-    )]
-    node_map: HashMap<NodeId, *mut dyn Widget>,
     root_node: NodeId,
     theme: Theme,
     tr: TextRenderer,
     doc: AutoCommit,
-    doc_root: ObjId,
-    modifiers: Modifiers,
-    focus: Option<NodeId>,
     chrome: shell::shell::chrome_state::Chrome,
 }
 
@@ -161,61 +155,16 @@ impl Harness {
         let active_workspace = owned.desktop.active.raw();
         host.room_activity_mut().refresh(&mut owned);
         host.room_activity_mut().finish_view(active_workspace);
-        let root = Box::new(host) as Box<dyn Widget>;
-        let theme = Theme::dark();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let mut root = root;
-        let child = root.build_layout(&mut taffy, &theme, &mut node_map);
-        let root_node = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::length(width),
-                        height: Dimension::length(height),
-                    },
-                    ..Default::default()
-                },
-                &[child],
-            )
-            .unwrap();
-
-        let mut tr = TextRenderer::new();
-        // Clone into a local so the closure borrow doesn't collide with `node_map`.
-        let measure_map = node_map.clone();
-        taffy
-            .compute_layout_with_measure(
-                root_node,
-                Size {
-                    width: AvailableSpace::Definite(width),
-                    height: AvailableSpace::Definite(height),
-                },
-                |known, available, node_id, _, _| {
-                    if let Some(&ptr) = measure_map.get(&node_id) {
-                        unsafe { (*ptr).measure(known, available, &mut tr) }
-                    } else {
-                        taffy::Size::ZERO
-                    }
-                },
-            )
-            .expect("compute_layout");
-        root.apply_layout(&taffy, child, Point::ORIGIN);
-
-        let mut doc = AutoCommit::new();
-        let doc_root = automerge::ROOT.clone();
-        let _ = &mut doc; // silence unused-mut warnings on older toolchains
+        let mut root = Box::new(host) as Box<dyn Widget>;
+        let Layout { taffy, child_node } = lay_out(&mut *root, width, height);
 
         Self {
             root,
             taffy,
-            node_map,
-            root_node: child,
-            theme,
-            tr,
-            doc,
-            doc_root,
-            modifiers: Modifiers::default(),
-            focus: None,
+            root_node: child_node,
+            theme: Theme::dark(),
+            tr: TextRenderer::new(),
+            doc: AutoCommit::new(),
             chrome,
         }
     }
@@ -247,72 +196,19 @@ impl Harness {
         reason = "kept as a reusable interaction seam for the documented sidebar hit-routing regression"
     )]
     fn click(&mut self, x: f64, y: f64) {
-        self.pump(&WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: PhysicalPosition::new(x, y),
-        });
-        self.pump(&WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        });
-        self.pump(&WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        });
+        self.pump(&cursor_moved(x, y));
+        self.pump(&mouse_press());
+        self.pump(&mouse_release());
     }
 
     fn pump(&mut self, event: &WindowEvent) -> bool {
-        let mut handled = false;
-        self.root.handle_event(
-            event,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &self.modifiers,
-                state: ui::widget::Edits::lend(&mut self.doc),
-                path: &self.doc_root,
-                handled: &mut handled,
-                focus_target: &mut self.focus,
-                node_id: self.root_node,
-                taffy: &self.taffy,
-            },
-        );
-        handled
+        let modifiers = Modifiers::default();
+        let (root, taffy) = (&mut *self.root, &self.taffy);
+        dispatch_in(&mut self.doc, root, taffy, self.root_node, modifiers, event)
     }
 
-    /// `pump_host` can't answer this for a declined key: it hands the host a
-    /// zeroed taffy node, relying on the hotkey pre-pass returning before any
-    /// child walk.
     fn key(&mut self, key: Key) -> bool {
-        self.pump(&key_press(key))
-    }
-}
-
-// winit's `KeyEvent` has a private field, so it can't come from a struct
-// literal — zero-init instead (see SAFETY below).
-fn escape_event() -> WindowEvent {
-    // SAFETY: `KeyEvent`'s pub fields are all safe to zero-init
-    // (`Option<SmolStr>` → `None`; `PhysicalKey`, `Key`, `KeyLocation`,
-    // `ElementState` all have a valid first variant at the all-zero bit
-    // pattern; `bool` → `false`). The private `platform_specific` field
-    // is a platform-specific zero-sized or plain struct whose zero
-    // bit pattern is valid on every target we care about. The shell
-    // only reads `logical_key` + `state` from this event so the rest is
-    // immaterial. This workaround is needed because winit 0.30 doesn't
-    // expose a KeyEvent constructor; upgrading to 0.31 (ActiveEventLoop)
-    // is out of scope for this test harness.
-    let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-    ev.logical_key = Key::Named(NamedKey::Escape);
-    ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-    ev.location = KeyLocation::Standard;
-    ev.state = ElementState::Pressed;
-    ev.repeat = false;
-    ev.text = None;
-    WindowEvent::KeyboardInput {
-        device_id: unsafe { std::mem::zeroed() },
-        event: ev,
-        is_synthetic: false,
+        self.pump(&key_press(key, None))
     }
 }
 
@@ -379,7 +275,7 @@ fn e2e_open_close_overview() {
         &out_dir.join("e2e-02-overview-open.png"),
     );
 
-    h.pump(&escape_event());
+    h.pump(&named_key(NamedKey::Escape));
     assert!(
         !h.chrome.borrow().overlays.overview,
         "Escape should close the overview overlay"
@@ -564,52 +460,10 @@ fn probe_topbar(
 
 // Test 2: tab drag-to-reorder (Files -> after Browser)
 
-/// The `WindowGroup` + layout tree for [`e2e_tab_drag_reorder`], split out to
-/// keep that test short. Standalone with four stub tabs, avoiding
-/// full-root plumbing; tab 1 (Files) is the drag source, tab 3 (Browser)
-/// the drop target, and tab 2 is active so the reorder can't also change
-/// the active id.
-fn layout_drag_reorder_group(
-    group: &mut WindowGroup,
-    theme: &Theme,
-    tr: &mut TextRenderer,
-) -> (TaffyTree<()>, NodeId) {
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-    let child = group.build_layout(&mut taffy, theme, &mut node_map);
-    let vp = taffy
-        .new_with_children(
-            Style {
-                size: Size {
-                    width: Dimension::length(960.0),
-                    height: Dimension::length(540.0),
-                },
-                ..Default::default()
-            },
-            &[child],
-        )
-        .unwrap();
-    let map_for_measure = node_map.clone();
-    taffy
-        .compute_layout_with_measure(
-            vp,
-            Size {
-                width: AvailableSpace::Definite(960.0),
-                height: AvailableSpace::Definite(540.0),
-            },
-            |known, available, node_id, _, _| {
-                if let Some(&ptr) = map_for_measure.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, tr) }
-                } else {
-                    taffy::Size::ZERO
-                }
-            },
-        )
-        .expect("compute_layout");
-    group.apply_layout(&taffy, child, Point::ORIGIN);
-    (taffy, child)
-}
-
+/// The standalone `WindowGroup` for [`e2e_tab_drag_reorder`], split out to
+/// keep that test short. Four stub tabs, avoiding full-root plumbing; tab 1
+/// (Files) is the drag source, tab 3 (Browser) the drop target, and tab 2 is
+/// active so the reorder can't also change the active id.
 fn setup_drag_reorder_group() -> (WindowGroup, TaffyTree<()>, NodeId, TextRenderer, Theme) {
     let tabs: Vec<(TabDescriptor, TileContent)> = vec![
         tab_stub(1, "Notes", AppKind::Editor, "notes"),
@@ -623,10 +477,11 @@ fn setup_drag_reorder_group() -> (WindowGroup, TaffyTree<()>, NodeId, TextRender
     standalone.set_strip_usable_px(960.0);
     let mut group = standalone;
 
-    let theme = Theme::dark();
-    let mut tr = TextRenderer::new();
-    let (taffy, child) = layout_drag_reorder_group(&mut group, &theme, &mut tr);
-    (group, taffy, child, tr, theme)
+    let Layout {
+        taffy,
+        child_node: child,
+    } = lay_out(&mut group, 960.0, 540.0);
+    (group, taffy, child, TextRenderer::new(), Theme::dark())
 }
 
 /// Bundles the widget/layout/doc plumbing [`pump`] needs, so
@@ -637,42 +492,22 @@ struct DragCtx<'a> {
     taffy: &'a TaffyTree<()>,
     child: NodeId,
     doc: &'a mut AutoCommit,
-    doc_root: &'a ObjId,
-    modifiers: &'a Modifiers,
-    focus: &'a mut Option<NodeId>,
 }
 
 impl DragCtx<'_> {
     fn pump_event(&mut self, event: &WindowEvent) {
-        let mut handled = false;
-        self.group.handle_event(
-            event,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: self.modifiers,
-                state: ui::widget::Edits::lend(self.doc),
-                path: self.doc_root,
-                handled: &mut handled,
-                focus_target: self.focus,
-                node_id: self.child,
-                taffy: self.taffy,
-            },
+        let modifiers = Modifiers::default();
+        dispatch_in(
+            self.doc, self.group, self.taffy, self.child, modifiers, event,
         );
     }
 
     fn move_to(&mut self, p: Point) {
-        self.pump_event(&WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: PhysicalPosition::new(p.x, p.y),
-        });
+        self.pump_event(&cursor_moved(p.x, p.y));
     }
 
     fn button(&mut self, state: ElementState) {
-        self.pump_event(&WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state,
-            button: MouseButton::Left,
-        });
+        self.pump_event(&mouse_input(state, MouseButton::Left));
     }
 }
 
@@ -758,13 +593,10 @@ fn e2e_tab_drag_reorder() {
     let to = tab_centers[3]; // Browser pill centre
 
     let mut doc = AutoCommit::new();
-    let doc_root = automerge::ROOT.clone();
-    let modifiers = Modifiers::default();
-    let mut focus: Option<NodeId> = None;
 
     // Cross the 8 px DRAG_START threshold in steps, capturing one mid-drag
     // frame so the drop-zone highlight is visible. Each `DragCtx` below is a
-    // temporary borrowing `group`/`doc`/`focus`, so it releases them again
+    // temporary borrowing `group`/`doc`, so it releases them again
     // before the render call in between needs its own borrow of `group`.
     press_and_drag_to(
         &mut DragCtx {
@@ -772,9 +604,6 @@ fn e2e_tab_drag_reorder() {
             taffy: &taffy,
             child,
             doc: &mut doc,
-            doc_root: &doc_root,
-            modifiers: &modifiers,
-            focus: &mut focus,
         },
         from,
         to,
@@ -784,7 +613,10 @@ fn e2e_tab_drag_reorder() {
     // group for that new active host before the next frame; retaining the old
     // Notes-only taffy child made both the midway and settled golden paint no
     // app body at all.
-    let (taffy, child) = layout_drag_reorder_group(&mut group, &theme, &mut tr);
+    let Layout {
+        taffy,
+        child_node: child,
+    } = lay_out(&mut group, 960.0, 540.0);
 
     render_frame_to(
         &mut group,
@@ -802,9 +634,6 @@ fn e2e_tab_drag_reorder() {
         taffy: &taffy,
         child,
         doc: &mut doc,
-        doc_root: &doc_root,
-        modifiers: &modifiers,
-        focus: &mut focus,
     }
     .button(ElementState::Released);
     // Keep the settled golden independent of hover-reveal wall time. The
@@ -815,9 +644,6 @@ fn e2e_tab_drag_reorder() {
         taffy: &taffy,
         child,
         doc: &mut doc,
-        doc_root: &doc_root,
-        modifiers: &modifiers,
-        focus: &mut focus,
     }
     .move_to(Point::new(900.0, 500.0));
 
@@ -831,9 +657,9 @@ fn e2e_tab_drag_reorder() {
         vec!["Editor", "Terminal", "Browser", "Files"],
         "the actual content hosts must follow the reordered tab strip",
     );
-    let (_settled_taffy, _settled_child) = layout_drag_reorder_group(&mut group, &theme, &mut tr);
+    lay_out(&mut group, 960.0, 540.0);
     group.bar_mut_for_tests().force_settled_for_tests();
-    let (_settled_taffy, _settled_child) = layout_drag_reorder_group(&mut group, &theme, &mut tr);
+    lay_out(&mut group, 960.0, 540.0);
     assert!(
         group.bar_mut_for_tests().is_settled_for_tests(),
         "the golden must sample a static tab row, not wall-clock animation"
@@ -843,7 +669,7 @@ fn e2e_tab_drag_reorder() {
         let mut s = Scene::new();
         group.draw(&mut s, Affine::IDENTITY, &mut tr, &theme, &presence);
     }
-    let (_settled_taffy, _settled_child) = layout_drag_reorder_group(&mut group, &theme, &mut tr);
+    lay_out(&mut group, 960.0, 540.0);
 
     render_frame_to(
         &mut group,
@@ -907,41 +733,9 @@ fn tab_stub(id: u64, title: &str, kind: AppKind, label: &str) -> (TabDescriptor,
 /// both tab-bar probes in [`probe_tab_centers`]. Split out to keep that
 /// function short.
 fn build_measure_and_draw(widget: &mut dyn Widget, theme: &Theme, presence: &PresenceCtx) {
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-    let child = widget.build_layout(&mut taffy, theme, &mut map);
-    let vp = taffy
-        .new_with_children(
-            Style {
-                size: Size {
-                    width: Dimension::length(960.0),
-                    height: Dimension::length(40.0),
-                },
-                ..Default::default()
-            },
-            &[child],
-        )
-        .unwrap();
-    let mut tr = TextRenderer::new();
-    let map_copy = map.clone();
-    taffy
-        .compute_layout_with_measure(
-            vp,
-            Size {
-                width: AvailableSpace::Definite(960.0),
-                height: AvailableSpace::Definite(40.0),
-            },
-            |known, available, node_id, _, _| {
-                if let Some(&ptr) = map_copy.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, &mut tr) }
-                } else {
-                    taffy::Size::ZERO
-                }
-            },
-        )
-        .expect("compute_layout");
-    widget.apply_layout(&taffy, child, Point::ORIGIN);
+    lay_out(widget, 960.0, 40.0);
     let mut scene = Scene::new();
+    let mut tr = TextRenderer::new();
     widget.draw(&mut scene, Affine::IDENTITY, &mut tr, theme, presence);
 }
 
@@ -1028,7 +822,7 @@ fn overlay_host_keys_and_corner_clicks_open_close_and_navigate_overlays() {
             assert!(!host.palette_visible(), "palette starts closed");
 
             let mods = Modifiers::from(winit::keyboard::ModifiersState::SUPER);
-            let handled = pump_host(&mut host, &key_press(Key::Named(NamedKey::Space)), mods);
+            let handled = pump_host(&mut host, &named_key(NamedKey::Space), mods);
             assert!(handled, "Super+Space must be consumed by the overlay host");
             assert!(
                 host.palette_visible(),
@@ -1047,12 +841,12 @@ fn overlay_host_keys_and_corner_clicks_open_close_and_navigate_overlays() {
             // Open via Super+Space rather than bypassing the host's state machine, guarding
             // against a mutation-ordering regression.
             let mods = Modifiers::from(winit::keyboard::ModifiersState::SUPER);
-            let _ = pump_host(&mut host, &key_press(Key::Named(NamedKey::Space)), mods);
+            let _ = pump_host(&mut host, &named_key(NamedKey::Space), mods);
             assert!(host.palette_visible());
 
             // Escape priority order: palette > overview > ws_settings > quick_settings.
             let no_mods = Modifiers::default();
-            let handled = pump_host(&mut host, &key_press(Key::Named(NamedKey::Escape)), no_mods);
+            let handled = pump_host(&mut host, &named_key(NamedKey::Escape), no_mods);
             assert!(handled, "Escape must be consumed while the palette is open");
             assert!(
                 !host.palette_visible(),
@@ -1072,7 +866,7 @@ fn overlay_host_keys_and_corner_clicks_open_close_and_navigate_overlays() {
                 chrome.borrow().tree().desktop.workspaces[0].strips[0].window_groups[0].active_tab;
 
             let mods = Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
-            let handled = pump_host(&mut host, &key_press(Key::Named(NamedKey::Tab)), mods);
+            let handled = pump_host(&mut host, &named_key(NamedKey::Tab), mods);
             assert!(handled, "Ctrl+Tab must be consumed by the overlay host");
             assert!(
                 !chrome.borrow().overlays.overview,
@@ -1085,11 +879,7 @@ fn overlay_host_keys_and_corner_clicks_open_close_and_navigate_overlays() {
             let backwards = Modifiers::from(
                 winit::keyboard::ModifiersState::CONTROL | winit::keyboard::ModifiersState::SHIFT,
             );
-            assert!(pump_host(
-                &mut host,
-                &key_press(Key::Named(NamedKey::Tab)),
-                backwards
-            ));
+            assert!(pump_host(&mut host, &named_key(NamedKey::Tab), backwards));
             assert_eq!(
                 chrome.borrow().tree().desktop.workspaces[0].strips[0].window_groups[0].active_tab,
                 before,
@@ -1107,7 +897,7 @@ fn overlay_host_keys_and_corner_clicks_open_close_and_navigate_overlays() {
             assert!(!chrome.borrow().overlays.overview);
 
             let mods = Modifiers::from(winit::keyboard::ModifiersState::SUPER);
-            let handled = pump_host(&mut host, &key_press(Key::Named(NamedKey::Tab)), mods);
+            let handled = pump_host(&mut host, &named_key(NamedKey::Tab), mods);
             assert!(handled, "Super+Tab must be consumed by the overlay host");
             assert!(
                 chrome.borrow().overlays.overview,
@@ -1131,29 +921,21 @@ fn overlay_host_keys_and_corner_clicks_open_close_and_navigate_overlays() {
             let (mut host, chrome) = shell::shell::build_tilo_overlay_host_with_chrome(&tree);
 
             let super_key = Modifiers::from(winit::keyboard::ModifiersState::SUPER);
-            assert!(pump_host(
-                &mut host,
-                &key_press(Key::Named(NamedKey::Tab)),
-                super_key
-            ));
+            assert!(pump_host(&mut host, &named_key(NamedKey::Tab), super_key));
             assert!(
                 chrome.borrow().overlays.overview,
                 "precondition: panel is open"
             );
 
             let no_mods = Modifiers::default();
-            let handled = pump_host(
-                &mut host,
-                &key_press(Key::Named(NamedKey::ArrowDown)),
-                no_mods,
-            );
+            let handled = pump_host(&mut host, &named_key(NamedKey::ArrowDown), no_mods);
             assert!(
                 handled,
                 "the open panel must consume the arrow instead of letting the \
                  desktop underneath it scroll"
             );
 
-            let handled = pump_host(&mut host, &key_press(Key::Named(NamedKey::Enter)), no_mods);
+            let handled = pump_host(&mut host, &named_key(NamedKey::Enter), no_mods);
             assert!(handled, "Enter must be consumed by the open panel");
             assert!(
                 !chrome.borrow().overlays.overview,
@@ -1294,50 +1076,9 @@ fn overlay_host_keys_and_corner_clicks_open_close_and_navigate_overlays() {
 // through the shell's `Box<dyn Widget>` tree. This still exercises the
 // full click pipeline (max_rects hit-test -> pending_max -> take_max ->
 // flip maximized -> floating-controls draw).
-/// The `WindowGroup` + layout tree for
+/// The standalone `WindowGroup` for
 /// [`e2e_maximized_tile_floating_controls`], split out to keep that test
 /// short.
-fn layout_maximize_test_group(
-    group: &mut WindowGroup,
-    theme: &Theme,
-    tr: &mut TextRenderer,
-) -> (TaffyTree<()>, NodeId) {
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-    let child = group.build_layout(&mut taffy, theme, &mut node_map);
-    let vp = taffy
-        .new_with_children(
-            Style {
-                size: Size {
-                    width: Dimension::length(960.0),
-                    height: Dimension::length(540.0),
-                },
-                ..Default::default()
-            },
-            &[child],
-        )
-        .unwrap();
-    let map_for_measure = node_map.clone();
-    taffy
-        .compute_layout_with_measure(
-            vp,
-            Size {
-                width: AvailableSpace::Definite(960.0),
-                height: AvailableSpace::Definite(540.0),
-            },
-            |known, available, node_id, _, _| {
-                if let Some(&ptr) = map_for_measure.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, tr) }
-                } else {
-                    taffy::Size::ZERO
-                }
-            },
-        )
-        .expect("compute_layout");
-    group.apply_layout(&taffy, child, Point::ORIGIN);
-    (taffy, child)
-}
-
 fn setup_maximize_test_group() -> (WindowGroup, TaffyTree<()>, NodeId, TextRenderer, Theme) {
     let tabs: Vec<(TabDescriptor, TileContent)> = vec![
         tab_stub(1, "Notes", AppKind::Editor, "notes"),
@@ -1350,10 +1091,11 @@ fn setup_maximize_test_group() -> (WindowGroup, TaffyTree<()>, NodeId, TextRende
     group.set_strip_usable_px(960.0);
     assert!(!group.maximized, "group starts un-maximized");
 
-    let theme = Theme::dark();
-    let mut tr = TextRenderer::new();
-    let (taffy, child) = layout_maximize_test_group(&mut group, &theme, &mut tr);
-    (group, taffy, child, tr, theme)
+    let Layout {
+        taffy,
+        child_node: child,
+    } = lay_out(&mut group, 960.0, 540.0);
+    (group, taffy, child, TextRenderer::new(), Theme::dark())
 }
 
 /// Hover the active pill, wait out its chip-reveal curve, then click its
@@ -1372,34 +1114,12 @@ fn hover_and_click_maximize_chip(group: &mut WindowGroup, taffy: &TaffyTree<()>,
     // CursorMoved populates `last_cursor` + the hover_max_idx cache, then
     // press+release at the same spot.
     let mut doc = AutoCommit::new();
-    let doc_root = automerge::ROOT.clone();
-    let modifiers = Modifiers::default();
-    let mut focus: Option<NodeId> = None;
     // Direct `group.handle_event` (not the boxed `pump`) keeps `.maximized`
     // reachable on the concrete type.
     let mut pump_ev = |group: &mut WindowGroup, event: WindowEvent| {
-        let mut handled = false;
-        group.handle_event(
-            &event,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &modifiers,
-                state: ui::widget::Edits::lend(&mut doc),
-                path: &doc_root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: child,
-                taffy,
-            },
-        );
+        dispatch_in(&mut doc, group, taffy, child, Modifiers::default(), &event);
     };
-    pump_ev(
-        group,
-        WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: PhysicalPosition::new(pill.x, pill.y),
-        },
-    );
+    pump_ev(group, cursor_moved(pill.x, pill.y));
     // The chip cluster slides out on wall time: `advance_reveal` starts the
     // curve on the layout pass that first sees the hover and returns where it
     // started, so `max_rects` stay `Rect::ZERO` until it has run, and
@@ -1432,31 +1152,11 @@ fn hover_and_click_maximize_chip(group: &mut WindowGroup, taffy: &TaffyTree<()>,
         .filter(|r| r.area() > 0.0)
         .expect("the active tab offers a Maximize2 chip once its reveal has run")
         .center();
-    pump_ev(
-        group,
-        WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: PhysicalPosition::new(max_center.x, max_center.y),
-        },
-    );
-    pump_ev(
-        group,
-        WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        },
-    );
+    pump_ev(group, cursor_moved(max_center.x, max_center.y));
+    pump_ev(group, mouse_press());
     // Release isn't required (Pressed publishes pending_max, drained same event)
     // but keeps the event stream realistic.
-    pump_ev(
-        group,
-        WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        },
-    );
+    pump_ev(group, mouse_release());
 
     assert!(
         group.maximized,
@@ -1519,8 +1219,7 @@ fn e2e_maximized_tile_floating_controls() {
     // snapshot never rebuilt the layout, so it blessed a 640px-wide
     // "maximized" window on a 960px output. Exercise the same rebuild the
     // shell schedules after the maximize state change.
-    let (_maximized_taffy, _maximized_child) =
-        layout_maximize_test_group(&mut group, &theme, &mut tr);
+    lay_out(&mut group, 960.0, 540.0);
     let maximized_rect = group.get_rect();
     assert_eq!(
         maximized_rect,
@@ -1658,26 +1357,6 @@ fn assert_region_visibly_differs(before: &Path, after: &Path, region: Rect, mini
 // hotkey path a real user hits is the pre-pass inside
 // `ShellOverlayHost::handle_event`.
 
-/// Same zero-init workaround as [`escape_event`] — winit 0.30 keeps
-/// `KeyEventExtra` `pub(crate)`.
-fn key_press(logical_key: Key) -> WindowEvent {
-    // SAFETY: see the note on `escape_event` — all pub fields of `KeyEvent`
-    // tolerate the all-zero bit pattern, and the overlay-host pre-pass
-    // only inspects `logical_key` + `state`.
-    let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-    ev.logical_key = logical_key;
-    ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-    ev.location = KeyLocation::Standard;
-    ev.state = ElementState::Pressed;
-    ev.repeat = false;
-    ev.text = None;
-    WindowEvent::KeyboardInput {
-        device_id: unsafe { std::mem::zeroed() },
-        event: ev,
-        is_synthetic: false,
-    }
-}
-
 /// Throwaway `AutoCommit` + empty taffy tree, so the hotkey pre-pass
 /// short-circuits before walking children.
 fn pump_host(
@@ -1685,25 +1364,8 @@ fn pump_host(
     event: &WindowEvent,
     modifiers: Modifiers,
 ) -> bool {
-    let mut doc = AutoCommit::new();
-    let root = automerge::ROOT.clone();
-    let mut handled = false;
-    let mut focus_target: Option<NodeId> = None;
     let taffy: TaffyTree<()> = TaffyTree::new();
     // `node_id` is only dereferenced when walking children; the pre-pass returns first.
-    let dummy_node: NodeId = unsafe { std::mem::zeroed() };
-    host.handle_event(
-        event,
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &modifiers,
-            state: ui::widget::Edits::lend(&mut doc),
-            path: &root,
-            handled: &mut handled,
-            focus_target: &mut focus_target,
-            node_id: dummy_node,
-            taffy: &taffy,
-        },
-    );
-    handled
+    let dummy_node = NodeId::from(0_u64);
+    dispatch(host, &taffy, dummy_node, modifiers, event)
 }

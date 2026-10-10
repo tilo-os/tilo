@@ -343,68 +343,7 @@ impl EnrollmentView {
             return content.push(Box::new(Text::new(&CATALOG.t("messages-setup-linked"))));
         }
         if let Some(review) = &state.review {
-            let explanation = if review.account.service == "whatsapp" && review.number.is_none() {
-                CATALOG.t("messages-whatsapp-storage-explanation")
-            } else {
-                CATALOG.t_args(
-                    "messages-first-self-review",
-                    &[(
-                        "identity",
-                        ui::i18n::ArgValue::Text(
-                            review
-                                .number
-                                .clone()
-                                .unwrap_or_else(|| review.scope.clone()),
-                        ),
-                    )],
-                )
-            };
-            content = content.push(Box::new(Text::new(&explanation)));
-            if review.account.service == "whatsapp" && phase == EnrollmentPhase::Linking {
-                return content.push(Box::new(
-                    actions.bind_effect_invocation(
-                        Button::new(
-                            "messages.first-whatsapp-code",
-                            "messages-whatsapp-show-code",
-                        )
-                        .with_enabled(!state.pending),
-                        &MessagesEffect::BeginFirstEnrollment {
-                            service: "whatsapp".into(),
-                        },
-                    ),
-                ));
-            }
-            if state.proposal.is_some()
-                && !(review.account.service == "whatsapp"
-                    && review.number.is_some()
-                    && phase == EnrollmentPhase::Review)
-            {
-                return content.push(Box::new(Text::new(&CATALOG.t(
-                    if phase == EnrollmentPhase::Interrupted {
-                        "messages-setup-interrupted"
-                    } else {
-                        "messages-first-permission-review"
-                    },
-                ))));
-            }
-            return content.push(Box::new(
-                actions.bind_effect_invocation(
-                    Button::new(
-                        "messages.first-account-review",
-                        if review.account.service == "whatsapp" && review.number.is_none() {
-                            "messages-whatsapp-review-storage"
-                        } else {
-                            "messages-first-confirm"
-                        },
-                    )
-                    .with_enabled(!state.pending && phase == EnrollmentPhase::Review),
-                    &MessagesEffect::ReviewFirstEnrollment {
-                        service: review.account.service.clone(),
-                        account: review.account.account.clone(),
-                        display_name: CATALOG.t(&format!("messages-{}", review.account.service)),
-                    },
-                ),
-            ));
+            return Self::review_panel(content, actions, &state, phase, review);
         }
         if phase == EnrollmentPhase::Interrupted {
             return content.push(Box::new(Text::new(
@@ -437,6 +376,76 @@ impl EnrollmentView {
                 ),
                 &MessagesEffect::BeginFirstEnrollment {
                     service: "signal".into(),
+                },
+            ),
+        ))
+    }
+    fn review_panel(
+        mut content: Column,
+        actions: &Actions<Messages>,
+        state: &Projection,
+        phase: EnrollmentPhase,
+        review: &EnrollmentReview,
+    ) -> Column {
+        let explanation = if review.account.service == "whatsapp" && review.number.is_none() {
+            CATALOG.t("messages-whatsapp-storage-explanation")
+        } else {
+            CATALOG.t_args(
+                "messages-first-self-review",
+                &[(
+                    "identity",
+                    ui::i18n::ArgValue::Text(
+                        review
+                            .number
+                            .clone()
+                            .unwrap_or_else(|| review.scope.clone()),
+                    ),
+                )],
+            )
+        };
+        content = content.push(Box::new(Text::new(&explanation)));
+        if review.account.service == "whatsapp" && phase == EnrollmentPhase::Linking {
+            return content.push(Box::new(
+                actions.bind_effect_invocation(
+                    Button::new(
+                        "messages.first-whatsapp-code",
+                        "messages-whatsapp-show-code",
+                    )
+                    .with_enabled(!state.pending),
+                    &MessagesEffect::BeginFirstEnrollment {
+                        service: "whatsapp".into(),
+                    },
+                ),
+            ));
+        }
+        if state.proposal.is_some()
+            && !(review.account.service == "whatsapp"
+                && review.number.is_some()
+                && phase == EnrollmentPhase::Review)
+        {
+            return content.push(Box::new(Text::new(&CATALOG.t(
+                if phase == EnrollmentPhase::Interrupted {
+                    "messages-setup-interrupted"
+                } else {
+                    "messages-first-permission-review"
+                },
+            ))));
+        }
+        content.push(Box::new(
+            actions.bind_effect_invocation(
+                Button::new(
+                    "messages.first-account-review",
+                    if review.account.service == "whatsapp" && review.number.is_none() {
+                        "messages-whatsapp-review-storage"
+                    } else {
+                        "messages-first-confirm"
+                    },
+                )
+                .with_enabled(!state.pending && phase == EnrollmentPhase::Review),
+                &MessagesEffect::ReviewFirstEnrollment {
+                    service: review.account.service.clone(),
+                    account: review.account.account.clone(),
+                    display_name: CATALOG.t(&format!("messages-{}", review.account.service)),
                 },
             ),
         ))

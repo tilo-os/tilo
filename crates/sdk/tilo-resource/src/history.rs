@@ -12,7 +12,6 @@
 //! [`replay_prefix`] rebuilds the document a position names.
 
 use std::collections::{BinaryHeap, HashMap};
-use tilo_clock::UNIX_EPOCH;
 
 use automerge::ChangeHash;
 use automerge::transaction::{CommitOptions, Transactable};
@@ -80,14 +79,6 @@ pub fn committed_versions(doc: &Doc) -> Vec<Version> {
         .collect()
 }
 
-/// Now on the toolkit's wall clock, so a capture that pins the clock stamps
-/// its commits at the pinned time like everything else it shows.
-fn unix_now_secs() -> i64 {
-    tilo_clock::wall()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |elapsed| i64::try_from(elapsed.as_secs()).unwrap_or(0))
-}
-
 /// Commit the open transaction with a wall-clock timestamp attached.
 /// `AutoCommit::commit()` leaves the change's advisory time at `0`, which is
 /// why routing commits through here is what makes [`Version::time_ms`] — and
@@ -96,7 +87,7 @@ fn unix_now_secs() -> i64 {
 ///
 /// An empty commit abandons the empty transaction and records nothing.
 pub fn commit_stamped(doc: &mut Doc) -> Option<ChangeHash> {
-    commit_stamped_at_with_message(doc, unix_now_secs(), None)
+    commit_stamped_at_with_message(doc, tilo_clock::unix_now_i64(), None)
 }
 
 /// As [`commit_stamped`], with a caller-supplied Unix time in **seconds**
@@ -110,7 +101,7 @@ pub fn commit_stamped_at(doc: &mut Doc, unix_secs: i64) -> Option<ChangeHash> {
 /// message: the commit-boundary counterpart to action dispatch, so history
 /// learns which app and resource an edit belongs to.
 pub fn commit_stamped_with_message(doc: &mut Doc, message: Option<String>) -> Option<ChangeHash> {
-    commit_stamped_at_with_message(doc, unix_now_secs(), message)
+    commit_stamped_at_with_message(doc, tilo_clock::unix_now_i64(), message)
 }
 
 /// [`commit_stamped_with_message`] at a caller-supplied Unix time in seconds.

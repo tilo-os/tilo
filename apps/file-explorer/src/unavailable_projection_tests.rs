@@ -44,7 +44,7 @@ fn unavailable_projection_never_reports_a_successful_control_write() {
         runtime
             .block_on(crate::sharing::create_one_use_view_link(
                 &path,
-                collab_types::FileRecordId::new()
+                fs_protocol::FileRecordId::new()
             ))
             .unwrap()
             .is_err()

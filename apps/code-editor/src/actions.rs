@@ -1138,9 +1138,7 @@ mod tests {
     use tilo_actions::LocalTransport;
 
     fn registry() -> ActionRegistry {
-        let mut r = ActionRegistry::new();
-        register(&mut r);
-        r
+        ActionRegistry::with(register)
     }
 
     #[test]

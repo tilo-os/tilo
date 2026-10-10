@@ -130,7 +130,7 @@ struct Files {
     namespace: Arc<NamespaceFile>,
     history: Arc<FileHistoryStore>,
     hydrator: Arc<Hydrator>,
-    actor: collab_types::FileActor,
+    actor: fs_protocol::FileActor,
 }
 
 impl Files {
@@ -152,7 +152,7 @@ impl Files {
             namespace: Arc::new(namespace),
             history: Arc::new(history),
             hydrator,
-            actor: collab_types::FileActor {
+            actor: fs_protocol::FileActor {
                 person: collab_types::Ed25519PublicKey(author.person),
                 device: collab_types::Ed25519PublicKey(author.device),
             },

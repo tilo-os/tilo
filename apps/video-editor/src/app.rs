@@ -6458,12 +6458,7 @@ impl Widget for VideoEditorApp {
             // The node was just installed by `build_layout`; a missing node
             // would be a host lifecycle violation rather than user input.
             .expect("the video-editor root node remains in the Taffy tree");
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = ui::widget::placed(layout, origin);
     }
 
     fn draw(

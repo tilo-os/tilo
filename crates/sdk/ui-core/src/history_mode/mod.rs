@@ -540,6 +540,9 @@ mod tests;
 mod host_tests;
 
 #[cfg(test)]
+pub(crate) mod focus_tests;
+
+#[cfg(test)]
 pub(crate) mod isolation_tests;
 
 #[cfg(test)]

@@ -1,12 +1,13 @@
 //! Items with identity: [`Id`] and the ordered, keyed [`Collection`].
 
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use automerge::transaction::Transactable;
 use automerge::{ObjId, ObjType, ReadDoc, ScalarValue, Value};
 
 use crate::delta::{Delta, Touch};
-use crate::model::{Doc, Model, ModelError, Slot, read_key, refresh_key};
+use crate::model::{Doc, Model, ModelError, Slot, read_key, refresh_key, write_key_changed};
 use crate::order;
 
 /// A stable identity for an item in a resource. Minted deterministically by
@@ -165,6 +166,20 @@ impl<T> Collection<T> {
             .map(|entry| &entry.item)
     }
 
+    /// [`get`](Self::get) for a caller that remembers where the item was (a
+    /// list row): looks at `near` and beside it first, so an item that
+    /// stayed or moved by one is found without a scan. Answers where the
+    /// item is now, to remember for next time, and the item.
+    pub fn get_near(&self, id: &Id, near: usize) -> Option<(usize, &T)> {
+        let around = [Some(near), near.checked_add(1), near.checked_sub(1)];
+        around
+            .into_iter()
+            .flatten()
+            .find(|&index| self.items.get(index).is_some_and(|entry| &entry.id == id))
+            .or_else(|| self.position(id))
+            .and_then(|index| self.items.get(index).map(|entry| (index, &entry.item)))
+    }
+
     pub fn get_mut(&mut self, id: &Id) -> Option<&mut T> {
         self.items
             .iter_mut()
@@ -212,6 +227,60 @@ impl<T> Collection<T> {
             entry.key = None;
         }
     }
+}
+
+impl<T> Collection<T> {
+    /// The order key each item is stored under, given the keys `stored`
+    /// holds: every stored key still consistent with the order (the longest
+    /// increasing run) is kept; new and moved items get minted keys.
+    fn order_keys(&self, stored: &HashMap<&Id, &str>) -> Vec<String> {
+        let existing: Vec<Option<&str>> = self
+            .items
+            .iter()
+            .map(|entry| stored.get(&entry.id).copied())
+            .collect();
+        let kept = longest_increasing(&existing);
+        let mut keys: Vec<Option<String>> = vec![None; self.items.len()];
+        for &index in &kept {
+            if let (Some(slot), Some(Some(key))) = (keys.get_mut(index), existing.get(index)) {
+                *slot = Some((*key).to_owned());
+            }
+        }
+        let mut index = 0;
+        while index < keys.len() {
+            if keys.get(index).is_some_and(Option::is_some) {
+                index = index.saturating_add(1);
+                continue;
+            }
+            let start = index;
+            while keys.get(index).is_some_and(Option::is_none) {
+                index = index.saturating_add(1);
+            }
+            let low = start
+                .checked_sub(1)
+                .and_then(|before| keys.get(before))
+                .and_then(Clone::clone);
+            let high = keys.get(index).and_then(Clone::clone);
+            let minted =
+                order::sequence(low.as_deref(), high.as_deref(), index.saturating_sub(start));
+            for (offset, key) in minted.into_iter().enumerate() {
+                if let Some(slot) = keys.get_mut(start.saturating_add(offset)) {
+                    *slot = Some(key);
+                }
+            }
+        }
+        keys.into_iter().map(Option::unwrap_or_default).collect()
+    }
+}
+
+/// Whether every item of a collection read from a document has a stored
+/// order key, each above the one before: the keys a write keeps all of.
+fn strictly_ordered<T>(collection: &Collection<T>) -> bool {
+    collection.items.iter().all(|entry| entry.key.is_some())
+        && collection
+            .items
+            .windows(2)
+            .all(|pair| matches!(pair, [a, b] if a.key < b.key))
 }
 
 impl<T> std::ops::Index<&Id> for Collection<T> {
@@ -382,52 +451,82 @@ impl<T: Model> Model for Collection<T> {
                 doc.delete(&map, entry.id.as_str())?;
             }
         }
-        // Keep every order key that is still consistent with the new order
-        // (the longest increasing run); mint keys only for new or moved items.
-        let by_id: std::collections::HashMap<&Id, &str> = stored
+        let by_id: HashMap<&Id, &str> = stored
             .iter()
             .map(|entry| (&entry.id, entry.key.as_str()))
             .collect();
-        let existing: Vec<Option<&str>> = self
-            .items
-            .iter()
-            .map(|entry| by_id.get(&entry.id).copied())
-            .collect();
-        let kept = longest_increasing(&existing);
-        let mut keys: Vec<Option<String>> = vec![None; self.items.len()];
-        for &index in &kept {
-            if let (Some(slot), Some(Some(key))) = (keys.get_mut(index), existing.get(index)) {
-                *slot = Some((*key).to_owned());
-            }
-        }
-        let mut index = 0;
-        while index < keys.len() {
-            if keys.get(index).is_some_and(Option::is_some) {
-                index = index.saturating_add(1);
-                continue;
-            }
-            let start = index;
-            while keys.get(index).is_some_and(Option::is_none) {
-                index = index.saturating_add(1);
-            }
-            let low = start
-                .checked_sub(1)
-                .and_then(|before| keys.get(before))
-                .and_then(Clone::clone);
-            let high = keys.get(index).and_then(Clone::clone);
-            let minted =
-                order::sequence(low.as_deref(), high.as_deref(), index.saturating_sub(start));
-            for (offset, key) in minted.into_iter().enumerate() {
-                if let Some(slot) = keys.get_mut(start.saturating_add(offset)) {
-                    *slot = Some(key);
-                }
-            }
-        }
-        for (Entry { id, item, .. }, key) in self.items.iter().zip(keys) {
+        for (Entry { id, item, .. }, key) in self.items.iter().zip(self.order_keys(&by_id)) {
             let entry = Slot::Key(&map, id.as_str()).object(doc, ObjType::Map)?;
-            let key = key.unwrap_or_default();
             Slot::Key(&entry, ORDER).put_scalar(doc, ScalarValue::Str(key.into()))?;
             item.store(doc, Slot::Key(&entry, VALUE))
+                .map_err(|error| error.at(id.as_str()))?;
+        }
+        Ok(())
+    }
+
+    /// Equal ids in equal order, each item storing as before, over order
+    /// keys a write would keep.
+    fn stores_as(&self, before: &Self) -> bool {
+        self.items.len() == before.items.len()
+            && strictly_ordered(before)
+            && self
+                .items
+                .iter()
+                .zip(&before.items)
+                .all(|(entry, was)| entry.id == was.id && entry.item.stores_as(&was.item))
+    }
+
+    /// What [`store`](Model::store) writes, from `before` (which knows every
+    /// stored entry and order key) instead of listing the stored entries:
+    /// only new, moved and changed items are visited, and an item someone
+    /// else touched (`dirty`) is written as `store` writes it.
+    fn store_changed(
+        &self,
+        before: &Self,
+        doc: &mut Doc,
+        slot: Slot<'_>,
+        dirty: &Delta,
+    ) -> Result<(), ModelError> {
+        let current: HashSet<&Id> = self.items.iter().map(|entry| &entry.id).collect();
+        // `before` read from a document knows each item's stored order key;
+        // with one missing, or an id twice over, only the document can say.
+        if current.len() != self.items.len() || before.items.iter().any(|e| e.key.is_none()) {
+            return self.store(doc, slot);
+        }
+        let map = slot.object(doc, ObjType::Map)?;
+        // `before` is in stored order, the order `store` deletes in.
+        for entry in &before.items {
+            if !current.contains(&entry.id) {
+                doc.delete(&map, entry.id.as_str())?;
+            }
+        }
+        let stored: HashMap<&Id, (&str, &T)> = before
+            .items
+            .iter()
+            .filter_map(|entry| Some((&entry.id, (entry.key.as_deref()?, &entry.item))))
+            .collect();
+        let by_id: HashMap<&Id, &str> = stored.iter().map(|(id, (key, _))| (*id, *key)).collect();
+        for (Entry { id, item, .. }, key) in self.items.iter().zip(self.order_keys(&by_id)) {
+            let touched = dirty.key(&map, id.as_str());
+            let Some(&(stored_key, previous)) =
+                stored.get(id).filter(|_| touched != Touch::Written)
+            else {
+                // New here, or replaced by someone else: written whole.
+                let entry = Slot::Key(&map, id.as_str()).object(doc, ObjType::Map)?;
+                Slot::Key(&entry, ORDER).put_scalar(doc, ScalarValue::Str(key.into()))?;
+                item.store(doc, Slot::Key(&entry, VALUE))
+                    .map_err(|error| error.at(id.as_str()))?;
+                continue;
+            };
+            let kept = touched == Touch::Untouched && stored_key == key;
+            if kept && item.stores_as(previous) {
+                continue;
+            }
+            let entry = Slot::Key(&map, id.as_str()).object(doc, ObjType::Map)?;
+            if !kept {
+                Slot::Key(&entry, ORDER).put_scalar(doc, ScalarValue::Str(key.into()))?;
+            }
+            write_key_changed(doc, &entry, VALUE, item, previous, dirty)
                 .map_err(|error| error.at(id.as_str()))?;
         }
         Ok(())

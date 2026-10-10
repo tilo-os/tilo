@@ -58,12 +58,6 @@ impl App {
         true
     }
 
-    pub fn a11y_settings(&self) -> crate::a11y::A11ySettings {
-        let mut s = self.accessibility.a11y;
-        s.screen_reader = self.accessibility.screen_reader.is_some();
-        s
-    }
-
     pub fn text_scale(&self) -> f32 {
         self.accessibility.text_scale
     }
@@ -337,12 +331,15 @@ impl App {
             self.focused_node = node;
             return;
         }
-        if self.close_admission.dialog.is_none()
-            && (self.history.is_some()
-                || crate::history_mode::embedded::has_surfaces(self.root_widget.as_ref()))
-        {
-            self.update_history_focus_order();
-            return;
+        if self.close_admission.dialog.is_none() {
+            let restrictions = crate::history_mode::embedded::FocusRestrictions::collect(
+                self.root_widget.as_ref(),
+                &self.layout.taffy,
+            );
+            if self.history.is_some() || restrictions.has_surfaces() {
+                self.update_history_focus_order(&restrictions);
+                return;
+            }
         }
         self.focusable_order.clear();
         let Some(root) = self.layout.root_node else {
@@ -528,8 +525,15 @@ impl App {
                         .legacy_status(node, &self.collaboration.local_author)
                 });
             let embedded = crate::history_mode::embedded::has_surfaces(self.root_widget.as_ref());
+            let local_status = crate::undo::local_undo_status(self.root_widget.as_ref());
             let mut status = || {
                 bound_status.clone().unwrap_or_else(|| {
+                    if let Some(local) = &local_status {
+                        return match local {
+                            crate::undo::LocalUndoStatus::Ready(status) => status.clone(),
+                            crate::undo::LocalUndoStatus::Pending => Default::default(),
+                        };
+                    }
                     if embedded {
                         self.state
                             .undo_status_snapshot(Some(&self.collaboration.local_author))
@@ -648,6 +652,16 @@ impl App {
         self.inspect_node(self.focused_node?, ImeWindowState::from_widget)
             .ok()
             .flatten()
+    }
+
+    #[cfg(feature = "native")]
+    fn focused_ime_requires_deferred_ack(&self) -> bool {
+        self.focused_node
+            .and_then(|node| {
+                self.inspect_node(node, |widget| widget.ime_requires_deferred_ack())
+                    .ok()
+            })
+            .unwrap_or(false)
     }
 
     #[cfg(feature = "native")]

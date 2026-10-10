@@ -9,7 +9,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from acceptance.core import Unobservable, _parse_trace, frame_stats, transition_stats  # noqa: E402
+from acceptance.checks.window import judge_switch_lines  # noqa: E402
+from acceptance.core import (Unobservable, _parse_trace, frame_stats, parse_switch_lines,  # noqa: E402
+                             transition_stats)
 
 HEADER = ("seq,start_us,period_us,input_us,pump_us,layout_us,scene_us,submit_us,testctl_us,"
           "clients_us,sleep_us,painted,present_async,input_latency_us,input_retirement_latency_us,"
@@ -113,6 +115,38 @@ class ParseTest(unittest.TestCase):
     def test_no_trace_is_unobservable(self):
         with self.assertRaises(Unobservable):
             _parse_trace("receipt: x\n")
+
+
+SWITCH = ("WORKSPACE-SWITCH first_queued_us={q} first_shown_us={s} settled_queued_us=410000 "
+          "settled_shown_us=416000 frames={f} dropped={d} interval_us=16667")
+BUDGETS = {"animation_min_frames": 8, "input_first_frame_ms": 33.4}
+
+
+class SwitchLineTest(unittest.TestCase):
+    def test_lines_are_read_wherever_the_log_prefixes_them(self):
+        text = "\n".join(["receipt: x", "12:00:01 " + SWITCH.format(q=4000, s=16000, f=25, d=0),
+                          "KEY-LATENCY app=x key_to_commit_us=1 key_to_submit_us=2 key_to_present_us=3",
+                          SWITCH.format(q=5000, s=21000, f=24, d=1)])
+        lines = parse_switch_lines(text)
+        self.assertEqual([(l["first_queued_us"], l["frames"], l["dropped"]) for l in lines],
+                         [(4000, 25, 0), (5000, 24, 1)])
+
+    def test_a_truncated_line_is_unobservable(self):
+        with self.assertRaises(Unobservable):
+            parse_switch_lines("WORKSPACE-SWITCH first_queued_us=1 frames=2")
+
+    def test_only_real_hardware_is_judged_by_what_it_showed(self):
+        slow_display = parse_switch_lines(SWITCH.format(q=60000, s=90000, f=25, d=3))
+        self.assertEqual(judge_switch_lines(slow_display, 1, BUDGETS, hardware=False), [])
+        problems = judge_switch_lines(slow_display, 1, BUDGETS, hardware=True)
+        self.assertEqual(len(problems), 2, problems)
+        self.assertIn("first frame shown 90.0 ms", problems[0])
+        self.assertIn("3 refresh intervals", problems[1])
+
+    def test_a_jump_or_a_missing_line_is_a_problem(self):
+        jump = parse_switch_lines(SWITCH.format(q=4000, s=4000, f=2, d=0))
+        self.assertIn("2 frames", judge_switch_lines(jump, 1, BUDGETS, hardware=False)[0])
+        self.assertIn("1 WORKSPACE-SWITCH lines", judge_switch_lines(jump, 2, BUDGETS, hardware=False)[0])
 
 
 if __name__ == "__main__":

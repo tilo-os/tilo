@@ -126,6 +126,12 @@ impl ActionHost for BrokerActionHost {
         self.broker.state().action_observe(caller, id)
     }
 
+    fn next_change(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<Pending<()>> {
+        // Authorized as `observe` is: an invocation this caller did not
+        // admit has no change to wait for.
+        self.broker.state().action_next_change_after_now(caller, id)
+    }
+
     fn cancel(
         &self,
         caller: &Caller,
@@ -248,6 +254,7 @@ mod tests {
             context: None,
             confirmation: None,
             revision: None,
+            wait_ms: None,
         }
     }
 
@@ -431,6 +438,7 @@ mod tests {
                 context: None,
                 confirmation: None,
                 revision: None,
+                wait_ms: None,
             };
             match now(host.invoke(&caller, open)) {
                 Err(ActionHostError::Refused { reason }) => assert!(
@@ -469,10 +477,12 @@ mod tests {
     }
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 #[path = "shortcuts_door_tests.rs"]
 mod shortcuts_door_tests;
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 #[path = "keyboard_shortcuts_door_tests.rs"]
 mod keyboard_shortcuts_door_tests;

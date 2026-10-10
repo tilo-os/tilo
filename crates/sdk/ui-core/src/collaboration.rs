@@ -41,6 +41,8 @@ pub const SESSION_RUNTIME_SUPPORTED: bool = runtime_portal::local_socket::SUPPOR
 pub const SESSION_RUNTIME_SUPPORTED: bool = false;
 
 #[cfg(feature = "broker-transport")]
+pub(crate) mod approved_checks;
+#[cfg(feature = "broker-transport")]
 mod broker;
 pub mod channel_live_activity;
 #[cfg(feature = "broker-transport")]
@@ -506,31 +508,9 @@ pub enum ActionDirectoryRequest {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ExportedInput {
-    None,
-    Text {
-        prompt: String,
-        placeholder: String,
-        wants_content: bool,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ExportedAction {
-    pub resource: String,
-    pub semantic_identity: Option<tilo_actions::ResourceSemanticIdentity>,
-    pub action: String,
-    pub resource_kind: String,
-    pub resource_label: String,
-    pub action_label: String,
-    pub description: Option<String>,
-    pub operation_kind: String,
-    pub params_json: String,
-    pub contract_json: String,
-    pub view: Option<tilo_actions::ResourceViewDescriptor>,
-    pub input: ExportedInput,
-}
+/// One inert operation this application exports, and what invoking it
+/// carries: the one exported-action shape, shared with the broker.
+pub use runtime_collab::{ExportedAction, ExportedInput};
 
 #[derive(Debug, Clone, PartialEq, serde::Deserialize)]
 pub struct BrokerActionSurface {
@@ -1711,6 +1691,10 @@ impl CollaborationManager {
         req: CollabRequest,
     ) -> Result<(), CollabSendError> {
         if self.missing_required_document_custody(&req) {
+            tracing::debug!(
+                cause = "missing_committed_document_custody",
+                "document route handoff refused"
+            );
             return Err(CollabSendError::Unavailable);
         }
         if matches!(req, CollabRequest::Hello { .. }) {
@@ -1718,6 +1702,10 @@ impl CollaborationManager {
             return Err(CollabSendError::Unavailable);
         }
         if self.awaiting_primary {
+            tracing::debug!(
+                cause = "primary_join_pending",
+                "document route handoff refused"
+            );
             return Err(CollabSendError::Unavailable);
         }
         if let CollabRequest::NativeMediaCommand {
@@ -1746,6 +1734,17 @@ impl CollaborationManager {
             && matches!(&self.backend, Backend::Transport(transport)
                 if transport.committed_document_required(&route.channel_id()));
         if unpublishable && !known_pending_document {
+            let required = match &self.backend {
+                Backend::Transport(transport) => {
+                    transport.committed_document_required(&route.channel_id())
+                }
+                Backend::Disabled(_) => false,
+            };
+            tracing::debug!(
+                cause = "original_history_unapplied",
+                required,
+                "document route handoff refused"
+            );
             // Join first; the route's original history must be applied
             // before any local mutation is published on it.
             let _ = self.submit(TransportCommand::Join(route));
@@ -1754,8 +1753,12 @@ impl CollaborationManager {
         // A known committed route may be refreshing. Required original
         // custody was checked above; retain this mutation in the bounded queue.
         // The worker still waits for this exact route before checking retained
-        // custody and applying the route's existing certification/commit policy.
-        Ok(self.submit(TransportCommand::ToRoute(route, req))?)
+        // custody and applying the existing certification/commit policy.
+        let result = self.submit(TransportCommand::ToRoute(route, req));
+        if let Err(error) = &result {
+            tracing::debug!(%error, cause = "transport_queue_refusal", "document route handoff refused");
+        }
+        Ok(result?)
     }
 
     pub(crate) fn document_publication_failed(&self) -> bool {

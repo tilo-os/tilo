@@ -336,8 +336,7 @@ mod tests {
                     edited: Some(envelope.timestamp),
                 }
             );
-            let mut registry = tilo_actions::ActionRegistry::new();
-            actions::register(&mut registry);
+            let registry = tilo_actions::ActionRegistry::with(actions::register);
             tilo_actions::replay(&mut peer, &envelope, &registry).unwrap();
             let mut peer_index = NoteDateIndex::default();
             peer_index.sync(&peer);

@@ -72,6 +72,17 @@ pub trait Resource: Sized + 'static {
         Ok(())
     }
 
+    /// Opt in to reusing the document-owned publication between changes.
+    ///
+    /// Return an epoch for every non-document input used by declarations,
+    /// children, views or local operations (for example the local date of a
+    /// daily-note action). The framework also invalidates on state and locale
+    /// revisions; surface bindings and effect availability remain live.
+    /// `None` preserves publication on every request for dynamic resources.
+    fn publication_cache_epoch(_state: &Self::State) -> Option<String> {
+        None
+    }
+
     /// Where `obj` sits in the document, when the state already knows: the
     /// path from the root to it. A change to an object the state has read
     /// (the paragraph being typed in) is then placed without asking the
@@ -233,6 +244,25 @@ pub trait Resource: Sized + 'static {
     /// agents and scripts — the same door as the root, not a second tree.
     fn children(_state: &Self::State) -> Vec<tilo_actions::Resource> {
         Vec::new()
+    }
+
+    /// The ids of the [`declarations`](Self::declarations) that
+    /// [`children`](Self::children) offer on some child with arguments
+    /// already bound (an item action on each item of a list), which the
+    /// resource then publishes for scripts rather than the palette.
+    ///
+    /// [`publish_head`] asks this to publish the resource's own actions
+    /// without building its children, so a resource with many children
+    /// answers from what it knows about them: `#[resource]` from how many
+    /// items each collection holds. The default builds the children and
+    /// looks.
+    fn children_offer_bound(state: &Self::State) -> Vec<&'static str> {
+        let children = Self::children(state);
+        Self::declarations()
+            .iter()
+            .filter(|decl| crate::items::offered_bound(&children, decl))
+            .map(|decl| decl.id)
+            .collect()
     }
 
     /// The nested resource `id`, when [`children`](Self::children) leaves it
@@ -1205,6 +1235,18 @@ pub fn publish<R: Resource>(id: &str, label: &str, state: &R::State) -> tilo_act
     publish_parts::<R>(id, label, Some(state))
 }
 
+/// [`publish`] without the children: the resource's identity, actions and
+/// views exactly as `publish` gives them, at a cost that does not grow with
+/// the children ([`Resource::children_offer_bound`]). What controls bind to.
+pub fn publish_head<R: Resource>(
+    id: &str,
+    label: &str,
+    state: &R::State,
+) -> tilo_actions::Resource {
+    let offered = R::children_offer_bound(state);
+    publish_own::<R>(id, label, Some(state), &|decl| offered.contains(&decl.id))
+}
+
 /// [`publish`], or without a state only what does not depend on one: the
 /// declared actions, [`APPLY`], [`GROUP`](crate::GROUP) and the local
 /// operations.
@@ -1214,6 +1256,21 @@ pub(crate) fn publish_parts<R: Resource>(
     state: Option<&R::State>,
 ) -> tilo_actions::Resource {
     let children = state.map(R::children).unwrap_or_default();
+    publish_own::<R>(id, label, state, &|decl| {
+        crate::items::offered_bound(&children, decl)
+    })
+    .with_children(children)
+}
+
+/// The resource's own part of [`publish_parts`]: everything but its
+/// children, with `offered_bound` saying which declarations a child offers
+/// with arguments bound.
+fn publish_own<R: Resource>(
+    id: &str,
+    label: &str,
+    state: Option<&R::State>,
+    offered_bound: &dyn Fn(&ActionDecl<R>) -> bool,
+) -> tilo_actions::Resource {
     let mut resource = tilo_actions::Resource::new(id, R::KIND, label);
     // Describe the declared domain ID before any host dispatch alias projection.
     resource.semantic_identity = tilo_actions::ResourceSemanticIdentity::new(R::KIND, id);
@@ -1224,7 +1281,7 @@ pub(crate) fn publish_parts<R: Resource>(
         // Offered on the items it acts on, with some of its arguments bound
         // ([`items::bound`](crate::items::bound)), it stays published here
         // for scripts that name the item, out of the palette's way.
-        resource = resource.with_action(if crate::items::offered_bound(&children, &decl) {
+        resource = resource.with_action(if offered_bound(&decl) {
             spec.programmatic()
         } else {
             spec
@@ -1262,7 +1319,7 @@ pub(crate) fn publish_parts<R: Resource>(
             .with_action(crate::low_mutation::apply_spec::<R>())
             .with_action(crate::low_mutation::group_spec::<R>());
     }
-    resource.with_children(children)
+    resource
 }
 
 /// Build the action a declaration produces for JSON arguments, validating them

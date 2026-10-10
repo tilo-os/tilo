@@ -8,7 +8,6 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use futures_util::StreamExt;
 use tracing::{debug, warn};
 use zbus::Connection;
 use zbus::zvariant::{ObjectPath, OwnedObjectPath, OwnedValue};
@@ -175,14 +174,6 @@ impl BluezClient {
     /// rejects the `Discoverable` property write.
     pub async fn set_discoverable(&self, adapter: &str, on: bool) -> zbus::Result<()> {
         self.set_adapter_prop(adapter, "Discoverable", on).await
-    }
-
-    /// # Errors
-    ///
-    /// Returns an error if `adapter` is not a valid object path or `BlueZ`
-    /// rejects the `Pairable` property write.
-    pub async fn set_pairable(&self, adapter: &str, on: bool) -> zbus::Result<()> {
-        self.set_adapter_prop(adapter, "Pairable", on).await
     }
 
     /// Begin scanning. The scan runs until [`Self::stop_discovery`] or until this client's
@@ -413,33 +404,6 @@ impl BluezClient {
                 })
             }
         }
-    }
-
-    /// Watch for device add/remove/property changes, refreshing the name cache, and call
-    /// `on_change` whenever the device list may have moved. Runs until the connection drops.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if subscribing to `BlueZ`'s `InterfacesAdded` or
-    /// `InterfacesRemoved` signals fails.
-    pub async fn watch_devices<F>(&self, mut on_change: F) -> zbus::Result<()>
-    where
-        F: FnMut(Vec<DeviceInfo>) + Send,
-    {
-        let proxy = zbus::Proxy::new(&self.connection, DEST, "/", OBJECT_MANAGER_IFACE).await?;
-        let mut added = proxy.receive_signal("InterfacesAdded").await?;
-        let mut removed = proxy.receive_signal("InterfacesRemoved").await?;
-        loop {
-            tokio::select! {
-                Some(_) = added.next() => {}
-                Some(_) = removed.next() => {}
-                else => break,
-            }
-            if let Ok(devices) = self.devices().await {
-                on_change(devices);
-            }
-        }
-        Ok(())
     }
 }
 

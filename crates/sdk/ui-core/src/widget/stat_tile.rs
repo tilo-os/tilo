@@ -509,14 +509,6 @@ impl StatTile {
         }
     }
 
-    /// Replace or clear the tone.
-    pub fn set_tone(&mut self, tone: Option<Tone>) {
-        if tone != self.tone {
-            self.tone = tone;
-            self.dirty = true;
-        }
-    }
-
     /// See [`StatTileFace::unit`].
     #[must_use]
     pub fn unit(mut self, unit: impl Into<String>) -> Self {
@@ -631,7 +623,7 @@ impl Widget for StatTile {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.metrics = Some(TileMetrics::new(theme));
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: taffy::Size {
                 width: percent(1.0_f32),
                 height: auto(),
@@ -644,9 +636,8 @@ impl Widget for StatTile {
             flex_basis: length(0.0_f32),
             flex_shrink: 0.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn measure(
@@ -674,14 +665,7 @@ impl Widget for StatTile {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        let rect = Rect::from_origin_size(
-            (
-                origin.x + f64::from(l.location.x),
-                origin.y + f64::from(l.location.y),
-            ),
-            (f64::from(l.size.width), f64::from(l.size.height)),
-        );
+        let rect = crate::widget::layout_rect(taffy, node, origin);
         if rect != self.rect {
             self.dirty = true;
         }
@@ -876,28 +860,26 @@ impl Widget for StatGroup {
             .iter_mut()
             .map(|tile| tile.build_layout(taffy, theme, node_map))
             .collect();
-        let node = taffy.parent_node(
-            Style {
-                display: taffy::Display::Grid,
-                grid_template_columns: vec![taffy::style_helpers::fr(1.0_f32)],
-                grid_auto_rows: vec![taffy::style_helpers::min_content()],
-                gap: taffy::Size {
-                    width: length(crate::num::f32_of_f64(self.column_gap)),
-                    height: length(crate::num::f32_of_f64(self.row_gap)),
-                },
-                size: taffy::Size {
-                    width: percent(1.0_f32),
-                    height: auto(),
-                },
-                min_size: taffy::Size {
-                    width: length(0.0_f32),
-                    height: auto(),
-                },
-                flex_shrink: 0.0,
-                ..Default::default()
+        let style = Style {
+            display: taffy::Display::Grid,
+            grid_template_columns: vec![taffy::style_helpers::fr(1.0_f32)],
+            grid_auto_rows: vec![taffy::style_helpers::min_content()],
+            gap: taffy::Size {
+                width: length(crate::num::f32_of_f64(self.column_gap)),
+                height: length(crate::num::f32_of_f64(self.row_gap)),
             },
-            &self.nodes,
-        );
+            size: taffy::Size {
+                width: percent(1.0_f32),
+                height: auto(),
+            },
+            min_size: taffy::Size {
+                width: length(0.0_f32),
+                height: auto(),
+            },
+            flex_shrink: 0.0,
+            ..Default::default()
+        };
+        let node = taffy.parent_node(style, &self.nodes);
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
@@ -922,14 +904,7 @@ impl Widget for StatGroup {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::from_origin_size(
-            (
-                origin.x + f64::from(l.location.x),
-                origin.y + f64::from(l.location.y),
-            ),
-            (f64::from(l.size.width), f64::from(l.size.height)),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         let origin = self.rect.origin();
         for (tile, &child) in self.tiles.iter_mut().zip(&self.nodes) {
             tile.apply_layout(taffy, child, origin);

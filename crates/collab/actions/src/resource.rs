@@ -1620,12 +1620,6 @@ impl ActionSpec {
         self
     }
 
-    #[must_use]
-    pub fn durably_discoverable(mut self) -> Self {
-        self.contract.discovery = DiscoveryScope::Durable;
-        self
-    }
-
     /// This document action as another resource carries it: every action it
     /// builds passes through `wrap`, which re-encodes it as the action of the
     /// resource that contains this one (a rich-text edit becomes the note's
