@@ -282,9 +282,11 @@ fn with_history(root: &Path, stored: u32) -> State {
     let mut state = open(root);
     let sequence = state.next_sequence_at(NOW).unwrap();
     commit(&state, sequence, 0);
+    // The commit took ordinal 1; edit `index` follows at `index + 1`.
     let active = active_generation(&state.store);
     for index in 1..stored {
-        std::fs::write(active.join(format!("{index:016x}.delta")), edit(index)).unwrap();
+        let ordinal = index.saturating_add(1);
+        std::fs::write(active.join(format!("{ordinal:016x}.delta")), edit(index)).unwrap();
     }
     state
 }
