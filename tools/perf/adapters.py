@@ -221,6 +221,8 @@ HOSTING_KPIS = {
     "hosting.relay.fanout_ms": "ms",
     "hosting.relay.store_fsyncs_per_edit": "count",
     "hosting.relay.store_listed_entries_per_edit": "count",
+    "hosting.relay.compaction_cpu_ms_per_collab_hour": "ms",
+    "hosting.relay.compaction_signature_checks_per_edit": "count",
 }
 
 

@@ -9,8 +9,11 @@
 //!
 //! A runtime is needed while any installed package names it: as its
 //! `runtime`, or among its manifest's `optional-runtimes`. Both the user's
-//! store and the image's count. A manifest that cannot be read makes the
-//! whole runtime collection stop: its runtimes cannot be told apart.
+//! store and the image's count, and so does every payload tree an update
+//! left behind because a launch held it or a running app had it mounted:
+//! that launch runs on the old build's runtime. A manifest that cannot be
+//! read makes the whole runtime collection stop: its runtimes cannot be
+//! told apart.
 
 use std::collections::BTreeSet;
 use std::io;
@@ -38,6 +41,20 @@ pub struct Request {
     pub dry_run: bool,
 }
 
+impl Request {
+    /// What runs after an install, update or uninstall: the store's cap
+    /// `max_store_bytes`, the default grace for fresh runtimes, now.
+    #[must_use]
+    pub fn after_change(max_store_bytes: u64) -> Self {
+        Self {
+            max_store_bytes,
+            grace_secs: runtime_bundle::gc::DEFAULT_GRACE_SECS,
+            now: tilo_clock::unix_now(),
+            dry_run: false,
+        }
+    }
+}
+
 /// What one collection did.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Report {
@@ -57,6 +74,7 @@ impl Report {
         self.runtimes
             .freed_bytes()
             .saturating_add(self.orphans.removed_bytes)
+            .saturating_add(self.orphans.staging_bytes)
     }
 }
 
@@ -93,7 +111,9 @@ pub fn collect(
         let user = store
             .registry()
             .map_err(|error| io::Error::other(error.to_string()))?;
-        referenced_runtimes(rows.iter().chain(user.entries()))
+        let mut named = referenced_runtimes(rows.iter().chain(user.entries()))?;
+        named.extend(retained_runtimes(&store.layout().packages())?);
+        Ok(named)
     };
     report.runtimes = runtimes
         .collect(
@@ -132,17 +152,68 @@ pub fn referenced_runtimes<'a>(
                 ));
             }
         };
-        let manifest = tilo_app_package::Manifest::from_toml_str(&text)
-            .map_err(|error| io::Error::other(format!("{}: manifest: {error}", row.id)))?;
-        versions.extend(manifest.package.runtime.as_deref().and_then(version_of));
-        versions.extend(
-            manifest
-                .package
-                .optional_runtimes
-                .iter()
-                .filter_map(|raw| version_of(raw)),
-        );
+        versions.extend(manifest_runtimes(&text, &row.id)?);
     }
+    Ok(versions)
+}
+
+/// The runtime versions the package records still under `packages`
+/// (`<store>/pkgs`) name, rows or not. Run after the orphan collection, the
+/// records without a row are the trees a launch or a running app holds.
+///
+/// # Errors
+///
+/// Returns the error listing `packages` or reading or parsing a manifest.
+pub fn retained_runtimes(packages: &Path) -> io::Result<BTreeSet<String>> {
+    let mut versions = BTreeSet::new();
+    let entries = match std::fs::read_dir(packages) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(versions),
+        Err(error) => return Err(error),
+    };
+    for entry in entries {
+        let entry = entry?;
+        let name = entry.file_name();
+        // Only record directories directly under `pkgs/`; a link is never
+        // followed.
+        let record = Path::new(&name).extension().is_some_and(|ext| ext == "pkg");
+        if !entry.file_type()?.is_dir() || !record {
+            continue;
+        }
+        let path = entry.path().join(package_store::layout::MANIFEST_FILE);
+        let text = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(io::Error::new(
+                    error.kind(),
+                    format!("{}: {error}", path.display()),
+                ));
+            }
+        };
+        versions.extend(manifest_runtimes(&text, &path.display().to_string())?);
+    }
+    Ok(versions)
+}
+
+/// The runtime and optional runtimes the manifest `text` of `who` names.
+fn manifest_runtimes(text: &str, who: &str) -> io::Result<Vec<String>> {
+    let manifest = tilo_app_package::Manifest::from_toml_str(text)
+        .map_err(|error| io::Error::other(format!("{who}: manifest: {error}")))?;
+    let mut versions: Vec<String> = manifest
+        .package
+        .runtime
+        .as_deref()
+        .and_then(version_of)
+        .into_iter()
+        .collect();
+    versions.extend(
+        manifest
+            .package
+            .optional_runtimes
+            .iter()
+            .filter_map(|raw| version_of(raw)),
+    );
     Ok(versions)
 }
 
