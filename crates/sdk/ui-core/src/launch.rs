@@ -909,26 +909,18 @@ fn run_parsed(
     Ok(())
 }
 
-/// Start building the process's font database on its own thread
+/// Start building the process's font database in the background
 /// (`text_render::prepare_font_database`): only the database, so it neither
-/// shapes text nor touches the GPU the renderer preparation is opening.
+/// shapes text nor touches the GPU the renderer preparation is opening. Where
+/// no background work can run, the first text renderer builds it as before.
 #[cfg(feature = "native")]
-#[allow(
-    clippy::disallowed_methods,
-    reason = "native launch: the font database loads on its own thread while the app constructs"
-)]
 fn prepare_font_database_beside() {
-    if let Err(error) = std::thread::Builder::new()
-        .name("font-database-prepare".into())
-        .spawn(|| {
-            tilo_startup_metrics::span(
-                "font-database-prepare",
-                crate::text_render::prepare_font_database,
-            );
-        })
-    {
-        tracing::warn!(%error, "could not prepare the font database in parallel");
-    }
+    let _ = crate::background::Background::current().spawn("font-database-prepare", || {
+        tilo_startup_metrics::span(
+            "font-database-prepare",
+            crate::text_render::prepare_font_database,
+        );
+    });
 }
 
 #[cfg(feature = "native")]

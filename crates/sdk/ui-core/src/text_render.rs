@@ -211,45 +211,7 @@ pub fn configured_font_system() -> FontSystem {
     {
         return font_system;
     }
-    let (locale, database) = system_font_database();
-    FontSystem::new_with_locale_and_db(locale.clone(), database.clone())
-}
-
-/// Build the database [`configured_font_system`] copies into every renderer
-/// now, without making a `FontSystem` or shaping anything. A native launch
-/// runs this on its own thread from process start, so the main thread's first
-/// renderer finds the catalog verified and every font file read instead of
-/// doing both itself (TIL-775). A renderer asked for meanwhile waits for this
-/// one (`OnceLock`): nothing is loaded twice, and the database is the one the
-/// main thread would have built.
-#[cfg(not(test))]
-pub fn prepare_font_database() {
-    let hosted = HOST_FONT_DATABASE
-        .read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .is_some();
-    // A host's database is ready by definition; Android reads its catalog
-    // out of the APK in `configured_font_system`.
-    if hosted || cfg!(all(target_os = "android", feature = "native")) {
-        return;
-    }
-    if crate::font_catalog::bundled_database(&crate::i18n::I18nManager::current_locale()).is_none()
-    {
-        let _ = system_font_database();
-    }
-}
-
-/// Unit tests set text from the controlled fixture catalog, built per call.
-#[cfg(test)]
-pub fn prepare_font_database() {}
-
-/// The system's fonts, scanned once per process. A scan parses every
-/// installed font file, and each renderer would otherwise repeat it.
-#[cfg(not(test))]
-fn system_font_database() -> &'static (String, cosmic_text::fontdb::Database) {
-    static SYSTEM_FONT_DATABASE: std::sync::OnceLock<(String, cosmic_text::fontdb::Database)> =
-        std::sync::OnceLock::new();
-    SYSTEM_FONT_DATABASE.get_or_init(|| {
+    let (locale, database) = SYSTEM_FONT_DATABASE.get_or_init(|| {
         let mut font_system = FontSystem::new();
         let database = font_system.db_mut();
         crate::font_catalog::drop_duplicate_faces(database);
@@ -257,8 +219,26 @@ fn system_font_database() -> &'static (String, cosmic_text::fontdb::Database) {
         database.set_serif_family(UI_SERIF_FAMILY);
         database.set_monospace_family(UI_MONOSPACE_FAMILY);
         (font_system.locale().to_owned(), font_system.db().clone())
-    })
+    });
+    FontSystem::new_with_locale_and_db(locale.clone(), database.clone())
 }
+
+/// Build the font database [`configured_font_system`] copies into every
+/// renderer now, and throw the font system away: a native launch runs this
+/// in the background from process start, so the main thread's first
+/// renderer finds the catalog verified and every font file read instead of
+/// doing both itself (TIL-775). The database is a process-wide `OnceLock`, so
+/// a renderer asked for meanwhile waits for this one: nothing is loaded
+/// twice, and it is the database the main thread would have built.
+pub fn prepare_font_database() {
+    drop(configured_font_system());
+}
+
+/// The system's fonts, scanned once per process. A scan parses every
+/// installed font file, and each renderer would otherwise repeat it.
+#[cfg(not(test))]
+static SYSTEM_FONT_DATABASE: std::sync::OnceLock<(String, cosmic_text::fontdb::Database)> =
+    std::sync::OnceLock::new();
 
 pub(crate) fn balance_buffer(buffer: &mut Buffer, font_system: &mut FontSystem, max_width: f32) {
     if max_width <= 0.0 {

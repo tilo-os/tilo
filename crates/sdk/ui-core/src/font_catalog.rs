@@ -32,31 +32,21 @@ pub(crate) use android::android_font_system;
 /// [`catalog_roots`] holds a catalog this build accepts.
 #[cfg(not(test))]
 pub(crate) fn bundled_font_system(locale: String) -> Option<FontSystem> {
-    bundled_database(&locale).map(|db| system_over(locale, db.clone()))
-}
-
-/// The database [`bundled_font_system`] copies, verified and discovered on
-/// the first call; a call while another thread builds it waits for that one.
-/// The database holds no locale (each `FontSystem` gets its own), so the
-/// first caller's `locale` decides nothing that a later caller would see.
-#[cfg(not(test))]
-pub(crate) fn bundled_database(locale: &str) -> Option<&'static fontdb::Database> {
     static DATABASE: OnceLock<Option<fontdb::Database>> = OnceLock::new();
-    DATABASE
-        .get_or_init(|| {
-            match load_first_catalog(
-                &catalog_roots(),
-                locale,
-                fontdb::Database::load_system_fonts,
-            ) {
-                Ok(font_system) => Some(font_system.into_locale_and_db().1),
-                Err(errors) => {
-                    tracing::error!(?errors, "Tilo font catalog unavailable");
-                    None
-                }
+    let database = DATABASE.get_or_init(|| {
+        match load_first_catalog(
+            &catalog_roots(),
+            &locale,
+            fontdb::Database::load_system_fonts,
+        ) {
+            Ok(font_system) => Some(font_system.into_locale_and_db().1),
+            Err(errors) => {
+                tracing::error!(?errors, "Tilo font catalog unavailable");
+                None
             }
-        })
-        .as_ref()
+        }
+    });
+    database.as_ref().map(|db| system_over(locale, db.clone()))
 }
 
 /// Where a native process looks for the product catalog, in order: a

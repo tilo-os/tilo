@@ -1,5 +1,6 @@
-//! Which wgpu backends a Linux process asks for when `WGPU_BACKEND` names
-//! none (`crate::gpu::RenderContext::new`).
+//! Which wgpu backends a native process asks for when `WGPU_BACKEND` names
+//! none and its platform has no fixed choice (`crate::gpu::RenderContext::new`:
+//! Windows asks for DX12, Android for Vulkan).
 //!
 //! wgpu initialises every backend it is asked for as the instance is made,
 //! and for OpenGL that means EGL, a Mesa driver and a GL context: on lavapipe
@@ -10,27 +11,30 @@
 //!
 //! - the launcher pinned the Vulkan driver of the compositor's render node
 //!   (`VK_DRIVER_FILES`/`VK_ICD_FILENAMES`, `launcher::gpu`): the GPU has one;
-//! - there is no render node at all: both backends could only offer a
-//!   software rasteriser, and lavapipe is preferred over llvmpipe's OpenGL.
+//! - there is no DRM render node at all: on Linux both backends could only
+//!   offer a software rasteriser, and lavapipe is preferred over llvmpipe's
+//!   OpenGL; on macOS OpenGL needs an ANGLE nobody ships.
 //!
-//! Then Vulkan is asked alone, and OpenGL only if Vulkan offers no adapter.
-//! Otherwise — a GPU whose Vulkan driver nobody matched — every backend is
-//! asked, as before, so its OpenGL driver can still beat lavapipe.
+//! Then every backend but OpenGL is asked, and OpenGL only if those offer no
+//! adapter. Otherwise — a GPU whose Vulkan driver nobody matched — every
+//! backend is asked, as before, so its OpenGL driver can still beat lavapipe.
+
+use std::path::Path;
 
 use crate::gpu::BackendChoice;
 
 /// This process's backends, from its environment and its devices.
-pub(crate) fn linux_default() -> BackendChoice {
-    linux_backends(vulkan_driver_pinned(), render_node_present())
+pub(crate) fn default_choice() -> BackendChoice {
+    backends_for(vulkan_driver_pinned(), render_node_present())
 }
 
-/// [`linux_default`] for a process whose Vulkan loader was (`vulkan_pinned`)
+/// [`default_choice`] for a process whose Vulkan loader was (`vulkan_pinned`)
 /// or was not told which driver to load, and that does or does not see a
 /// render node.
-pub(crate) fn linux_backends(vulkan_pinned: bool, render_node: bool) -> BackendChoice {
+pub(crate) fn backends_for(vulkan_pinned: bool, render_node: bool) -> BackendChoice {
     if vulkan_pinned || !render_node {
         BackendChoice {
-            primary: wgpu::Backends::VULKAN,
+            primary: wgpu::Backends::all().difference(wgpu::Backends::GL),
             fallback: Some(wgpu::Backends::GL),
         }
     } else {
@@ -52,11 +56,13 @@ fn vulkan_driver_pinned() -> bool {
 /// Whether any DRM render node is visible: inside a sandbox, only the GPU's
 /// the launcher bound.
 fn render_node_present() -> bool {
-    std::fs::read_dir("/dev/dri").is_ok_and(|entries| {
-        entries
-            .flatten()
-            .any(|entry| entry.file_name().to_string_lossy().starts_with("renderD"))
-    })
+    tilo_files::file_at(Path::new("/dev/dri"))
+        .and_then(|(dev, dri)| tilo_files::blocking::list(&dev, &dri))
+        .is_ok_and(|entries| {
+            entries
+                .iter()
+                .any(|entry| entry.name.starts_with("renderD"))
+        })
 }
 
 #[cfg(test)]
@@ -65,19 +71,20 @@ mod tests {
     use wgpu::Backends;
 
     #[test]
-    fn linux_asks_for_vulkan_alone_unless_a_gpu_may_lack_a_vulkan_driver() {
-        let vulkan_first = BackendChoice {
-            primary: Backends::VULKAN,
+    fn opengl_is_only_asked_for_where_a_gpu_may_lack_a_vulkan_driver() {
+        let without_opengl = BackendChoice {
+            primary: Backends::all().difference(Backends::GL),
             fallback: Some(Backends::GL),
         };
+        assert!(without_opengl.primary.contains(Backends::VULKAN));
         // The launcher pinned the render node's Vulkan driver.
-        assert_eq!(linux_backends(true, true), vulkan_first);
-        assert_eq!(linux_backends(true, false), vulkan_first);
+        assert_eq!(backends_for(true, true), without_opengl);
+        assert_eq!(backends_for(true, false), without_opengl);
         // No GPU at all: lavapipe beats llvmpipe's OpenGL either way.
-        assert_eq!(linux_backends(false, false), vulkan_first);
+        assert_eq!(backends_for(false, false), without_opengl);
         // A GPU whose Vulkan driver nobody matched may only have OpenGL.
         assert_eq!(
-            linux_backends(false, true),
+            backends_for(false, true),
             BackendChoice {
                 primary: Backends::all(),
                 fallback: None,
