@@ -359,14 +359,7 @@ impl SettingsApp {
     pub(crate) fn publish_browser_identity(&self, origin: String) -> Result<(), String> {
         let identity =
             ui::local_identity::bound().ok_or("Sign in before publishing this identity")?;
-        let root = identity
-            .group_public_key
-            .iter()
-            .fold(String::new(), |mut text, byte| {
-                use std::fmt::Write as _;
-                let _ = write!(text, "{byte:02x}");
-                text
-            });
+        let root = hex::encode(identity.group_public_key);
         self.account_root
             .publish_browser_identity(root, origin, identity.display_name)
     }
