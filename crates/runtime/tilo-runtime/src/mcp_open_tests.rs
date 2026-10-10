@@ -370,7 +370,7 @@ impl ActionHost for Writer {
             return Pending::ready(Err(ActionHostError::UnknownAction));
         }
         if request.target.provider == WORKSPACE {
-            if !matches!(&request.argument, InvokeArgument::Json(map) if map.is_empty()) {
+            if !matches!(&request.argument, InvokeArgument::None) {
                 return Pending::ready(Err(ActionHostError::Refused {
                     reason: "launch content requires an application the launcher authenticated"
                         .into(),
@@ -532,7 +532,7 @@ fn opening_an_app_with_a_file_opens_it_through_the_apps_own_action() {
                 WORKSPACE.into(),
                 "app.so.tilo.word-processor".into(),
                 "open".into(),
-                json!({})
+                Value::Null
             ),
             (
                 "1".into(),
@@ -570,7 +570,7 @@ fn opening_a_file_answers_its_first_page_through_the_apps_declared_read() {
     let calls = host.invoked();
     assert_eq!(
         calls.last().unwrap(),
-        &("1".into(), DOC.into(), "read-text".into(), json!({})),
+        &("1".into(), DOC.into(), "read-text".into(), Value::Null),
         "the read runs with no arguments: {calls:?}"
     );
 

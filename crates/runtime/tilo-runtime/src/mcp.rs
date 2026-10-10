@@ -2047,20 +2047,26 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         revision: Option<String>,
         wait: std::time::Duration,
     ) -> Result<Value, String> {
-        // MCP has no owner-authored FreshCurrent binding. Pin an omitted
-        // revision to the authoritative directory instead of admitting an
-        // unbound current-mode invocation.
-        let (revision, current) = self.revision_for(&target.provider, revision).await?;
+        if revision.as_deref() == Some("") {
+            return Err("revision must not be empty".into());
+        }
+        // The owner resolves Current in its admission turn. Actions requiring
+        // a confirmed revision refuse it and take the pinned retry below.
+        let current = revision.is_none();
         let mut request = InvokeRequest {
             on_behalf_of: None,
             invocation,
             target,
-            argument: InvokeArgument::Json(arguments),
+            argument: if arguments.is_empty() {
+                InvokeArgument::None
+            } else {
+                InvokeArgument::Json(arguments)
+            },
             context: self.context(),
             // The MCP client admitted this call under its own
             // allow/deny policy; that decision is the confirmation.
             confirmation: Some(tilo_actions::remote::Confirmation::Confirmed),
-            revision: Some(revision),
+            revision,
             fresh_binding: None,
             wait_ms: None,
         };
