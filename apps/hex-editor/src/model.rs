@@ -311,11 +311,6 @@ impl HexModel {
         }
     }
 
-    /// The byte at the cursor, if the cursor is within bounds.
-    pub fn byte_at_cursor(&self) -> Option<u8> {
-        self.bytes.get(self.cursor).copied()
-    }
-
     // --- view configuration --------------------------------------------
 
     pub fn set_bytes_per_row(&mut self, n: usize) {

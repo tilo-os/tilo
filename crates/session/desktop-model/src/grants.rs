@@ -6,7 +6,7 @@
 //! document and persists it however it keeps state.
 
 use collab_types::caps::CapOverride;
-use tilo_actions::{ActionContext, ActionFacet, EffectReceiptStatus, InvocationId};
+use tilo_actions::{ActionContext, EffectReceiptStatus, InvocationId};
 
 use crate::ids::WorkspaceId;
 use crate::task::WorkspaceEffectReceipt;
@@ -40,13 +40,12 @@ impl DesktopTree {
     /// Record one terminal effect of `invocation` in `workspace_id`'s
     /// history, exactly once: the receipt as stored, or `None` when the
     /// workspace is gone or already holds a receipt for the invocation.
-    /// Every text is bounded and stripped of control characters.
     pub fn append_workspace_effect_receipt_at(
         &mut self,
         workspace_id: WorkspaceId,
         invocation: InvocationId,
         actor: &str,
-        mut context: ActionContext,
+        context: ActionContext,
         status: EffectReceiptStatus,
         completed_at: i64,
     ) -> Option<WorkspaceEffectReceipt> {
@@ -61,27 +60,8 @@ impl DesktopTree {
         {
             return None;
         }
-        let original_action = bounded_receipt_text(&context.action_label, 160);
-        context.action_label = if original_action.is_empty() {
-            status.label().to_string()
-        } else {
-            format!("{} · {original_action}", status.label())
-        };
-        context
-            .facets
-            .push(ActionFacet::new("tilo.receipt", "effect"));
-        context.facets.push(ActionFacet::new(
-            "tilo.invocation",
-            invocation.0.to_string(),
-        ));
-        redact_receipt_context(&mut context);
-        let receipt = WorkspaceEffectReceipt {
-            invocation,
-            actor: bounded_receipt_text(actor, 160),
-            context,
-            status,
-            completed_at,
-        };
+        let receipt =
+            WorkspaceEffectReceipt::redacted(invocation, actor, context, status, completed_at);
         workspace.effect_receipts.push(receipt.clone());
         Some(receipt)
     }
@@ -104,47 +84,6 @@ pub fn app_action_grant_context(
         "App actions",
     )
     .with_app(WORKSPACE_GOVERNANCE_APP_ID, "Workspace permissions")
-}
-
-/// `value` without control characters, cut to `max` characters and trimmed.
-#[must_use]
-pub fn bounded_receipt_text(value: &str, max: usize) -> String {
-    value
-        .chars()
-        .filter(|character| !character.is_control())
-        .take(max)
-        .collect::<String>()
-        .trim()
-        .to_string()
-}
-
-/// Bound every text of `context` that a public effect receipt shows.
-pub fn redact_receipt_context(context: &mut ActionContext) {
-    context.action_label = bounded_receipt_text(&context.action_label, 200);
-    if let Some(app) = &mut context.app {
-        app.id = bounded_receipt_text(&app.id, 160);
-        app.label = bounded_receipt_text(&app.label, 160);
-    }
-    if let Some(resource) = &mut context.resource {
-        resource.id = bounded_receipt_text(&resource.id, 512);
-        resource.kind = bounded_receipt_text(&resource.kind, 160);
-        resource.label = bounded_receipt_text(&resource.label, 200);
-    }
-    context.purpose = context
-        .purpose
-        .as_deref()
-        .map(|value| bounded_receipt_text(value, 512))
-        .filter(|value| !value.is_empty());
-    if let Some(group) = &mut context.group {
-        group.id = bounded_receipt_text(&group.id, 160);
-        group.label = bounded_receipt_text(&group.label, 200);
-        group.kind = bounded_receipt_text(&group.kind, 160);
-    }
-    context.facets.truncate(32);
-    for facet in &mut context.facets {
-        facet.key = bounded_receipt_text(&facet.key, 96);
-        facet.value = bounded_receipt_text(&facet.value, 160);
-    }
 }
 
 #[cfg(test)]

@@ -355,7 +355,7 @@ fn documents_replay_converge_version_index_and_migrate() {
         board.apply(Board::RENAME.with("v2".into())).unwrap();
         let versions = board.versions();
         let last = versions.last().unwrap();
-        assert_eq!(last.actor, hex(b"alice"));
+        assert_eq!(last.actor, hex::encode(b"alice"));
         assert_eq!(last.summary().as_deref(), Some("Rename the board · Board"));
         assert_eq!(board.state_at(&v1).unwrap().title, "v1");
         assert_eq!(board.state().unwrap().title, "v2");
@@ -444,14 +444,6 @@ fn apply_and_group_name_the_declared_actions_instead_of_repeating_them() {
     );
     let refused = tilo_resource::group::build_group::<Board>(&args, 0).unwrap_err();
     assert!(refused.starts_with("member 1 (move-card): "), "{refused}");
-}
-
-fn hex(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-    bytes.iter().fold(String::new(), |mut out, byte| {
-        let _ = write!(out, "{byte:02x}");
-        out
-    })
 }
 
 #[test]
@@ -597,4 +589,41 @@ fn schema_reuse_keeps_resource_types_and_live_children_distinct() {
         1,
         "repeated publications and group reuse the compiled action schema"
     );
+}
+
+#[test]
+fn the_head_is_the_published_record_without_building_a_child() {
+    for count in [0_usize, 1, 3] {
+        let board = Board {
+            title: "Plan".to_owned(),
+            cards: (0..count)
+                .map(|index| {
+                    let card = Card {
+                        text: format!("Card {index}"),
+                        stage: Stage::Todo,
+                        created_ms: 0,
+                    };
+                    (Id::from_raw(format!("card-{index}")), card)
+                })
+                .collect(),
+        };
+        let mut published = tilo_resource::publish::<Board>("board", "Board", &board);
+        assert_eq!(published.children.len(), count);
+        published.children.clear();
+        let head = tilo_resource::publish_head::<Board>("board", "Board", &board);
+        assert!(head.children.is_empty());
+        assert_eq!(
+            tilo_actions::door::survey(&[head]),
+            tilo_actions::door::survey(&[published]),
+            "{count} cards: the head carries the published record's own actions"
+        );
+        // Counted, not built: the card actions are for scripts once a card
+        // offers them.
+        let offered = Board::children_offer_bound(&board);
+        if count == 0 {
+            assert!(offered.is_empty(), "{offered:?}");
+        } else {
+            assert_eq!(offered, ["advance", "move-card", "delete-card"]);
+        }
+    }
 }

@@ -105,6 +105,22 @@ pub(crate) fn session_decision(
 pub(crate) fn bind(identity_dir: &Path) -> Result<(UnixListener, PathBuf), NotServed> {
     let path =
         admin_socket_path(std::env::var_os("XDG_RUNTIME_DIR")).ok_or(NotServed::NoRuntimeDir)?;
+    bind_at(identity_dir, path)
+}
+
+/// An explicitly requested headless session serves the same owner-only
+/// semantic protocol at a separate socket. It cannot replace the real seat's
+/// listener, and it retains every ownership and caller check of that seat.
+pub(crate) fn bind_headless_owner(
+    identity_dir: &Path,
+) -> Result<(UnixListener, PathBuf), NotServed> {
+    let path = admin_socket_path(std::env::var_os("XDG_RUNTIME_DIR"))
+        .ok_or(NotServed::NoRuntimeDir)?
+        .with_file_name("headless-owner-control.sock");
+    bind_at(identity_dir, path)
+}
+
+fn bind_at(identity_dir: &Path, path: PathBuf) -> Result<(UnixListener, PathBuf), NotServed> {
     session_decision(
         in_admin_group(),
         tilo_identity_host::provisioning::active_identity_owns_device(

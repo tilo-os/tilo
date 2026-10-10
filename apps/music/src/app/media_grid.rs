@@ -137,7 +137,7 @@ impl MediaGridHost {
             let asked = Rc::clone(&self.asked);
             built = built.hover_action(
                 Icon::MoreHorizontal,
-                ui::i18n!("music-spotify-playlist-actions"),
+                crate::i18n::t("music-spotify-playlist-actions"),
                 move || {
                     asked.borrow_mut().push(menu.clone());
                 },

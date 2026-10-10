@@ -4,8 +4,7 @@ use collab_types::caps::{
     decide_capability,
 };
 use collab_types::role::Role as CapRole;
-use tilo_desktop_model::grants::{bounded_receipt_text, redact_receipt_context};
-use tilo_desktop_model::{UserId, Workspace, WorkspaceEffectReceipt};
+use tilo_desktop_model::{UserId, Workspace};
 pub trait WorkspacePolicy {
     fn grant_capability(&mut self, cap: CapOverride) -> String;
     fn revoke_capability(&mut self, id: &str) -> bool;
@@ -193,41 +192,6 @@ impl WorkspacePolicy for Workspace {
             .collect()
     }
 }
-/// Construct the same bounded public receipt for native and standalone owners.
-/// No invocation arguments, output, streamed items or private failure text enter it.
-pub fn redacted_effect_receipt(
-    invocation: tilo_actions::InvocationId,
-    actor: &str,
-    mut context: tilo_actions::ActionContext,
-    status: tilo_actions::EffectReceiptStatus,
-) -> WorkspaceEffectReceipt {
-    let completed_at = tilo_clock::unix_now_i64();
-    let original_action = bounded_receipt_text(&context.action_label, 160);
-    context.action_label = if original_action.is_empty() {
-        status.label().to_string()
-    } else {
-        format!("{} · {original_action}", status.label())
-    };
-    // Arbitrary application facets may contain private argument summaries.
-    // Only broker-owned terminal identifiers enter this public audit.
-    context.facets.clear();
-    context
-        .facets
-        .push(tilo_actions::ActionFacet::new("tilo.receipt", "effect"));
-    context.facets.push(tilo_actions::ActionFacet::new(
-        "tilo.invocation",
-        invocation.0.to_string(),
-    ));
-    redact_receipt_context(&mut context);
-    WorkspaceEffectReceipt {
-        invocation,
-        actor: bounded_receipt_text(actor, 160),
-        context,
-        status,
-        completed_at,
-    }
-}
-
 #[cfg(test)]
 mod retained_clock_tests {
     use super::*;
@@ -284,11 +248,12 @@ mod effect_receipt_redaction_tests {
             ],
             ..Default::default()
         };
-        let receipt = super::redacted_effect_receipt(
+        let receipt = tilo_desktop_model::WorkspaceEffectReceipt::redacted(
             invocation,
             "person",
             context,
             tilo_actions::EffectReceiptStatus::Succeeded,
+            tilo_clock::unix_now_i64(),
         );
         assert_eq!(
             receipt.context.facets,

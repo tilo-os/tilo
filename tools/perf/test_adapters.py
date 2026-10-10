@@ -62,7 +62,7 @@ class FsGate(unittest.TestCase):
             name, unit, value = match.groups()
             slos[name] = float(value) * (1000.0 if unit == "secs" else 1.0)
         reports = dict(re.findall(r'report\(\s*"([a-z0-9-]+)",\s*[^,]+,\s*(\w+_SLO),?\s*\)', source))
-        self.assertEqual(len(reports), 10, reports)
+        self.assertEqual(len(reports), 11, reports)
         budgets = compare.load_budgets(compare.BUDGETS)
         expected = {f"fs.{name}": slos[constant] for name, constant in reports.items()}
         got = {kpi: entry["max"] for kpi, entry in budgets.kpis.items() if kpi.startswith("fs.")}
@@ -244,6 +244,8 @@ def load_report(collaborators: int = 100, minutes: int = 2) -> dict:
                   "hosting.relay.frame_bytes_per_collab_hour": ("bytes", 8e6)}
     kpis = {kpi: {"unit": unit, "samples": [value] * minutes} for kpi, (unit, value) in per_minute.items()}
     kpis["hosting.relay.fanout_ms"] = {"unit": "ms", "samples": [4.0, 6.0, 30.0]}
+    kpis["hosting.relay.store_fsyncs_per_edit"] = {"unit": "count", "samples": [2.1] * minutes}
+    kpis["hosting.relay.store_listed_entries_per_edit"] = {"unit": "count", "samples": [0.0] * minutes}
     return {"collaborators": collaborators, "rooms": collaborators // 4, "room_size": 4, "window_s": 60,
             "windows": minutes, "relay_idle_rss_mib": 20.0, "edits": 6000, "presence": 36000,
             "undelivered_edits": 0, "kpis": kpis}
@@ -285,6 +287,23 @@ class HostingLoad(unittest.TestCase):
         del report["kpis"]["hosting.relay.fanout_ms"]
         with self.assertRaisesRegex(ValueError, "reported"):
             adapters.hosting_load(report, self.prices, ENV)
+
+    def test_an_older_bench_is_read_when_not_all_kpis_are_required(self):
+        """The A/B lane reads a bench from before a KPI existed (TIL-732's parent)."""
+        report = load_report()
+        del report["kpis"]["hosting.relay.store_fsyncs_per_edit"]
+        report["kpis"]["hosting.relay.future_metric"] = {"unit": "count", "samples": [1.0]}
+        records = {item.kpi for item in adapters.hosting_load(report, self.prices, ENV, require_all=False)}
+        self.assertIn("hosting.relay.cpu_s_per_collab_hour.n100", records)
+        self.assertIn("hosting.relay.cost_usd_per_collab_hour.aws-t4g-small.n100", records)
+        self.assertNotIn("hosting.relay.store_fsyncs_per_edit.n100", records)
+        self.assertFalse(any("future_metric" in kpi for kpi in records))
+
+    def test_a_report_that_cannot_be_priced_fails_even_partially(self):
+        report = load_report()
+        del report["kpis"]["hosting.relay.cpu_s_per_collab_hour"]
+        with self.assertRaisesRegex(ValueError, "without"):
+            adapters.hosting_load(report, self.prices, ENV, require_all=False)
 
     def test_the_kpis_are_the_benchs(self):
         """The adapter reads the KPI ids and units the Rust bench writes."""

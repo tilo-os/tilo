@@ -54,7 +54,9 @@ pub fn item_of_resource<R: Resource>(resource_id: &str) -> Option<(&str, Id)> {
     Some((field, Id::from_raw(item)))
 }
 
-fn targets(action: &ItemAction, collections: &[ItemCollection], field: &str) -> bool {
+/// Whether `action` acts on the items of the collection `field`, among the
+/// record's collection fields `fields`.
+fn targets(action: &ItemAction, fields: &[&str], field: &str) -> bool {
     if let Some(named) = action.collection {
         return named == field;
     }
@@ -64,13 +66,10 @@ fn targets(action: &ItemAction, collections: &[ItemCollection], field: &str) -> 
             || candidate.strip_suffix('s') == Some(param)
             || candidate.strip_suffix("es") == Some(param)
     };
-    if collections
-        .iter()
-        .any(|collection| named_after(collection.field))
-    {
+    if fields.iter().any(|candidate| named_after(candidate)) {
         named_after(field)
     } else {
-        collections.len() == 1
+        fields.len() == 1
     }
 }
 
@@ -81,11 +80,15 @@ pub fn item_children<R: Resource>(
     actions: &[ItemAction],
 ) -> Vec<tilo_actions::Resource> {
     let declarations = R::declarations();
+    let fields: Vec<&str> = collections
+        .iter()
+        .map(|collection| collection.field)
+        .collect();
     let mut children = Vec::new();
     for collection in collections {
         let scoped: Vec<(&ItemAction, &ActionDecl<R>)> = actions
             .iter()
-            .filter(|action| targets(action, collections, collection.field))
+            .filter(|action| targets(action, &fields, collection.field))
             .filter_map(|action| {
                 declarations
                     .iter()
@@ -110,6 +113,45 @@ pub fn item_children<R: Resource>(
         }
     }
     children
+}
+
+/// [`Resource::children_offer_bound`] of a record whose children are
+/// `others` followed by its [`item_children`]: the declarations offered
+/// bound on `others` or on the items of a collection, known from how many
+/// items each collection holds (`sizes`, by field) without building a child
+/// per item.
+pub fn offered_on_items<R: Resource>(
+    others: &[tilo_actions::Resource],
+    sizes: &[(&'static str, usize)],
+    actions: &[ItemAction],
+) -> Vec<&'static str> {
+    let fields: Vec<&str> = sizes.iter().map(|(field, _)| *field).collect();
+    let declarations = R::declarations();
+    // `item_children` binds the first declaration of an action's id.
+    let first = |id: &str| declarations.iter().find(|decl| decl.id == id);
+    declarations
+        .iter()
+        .filter(|decl| {
+            let on_items = actions.iter().any(|action| {
+                action.action == decl.id
+                    && first(action.action).is_some_and(|bound| {
+                        // What `offered_bound` asks of the item's spec: it
+                        // takes fewer parameters than the declaration.
+                        let kept = bound
+                            .params
+                            .iter()
+                            .filter(|param| param.name != action.param)
+                            .count();
+                        kept < decl.params.len()
+                    })
+                    && sizes
+                        .iter()
+                        .any(|&(field, size)| size > 0 && targets(action, &fields, field))
+            });
+            on_items || offered_bound(others, decl)
+        })
+        .map(|decl| decl.id)
+        .collect()
 }
 
 /// The spec of `decl` with its item parameter bound to `item`.

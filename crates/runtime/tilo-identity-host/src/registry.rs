@@ -326,7 +326,11 @@ impl IdentityRegistryStore {
         set_private_dir_mode(&self.identity_dir)?;
         let bytes = serde_json::to_vec_pretty(registry)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-        tilo_files::native::atomic::write_with_mode(&self.registry_path, &bytes, 0o600)
+        let written =
+            tilo_files::native::atomic::write_with_mode(&self.registry_path, &bytes, 0o600);
+        // The identity a workspace selected decides whose fleet admits.
+        crate::policy_change::announce();
+        written
     }
 
     /// Load the registry after registering every identity record in the
@@ -516,37 +520,6 @@ pub fn selected_identity_profile(room: &str) -> io::Result<Option<IdentityProfil
     let store = IdentityRegistryStore::from_env()?;
     let registry = store.load_reconciled_cached()?;
     Ok(registry.selected_for_workspace(room).cloned())
-}
-
-/// Select the next registered identity for `room`. This small operation is
-/// used by workspace settings; importing a new record remains a deliberate
-/// identity ceremony.
-///
-/// # Errors
-///
-/// Returns an error if loading the registry, migration, or saving fails.
-pub fn cycle_workspace_identity(room: &str) -> io::Result<Option<IdentityProfile>> {
-    let store = IdentityRegistryStore::from_env()?;
-    let mut registry = store.load_reconciled()?;
-    if registry.identities.is_empty() {
-        return Ok(None);
-    }
-    let ids: Vec<String> = registry.identities.keys().cloned().collect();
-    let current = registry
-        .selected_for_workspace(room)
-        .map(|profile| profile.id.as_str());
-    let next_index = current
-        .and_then(|id| ids.iter().position(|candidate| candidate == id))
-        .map_or(0, |index| {
-            index.wrapping_add(1).checked_rem(ids.len()).unwrap_or(0)
-        });
-    let Some(next_id) = ids.get(next_index) else {
-        return Ok(None);
-    };
-    registry.bind_workspace(room.to_string(), next_id)?;
-    let profile = registry.identities.get(next_id).cloned();
-    store.save(&registry)?;
-    Ok(profile)
 }
 
 /// Resolve the identity directory from environment variables.

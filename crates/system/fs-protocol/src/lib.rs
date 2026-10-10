@@ -61,14 +61,6 @@ pub use files::{
     MERGE_PREFLIGHT_XATTR_PREFIX, MergePreflightProjectionV1, PreviewStatus, PreviewVariant,
     prefer_conflict_resolution,
 };
-#[allow(
-    deprecated,
-    reason = "stable source compatibility for the moved collab-types API"
-)]
-pub use files::{
-    FileMutationOperationV1, FileMutationParticipantRoleV1, FileMutationParticipantV1,
-    FileMutationTransactionManifestV1, FileMutationTransactionV1,
-};
 pub use recipient_control::{
     MAX_RECIPIENT_CONTROL_CONNECTIONS, MAX_RECIPIENT_CONTROL_FRAME_BYTES,
     MAX_RECIPIENT_CONTROL_REQUESTS_PER_CONNECTION, MAX_RECIPIENT_MOUNT_PATH_BYTES,

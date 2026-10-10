@@ -748,20 +748,17 @@ impl Widget for ChordChart {
         _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
-        if !matches!(action, crate::a11y::Action::Activate) {
-            return false;
-        }
-        let Some(key) = keys.last() else {
+        let Some(key) = crate::widget::chart_navigation::activated_key(action, keys) else {
             return false;
         };
         for node in &self.nodes {
-            if crate::a11y::hash_key(&format!("node:{}", node.id)) == *key {
+            if crate::a11y::hash_key(&format!("node:{}", node.id)) == key {
                 self.activated = Some(ChordSelection::Node(node.id.clone()));
                 return true;
             }
         }
         for link in &self.links {
-            if crate::a11y::hash_key(&format!("link:{}", link.id)) == *key {
+            if crate::a11y::hash_key(&format!("link:{}", link.id)) == key {
                 self.activated = Some(ChordSelection::Link(link.id.clone()));
                 return true;
             }

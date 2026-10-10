@@ -155,10 +155,6 @@ impl TimelineViewport {
         });
     }
 
-    pub fn pin_hour(&mut self, hour: f64) {
-        self.pinned_hour = Some(hour.clamp(0.0, 24.0));
-    }
-
     pub fn tokens(&self) -> TimelineTokens {
         self.tokens
     }

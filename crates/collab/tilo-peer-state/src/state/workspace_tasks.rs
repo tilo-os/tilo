@@ -5,6 +5,57 @@ use crate::workspace_task::{
 use collab_types::caps::{Actor, CapDecision, ResourceRef, Verb, decide_capability};
 
 impl StatePeer {
+    /// Revalidate the assigned agent and the exact person's retained run approval.
+    /// This is a check on existing capabilities, not a run-created grant.
+    /// # Errors
+    /// An actor was removed/revoked, its certificate expired, or write approval ended.
+    pub fn check_task_execution_actor(
+        &self,
+        agent_id: &str,
+        approval: Option<&tilo_desktop_model::WorkspaceTaskApproval>,
+        now: SystemTime,
+    ) -> Result<(), String> {
+        let seconds = now
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_err(|_| "task execution clock unavailable")?
+            .as_secs();
+        let doc = self
+            .core
+            .room_doc
+            .as_deref()
+            .ok_or("admitted task document unavailable")?;
+        let (_, owner, caps) = crate::room::extract_governed_fields(doc);
+        let mut workspace = tilo_desktop_model::Workspace::new(
+            tilo_desktop_model::WorkspaceId(0),
+            "task admission",
+        );
+        workspace.owner = owner;
+        workspace.capabilities = caps;
+        if workspace
+            .role_of_agent_in_room_at(agent_id, &self.core.room, seconds)
+            .is_none_or(|role| role == Role::Denied)
+        {
+            return Err("assigned task agent is no longer admitted".into());
+        }
+        if let Some(approval) = approval {
+            let (role, caps, person) = self.permissions(approval.device, now)?;
+            let actor = Actor::person(Some(role), person.clone()).in_room(self.core.room.clone());
+            if person != approval.person
+                || !matches!(role, Role::Owner | Role::Editor)
+                || decide_capability(
+                    &actor,
+                    &ResourceRef::Workspace,
+                    Verb::Write,
+                    &caps,
+                    Some(seconds),
+                ) != CapDecision::Allow
+            {
+                return Err("task run approval is no longer authorized".into());
+            }
+        }
+        Ok(())
+    }
+
     /// Apply one typed task command against the current admitted room document.
     /// The caller or host certificate is rechecked here, in the same serialized
     /// owner turn as the mutation; strings in the command confer no authority.
@@ -103,6 +154,7 @@ impl StatePeer {
             }
         };
         require_budget_owner(command, &actor, owner.as_ref())?;
+        self.check_agent_task_approval(&actor, command, room, now)?;
         let mut candidate = room.clone();
         let AppliedTaskCommand { changed, result } = crate::workspace_task::apply(
             &mut candidate,
@@ -116,6 +168,30 @@ impl StatePeer {
             self.core.room_doc = Some(candidate.into());
         }
         Ok((changed, result))
+    }
+
+    fn check_agent_task_approval(
+        &self,
+        actor: &AdmittedTaskActor,
+        command: &WorkspaceTaskCommand,
+        room: &automerge::AutoCommit,
+        now: SystemTime,
+    ) -> Result<(), String> {
+        if let AdmittedTaskActor::Agent { id, .. } = actor {
+            let task_id = match command {
+                WorkspaceTaskCommand::AppliedAck { task_id, .. }
+                | WorkspaceTaskCommand::Finish { task_id, .. }
+                | WorkspaceTaskCommand::ExecutionPhase { task_id, .. } => Some(task_id),
+                _ => None,
+            };
+            let state = crate::workspace_task::snapshot(room)?;
+            let approval = task_id
+                .and_then(|id| state.controls.get(id))
+                .and_then(|control| control.active_run.as_ref())
+                .and_then(|run| run.approval.as_ref());
+            self.check_task_execution_actor(id, approval, now)?;
+        }
+        Ok(())
     }
 }
 

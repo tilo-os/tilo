@@ -7,7 +7,7 @@
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect};
 use vello::peniko::Fill;
-use winit::keyboard::{Key, NamedKey};
+use winit::keyboard::Key;
 
 use ui::ColorCompat;
 use ui::text_render::TextRenderer;
@@ -430,23 +430,12 @@ impl QuickSettingsWifiPane {
         state: &mut QuickSettingsState,
         actions: &dyn QsActions,
     ) -> Option<WifiPaneOutcome> {
-        match logical_key {
-            Key::Named(NamedKey::Tab) => {
+        match super::PaneKey::of(logical_key, backwards)? {
+            super::PaneKey::Focus(backwards) => {
                 self.focus_next(panel, state, backwards);
                 Some(WifiPaneOutcome::DrillIn(DrillInOutcome::None))
             }
-            Key::Named(NamedKey::ArrowUp | NamedKey::ArrowLeft) => {
-                self.focus_next(panel, state, true);
-                Some(WifiPaneOutcome::DrillIn(DrillInOutcome::None))
-            }
-            Key::Named(NamedKey::ArrowDown | NamedKey::ArrowRight) => {
-                self.focus_next(panel, state, false);
-                Some(WifiPaneOutcome::DrillIn(DrillInOutcome::None))
-            }
-            Key::Named(NamedKey::Enter | NamedKey::Space) => {
-                Some(self.activate_focused(panel, state, actions))
-            }
-            _ => None,
+            super::PaneKey::Activate => Some(self.activate_focused(panel, state, actions)),
         }
     }
 
@@ -753,6 +742,7 @@ impl QuickSettingsWifiPane {
 mod tests {
     use super::*;
     use std::cell::RefCell;
+    use winit::keyboard::NamedKey;
 
     #[derive(Default)]
     struct RecordingActions {

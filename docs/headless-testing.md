@@ -55,6 +55,26 @@ Scenarios are defined in `crates/session/shell/src/bin/shots/scenario.rs`. Each 
 
 **No display server required.** `shots --mode offscreen` and `--mode recording` use `quick_ui::offscreen::OffscreenRenderer` — wgpu only, no window.
 
+## Owner control with an existing identity
+
+For semantic actions on an existing owner's headless session, launch
+`shell --host-desktop-session --backend headless --headless-owner-control`.
+The normal first-login, device-owner, administrator-group, lock and caller
+checks apply. No development control variable is needed. The endpoint is
+`$XDG_RUNTIME_DIR/tilo-session/headless-owner-control.sock`, separate from the
+real seat's `admin-control.sock`; an existing live listener is never replaced.
+Headless sessions without the explicit flag retain their existing behavior.
+
+Use the normal action interface against that endpoint:
+
+```bash
+tilo-control --socket "$XDG_RUNTIME_DIR/tilo-session/headless-owner-control.sock" actions list
+```
+
+This endpoint accepts semantic owner commands, not the development input and
+capture protocol described below. A locked session still requires its normal
+unlock action. Physical cursor and display acceptance remains a real-seat test.
+
 ## Layer 2: `TILO_TEST_CONTROL` — drive the live binary via a unix socket
 
 Best for: ad-hoc interactive testing from a script or an AI agent, exploratory "click here, snapshot that" flows, integration tests where you want to assert against the live compositor's state.
@@ -519,6 +539,12 @@ for one service thread of a unit test, `idle_wakeups(pid, settle, window)` for
 a process tree, and `sample_process` with `Wakeups::between` for a stretch the
 test drives itself (`shell::network::idle_quiet_tests` uses it for the
 collaboration plane of two converged desktops).
+
+A gate that runs inside the pull-request test shard shares the runner with
+other tests, and preemptions grow with that load. `Wakeups::blocking_per_second`
+counts only voluntary switches, one per wakeup. The lone-desktop gate in
+`idle_quiet_tests` uses it, together with a CPU bound that catches a thread
+spinning without blocking (TIL-749).
 
 ## Where to look in source
 

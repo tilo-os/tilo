@@ -253,6 +253,56 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
         assert!(!lifetime_socket_open(&terminal_end));
     }
 
+    // Case `an_open_waits_for_a_supervisor_answer_slower_than_the_connect_bound`.
+    {
+        use std::io::BufRead as _;
+
+        // Open over a connection read-bounded by `bound`, against a supervisor
+        // that answers (refusing: no runtime) after `delay`; return the result
+        // and the connection's bound afterwards.
+        let open_with = |bound: Option<std::time::Duration>, delay: std::time::Duration| {
+            let (terminal_end, supervisor_end) =
+                std::os::unix::net::UnixStream::pair().expect("socket pair");
+            terminal_end.set_read_timeout(bound).unwrap();
+            let supervisor = std::thread::spawn(move || {
+                let mut request = String::new();
+                std::io::BufReader::new(&supervisor_end)
+                    .read_line(&mut request)
+                    .unwrap();
+                std::thread::sleep(delay);
+                (&supervisor_end)
+                    .write_all(b"{\"result\":\"no-runtime\",\"reason\":\"checked\"}\n")
+                    .unwrap();
+                request
+            });
+            let opened = crate::inner::ush_backend_on(
+                &terminal_end,
+                &[],
+                &crate::target::SessionTarget::default_environment(),
+                crate::Requester::Person,
+                None,
+            );
+            assert!(supervisor.join().unwrap().contains("open-session"));
+            (opened.err(), terminal_end.read_timeout().unwrap())
+        };
+        let answered = |error: &Option<crate::OpenError>| matches!(error, Some(crate::OpenError::NoRuntime(reason)) if reason == "checked");
+
+        // A hosted connection carries the 250 ms connect bound; a supervisor
+        // checking a first open's environment answers later than that.
+        let connect_bound = std::time::Duration::from_millis(250);
+        let (error, _) = open_with(Some(connect_bound), std::time::Duration::from_millis(700));
+        assert!(answered(&error), "the late answer was not read: {error:?}");
+
+        // A connection with no bound, or a longer one, keeps it.
+        let (error, after) = open_with(None, std::time::Duration::ZERO);
+        assert!(answered(&error), "{error:?}");
+        assert_eq!(after, None);
+        let long = std::time::Duration::from_secs(60);
+        let (error, after) = open_with(Some(long), std::time::Duration::ZERO);
+        assert!(answered(&error), "{error:?}");
+        assert_eq!(after, Some(long));
+    }
+
     // Case `service_fd_is_detected_only_when_the_descriptor_is_actually_open`.
     {
         // The service path is selected on a *live* descriptor, not on the mere
@@ -345,6 +395,15 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
         )
         .unwrap();
         ui::widget::Widget::sync(&mut widget, &doc, &automerge::ROOT);
+        let deadline = std::time::Instant::now() + HANG_BOUND;
+        while matches!(widget.session_state(), crate::sessions::OpenState::Opening) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "healthy open must finish"
+            );
+            ui::widget::Widget::update(&mut widget, &doc, &automerge::ROOT);
+            std::thread::yield_now();
+        }
         assert_eq!(widget.session_state(), &crate::sessions::OpenState::Open);
         drop(widget);
         server.join().unwrap();
@@ -391,6 +450,15 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
         )
         .unwrap();
         ui::widget::Widget::sync(&mut widget, &doc, &automerge::ROOT);
+        let deadline = std::time::Instant::now() + HANG_BOUND;
+        while matches!(widget.session_state(), crate::sessions::OpenState::Opening) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "open failure must finish"
+            );
+            ui::widget::Widget::update(&mut widget, &doc, &automerge::ROOT);
+            std::thread::yield_now();
+        }
         assert!(
             matches!(
                 widget.session_state(),
@@ -1728,7 +1796,7 @@ fn find_in_terminal_is_local_discoverable_and_reflows() {
             .iter()
             .find(|child| child.role == Role::Menu)
             .expect("discoverable menu");
-        let find_label = ui::i18n::I18nManager::lookup("terminal-find-scrollback", None);
+        let find_label = crate::i18n::t("terminal-find-scrollback");
         assert_ne!(
             find_label, "terminal-find-scrollback",
             "toolkit supplies the visible label"
@@ -1859,7 +1927,7 @@ fn find_in_terminal_is_local_discoverable_and_reflows() {
         // Assistive activation resolves the exported controls to their real
         // FindBar owner rather than sending child targets to TerminalView.
         let control = |harness: &ui::headless::FrameHarness, key: &str| {
-            let label = ui::i18n::I18nManager::lookup_plain(key);
+            let label = crate::i18n::t(key);
             harness
                 .a11y_nodes()
                 .into_iter()

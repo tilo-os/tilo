@@ -3022,15 +3022,6 @@ pub fn insert_image_action(block: &str, at: usize, image: ImageInput) -> RichTex
     }
 }
 
-/// Remove `blocks` (an image, or a table's cells).
-/// Insert a paragraph carrying `text` after block `after`.
-pub fn insert_paragraph_action(after: &str, text: &str) -> RichTextAction {
-    RichTextAction::InsertParagraph {
-        after: after.to_string(),
-        text: text.to_string(),
-    }
-}
-
 /// Append `text` as a new paragraph at the end of the body (resolved at apply).
 pub fn append_paragraph_action(text: &str) -> RichTextAction {
     RichTextAction::AppendParagraph {
@@ -3047,11 +3038,6 @@ pub fn continue_paragraph_action(text: &str) -> RichTextAction {
 
 pub fn remove_blocks_action(blocks: Vec<String>) -> RichTextAction {
     RichTextAction::RemoveBlocks { blocks }
-}
-
-/// Move `blocks` to directly after `after` (the start of the body for `None`).
-pub fn move_blocks_action(blocks: Vec<String>, after: Option<String>) -> RichTextAction {
-    RichTextAction::MoveBlocks { blocks, after }
 }
 
 /// Replace the whole document body with `markdown`.

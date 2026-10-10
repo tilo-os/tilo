@@ -68,6 +68,9 @@ const INHERITED_ENV: &[&str] = &[
     // GTK and Qt host applications while native Tilo fields keep working.
     "XMODIFIERS",
     "GTK_IM_MODULE",
+    // A deliberately selected compatibility module may live with its GTK
+    // runtime. Keep its discovery path alongside the selected module name.
+    "GTK_PATH",
     "QT_IM_MODULE",
     // Qt 6 on Fedora advertises its ordered Wayland/IBus fallback through
     // the plural spelling; keeping only QT_IM_MODULE loses that selection.
@@ -739,6 +742,7 @@ mod tests {
         for key in [
             "XMODIFIERS",
             "GTK_IM_MODULE",
+            "GTK_PATH",
             "QT_IM_MODULE",
             "QT_IM_MODULES",
             "SDL_IM_MODULE",
@@ -749,6 +753,7 @@ mod tests {
         for key in [
             "XMODIFIERS",
             "GTK_IM_MODULE",
+            "GTK_PATH",
             "QT_IM_MODULE",
             "QT_IM_MODULES",
             "SDL_IM_MODULE",

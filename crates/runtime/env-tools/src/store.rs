@@ -146,18 +146,6 @@ pub fn device_builder() -> anyhow::Result<Builder<PackageStoreTools, Option<Cata
     ))
 }
 
-/// `store`, also trusting the tools this device builds, when its device key
-/// is readable here; else `store` unchanged.
-pub fn trusting_device_tools(store: Store) -> Store {
-    match crate::signing::device_identity() {
-        Ok(identity) => trust_builder(store, &identity),
-        Err(error) => {
-            tracing::debug!(%error, "no device key: tools built here are not trusted");
-            store
-        }
-    }
-}
-
 /// [`device_builder`] as the environment record's seam, or a builder that
 /// says why this device can't build tools.
 pub fn device_tool_builder() -> std::sync::Arc<dyn tilo_environment::ToolBuilder> {

@@ -5821,6 +5821,27 @@ struct SpatialControlSession {
     nearby_drop: Option<std::path::PathBuf>,
 }
 
+/// Apply a production native-seat batch; the runtime drains revocation barriers
+/// before surviving input. Both phases keep their existing timing/count names.
+pub(crate) fn dispatch_spatial_input_batch(
+    state: &mut State,
+    batch: crate::shell::device_fabric_runtime::SpatialInputBatch,
+) {
+    use crate::shell::device_fabric_runtime::SpatialInputBatch;
+    match batch {
+        SpatialInputBatch::Releases(controllers) => {
+            for controller in controllers {
+                let _ = state.release_personal_fabric_input(&controller);
+            }
+        }
+        SpatialInputBatch::Inputs(events) => {
+            for (controller, event) in events {
+                let _ = state.apply_personal_fabric_input(&controller, event);
+            }
+        }
+    }
+}
+
 fn end_spatial_control(
     network: &crate::shell::network::ShellNetwork,
     active: &mut Option<SpatialControlSession>,
@@ -5828,29 +5849,54 @@ fn end_spatial_control(
     let Some(session) = active.take() else {
         return;
     };
-    for keycode in session.pressed_keys {
-        let _ = crate::shell::device_fabric_runtime::send_spatial_input_bound(
-            network,
-            &session.target,
-            session.lease_nonce,
-            crate::shell::device_fabric::FabricInputEvent::Key {
+    let events = session
+        .pressed_keys
+        .into_iter()
+        .map(
+            |keycode| crate::shell::device_fabric::FabricInputEvent::Key {
                 keycode,
                 pressed: false,
                 modifiers: 0,
             },
-        );
-    }
-    for button in session.pressed_buttons {
-        let _ = crate::shell::device_fabric_runtime::send_spatial_input_bound(
-            network,
-            &session.target,
-            session.lease_nonce,
+        )
+        .chain(session.pressed_buttons.into_iter().map(|button| {
             crate::shell::device_fabric::FabricInputEvent::PointerButton {
                 button,
                 pressed: false,
-            },
-        );
-    }
+            }
+        }))
+        .collect();
+    let _ = crate::shell::device_fabric_runtime::queue_spatial_input_cleanup_bound(
+        network,
+        &session.target,
+        session.lease_nonce,
+        events,
+    );
+}
+
+#[cfg(test)]
+pub(crate) fn teardown_spatial_control_for_test(
+    network: &crate::shell::network::ShellNetwork,
+    target: crate::shell::personal_continuity::DeviceId,
+    nonce: [u8; 16],
+    held: (
+        std::collections::BTreeSet<u32>,
+        std::collections::BTreeSet<u32>,
+    ),
+) -> bool {
+    let mut active = Some(SpatialControlSession {
+        target,
+        lease_nonce: nonce,
+        output: None,
+        return_edge: crate::shell::device_fabric::DisplayEdge::Right,
+        x: 0.0,
+        y: 0.0,
+        pressed_keys: held.0,
+        pressed_buttons: held.1,
+        nearby_drop: None,
+    });
+    end_spatial_control(network, &mut active);
+    active.is_none()
 }
 
 #[allow(
@@ -8438,9 +8484,12 @@ pub fn run() {
             .is_some_and(|value| value == "1");
     let identity_missing =
         crate::shell::identity_provisioning::needs_first_run_flow(&identity_store);
-    // The device admin's control socket is the real seat's: a nested or
-    // headless compositor is a development session with its own sockets.
-    let mut admin_control_due = (backend_kind == BackendKind::Drm)
+    // The normal admin socket remains the real seat's. An owner can request
+    // a separate semantic endpoint for headless work without enabling the
+    // development input socket or changing first-use and lock handling.
+    let headless_owner_control = backend_kind == BackendKind::Headless
+        && std::env::args().any(|argument| argument == "--headless-owner-control");
+    let mut admin_control_due = (backend_kind == BackendKind::Drm || headless_owner_control)
         .then(|| identity_store.path().parent().map(Path::to_path_buf))
         .flatten();
     let onboarding_identity_dir = if should_activate_first_use(
@@ -11546,25 +11595,33 @@ pub fn run() {
             if let Some(bridge) = realtime_fabric_bridge.as_ref() {
                 pump_phase!("realtime-app-events", bridge.pump_app_events());
             }
-            let spatial_input = crate::shell::device_fabric_runtime::take_spatial_input();
-            let spatial_input_count = spatial_input.len();
-            pump_phase!(
-                "spatial-input",
-                spatial_input_count,
-                for (controller, event) in spatial_input {
-                    let _ = state.apply_personal_fabric_input(&controller, event);
+            for batch in crate::shell::device_fabric_runtime::take_spatial_input_batches() {
+                use crate::shell::device_fabric_runtime::SpatialInputBatch;
+                match batch {
+                    SpatialInputBatch::Releases(controllers) => {
+                        let count = controllers.len();
+                        pump_phase!(
+                            "spatial-input-releases",
+                            count,
+                            dispatch_spatial_input_batch(
+                                &mut state,
+                                SpatialInputBatch::Releases(controllers),
+                            )
+                        );
+                    }
+                    SpatialInputBatch::Inputs(events) => {
+                        let count = events.len();
+                        pump_phase!(
+                            "spatial-input",
+                            count,
+                            dispatch_spatial_input_batch(
+                                &mut state,
+                                SpatialInputBatch::Inputs(events)
+                            )
+                        );
+                    }
                 }
-            );
-            let spatial_releases =
-                crate::shell::device_fabric_runtime::take_spatial_input_releases();
-            let spatial_release_count = spatial_releases.len();
-            pump_phase!(
-                "spatial-input-releases",
-                spatial_release_count,
-                for controller in spatial_releases {
-                    let _ = state.release_personal_fabric_input(&controller);
-                }
-            );
+            }
             let nearby_drop_events = crate::shell::device_fabric_runtime::take_nearby_drop_events();
             let nearby_drop_event_count = nearby_drop_events.len();
             pump_phase!(
@@ -11612,7 +11669,8 @@ pub fn run() {
                     });
                 }
             );
-            let personal_viewers = crate::shell::device_fabric_runtime::window_viewers();
+            let personal_viewers =
+                crate::shell::device_fabric_runtime::window_viewers(continuity_policy.current());
             let viewer_hosts = if backend_kind == BackendKind::Headless {
                 let active_room = {
                     let tree_handle = frame_builder.chrome_handle().borrow().tree_handle();
@@ -11855,7 +11913,11 @@ pub fn run() {
                 let tree = tree_handle.read();
                 shown_hosted_windows(&tree, &tiles)
             };
-            crate::shell::device_fabric_runtime::publish_window_views(net, window_views);
+            crate::shell::device_fabric_runtime::publish_window_views(
+                net,
+                window_views,
+                continuity_policy.current(),
+            );
         }
         pump_checkpoint!("device-fabric-and-network");
         // Keep the presence relay current, then fold in what peers sent. Pointer
@@ -11922,7 +11984,12 @@ pub fn run() {
         }
         // First login has to finish before the device has an owner to serve.
         if !onboarding_active && let Some(identity_dir) = admin_control_due.take() {
-            match crate::compositor::admin_control::bind(&identity_dir) {
+            let bound = if headless_owner_control {
+                crate::compositor::admin_control::bind_headless_owner(&identity_dir)
+            } else {
+                crate::compositor::admin_control::bind(&identity_dir)
+            };
+            match bound {
                 Ok((listener, path)) => {
                     tracing::info!(path = %path.display(), "admin control: listening");
                     let wake = control_listener_wake(&listener, &event_loop.handle());
@@ -13432,8 +13499,15 @@ fn spawn_auto_brightness_worker(settings: settings_store::live::LiveSettings) {
                 } else {
                     controller.reset();
                 }
-                snapshot = settings
-                    .wait_for_change(snapshot.generation, std::time::Duration::from_secs(2));
+                snapshot = if enabled {
+                    // The sensor is read every 2 s while the setting is on, and
+                    // the idle dim's hold (`backlight_held`) ends with no
+                    // settings write, so it is looked at again on that cadence.
+                    settings.wait_for_change(snapshot.generation, std::time::Duration::from_secs(2))
+                } else {
+                    // Off: nothing to do until the settings change.
+                    settings.wait_for_next(snapshot.generation)
+                };
             }
         });
 }
@@ -13457,6 +13531,31 @@ mod tests {
         native_consent_fixture_root, run_isolated_native_consent_test,
         wait_for_local_session_worker_teardown,
     };
+
+    /// Automatic brightness is off by default, so on almost every desktop its
+    /// worker has nothing to do: it waits for a settings change instead of
+    /// waking every 2 s (TIL-690 measured 0.5 wakeups/s on an idle desktop).
+    #[test]
+    fn auto_brightness_worker_sleeps_while_the_setting_is_off() {
+        let source = std::sync::Arc::new(settings_store::HostDocument::new(
+            serde_json::Map::new(),
+            |_| Ok(()),
+        ));
+        let settings = settings_store::live::LiveSettings::start_from(source, || {});
+        // The kernel's 15-byte name of `tilo-auto-brightness`.
+        let ((), tid) = tilo_test_env::idle::spawned_thread("tilo-auto-brigh", || {
+            spawn_auto_brightness_worker(settings.clone());
+        });
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let settled = tilo_test_env::idle::context_switches(&tid);
+        // Longer than the 2 s cadence it used to wake on even when off.
+        std::thread::sleep(std::time::Duration::from_millis(2500));
+        let woke = tilo_test_env::idle::context_switches(&tid).saturating_sub(settled);
+        assert_eq!(
+            woke, 0,
+            "the disabled auto-brightness worker woke {woke} times in 2.5 s"
+        );
+    }
 
     #[test]
     fn explicit_display_wake_restores_backend_and_presenter_without_unlock_or_input() {
@@ -15407,6 +15506,41 @@ mod tests {
                 &mut self.state,
             );
         }
+
+        fn wait_for_invoke_response(
+            &mut self,
+            conn: &mut TestControlConn,
+            woken: &std::cell::Cell<bool>,
+            deadline: Instant,
+        ) {
+            loop {
+                assert!(
+                    Instant::now() < deadline,
+                    "settled response must be observed before the original deadline"
+                );
+                self.pump(conn);
+                assert!(!conn.closed, "the original connection must remain open");
+                if conn.pending_invocation.is_none() {
+                    assert!(
+                        conn.output.is_empty(),
+                        "the settled response must be flushed"
+                    );
+                    return;
+                }
+                // A shared loop ping can arrive before this job's watcher.
+                // Keep serving the same request as the compositor does.
+                woken.set(false);
+                assert!(
+                    park_until_woken(
+                        &mut self.event_loop,
+                        &mut self.state,
+                        woken,
+                        deadline.saturating_duration_since(Instant::now()),
+                    ),
+                    "the pending invocation must wake the loop before its deadline"
+                );
+            }
+        }
     }
 
     #[test]
@@ -15459,8 +15593,65 @@ mod tests {
         assert_eq!(runs.get(), 2);
     }
 
+    // Hold only this test process's session workers so an unrelated loop ping
+    // deterministically precedes the real broker-completion watcher. Drop
+    // releases every worker even if an assertion fails.
+    struct HeldSessionWorkers(Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>);
+
+    impl Drop for HeldSessionWorkers {
+        fn drop(&mut self) {
+            *self
+                .0
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
+            self.0.1.notify_all();
+        }
+    }
+
+    fn hold_session_workers() -> HeldSessionWorkers {
+        let runtime = crate::session_runtime::runtime().expect("session runtime");
+        let count = runtime.metrics().num_workers();
+        let held = HeldSessionWorkers(Arc::new((
+            std::sync::Mutex::new(false),
+            std::sync::Condvar::new(),
+        )));
+        let (ready, started) = std::sync::mpsc::channel();
+        for _ in 0..count {
+            let gate = Arc::clone(&held.0);
+            let ready = ready.clone();
+            drop(runtime.spawn(async move {
+                ready.send(()).expect("worker ready");
+                let released = gate
+                    .0
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                drop(
+                    gate.1
+                        .wait_while(released, |released| !*released)
+                        .unwrap_or_else(std::sync::PoisonError::into_inner),
+                );
+            }));
+        }
+        for _ in 0..count {
+            started
+                .recv_timeout(Duration::from_secs(2))
+                .expect("each worker must be observed held");
+        }
+        held
+    }
+
     #[test]
     fn wait_ms_answers_the_settled_outcome_in_one_call() {
+        wait_ms_answer_with_loop_wake(false);
+    }
+
+    #[test]
+    fn wait_ms_tolerates_an_unrelated_wake_before_the_completion_watch() {
+        wait_ms_answer_with_loop_wake(true);
+    }
+
+    fn wait_ms_answer_with_loop_wake(unrelated_wake: bool) {
         use std::io::Write as _;
 
         let mut fixture = ControlFixture::new();
@@ -15471,11 +15662,13 @@ mod tests {
         let invocation = tilo_actions::InvocationId::new();
         let accepted = tilo_actions::InvocationUpdate::Accepted { invocation };
         broker.record_completion_for_test(job, &actor, accepted.clone());
+        let resolves = std::rc::Rc::new(std::cell::Cell::new(0));
+        let runs = std::rc::Rc::new(std::cell::Cell::new(0));
         crate::shell::overlay_host::install_fixture_search_provider(
             fixture.frame_builder.host_mut(),
             std::rc::Rc::new(CountingProvider {
-                resolves: std::rc::Rc::default(),
-                runs: std::rc::Rc::default(),
+                resolves: std::rc::Rc::clone(&resolves),
+                runs: std::rc::Rc::clone(&runs),
                 receipt: crate::shell::search::ActionReceipt {
                     broker_invocation_id: Some(job),
                     update: accepted,
@@ -15483,7 +15676,7 @@ mod tests {
             }),
         );
         let (wake, woken) = loop_wake(&fixture.event_loop);
-        let _installed = crate::shell::search::invocation_wake::install(wake);
+        let _installed = crate::shell::search::invocation_wake::install(wake.clone());
         let (mut conn, mut writer, mut reader) = control_client();
 
         let invoke = serde_json::json!({
@@ -15500,6 +15693,13 @@ mod tests {
             .expect("dispatch");
         assert!(!woken.get(), "nothing has moved the job yet");
 
+        let held = unrelated_wake.then(hold_session_workers);
+        if held.is_some() {
+            wake();
+        }
+        let deadline = Instant::now()
+            .checked_add(Duration::from_secs(10))
+            .expect("observation deadline");
         broker.record_completion_for_test(
             job,
             &actor,
@@ -15511,14 +15711,20 @@ mod tests {
                 },
             },
         );
-        // The job settling wakes the parked loop by itself.
+        // Completion alone wakes the ordinary case. The delayed-watcher case
+        // first receives its unrelated ping and still has no response.
         assert!(park_until_woken(
             &mut fixture.event_loop,
             &mut fixture.state,
             &woken,
-            Duration::from_secs(10),
+            deadline.saturating_duration_since(Instant::now()),
         ));
         fixture.pump(&mut conn);
+        if held.is_some() {
+            assert_socket_pending(&mut reader);
+        }
+        drop(held);
+        fixture.wait_for_invoke_response(&mut conn, &woken, deadline);
         let test_control::Response::Answer(answer) = socket_response(&mut reader) else {
             panic!("the settled outcome is the answer");
         };
@@ -15526,6 +15732,12 @@ mod tests {
         assert_eq!(answer["receipt"]["broker_invocation_id"], job);
         assert_eq!(answer["receipt"]["update"]["state"], "succeeded");
         assert_eq!(answer["receipt"]["update"]["output"]["value"], "done");
+        assert_eq!(resolves.get(), 1, "one request resolves its action once");
+        assert_eq!(
+            runs.get(),
+            1,
+            "extra loop wakes never invoke the action again"
+        );
     }
 
     #[test]

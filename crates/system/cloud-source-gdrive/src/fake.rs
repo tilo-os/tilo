@@ -559,15 +559,15 @@ impl State {
             map.insert("headRevisionId".into(), json!(head.id));
             map.insert(
                 "md5Checksum".into(),
-                json!(hex(&md5::Md5::digest(&head.bytes))),
+                json!(hex::encode(md5::Md5::digest(&head.bytes))),
             );
             map.insert(
                 "sha1Checksum".into(),
-                json!(hex(&sha1::Sha1::digest(&head.bytes))),
+                json!(hex::encode(sha1::Sha1::digest(&head.bytes))),
             );
             map.insert(
                 "sha256Checksum".into(),
-                json!(hex(&sha2::Sha256::digest(&head.bytes))),
+                json!(hex::encode(sha2::Sha256::digest(&head.bytes))),
             );
         }
         Value::Object(map)
@@ -1740,10 +1740,6 @@ fn parse_unary(tokens: &[Token], at: &mut usize) -> Result<Query, ()> {
 }
 
 // --- helpers -------------------------------------------------------------
-
-fn hex(bytes: &[u8]) -> String {
-    hex::encode(bytes)
-}
 
 /// `2024-05-01T12:30:45.123Z`.
 fn format_rfc3339(time: SystemTime) -> String {

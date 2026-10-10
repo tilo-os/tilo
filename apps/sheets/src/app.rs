@@ -865,12 +865,6 @@ impl SheetsApp {
         self.grid.select_range_public(from, to);
     }
 
-    /// The index of the active sheet. Lets a test observe where a Ctrl+K
-    /// activation navigated.
-    pub fn active_sheet_index(&self) -> usize {
-        self.active_sheet
-    }
-
     /// Open the per-document settings sheet.
     fn open_doc_settings(&mut self) {
         self.close_overlays();

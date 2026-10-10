@@ -1259,59 +1259,19 @@ mod tests {
     }
 
     #[cfg(target_os = "linux")]
-    fn thread_ids() -> std::collections::BTreeSet<String> {
-        std::fs::read_dir("/proc/self/task")
-            .expect("tasks")
-            .map(|entry| entry.expect("task").file_name().into_string().expect("tid"))
-            .collect()
-    }
-
-    #[cfg(target_os = "linux")]
-    fn context_switches(tid: &str) -> u64 {
-        std::fs::read_to_string(format!("/proc/self/task/{tid}/status"))
-            .expect("thread status")
-            .lines()
-            .filter(|line| line.contains("ctxt_switches"))
-            .filter_map(|line| line.split_whitespace().nth(1)?.parse::<u64>().ok())
-            .sum()
-    }
-
-    #[cfg(target_os = "linux")]
     #[test]
     fn an_idle_listener_sleeps_until_a_client_arrives() {
         let temp = tempfile::tempdir().expect("temp");
         let socket = temp.path().join("identity.sock");
-        let before = thread_ids();
-        let broker = spawn(
-            socket.clone(),
-            Arc::new(WorkspaceTree::default().shared()),
-            Arc::new(()),
-        )
-        .expect("broker");
-        // A thread names itself once it runs, so it may not be named yet.
-        let waiting = std::time::Instant::now();
-        let listener = loop {
-            let named = thread_ids()
-                .difference(&before)
-                .find(|tid| {
-                    std::fs::read_to_string(format!("/proc/self/task/{tid}/comm"))
-                        .is_ok_and(|comm| comm.trim() == "tilo-identity-b")
-                })
-                .cloned();
-            if let Some(tid) = named {
-                break tid;
-            }
-            assert!(
-                waiting.elapsed() < Duration::from_secs(5),
-                "the broker's listener thread"
-            );
-            thread::sleep(Duration::from_millis(5));
-        };
-        thread::sleep(Duration::from_millis(50));
-        let settled = context_switches(&listener);
-        thread::sleep(Duration::from_millis(400));
-        let woke = context_switches(&listener).saturating_sub(settled);
-        assert_eq!(woke, 0, "an idle listener woke {woke} times in 400 ms");
+        let (broker, listener) = tilo_test_env::idle::spawned_thread("tilo-identity-b", || {
+            spawn(
+                socket.clone(),
+                Arc::new(WorkspaceTree::default().shared()),
+                Arc::new(()),
+            )
+            .expect("broker")
+        });
+        tilo_test_env::idle::assert_stays_asleep(&listener, "identity broker listener");
 
         UnixStream::connect(&socket).expect("still accepts clients");
         let started = std::time::Instant::now();
