@@ -219,6 +219,7 @@ HOSTING_KPIS = {
     "hosting.relay.egress_bytes_per_collab_hour": "bytes",
     "hosting.relay.frame_bytes_per_collab_hour": "bytes",
     "hosting.relay.fanout_ms": "ms",
+    "hosting.relay.store_fsyncs_per_edit": "count",
 }
 
 

@@ -685,6 +685,17 @@ p99_tolerance = 2.0
 min_delta = 10.0
 source = "relay_load: one edit, publish to receipt by each other member of the room"
 
+# File and directory barriers per committed edit (TIL-732): two are the floor
+# of the one-file-per-record store (the record, then its directory). Measured
+# 2.82 before TIL-732 (Perf / scheduled run 91348) and 2.10 after (run 91404),
+# within 0.4 % per window, so the ceiling sits about 15 % above: a reservation
+# renewed per commit or a resynced ancestor fails at once.
+[kpi."hosting.relay.store_fsyncs_per_edit.n100"]
+unit = "count"
+p50 = 2.4
+enforce = true
+source = "relay_load: workspace-store fsyncs per committed delta (store::fsyncs)"
+
 # Not met on AWS: egress at $0.09/GB is $0.00099 of the measured $0.00113.
 [kpi."hosting.relay.cost_usd_per_collab_hour.aws-t4g-small.n100"]
 unit = "usd"
