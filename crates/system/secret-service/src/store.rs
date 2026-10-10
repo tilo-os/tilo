@@ -657,26 +657,45 @@ impl Store {
         })
     }
 
-    /// What an item says about itself. No caller is attributed: D-Bus
-    /// property reads do not carry one, and an item's path is not guessable.
+    /// What an item says about itself, to a caller who may see it.
     ///
     /// # Errors
     ///
-    /// [`StoreError::NoSuchObject`].
-    pub fn item_info(&self, item: &ItemRef) -> Result<ItemInfo> {
+    /// [`StoreError::NoSuchObject`] for an item that does not exist or that
+    /// the caller may not see (the two are not told apart);
+    /// [`StoreError::Revoked`] for a revoked caller.
+    pub fn item_info(&self, caller: &AppId, item: &ItemRef) -> Result<ItemInfo> {
         self.with_open(|open| {
-            let found = open
-                .vault
-                .collections
-                .get(&item.collection)
-                .and_then(|c| c.items.get(&item.id))
-                .ok_or(StoreError::NoSuchObject)?;
+            Self::admit(open, caller)?;
+            let found = visible(&open.vault, caller, item)?;
             Ok(ItemInfo {
                 label: found.label.clone(),
                 attributes: found.attributes.clone(),
                 created: found.created,
                 modified: found.modified,
             })
+        })
+    }
+
+    /// Every item's place, for registering their D-Bus objects. Names no
+    /// caller and returns no content.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::Locked`] while locked.
+    pub fn refs(&self) -> Result<Vec<ItemRef>> {
+        self.with_open(|open| {
+            Ok(open
+                .vault
+                .collections
+                .iter()
+                .flat_map(|(name, collection)| {
+                    collection.items.keys().map(|id| ItemRef {
+                        collection: name.clone(),
+                        id: id.clone(),
+                    })
+                })
+                .collect())
         })
     }
 

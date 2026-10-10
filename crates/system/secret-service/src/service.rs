@@ -8,10 +8,10 @@
 //!
 //! Every method attributes its caller (see [`CallerResolver`]) and the
 //! store answers for that caller alone: another application's items are not
-//! found, not merely refused. D-Bus property reads carry no caller, so an
-//! item's `Label` and `Attributes` are readable by whoever knows its path;
-//! the path holds 128 random bits and is only ever returned to callers
-//! the item is visible to, and no secret is reachable through a property.
+//! found, not merely refused. Property reads are attributed too: a
+//! collection's `Items` lists exactly the items the reader may see, and an
+//! item's `Label`, `Attributes`, `Created` and `Modified` are refused to a
+//! reader who may not see the item. Item paths also hold 128 random bits.
 
 #![allow(
     clippy::unused_async,
@@ -228,6 +228,15 @@ impl Core {
         Ok(self.resolver.identify(sender.as_deref()).await?)
     }
 
+    /// The caller of a property read. A read that carries no message
+    /// header (a signal's own emission) names no one and is refused.
+    async fn property_caller(&self, header: Option<&Header<'_>>) -> zbus::fdo::Result<AppId> {
+        let header = header.ok_or_else(|| zbus::fdo::Error::AccessDenied("no caller".into()))?;
+        self.caller(header)
+            .await
+            .map_err(|error| zbus::fdo::Error::AccessDenied(error.to_string()))
+    }
+
     async fn manager(&self, header: &Header<'_>, allowed: &[AppId]) -> Result<AppId> {
         let caller = self.caller(header).await?;
         allowed
@@ -333,6 +342,7 @@ pub async fn publish(connection: &Connection, core: &Arc<Core>) -> zbus::Result<
     for name in &names {
         publish_collection(server, core, name).await?;
     }
+    sync_objects(server, core).await?;
     for alias in ["default", SESSION_COLLECTION] {
         server
             .at(
@@ -343,6 +353,23 @@ pub async fn publish(connection: &Connection, core: &Arc<Core>) -> zbus::Result<
                 },
             )
             .await?;
+    }
+    Ok(())
+}
+
+/// Register the objects of everything the store holds now: collections made
+/// by an earlier run, and items, which a property read cannot register for
+/// itself (the object server is locked while it answers).
+async fn sync_objects(server: &ObjectServer, core: &Arc<Core>) -> zbus::Result<()> {
+    if let Ok(collections) = core.store.collections() {
+        for (name, _) in collections {
+            publish_collection(server, core, &name).await?;
+        }
+    }
+    if let Ok(items) = core.store.refs() {
+        for item in &items {
+            publish_item(server, core, item).await?;
+        }
     }
     Ok(())
 }
@@ -448,6 +475,9 @@ impl ServiceIface {
                 },
             )
             .await?;
+        // Every client opens a session first: make what the store holds
+        // addressable before it browses.
+        sync_objects(server, &self.core).await?;
         let path = OwnedObjectPath::try_from(path).map_err(|e| failed(&e))?;
         Ok((output, path))
     }
@@ -544,7 +574,12 @@ impl ServiceIface {
         Ok(out)
     }
 
-    async fn read_alias(&self, name: String) -> Result<OwnedObjectPath> {
+    async fn read_alias(
+        &self,
+        #[zbus(object_server)] server: &ObjectServer,
+        name: String,
+    ) -> Result<OwnedObjectPath> {
+        sync_objects(server, &self.core).await?;
         match self.core.store.read_alias(&name) {
             Ok(_) => Ok(object(&alias_path(&name))?),
             // Even while locked, the two aliases libsecret uses exist.
@@ -737,10 +772,35 @@ impl CollectionIface {
         Ok((object(&path)?, object(NO_PROMPT)?))
     }
 
+    /// The items the reading application may see, and no others.
     #[zbus(property)]
-    async fn items(&self) -> Vec<OwnedObjectPath> {
-        // A property read names no caller, so it must not list items.
-        Vec::new()
+    async fn items(
+        &self,
+        #[zbus(header)] header: Option<Header<'_>>,
+    ) -> zbus::fdo::Result<Vec<OwnedObjectPath>> {
+        let caller = self.core.property_caller(header.as_ref()).await?;
+        let name = self.canonical().map_err(|error| property_error(&error))?;
+        match self
+            .core
+            .store
+            .search(&caller, Some(&name), &BTreeMap::new())
+        {
+            Ok(found) => {
+                let mut paths = Vec::with_capacity(found.len());
+                // Registered by `sync_objects`, which every client's opening
+                // calls run: the object server cannot be written to here.
+                for item in &found {
+                    paths.push(
+                        OwnedObjectPath::try_from(item_path(item))
+                            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?,
+                    );
+                }
+                Ok(paths)
+            }
+            // Locked: there is nothing to list yet.
+            Err(StoreError::Locked(_)) => Ok(Vec::new()),
+            Err(error) => Err(store_property_error(&error)),
+        }
     }
 
     #[zbus(property)]
@@ -791,9 +851,28 @@ struct ItemIface {
 }
 
 impl ItemIface {
-    fn info(&self) -> Option<crate::store::ItemInfo> {
-        self.core.store.item_info(&self.item).ok()
+    /// What the reading application may know of this item.
+    async fn info(&self, header: Option<&Header<'_>>) -> zbus::fdo::Result<crate::store::ItemInfo> {
+        let caller = self.core.property_caller(header).await?;
+        self.core
+            .store
+            .item_info(&caller, &self.item)
+            .map_err(|error| store_property_error(&error))
     }
+}
+
+/// A property read refused: the item is not the reader's to know of.
+fn store_property_error(error: &StoreError) -> zbus::fdo::Error {
+    match error {
+        StoreError::Revoked | StoreError::NoSuchObject => {
+            zbus::fdo::Error::AccessDenied("not visible to this application".into())
+        }
+        other => zbus::fdo::Error::Failed(other.to_string()),
+    }
+}
+
+fn property_error(error: &SecretError) -> zbus::fdo::Error {
+    zbus::fdo::Error::Failed(format!("{error:?}"))
 }
 
 #[interface(name = "org.freedesktop.Secret.Item")]
@@ -820,11 +899,14 @@ impl ItemIface {
         &self,
         #[zbus(header)] header: Header<'_>,
         session: ObjectPath<'_>,
-    ) -> Result<WireSecret> {
+    ) -> Result<(WireSecret,)> {
+        // One output argument that is itself a struct: a bare struct would
+        // be sent as its four fields, which libsecret rejects.
         let caller = self.core.caller(&header).await?;
         let sender = sender_of(&header).unwrap_or_default();
-        self.core
-            .wire_secret(&session, &sender, &self.item, &caller)
+        Ok((self
+            .core
+            .wire_secret(&session, &sender, &self.item, &caller)?,))
     }
 
     async fn set_secret(
@@ -851,25 +933,31 @@ impl ItemIface {
     }
 
     #[zbus(property)]
-    async fn attributes(&self) -> HashMap<String, String> {
-        self.info()
-            .map(|info| info.attributes.into_iter().collect())
-            .unwrap_or_default()
+    async fn attributes(
+        &self,
+        #[zbus(header)] header: Option<Header<'_>>,
+    ) -> zbus::fdo::Result<HashMap<String, String>> {
+        Ok(self
+            .info(header.as_ref())
+            .await?
+            .attributes
+            .into_iter()
+            .collect())
     }
 
     #[zbus(property)]
-    async fn label(&self) -> String {
-        self.info().map(|info| info.label).unwrap_or_default()
+    async fn label(&self, #[zbus(header)] header: Option<Header<'_>>) -> zbus::fdo::Result<String> {
+        Ok(self.info(header.as_ref()).await?.label)
     }
 
     #[zbus(property)]
-    async fn created(&self) -> u64 {
-        self.info().map_or(0, |info| info.created)
+    async fn created(&self, #[zbus(header)] header: Option<Header<'_>>) -> zbus::fdo::Result<u64> {
+        Ok(self.info(header.as_ref()).await?.created)
     }
 
     #[zbus(property)]
-    async fn modified(&self) -> u64 {
-        self.info().map_or(0, |info| info.modified)
+    async fn modified(&self, #[zbus(header)] header: Option<Header<'_>>) -> zbus::fdo::Result<u64> {
+        Ok(self.info(header.as_ref()).await?.modified)
     }
 }
 

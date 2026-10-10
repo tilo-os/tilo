@@ -23,7 +23,14 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Serve org.freedesktop.secrets on the session bus.
-    Serve,
+    Serve {
+        /// Where the device identity lives instead of `/var/lib/tilo`, and
+        /// where one is created when absent. Only development builds have
+        /// this: a release build reads the machine's one identity.
+        #[cfg(debug_assertions)]
+        #[arg(long, hide = true)]
+        identity_root: Option<std::path::PathBuf>,
+    },
     /// Whether the store is open, and what it imported.
     Status,
     /// The applications that use the store.
@@ -56,7 +63,10 @@ async fn main() -> ExitCode {
         .init();
     let cli = Cli::parse();
     let outcome = match cli.command {
-        Command::Serve => serve().await,
+        #[cfg(debug_assertions)]
+        Command::Serve { identity_root } => serve(identity_root).await,
+        #[cfg(not(debug_assertions))]
+        Command::Serve {} => serve(None).await,
         Command::Status => status().await,
         Command::Apps { action } => apps(action).await,
     };
@@ -75,14 +85,19 @@ fn uid() -> u32 {
     unsafe { libc::geteuid() }
 }
 
-async fn serve() -> Result<(), String> {
+async fn serve(identity_root: Option<std::path::PathBuf>) -> Result<(), String> {
     let dir = tilo_secret_service::data_dir().ok_or("no home directory")?;
     let uid = uid();
-    let keys = DeviceIdentityKey::new(
-        IdentityPaths::default_system(),
-        dir.join("salt"),
-        &uid.to_string(),
-    );
+    let paths = match identity_root {
+        Some(root) => {
+            let paths = IdentityPaths::under(root);
+            tilo_user_identity::persist::load_or_create_device_key(&paths)
+                .map_err(|e| format!("development identity: {e}"))?;
+            paths
+        }
+        None => IdentityPaths::default_system(),
+    };
+    let keys = DeviceIdentityKey::new(paths, dir.join("salt"), &uid.to_string());
     let store = Arc::new(Store::new(dir.join("vault.tseal"), Box::new(keys)));
     match store.locked() {
         None => info!("the store is open"),
