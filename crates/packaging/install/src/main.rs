@@ -198,6 +198,22 @@ enum Cmd {
     },
     /// Print the PATH-shim directory and a shell-rc snippet to prepend it.
     Path,
+    /// Reclaim disk nothing needs: apps past the store's size cap, payload
+    /// trees no package names and runtime builds no installed package runs
+    /// on. Pinned packages and runtimes, and whatever a running app has
+    /// mounted, stay. Also runs after every install, update and uninstall.
+    Gc {
+        /// List the runtime builds that would be removed, removing nothing.
+        #[arg(long)]
+        dry_run: bool,
+        /// How long a runtime installed without an app naming it is kept,
+        /// in seconds (an app's first open installs its runtime first).
+        #[arg(long, default_value_t = runtime_bundle::gc::DEFAULT_GRACE_SECS)]
+        grace_secs: u64,
+        /// The store's size cap in bytes; `0` evicts no app for size.
+        #[arg(long, default_value_t = package_store::DEFAULT_MAX_STORE_BYTES)]
+        max_store_bytes: u64,
+    },
     /// Manage installed Tilo runtime bundles.
     Runtime {
         #[command(subcommand)]
@@ -315,8 +331,14 @@ enum RuntimeCmd {
     },
     /// List installed runtime bundle versions.
     List,
-    /// Remove an installed runtime bundle by version tag.
+    /// Remove an installed runtime bundle by version tag. A bundle a
+    /// running app has mounted is taken out of use now and deleted by the
+    /// first collection after the app closes.
     Remove { version: String },
+    /// Keep a runtime bundle even when no installed package runs on it.
+    Pin { version: String },
+    /// Let collection remove a runtime bundle again once nothing needs it.
+    Unpin { version: String },
     /// Print the resolved path for a version (same lookup order as the launcher).
     Path {
         #[arg(long)]
@@ -375,6 +397,8 @@ enum Error {
     Io(#[from] std::io::Error),
     #[error("shim install/remove: {0}")]
     Shim(String),
+    #[error("collecting garbage: {0}")]
+    Gc(String),
     #[error("runtime-bundle: {0}")]
     RuntimeBundle(String),
     #[error("runtime bundle tilo-runtime/{0} is already installed (use --force to overwrite)")]
@@ -934,6 +958,7 @@ fn install(
             &candidate,
             &checked,
             force,
+            pinned,
             dry_run,
             payload_from
                 .as_ref()
@@ -1071,10 +1096,16 @@ impl tilo_app_package::BlobSource for BlobDir {
 /// verify as the build the package names, for this machine, signed by a
 /// publisher this device trusts — the same checks the launcher makes before
 /// mounting it — so an install never leaves a runtime the launcher refuses.
+///
+/// Each install (or finding it installed) leases the bundle, so collection
+/// keeps it through the app install that follows; `pinned` keeps it for
+/// good. A replaced bundle leaves the version's directory in one rename
+/// before it is deleted, and stays while a running app has it mounted.
 fn install_runtime_package(
     candidate: &Candidate,
     checked: &Checked,
     force: bool,
+    pinned: bool,
     dry_run: bool,
     payload: Option<&dyn BlobFetcher>,
 ) -> Result<(), Error> {
@@ -1101,32 +1132,47 @@ fn install_runtime_package(
         println!("(nothing was written)");
         return Ok(());
     }
+    let root = dest
+        .parent()
+        .ok_or_else(|| Error::RuntimeBundle(format!("{} has no parent", dest.display())))?;
+    let bundles = runtime_bundle::gc::BundleRoot::new(root);
+    let _collection_held_off = bundles.install_lock()?;
+    let keep = |bundles: &runtime_bundle::gc::BundleRoot| -> Result<(), Error> {
+        bundles.lease(version, tilo_clock::unix_now())?;
+        if pinned {
+            bundles.pin(version)?;
+        }
+        Ok(())
+    };
     if dest.join(runtime_bundle::BUNDLE_MANIFEST_FILENAME).exists() && !force {
+        keep(&bundles)?;
         println!(
             "runtime {provides} is already installed at {}",
             dest.display()
         );
         return Ok(());
     }
-    let root = dest
-        .parent()
-        .ok_or_else(|| Error::RuntimeBundle(format!("{} has no parent", dest.display())))?;
-    fs::create_dir_all(root)?;
-    let staging = root.join(format!(".install-{}", std::process::id()));
+    let staging = root.join(format!(
+        "{}{}",
+        runtime_bundle::gc::STAGING_PREFIX,
+        std::process::id()
+    ));
     if staging.exists() {
         fs::remove_dir_all(&staging)?;
     }
     let result = stage_runtime_bundle(candidate, &staging, payload).and_then(|tree| {
         let manifest = check_runtime_bundle(&tree, version)?;
         seal_runtime_bundle(&tree, &manifest);
-        if dest.exists() {
-            fs::remove_dir_all(&dest)?;
-        }
+        let replaced = bundles.retire(version)?;
         fs::rename(&tree, &dest)?;
+        if let Some(replaced) = replaced {
+            bundles.purge(&replaced, &install::gc::in_use_now())?;
+        }
         Ok(())
     });
     let _ = fs::remove_dir_all(&staging);
     result?;
+    keep(&bundles)?;
     println!("installed: runtime {provides}");
     println!("  package  : {} {}", checked.id(), checked.version());
     println!("  bundle   : {}", dest.display());
@@ -2141,9 +2187,13 @@ fn runtime_install(
     if dest.join(runtime_bundle::BUNDLE_MANIFEST_FILENAME).exists() && !force {
         return Err(Error::RuntimeBundleExists(version.to_string()));
     }
-    if dest.exists() {
-        fs::remove_dir_all(&dest)?;
+    let bundles = runtime_bundles()?;
+    let _collection_held_off = bundles.install_lock()?;
+    if let Some(replaced) = bundles.retire(version)? {
+        bundles.purge(&replaced, &install::gc::in_use_now())?;
     }
+    // Built on this device on purpose, from no package: kept until removed.
+    bundles.pin(version)?;
     fs::create_dir_all(&dest)?;
     let host_root: Option<&Path> = if let Some(p) = from {
         Some(p)
@@ -2210,15 +2260,123 @@ fn runtime_list() -> Result<(), Error> {
     Ok(())
 }
 
+/// The per-user runtime bundles, where `runtime_bundle::default_bundle_path`
+/// puts them.
+fn runtime_bundles() -> Result<runtime_bundle::gc::BundleRoot, Error> {
+    runtime_bundle::gc::BundleRoot::from_env().map_err(|e| Error::RuntimeBundle(e.to_string()))
+}
+
 fn runtime_remove(version: &str) -> Result<(), Error> {
-    let path = runtime_bundle::default_bundle_path(version)
-        .map_err(|e| Error::RuntimeBundle(e.to_string()))?;
-    if !path.exists() {
+    let bundles = runtime_bundles()?;
+    let _collection_held_off = bundles.install_lock()?;
+    bundles.unpin(version)?;
+    // Out of the version's directory in one rename first: a removal stopped
+    // halfway never leaves a bundle a launch would pick.
+    let trashed = bundles
+        .retire(version)?
+        .ok_or_else(|| Error::RuntimeBundleNotInstalled(version.to_string()))?;
+    if bundles.purge(&trashed, &install::gc::in_use_now())? {
+        println!("removed runtime bundle: tilo-runtime/{version}");
+    } else {
+        println!(
+            "removed runtime bundle: tilo-runtime/{version}; a running app still has it \
+             mounted, so its files go once that app closes (`tilo-install gc`)"
+        );
+    }
+    Ok(())
+}
+
+fn runtime_pin(version: &str, pinned: bool) -> Result<(), Error> {
+    let bundles = runtime_bundles()?;
+    if !bundles
+        .bundle(version)
+        .join(runtime_bundle::BUNDLE_MANIFEST_FILENAME)
+        .exists()
+    {
         return Err(Error::RuntimeBundleNotInstalled(version.to_string()));
     }
-    fs::remove_dir_all(&path)?;
-    println!("removed runtime bundle: tilo-runtime/{version}");
+    if pinned {
+        bundles.pin(version)?;
+        println!("pinned runtime bundle: tilo-runtime/{version}");
+    } else {
+        bundles.unpin(version)?;
+        println!("unpinned runtime bundle: tilo-runtime/{version}");
+    }
     Ok(())
+}
+
+/// What `gc` and every change run.
+fn gc_request(dry_run: bool, grace_secs: u64, max_store_bytes: u64) -> install::gc::Request {
+    install::gc::Request {
+        max_store_bytes,
+        grace_secs,
+        now: tilo_clock::unix_now(),
+        dry_run,
+    }
+}
+
+fn collect_garbage(request: install::gc::Request) -> Result<install::gc::Report, Error> {
+    let store = store()?;
+    let catalog = package_store::Catalog::at(
+        store.layout().root(),
+        package_store::SystemStore::from_env(),
+    );
+    install::gc::collect(&store, &catalog, &runtime_bundles()?, request).map_err(Error::Gc)
+}
+
+fn gc(dry_run: bool, grace_secs: u64, max_store_bytes: u64) -> Result<(), Error> {
+    let report = collect_garbage(gc_request(dry_run, grace_secs, max_store_bytes))?;
+    let runtimes = &report.runtimes;
+    if runtimes.busy {
+        println!("runtimes: an install is running; collected by the next change");
+    }
+    for id in &report.evicted {
+        println!("evicted  : {id} (store over {max_store_bytes} bytes)");
+    }
+    for path in &report.orphans.removed {
+        println!("removed  : {} (named by no package)", path.display());
+    }
+    for (version, bytes) in &runtimes.removed {
+        let verb = if dry_run { "would go" } else { "removed " };
+        println!("{verb} : runtime {version} ({})", human_bytes(*bytes));
+    }
+    for (version, why) in &runtimes.kept {
+        let why = match why {
+            runtime_bundle::gc::Kept::Referenced => "an installed package runs on it",
+            runtime_bundle::gc::Kept::Pinned => "pinned",
+            runtime_bundle::gc::Kept::Leased => "installed within the grace period",
+            runtime_bundle::gc::Kept::InUse => "a running app has it mounted",
+        };
+        println!("kept     : runtime {version} ({why})");
+    }
+    let verb = if dry_run { "would free" } else { "freed" };
+    println!("{verb}: {}", human_bytes(report.freed_bytes()));
+    Ok(())
+}
+
+/// After an install, update or uninstall: reclaim what it left unneeded.
+/// Never fails the change it follows; says what it freed on stderr, so the
+/// change's own output stays as scripts read it.
+fn collect_after_change() {
+    let request = gc_request(
+        false,
+        runtime_bundle::gc::DEFAULT_GRACE_SECS,
+        package_store::DEFAULT_MAX_STORE_BYTES,
+    );
+    match collect_garbage(request) {
+        Ok(report) if report.freed_bytes() > 0 || !report.evicted.is_empty() => eprintln!(
+            "tilo-install: reclaimed {} ({} runtime build(s), {} app(s) evicted)",
+            human_bytes(report.freed_bytes()),
+            report.runtimes.removed.len(),
+            report.evicted.len()
+        ),
+        Ok(_) => {}
+        Err(error) => eprintln!("tilo-install: warning: nothing reclaimed: {error}"),
+    }
+}
+
+fn human_bytes(bytes: u64) -> String {
+    install::state::human_bytes(bytes)
 }
 
 fn runtime_path(version: &str) -> Result<(), Error> {
@@ -2263,6 +2421,8 @@ fn runtime(cmd: RuntimeCmd) -> Result<(), Error> {
         ),
         RuntimeCmd::List => runtime_list(),
         RuntimeCmd::Remove { version } => runtime_remove(&version),
+        RuntimeCmd::Pin { version } => runtime_pin(&version, true),
+        RuntimeCmd::Unpin { version } => runtime_pin(&version, false),
         RuntimeCmd::Path { version } => runtime_path(&version),
         RuntimeCmd::Verify { version } => runtime_verify(&version),
     }
@@ -2270,7 +2430,31 @@ fn runtime(cmd: RuntimeCmd) -> Result<(), Error> {
 
 fn main() {
     let cli = Cli::parse();
-    let result = match cli.cmd {
+    // What changes the installed set: collection runs after it succeeds.
+    let changes = matches!(
+        cli.cmd,
+        Cmd::Install { dry_run: false, .. }
+            | Cmd::Update { dry_run: false, .. }
+            | Cmd::Uninstall { dry_run: false, .. }
+    );
+    // An install holds collection off while it runs, so the runtime it
+    // checked for (or is fetching) cannot be collected under it.
+    let collection_held_off = matches!(cli.cmd, Cmd::Install { .. } | Cmd::Update { .. })
+        .then(|| runtime_bundles().ok()?.install_lock().ok())
+        .flatten();
+    let result = dispatch(cli.cmd);
+    drop(collection_held_off);
+    if let Err(e) = result {
+        eprintln!("tilo-install: {e}");
+        std::process::exit(1);
+    }
+    if changes {
+        collect_after_change();
+    }
+}
+
+fn dispatch(cmd: Cmd) -> Result<(), Error> {
+    match cmd {
         Cmd::Install {
             tapp,
             pinned,
@@ -2350,12 +2534,13 @@ fn main() {
             RevokedCmd::List => revoked_list(),
         },
         Cmd::Path => print_path(),
+        Cmd::Gc {
+            dry_run,
+            grace_secs,
+            max_store_bytes,
+        } => gc(dry_run, grace_secs, max_store_bytes),
         Cmd::Runtime { cmd } => runtime(cmd),
         Cmd::Image { cmd } => image(cmd),
-    };
-    if let Err(e) = result {
-        eprintln!("tilo-install: {e}");
-        std::process::exit(1);
     }
 }
 
