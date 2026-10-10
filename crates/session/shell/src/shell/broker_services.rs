@@ -314,7 +314,7 @@ impl LegacyWorkspaceProjection for NativeWorkspaceAuthority {
             .map(|w| w.id)
             .ok_or("effect workspace no longer hosted")?;
         // Preserve native projection semantics; this void flush is not OwnerCommitService.
-        let _ = tree.append_workspace_effect_receipt(id, invocation, actor, context, status);
+        let _ = tree.append_app_effect_receipt(id, invocation, actor, context, status);
         drop(tree);
         Ok(())
     }

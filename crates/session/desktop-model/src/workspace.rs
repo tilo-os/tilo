@@ -254,6 +254,33 @@ pub fn context_at(now: u64) -> Context<'static> {
     Context::at_secs(now).in_session(session_id())
 }
 
+/// The answer the grant sets of the tasks an invocation works in give for an
+/// action of `kind` at `node`, among `tasks` under `policy`: the task the
+/// invocation names (`named`), and every task `agent` (an agent's id, without
+/// its `agent:` prefix) is running — so a run is held to its task whether or
+/// not its calls say so. The least of them; `None` when none of those tasks
+/// carries a grant set.
+#[must_use]
+pub fn task_bound(
+    policy: &RoomPolicy,
+    tasks: &[crate::WorkspaceTask],
+    (agent, named): (Option<&str>, Option<&str>),
+    (node, kind): (&TreePath, ActionKind),
+    cx: &Context<'_>,
+) -> Option<Answer> {
+    let running = tasks.iter().filter(|task| {
+        matches!(
+            task.status,
+            crate::WorkspaceTaskStatus::InProgress | crate::WorkspaceTaskStatus::Waiting
+        ) && agent.is_some_and(|agent| task.assigned_agent.as_deref() == Some(agent))
+    });
+    named
+        .into_iter()
+        .chain(running.map(|task| task.id.as_str()))
+        .filter_map(|task| policy.task_answer(task, node, kind, cx))
+        .min()
+}
+
 /// This process's session, which a grant given "until log out" names.
 #[must_use]
 pub fn session_id() -> &'static str {
@@ -830,20 +857,7 @@ impl Workspace {
         kind: ActionKind,
         now: u64,
     ) -> Option<Answer> {
-        let subject = Subject::Task(task.to_owned());
-        if !self
-            .policy
-            .grants
-            .iter()
-            .any(|grant| grant.subject == subject)
-        {
-            return None;
-        }
-        Some(
-            self.subject_authority(subject)
-                .decide(node, kind, &context_at(now))
-                .answer,
-        )
+        self.policy.task_answer(task, node, kind, &context_at(now))
     }
 
     /// What a launch into this room hands its apps at `now`: the apps the
@@ -890,17 +904,13 @@ impl Workspace {
         kind: ActionKind,
         now: u64,
     ) -> Option<Answer> {
-        let running = self.tasks.iter().filter(|task| {
-            matches!(
-                task.status,
-                crate::WorkspaceTaskStatus::InProgress | crate::WorkspaceTaskStatus::Waiting
-            ) && agent.is_some_and(|agent| task.assigned_agent.as_deref() == Some(agent))
-        });
-        named
-            .into_iter()
-            .chain(running.map(|task| task.id.as_str()))
-            .filter_map(|task| self.task_answer_at(task, node, kind, now))
-            .min()
+        task_bound(
+            &self.policy,
+            &self.tasks,
+            (agent, named),
+            (node, kind),
+            &context_at(now),
+        )
     }
 
     /// The role a person with `agent`'s reach in the room would hold: what

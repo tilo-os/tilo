@@ -505,7 +505,6 @@ fn grant_notes(f: &Fixture) {
 }
 fn set_notes_permission(f: &Fixture, may_write: bool) {
     use tilo_action_policy::{Answer, Grant, KindSet, Subject, TreePath};
-    let now = std::time::SystemTime::now();
     let room_id = room().to_string();
     let append = tilo_actions::action_node(
         &TreePath::room(&room_id),
@@ -534,6 +533,10 @@ fn set_notes_permission(f: &Fixture, may_write: bool) {
             Subject::person(hex::encode(f.native.certificate.user_public_key)),
         )
     };
+    put_grant(f, grant);
+}
+fn put_grant(f: &Fixture, grant: tilo_action_policy::Grant) {
+    let now = std::time::SystemTime::now();
     let messages = f
         .native
         .owner
@@ -629,6 +632,52 @@ async fn native_live_owner_revocation_fences_new_and_retained_actions_with_stale
             assert!(
                 control.send().promise.await.is_err(),
                 "removed agent must not read pending directions through a stale projection"
+            );
+            drop(f);
+        })
+        .await;
+}
+
+/// The agent may append to the notes, but the task it runs only reads:
+/// the run is held to its task's grant set.
+#[tokio::test(flavor = "current_thread")]
+async fn a_native_run_is_held_to_its_tasks_grant_set() {
+    use tilo_action_policy::{Answer, Grant, KindSet, Lifetime, Subject, TreePath};
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let f = Fixture::new();
+            f.approve();
+            let agent = f.channel(100, true);
+            let run = delivered(&agent).await;
+            let (_target, stream) = notes_target(&f).await;
+            grant_notes(&f);
+            put_grant(
+                &f,
+                Grant::new(
+                    "task-reads-only",
+                    Subject::Task(f.task.clone()),
+                    TreePath::room(room().to_string()),
+                    KindSet::READ,
+                    Answer::Allow,
+                    Subject::person(hex::encode(f.native.certificate.user_public_key)),
+                )
+                .with_lifetime(Lifetime::Task(f.task.clone())),
+            );
+            assert!(
+                invoke(&agent, &run, uuid::Uuid::from_u128(8100))
+                    .await
+                    .unwrap_err()
+                    .to_string()
+                    .contains("owner")
+            );
+            assert!(
+                tokio::time::timeout(
+                    Duration::from_millis(30),
+                    stream.read_request().send().promise
+                )
+                .await
+                .is_err(),
+                "the refused action never reached the app"
             );
             drop(f);
         })

@@ -3650,8 +3650,9 @@ impl WorkspaceTree {
         true
     }
 
-    /// Persist one terminal effect exactly once. This creates semantic
-    /// workspace activity, not a mutation in the target application's CRDT.
+    /// Persist one terminal effect the host itself made, exactly once, with
+    /// what it did. This creates semantic workspace activity, not a mutation
+    /// in the target application's CRDT.
     pub fn append_workspace_effect_receipt(
         &mut self,
         workspace_id: WorkspaceId,
@@ -3679,14 +3680,45 @@ impl WorkspaceTree {
         status: tilo_actions::EffectReceiptStatus,
         completed_at: i64,
     ) -> bool {
-        let Some(receipt) = self.desktop.append_workspace_effect_receipt_at(
-            workspace_id,
+        let receipt = tilo_desktop_model::WorkspaceEffectReceipt::recorded(
             invocation,
             actor,
             context,
             status,
             completed_at,
-        ) else {
+        );
+        self.append_receipt(workspace_id, receipt)
+    }
+
+    /// Persist one terminal effect an application reports, exactly once:
+    /// recorded without its arguments, which may carry private values.
+    pub fn append_app_effect_receipt(
+        &mut self,
+        workspace_id: WorkspaceId,
+        invocation: tilo_actions::InvocationId,
+        actor: &str,
+        context: tilo_actions::ActionContext,
+        status: tilo_actions::EffectReceiptStatus,
+    ) -> bool {
+        let receipt = tilo_desktop_model::WorkspaceEffectReceipt::redacted(
+            invocation,
+            actor,
+            context,
+            status,
+            unix_now_i64(),
+        );
+        self.append_receipt(workspace_id, receipt)
+    }
+
+    fn append_receipt(
+        &mut self,
+        workspace_id: WorkspaceId,
+        receipt: tilo_desktop_model::WorkspaceEffectReceipt,
+    ) -> bool {
+        let Some(receipt) = self
+            .desktop
+            .append_workspace_effect_receipt(workspace_id, receipt)
+        else {
             return false;
         };
         self.doc_upsert_workspace_effect_receipt(workspace_id, &receipt);
@@ -9418,6 +9450,57 @@ mod workspace_tree_lifecycle_tests {
                     ),
                     [("status".to_owned(), tilo_actions::Scalar::from("done"))],
                 )
+            );
+        }
+
+        // Phase `an_applications_effect_is_recorded_without_its_arguments`.
+        {
+            let mut tree = WorkspaceTree::bootstrap_default();
+            let workspace = tree.desktop.active;
+            let sent = |app: &str| {
+                tilo_actions::ActionContext::for_resource("mail.message:7", "mail.message", "Draft")
+                    .with_app(app, "Mail")
+                    .with_described(tilo_actions::Described::new(tilo_actions::Did::verb(
+                        tilo_actions::ActionKey::new(app, "mail.message", "send"),
+                        [(
+                            "to".to_owned(),
+                            tilo_actions::Scalar::from("private@example.com"),
+                        )],
+                    )))
+            };
+            let args = |tree: &WorkspaceTree, invocation: tilo_actions::InvocationId| {
+                let receipt = tree.desktop.workspaces[0]
+                    .effect_receipts
+                    .iter()
+                    .find(|receipt| receipt.invocation == invocation)
+                    .unwrap()
+                    .clone();
+                match receipt.context.what {
+                    Some(tilo_actions::Did::Verb(verb)) => verb.args.len(),
+                    other => panic!("the receipt keeps what was done: {other:?}"),
+                }
+            };
+            let app = tilo_actions::InvocationId::new();
+            assert!(tree.append_app_effect_receipt(
+                workspace,
+                app,
+                "person",
+                sent("org.tilo.Mail"),
+                tilo_actions::EffectReceiptStatus::Succeeded,
+            ));
+            assert_eq!(args(&tree, app), 0, "an app's arguments stay private");
+            let host = tilo_actions::InvocationId::new();
+            assert!(tree.append_workspace_effect_receipt(
+                workspace,
+                host,
+                "person",
+                sent(WORKSPACE_GOVERNANCE_APP_ID),
+                tilo_actions::EffectReceiptStatus::Succeeded,
+            ));
+            assert_eq!(
+                args(&tree, host),
+                1,
+                "the host's own record keeps what it did"
             );
         }
 

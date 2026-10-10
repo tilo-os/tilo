@@ -6,9 +6,7 @@
 //! document and persists it however it keeps state.
 
 use tilo_action_policy::{Change, Grant, Refusal};
-use tilo_actions::{
-    ActionContext, ActionKey, Described, Did, EffectReceiptStatus, InvocationId, Scalar,
-};
+use tilo_actions::{ActionContext, ActionKey, Described, Did, Scalar};
 
 use crate::ids::WorkspaceId;
 use crate::task::WorkspaceEffectReceipt;
@@ -46,17 +44,16 @@ impl DesktopTree {
             .unwrap_or(grant))
     }
 
-    /// Record one terminal effect of `invocation` in `workspace_id`'s
-    /// history, exactly once: the receipt as stored, or `None` when the
-    /// workspace is gone or already holds a receipt for the invocation.
-    pub fn append_workspace_effect_receipt_at(
+    /// Record one terminal effect in `workspace_id`'s history, exactly once
+    /// per invocation: the receipt as stored, or `None` when the workspace is
+    /// gone or already holds a receipt for the invocation. An application's
+    /// effect is recorded [`WorkspaceEffectReceipt::redacted`]; a record the
+    /// host writes itself, such as a grant a person gave,
+    /// [`WorkspaceEffectReceipt::recorded`].
+    pub fn append_workspace_effect_receipt(
         &mut self,
         workspace_id: WorkspaceId,
-        invocation: InvocationId,
-        actor: &str,
-        context: ActionContext,
-        status: EffectReceiptStatus,
-        completed_at: i64,
+        receipt: WorkspaceEffectReceipt,
     ) -> Option<WorkspaceEffectReceipt> {
         let workspace = self
             .workspaces
@@ -65,12 +62,10 @@ impl DesktopTree {
         if workspace
             .effect_receipts
             .iter()
-            .any(|receipt| receipt.invocation == invocation)
+            .any(|held| held.invocation == receipt.invocation)
         {
             return None;
         }
-        let receipt =
-            WorkspaceEffectReceipt::recorded(invocation, actor, context, status, completed_at);
         workspace.effect_receipts.push(receipt.clone());
         Some(receipt)
     }
@@ -120,6 +115,7 @@ mod tests {
     use super::*;
     use crate::ids::{RoomId, WorkspaceId};
     use crate::workspace::{Workspace, preset_assign_node};
+    use tilo_actions::{EffectReceiptStatus, InvocationId};
 
     fn tree() -> (DesktopTree, WorkspaceId) {
         let id = WorkspaceId(1);
@@ -251,13 +247,15 @@ mod tests {
         let context =
             app_action_grant_context("room", "Caller\u{7}", "Target", &"x".repeat(400), "once");
         let receipt = tree
-            .append_workspace_effect_receipt_at(
+            .append_workspace_effect_receipt(
                 id,
-                invocation,
-                "owner",
-                context,
-                EffectReceiptStatus::Succeeded,
-                42,
+                WorkspaceEffectReceipt::recorded(
+                    invocation,
+                    "owner",
+                    context,
+                    EffectReceiptStatus::Succeeded,
+                    42,
+                ),
             )
             .unwrap();
         let Some(Did::Verb(verb)) = &receipt.context.what else {
@@ -283,13 +281,15 @@ mod tests {
                 .any(|facet| facet.key == "tilo.invocation")
         );
         assert!(
-            tree.append_workspace_effect_receipt_at(
+            tree.append_workspace_effect_receipt(
                 id,
-                invocation,
-                "owner",
-                ActionContext::default(),
-                EffectReceiptStatus::Succeeded,
-                43,
+                WorkspaceEffectReceipt::redacted(
+                    invocation,
+                    "owner",
+                    ActionContext::default(),
+                    EffectReceiptStatus::Succeeded,
+                    43,
+                ),
             )
             .is_none()
         );

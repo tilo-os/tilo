@@ -5,14 +5,15 @@ use std::rc::Rc;
 use ed25519_dalek::{Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use tilo_actions::remote::{Caller, CallerPrincipal};
-use tilo_app::feedback::{Error, FeedbackHost, MaskedScreenshot, Receipt, ReviewText, Submission};
+use tilo_app::feedback::{
+    Error, FeedbackHost, MaskedScreenshot, Receipt, ReviewText, Submission, destination,
+};
 use ui::permissions::{ActionKind, Answer, PermissionContext, TreePath};
 use ui::record::{RecordId, RecordStore};
 
 use super::{Destination, DurableStore, PrivateFeedback, StorageKey};
 
 const DOMAIN: &[u8] = b"tilo-feedback-canonical-receipt-v1\0";
-const CHAT_PACKAGE: &str = "so.tilo.chat";
 
 /// Current enrollment, sampled by the existing authenticated transport.
 /// This is intentionally not deserializable from a request or launch config.
@@ -67,7 +68,11 @@ impl Enrollment {
 
     fn authorize_startup(&self) -> Result<Pin, Error> {
         let (pin, permissions) = self.admitted_pin()?;
-        let submit = chat_action("channels", &self.destination.channel, "submit-feedback");
+        let submit = chat_action(
+            destination::CHANNELS,
+            &self.destination.channel,
+            destination::SUBMIT,
+        );
         if permissions.answer(&submit, ActionKind::Read) != Answer::Allow {
             return Err(Error::Invalid("feedback destination not authorized"));
         }
@@ -78,7 +83,11 @@ impl Enrollment {
         let pin = self.authorize_startup()?;
         let (_, permissions) = self.admitted_pin()?;
         // Publishing the report edits the channel: reading it is not enough.
-        let submit = chat_action("channels", &self.destination.channel, "submit-feedback");
+        let submit = chat_action(
+            destination::CHANNELS,
+            &self.destination.channel,
+            destination::SUBMIT,
+        );
         if permissions.answer(&submit, ActionKind::Undoable) != Answer::Allow {
             return Err(Error::Invalid("feedback destination not authorized"));
         }
@@ -87,7 +96,11 @@ impl Enrollment {
 
     fn authorize_receipt(&self, submission: &Submission) -> Result<Pin, Error> {
         let (pin, permissions) = self.admitted_pin()?;
-        let read = chat_action("feedback", &submission.id, "read-feedback-receipt");
+        let read = chat_action(
+            destination::REPORTS,
+            &submission.id,
+            destination::READ_RECEIPT,
+        );
         if permissions.answer(&read, ActionKind::Read) != Answer::Allow {
             return Err(Error::Invalid("feedback receipt not authorized"));
         }
@@ -108,20 +121,16 @@ struct Pin {
     reporter: Identity,
 }
 
-/// Chat's resource kind: its items are `<kind>/<field>/<id>`, of kind
-/// `<kind>.<field>`.
-const CHAT_KIND: &str = "chat.workspace";
-
-/// The resource id of Chat's item `id` in `field`.
+/// The resource id of the destination's item `id` in `field`.
 fn chat_item(field: &str, id: &str) -> String {
-    format!("{CHAT_KIND}/{field}/{id}")
+    format!("{}/{field}/{id}", destination::RESOURCE_KIND)
 }
 
-/// The node of `action` on Chat's item `id` in `field`.
+/// The node of `action` on the destination's item `id` in `field`.
 fn chat_action(field: &str, id: &str, action: &str) -> TreePath {
     ui::permissions::action_node(
-        CHAT_PACKAGE,
-        &format!("{CHAT_KIND}.{field}"),
+        destination::PACKAGE,
+        &format!("{}.{field}", destination::RESOURCE_KIND),
         &chat_item(field, id),
         action,
     )
@@ -263,8 +272,8 @@ impl Transport for SessionTransport {
         let target = tilo_actions::remote::RemoteActionTarget {
             provider: enrollment.destination.provider,
             address: tilo_actions::ActionAddress::new(
-                chat_item("channels", &enrollment.destination.channel),
-                "submit-feedback",
+                chat_item(destination::CHANNELS, &enrollment.destination.channel),
+                destination::SUBMIT,
             ),
         };
         (self.send)(&target, submission)
@@ -327,7 +336,8 @@ impl CanonicalDestination {
             || owner.user_public_key().is_none()
             || owner.device_public_key().is_none()
             || owner != *signer.owner()
-            || source.records.package_and_home() != (CHAT_PACKAGE.into(), destination.room.clone())
+            || source.records.package_and_home()
+                != (destination::PACKAGE.into(), destination.room.clone())
         {
             return Err(Error::ReceiptMismatch);
         }

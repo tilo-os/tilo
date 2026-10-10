@@ -45,7 +45,7 @@ pub(super) fn validate(resource: &Resource, payload: &[u8]) -> Result<(), Semant
 pub(crate) fn spec(id: &str) -> ActionSpec {
     let id = id.to_owned();
     ActionSpec::typed_operation(
-        "read-feedback-receipt",
+        ui::feedback::destination::READ_RECEIPT,
         "Read feedback receipt",
         "Read this report from its canonical destination",
         OperationKind::Effect,

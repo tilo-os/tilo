@@ -253,6 +253,27 @@ impl RoomPolicy {
         }
     }
 
+    /// The answer task `task`'s own grant set gives for an action of `kind`
+    /// at `node`, or `None` when the task carries no grant set.
+    #[must_use]
+    pub fn task_answer(
+        &self,
+        task: &str,
+        node: &TreePath,
+        kind: ActionKind,
+        cx: &Context<'_>,
+    ) -> Option<Answer> {
+        let subject = Subject::Task(task.to_owned());
+        self.grants
+            .iter()
+            .any(|grant| grant.subject == subject)
+            .then(|| {
+                Authority::person(self.party_of(subject))
+                    .decide(node, kind, cx)
+                    .answer
+            })
+    }
+
     /// The room's grants naming a delegation subject (an agent, an app, a
     /// task), for bounding a person's authority.
     #[must_use]

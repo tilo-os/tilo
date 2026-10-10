@@ -240,13 +240,15 @@ impl AppActionGrants for ProfileGrants {
             let stored = tree
                 .grant_in_workspace_at(workspace, &request.person, grant, now)
                 .ok()?;
-            tree.append_workspace_effect_receipt_at(
+            tree.append_workspace_effect_receipt(
                 workspace,
-                tilo_actions::InvocationId::new(),
-                &request.person,
-                context,
-                tilo_actions::EffectReceiptStatus::Succeeded,
-                i64::try_from(now).unwrap_or(i64::MAX),
+                tilo_desktop_model::WorkspaceEffectReceipt::recorded(
+                    tilo_actions::InvocationId::new(),
+                    &request.person,
+                    context,
+                    tilo_actions::EffectReceiptStatus::Succeeded,
+                    i64::try_from(now).unwrap_or(i64::MAX),
+                ),
             );
             Some(stored.id.as_str().to_owned())
         })
@@ -278,13 +280,15 @@ impl LegacyWorkspaceProjection for ProfileWorkspace {
         let completed_at = tilo_clock::unix_now_i64();
         self.record(room, |tree, workspace| {
             // A retried invocation keeps its first receipt.
-            tree.append_workspace_effect_receipt_at(
+            tree.append_workspace_effect_receipt(
                 workspace,
-                invocation,
-                actor,
-                context,
-                status,
-                completed_at,
+                tilo_desktop_model::WorkspaceEffectReceipt::redacted(
+                    invocation,
+                    actor,
+                    context,
+                    status,
+                    completed_at,
+                ),
             );
             Some(())
         })

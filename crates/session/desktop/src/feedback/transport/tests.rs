@@ -54,18 +54,30 @@ fn submit_grant(kinds: KindSet, answer: Answer) -> policy::Grant {
     )
 }
 
+/// The feedback contract names what Chat itself publishes: its package and
+/// resource kind, the item ids its channels and reports have, and the
+/// action that files a report.
 #[test]
-fn chat_item_names_the_resource_chat_publishes() {
+fn the_feedback_contract_names_what_chat_publishes() {
+    use tilo_app::framework::ResourceApp;
+    use tilo_app::tilo_resource::Resource;
+    assert_eq!(destination::PACKAGE, chat::resource::ChatShell::ID);
     assert_eq!(
-        chat_item("channels", "feedback"),
+        destination::RESOURCE_KIND,
+        <chat::resource::Chat as Resource>::KIND
+    );
+    assert_eq!(
+        chat_item(destination::CHANNELS, "feedback"),
         chat::projection::item_id("channels", "feedback")
     );
     assert_eq!(
-        format!("{CHAT_KIND}.channels"),
-        format!(
-            "{}.channels",
-            <chat::resource::Chat as tilo_app::tilo_resource::Resource>::KIND
-        )
+        chat_item(destination::REPORTS, "report-1"),
+        chat::projection::item_id("feedback", "report-1")
+    );
+    assert!(
+        <chat::resource::Chat as Resource>::declarations()
+            .iter()
+            .any(|declaration| declaration.id == destination::SUBMIT)
     );
 }
 

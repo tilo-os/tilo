@@ -23,8 +23,9 @@ pub struct NativeTaskActionRequirement {
 
 impl NativeTaskActionRequirement {
     /// Apply the room's grants for the agent to this action, on the live
-    /// admitted document. An unattended run has nobody to ask, so only an
-    /// action the agent is allowed passes.
+    /// admitted document, held to the grant set of every task the agent
+    /// runs. An unattended run has nobody to ask, so only an action the
+    /// agent and its task are allowed passes.
     ///
     /// # Errors
     /// The room is unavailable or the current agent is not allowed this action.
@@ -48,17 +49,27 @@ impl NativeTaskActionRequirement {
             self.need.field.as_deref(),
             &self.action,
         );
+        let cx = Context::at_time(now);
         let verdict = Authority::person(policy.party_of(Subject::agent(agent))).decide(
             &node,
             self.need.kind,
-            &Context::at_time(now),
+            &cx,
         );
         let verdict = if self.need.privileged {
             verdict.privileged()
         } else {
             verdict
         };
-        if verdict.answer != Answer::Allow {
+        // The run is held to its task's grant set too.
+        let tasks = tilo_desktop_model::projection::workspace_tasks_of(doc);
+        let task = tilo_desktop_model::task_bound(
+            &policy,
+            &tasks,
+            (Some(agent), None),
+            (&node, self.need.kind),
+            &cx,
+        );
+        if verdict.answer != Answer::Allow || task.is_some_and(|answer| answer != Answer::Allow) {
             return Err("native task action is no longer authorized by its owner".into());
         }
         Ok(())

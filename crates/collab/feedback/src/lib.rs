@@ -23,6 +23,25 @@ pub use tilo_feedback_review::{DeclaredSensitivity, RedactionCategory, ReviewTex
 
 use serde::{Deserialize, Serialize};
 
+/// What the destination app publishes for feedback: the host decides a
+/// reporter's grants at these actions, and the app declares them under these
+/// names. Items are `<RESOURCE_KIND>/<field>/<id>`, of kind
+/// `<RESOURCE_KIND>.<field>`.
+pub mod destination {
+    /// The destination app's package.
+    pub const PACKAGE: &str = "so.tilo.chat";
+    /// Its resource kind.
+    pub const RESOURCE_KIND: &str = "chat.workspace";
+    /// The field of the channels reports are filed in.
+    pub const CHANNELS: &str = "channels";
+    /// The field of the filed reports.
+    pub const REPORTS: &str = "feedback";
+    /// The channel item's action that files a report.
+    pub const SUBMIT: &str = "submit-feedback";
+    /// The report item's action that answers its receipt.
+    pub const READ_RECEIPT: &str = "read-feedback-receipt";
+}
+
 /// A configured destination. A label or a URL is never routing authority.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
