@@ -73,7 +73,7 @@ session_include_line=$(grep -n '^session[[:space:]]\+include[[:space:]]\+passwor
 session_keyring_line=$(grep -n '^session[[:space:]]\+optional[[:space:]]\+pam_gnome_keyring\.so[[:space:]]\+auto_start$' "$pam" | cut -d: -f1)
 if [ -n "$auth_keyring_line" ] \
    && [ -n "$password_auth_line" ] \
-   && [ "$auth_keyring_line" -lt "$password_auth_line" ] \
+   && [ "$password_auth_line" -lt "$auth_keyring_line" ] \
    && [ -n "$session_include_line" ] \
    && [ -n "$session_keyring_line" ] \
    && [ "$session_include_line" -lt "$session_keyring_line" ] \
