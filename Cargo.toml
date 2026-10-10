@@ -131,7 +131,6 @@ members = [
     # SDK
     "crates/sdk/font-catalog",
     "crates/sdk/runner-native",
-    "crates/sdk/runner-web",
     "crates/sdk/tilo-app",
     "crates/sdk/tilo-caps",
     "crates/sdk/tilo-cpu-raster",
