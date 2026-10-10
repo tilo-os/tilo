@@ -56,7 +56,7 @@ fn loaded(doc: &AutoCommit) -> Library {
 
 /// Show the window what `doc` holds now, as the framework presents it.
 fn present(app: &FeedsApp, doc: &AutoCommit) {
-    app.present_library(loaded(doc));
+    app.present_library(Rc::new(loaded(doc)));
 }
 
 /// An article a refresh fetched, titled `title`.
@@ -480,6 +480,7 @@ fn reader_state_edits_persist_through_the_document() {
     a.core_mut().set_filter(Filter::All);
     a.core_mut()
         .mark_all_read(&mut ui::widget::Edits::lend(&mut doc));
+    present(&a, &doc);
     assert_eq!(a.core().store.total_unread(), 0);
     assert_eq!(loaded(&doc).total_unread(), 0, "marked read in the library");
 }
@@ -514,6 +515,7 @@ fn accessibility_mirrors_and_operates_the_reader() {
         &mut ui::widget::Edits::lend(&mut st.doc),
         &st.root,
     ));
+    present(a, &st.doc);
     assert_ne!(
         a.core().store.article(&id).is_some_and(|x| x.starred),
         before
@@ -584,6 +586,7 @@ fn the_tag_editor_uses_the_canonical_action() {
         loaded(&doc).article(&id).unwrap().tag_list(),
         ["design", "later"]
     );
+    present(&a, &doc);
     a.stage_tag_editor();
     a.take_pending_modal();
     a.modal.as_mut().unwrap().dialog.content_mut().set_value("");
@@ -859,6 +862,7 @@ fn the_feed_menu_opens_on_its_row_and_runs_its_actions() {
         MenuAction::MarkFeedRead(feed.clone()),
         &mut ui::widget::Edits::lend(doc),
     );
+    present(a, doc);
     assert_eq!(a.core().store.unread_for_feed(&feed), 0);
     assert_eq!(loaded(doc).unread_for_feed(&feed), 0);
 
@@ -973,7 +977,7 @@ fn the_list_scrolls_and_keeps_the_open_article_in_view() {
                     vec![],
                 ),
             );
-            core.store
+            Rc::make_mut(&mut core.store)
                 .articles
                 .push(Id::from_raw(format!("archive-{i}")), archived);
         }

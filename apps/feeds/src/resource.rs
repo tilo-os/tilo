@@ -366,7 +366,7 @@ impl ResourceApp for FeedsShell {
 
 impl ResourceSurface<Library, FeedsEffect> for FeedsApp {
     fn present(&mut self, state: &Rc<Library>) {
-        self.present_library(Library::clone(state));
+        self.present_library(Rc::clone(state));
     }
 
     fn attach(&mut self, cx: SurfaceCx<Library>) {
