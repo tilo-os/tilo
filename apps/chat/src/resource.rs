@@ -573,6 +573,36 @@ pub(crate) fn agent_work_scenario() -> Vec<(&'static str, ChatAction)> {
     ]
 }
 
+fn agent_live_row(app: &ChatApp, agent: &str) -> LiveRow {
+    let actor = format!("agent:{agent}");
+    let label = app.room_names.get(&actor).map_or(agent, String::as_str);
+    let row = LiveRow::new(format!("chat.person:{agent}"), "chat.agent", label).operation(
+        ChatEffect::OpenAgentConversation {
+            workspace: app.context_ws.clone(),
+            agent: agent.to_owned(),
+        }
+        .bound()
+        .launchable_when_closed(),
+    );
+    match app.agent_presentation_is_detached(&app.context_ws, agent) {
+        Some(false) => row.operation(localized_presentation_action(
+            &ChatEffect::FloatAgentConversation {
+                workspace: app.context_ws.clone(),
+                agent: agent.to_owned(),
+            },
+            "chat-agent-float",
+        )),
+        Some(true) => row.operation(localized_presentation_action(
+            &ChatEffect::ReturnAgentConversation {
+                workspace: app.context_ws.clone(),
+                agent: agent.to_owned(),
+            },
+            "chat-agent-return",
+        )),
+        None => row,
+    }
+}
+
 impl ResourceSurface<Chat, ChatEffect> for ChatApp {
     fn present(&mut self, _state: &std::rc::Rc<ChatState>) {
         // The surface reads the document it syncs with, and reloads when its
@@ -616,39 +646,7 @@ impl ResourceSurface<Chat, ChatEffect> for ChatApp {
     fn live_rows(&self) -> Vec<LiveRow> {
         self.room_agents
             .iter()
-            .map(|agent| {
-                let actor = format!("agent:{agent}");
-                let label = self
-                    .room_names
-                    .get(&actor)
-                    .map_or(agent.as_str(), String::as_str);
-                let row = LiveRow::new(format!("chat.person:{agent}"), "chat.agent", label)
-                    .operation(
-                        ChatEffect::OpenAgentConversation {
-                            workspace: self.context_ws.clone(),
-                            agent: agent.clone(),
-                        }
-                        .bound()
-                        .launchable_when_closed(),
-                    );
-                match self.agent_presentation_is_detached(&self.context_ws, agent) {
-                    Some(false) => row.operation(localized_presentation_action(
-                        &ChatEffect::FloatAgentConversation {
-                            workspace: self.context_ws.clone(),
-                            agent: agent.clone(),
-                        },
-                        "chat-agent-float",
-                    )),
-                    Some(true) => row.operation(localized_presentation_action(
-                        &ChatEffect::ReturnAgentConversation {
-                            workspace: self.context_ws.clone(),
-                            agent: agent.clone(),
-                        },
-                        "chat-agent-return",
-                    )),
-                    None => row,
-                }
-            })
+            .map(|agent| agent_live_row(self, agent))
             .collect()
     }
 
@@ -656,12 +654,8 @@ impl ResourceSurface<Chat, ChatEffect> for ChatApp {
         let agent = id.strip_prefix("chat.person:")?;
         self.room_agents
             .iter()
-            .any(|known| known == agent)
-            .then(|| {
-                let actor = format!("agent:{agent}");
-                let label = self.room_names.get(&actor).map_or(agent, String::as_str);
-                LiveRow::new(id, "chat.agent", label)
-            })
+            .find(|known| known.as_str() == agent)
+            .map(|known| agent_live_row(self, known))
     }
 
     fn row_declarations(&self, row: &str) -> Vec<ActionDecl<Chat>> {
@@ -1409,6 +1403,59 @@ mod tests {
                 .iter()
                 .all(|action| action.address.resource != "chat.person:tide"),
             "withdrawing the complete Context withdraws both capabilities"
+        );
+    }
+
+    #[test]
+    fn exact_agent_row_keeps_the_enumerated_read_view_for_a_viewer() {
+        let mut app = TestApp::<ChatShell>::with_role(ui::permissions::Role::Viewer).unwrap();
+        app.harness().set_collaboration_context(vec![
+            collaborator("test-author", "Quinten", false, true),
+            collaborator("agent:tide", "Tide", true, false),
+        ]);
+        let offered = app.actions().unwrap();
+        let on_agent = offered
+            .iter()
+            .filter(|action| action.address.resource == "chat.person:tide")
+            .collect::<Vec<_>>();
+        assert_eq!(
+            on_agent
+                .iter()
+                .map(|action| action.address.action.as_str())
+                .collect::<Vec<_>>(),
+            ["open-agent-conversation"],
+            "a Read ceiling preserves the view while withdrawing Message"
+        );
+
+        let (listed, exact) = app
+            .with_surface::<ChatApp, _>(|chat| {
+                let listed = <ChatApp as ResourceSurface<Chat, ChatEffect>>::live_rows(chat)
+                    .into_iter()
+                    .find(|row| row.id() == "chat.person:tide")
+                    .expect("enumerated Agent row")
+                    .into_resource();
+                let exact = <ChatApp as ResourceSurface<Chat, ChatEffect>>::live_row(
+                    chat,
+                    "chat.person:tide",
+                )
+                .expect("exact Agent row")
+                .into_resource();
+                (listed, exact)
+            })
+            .expect("mounted Chat surface");
+        assert_eq!(exact.id, listed.id);
+        assert_eq!(exact.kind, listed.kind);
+        assert_eq!(exact.label, listed.label);
+        let listed_actions = ui::tilo_actions::door::survey(std::slice::from_ref(&listed));
+        let exact_actions = ui::tilo_actions::door::survey(std::slice::from_ref(&exact));
+        assert_eq!(exact_actions, listed_actions);
+        let open = exact_actions
+            .iter()
+            .find(|action| action.address.action == "open-agent-conversation")
+            .expect("exact lookup retains the Agent view");
+        assert_eq!(
+            open.contract.permission,
+            ui::tilo_actions::PermissionRequirement::Read
         );
     }
 
