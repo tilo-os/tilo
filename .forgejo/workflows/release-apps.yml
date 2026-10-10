@@ -624,6 +624,15 @@ jobs:
           # The publish job reuses this already-built CLI to create signed
           # registry mutations from the final tapp bytes.
           install -m 0755 target/release/tilo-app-package dist/app-release/tilo-app-package
+      # Two builds of one source must give the same bytes, or every OS image
+      # and update re-sends apps that did not change. One small app,
+      # packaged twice through package-apps.sh with a throwaway identity, the
+      # second time compiled again past the compiler cache; any differing byte
+      # in its tapp, the runtime or the runtime package fails the job. The
+      # runtime and the tools come from the build above, so this costs the
+      # app's own compile and two runtime bakes.
+      - name: An app package is byte-identical when built twice
+        run: tools/apps/check-reproducible-tapp.sh calculator
       # The signed bytes a person downloads, each app against its own budget
       # (tools/perf/tapp-size-budget/; DEVELOPMENT.md, "App package size").
       # It measures only what this job built, so it adds no build.

@@ -1502,6 +1502,13 @@ jobs:
         env:
           SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
           RUNTIME_BUNDLE_SIGNING_KEY: ${{ steps.release-mode.outputs.publish == 'true' && secrets.RUNTIME_BUNDLE_SIGNING_KEY || '' }}
+          # Signs the apps a dev image compiles itself, the same identity in
+          # every build, so unchanged apps keep their bytes and paths and an
+          # update carries only the apps that changed. It is in no
+          # trust list; a publication takes the released collection instead
+          # and never receives it. The runtime bundles' keys, which the
+          # launcher trusts, stay minted per build.
+          DEV_APP_PUBLISHER_IDENTITY: ${{ steps.release-mode.outputs.publish != 'true' && secrets.DEV_APP_PUBLISHER_IDENTITY || '' }}
         with:
           context: .
           build-contexts: |
@@ -1541,6 +1548,7 @@ jobs:
           # the Rust compile RUN; they never enter an image layer or build arg.
           secret-envs: |
             browser_runtime_identity=RUNTIME_BUNDLE_SIGNING_KEY
+            app_publisher_identity=DEV_APP_PUBLISHER_IDENTITY
             ${{ steps.compiler-cache.outputs.secret-envs }}
           provenance: false
           # The toolchain is the builder stage up to the workspace sources. A
@@ -1629,6 +1637,7 @@ jobs:
         env:
           SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
           RUNTIME_BUNDLE_SIGNING_KEY: ${{ steps.release-mode.outputs.publish == 'true' && secrets.RUNTIME_BUNDLE_SIGNING_KEY || '' }}
+          DEV_APP_PUBLISHER_IDENTITY: ${{ steps.release-mode.outputs.publish != 'true' && secrets.DEV_APP_PUBLISHER_IDENTITY || '' }}
         with:
           context: .
           build-contexts: |
@@ -1668,6 +1677,7 @@ jobs:
           # the Rust compile RUN; they never enter an image layer or build arg.
           secret-envs: |
             browser_runtime_identity=RUNTIME_BUNDLE_SIGNING_KEY
+            app_publisher_identity=DEV_APP_PUBLISHER_IDENTITY
             ${{ steps.compiler-cache.outputs.secret-envs }}
           provenance: false
           # No layer cache: the compile goes through the compiler cache, and its
@@ -1751,6 +1761,7 @@ jobs:
         env:
           SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
           RUNTIME_BUNDLE_SIGNING_KEY: ${{ steps.release-mode.outputs.publish == 'true' && secrets.RUNTIME_BUNDLE_SIGNING_KEY || '' }}
+          DEV_APP_PUBLISHER_IDENTITY: ${{ steps.release-mode.outputs.publish != 'true' && secrets.DEV_APP_PUBLISHER_IDENTITY || '' }}
         with:
           context: .
           build-contexts: |
@@ -1790,6 +1801,7 @@ jobs:
           # the Rust compile RUN; they never enter an image layer or build arg.
           secret-envs: |
             browser_runtime_identity=RUNTIME_BUNDLE_SIGNING_KEY
+            app_publisher_identity=DEV_APP_PUBLISHER_IDENTITY
             ${{ steps.compiler-cache.outputs.secret-envs }}
           provenance: false
           cache-from: ${{ steps.release-mode.outputs.publish != 'true' && format('type=gha,scope=tilo-os-{0}-rootfs-{1}', needs.plan.outputs.hardware-profile, matrix.arch) || '' }}
@@ -1808,6 +1820,7 @@ jobs:
         env:
           SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
           RUNTIME_BUNDLE_SIGNING_KEY: ${{ steps.release-mode.outputs.publish == 'true' && secrets.RUNTIME_BUNDLE_SIGNING_KEY || '' }}
+          DEV_APP_PUBLISHER_IDENTITY: ${{ steps.release-mode.outputs.publish != 'true' && secrets.DEV_APP_PUBLISHER_IDENTITY || '' }}
         with:
           context: .
           build-contexts: |
@@ -1844,6 +1857,7 @@ jobs:
             TILO_COMPILER_CACHE=${{ steps.compiler-cache.outputs.mode }}
           secret-envs: |
             browser_runtime_identity=RUNTIME_BUNDLE_SIGNING_KEY
+            app_publisher_identity=DEV_APP_PUBLISHER_IDENTITY
             ${{ steps.compiler-cache.outputs.secret-envs }}
           provenance: false
           cache-from: ${{ steps.release-mode.outputs.publish != 'true' && format('type=gha,scope=tilo-os-{0}-tools-{1}', needs.plan.outputs.hardware-profile, matrix.arch) || '' }}
@@ -1869,6 +1883,7 @@ jobs:
         env:
           SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
           RUNTIME_BUNDLE_SIGNING_KEY: ${{ steps.release-mode.outputs.publish == 'true' && secrets.RUNTIME_BUNDLE_SIGNING_KEY || '' }}
+          DEV_APP_PUBLISHER_IDENTITY: ${{ steps.release-mode.outputs.publish != 'true' && secrets.DEV_APP_PUBLISHER_IDENTITY || '' }}
         with:
           context: .
           build-contexts: |
@@ -1916,6 +1931,7 @@ jobs:
           # the Rust compile RUN; they never enter an image layer or build arg.
           secret-envs: |
             browser_runtime_identity=RUNTIME_BUNDLE_SIGNING_KEY
+            app_publisher_identity=DEV_APP_PUBLISHER_IDENTITY
             ${{ steps.compiler-cache.outputs.secret-envs }}
           provenance: false
           # The compile results are this builder's own; the rootfs and the
@@ -1944,6 +1960,7 @@ jobs:
         env:
           SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
           RUNTIME_BUNDLE_SIGNING_KEY: ${{ steps.release-mode.outputs.publish == 'true' && secrets.RUNTIME_BUNDLE_SIGNING_KEY || '' }}
+          DEV_APP_PUBLISHER_IDENTITY: ${{ steps.release-mode.outputs.publish != 'true' && secrets.DEV_APP_PUBLISHER_IDENTITY || '' }}
         with:
           context: .
           build-contexts: |
@@ -1982,6 +1999,7 @@ jobs:
             TILO_COMPILER_CACHE=${{ steps.compiler-cache.outputs.mode }}
           secret-envs: |
             browser_runtime_identity=RUNTIME_BUNDLE_SIGNING_KEY
+            app_publisher_identity=DEV_APP_PUBLISHER_IDENTITY
             ${{ steps.compiler-cache.outputs.secret-envs }}
           provenance: false
           cache-to: |
@@ -2505,6 +2523,7 @@ jobs:
         env:
           SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
           RUNTIME_BUNDLE_SIGNING_KEY: ${{ steps.release-mode.outputs.publish == 'true' && secrets.RUNTIME_BUNDLE_SIGNING_KEY || '' }}
+          DEV_APP_PUBLISHER_IDENTITY: ${{ steps.release-mode.outputs.publish != 'true' && secrets.DEV_APP_PUBLISHER_IDENTITY || '' }}
         with:
           context: .
           build-contexts: |
@@ -2550,6 +2569,7 @@ jobs:
           # the Rust compile RUN; they never enter an image layer or build arg.
           secret-envs: |
             browser_runtime_identity=RUNTIME_BUNDLE_SIGNING_KEY
+            app_publisher_identity=DEV_APP_PUBLISHER_IDENTITY
             ${{ steps.compiler-cache.outputs.secret-envs }}
           provenance: false
 

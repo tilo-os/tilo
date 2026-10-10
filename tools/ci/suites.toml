@@ -307,6 +307,7 @@ inputs = ["os/", "tools/"]
 suites = [
   "os/tests/parallel_package_uploads.sh",
   "os/tests/prior_app_collection_reuse.sh",
+  "tools/apps/test_compare_build_outputs.py",
 ]
 
 [[group]]
