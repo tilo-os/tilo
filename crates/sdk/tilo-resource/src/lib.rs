@@ -138,7 +138,7 @@ pub use resource::{
     APPLY, APPLY_PARAM, ActionDecl, BuildAction, NoAction, Place, Resource, ScopeDecl, SearchBody,
     SearchEntry, SearchPiece, SearchRow, SearchRowShape, SearchText, SearchWeight, SharedRecord,
     action_label, bind_declaration, build_action, declaration_spec, encode, origin_now_ms, publish,
-    reset_type_schemas, scope_contains,
+    publish_head, reset_type_schemas, scope_contains,
 };
 pub use schema::JsonSchema;
 pub use shape::{FieldShape, Shape};
