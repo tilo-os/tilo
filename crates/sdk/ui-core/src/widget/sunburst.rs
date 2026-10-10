@@ -17,7 +17,6 @@ use vello::peniko::{Color, Fill};
 use winit::event::WindowEvent;
 
 use crate::a11y::{AccessNode, AccessState, Role};
-use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -386,28 +385,8 @@ impl SunburstChart {
         let target = colors.surfaces.base;
         let amount = (f64::from(u32::try_from(depth.saturating_sub(1)).unwrap_or(u32::MAX)) * 0.12)
             .min(0.48);
-        mix(base, target, amount)
+        crate::tokens::colors::mix8_f64(base, target, amount)
     }
-}
-
-fn mix(start: Color, end: Color, amount: f64) -> Color {
-    let amount = amount.clamp(0.0, 1.0);
-    let channel = |a: u8, b: u8| {
-        let value = f64::from(a) + (f64::from(b) - f64::from(a)) * amount;
-        #[allow(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "interpolation remains inside u8 endpoints"
-        )]
-        {
-            value.round() as u8
-        }
-    };
-    Color::from_rgb8(
-        channel(start.r(), end.r()),
-        channel(start.g(), end.g()),
-        channel(start.b(), end.b()),
-    )
 }
 
 impl InteractiveChart for SunburstChart {
@@ -594,21 +573,15 @@ impl Widget for SunburstChart {
         _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
-        if !matches!(action, crate::a11y::Action::Activate) {
-            return false;
-        }
-        let Some(key) = key_path.last() else {
+        let Some(id) = crate::widget::chart_navigation::activated_id(
+            action,
+            key_path,
+            self.segments().into_iter().map(|segment| segment.id),
+        ) else {
             return false;
         };
-        if let Some(segment) = self
-            .segments()
-            .into_iter()
-            .find(|segment| crate::a11y::hash_key(&segment.id) == *key)
-        {
-            self.activated = Some(segment.id);
-            return true;
-        }
-        false
+        self.activated = Some(id);
+        true
     }
     fn name(&self) -> &'static str {
         "SunburstChart"

@@ -1113,29 +1113,6 @@ impl<M: ListModel> VirtualList<M> {
         self.viewport.offset().to_bits() != before.to_bits()
     }
 
-    fn route_to_children(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        if let Some(row) = self
-            .mounted
-            .iter_mut()
-            .find(|row| row.widget.wants_pointer_capture())
-            && let Some(node) = row.node
-        {
-            row.widget
-                .handle_event(event, &mut ctx.reborrow(ctx.path, node));
-            return;
-        }
-        for row in self.mounted.iter_mut().rev() {
-            let Some(node) = row.node else {
-                continue;
-            };
-            row.widget
-                .handle_event(event, &mut ctx.reborrow(ctx.path, node));
-            if *ctx.handled {
-                break;
-            }
-        }
-    }
-
     fn handle_scrollbar_event(&mut self, event: &WindowEvent, scale_factor: f64) -> bool {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
@@ -1493,7 +1470,12 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
             return;
         }
         if !self.drag_scroll.is_tracking() && !self.reorder.is_tracking() {
-            self.route_to_children(event, ctx);
+            crate::widget::route_to_mounted(
+                &mut self.mounted,
+                |mounted| (&mut mounted.widget, mounted.node),
+                event,
+                ctx,
+            );
         }
         if *ctx.handled {
             return;

@@ -563,21 +563,15 @@ impl Widget for FunnelChart {
         _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
-        if !matches!(action, crate::a11y::Action::Activate) {
-            return false;
-        }
-        let Some(key) = key_path.last() else {
+        let Some(id) = crate::widget::chart_navigation::activated_id(
+            action,
+            key_path,
+            self.stages.iter().map(|stage| &stage.id),
+        ) else {
             return false;
         };
-        if let Some(stage) = self
-            .stages
-            .iter()
-            .find(|stage| crate::a11y::hash_key(&stage.id) == *key)
-        {
-            self.activated = Some(stage.id.clone());
-            return true;
-        }
-        false
+        self.activated = Some(id.clone());
+        true
     }
     fn name(&self) -> &'static str {
         "FunnelChart"

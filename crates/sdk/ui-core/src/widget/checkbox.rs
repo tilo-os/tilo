@@ -6,6 +6,7 @@ use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::binding::{BoxedBinding, Pulled};
+use crate::widget::toggle::BoolChangeCallback;
 use crate::widget::{ActionEmitter, ControlBindingMetadata};
 use crate::widget::{AppModel, ModelPath};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -43,8 +44,6 @@ pub struct CheckboxFace {
     checked: bool,
     interact: CheckboxInteract,
 }
-
-type BoolChangeCallback = Box<dyn FnMut(bool)>;
 
 impl CheckboxFace {
     pub fn new(rect: Rect, checked: bool) -> Self {
@@ -197,18 +196,12 @@ impl Checkbox {
     }
 
     fn commit_user_toggle(&mut self, _state: &AppModel, _root: &ModelPath) {
-        let checked = !self.is_checked;
-        if let Some(action) = &mut self.action {
-            let _ = action.emit(checked);
-        } else if let Some(binding) = &mut self.binding {
-            binding.publish(&checked);
-        }
-        self.is_checked = checked;
-        if self.action.is_none()
-            && let Some(callback) = self.on_change.as_mut()
-        {
-            callback(checked);
-        }
+        super::toggle::commit_flip(
+            &mut self.is_checked,
+            &mut self.action,
+            &mut self.binding,
+            &mut self.on_change,
+        );
     }
 
     /// Opt this widget into presence tracking by binding it to a CRDT-style path.
@@ -652,15 +645,11 @@ impl Widget for Checkbox {
         presence: &crate::presence::PresenceCtx,
         permissions: &crate::permissions::PermissionContext,
     ) {
-        if presence.should_cull(self.get_rect()) {
-            return;
-        }
-        self.draw(scene, transform, text_renderer, theme, presence);
-
-        crate::widget::draw_gate_and_peer_focus(
+        crate::widget::draw_gated_leaf(
             self,
             scene,
             transform,
+            text_renderer,
             theme,
             presence,
             permissions,

@@ -444,26 +444,7 @@ impl Widget for Column {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        let allocated = super::layout::allocation_or_content_size(taffy, node, &layout);
-        let w = f64::from(allocated.width);
-        let h = f64::from(allocated.height);
-        self.paint_rect = vello::kurbo::Rect::from_origin_size(
-            (
-                origin.x + f64::from(layout.location.x),
-                origin.y + f64::from(layout.location.y),
-            ),
-            (
-                f64::from(layout.size.width.max(layout.content_size.width)),
-                f64::from(layout.size.height.max(layout.content_size.height)),
-            ),
-        );
-        self.rect = vello::kurbo::Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + w,
-            origin.y + f64::from(layout.location.y) + h,
-        );
+        (self.rect, self.paint_rect) = super::layout::flow_rects(taffy, node, origin);
         let new_origin = Point::new(self.rect.x0, self.rect.y0);
 
         for (child_widget, child_node) in self.children.iter_mut().zip(&self.child_nodes) {
