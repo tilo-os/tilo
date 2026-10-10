@@ -61,11 +61,6 @@ impl<M: PaneModel> ModelPane<M> {
             drawn_rect: Rect::ZERO,
         }
     }
-
-    /// The model the pane shows.
-    pub fn model(&self) -> std::cell::Ref<'_, M> {
-        self.model.borrow()
-    }
 }
 
 impl<M: PaneModel> Widget for ModelPane<M> {

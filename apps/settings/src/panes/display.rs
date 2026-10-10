@@ -1056,10 +1056,6 @@ impl DisplayModel {
         self
     }
 
-    pub fn outputs(&self) -> &[DisplayOutput] {
-        &self.outputs
-    }
-
     /// The outputs the arrangement card lists as rows: only the connected
     /// ones. Disconnected physical ports are unused hardware, not displays —
     /// enumerating each one (a laptop's GPU can expose a dozen idle DP

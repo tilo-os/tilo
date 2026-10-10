@@ -594,27 +594,10 @@ impl MailAccount {
 }
 
 /// The mail account list — Mail's `AccountStore` shape.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MailStore {
     pub accounts: Vec<MailAccount>,
-    #[serde(default)]
     pub active: usize,
-}
-
-impl MailStore {
-    pub fn to_json(&self) -> String {
-        serde_json::to_string_pretty(self).unwrap_or_else(|_| "{}".into())
-    }
-
-    pub fn from_json(s: &str) -> Option<Self> {
-        serde_json::from_str(s).ok()
-    }
-
-    pub fn remove(&mut self, id: &str) -> bool {
-        let before = self.accounts.len();
-        self.accounts.retain(|a| a.id != id);
-        self.accounts.len() != before
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -658,21 +641,9 @@ impl DavAccount {
 
 /// A DAV account list. The *same* struct backs both the calendar and the
 /// files view of the canonical store.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DavStore {
-    #[serde(default = "default_version")]
-    pub version: u32,
     pub accounts: Vec<DavAccount>,
-}
-
-impl DavStore {
-    pub fn to_json(&self) -> String {
-        serde_json::to_string_pretty(self).unwrap_or_else(|_| "{}".into())
-    }
-
-    pub fn from_json(s: &str) -> Option<Self> {
-        serde_json::from_str(s).ok()
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -729,21 +700,9 @@ impl NextcloudAccount {
 }
 
 /// The Nextcloud account list.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct NextcloudStore {
-    #[serde(default = "default_version")]
-    pub version: u32,
     pub accounts: Vec<NextcloudAccount>,
-}
-
-impl NextcloudStore {
-    pub fn to_json(&self) -> String {
-        serde_json::to_string_pretty(self).unwrap_or_else(|_| "{}".into())
-    }
-
-    pub fn from_json(s: &str) -> Option<Self> {
-        serde_json::from_str(s).ok()
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -786,19 +745,6 @@ impl AccountKind {
             AccountKind::OneDrive => "OneDrive",
             AccountKind::Dropbox => "Dropbox",
             AccountKind::ICloudDrive => "iCloud Drive",
-        }
-    }
-
-    pub fn glyph(self) -> &'static str {
-        match self {
-            AccountKind::Mail => "\u{f01ee}",   // md-email
-            AccountKind::CalDav => "\u{f00ed}", // md-calendar
-            AccountKind::WebDav => "\u{f0256}", // md-folder_outline
-            AccountKind::Nextcloud
-            | AccountKind::GoogleDrive
-            | AccountKind::OneDrive
-            | AccountKind::Dropbox
-            | AccountKind::ICloudDrive => "\u{f015f}", // md-cloud
         }
     }
 
@@ -888,13 +834,6 @@ pub struct AccountDirectory {
 }
 
 impl AccountDirectory {
-    /// Load every store. Email and `CalDAV` accounts come from the shared
-    /// canonical store ([`accounts::AccountStore`]) — the same store Mail and
-    /// Calendar read, so the shapes can no longer drift apart.
-    pub fn load() -> Self {
-        Self::load_in(&AccountRoot::live())
-    }
-
     /// [`Self::load`] from the stores under `root`.
     pub fn load_in(root: &AccountRoot) -> Self {
         root.recover_mutation_or_warn();
@@ -1027,9 +966,6 @@ pub fn short_url(url: &str) -> String {
 fn default_true() -> bool {
     true
 }
-fn default_version() -> u32 {
-    1
-}
 
 // ---------------------------------------------------------------------------
 // Bridges onto the shared canonical store.
@@ -1100,16 +1036,12 @@ fn caldav_store_from_shared(shared: &accounts::AccountStore) -> DavStore {
             password: String::new(),
         })
         .collect();
-    DavStore {
-        version: 1,
-        accounts,
-    }
+    DavStore { accounts }
 }
 
 fn webdav_store_from_shared(shared: &accounts::AccountStore) -> DavStore {
     let ty = accounts::AccountTypeId::from(WEBDAV_TYPE);
     DavStore {
-        version: 1,
         accounts: shared
             .list(&ty)
             .into_iter()
@@ -1129,7 +1061,6 @@ fn webdav_store_from_shared(shared: &accounts::AccountStore) -> DavStore {
 fn nextcloud_store_from_shared(shared: &accounts::AccountStore) -> NextcloudStore {
     let ty = accounts::AccountTypeId::from(NEXTCLOUD_TYPE);
     NextcloudStore {
-        version: 1,
         accounts: shared
             .list(&ty)
             .into_iter()
@@ -1144,14 +1075,6 @@ fn nextcloud_store_from_shared(shared: &accounts::AccountStore) -> NextcloudStor
             })
             .collect(),
     }
-}
-
-/// The per-user Tilo config root: `$XDG_CONFIG_HOME/tilo` or `~/.config/tilo`.
-/// Shared by every account store and the region store so they all resolve
-/// the same directory — and, through [`settings_store`], the same directory
-/// the compositor and every other app resolve.
-pub fn config_root() -> Option<PathBuf> {
-    settings_store::config_root()
 }
 
 /// A deterministic, populated directory for `--shots` and tests so the
@@ -1202,12 +1125,10 @@ pub fn sample_directory() -> AccountDirectory {
             active: 0,
         },
         calendar: DavStore {
-            version: 1,
             accounts: vec![cal],
         },
         files: DavStore::default(),
         nextcloud: NextcloudStore {
-            version: 1,
             accounts: vec![cloud],
         },
         cloud: Vec::new(),
@@ -1387,61 +1308,6 @@ mod tests {
             .unwrap();
         root.take_in_device_accounts().unwrap();
         assert!(record.get().store().get(&local.id).is_none());
-    }
-
-    /// Every account store round-trips through JSON at its contract path, and
-    /// no store ever writes a password.
-    #[test]
-    fn account_stores_round_trip_without_passwords() {
-        let mut acct = MailAccount::new(AccountConfig {
-            email: "a@x.example".into(),
-            password: "hunter2".into(),
-            ..Default::default()
-        });
-        acct.tint = 4;
-        let store = MailStore {
-            accounts: vec![acct],
-            active: 0,
-        };
-        let json = store.to_json();
-        assert!(
-            !json.contains("hunter2"),
-            "mail password must never reach the JSON"
-        );
-        let back = MailStore::from_json(&json).expect("parse");
-        // Everything except the (skipped) password round-trips.
-        assert_eq!(back.accounts[0].config.email, "a@x.example");
-        assert_eq!(back.accounts[0].tint, 4);
-        assert_eq!(back.accounts[0].config.password, "");
-
-        let dav = DavStore {
-            version: 1,
-            accounts: vec![DavAccount::new("Cal", "https://d.example/c/", "ada")],
-        };
-        assert_eq!(DavStore::from_json(&dav.to_json()).unwrap(), dav);
-        let nc = NextcloudStore {
-            version: 1,
-            accounts: vec![NextcloudAccount::new("NC", "https://cloud.example", "ada")],
-        };
-        assert_eq!(NextcloudStore::from_json(&nc.to_json()).unwrap(), nc);
-
-        let mut a = DavAccount::new("Cal", "https://d/", "u");
-        a.password = "secret".into();
-        let store = DavStore {
-            version: 1,
-            accounts: vec![a],
-        };
-        assert!(!store.to_json().contains("secret"), "dav password leaked");
-        let mut n = NextcloudAccount::new("NC", "https://c", "u");
-        n.password = "nextsecret".into();
-        let store = NextcloudStore {
-            version: 1,
-            accounts: vec![n],
-        };
-        assert!(
-            !store.to_json().contains("nextsecret"),
-            "nextcloud password leaked"
-        );
     }
 
     #[test]

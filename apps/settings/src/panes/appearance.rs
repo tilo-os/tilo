@@ -182,9 +182,6 @@ pub fn text_size_options() -> Vec<String> {
         .collect()
 }
 
-/// The English text-size names an effect takes.
-pub const TEXT_SIZE_NAMES: [&str; 4] = ["Small", "Default", "Large", "Larger"];
-
 /// The UI-scale steps an effect takes.
 pub const UI_SCALE_NAMES: [&str; 5] = ["90%", "100%", "110%", "125%", "150%"];
 

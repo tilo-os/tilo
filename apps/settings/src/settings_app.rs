@@ -43,14 +43,6 @@ use ui::widget::{NavMode, SearchField};
 use ui::{AppKind, AppWidget, IconDescriptor};
 const MEASURE: f32 = ui::tokens::Metrics::BASE.panel_width_sheet;
 
-/// At or above this allocated width (logical px) the sidebar docks beside the
-/// content; below it the shell switches to the narrow list-vs-content screens.
-/// The toolkit's `compact_breakpoint` (HIG §9.6): a typical settings window is
-/// docked while a narrow / split-screen placement gets the phone layout. At a
-/// large-text preference the live breakpoint is this times the text scale
-/// (see `SettingsApp::build_shell`).
-pub const NAV_BREAKPOINT: f64 = ui::tokens::Metrics::BASE.compact_breakpoint as f64;
-
 /// One scroller's offset, shared with every scroller rebuilt in its place.
 type ScrollOffset = std::rc::Rc<std::cell::Cell<(f32, f32)>>;
 
