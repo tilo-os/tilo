@@ -396,3 +396,86 @@ fn cached_apply_is_replay_identical() {
         "the live replica read {live_loads} titles, the cold one {cold_loads}"
     );
 }
+
+/// Text made the first time as a change of its own beside the action that
+/// stores it (as a deterministic slot is), merged in while the action runs.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MergedText(pub String);
+
+impl Model for MergedText {
+    tilo_resource::leaf_paths!();
+    fn to_json(&self) -> serde_json::Value {
+        self.0.to_json()
+    }
+    fn from_json(value: &serde_json::Value) -> Result<Self, ModelError> {
+        String::from_json(value).map(Self)
+    }
+    fn load(doc: &Doc, value: &Value<'_>, id: &ObjId) -> Result<Self, ModelError> {
+        String::load(doc, value, id).map(Self)
+    }
+    fn missing() -> Result<Self, ModelError> {
+        Ok(Self::default())
+    }
+    fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
+        if let Slot::Key(parent, key) = slot
+            && doc.pending_ops() == 0
+            && doc.get(parent, key)?.is_none()
+        {
+            let heads = doc.get_heads();
+            let mut made = doc
+                .fork_at(&heads)?
+                .with_actor(automerge::ActorId::from(b"merged-slot".as_slice()));
+            let text = made.put_object(parent, key, ObjType::Text)?;
+            made.splice_text(&text, 0, 0, &self.0)?;
+            made.commit();
+            doc.merge_incoming(&mut made)?;
+            return Ok(());
+        }
+        self.0.store(doc, slot)
+    }
+}
+
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Texts {
+    pub texts: std::collections::BTreeMap<String, MergedText>,
+    pub count: i64,
+}
+
+#[resource(kind = "test.merged-texts", label = "Texts")]
+impl Texts {
+    /// Keep a text under a key, the first time.
+    #[action]
+    pub fn keep_text(&mut self, key: String, text: String) {
+        self.texts.entry(key).or_insert(MergedText(text));
+    }
+
+    /// Count once more.
+    #[action]
+    pub fn bump(&mut self) {
+        self.count += 1;
+    }
+}
+
+/// An action whose write merged a change of its own (a text made beside
+/// it) moved its base while it ran: it keeps no record for the next action,
+/// which must still see the text rather than write over it.
+#[test]
+fn a_record_kept_across_a_merged_slot_does_not_lose_it() {
+    let mut texts = Replica::<Texts>::new();
+    // A record kept from this action is what the next one would start from.
+    texts.apply(Texts::BUMP.invoke()).unwrap();
+    let keep = |key: &str, text: &str| Texts::KEEP_TEXT.with((key.to_owned(), text.to_owned()));
+    texts.apply(keep("readme", "hello")).unwrap();
+    // The next action writes the map the text is in.
+    texts.apply(keep("notes", "later")).unwrap();
+    let state = texts.state().unwrap();
+    assert_eq!(
+        state.texts.get("readme").map(|text| text.0.as_str()),
+        Some("hello"),
+        "the next action keeps the text the last one merged"
+    );
+    assert_eq!(
+        state.texts.get("notes").map(|text| text.0.as_str()),
+        Some("later")
+    );
+}
