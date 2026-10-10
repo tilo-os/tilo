@@ -91,7 +91,7 @@ def stop_process_group(proc: subprocess.Popen) -> None:
 # Column order is defined by `metrics::CSV_HEADER`; we read the header
 # rather than hard-coding indices so a new column can't silently shift
 # every number this script prints.
-TEXT_TRACE_COLUMNS = {"wake", "input_step"}
+TEXT_TRACE_COLUMNS = {"wake", "input_step", "redraw"}
 REQUIRED_TRACE_COLUMNS = {
     "start_us", "period_us", "input_us", "pump_us", "layout_us", "scene_us",
     "submit_us", "clients_us", "sleep_us", "painted", "present_async",

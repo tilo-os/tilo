@@ -287,6 +287,23 @@ class HostingLoad(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "reported"):
             adapters.hosting_load(report, self.prices, ENV)
 
+    def test_an_older_bench_is_read_when_not_all_kpis_are_required(self):
+        """The A/B lane reads a bench from before a KPI existed (TIL-732's parent)."""
+        report = load_report()
+        del report["kpis"]["hosting.relay.store_fsyncs_per_edit"]
+        report["kpis"]["hosting.relay.future_metric"] = {"unit": "count", "samples": [1.0]}
+        records = {item.kpi for item in adapters.hosting_load(report, self.prices, ENV, require_all=False)}
+        self.assertIn("hosting.relay.cpu_s_per_collab_hour.n100", records)
+        self.assertIn("hosting.relay.cost_usd_per_collab_hour.aws-t4g-small.n100", records)
+        self.assertNotIn("hosting.relay.store_fsyncs_per_edit.n100", records)
+        self.assertFalse(any("future_metric" in kpi for kpi in records))
+
+    def test_a_report_that_cannot_be_priced_fails_even_partially(self):
+        report = load_report()
+        del report["kpis"]["hosting.relay.cpu_s_per_collab_hour"]
+        with self.assertRaisesRegex(ValueError, "without"):
+            adapters.hosting_load(report, self.prices, ENV, require_all=False)
+
     def test_the_kpis_are_the_benchs(self):
         """The adapter reads the KPI ids and units the Rust bench writes."""
         written = dict(re.findall(r'"(hosting\.relay\.[a-z_]+)": kpi\("(\w+)"', LOAD_BENCH.read_text()))
