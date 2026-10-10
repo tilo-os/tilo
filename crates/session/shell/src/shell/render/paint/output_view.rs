@@ -238,9 +238,9 @@ impl OutputSurface {
     }
 }
 
-/// Owed regions past this render in full anyway (the sparse renderer's own rectangle limit),
-/// so a longer debt is not kept.
-const MAX_OWED_RECTS: usize = 64;
+/// The most regions a debt keeps: the sparse renderer's own rectangle limit. A longer one is
+/// merged ([`super::coalesce_damage`]) rather than dropped.
+const MAX_OWED_RECTS: usize = super::MAX_DAMAGE_RECTS;
 
 /// The revision an output's retained pixels hold, and the damage skipped frames owe them.
 struct RetainedPixels<'a> {
@@ -470,10 +470,13 @@ impl VelloDrmBridge {
             damage.previous_revision,
         ) {
             (Some(retained), Some(mapped), Some(previous))
-                if *retained.revision == Some(previous)
-                    && retained.owed.len().saturating_add(mapped.len()) <= MAX_OWED_RECTS =>
+                if *retained.revision == Some(previous) =>
             {
-                retained.owed.extend(mapped);
+                // The debt stays bounded by merging, not by giving up: a caret repeated by
+                // every skipped frame is one rectangle, and a long run of different ones
+                // becomes a few larger ones. Past the limit the next render used to be dense.
+                let owed = std::mem::take(retained.owed);
+                *retained.owed = super::coalesce_damage([owed, mapped].concat(), MAX_OWED_RECTS);
                 *retained.revision = Some(damage.revision);
                 true
             }

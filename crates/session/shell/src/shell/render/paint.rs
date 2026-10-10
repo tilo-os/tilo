@@ -252,6 +252,89 @@ impl<'a> SceneDamage<'a> {
     }
 }
 
+/// The most regions one sparse dispatch takes.
+pub(crate) const MAX_DAMAGE_RECTS: usize = 64;
+
+/// Whether repainting `dirty_pixels` of `full_pixels` through the sparse path beats a dense
+/// frame. A sparse frame costs a fixed part (flatten, bin, tile) plus its dirty share of the
+/// fine raster; a dense one costs that fixed part plus the whole raster. On the Adreno X1-85 at
+/// 2944x1840 a dense frame is 33 ms and a small sparse one 9.5 ms, so the fixed part is at most
+/// 9.5 ms and the raster at least 23.5 ms: the sparse path still saves about 6 ms with three
+/// quarters of the output dirty. A window-sized update (typing in a half-screen window, which
+/// repaints its tile) is therefore sparse; only a near-whole-screen change renders densely.
+pub(crate) fn damage_is_profitable(dirty_pixels: u64, full_pixels: u64) -> bool {
+    full_pixels != 0 && dirty_pixels.saturating_mul(4) < full_pixels.saturating_mul(3)
+}
+
+/// The pixels `rects` cover, an overlap counted once per rectangle.
+pub(crate) fn damage_area(rects: &[vello::FineDamageRect]) -> u64 {
+    rects.iter().fold(0_u64, |pixels, rect| {
+        pixels.saturating_add(u64::from(rect.width).saturating_mul(u64::from(rect.height)))
+    })
+}
+
+fn damage_union(a: vello::FineDamageRect, b: vello::FineDamageRect) -> vello::FineDamageRect {
+    let x = a.x.min(b.x);
+    let y = a.y.min(b.y);
+    let right = a.x.saturating_add(a.width).max(b.x.saturating_add(b.width));
+    let bottom =
+        a.y.saturating_add(a.height)
+            .max(b.y.saturating_add(b.height));
+    vello::FineDamageRect {
+        x,
+        y,
+        width: right.saturating_sub(x),
+        height: bottom.saturating_sub(y),
+    }
+}
+
+/// `rects` without the ones another contains, merged down to at most `limit` rectangles when
+/// there are more. Each merge joins the pair whose union adds the least area, so a caret blinking
+/// at one place stays one small rectangle however many frames repeated it. Merging only ever
+/// repaints more than the damage, which is correct; it never loses a pixel.
+pub(crate) fn coalesce_damage(
+    rects: Vec<vello::FineDamageRect>,
+    limit: usize,
+) -> Vec<vello::FineDamageRect> {
+    let contains = |outer: &vello::FineDamageRect, inner: &vello::FineDamageRect| {
+        outer.x <= inner.x
+            && outer.y <= inner.y
+            && outer.x.saturating_add(outer.width) >= inner.x.saturating_add(inner.width)
+            && outer.y.saturating_add(outer.height) >= inner.y.saturating_add(inner.height)
+    };
+    let mut kept: Vec<vello::FineDamageRect> = Vec::with_capacity(rects.len());
+    for rect in rects {
+        if kept.iter().any(|existing| contains(existing, &rect)) {
+            continue;
+        }
+        kept.retain(|existing| !contains(&rect, existing));
+        kept.push(rect);
+    }
+    let limit = limit.max(1);
+    while kept.len() > limit {
+        let mut best: Option<(u64, usize, usize)> = None;
+        for (i, a) in kept.iter().enumerate() {
+            for (j, b) in kept.iter().enumerate().skip(i.saturating_add(1)) {
+                let union = damage_union(*a, *b);
+                let growth = damage_area(&[union])
+                    .saturating_sub(damage_area(&[*a]).saturating_add(damage_area(&[*b])));
+                if best.is_none_or(|(least, _, _)| growth < least) {
+                    best = Some((growth, i, j));
+                }
+            }
+        }
+        let Some((_, i, j)) = best else { break };
+        let (Some(a), Some(b)) = (kept.get(i).copied(), kept.get(j).copied()) else {
+            break;
+        };
+        kept.swap_remove(j);
+        if let Some(slot) = kept.get_mut(i) {
+            *slot = damage_union(a, b);
+        }
+    }
+    kept
+}
+
 /// Mapped readback layout needed by the direct XRGB swizzle.
 #[derive(Clone, Copy)]
 struct MappedXrgbSource<'a> {
@@ -4088,14 +4171,14 @@ impl VelloDrmBridge {
     /// rectangles intentionally stay separate unless one contains the other: bounding-box merges
     /// turn an L-shaped top bar plus popover into a large false damage band. Vello's sparse tile
     /// masks already deduplicate the raster work, while the copies below account for their actual
-    /// (possibly overlapping) payload. A sparse dispatch with too many regions or at least half
-    /// the output dirty remains a deliberate full-frame boundary.
+    /// (possibly overlapping) payload. A sparse dispatch with [`MAX_DAMAGE_RECTS`] distinct
+    /// regions is first coalesced ([`coalesce_damage`]) and, with the output
+    /// [`damage_is_profitable`] no longer, remains a deliberate full-frame boundary.
     fn normalize_damage(
         damage: &[vello::FineDamageRect],
         size: (u32, u32),
     ) -> Option<Vec<vello::FineDamageRect>> {
-        const MAX_DAMAGE_RECTS: usize = 64;
-        if damage.is_empty() || damage.len() > MAX_DAMAGE_RECTS {
+        if damage.is_empty() {
             return None;
         }
         let (width, height) = size;
@@ -4132,11 +4215,12 @@ impl VelloDrmBridge {
             }
         }
 
-        let dirty_pixels = normalized.iter().fold(0_u64, |pixels, rect| {
-            pixels.saturating_add(u64::from(rect.width).saturating_mul(u64::from(rect.height)))
-        });
+        // More regions than one dispatch takes are merged, never refused: a repaint of a little
+        // more than the damage is still far cheaper than a dense frame.
+        let normalized = coalesce_damage(normalized, MAX_DAMAGE_RECTS);
+        let dirty_pixels = damage_area(&normalized);
         let full_pixels = u64::from(width).saturating_mul(u64::from(height));
-        if full_pixels == 0 || dirty_pixels.saturating_mul(2) >= full_pixels {
+        if !damage_is_profitable(dirty_pixels, full_pixels) {
             return None;
         }
         Some(normalized)
@@ -6444,6 +6528,176 @@ mod tests {
             bridge.target.last_successful_revision,
             Some(2),
             "the kept target holds the new revision, so the next frame repairs it sparsely"
+        );
+    }
+
+    fn rect(x: u32, y: u32, width: u32, height: u32) -> vello::FineDamageRect {
+        vello::FineDamageRect {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    /// 200x100 desktop: a blue ground with a red "window" tile and a caret drawn in
+    /// `caret`. What a frame typing in the window changes.
+    fn window_scene(caret: Color) -> Scene {
+        let mut scene = Scene::new();
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            Color::from_rgb8(0, 0, 255),
+            None,
+            &vello::kurbo::Rect::new(0.0, 0.0, 200.0, 100.0),
+        );
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            Color::from_rgb8(255, 0, 0),
+            None,
+            &vello::kurbo::Rect::new(0.0, 0.0, 130.0, 100.0),
+        );
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            caret,
+            None,
+            &vello::kurbo::Rect::new(40.0, 20.0, 42.0, 36.0),
+        );
+        scene
+    }
+
+    #[test]
+    fn the_sparse_policy_admits_a_window_and_merges_long_lists_instead_of_refusing_them() {
+        let size = (2944, 1840);
+        // A 1472x1840 window is half of the output; 2208 px wide is three quarters.
+        for (width, admitted) in [(1472, true), (2200, true), (2208, false), (2944, false)] {
+            let window = [rect(0, 0, width, 1840)];
+            assert_eq!(
+                VelloDrmBridge::normalize_damage(&window, size).is_some(),
+                admitted,
+                "a window {width} px wide of {} px",
+                size.0
+            );
+        }
+        assert!(damage_is_profitable(0, 1));
+        assert!(!damage_is_profitable(1, 0));
+
+        // 200 distinct caret-sized rectangles (what skipped frames pile up) merge to the
+        // dispatch limit and still cover every one of them.
+        let carets: Vec<_> = (0..200_u32)
+            .map(|i| rect(16 * (i % 50), 16 * (i / 50), 16, 16))
+            .collect();
+        let merged = VelloDrmBridge::normalize_damage(&carets, size)
+            .expect("a long list of small rectangles is repaired sparsely");
+        assert!(merged.len() <= MAX_DAMAGE_RECTS, "{} rects", merged.len());
+        for caret in &carets {
+            assert!(
+                merged.iter().any(|m| {
+                    m.x <= caret.x
+                        && m.y <= caret.y
+                        && m.x + m.width >= caret.x + caret.width
+                        && m.y + m.height >= caret.y + caret.height
+                }),
+                "{caret:?} is covered"
+            );
+        }
+        // The same caret repeated is one rectangle.
+        let repeated = vec![rect(100, 100, 2, 16); 500];
+        assert_eq!(
+            coalesce_damage(repeated, MAX_DAMAGE_RECTS),
+            [rect(100, 100, 2, 16)]
+        );
+    }
+
+    #[test]
+    fn a_window_sized_typing_update_renders_sparsely_and_equals_a_full_repaint() {
+        let mut bridge = required_bridge(200, 100);
+        let mut fresh = required_bridge(200, 100);
+        let view = OutputView::at(crate::shell::render::OutputId(0), (0, 0), (200, 100));
+        let before = window_scene(Color::from_rgb8(255, 255, 255));
+        let after = window_scene(Color::from_rgb8(0, 0, 0));
+        paint_output_pixels(&mut bridge, &before, &view, 1);
+        // The window tile is 65% of the output: damage as large as the window, which used to
+        // pass the "at least half" gate and render the whole output.
+        let window = [rect(0, 0, 130, 100)];
+        let (stats, pixels) = paint_output_damage(
+            &mut bridge,
+            &after,
+            &view,
+            SceneDamage {
+                revision: 2,
+                previous_revision: Some(1),
+                regions: Some(&window),
+            },
+        );
+        assert_eq!(
+            (
+                stats.sparse_attempts,
+                stats.full_attempts,
+                stats.damage_admitted
+            ),
+            (1, 0, true),
+            "typing in a window repaints the window, not the output"
+        );
+        let expected = paint_output_pixels(&mut fresh, &after, &view, 1);
+        assert_eq!(
+            pixels, expected,
+            "the presented pixels equal a full repaint"
+        );
+    }
+
+    #[test]
+    fn a_long_run_of_skipped_frames_owes_merged_damage_and_stays_sparse() {
+        let mut bridge = required_bridge(200, 100);
+        let mut fresh = required_bridge(200, 100);
+        let view = OutputView::at(crate::shell::render::OutputId(0), (0, 0), (200, 100));
+        let first = window_scene(Color::from_rgb8(255, 255, 255));
+        let last = window_scene(Color::from_rgb8(0, 0, 0));
+        paint_output_pixels(&mut bridge, &first, &view, 1);
+        // 150 skipped frames, 100 distinct specks of the upper 40%, then the caret frame.
+        for revision in 2..152_u64 {
+            let (x, y) = (4 * (revision % 50), 2 * (revision % 20));
+            let strip = [rect(
+                u32::try_from(x).unwrap_or(0),
+                u32::try_from(y).unwrap_or(0),
+                4,
+                2,
+            )];
+            assert!(
+                bridge.defer_output(
+                    &view,
+                    SceneDamage {
+                        revision,
+                        previous_revision: revision.checked_sub(1),
+                        regions: Some(&strip),
+                    },
+                ),
+                "the debt of skipped frame {revision} is kept, merged"
+            );
+        }
+        assert!(bridge.target.owed_damage.len() <= MAX_DAMAGE_RECTS);
+        let caret = [rect(32, 16, 16, 32)];
+        let (stats, pixels) = paint_output_damage(
+            &mut bridge,
+            &last,
+            &view,
+            SceneDamage {
+                revision: 152,
+                previous_revision: Some(151),
+                regions: Some(&caret),
+            },
+        );
+        assert_eq!(
+            (stats.sparse_attempts, stats.full_attempts),
+            (1, 0),
+            "the merged debt is repaired sparsely"
+        );
+        let expected = paint_output_pixels(&mut fresh, &last, &view, 1);
+        assert_eq!(
+            pixels, expected,
+            "the presented pixels equal a full repaint"
         );
     }
 
