@@ -16,12 +16,12 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{
     AvatarFace, Button, ButtonFace, EmptyState, EmptyStateContent, Interaction, ListRowFace,
-    PressOutcome, RowAction, RowLeading, ScrollMetrics, Widget,
+    RowAction, RowLeading, Widget,
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{BlendMode, Fill};
-use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::vault::{Core, Request, Requests, Shared, VaultFilter, is_favorite, summary};
 
@@ -71,24 +71,6 @@ fn hold_star_slot<'a>(
     }
 }
 
-/// The scroll bar's gutter at the list's trailing edge: rows end before it,
-/// and the thumb runs in its middle lane, clear of the rows and of the
-/// column's edge.
-#[derive(Clone, Copy, Debug, Default)]
-struct Gutter {
-    width: f64,
-    margin: f64,
-}
-
-impl Gutter {
-    fn of(theme: &Theme) -> Self {
-        Self {
-            width: f64::from(theme.tokens.metrics.scrollbar_gutter),
-            margin: f64::from(theme.tokens.spacing.rhythm.tight) / 2.0,
-        }
-    }
-}
-
 /// What a row's favorite toggle depends on.
 #[derive(Clone, Copy)]
 struct StarRow {
@@ -128,15 +110,6 @@ fn paint_star(
 }
 
 impl Core {
-    fn gutter_track(&self, gutter: Gutter) -> Rect {
-        let area = self.list.rect;
-        Rect::new(area.x1 - gutter.width, area.y0, area.x1, area.y1).inset(-gutter.margin)
-    }
-
-    fn list_metrics(&self) -> ScrollMetrics {
-        ScrollMetrics::new(self.list.content, self.list.rect.height(), self.list.scroll)
-    }
-
     pub(crate) fn paint_list(
         &mut self,
         scene: &mut Scene,
@@ -150,47 +123,51 @@ impl Core {
         self.list.empty_action = None;
         let resized = self.list.rect.size() != area.size();
         self.list.rect = area;
+        self.list.scroller.set_viewport(area, theme);
         if area.width() <= 0.0 || area.height() <= 0.0 {
             return;
         }
         let visible: Vec<accounts::SecretItem> = self.visible().into_iter().cloned().collect();
         if visible.is_empty() {
-            self.list.content = 0.0;
+            self.list.scroller.set_content_size(0.0, 0.0);
             self.paint_list_empty(scene, t, text, theme, area);
             return;
         }
         let inset = f64::from(theme.tokens.spacing.s2);
-        let gutter = Gutter::of(theme);
         let summaries: Vec<String> = visible.iter().map(summary).collect();
         let height = ListRowFace::new("")
             .leading(RowLeading::Avatar(AvatarFace::new("", "")))
             .secondary("")
             .height(text, theme);
-        self.list.line = height;
         let count = ui::num::f64_of_usize(visible.len());
-        self.list.content = height * count + inset * 2.0;
+        self.list
+            .scroller
+            .set_content_size(area.width(), height * count + inset * 2.0);
         if (std::mem::take(&mut self.list.reveal) || resized)
             && let Some(index) = visible
                 .iter()
                 .position(|item| Some(&item.id) == self.selected.as_ref())
         {
+            // The row with the list's inset above and below it.
             let top = ui::num::f64_of_usize(index) * height;
-            let bottom = top + height;
-            if top < self.list.scroll {
-                self.list.scroll = top;
-            } else if bottom + inset * 2.0 > self.list.scroll + area.height() {
-                self.list.scroll = bottom + inset * 2.0 - area.height();
-            }
+            self.list.scroller.scroll_into_view(Rect::new(
+                0.0,
+                top,
+                area.width(),
+                top + height + inset * 2.0,
+            ));
         }
-        let overflows = self.list_metrics().overflows();
-        let max = (self.list.content - area.height()).max(0.0);
-        self.list.scroll = self.list.scroll.clamp(0.0, max);
+        let overflows = self.list.scroller.overflows_vertically();
 
         // The rows' text starts on the column's content edge, where the
         // column's title starts; a row's lift bleeds past it.
         let edge = ui::chrome::column_gutter(theme) - ui::chrome::row_bleed(theme);
-        let x1 = area.x1 - edge.max(if overflows { gutter.width } else { 0.0 });
-        let mut y = area.y0 + inset - self.list.scroll;
+        let x1 = if overflows {
+            self.list.scroller.content_rect().x1
+        } else {
+            area.x1 - edge
+        };
+        let mut y = area.y0 + inset - self.list.scroller.offset().y;
         let pointer = self.pointer;
         // A new item is not in the list yet: nothing there is the open item.
         let open = if self.screen == crate::vault::Screen::Editor && self.editing.is_none() {
@@ -239,17 +216,7 @@ impl Core {
             self.list.rows.push((rect.intersect(area), item.id.clone()));
         }
         scene.pop_layer();
-
-        if overflows {
-            self.list.bar.draw(
-                scene,
-                t,
-                self.gutter_track(gutter),
-                self.list_metrics(),
-                theme,
-                false,
-            );
-        }
+        self.list.scroller.paint_bars(scene, t, theme);
     }
 
     fn paint_list_empty(
@@ -286,82 +253,43 @@ impl Core {
         );
     }
 
-    /// Route `event` to the list. Returns whether the list used it.
+    /// Route `event` to the list, marking it handled when the list used it.
     fn list_event(
         &mut self,
         event: &WindowEvent,
-        ctx: &ui::widget::EventCtx<'_>,
-        gutter: Gutter,
+        ctx: &mut ui::widget::EventCtx<'_>,
+        theme: &Theme,
         requests: &Requests,
-    ) -> bool {
-        let area = self.list.rect;
-        let inside = area.contains(self.pointer);
-        match event {
-            WindowEvent::CursorMoved { .. } => {
-                let track = self.gutter_track(gutter);
-                let metrics = self.list_metrics();
-                if let Some(offset) = self.list.bar.drag_to(track, metrics, self.pointer) {
-                    self.list.scroll = offset;
-                    return true;
-                }
-                self.list.bar.update_hover(track, metrics, self.pointer);
-                false
-            }
-            WindowEvent::MouseWheel { delta, .. } if inside => {
-                let dy = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * self.list.line,
-                    MouseScrollDelta::PixelDelta(p) => p.y / ctx.scale_factor,
-                };
-                let max = (self.list.content - area.height()).max(0.0);
-                self.list.scroll = (self.list.scroll - dy).clamp(0.0, max);
-                true
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } if inside => {
-                let metrics = self.list_metrics();
-                if metrics.overflows() {
-                    match self
-                        .list
-                        .bar
-                        .press(self.gutter_track(gutter), metrics, self.pointer)
-                    {
-                        PressOutcome::Thumb => return true,
-                        PressOutcome::Page(offset) => {
-                            self.list.scroll = offset;
-                            return true;
-                        }
-                        PressOutcome::Miss => {}
-                    }
-                }
-                let pointer = self.pointer;
-                let request = if self.list.empty_action.is_some_and(|r| r.contains(pointer)) {
-                    Some(Request::NewItem)
-                } else if let Some((_, id)) =
-                    self.list.stars.iter().find(|(r, _)| r.contains(pointer))
-                {
-                    Some(Request::ToggleFavorite(id.clone()))
-                } else {
-                    self.list
-                        .rows
-                        .iter()
-                        .find(|(rect, _)| rect.contains(pointer))
-                        .map(|(_, id)| Request::Open(id.clone()))
-                };
-                if let Some(request) = request {
-                    requests.borrow_mut().push(request);
-                }
-                true
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Released,
-                button: MouseButton::Left,
-                ..
-            } => self.list.bar.release(),
-            _ => false,
+    ) {
+        // The scroll region takes the wheel, touchpad gestures and its bar.
+        self.list.scroller.handle_event(event, ctx, theme);
+        let WindowEvent::MouseInput {
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+            ..
+        } = event
+        else {
+            return;
+        };
+        if *ctx.handled || !self.list.rect.contains(self.pointer) {
+            return;
         }
+        let pointer = self.pointer;
+        let request = if self.list.empty_action.is_some_and(|r| r.contains(pointer)) {
+            Some(Request::NewItem)
+        } else if let Some((_, id)) = self.list.stars.iter().find(|(r, _)| r.contains(pointer)) {
+            Some(Request::ToggleFavorite(id.clone()))
+        } else {
+            self.list
+                .rows
+                .iter()
+                .find(|(rect, _)| rect.contains(pointer))
+                .map(|(_, id)| Request::Open(id.clone()))
+        };
+        if let Some(request) = request {
+            requests.borrow_mut().push(request);
+        }
+        *ctx.handled = true;
     }
 
     fn list_accessibility(&self) -> AccessNode {
@@ -392,7 +320,9 @@ pub(crate) struct ListPane {
     core: Shared,
     requests: Requests,
     rect: Rect,
-    gutter: Gutter,
+    /// The theme of the last layout, for the scroll region's lanes, steps
+    /// and fade.
+    theme: Theme,
 }
 
 impl ListPane {
@@ -401,7 +331,7 @@ impl ListPane {
             core: Rc::clone(core),
             requests: Rc::clone(requests),
             rect: Rect::ZERO,
-            gutter: Gutter::default(),
+            theme: Theme::dark(),
         }
     }
 }
@@ -414,7 +344,7 @@ impl Widget for ListPane {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        self.gutter = Gutter::of(theme);
+        self.theme = theme.clone();
         let style = Style {
             size: taffy::Size {
                 width: taffy::Dimension::percent(1.0),
@@ -443,13 +373,9 @@ impl Widget for ListPane {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        if self
-            .core
+        self.core
             .borrow_mut()
-            .list_event(event, ctx, self.gutter, &self.requests)
-        {
-            *ctx.handled = true;
-        }
+            .list_event(event, ctx, &self.theme, &self.requests);
     }
 
     fn accessibility(&self) -> Option<AccessNode> {
@@ -476,7 +402,20 @@ impl Widget for ListPane {
     }
 
     fn wants_pointer_capture(&self) -> bool {
-        self.core.borrow().list.bar.is_dragging()
+        self.core.borrow().list.scroller.is_dragging()
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        self.core
+            .try_borrow()
+            .is_ok_and(|core| core.list.scroller.needs_animation_frame(&self.theme))
+    }
+
+    fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
+        self.core
+            .try_borrow()
+            .ok()
+            .and_then(|core| core.list.scroller.next_wake_deadline(&self.theme))
     }
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {

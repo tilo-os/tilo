@@ -130,11 +130,39 @@ record is held in its own app worker (`crates/agent/agent-participant/src/worker
   (`participant/unopened.rs`). With no isolate those changes wait and the
   record does not open; nothing decodes them in the host instead. A worker
   that dies is replaced from that copy, at most twice per record.
+- **Keys before acting.** Room actions act on a record only once the host
+  holds that record's channel keys. The wait is woken by the key's arrival
+  and covers only the record the request names, so a record whose keys are
+  withheld holds back no other. When the keys have not arrived after 10 s,
+  the invocation is refused as unavailable; it never runs on a record seen
+  only in part. A catalogue waits for the same keys once, then lists what
+  opened.
 
 Still in the host process: the app catalogue is linked statically (each
 app's `definition()` builds there), and agents' device keys are kept in
 `agents.json`. Moving the catalogue to installed packages and the agent keys
 to the secret store are tracked follow-ups.
+
+### Load hints beside local records
+
+Loading a large record spends most of its time rebuilding every change to
+learn its hash, so a full save of a record of 64 KiB or more also writes the
+change hashes it listed to `state.hashes` beside `state.automerge`
+(`crates/system/app-state/src/load_hint.rs`), and the next load takes them
+instead (TIL-762). A hint skips verifying that each change matches its hash,
+so it is trusted exactly as far as the record bytes beside it:
+
+- Only `DocWriter` makes one, from the document it holds, whose changes were
+  verified when they entered it; the store keeps it on this device and never
+  syncs, sends or receives it. Documents and changes from peers are always
+  rebuilt and verified in full, through the isolate where it applies.
+- It names the document chunk it was made for by BLAKE3 digest and is used
+  for those bytes only; anything else (a replacement, a restored file, a
+  torn write) makes it stale and the load rebuilds every change.
+- Automerge still requires one distinct hash per change whose tips are the
+  stored heads. A keyed MAC would add nothing: its key would sit in the same
+  device-local directory, behind the same write access that already decides
+  what the record contains.
 
 ## Per-workspace Wayland bridge socket
 

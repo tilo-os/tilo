@@ -4070,7 +4070,7 @@ impl BlockEditor {
     #[doc(hidden)]
     pub fn slash_menu_handle_key_for_test(&mut self, event: &WindowEvent) -> bool {
         let consumed = self.slash_menu.handle_key(event);
-        if let Some(new_kind) = self.slash_menu.take_selected_kind() {
+        if let Some(new_kind) = self.slash_menu.take_selection() {
             self.commit_slash_selection(new_kind);
         }
         if !self.slash_menu.is_visible() {
@@ -9271,7 +9271,7 @@ impl Widget for BlockEditor {
             let handled = self
                 .slash_menu
                 .perform_semantic_action(target, action, state, path);
-            if let Some(new_kind) = self.slash_menu.take_selected_kind() {
+            if let Some(new_kind) = self.slash_menu.take_selection() {
                 self.commit_slash_selection(new_kind);
             }
             if !self.slash_menu.is_visible() {
@@ -9803,8 +9803,8 @@ impl BlockEditor {
             return false;
         }
         let consumed = self.slash_menu.handle_key(event);
-        // Drain pending_selection regardless of `consumed` — Enter may have set it.
-        if let Some(new_kind) = self.slash_menu.take_selected_kind() {
+        // Drain the pending selection regardless of `consumed` — Enter may have set it.
+        if let Some(new_kind) = self.slash_menu.take_selection() {
             self.commit_slash_selection(new_kind);
         }
         if !self.slash_menu.is_visible() {

@@ -739,10 +739,27 @@ def processes(ctx) -> dict:
 # mappings by Anonymous kB: one `[heap]` or a run of 64 MiB-aligned `[anon]` regions
 # (glibc arenas) reads differently from one GPU buffer that doubled. Tilo's own kernel
 # has no smaps (CONFIG_PROC_PAGE_MONITOR=n, os/kernel/config-fragments/tilo.config), so
-# there only the status lines exist.
+# there only the status lines exist. Its shmem is read by fd instead: per memfd, dma-buf,
+# DRM and /dev/shm fd, its size and the bytes allocated to it (`stat -L` through the fd:
+# a memfd's st_blocks are its shmem pages, mapped or not), and from fdinfo a dma-buf's
+# size and exporter and a DRM fd's GEM totals. Shmem the compositor's cgroup holds that
+# nothing maps (TIL-731) is named here.
 SHELL_MEMORY = r'''
 pid=__PID__
 awk '/^(VmRSS|RssAnon|RssFile|RssShmem|VmSwap|Threads):/ {print "S", $1, $2}' /proc/$pid/status
+for fd in /proc/$pid/fd/*; do
+  target=$(readlink "$fd" 2>/dev/null) || continue
+  case "$target" in
+    /memfd:*|anon_inode:dmabuf*|/dmabuf:*|/dev/dri/*|/dev/udmabuf|/dev/shm/*) ;;
+    *) continue ;;
+  esac
+  n=${fd##*/}
+  sizes=$(stat -L -c '%s %b %B' "$fd" 2>/dev/null || echo '- - -')
+  info=$(awk '$1 ~ /^(size|exp_name|drm-driver|drm-total-[a-z0-9-]+|drm-resident-[a-z0-9-]+):$/ {
+              sub(/:$/, "", $1); v = $2; for (i = 3; i <= NF; i++) v = v "_" $i; printf "%s=%s ", $1, v}' \
+            "/proc/$pid/fdinfo/$n" 2>/dev/null)
+  printf 'F\t%s\t%s\t%s\t%s\n' "$n" "$sizes" "$info" "$target"
+done
 [ -d /proc/$pid ] && [ ! -e /proc/$pid/smaps_rollup ] && echo "PAGE-MONITOR no" && exit 0
 awk 'NR > 1 && $3 == "kB" {print "R", $1, $2}' /proc/$pid/smaps_rollup
 awk '/^[0-9a-f]+-[0-9a-f]+ / {range = $1; name = "[anon]"; if (NF >= 6) {name = $6; for (i = 7; i <= NF; i++) name = name " " $i}}
@@ -750,16 +767,54 @@ awk '/^[0-9a-f]+-[0-9a-f]+ / {range = $1; name = "[anon]"; if (NF >= 6) {name = 
 '''
 
 
+def _shm_fd(f: list[str]) -> dict | None:
+    """One `F` line, split on tabs: fd, `size blocks block_size`, fdinfo `key=value`s, target."""
+    sizes = f[2].split()
+    if not f[1].isdigit() or len(sizes) != 3:
+        return None
+    size, blocks, unit = (int(v) if v.isdigit() else None for v in sizes)
+    target = f[4]
+    kind = ("memfd" if target.startswith("/memfd:") else "dmabuf" if "dmabuf" in target
+            else "drm" if target.startswith("/dev/dri/") else "udmabuf" if target == "/dev/udmabuf"
+            else "shm")
+    name = target.removeprefix("/memfd:").removesuffix(" (deleted)") if kind == "memfd" else target
+    return {"fd": int(f[1]), "kind": kind, "name": name, "size_bytes": size,
+            "allocated_bytes": blocks * unit if blocks is not None and unit is not None else None,
+            "fdinfo": dict(kv.split("=", 1) for kv in f[3].split() if "=" in kv)}
+
+
+def shm_by_name(fds: list[dict]) -> dict:
+    """The compositor's memfds and /dev/shm files summed by name: how many, their size and
+    the shmem allocated to them, in MiB, largest allocation first."""
+    out: dict[str, dict] = {}
+    for f in fds:
+        if f["kind"] not in ("memfd", "shm") or f["allocated_bytes"] is None:
+            continue
+        o = out.setdefault(f["name"], {"count": 0, "size_mib": 0.0, "allocated_mib": 0.0})
+        o["count"] += 1
+        o["size_mib"] = round(o["size_mib"] + (f["size_bytes"] or 0) / 2**20, 1)
+        o["allocated_mib"] = round(o["allocated_mib"] + f["allocated_bytes"] / 2**20, 1)
+    return dict(sorted(out.items(), key=lambda kv: -kv[1]["allocated_mib"]))
+
+
 def parse_shell_memory(text: str) -> dict:
-    """`SHELL_MEMORY` output -> {"status_kib", "smaps_rollup_kib", "top_anon_mappings"}."""
-    status, rollup, top = {}, {}, []
+    """`SHELL_MEMORY` output -> {"status_kib", "smaps_rollup_kib", "top_anon_mappings",
+    "shm_fds", "shm_by_name"}."""
+    status, rollup, top, fds = {}, {}, [], []
     for line in text.splitlines():
+        if line.startswith("F\t"):
+            parts = line.split("\t", 4)
+            fd = _shm_fd(parts) if len(parts) == 5 else None
+            if fd:
+                fds.append(fd)
+            continue
         f = line.split()
         if len(f) >= 3 and f[0] in ("S", "R") and f[2].isdigit():
             (status if f[0] == "S" else rollup)[f[1].rstrip(":")] = int(f[2])
         elif len(f) >= 4 and f[0] == "A" and f[1].isdigit():
             top.append({"anon_kib": int(f[1]), "range": f[2], "name": " ".join(f[3:])})
-    return {"status_kib": status, "smaps_rollup_kib": rollup, "top_anon_mappings": top}
+    return {"status_kib": status, "smaps_rollup_kib": rollup, "top_anon_mappings": top,
+            "shm_fds": fds, "shm_by_name": shm_by_name(fds)}
 
 
 def shell_memory(ctx, pid: int) -> dict:

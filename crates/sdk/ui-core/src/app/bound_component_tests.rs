@@ -996,6 +996,7 @@ include!("owner_publication_tests.rs");
 include!("action_directory_snapshot_bound_tests.rs");
 include!("bound_record_sync_tests.rs");
 include!("standalone_history_record_restore_tests.rs");
+include!("shared_forest_tests.rs");
 
 #[test]
 fn background_document_job_is_broker_admitted_before_its_canonical_edit() {
@@ -2955,5 +2956,101 @@ fn bound_hover_carries_snapshots_only_across_unwritten_records() {
     assert!(
         DISCOVERY_COUNT.get() > first,
         "the written record is rediscovered"
+    );
+}
+
+/// A frame that hands over the same component snapshot reuses what was
+/// derived from it (the controls' allowed addresses, the component's semantic
+/// nodes) instead of copying and walking the whole published tree again, and
+/// a changed snapshot or permission still produces exactly what a fresh
+/// derivation would (TIL-761).
+#[test]
+fn unchanged_component_snapshots_keep_their_controls_and_semantic_nodes() {
+    let mut fixture = ActionFixture::new();
+    let at = |fixture: &ActionFixture, time| {
+        let moved = fixture.permissions.borrow().clone().at_unix_time(time);
+        *fixture.permissions.borrow_mut() = moved;
+    };
+    let availability = |fixture: &mut ActionFixture| {
+        CONTROL_AUTHORITY.with_borrow_mut(Vec::clear);
+        fixture.app.refresh_control_action_availability();
+        CONTROL_AUTHORITY.with_borrow(Clone::clone)
+    };
+    assert_eq!(
+        availability(&mut fixture),
+        vec![(false, true), (true, true)]
+    );
+    assert_eq!(
+        availability(&mut fixture),
+        vec![(false, true), (true, true)],
+        "a reused derivation answers as the first did"
+    );
+    at(&fixture, 120);
+    assert_eq!(
+        availability(&mut fixture),
+        vec![(false, false), (true, false)],
+        "an expired grant withdraws the controls"
+    );
+    at(&fixture, 100);
+    assert_eq!(
+        availability(&mut fixture),
+        vec![(false, true), (true, true)]
+    );
+
+    fixture.app.refresh_semantic_tree();
+    let (id, _) = fixture
+        .app
+        .accessibility
+        .semantic_tree
+        .bound_actions_for_test()
+        .into_iter()
+        .find(|(_, target)| target.address.instance_id == 11)
+        .expect("a bound component action in the semantic tree");
+    let before = std::ptr::from_ref(
+        fixture
+            .app
+            .accessibility
+            .semantic_tree
+            .node(&id)
+            .expect("the component's resource node"),
+    );
+    assert!(
+        fixture.app.refresh_semantic_tree().is_empty(),
+        "nothing changed"
+    );
+    assert!(
+        std::ptr::eq(
+            before,
+            fixture
+                .app
+                .accessibility
+                .semantic_tree
+                .node(&id)
+                .expect("the component's resource node"),
+        ),
+        "an unchanged snapshot keeps its nodes rather than rebuilding them"
+    );
+
+    at(&fixture, 120);
+    assert!(
+        !fixture.app.refresh_semantic_tree().is_empty(),
+        "withdrawn actions change the tree"
+    );
+    let content = |tree: &crate::a11y_tree::SemanticTree| {
+        let mut bound = tree
+            .bound_actions_for_test()
+            .into_iter()
+            .map(|(id, target)| (id, target.address.address.action))
+            .collect::<Vec<_>>();
+        bound.sort();
+        (tree.iter().cloned().collect::<Vec<_>>(), bound, tree.len())
+    };
+    let retained = content(&fixture.app.accessibility.semantic_tree);
+    fixture.app.accessibility.semantic_tree = crate::a11y_tree::SemanticTree::new();
+    fixture.app.refresh_semantic_tree();
+    assert_eq!(
+        retained,
+        content(&fixture.app.accessibility.semantic_tree),
+        "the retained tree is the tree a fresh refresh builds"
     );
 }

@@ -1488,7 +1488,7 @@ mod tests {
     #[test]
     fn prefs_defaults_are_sensible_and_classified() {
         let region = serde_json::json!({
-            "locale": crate::region::Locale::default(),
+            "locale": tilo_locale::Locale::default(),
             "default_apps": crate::panes::personal_apps::DefaultApps::default(),
         })
         .to_string();

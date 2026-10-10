@@ -1913,7 +1913,7 @@ fn ua_for_uri(uri: &str) -> &'static str {
             _ => IOS_UA,
         };
     }
-    crate::backend::proxy::BROWSER_UA
+    tilo_invidious::BROWSER_UA
 }
 
 /// Parse the `clen=` (content-length) query param off a googlevideo url, so the
@@ -2143,7 +2143,7 @@ fn download_into(
             .and_then(|v| v.to_str().ok())
             .unwrap_or("")
             .to_string();
-        if off == 0 && !ct.is_empty() && !crate::backend::proxy::content_type_is_media(&ct) {
+        if off == 0 && !ct.is_empty() && !tilo_invidious::content_type_is_media(&ct) {
             tracing::warn!(target: "music::audio", %uri, content_type = %ct, "stream fetch: non-media Content-Type — discarding, will try fallback");
             break;
         }
@@ -2179,7 +2179,7 @@ fn download_into(
                 tracing::warn!(target: "music::audio", %uri, off, "stream fetch: source ignored bounded range");
                 return 0;
             }
-            if off == 0 && crate::backend::proxy::body_sniffs_as_html(&first) {
+            if off == 0 && tilo_invidious::body_sniffs_as_html(&first) {
                 tracing::warn!(target: "music::audio", %uri, "stream fetch: body sniffs as HTML — discarding, will try fallback");
                 return 0;
             }
