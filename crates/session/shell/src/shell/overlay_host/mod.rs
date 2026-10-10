@@ -21142,16 +21142,13 @@ impl Widget for ShellOverlayHost {
                         .with_name(t("a11y-workspace-settings"))
                         .with_description(t("a11y-workspace-settings-description"))
                         .with_state(AccessState::new().modal(true));
-                    if self
-                        .workspace_settings_overlay
-                        .ownership_action_rect()
-                        .area()
-                        > 0.0
-                    {
+                    let ownership = self.workspace_settings_overlay.ownership_action_rect();
+                    if ownership.area() > 0.0 {
                         settings.children.push(
                             AccessNode::new(Role::Button)
                                 .with_name(t("a11y-manage-ownership"))
-                                .with_description(t("a11y-manage-ownership-description")),
+                                .with_description(t("a11y-manage-ownership-description"))
+                                .with_bounds(ownership),
                         );
                     }
                     if let Some(chrome) = &self.chrome {
