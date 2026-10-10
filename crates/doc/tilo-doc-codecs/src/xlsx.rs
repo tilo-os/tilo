@@ -7,7 +7,7 @@
 use crate::format::{CodecError, Confidence};
 use crate::sheet_common::{
     ParsedSheet, ParsedWorkbook, SheetPackage, SheetProvider, attr_local, end_local_name,
-    local_name,
+    local_name, parse_doc_props,
 };
 use crate::xml_escape::escape_attr_quotes;
 use quick_xml::events::Event;
@@ -85,7 +85,15 @@ impl XlsxCodec {
             parsed.sheets.push(sheet);
         }
         if let Some(core) = pkg.get("docProps/core.xml") {
-            parsed.properties = parse_core_props(core);
+            parsed.properties = parse_doc_props(
+                core,
+                &[
+                    (b"title", "title"),
+                    (b"creator", "author"),
+                    (b"created", "created"),
+                    (b"modified", "modified"),
+                ],
+            );
         }
         // Preserve styles + theme so cell `s=` refs resolve and unmodeled parts survive; regenerated structural parts are not.
         for (name, bytes) in &pkg.parts {
@@ -457,50 +465,6 @@ fn push_cell(
             style,
         },
     ));
-}
-
-fn parse_core_props(xml: &[u8]) -> BTreeMap<String, String> {
-    let mut props = BTreeMap::new();
-    let Ok(s) = std::str::from_utf8(xml) else {
-        return props;
-    };
-    let mut reader = Reader::from_str(s);
-    let mut cur: Option<&'static str> = None;
-    let mut buf = String::new();
-    while let Ok(ev) = reader.read_event() {
-        match ev {
-            Event::Start(e) => {
-                cur = match local_name(&e) {
-                    b"title" => Some("title"),
-                    b"creator" => Some("author"),
-                    b"created" => Some("created"),
-                    b"modified" => Some("modified"),
-                    _ => None,
-                };
-                buf.clear();
-            }
-            Event::Text(t) => {
-                if cur.is_some()
-                    && let Ok(txt) = t.xml10_content()
-                {
-                    buf.push_str(&txt);
-                }
-            }
-            Event::GeneralRef(r) if cur.is_some() => {
-                buf.extend(crate::resolve_general_ref(&r));
-            }
-            Event::End(_) => {
-                if let Some(key) = cur.take()
-                    && !buf.is_empty()
-                {
-                    props.insert(key.to_string(), buf.clone());
-                }
-            }
-            Event::Eof => break,
-            _ => {}
-        }
-    }
-    props
 }
 
 fn content_types_xml(nsheets: usize, has_theme: bool) -> String {

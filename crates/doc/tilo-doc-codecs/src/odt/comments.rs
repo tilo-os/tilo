@@ -160,8 +160,9 @@ fn annotation_meta(raw: &str) -> (String, String) {
     (author, date)
 }
 
-/// Render a comment's paragraphs as the body `text:p` sequence; only plain text + tabs/breaks are modeled.
-fn render_comment_body(blocks: &[BlockView]) -> String {
+/// Render a comment's or note's paragraphs as a `text:p` sequence; only plain text + tabs/breaks
+/// are modeled (richer inline styling isn't supported in annotation or note bodies).
+pub(super) fn render_plain_body(blocks: &[BlockView]) -> String {
     let mut out = String::new();
     for b in blocks {
         out.push_str("<text:p>");
@@ -188,7 +189,7 @@ pub(super) fn render_annotation_start(comment: &CommentView) -> String {
     format!(
         r#"<office:annotation office:name="{name}"><dc:creator>{}</dc:creator>{date}{}</office:annotation>"#,
         escape_text(&comment.author),
-        render_comment_body(&comment.blocks),
+        render_plain_body(&comment.blocks),
     )
 }
 

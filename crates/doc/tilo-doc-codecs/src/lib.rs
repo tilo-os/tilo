@@ -50,6 +50,8 @@ pub mod markdown;
 pub mod ods;
 #[cfg(feature = "odt")]
 pub mod odt;
+#[cfg(any(feature = "docx", feature = "odt"))]
+mod office_meta;
 #[cfg(feature = "office")]
 pub mod preserve;
 #[cfg(any(feature = "html", feature = "docx", feature = "odt"))]
@@ -122,6 +124,24 @@ pub fn resolve_general_ref(reference: &quick_xml::events::BytesRef<'_>) -> Optio
         "quot" => Some('"'),
         "apos" => Some('\''),
         _ => None,
+    }
+}
+
+#[cfg(any(feature = "docx", feature = "odt"))]
+/// The generic family (`mono`, `serif` or `sans`) a document font name falls under.
+pub(crate) fn generic_font(name: &str) -> String {
+    let n = name.to_ascii_lowercase();
+    if n.contains("mono") || n.contains("courier") || n.contains("consol") {
+        "mono".into()
+    } else if (n.contains("serif") && !n.contains("sans"))
+        || n.contains("times")
+        || n.contains("georgia")
+        || n.contains("garamond")
+        || n.contains("roman")
+    {
+        "serif".into()
+    } else {
+        "sans".into()
     }
 }
 

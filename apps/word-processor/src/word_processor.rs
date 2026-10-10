@@ -1848,64 +1848,49 @@ impl WordProcessor {
 
     /// Delete the caret's row (deletes the whole table if it was the last row).
     pub fn table_del_row(&mut self, state: &mut ui::widget::Edits<'_>) {
-        let Some((tid, cells)) = self.caret_table(state) else {
-            return;
-        };
-        let nrows = cells.iter().map(|(_, r, _)| *r).max().unwrap_or(0) + 1;
-        if nrows <= 1 {
-            self.table_delete(state);
-            return;
-        }
-        let (cur_row, cur_col) = self.caret_rc(&cells);
-        let target_row = if cur_row + 1 < nrows {
-            cur_row + 1
-        } else {
-            cur_row - 1
-        };
-        let new_caret = cells
-            .iter()
-            .find(|(_, r, c)| *r == target_row && *c == cur_col)
-            .map(|(id, _, _)| id.clone());
-        let action = crate::actions::edit_table_action(
-            &tid,
-            crate::actions::TableEdit::DeleteRow { row: cur_row },
-        );
-        if !self.apply_rich(state, action) {
-            return;
-        }
-        if let Some(nc) = new_caret {
-            self.caret = Caret {
-                block: nc,
-                offset: 0,
-            };
-            self.selection_anchor = None;
-        }
+        self.table_del_line(state, false);
     }
 
     /// Delete the caret's column (deletes the whole table if it was the last).
     pub fn table_del_col(&mut self, state: &mut ui::widget::Edits<'_>) {
+        self.table_del_line(state, true);
+    }
+
+    /// Delete the caret's row, or its column when `column`, moving the caret to
+    /// the neighbouring line (deletes the whole table if it was the last one).
+    fn table_del_line(&mut self, state: &mut ui::widget::Edits<'_>, column: bool) {
         let Some((tid, cells)) = self.caret_table(state) else {
             return;
         };
-        let ncols = cells.iter().map(|(_, _, c)| *c).max().unwrap_or(0) + 1;
-        if ncols <= 1 {
+        // A cell's (line, cross) position: its index along the deleted axis first.
+        let along = |r: usize, c: usize| if column { (c, r) } else { (r, c) };
+        let nlines = cells
+            .iter()
+            .map(|(_, r, c)| along(*r, *c).0)
+            .max()
+            .unwrap_or(0)
+            + 1;
+        if nlines <= 1 {
             self.table_delete(state);
             return;
         }
         let (cur_row, cur_col) = self.caret_rc(&cells);
-        let target_col = if cur_col + 1 < ncols {
-            cur_col + 1
+        let (cur_line, cross) = along(cur_row, cur_col);
+        let target_line = if cur_line + 1 < nlines {
+            cur_line + 1
         } else {
-            cur_col - 1
+            cur_line - 1
         };
         let new_caret = cells
             .iter()
-            .find(|(_, r, c)| *r == cur_row && *c == target_col)
+            .find(|(_, r, c)| along(*r, *c) == (target_line, cross))
             .map(|(id, _, _)| id.clone());
-        let action = crate::actions::edit_table_action(
-            &tid,
-            crate::actions::TableEdit::DeleteColumn { column: cur_col },
-        );
+        let edit = if column {
+            crate::actions::TableEdit::DeleteColumn { column: cur_line }
+        } else {
+            crate::actions::TableEdit::DeleteRow { row: cur_line }
+        };
+        let action = crate::actions::edit_table_action(&tid, edit);
         if !self.apply_rich(state, action) {
             return;
         }

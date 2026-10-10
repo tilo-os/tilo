@@ -945,17 +945,18 @@ fn run_props(marks: &[&tilo_doc::document::MarkSpan]) -> String {
     s
 }
 
-/// Emit run content, turning `\t` → `<w:tab/>` and `\n` → `<w:br/>`.
-fn run_content(text: &str) -> String {
+/// Emit run content as `text_elem` (`w:t`, or `w:delText` for a deleted run as OOXML
+/// requires), turning `\t` → `<w:tab/>` and `\n` → `<w:br/>`.
+fn run_content(text: &str, text_elem: &str) -> String {
     let mut out = String::new();
     let mut buf = String::new();
     let flush = |out: &mut String, buf: &mut String| {
         if !buf.is_empty() {
-            out.push_str(r#"<w:t xml:space="preserve">"#);
+            let _ = write!(out, r#"<{text_elem} xml:space="preserve">"#);
             for c in buf.chars() {
                 push_text(out, c);
             }
-            out.push_str("</w:t>");
+            let _ = write!(out, "</{text_elem}>");
             buf.clear();
         }
     };
@@ -1018,37 +1019,6 @@ fn change_open_tag(change: &tilo_doc::snapshot::ChangeView, docx_id: i64) -> Str
         r#"<{elem} w:id="{docx_id}" w:author="{}"{date}>"#,
         escape_attr(&change.author)
     )
-}
-
-/// Emit a *deleted* run's content as `<w:delText>` (OOXML requires it, not `w:t`); `\t`/`\n` still map as usual.
-fn del_run_content(text: &str) -> String {
-    let mut out = String::new();
-    let mut buf = String::new();
-    let flush = |out: &mut String, buf: &mut String| {
-        if !buf.is_empty() {
-            out.push_str(r#"<w:delText xml:space="preserve">"#);
-            for c in buf.chars() {
-                push_text(out, c);
-            }
-            out.push_str("</w:delText>");
-            buf.clear();
-        }
-    };
-    for c in text.chars() {
-        match c {
-            '\t' => {
-                flush(&mut out, &mut buf);
-                out.push_str("<w:tab/>");
-            }
-            '\n' => {
-                flush(&mut out, &mut buf);
-                out.push_str("<w:br/>");
-            }
-            _ => buf.push(c),
-        }
-    }
-    flush(&mut out, &mut buf);
-    out
 }
 
 /// The id-lookup tables `render_runs` needs to resolve marks into DOCX-side numeric/ref ids;
@@ -1205,11 +1175,7 @@ fn push_run(out: &mut String, text: &str, rpr: &str, is_del: bool) {
     if !rpr.is_empty() {
         let _ = write!(out, "<w:rPr>{rpr}</w:rPr>");
     }
-    if is_del {
-        out.push_str(&del_run_content(text));
-    } else {
-        out.push_str(&run_content(text));
-    }
+    out.push_str(&run_content(text, if is_del { "w:delText" } else { "w:t" }));
     out.push_str("</w:r>");
 }
 

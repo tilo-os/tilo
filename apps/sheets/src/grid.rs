@@ -1211,34 +1211,20 @@ impl Grid {
 
     /// Visible column indices given the current scroll + body width.
     fn visible_cols(&self) -> Vec<u32> {
-        let body = self.body_rect();
-        let start = self
-            .col_x
-            .partition_point(|&x| x <= self.scroll_x)
-            .saturating_sub(1)
-            .min(self.n_cols as usize);
-        let end = self
-            .col_x
-            .partition_point(|&x| x < self.scroll_x + body.width())
-            .min(self.n_cols as usize);
-        (start..end)
-            .filter_map(|index| u32::try_from(index).ok())
-            .collect()
+        visible_span(
+            &self.col_x,
+            self.scroll_x,
+            self.body_rect().width(),
+            self.n_cols,
+        )
     }
     fn visible_rows(&self) -> Vec<u32> {
-        let body = self.body_rect();
-        let start = self
-            .row_y
-            .partition_point(|&y| y <= self.scroll_y)
-            .saturating_sub(1)
-            .min(self.n_rows as usize);
-        let end = self
-            .row_y
-            .partition_point(|&y| y < self.scroll_y + body.height())
-            .min(self.n_rows as usize);
-        (start..end)
-            .filter_map(|index| u32::try_from(index).ok())
-            .collect()
+        visible_span(
+            &self.row_y,
+            self.scroll_y,
+            self.body_rect().height(),
+            self.n_rows,
+        )
     }
 
     /// Map a screen point to a cell, or `None` if it's over a header/corner.
@@ -3116,6 +3102,21 @@ fn bounded_window(active: u32, total: u32, limit: u32) -> Vec<u32> {
         .saturating_sub(half)
         .min(total.saturating_sub(take));
     (start..start.saturating_add(take)).collect()
+}
+
+/// The indices of the lines (columns or rows, starting at `edges`) that overlap the window
+/// `[scroll, scroll + extent)`, capped at `count`.
+fn visible_span(edges: &[f64], scroll: f64, extent: f64, count: u32) -> Vec<u32> {
+    let start = edges
+        .partition_point(|&x| x <= scroll)
+        .saturating_sub(1)
+        .min(count as usize);
+    let end = edges
+        .partition_point(|&x| x < scroll + extent)
+        .min(count as usize);
+    (start..end)
+        .filter_map(|index| u32::try_from(index).ok())
+        .collect()
 }
 
 #[cfg(test)]

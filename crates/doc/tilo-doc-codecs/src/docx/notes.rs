@@ -3,12 +3,12 @@
 //! `<w:footnoteReference w:id="N"/>`/`<w:endnoteReference w:id="N"/>`. This maps a note
 //! onto a `note-ref` marker in body text plus its content in the `notes` container.
 
-use crate::xml_escape::push_text;
+use super::comments::{attr_w_val, render_plain_body};
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
 use std::collections::BTreeMap;
 use tilo_doc::model::{DocMut, DocRef, NoteKind, materialize_notes};
-use tilo_doc::snapshot::{BlockView, NoteView};
+use tilo_doc::snapshot::NoteView;
 // `write!` into a `String` cannot fail; the discarded `Result` is the
 // `fmt::Write` contract, not a swallowed error.
 use std::fmt::Write as _;
@@ -142,49 +142,6 @@ fn import_one_note(raw: &str, kind: NoteKind, doc: &mut DocMut) -> String {
     note_id
 }
 
-fn attr_w_val(e: &quick_xml::events::BytesStart, key: &[u8]) -> Option<String> {
-    e.attributes()
-        .flatten()
-        .find(|a| a.key.as_ref() == key)
-        .and_then(|a| crate::unescape_attr(&a))
-}
-
-/// Render a note's paragraphs as `w:footnote`/`w:endnote` inner XML (plain text + tabs/
-/// breaks; richer inline styling in notes is not modeled).
-fn render_note_body(blocks: &[BlockView]) -> String {
-    let mut out = String::new();
-    for b in blocks {
-        out.push_str("<w:p>");
-        let mut buf = String::new();
-        let flush = |out: &mut String, buf: &mut String| {
-            if !buf.is_empty() {
-                out.push_str(r#"<w:r><w:t xml:space="preserve">"#);
-                for c in buf.chars() {
-                    push_text(out, c);
-                }
-                out.push_str("</w:t></w:r>");
-                buf.clear();
-            }
-        };
-        for c in b.text.chars() {
-            match c {
-                '\t' => {
-                    flush(&mut out, &mut buf);
-                    out.push_str("<w:r><w:tab/></w:r>");
-                }
-                '\n' => {
-                    flush(&mut out, &mut buf);
-                    out.push_str("<w:r><w:br/></w:r>");
-                }
-                _ => buf.push(c),
-            }
-        }
-        flush(&mut out, &mut buf);
-        out.push_str("</w:p>");
-    }
-    out
-}
-
 /// A note assigned a stable `w:id` for the body references, paired with its view.
 pub(super) struct ExportNote<'a> {
     pub docx_id: i64,
@@ -264,7 +221,7 @@ fn part_xml(notes: &[ExportNote], root: &str, item: &str) -> Option<Vec<u8>> {
             inner,
             r#"<w:{item} w:id="{}">{}</w:{item}>"#,
             en.docx_id,
-            render_note_body(&en.note.blocks)
+            render_plain_body(&en.note.blocks)
         );
     }
     let xml = format!(
