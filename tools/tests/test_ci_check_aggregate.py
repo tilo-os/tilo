@@ -56,6 +56,7 @@ class CheckAggregateTests(unittest.TestCase):
                   pins_required="false", pins="skipped",
                   android_required="false", android="skipped",
                   wasm_required="false", wasm="skipped",
+                  tapps_required="false", tapps="skipped",
                   test=None, check=None, clippy=None, check_required=None):
         if check_required is None:
             check_required = "true" if required == "true" else "false"
@@ -75,6 +76,7 @@ class CheckAggregateTests(unittest.TestCase):
                      "PINS_REQUIRED": pins_required, "PINS_RESULT": pins,
                      "ANDROID_REQUIRED": android_required, "ANDROID_RESULT": android,
                      "WASM_REQUIRED": wasm_required, "WASM_RESULT": wasm,
+                     "TAPPS_REQUIRED": tapps_required, "TAPPS_RESULT": tapps,
                      "SELECTED_COUNT": count, "GITHUB_STEP_SUMMARY": summary.as_posix()},
                 capture_output=True, text=True,
             )
@@ -141,6 +143,7 @@ class CheckAggregateTests(unittest.TestCase):
             "needs.select.outputs.check_required": "true",
             "needs.select.outputs.android_required": "true",
             "needs.select.outputs.wasm_required": "true",
+            "needs.select.outputs.tapp_required": "true",
             "needs.policy.result": "success",
             "needs.builder.outputs.affected": "true",
             "needs.builder.outputs.linux_affected": "true",
@@ -158,7 +161,7 @@ class CheckAggregateTests(unittest.TestCase):
                                               ast.Constant, ast.And, ast.Or, ast.Eq, ast.NotEq))
             return eval(compile(parsed, "workflow-native-if", "eval"), {"__builtins__": {}})
 
-        for name in ("test", "check", "clippy", "android", "wasm"):
+        for name in ("test", "check", "clippy", "android", "wasm", "tapps"):
             with self.subTest(job=name):
                 job = section(self.workflow, name, 2)
                 self.assertIn("needs: [builder, select, security]", job)
@@ -179,7 +182,7 @@ class CheckAggregateTests(unittest.TestCase):
                 for required, result in (("", "success"), ("false", "success"), ("false", "failure")):
                     self.assertFalse(admitted(job, **{"needs.select.outputs.security_required": required,
                                                       "needs.security.result": result}))
-                applicability = "android" if name == "android" else "wasm" if name == "wasm" else "rust"
+                applicability = {"android": "android", "wasm": "wasm", "tapps": "tapp"}.get(name, "rust")
                 self.assertFalse(admitted(job, **{f"needs.select.outputs.{applicability}_required": "false"}))
                 if name == "check":
                     self.assertFalse(admitted(job, **{"needs.select.outputs.check_required": "false"}))
@@ -265,6 +268,18 @@ class CheckAggregateTests(unittest.TestCase):
                 with self.subTest(wasm_required=wasm_required, wasm=wasm):
                     self.assertNotEqual(self.aggregate(wasm_required=wasm_required,
                                                        wasm=wasm)[0], 0)
+        with self.subTest(phase='the tapp size lane runs exactly when the selector requires it'):
+            self.doCleanups()
+            self.setUp()
+            self.assertEqual(self.aggregate(tapps_required="true", tapps="success")[0], 0)
+            for tapps_required, tapps in (
+                ("true", "failure"), ("true", "cancelled"), ("true", "skipped"),
+                ("false", "success"), ("false", "failure"),
+                ("", "skipped"), ("", "success"),
+            ):
+                with self.subTest(tapps_required=tapps_required, tapps=tapps):
+                    self.assertNotEqual(self.aggregate(tapps_required=tapps_required,
+                                                       tapps=tapps)[0], 0)
         with self.subTest(phase='successful rust checks pass'):
             self.doCleanups()
             self.setUp()
@@ -433,7 +448,7 @@ class CheckAggregateTests(unittest.TestCase):
             checks = section(self.workflow, "checks", 2)
             self.assertIn("if: always()", checks)
             self.assertIn(
-                "needs: [builder, select, security, test, check, clippy, android, wasm, suites, pins]",
+                "needs: [builder, select, security, test, check, clippy, android, wasm, suites, pins, tapps]",
                 checks)
             for name in ("test", "check", "clippy", "android", "wasm"):
                 variable = name.upper().replace("-", "_")
@@ -464,6 +479,30 @@ class CheckAggregateTests(unittest.TestCase):
             self.assertIn("--target wasm32-unknown-unknown", wasm)
             self.assertIn("CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS: -D warnings", wasm)
             self.assertIn("run: bash tools/ci/check-wasm.sh", wasm)
+            # Affected tapps against their size budgets, on both architectures,
+            # packaged as Release / apps packages them (TIL-765).
+            self.assertIn("TAPPS_REQUIRED: ${{ needs.select.outputs.tapp_required }}", checks)
+            self.assertIn("tapp_required: ${{ steps.plan.outputs.tapp_required }}", select_job)
+            self.assertIn("tapp_apps: ${{ steps.plan.outputs.tapp_apps }}", select_job)
+            tapps = section(self.workflow, "tapps", 2)
+            self.assertIn("needs.select.outputs.tapp_required == 'true' }}\n", tapps)
+            self.assertIn("image: ${{ needs.builder.outputs.image }}", tapps)
+            self.assertEqual(re.findall(r"- arch: (\S+)\s+runner: (\S+)", tapps),
+                             [("x86_64", "runner-large"), ("aarch64", "runner-large-arm64")])
+            self.assertIn("TILO_RELEASE_APPS: ${{ needs.select.outputs.tapp_apps }}", tapps)
+            self.assertIn("dist/apps/package-apps.sh", tapps)
+            self.assertIn("python3 tools/perf/tapp_size_ratchet.py measure dist/app-release", tapps)
+            release = (ROOT / ".forgejo/workflows/release-apps.yml").read_text()
+            build = section(release, "build", 2)
+            # The same compiler-cache entries as the main builds.
+            for setting in ("CARGO_PROFILE_RELEASE_LTO: thin", 'CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"'):
+                self.assertIn(setting, build)
+                self.assertIn(setting, tapps)
+            self.assertIn("TILO_SCCACHE_KEY_PREFIX: tilo/apps/v2/${{ matrix.arch }}", build)
+            self.assertIn("SCCACHE_GHA_VERSION: tilo/apps/v2/${{ matrix.arch }}", tapps)
+            script = (ROOT / "tools/ci/select.sh").read_text(encoding="utf-8")
+            self.assertIn("tools/perf/tapp_size_ratchet.py select", script)
+            self.assertIn("printf 'tapp_apps=\\ntapp_required=false\\n'", script)
             # The script checks every wasm32 build the workspace-hack policy
             # resolves, with the features its build script uses.
             spec = importlib.util.spec_from_file_location(
