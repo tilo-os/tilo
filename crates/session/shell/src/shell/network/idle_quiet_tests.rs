@@ -417,7 +417,9 @@ fn a_lone_idle_desktop_keeps_its_network_runtime_asleep() {
         DeviceCapabilities::primary(),
     );
     assert!(net.join_default_workspace());
-    let deadline = Instant::now() + tilo_test_env::hang_bound();
+    let deadline = Instant::now()
+        .checked_add(tilo_test_env::hang_bound())
+        .unwrap();
     while net.dial_addr().is_none() {
         assert!(Instant::now() < deadline, "the desktop never listened");
         std::thread::sleep(Duration::from_millis(20));
