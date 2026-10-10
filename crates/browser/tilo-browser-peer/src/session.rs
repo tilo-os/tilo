@@ -284,6 +284,7 @@ enum Command {
     Join(u64),
     Publish(DocumentRoute, Vec<Vec<u8>>),
     InstallCipher(DocumentRoute, Box<dyn ContentCipher>),
+    InstallChannelKeys(DocumentRoute, channel_crypto::ChannelContentKeys),
     OpenRoute(DocumentRoute),
     PinGovernor(String, [u8; 32]),
     LiveJoin(u64),
@@ -564,6 +565,25 @@ impl PeerHandle {
         cipher: Box<dyn ContentCipher>,
     ) -> Result<(), String> {
         self.send(Command::InstallCipher(route, cipher))
+    }
+
+    /// Hold `keys` as `route`'s channel keys, exactly as if the channel's
+    /// steward had admitted this session to it: documents held for them
+    /// open, the route's status stops awaiting keys, and edits held for them
+    /// go out sealed. For an application endpoint of the device that
+    /// stewards the channel, which hands it the keys it already holds
+    /// ([`channel_crypto::ChannelSteward::content_keys`]); any other session
+    /// is admitted by the steward over the channel itself.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error once the session is closed.
+    pub fn install_channel_keys(
+        &self,
+        route: DocumentRoute,
+        keys: channel_crypto::ChannelContentKeys,
+    ) -> Result<(), String> {
+        self.send(Command::InstallChannelKeys(route, keys))
     }
 
     /// Take part in `route`'s encrypted channel: when a steward governs it,
@@ -1552,6 +1572,15 @@ impl Task {
             Command::InstallCipher(route, cipher) => {
                 self.ciphers.insert(route.clone(), cipher);
                 self.release_live(&route, client);
+                true
+            }
+            Command::InstallChannelKeys(route, keys) => {
+                // Settled with the next channel changes, the same way as
+                // keys the channel's own governance hands this session.
+                self.absorb(crate::channels::Changes {
+                    keys: vec![(route, keys)],
+                    outgoing: Vec::new(),
+                });
                 true
             }
             Command::OpenRoute(route) => {
