@@ -258,10 +258,10 @@ separate from headless and nested-window results.
 
 | Variable | Default / values | Effect |
 | --- | --- | --- |
-| `TILO_FRAME_TRACE` | Unset; path | Enables instrumentation and creates/truncates a per-tick CSV file. |
+| `TILO_FRAME_TRACE` | Unset; path | Enables instrumentation and creates/truncates a per-tick CSV file. The `redraw` column attributes painted ticks to active native reasons, with shell update sources as `apps/<source>`; idle ticks leave it empty. Hidden desktop work is excluded while locked. |
 | `TILO_FRAME_SUMMARY` | Unset; path | Enables instrumentation and writes a JSON summary at shutdown. Either path alone enables recording; use valid dedicated paths, not empty strings. |
 | `TILO_FRAME_WARMUP_MS` | `1500`; trimmed u64 | Excludes early samples from summary; zero allowed, invalid falls back. Only useful with instrumentation enabled. |
-| `TILO_PAINT_STATS` | Present (Unicode), off | Logs painted/idle tick counts, selected redraw causes, cadence, and presentation/backpressure counters about every two seconds. `=0` still logs. The cause counters are not an exhaustive partition of all redraw reasons. |
+| `TILO_PAINT_STATS` | Present (Unicode), off | Logs painted/idle tick counts, selected redraw causes, cadence, and presentation/backpressure counters about every two seconds. `=0` still logs. The cause counters are not an exhaustive partition of all redraw reasons. `still redraw` names the deepest dirty content widgets seen on an unlocked non-animating frame. |
 | `TILO_LOOP_TIMING` | Present (Unicode), off | Logs a phase breakdown for native-loop ticks with more than 100 ms of non-sleeping work. `=0` still enables it; no log does not establish a 16.67 ms deadline. |
 | `TILO_RUN_SECONDS` | Unset: run indefinitely | Positive finite fractional seconds requests clean shutdown; malformed/nonpositive values mean no timeout. |
 | `TILO_REFRESH_HZ` | Backend refresh, or 60 Hz fallback | Diagnostic pacing override, finite 20–1000 Hz including fractional rates (rounded to millihertz). Invalid values warn and are ignored. Does not reconfigure a physical monitor. |

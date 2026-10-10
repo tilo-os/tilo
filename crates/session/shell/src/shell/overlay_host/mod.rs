@@ -421,6 +421,28 @@ struct OverlayInputs {
     now_playing: std::rc::Rc<dyn crate::shell::now_playing::NowPlayingSource>,
 }
 
+/// The parts of the shell's per-frame update that can ask for a redraw, in
+/// the bit order of [`ShellOverlayHost::last_update_sources`].
+pub(crate) const UPDATE_SOURCE_NAMES: [&str; 18] = [
+    "content",
+    "pairing",
+    "tab-close",
+    "search",
+    "sidebar",
+    "notification-expired",
+    "launch",
+    "session-action",
+    "chrome",
+    "portal",
+    "file-picker",
+    "dialog",
+    "capture-mirror",
+    "presence",
+    "follow",
+    "quick-settings",
+    "radio",
+    "display-storage",
+];
 /// How long a launchpad app card waits for the Applications index to take
 /// in the installed apps after boot before falling back to the launcher.
 const LAUNCHPAD_APP_RESOLVE_WINDOW: Duration = Duration::from_secs(5);
@@ -479,6 +501,10 @@ pub struct ShellOverlayHost {
     shortcut_rebind: Option<settings_store::hardware::ShortcutAction>,
     shortcut_rebind_message: Option<String>,
     shortcut_guide_focus: Option<ShortcutGuideFocus>,
+    /// What asked for a redraw on the last `update`, one bit per
+    /// [`UPDATE_SOURCE_NAMES`] entry: the frame trace names why an idle
+    /// desktop painted.
+    last_update_sources: u32,
     desktop_controls: DesktopControlsSource,
     shortcut_help_drawn_rect: Rect,
     /// The effective shortcut table for this compositor session.  Input is
@@ -1699,8 +1725,18 @@ const fn ui_power_profile(
 
 type AppLauncher = std::rc::Rc<dyn Fn(&Chrome, &str, &str)>;
 impl ShellOverlayHost {
+    /// What asked for a redraw on the last update, as bits of
+    /// [`UPDATE_SOURCE_NAMES`]; zero when nothing did.
+    pub(crate) fn last_update_sources(&self) -> u32 {
+        self.last_update_sources
+    }
+
     pub(crate) fn content_animating_leaves(&self) -> Vec<String> {
         crate::shell::animation_diagnostics::animating_leaves(self.content.as_ref())
+    }
+
+    pub(crate) fn content_redrawing_leaves(&self) -> Vec<String> {
+        crate::shell::animation_diagnostics::redrawing_leaves(self.content.as_ref())
     }
 
     /// Stable, allocation-free diagnostics for animation demand. Each bit is
@@ -2276,6 +2312,7 @@ impl ShellOverlayHost {
             shortcut_rebind: None,
             shortcut_rebind_message: None,
             shortcut_guide_focus: None,
+            last_update_sources: 0,
             shortcut_config: inputs.shortcut_config,
             shortcut_triggers: shortcut_triggers::ShortcutTriggerState::new(
                 inputs.shortcut_triggers,
@@ -17634,7 +17671,9 @@ impl Widget for ShellOverlayHost {
                 .onboarding
                 .as_mut()
                 .is_some_and(|onboarding| onboarding.update(doc, path));
-            return onboarding_dirty || dialog_dirty;
+            self.last_update_sources =
+                u32::from(onboarding_dirty) | (u32::from(dialog_dirty) << 11);
+            return self.last_update_sources != 0;
         }
         let pairing_dirty = self.pairing.pump(doc, path);
         let radio_dirty = self.poll_quick_settings_radio();
@@ -17791,24 +17830,30 @@ impl Widget for ShellOverlayHost {
         if let Some(chrome) = self.chrome.as_ref() {
             chrome.borrow().tree_mut().commit_room_change();
         }
-        content_dirty
-            || quick_settings_dirty
-            || radio_dirty
-            || display_storage_dirty
-            || pairing_dirty
-            || close_dirty
-            || palette_dirty
-            || sidebar_dirty
-            || notifications_dropped
-            || launch_dirty
-            || session_action_dirty
-            || chrome_dirty
-            || portal_dirty
-            || picker_dirty
-            || dialog_dirty
-            || mirror_dirty
-            || presence_dirty
-            || follow_dirty
+        self.last_update_sources = [
+            content_dirty,
+            pairing_dirty,
+            close_dirty,
+            palette_dirty,
+            sidebar_dirty,
+            notifications_dropped,
+            launch_dirty,
+            session_action_dirty,
+            chrome_dirty,
+            portal_dirty,
+            picker_dirty,
+            dialog_dirty,
+            mirror_dirty,
+            presence_dirty,
+            follow_dirty,
+            quick_settings_dirty,
+            radio_dirty,
+            display_storage_dirty,
+        ]
+        .into_iter()
+        .enumerate()
+        .fold(0, |bits, (bit, dirty)| bits | (u32::from(dirty) << bit));
+        self.last_update_sources != 0
     }
 
     #[allow(
