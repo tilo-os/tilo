@@ -292,7 +292,7 @@ fn receive_and_reply(
 #[test]
 fn interrupted_first_account_reset_retires_old_review_before_fresh_pairing() {
     let mut rig = Rig::new();
-    let _paths = xdg_paths::scope_profile(rig.root.path().join("first-owner"));
+    let _paths = tilo_paths::scope_profile(rig.root.path().join("first-owner"));
     let _secrets = tilo_secrets::scope_thread(tilo_secrets::memory_backend());
     let lifecycle = LocalSessionAuthority::new();
     lifecycle.lifecycle().publish_native_state(false, false);
