@@ -14,6 +14,8 @@ let playbackConfig;
 let stopped = false;
 // Capture metadata of the frames handed to the encoder, in encode order.
 const pendingEncodes = [];
+// The capture metadata of the last encoder output.
+let lastEncoded;
 const decoders = new Map();
 // Opus DTX (usedtx): a silent frame that needs no transmission produces no
 // output at all (Chromium) or a packet of at most two bytes (libopus), and
@@ -21,7 +23,8 @@ const decoders = new Map();
 // follow encode order, and an encoder finishes a 20 ms frame within
 // milliseconds of receiving it, so when an output arrives every pending frame
 // that waited longer than this, with a newer one behind it, was a DTX frame.
-// A slower encoder only shifts a capture timestamp by one frame.
+// A slower encoder (a loaded machine) only shifts capture timestamps by a
+// frame: emitted timestamps always advance by at least one frame.
 const DTX_SETTLED_MS = 15;
 // Bounds the metadata of frames the encoder silently consumed: 20 DTX
 // frames per comfort-noise update, plus a short backlog.
@@ -66,7 +69,15 @@ function encoderError(error) {
 function takeEncoded() {
   const at = now();
   while (pendingEncodes.length > 1 && at - pendingEncodes[0].submittedAt > DTX_SETTLED_MS) pendingEncodes.shift();
-  return pendingEncodes.shift();
+  // With no frame left (a slow encoder's frame was taken for a DTX frame),
+  // the output still follows the last one.
+  let metadata = pendingEncodes.shift() ?? lastEncoded;
+  if (metadata && lastEncoded) {
+    const next = lastEncoded.timestamp + BigInt(lastEncoded.duration);
+    if (metadata.timestamp < next) metadata = {...metadata, timestamp: next};
+  }
+  lastEncoded = metadata;
+  return metadata;
 }
 
 function postPlaybackRelease(state, samples) {

@@ -117,6 +117,46 @@ test('codec worker sends nothing for Opus DTX frames and keeps capture timestamp
   assert.deepEqual(new Uint8Array(encoded[3].payload), update);
 });
 
+test('a slow DTX encoder never ends the call and never repeats or reverses a capture timestamp', async t => {
+  // A loaded machine: outputs arrive 25-40 ms after their frame, later than
+  // the DTX settle window, while the next frame is already queued.
+  const previousSelf = globalThis.self;
+  const posted = [];
+  let clock = 0;
+  class AudioData { constructor(init) { Object.assign(this, init); } close() {} }
+  class EncodedAudioChunk {
+    constructor(init) { Object.assign(this, init); this.byteLength = init.data.byteLength; }
+    copyTo(target) { target.set(this.data); }
+  }
+  class AudioEncoder {
+    constructor(callbacks) { Object.assign(this, callbacks); this.encodeQueueSize = 0; this.pending = []; AudioEncoder.instance = this; }
+    configure() {}
+    encode(frame) { this.pending.push(frame); }
+    close() {}
+    finish(bytes) { this.pending.shift(); if (bytes) this.output(new EncodedAudioChunk({type: 'key', timestamp: 0, duration: 20_000, data: bytes})); }
+  }
+  class AudioDecoder { constructor() {} configure() {} close() {} }
+  globalThis.self = {AudioData, AudioEncoder, AudioDecoder, EncodedAudioChunk, performance: {now: () => clock},
+    postMessage(message) { posted.push(message); }, close() {}};
+  t.after(() => { globalThis.self = previousSelf; });
+  await import(`./voice-audio-worker.mjs?slow=${Date.now()}`);
+  self.onmessage({data: {type: 'init', encoderConfig: {codec: 'opus', opus: {usedtx: true}}, decoderConfig: {codec: 'opus'}}});
+  posted.length = 0;
+  const speech = Uint8Array.of(0x78, 1, 2, 3);
+  // Frames every 20 ms; each finishes only after the next was submitted.
+  // Frames 10..19 are DTX (no output).
+  for (let index = 0; index < 40; index++) {
+    self.onmessage({data: {type: 'encode', samples: new Float32Array(960).buffer, timestamp: BigInt(index * 960), duration: 960}});
+    clock += 20;
+    if (index > 0) AudioEncoder.instance.finish(index - 1 >= 10 && index - 1 < 20 ? undefined : speech);
+  }
+  AudioEncoder.instance.finish(speech);
+  assert.equal(posted.filter(message => message.type === 'error').length, 0, JSON.stringify(posted.filter(message => message.type === 'error')));
+  const stamps = posted.filter(message => message.type === 'encoded').map(message => message.timestamp);
+  assert.equal(stamps.length, 30, 'every speech frame is sent');
+  for (let index = 1; index < stamps.length; index++) assert.ok(stamps[index] > stamps[index - 1], `${stamps[index - 1]} then ${stamps[index]}`);
+});
+
 test('codec worker owns an independently bounded decoder for each remote publisher', async t => {
   const previousSelf = globalThis.self;
   const posted = [];
