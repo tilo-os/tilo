@@ -1,6 +1,6 @@
 //! Region & Formats pane — the editor for the person's **locale**.
 //!
-//! This panel edits [`crate::region::Locale`], the `locale` section of the
+//! This panel edits [`tilo_locale::Locale`], the `locale` section of the
 //! person's settings, which every app's toolkit follows. The Sheets app reads
 //! `locale.currency` / `locale.date_format` / `locale.time_format` for its
 //! cell formatting, and the Weather app reads `locale.measurement` for its
@@ -22,12 +22,12 @@ use ui::widget::{AppModel, Dropdown, ModelPath, Widget};
 use crate::effects::effect;
 use crate::host::{Followed, PaneCx};
 use crate::i18n::t;
-use crate::region::{
-    Currency, DateStyle, FirstDayOfWeek, Locale, Measurement, NumberStyle, TimeStyle,
-};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{caption, card, rows};
+use tilo_locale::{
+    Currency, DateStyle, FirstDayOfWeek, Locale, Measurement, NumberStyle, TimeStyle,
+};
 
 fn date_label(style: DateStyle) -> String {
     t(match style {

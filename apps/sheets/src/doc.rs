@@ -23,8 +23,9 @@ use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
 use ui::doc::{read_bool, read_i64_coerced, read_str};
 
-use crate::model::{Addr, CellFormat, Currency, DateStyle, GridEdit, TimeStyle};
+use crate::model::{Addr, CellFormat, GridEdit};
 use crate::settings::DocSettings;
+use tilo_locale::{Currency, DateStyle, TimeStyle};
 
 /// One sheet's snapshot pulled out of the CRDT for rendering.
 #[derive(Clone, Debug, Default)]
