@@ -1293,6 +1293,17 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             }
         }
     };
+    // The same parts as `children`, apart, so the framework can keep the
+    // item children it built for an earlier version.
+    let children_parts = quote! {
+        fn children_parts(state: &Self) -> #krate::items::ChildrenParts {
+            #krate::items::ChildrenParts {
+                others: #derived,
+                items: <Self as #krate::Fields>::item_collections(state),
+                item_actions: ::std::vec![#(#item_actions),*],
+            }
+        }
+    };
     let children = quote! {{
         let mut children: ::std::vec::Vec<#krate::__private::Resource> = #derived;
         children.extend(#krate::items::item_children::<Self>(
@@ -1841,6 +1852,7 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             }
 
             #offer_bound
+            #children_parts
             #item_effects
             #item_views
             #answer

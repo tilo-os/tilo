@@ -482,13 +482,36 @@ pub fn item_children<R: Resource>(
     collections: &[ItemCollection],
     actions: &[ItemAction],
 ) -> Vec<tilo_actions::Resource> {
+    let mut children = Vec::new();
+    for_each_item_child::<R>(collections, actions, &mut |_, _, _, build| {
+        children.push(build());
+    });
+    children
+}
+
+/// What [`for_each_item_child`] calls per item child: the collection it is
+/// an item of, its id and label, and how to build it.
+pub type ItemChildVisitor<'a> =
+    dyn FnMut(&ItemCollection, &Id, &str, &dyn Fn() -> tilo_actions::Resource) + 'a;
+
+/// [`item_children`] one item at a time, for a publisher that keeps the
+/// children it built for an earlier version: `each(collection, id, label,
+/// build)` is called for every item child in order, and `build()` makes
+/// that child exactly as [`item_children`] does. A child is a function of
+/// its collection (field and the items it sits in), its id and its label,
+/// and the locale its actions' labels are in.
+#[inline(never)]
+pub fn for_each_item_child<R: Resource>(
+    collections: &[ItemCollection],
+    actions: &[ItemAction],
+    each: &mut ItemChildVisitor<'_>,
+) {
     let declarations = R::declarations();
     let fields: Vec<&str> = collections
         .iter()
         .filter(|collection| collection.within.is_empty())
         .map(|collection| collection.field)
         .collect();
-    let mut children = Vec::new();
     for collection in collections {
         if !collection.within.is_empty() {
             // An item of a collection inside an item: its label, its fields,
@@ -508,21 +531,23 @@ pub fn item_children<R: Resource>(
                 .collect();
             if collection.labelled || !verbs.is_empty() {
                 for (id, label) in &collection.items {
-                    let mut child =
-                        nested_item::<R>(&collection.within, collection.field, id, label);
-                    for (action, decl) in &verbs {
-                        let mut values: Vec<(String, serde_json::Value)> = action
-                            .within_params
-                            .iter()
-                            .zip(&collection.within)
-                            .map(|(param, (_, outer_id))| {
-                                ((*param).to_owned(), outer_id.as_str().into())
-                            })
-                            .collect();
-                        values.push((action.param.to_owned(), id.as_str().into()));
-                        child = child.with_action(bound(decl, &values));
-                    }
-                    children.push(child);
+                    each(collection, id, label, &|| {
+                        let mut child =
+                            nested_item::<R>(&collection.within, collection.field, id, label);
+                        for (action, decl) in &verbs {
+                            let mut values: Vec<(String, serde_json::Value)> = action
+                                .within_params
+                                .iter()
+                                .zip(&collection.within)
+                                .map(|(param, (_, outer_id))| {
+                                    ((*param).to_owned(), outer_id.as_str().into())
+                                })
+                                .collect();
+                            values.push((action.param.to_owned(), id.as_str().into()));
+                            child = child.with_action(bound(decl, &values));
+                        }
+                        child
+                    });
                 }
             }
             continue;
@@ -536,7 +561,9 @@ pub fn item_children<R: Resource>(
             continue;
         }
         for (id, label) in &collection.items {
-            children.push(item_resource(&scoped, collection.field, id, label));
+            each(collection, id, label, &|| {
+                item_resource(&scoped, collection.field, id, label)
+            });
         }
         // Forget items that are gone.
         BUILT.with(|built| {
@@ -551,7 +578,28 @@ pub fn item_children<R: Resource>(
             }
         });
     }
-    children
+}
+
+/// The id of the resource the item `id` of `collection` is published as.
+pub fn item_child_id<R: Resource>(collection: &ItemCollection, id: &Id) -> String {
+    if collection.within.is_empty() {
+        item_resource_id::<R>(collection.field, id)
+    } else {
+        nested_resource_id::<R>(&collection.within, collection.field, id)
+    }
+}
+
+/// [`Resource::children`] in the parts a publisher can keep between
+/// versions ([`Resource::children_parts`]): the children that are not
+/// items, then one per item of `items` carrying `item_actions`
+/// ([`item_children`]).
+pub struct ChildrenParts {
+    /// The children before the items, built afresh.
+    pub others: Vec<tilo_actions::Resource>,
+    /// The record's collections, each item with its label.
+    pub items: Vec<ItemCollection>,
+    /// The actions offered on items.
+    pub item_actions: Vec<ItemAction>,
 }
 
 /// The resource of an item of a nested collection.
