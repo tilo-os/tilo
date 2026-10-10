@@ -45,13 +45,11 @@ impl Resource for Notebook {
             .map_err(ModelError::invalid)?;
         workspace.canonical_projection_heads = committed_projection_heads(doc);
         workspace.bodies = {
-            #[cfg(test)]
-            let _profile = crate::cpu_profile::Phase::start("projection_bodies");
+            let _profile = ui::tilo_resource::profiling::Phase::start("projection_bodies");
             std::sync::Arc::new(crate::actions::read_bodies(doc, workspace.pages()))
         };
         workspace.body_states = {
-            #[cfg(test)]
-            let _profile = crate::cpu_profile::Phase::start("projection_rich_states");
+            let _profile = ui::tilo_resource::profiling::Phase::start("projection_rich_states");
             Rc::new(crate::actions::read_body_states(doc, workspace.pages()))
         };
         Ok(workspace)
@@ -68,16 +66,14 @@ impl Resource for Notebook {
         let refreshed_pages = updates.iter().map(|update| update.page).collect();
         let before = state.canonical_projection_heads.clone();
         {
-            #[cfg(test)]
-            let _profile = crate::cpu_profile::Phase::start("projection_bodies");
+            let _profile = ui::tilo_resource::profiling::Phase::start("projection_bodies");
             let bodies = std::sync::Arc::make_mut(&mut state.bodies);
             for update in &updates {
                 bodies.insert(update.page, update.blocks.clone());
             }
         }
         {
-            #[cfg(test)]
-            let _profile = crate::cpu_profile::Phase::start("projection_rich_states");
+            let _profile = ui::tilo_resource::profiling::Phase::start("projection_rich_states");
             let bodies = Rc::make_mut(&mut state.body_states);
             for update in updates {
                 bodies.insert(update.page, update.rich);

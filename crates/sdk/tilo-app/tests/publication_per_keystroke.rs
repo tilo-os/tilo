@@ -5,9 +5,9 @@
 //! publication the host asks for binds row edits in one walk of the view.
 #![cfg(feature = "test-support")]
 
-use tilo_app::framework::profiling::observe;
 use tilo_app::i18n::EmbeddedCatalog;
 use tilo_app::prelude::*;
+use tilo_app::tilo_resource::profiling::observe;
 
 static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new(
     "en-US",
@@ -125,12 +125,10 @@ fn one_keystroke(tasks: u32) -> Result<Phases, String> {
             app.state().draft
         ));
     }
-    let mut counts = Phases::new();
-    for phase in phases {
-        let count = counts.entry(phase.phase).or_insert(0);
-        *count = count.saturating_add(1);
-    }
-    Ok(counts)
+    Ok(phases
+        .into_iter()
+        .map(|phase| (phase.phase, phase.calls))
+        .collect())
 }
 
 #[test]
