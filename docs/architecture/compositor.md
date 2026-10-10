@@ -258,11 +258,11 @@ pub struct State {
     pub shm_state:            ShmState,
     pub seat_state:           SeatState<Self>,
     pub output_manager_state: OutputManagerState,
-    // … per-workspace bridge sockets, shell chrome handle, frame builder, …
+    // … shell chrome handle, frame builder, …
 }
 ```
 
-Each protocol handler attaches via `delegate_compositor!`, `delegate_xdg_shell!`, `delegate_shm!`, `delegate_seat!`, `delegate_output!`. The main socket is registered via `ListeningSocketSource`; per-workspace bridge sockets register additional sources on the same loop (see `docs/architecture/security.md`).
+Each protocol handler attaches via `delegate_compositor!`, `delegate_xdg_shell!`, `delegate_shm!`, `delegate_seat!`, `delegate_output!`. The main socket is registered via `ListeningSocketSource`; each accepted client is attributed from its peer credentials (see `docs/architecture/security.md`).
 
 The Wayland state is decoupled from the graphical backend so the compositor's logic can run in the headless integration test harness (`crates/session/shell/tests/interaction_test.rs`, `compositor_test.rs`) without a GPU.
 
@@ -665,7 +665,7 @@ Fallback if bare DRM init fails: relaunch under `cage` as a single-window Waylan
 
 ## What's not here
 
-- **Sandboxing protocol details and the per-workspace Wayland bridge socket** — `docs/architecture/security.md`.
+- **Sandboxing protocol details and Wayland client attribution** — `docs/architecture/security.md`.
 - **Peer sync, foreign-surface streaming, remote input replay** — `docs/architecture/collaboration.md`.
 - **xdg-desktop-portal backend** — `docs/architecture/security.md` and `crates/session/shell/src/portal/`.
 - **WorkspaceTree CRDT shape** — `docs/architecture/overview.md` plus `docs/superpowers/specs/2026-05-04-workspace-tree-automerge-design.md`.
