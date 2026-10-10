@@ -2022,6 +2022,13 @@ pub struct VelloDrmBridge {
     /// One retained surface per output that is not the whole scene, for
     /// [`Self::paint_output_until`]. They share `target`'s renderer and device.
     output_surfaces: Vec<(super::OutputId, OutputSurface)>,
+    /// On a software rasteriser, has each heap trim return the device memory
+    /// closed windows freed (TIL-731) for as long as this bridge lives.
+    _device_memory: Option<crate::shell::heap_trim::DeviceRegistration>,
+    /// Atlas side and renderer allocations at the last `RENDERER-MEMORY` line.
+    logged_memory: Option<[u64; 6]>,
+    /// [`crate::shell::heap_trim::windows_closed`] at the last frame.
+    windows_closed_seen: u64,
     /// Narrow fault injection for the tracked-swizzle cleanup test. It is absent from ordinary
     /// binaries and shortens only the test's mapped source view after GPU completion.
     #[cfg(test)]
@@ -2079,6 +2086,7 @@ impl VelloDrmBridge {
         ));
         let bgra_blitter = TextureBlitter::new(device, wgpu::TextureFormat::Bgra8Unorm);
         let (readback_buf, padded_bytes_per_row) = Self::allocate_staging(device, width, height);
+        let device_memory = crate::shell::heap_trim::register_device(&adapter_info, device);
 
         Ok(Self {
             context,
@@ -2108,6 +2116,9 @@ impl VelloDrmBridge {
             recovery_not_before: None,
             recovery_backoff: RECOVERY_BACKOFF_INITIAL,
             output_surfaces: Vec::new(),
+            _device_memory: device_memory,
+            logged_memory: None,
+            windows_closed_seen: crate::shell::heap_trim::windows_closed(),
             #[cfg(test)]
             fail_next_tracked_swizzle: false,
         })
@@ -4536,6 +4547,71 @@ impl VelloDrmBridge {
     /// GPU allocations the renderer accounts for, the image atlas included.
     pub fn renderer_memory_stats(&self) -> vello::RendererMemoryStats {
         self.target.memory_stats()
+    }
+
+    /// After each frame (TIL-731). When a window closed since the last
+    /// frame, the image atlas comes down within the next few frames rather
+    /// than after sixty: a desktop that goes idle after a close draws too
+    /// few to bring it down the slow way, and kept up to 256 MiB of atlas.
+    /// When the atlas did come down, so did the scene: the buffers pooled for
+    /// the larger one go too (the next frame pools what it needs), and a trim
+    /// gives the memory back to the kernel. Cheap enough for every frame.
+    pub fn after_paint(&mut self) {
+        let closed = crate::shell::heap_trim::windows_closed();
+        if closed != self.windows_closed_seen {
+            self.windows_closed_seen = closed;
+            self.target.renderer.shrink_image_atlas_soon();
+        }
+        let atlas_before = self.logged_memory.map(|mark| mark[0]);
+        let atlas_now = u64::from(self.target.image_cache_stats().atlas_side);
+        if atlas_before.is_some_and(|was| atlas_now < was) {
+            self.target.renderer.trim_pooled_buffers();
+            crate::shell::heap_trim::request();
+        }
+        self.log_memory_changes();
+    }
+
+    /// Log one `RENDERER-MEMORY` line when the image atlas changes size or
+    /// the renderer's GPU allocations move by 8 MiB or more since the last
+    /// line, so the session log tells which of them a desktop with no window
+    /// left still holds.
+    fn log_memory_changes(&mut self) {
+        const STEP: u64 = 8 << 20;
+        let memory = self.target.memory_stats();
+        let images = self.target.image_cache_stats();
+        let mark = [
+            u64::from(images.atlas_side),
+            memory.image_bytes,
+            memory.pooled_buffer_bytes,
+            memory.live_buffer_bytes,
+            memory.bump_budget_bytes,
+            memory.sparse_upload_bytes,
+        ];
+        let moved = self.logged_memory.is_none_or(|last| {
+            last[0] != mark[0]
+                || last
+                    .iter()
+                    .zip(mark)
+                    .skip(1)
+                    .any(|(was, now)| was.abs_diff(now) >= STEP)
+        });
+        if !moved {
+            return;
+        }
+        self.logged_memory = Some(mark);
+        let mib = |bytes: u64| bytes / (1 << 20);
+        // A measurement line for the session log, like WORKSPACE-SWITCH.
+        eprintln!(
+            "RENDERER-MEMORY atlas_side={} image_mib={} pooled_mib={} live_mib={} bump_mib={} \
+             sparse_upload_mib={} resident_images={}",
+            images.atlas_side,
+            mib(memory.image_bytes),
+            mib(memory.pooled_buffer_bytes),
+            mib(memory.live_buffer_bytes),
+            mib(memory.bump_budget_bytes),
+            mib(memory.sparse_upload_bytes),
+            images.resident,
+        );
     }
 
     /// Dense Vello submissions used by the latest paint, including bump-budget retries.
