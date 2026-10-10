@@ -4929,7 +4929,20 @@ fn settled_playback_uses_bounded_wakes_instead_of_vsync() {
     app.tick();
     assert!(
         !app.needs_animation_frame(),
-        "painting rearms the bounded wake"
+        "polling rearms the bounded wake"
+    );
+    app.last_tick = ui::time::now()
+        .checked_sub(Duration::from_millis(101))
+        .expect("a slow paint outlives the playback interval");
+    let completed_at = ui::time::now();
+    app.mark_drawn();
+    assert!(
+        !app.needs_animation_frame(),
+        "a completed slow paint must leave time before another paint"
+    );
+    assert!(
+        app.next_wake_deadline().expect("playback still wakes") > completed_at,
+        "the next interval starts after painting, not before it"
     );
     app.pb.playing = false;
     assert!(
