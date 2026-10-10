@@ -513,7 +513,7 @@ fn parse_host_addr(value: &str) -> Option<iroh::EndpointAddr> {
 }
 
 /// Which peers a session's endpoint can reach.
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 enum Reach {
     /// Any, through the public relays and discovery. The relays wait until
     /// something needs this device reachable
@@ -525,11 +525,11 @@ enum Reach {
         allow(dead_code, reason = "tests reach only loopback peers")
     )]
     Loopback,
-    /// Only this machine's, holding these relays back the way
+    /// Only this machine's, holding relays nobody listens on back the way
     /// [`Self::Internet`] holds back the public ones (tests of the
     /// deferral).
     #[cfg(test)]
-    LoopbackHoldingRelays(iroh::RelayMap),
+    LoopbackHoldingRelays,
 }
 
 /// Why someone could need to dial this device as its session starts, from
@@ -1598,12 +1598,12 @@ impl ShellNetwork {
                 iroh::RelayMap::empty(),
             ),
             #[cfg(test)]
-            Reach::LoopbackHoldingRelays(relays) => (
+            Reach::LoopbackHoldingRelays => (
                 iroh::Endpoint::builder(presets::Minimal)
                     .relay_mode(held_back)
                     .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
                     .map_err(|e| std::io::Error::other(format!("iroh bind: {e}")))?,
-                relays,
+                reachability_tests::unused_relays(),
             ),
         };
         let endpoint = runtime
