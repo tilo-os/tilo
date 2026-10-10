@@ -806,12 +806,14 @@ fn spawn_inner(
     };
     services.record_content = record_content;
     // The same service the identity broker answers key requests from: its
-    // changes tell each route's endpoint when to ask again.
-    services.channel_keys = channel_encryption.clone().map(|access| {
-        let keys = crate::shell::channel_encryption::ChannelKeyProvider::default();
-        keys.set(Some(access));
-        keys
-    });
+    // changes tell each route's endpoint when to ask again. A session broker
+    // follows even without one; a configured peer broker never has one and
+    // still says it cannot follow.
+    services.channel_keys = if config.is_none() {
+        Some(session_channel_keys(channel_encryption.clone()))
+    } else {
+        None
+    };
     services.audio_output = Some(Arc::new(super::audio_output::AudioOutputService::new(
         local_session.lifecycle(),
     )));
@@ -926,6 +928,23 @@ fn spawn_inner(
         channel_encryption,
         peer_departures: peer_sync.map(|net| net.peer_departure_history()),
     })
+}
+
+/// What a session broker's endpoints follow for their channels' key changes
+/// (`channelKeysChanged`): the session's channel service, or none.
+///
+/// Without a service a route holds no keys (the identity service answers
+/// from the same slot, so it says `Unavailable`), and nothing changes for
+/// this broker's lifetime. The follow then stays pending at no cost.
+/// Refusing it instead tells the endpoint that this broker cannot say when
+/// keys change, and it falls back to asking the identity service for every
+/// route once a second, forever (TIL-754).
+fn session_channel_keys(
+    access: Option<crate::shell::channel_encryption::ChannelKeyAccess>,
+) -> crate::shell::channel_encryption::ChannelKeyProvider {
+    let keys = crate::shell::channel_encryption::ChannelKeyProvider::default();
+    keys.set(access);
+    keys
 }
 
 /// The broker's session services: the durable history store and the
@@ -1236,6 +1255,37 @@ mod tests {
                 seen: None,
             },
         }
+    }
+
+    /// A session broker without a channel service answers an endpoint's
+    /// `channelKeysChanged` with a wait, not a refusal: a refusal makes the
+    /// endpoint ask the identity service for every route once a second
+    /// (TIL-754). The wait still ends when the slot it follows changes.
+    #[test]
+    fn a_session_broker_without_a_channel_service_keeps_key_follows_pending() {
+        use std::future::Future as _;
+        let keys = session_channel_keys(None);
+        let channel = collab_types::document_channel_id(
+            "so.tilo.terminal",
+            "00000000-0000-0000-0000-000000000000",
+            "tab",
+        );
+        let mut follow = std::pin::pin!(keys.channel_changed(channel, 0));
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(
+            follow.as_mut().poll(&mut cx).is_pending(),
+            "with no channel service nothing changes, so the follow waits"
+        );
+        assert!(
+            follow.as_mut().poll(&mut cx).is_pending(),
+            "and keeps waiting"
+        );
+        keys.set(None);
+        assert_eq!(
+            follow.as_mut().poll(&mut cx),
+            std::task::Poll::Ready(0),
+            "a change of the followed slot ends the wait"
+        );
     }
 
     #[test]
