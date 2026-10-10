@@ -171,8 +171,12 @@ def build_phase(jobs, output, target, package_ids, root):
                'sampling_errors': errors + stderr_errors, 'exit': status, 'metadata_bytes': size}
     (output / 'receipt.json').write_text(json.dumps(receipt, indent=2) + '\n')
     print('NATIVE_WIDTH_TRIAL=' + json.dumps(receipt), flush=True)
-    if status or size > CAP or errors or stderr_errors or cache_delta['Cache errors'] or peaks['swap_bytes'] or any(events.get(key, 0) for key in ('max', 'oom', 'oom_kill')):
+    if status or size > CAP or errors or stderr_errors or cache_delta['Cache errors'] or peaks['swap_bytes'] or any(events.get(key, 0) for key in ('oom', 'oom_kill')):
         raise RuntimeError('Build or resource observation failed qualification')
+    # Ceiling reclaim disqualifies the outcome after collecting the complete
+    # comparison. OOM, swap, corrupt observations and build failures still stop
+    # immediately; pressure must not hide the byte identity and full-test proof.
+    receipt['resource_qualified'] = events['max'] == 0
     receipt['binaries'] = binary_receipt(b''.join(chunks).decode(), target, package_ids)
     (output / 'receipt.json').write_text(json.dumps(receipt, indent=2) + '\n')
     return receipt
@@ -218,12 +222,14 @@ def main():
     target.mkdir()
     (target / '.native-width-owned').touch()
     receipts = []
-    # The cold eight-job primer hit the memory ceiling before comparison.
-    # Prime at six jobs; all measured widths still retain the same strict guards.
+    phases = []
+    # Prime at six jobs. Retain pressure receipts from every phase and reject
+    # resource qualification after completing the comparison and full suite.
     for index, jobs in enumerate((6, 8, 6, 6, 8)):
         phase = output / str(index)
         phase.mkdir()
         receipt = build_phase(jobs, phase, target, package_ids, root)
+        phases.append(receipt)
         if index:
             receipts.append(receipt)
             if receipt['binaries'] != receipts[0]['binaries']:
@@ -239,9 +245,13 @@ def main():
                                  for row in receipts if row['jobs'] == jobs) / 2
                        for field in ('wall_seconds', 'cpu_usage_usec')} for jobs in (8, 6)}
     result = {'averages': averages, 'identical_binaries': True, 'full_tests': 'passed',
-              'performance_qualified': all(averages[6][field] < averages[8][field] for field in averages[8])}
+              'performance_improved': all(averages[6][field] < averages[8][field] for field in averages[8]),
+              'resource_qualified': all(row['resource_qualified'] for row in phases)}
+    result['performance_qualified'] = result['performance_improved'] and result['resource_qualified']
     (output / 'result.json').write_text(json.dumps(result, indent=2) + '\n')
     print('NATIVE_WIDTH_RESULT=' + json.dumps(result), flush=True)
+    if not result['resource_qualified']:
+        raise RuntimeError('Memory ceiling reclaim disqualified the complete comparison')
 
 
 if __name__ == '__main__':
