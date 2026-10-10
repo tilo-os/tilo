@@ -138,6 +138,48 @@ permission profiles, tasks, admitted devices, stewarded rooms). The
 whole-tree budget does not move: run 90830 still spun at 1215/s (TIL-696),
 which the 3000/s spin budget covers; the parked budget drops with TIL-696.
 
+### TIL-702: the network runtime on an installed desktop
+
+The headless gate above sees `tilo-net-rt` at 2.9/s (run 91403): it has no
+call device table and no third runtime thread. The VM does. In vm-acceptance
+R01 (no apps open), by thread, before (run 91456, dev disk `35c21096db`) and
+after (run 91460, the same disk with this branch's shell swapped in, which
+includes #4044's gossip sweep):
+
+| thread | before | after |
+| -- | --: | --: |
+| `tilo-net-rt-2` (blocking pool) | 15.40/s | gone |
+| `tilo-net-rt-1` | 6.57/s | 3.73/s |
+| `tilo-net-rt-0` | 6.50/s | 2.97/s |
+| `tilo-net-rt` group | **28.47/s, 1.03 % of a core** | **6.70/s, 0.23 %** |
+| whole compositor's threads | 41.3/s | 20.0/s |
+
+`tilo-net-rt-2` was the call device table (`network/native_media/devices.rs`):
+installed on the network runtime whenever the person has a device identity,
+it ran a blocking PipeWire registry round trip every second from session
+start, call or no call. That is also why `wireplumber` (0.43 %) and
+`pipewire` (6.9/s) were busy in run 91456 and are not in run 91460
+(`pipewire` 0.7/s). Only a call reads the table, so a call now holds a
+`Watch` from when it starts preparing until it ends, and the loop parks on a
+`Notify` otherwise.
+
+The workers' drop is #4044: gossip's per-topic cache sweep every second.
+
+What remains, named by counting tracing spans and events per thread in a
+lone desktop's process (a temporary probe on the TIL-702 branch, focused run
+91459): on loopback 0.95/s, the 5 s upkeep tick and the 10 s sweep. With the
+public relays (`Reach::Internet`, as the VM runs) 6.0/s, two thirds of it
+inside iroh's `net_report` `QADv4` span: every 20-26 s iroh re-runs its net
+report and opens fresh QUIC address-discovery connections to the relays
+(handshakes, then closes). Getting under TIL-702's 2/s target needs that
+deferred until something needs reachability (the issue's step 2), which is
+left for a follow-up.
+
+`idle_quiet_tests::a_lone_idle_desktop_keeps_its_network_runtime_asleep`
+gates the loopback case at 2/s (measured 1.05/s, focused run 91528). The
+call table's parking is held by
+`devices::tests::the_refresh_loop_runs_only_while_a_call_watches`.
+
 ## The collaboration-plane gate in the shell shard
 
 `idle_quiet_tests` (two converged desktops) had a 15/s budget, set from
