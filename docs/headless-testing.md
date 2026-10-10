@@ -460,6 +460,7 @@ scripts/perf/frame-loop-bench.py --resummarize target/frame-bench/run.csv
 | `TILO_RUN_SECONDS` | exit cleanly after N seconds, flushing both |
 | `TILO_REFRESH_HZ` | force the presentation rate (diagnostic) |
 | `TILO_PAINT_STATS=1` | 2-second painted-vs-idled counter on stderr |
+| `TILO_PAINT_STATS=ticks` | the same, plus a `paint-tick: painted=… woke=…` line per loop iteration |
 | `TILO_LOOP_TIMING=1` | log any tick over 100 ms with a phase breakdown |
 
 `TILO_RUN_SECONDS` matters for a scripted run: the trace and summary are
@@ -521,7 +522,7 @@ idle wakeups over 10.0 s: 60.27/s and 2.1 % of a core across 1 processes
       20.79       1.20     0.6        2  shell / tilo-collab-bro
       19.89       0.00     0.4        1  shell / tilo-audio-outp
        ...
-compositor frame loop: 0.0 ticks/s, 0 frames painted; its paint-stats in the window:
+compositor frame loop: 0.0 ticks/s (0 ticks, woken by: ), 0 frames painted (after: ), 0 clock minute(s) turned; its paint-stats in the window:
 ```
 
 `wakeups/s` counts every context switch (voluntary: the thread blocked again;
@@ -529,8 +530,12 @@ involuntary: it was preempted), `preempt/s` the involuntary share, `cpu %` its
 CPU time, `threads` how many threads of that name were seen (names are the
 kernel's 15-byte truncation). A loop that spins without blocking shows in
 `cpu %` and in the frame loop's tick rate rather than in wakeups, so the gate
-also holds the loop to `LOOP_TICK_BUDGET` and to zero painted frames; the
-`paint-stats: wakes` lines name what woke it. Pull requests run it whenever
+also holds the loop to `LOOP_TICK_BUDGET` and to no painted frames but the top
+bar's clock repaint when a minute turns in the window. It counts the
+compositor's `paint-tick` lines (`TILO_PAINT_STATS=ticks`), one per loop
+iteration with what woke it, read inside the window: a 2-second `paint-stats`
+summary counts every tick since the previous one, so the first one printed in
+the window can carry startup's ticks (TIL-756). Pull requests run it whenever
 `shell` changes; the scheduled lane (`kpis=wakeups`) runs it with a 60 s window
 (`TILO_IDLE_WAKEUP_WINDOW_SECS`) and records `wakeups.*`. When a change
 removes a waker, lower `IDLE_WAKEUP_BUDGET` in the same pull request to the new
