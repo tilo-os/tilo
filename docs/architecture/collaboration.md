@@ -343,6 +343,18 @@ This gives three deployments without three protocols:
   Both halves keep at most 64 slots of at most 4 KiB per session. Deltas are
   never delayed for it. Clients dial `/7` first and fall back to `/6`; older
   sessions, replays and positions get the frames they always did.
+- Packets, not frames (TIL-776): a 27 B presence batch costs about 35 B of
+  QUIC packet on top, so the host writes whatever goes to one connection
+  together in one write where it can. A live delta's write carries its
+  position and every presence that may go early: carets, selections, typing
+  and events at any time (their 5 ms window exists only to share a frame),
+  and a pointer once 25 ms have passed since it last went (never later than
+  its 20 Hz pace, never more often than twice it). A batch that falls due
+  takes the same company. A keystroke's `Typing` and `Caret` reach the host
+  while its delta is still being committed; while a delta of the same author
+  is unpublished, they are held, up to 20 ms, and leave in the delta's write,
+  so a member receives the character and the caret after it in one packet.
+  The delta never waits, and the frames are the same on every protocol.
 - Remote actions (v1): versioned JSON `RemoteActionFrame`s (`tilo_actions::remote`).
   A caller follows an invocation with one waiting request at a time —
   `wait_ms` on `Invoke`, or on `Observe` with the `seen` update — which the

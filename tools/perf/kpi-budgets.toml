@@ -826,6 +826,34 @@ p99_tolerance = 2.0
 min_delta = 10.0
 source = "relay_load: one edit, publish to receipt by each other member of the room"
 
+# Presence delivery (TIL-776): publish to receipt of each pointer move and
+# caret the relay forwarded. The relay paces a pointer to 20 Hz, so a move
+# waits up to 50 ms; carets wait 5 ms, or up to 20 ms for the delta they
+# follow. Measured in Perf / scheduled A/B run 94883: pointer 18.2 ms p50 and
+# 39.5 ms p99, caret 5.2 and 28.3 ms (a 5-minute run, 94831: pointer 18.8 and
+# 48.0, caret 9.0 and 39.7). The pointer's p99 ceiling is the 100 ms cursor
+# bound the issue set; the rest sit about twice the measurement, with the
+# fan-out's tolerances for the shared runner.
+[kpi."hosting.relay.presence_pointer_ms.n100"]
+unit = "ms"
+p50 = 40.0
+p99 = 100.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 10.0
+source = "relay_load: one forwarded pointer move, publish to receipt by each other member of the room"
+
+[kpi."hosting.relay.presence_caret_ms.n100"]
+unit = "ms"
+p50 = 25.0
+p99 = 80.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 10.0
+source = "relay_load: one forwarded caret, publish to receipt by each other member of the room"
+
 # File and directory barriers per committed edit (TIL-732): two are the floor
 # of the one-file-per-record store (the record, then its directory). Measured
 # 2.82 before TIL-732 (Perf / scheduled run 91348) and 2.10 after (run 91404),
