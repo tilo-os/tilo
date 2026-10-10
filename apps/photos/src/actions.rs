@@ -12,8 +12,6 @@
 use ui::tilo_resource;
 use ui::tilo_resource::Effect;
 
-use crate::model::Edits;
-
 /// A stable, metadata-only position in the chronological timeline.
 ///
 /// No timezone conversion or inferred capture date is involved: `Month` and
@@ -38,7 +36,7 @@ pub enum PhotosEffect {
     /// Open photograph: show it in this window. Which photograph a window
     /// shows is its own view state; opening one here changes nothing for a
     /// collaborator.
-    #[effect(view)]
+    #[effect(view, item = photos)]
     View {
         #[param("Id of the photograph")]
         photo_id: String,
@@ -152,13 +150,12 @@ pub enum PhotosEffect {
     /// clipboard.
     #[effect(device_only)]
     ShareReference { resource_id: String },
-    /// Produce edited image content: render one photograph's crop and
-    /// rotation into immutable PNG content.
-    #[effect(content, idempotent)]
+    /// Produce edited image content: render the photograph's crop and
+    /// rotation, as they are now, into immutable PNG content.
+    #[effect(content, idempotent, kind = "read", item = photos)]
     ExportEditedContent {
-        resource_id: String,
-        source_content: String,
-        edits: Edits,
+        #[param("The photograph")]
+        photo: ui::tilo_resource::Id,
     },
     /// Save edited photograph: the photograph this window shows.
     #[effect(job, device_only)]
@@ -345,28 +342,25 @@ pub enum PhotosEffect {
 /// snapshot is no longer in the library, or when the source bytes cannot be
 /// read, decoded, re-encoded, or stored as content.
 pub fn export_edited_content(
-    expected_photo_id: &str,
-    source_content: &str,
-    expected_edits: Edits,
+    photo_id: &str,
     library: &crate::model::PhotoLibrary,
     store: &tilo_content::ContentStore,
 ) -> Result<tilo_actions::ActionOutput, String> {
     let photo = library
-        .photo(expected_photo_id)
+        .photo(photo_id)
         .ok_or_else(|| "that photograph is no longer in the library".to_string())?;
-    if photo.image.content.as_deref() != Some(source_content) || photo.edits != expected_edits {
-        return Err("the addressed photograph or its edit snapshot is no longer current".into());
-    }
+    let source_content = photo
+        .image
+        .content
+        .as_deref()
+        .ok_or_else(|| "the photograph's bytes are not kept as content".to_string())?;
+    let edits = photo.edits;
     let source = store
         .read(source_content)
         .ok_or_else(|| "the addressed photograph bytes are unavailable".to_string())?;
     let original = crate::pixels::decode(&source)
         .ok_or_else(|| "the addressed photograph bytes are not a supported image".to_string())?;
-    let rendered = crate::pixels::render(
-        &original,
-        expected_edits.crop,
-        expected_edits.rotate_quarters,
-    );
+    let rendered = crate::pixels::render(&original, edits.crop, edits.rotate_quarters);
     let encoded = crate::pixels::encode_png(&rendered)
         .ok_or_else(|| "the edited photograph could not be encoded".to_string())?;
     let hash = store.put(&encoded).map_err(|error| {

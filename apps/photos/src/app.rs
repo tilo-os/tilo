@@ -12746,15 +12746,9 @@ impl PhotosApp {
                     resources: vec![id],
                 }));
             }
-            PhotosEffect::ExportEditedContent {
-                resource_id,
-                source_content,
-                edits,
-            } => {
+            PhotosEffect::ExportEditedContent { photo } => {
                 return crate::actions::export_edited_content(
-                    &resource_id,
-                    &source_content,
-                    edits,
+                    photo.as_str(),
                     library,
                     &self.content,
                 )

@@ -4575,7 +4575,7 @@ mod tests {
             let held = photos::model::LibraryPhoto::from_image(
                 photos::OpenImage::from_path("held.png", 3, 2).with_content(source_hash),
             );
-            let image_id = held.id.clone();
+            let image_id = photos::resource::photo_resource_id(&held.id);
             let import = photos::resource::import(&held).build(0).unwrap();
             tilo_actions::Action::apply(&import, &mut photo).unwrap();
             // Exactly the open photograph's production and view, and the
