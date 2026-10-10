@@ -188,7 +188,9 @@ try {
   await tab.waitFor('document.querySelector("#status").textContent.includes("no existing browser device")');
   stage('explicit-unadmitted-account-refused-without-enrollment');
   await tab.evaluate('document.querySelector("select").value = Array.from(document.querySelector("select").options).find(option=>option.textContent === "Fixture reader").value; document.querySelector("#open").requestSubmit();');
-  await tab.waitFor('document.querySelector("#status").textContent === "Shared resource open. Leave to close this session."');
+  await tab.waitFor('document.querySelector("#status").textContent !== "Checking your existing admission…" && document.querySelector("#status").textContent !== ""');
+  assert.equal(await tab.evaluate('document.querySelector("#status").textContent'),
+    'Shared resource open. Leave to close this session.', 'the admitted reader must reopen the shared resource');
   assert.ok(await tab.evaluate('document.querySelector("#surface canvas")?.width > 0'));
   stage('production-account-choice-and-resource-page-mount');
   await tab.evaluate('document.querySelector("#leave").click()');
