@@ -58,7 +58,7 @@ pub enum Outcome {
 }
 
 /// Import from `source` unless an earlier run did.
-pub async fn migrate_once(store: &Store, source: &impl LegacySource) -> Outcome {
+pub async fn migrate_once(store: &Store, source: &(impl LegacySource + Sync)) -> Outcome {
     match store.migration() {
         Ok(Some(_)) => return Outcome::AlreadyDone,
         Ok(None) => {}
@@ -167,7 +167,7 @@ async fn read_login_collection(connection: &Connection) -> Result<Vec<LegacyItem
             ));
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
-        waited += Duration::from_millis(100);
+        waited = waited.saturating_add(Duration::from_millis(100));
     }
     let service = zbus::Proxy::new(
         connection,

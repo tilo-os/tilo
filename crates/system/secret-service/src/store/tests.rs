@@ -160,7 +160,7 @@ fn items_persist_sealed_and_open_only_under_the_same_key() {
     assert_eq!(std::fs::read(&path).unwrap(), disk);
 
     // Damage is a distinct, non-destructive state.
-    let mut damaged = disk.clone();
+    let mut damaged = disk;
     if let Some(last) = damaged.last_mut() {
         *last ^= 1;
     }
@@ -196,7 +196,7 @@ fn search_lookup_replace_and_delete_work_like_libsecret_expects() {
     assert_eq!(both.len(), 2);
     assert_eq!(
         store.search(&me, None, &attributes(&[("a", "2")])).unwrap(),
-        vec![two.clone()]
+        vec![two]
     );
     assert!(
         store
@@ -525,8 +525,7 @@ fn the_device_identity_releases_a_key_bound_to_device_person_and_salt() {
         first.expose_secret(),
         other_person.release().unwrap().expose_secret()
     );
-    let other_home =
-        DeviceIdentityKey::new(paths.clone(), dir.path().join("elsewhere/salt"), "1000");
+    let other_home = DeviceIdentityKey::new(paths, dir.path().join("elsewhere/salt"), "1000");
     assert_ne!(
         first.expose_secret(),
         other_home.release().unwrap().expose_secret()

@@ -13,6 +13,11 @@
 //! the path holds 128 random bits and is only ever returned to callers
 //! the item is visible to, and no secret is reachable through a property.
 
+#![allow(
+    clippy::unused_async,
+    reason = "zbus interface methods are async by convention, and most of these hold no await"
+)]
+
 use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
 use std::pin::Pin;
@@ -250,15 +255,15 @@ impl Core {
             .get(session)
             .filter(|entry| entry.owner == sender)
             .ok_or_else(|| SecretError::NoSession("no such session".into()))?;
-        match &entry.key {
+        let sealed = match &entry.key {
             SessionKey::Plain => Ok((Vec::new(), plain.to_vec())),
-            SessionKey::Dh(key) => {
-                let (iv, ciphertext) = key
-                    .encrypt(plain)
-                    .map_err(|error| SecretError::Failed(error.to_string()))?;
-                Ok((iv.to_vec(), ciphertext))
-            }
-        }
+            SessionKey::Dh(key) => key
+                .encrypt(plain)
+                .map(|(iv, ciphertext)| (iv.to_vec(), ciphertext))
+                .map_err(|error| SecretError::Failed(error.to_string())),
+        };
+        drop(sessions);
+        sealed
     }
 
     fn decrypt(&self, sender: &str, secret: &WireSecret) -> Result<Zeroizing<Vec<u8>>> {
@@ -267,12 +272,14 @@ impl Core {
             .get(secret.0.as_str())
             .filter(|entry| entry.owner == sender)
             .ok_or_else(|| SecretError::NoSession("no such session".into()))?;
-        match &entry.key {
+        let opened = match &entry.key {
             SessionKey::Plain => Ok(Zeroizing::new(secret.2.clone())),
             SessionKey::Dh(key) => key
                 .decrypt(&secret.1, &secret.2)
                 .map_err(|_| SecretError::InvalidArgs("the secret does not decrypt".into())),
-        }
+        };
+        drop(sessions);
+        opened
     }
 
     fn wire_secret(
@@ -503,8 +510,9 @@ impl ServiceIface {
 
     async fn lock(
         &self,
-        _objects: Vec<OwnedObjectPath>,
+        objects: Vec<OwnedObjectPath>,
     ) -> Result<(Vec<OwnedObjectPath>, OwnedObjectPath)> {
+        drop(objects);
         // The key is not the person's to withdraw: it is released again at
         // the next operation, so locking would only pretend.
         Ok((Vec::new(), object(NO_PROMPT)?))
