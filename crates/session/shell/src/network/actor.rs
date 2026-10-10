@@ -945,9 +945,10 @@ impl ProtocolHandler for PersonalFabricProtocol {
 /// Why `command` means a remote party is involved, so this device must be
 /// reachable from now on (`crate::network::reachability`): it dials a peer
 /// or host, enrols a device, administers a relay room, joins a call or
-/// sends to one of the person's devices. `None` for everything a lone
-/// desktop does by itself: joining and publishing to a topic nobody else
-/// is on sends nothing, and a lone desktop does that on every local change.
+/// sends to a named one of the person's devices. `None` for everything a
+/// lone desktop does by itself: joining and publishing to a topic nobody
+/// else is on (its rooms, its fabric broadcast) sends nothing, and a lone
+/// desktop does that on every local change.
 fn remote_party_command(command: &NetCmd) -> Option<&'static str> {
     Some(match command {
         NetCmd::Connect { .. } => "dialling a peer",
@@ -955,9 +956,9 @@ fn remote_party_command(command: &NetCmd) -> Option<&'static str> {
         NetCmd::GovernorAction { .. } | NetCmd::RoomAdmin { .. } => "talking to a room's host",
         NetCmd::NativeEnrollment(_) => "enrolling a device",
         NetCmd::NativeMedia(_) => "a call",
-        NetCmd::PublishPersonalFabric { .. }
-        | NetCmd::PublishPersonalFabricTarget { .. }
-        | NetCmd::PublishNearbyTransfer { .. } => "sending to the person's devices",
+        NetCmd::PublishPersonalFabricTarget { .. } | NetCmd::PublishNearbyTransfer { .. } => {
+            "sending to one of the person's devices"
+        }
         NetCmd::PublishSurfaceTo { .. } => "streaming a window to a peer",
         _ => return None,
     })
