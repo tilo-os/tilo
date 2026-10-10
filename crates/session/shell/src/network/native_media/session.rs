@@ -52,6 +52,9 @@ impl MediaFactory for Factory {
         let runtime = self.runtime.clone();
         Box::pin(async move {
             let mut preparing = AbortTask(runtime.spawn(async move {
+                // From here until the call ends the observations it reads
+                // stay fresh; waiting for the grant can outlast them.
+                let fresh = devices.watch();
                 let observed = devices.prepare().await.map_err(|_| Issue::Unavailable)?;
                 let output = devices.output().ok_or(Issue::Unavailable)?;
                 if !observed.contains(output.cookie, output.node, output.serial, false) {
@@ -114,6 +117,7 @@ impl MediaFactory for Factory {
                 Ok(Box::new(Session {
                     runtime,
                     devices,
+                    _fresh: fresh,
                     output,
                     audio,
                     capture: None,
@@ -410,6 +414,8 @@ fn installation_fence(
 struct Session {
     runtime: Arc<Running>,
     devices: Arc<devices::Devices>,
+    /// Keeps `devices` refreshing for as long as the call lasts.
+    _fresh: devices::Watch,
     output: Arc<devices::Observation>,
     audio: VoiceAudio,
     capture: Option<CaptureIntent>,
