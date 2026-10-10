@@ -244,23 +244,36 @@ class NotesTask:
         raise PolicyError(f"the task has no step {step}")
 
     def body_action(self, rows: list[dict[str, Any]]) -> dict[str, Any]:
-        """The new note's body `append-paragraph`: on the resource whose label is the title."""
+        """The new note's body `append-paragraph`. The listing for the title
+        holds the note (`notes.page:<id>`) and its body, a child resource
+        (`…/page/<id>/body`) labelled with the title; read the ids the way a
+        model reads the listing it was given."""
         notes = [r for r in rows if notes_row(r)]
         appends = [r for r in notes if operation_of(r) == "append-paragraph"]
-        # The body is a child resource of the notebook labelled with the page's
-        # title; its row names the title as its title or subtitle.
-        titled = [r for r in appends
-                  if self.title in (str(r.get("title", "")), str(r.get("subtitle", "")))]
-        if len(titled) == 1:
-            return titled[0]
-        page_ids = {m.group(1) for r in notes if self.title in (r.get("title"), r.get("subtitle"))
-                    for m in [re.search(r"([0-9a-f]{8}-[0-9a-f-]{27})", str(r.get("resource", "")))]
-                    if m}
-        matched = [r for r in appends if any(p in str(r.get("resource", "")) for p in page_ids)]
-        if len(matched) == 1:
-            return matched[0]
-        raise PolicyError(f"no single append-paragraph on {self.title!r} ({len(titled)} titled, "
-                          f"{len(matched)} by page id) among {len(rows)} rows: {describe_rows(rows)}")
+        pages = {m.group(1) for r in notes
+                 for m in [re.search(r"notes\.page:([0-9a-f-]{36})", resource_of(r))] if m}
+        bodies = [r for r in appends
+                  if (m := re.search(r"page/([0-9a-f-]{36})/body", resource_of(r)))
+                  and m.group(1) in pages]
+        if len(bodies) == 1:
+            return bodies[0]
+        if not pages and len(appends) == 1:
+            return appends[0]
+        raise PolicyError(f"no single append-paragraph on {self.title!r} ({len(pages)} notes, "
+                          f"{len(appends)} bodies) among {len(rows)} rows: {describe_rows(rows)}")
+
+
+def resource_of(row: dict[str, Any]) -> str:
+    """A row's resource id, with a bound resource's hex-encoded tail read
+    (`tilo-ui-bound:v1:<room>:<record>:<hex>`)."""
+    resource = str(row.get("resource") or "")
+    tail = resource.rsplit(":", 1)[-1]
+    if resource.startswith("tilo-ui-bound:") and len(tail) % 2 == 0:
+        try:
+            return bytes.fromhex(tail).decode()
+        except ValueError:
+            pass
+    return resource
 
 
 def check_succeeded(result: Any, what: str) -> None:
@@ -690,7 +703,7 @@ def seeded_desktop(shell: Path, seeder: Path, log: Path, timeout: int) -> Iterat
         env["TILO_HEADLESS_PROFILE"] = str(profile)
         # What the session says while it starts is the first thing to read
         # when a run cannot find Notes.
-        env.setdefault("RUST_LOG", os.environ.get("RUST_LOG", "info"))
+        env.setdefault("RUST_LOG", os.environ.get("RUST_LOG", "info,tilo::listing=debug"))
         with spawned(shell, log, timeout, env) as socket_path:
             yield socket_path
     finally:

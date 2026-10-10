@@ -2534,14 +2534,26 @@ impl SearchProvider for LiveAppActionsProvider {
     fn index_settling(&self, ctx: &SearchContext<'_>) -> bool {
         let scope = Self::surface_scope(ctx);
         let source_generation = self.broker.surfaces_generation();
-        let ready = self
+        let built = self
             .surface_snapshot
             .borrow()
             .as_ref()
-            .is_some_and(|snapshot| {
-                snapshot.source_generation == source_generation && snapshot.scope == scope
-            });
-        !ready || !self.directory_pending.borrow().is_empty()
+            .map(|snapshot| (snapshot.source_generation, snapshot.scope == scope));
+        let ready = built == Some((source_generation, true));
+        let pending = self.directory_pending.borrow().len();
+        if !ready || pending > 0 {
+            // Why a listing is not complete yet, for whoever has to find
+            // out why one never settles.
+            tracing::debug!(
+                target: "tilo::listing",
+                source_generation,
+                ?built,
+                building = self.surface_build.borrow().is_some(),
+                pending_directory_pages = pending,
+                "app actions still settling"
+            );
+        }
+        !ready || pending > 0
     }
 
     #[allow(
