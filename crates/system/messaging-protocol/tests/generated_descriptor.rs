@@ -8,13 +8,12 @@ use buffa_build::Config;
 // FileDescriptorSet for: syntax = "proto3"; package fixture; message Before {}
 const DESCRIPTOR: &[u8] = b"\x0a\x2a\x0a\x0d\x66\x69\x78\x74\x75\x72\x65\x2e\x70\x72\x6f\x74\x6f\x12\x07\x66\x69\x78\x74\x75\x72\x65\x22\x08\x0a\x06\x42\x65\x66\x6f\x72\x65\x62\x06\x70\x72\x6f\x74\x6f\x33";
 
-fn generate(config: Config, out: &Path) {
+fn generate(config: Config, out: &Path) -> Result<(), Box<dyn std::error::Error>> {
     config
         .files(&["fixture.proto"])
         .out_dir(out)
         .include_file("mod.rs")
         .compile()
-        .expect("valid descriptor must generate Rust");
 }
 
 #[test]
@@ -24,8 +23,8 @@ fn descriptor_file_generation_is_reproducible_and_observes_schema_changes() {
     std::fs::write(&input, DESCRIPTOR).unwrap();
     let original = temp.path().join("original");
     let repeat = temp.path().join("repeat");
-    generate(Config::new().descriptor_set(&input), &original);
-    generate(Config::new().descriptor_set(&input), &repeat);
+    generate(Config::new().descriptor_set(&input), &original).unwrap();
+    generate(Config::new().descriptor_set(&input), &repeat).unwrap();
     let mut count = 0;
     for entry in std::fs::read_dir(&original).unwrap() {
         let entry = entry.unwrap();
@@ -51,7 +50,7 @@ fn descriptor_file_generation_is_reproducible_and_observes_schema_changes() {
     descriptor[start..start + b"Before".len()].copy_from_slice(b"After_");
     std::fs::write(&input, descriptor).unwrap();
     let changed = temp.path().join("changed");
-    generate(Config::new().descriptor_set(&input), &changed);
+    generate(Config::new().descriptor_set(&input), &changed).unwrap();
     let original = std::fs::read_to_string(original.join("fixture.rs")).unwrap();
     let changed = std::fs::read_to_string(changed.join("fixture.rs")).unwrap();
     assert!(original.contains("pub struct Before"));
@@ -66,7 +65,7 @@ fn descriptor_file_generation_is_reproducible_and_observes_schema_changes() {
 fn descriptor_tracking_distinguishes_generated_outputs_from_external_inputs() {
     if let Some(input) = std::env::var_os("TILO_DESCRIPTOR_PROBE_INPUT") {
         let out = std::env::var_os("TILO_DESCRIPTOR_PROBE_OUTPUT").unwrap();
-        generate(Config::new().descriptor_set(input), Path::new(&out));
+        generate(Config::new().descriptor_set(input), Path::new(&out)).unwrap();
         return;
     }
     let temp = tempfile::tempdir().unwrap();
@@ -95,7 +94,7 @@ fn descriptor_tracking_distinguishes_generated_outputs_from_external_inputs() {
         std::os::unix::fs::symlink(&generated, &external_link).unwrap();
         std::os::unix::fs::symlink(&external, &escaping_link).unwrap();
         cases.push((external_link, Some(out.clone()), true));
-        cases.push((escaping_link, Some(out.clone()), true));
+        cases.push((escaping_link, Some(out), true));
     }
     for (index, (input, cargo_out, tracked)) in cases.into_iter().enumerate() {
         let mut command = Command::new(std::env::current_exe().unwrap());
