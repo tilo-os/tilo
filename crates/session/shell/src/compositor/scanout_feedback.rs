@@ -105,8 +105,14 @@ pub struct ScanoutOpacity(AtomicBool);
 
 impl ScanoutOpacity {
     /// Record the opacity of the buffer a commit to the surface `states`
-    /// describe attaches.
-    pub fn record(states: &compositor::SurfaceData, opaque: bool) {
+    /// describe attaches: `commit` when it is a dma-buf, else not opaque.
+    pub fn record(
+        states: &compositor::SurfaceData,
+        commit: Option<&crate::compositor::foreign::DmabufCommit>,
+    ) {
+        use smithay::backend::allocator::Buffer as _;
+        let opaque =
+            commit.is_some_and(|commit| scanout_opaque(commit.buffer.format().code, commit.opaque));
         states.data_map.insert_if_missing_threadsafe(Self::default);
         if let Some(opacity) = states.data_map.get::<Self>() {
             opacity.0.store(opaque, Ordering::Relaxed);

@@ -1751,7 +1751,7 @@ impl State {
                         scanout_feedback =
                             Some(crate::compositor::scanout_feedback::ScanoutFeedback::new(
                                 node.dev,
-                                dmabuf_formats.clone(),
+                                dmabuf_formats,
                                 feedback,
                             ));
                         Some(global)
@@ -4336,17 +4336,10 @@ impl State {
             let Some(client) = surface.client() else {
                 return (ForeignCommitCapture::Failed, None);
             };
-            let dmabuf = smithay::wayland::dmabuf::get_dmabuf(&buffer).cloned().ok();
-            let commit = dmabuf.map(|dmabuf| declared.commit(states, dmabuf));
-            crate::compositor::scanout_feedback::ScanoutOpacity::record(
-                states,
-                commit.as_ref().is_some_and(|commit| {
-                    crate::compositor::scanout_feedback::scanout_opaque(
-                        commit.buffer.format().code,
-                        commit.opaque,
-                    )
-                }),
-            );
+            let commit = smithay::wayland::dmabuf::get_dmabuf(&buffer)
+                .ok()
+                .map(|dmabuf| declared.commit(states, dmabuf.clone()));
+            crate::compositor::scanout_feedback::ScanoutOpacity::record(states, commit.as_ref());
             if let Some(commit) = commit {
                 if let Some(capture) = crate::compositor::foreign::store()
                     .prepare_dmabuf_capture_with_damage(surface_id, client, commit, damage)

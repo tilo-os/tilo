@@ -560,7 +560,7 @@ pub(super) struct ClientPlane {
     built_offer: Option<(DrmFourcc, Option<Arc<ScanoutPlane>>)>,
     /// What the output offers a fullscreen client now ([`Self::offer`]).
     offered: Option<Arc<ScanoutPlane>>,
-    /// What [`Self::unpublished_offer`] last handed out.
+    /// What [`Self::publish_offer`] last published.
     published: Option<Arc<ScanoutPlane>>,
 }
 
@@ -604,13 +604,15 @@ impl ClientPlane {
         self.offered = offer;
     }
 
-    /// The output's offer, when it differs from the one last handed out.
-    pub fn unpublished_offer(&mut self) -> Option<Option<Arc<ScanoutPlane>>> {
+    /// Publish the offer of `output` (this plane's output) into `planes`
+    /// when it differs from the one last published; returns whether it did.
+    pub fn publish_offer(&mut self, output: OutputId, planes: &ClientPlanes) -> bool {
         if self.offered == self.published {
-            return None;
+            return false;
         }
         self.published.clone_from(&self.offered);
-        Some(self.offered.clone())
+        planes.publish(output, self.offered.clone());
+        true
     }
 
     /// The framebuffer `dmabuf` scans out through as `fourcc`
@@ -981,22 +983,27 @@ mod tests {
     fn an_offer_is_published_once_per_change() {
         let planes = ClientPlanes::default();
         let mut plane = ClientPlane::default();
-        assert_eq!(plane.unpublished_offer(), None, "nothing offered yet");
+        assert!(
+            !plane.publish_offer(OutputId(3), &planes),
+            "nothing offered yet"
+        );
         let offer = Arc::new(ScanoutPlane {
             device: 226,
             formats: client_formats(&PlaneFormats::Implicit(vec![XRGB]), DrmFourcc::Xrgb8888),
         });
         plane.offered = Some(Arc::clone(&offer));
-        let published = plane.unpublished_offer().expect("a new offer");
-        planes.publish(OutputId(3), published);
+        assert!(plane.publish_offer(OutputId(3), &planes), "a new offer");
         assert_eq!(planes.get(OutputId(3)), Some(Arc::clone(&offer)));
-        assert_eq!(plane.unpublished_offer(), None, "published already");
+        assert!(
+            !plane.publish_offer(OutputId(3), &planes),
+            "published already"
+        );
 
         // A refusing output withdraws it.
         plane.offered = None;
-        planes.publish(OutputId(3), plane.unpublished_offer().expect("withdrawn"));
+        assert!(plane.publish_offer(OutputId(3), &planes), "withdrawn");
         assert_eq!(planes.get(OutputId(3)), None);
-        assert_eq!(plane.unpublished_offer(), None);
+        assert!(!plane.publish_offer(OutputId(3), &planes));
     }
 
     /// A buffer that records when its holder let go.

@@ -2473,9 +2473,7 @@ fn refresh_client_offer(
 /// ([`client_scanout::ClientPlanes`]).
 fn publish_client_planes(scanouts: &mut [ScanoutEntry], planes: &client_scanout::ClientPlanes) {
     for entry in scanouts {
-        if let Some(plane) = entry.scanout.unpublished_client_plane() {
-            planes.publish(entry.id, plane);
-        }
+        entry.scanout.publish_client_plane(entry.id, planes);
     }
 }
 

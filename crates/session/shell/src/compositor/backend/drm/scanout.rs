@@ -3436,12 +3436,14 @@ impl DrmScanout {
             .offer(&self.card, self.crtc, device, target);
     }
 
-    /// This output's offer to fullscreen clients, when it changed since it
-    /// was last taken.
-    pub(super) fn unpublished_client_plane(
+    /// Publish this output's offer to fullscreen clients into `planes`, when
+    /// it changed since last published.
+    pub(super) fn publish_client_plane(
         &mut self,
-    ) -> Option<Option<std::sync::Arc<crate::compositor::scanout_feedback::ScanoutPlane>>> {
-        self.client_plane.unpublished_offer()
+        output: OutputId,
+        planes: &super::client_scanout::ClientPlanes,
+    ) {
+        self.client_plane.publish_offer(output, planes);
     }
 
     /// A flip of `dmabuf` failed: composite it from now on.
