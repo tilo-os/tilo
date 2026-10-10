@@ -115,6 +115,20 @@ pub(super) fn client_scanout_rejection(input: ClientEligibility) -> Option<&'sta
     None
 }
 
+/// The format a client buffer is scanned out as: its own, or — when its
+/// alpha is padding because the client declared the whole surface opaque
+/// (`wl_surface.set_opaque_region`, [`GpuFrame::opaque`]) — the `X` twin of
+/// its alpha format. The two lay pixels out identically; KMS then ignores the
+/// alpha, as the composited frame does, and a legacy flip from the output's
+/// own `XRGB8888` targets onto it keeps the format.
+pub(super) fn scanout_fourcc(fourcc: DrmFourcc, opaque: bool) -> DrmFourcc {
+    match (fourcc, opaque) {
+        (DrmFourcc::Argb8888, true) => DrmFourcc::Xrgb8888,
+        (DrmFourcc::Abgr8888, true) => DrmFourcc::Xbgr8888,
+        (other, _) => other,
+    }
+}
+
 /// What the primary plane scans out.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum PlaneFormats {
@@ -250,11 +264,14 @@ impl std::fmt::Debug for ClientFramebuffer {
 }
 
 impl ClientFramebuffer {
-    /// Make `dmabuf` a framebuffer on `card`. The framebuffer keeps its own
-    /// references to the buffer's memory, so the GEM handles go at once.
-    fn import(card: &Card, dmabuf: &Dmabuf) -> Result<Self, String> {
+    /// Make `dmabuf` a framebuffer on `card`, read as `fourcc` (its own
+    /// format, or the `X` twin of it, [`scanout_fourcc`]). The framebuffer
+    /// keeps its own references to the buffer's memory, so the GEM handles go
+    /// at once.
+    fn import(card: &Card, dmabuf: &Dmabuf, fourcc: DrmFourcc) -> Result<Self, String> {
         let mut planes = DmabufPlanes {
             dmabuf,
+            fourcc,
             handles: [None; 4],
         };
         for (slot, fd) in planes.handles.iter_mut().zip(dmabuf.handles()) {
@@ -303,6 +320,8 @@ impl Drop for ClientFramebuffer {
 /// A client dma-buf described for `ADDFB2`.
 struct DmabufPlanes<'a> {
     dmabuf: &'a Dmabuf,
+    /// The format the framebuffer reads it as ([`scanout_fourcc`]).
+    fourcc: DrmFourcc,
     handles: [Option<drm_buffer::Handle>; 4],
 }
 
@@ -311,7 +330,7 @@ impl PlanarBuffer for DmabufPlanes<'_> {
         (self.dmabuf.width(), self.dmabuf.height())
     }
     fn format(&self) -> DrmFourcc {
-        self.dmabuf.format().code
+        self.fourcc
     }
     fn modifier(&self) -> Option<DrmModifier> {
         let modifier = self.dmabuf.format().modifier;
@@ -440,6 +459,8 @@ pub(super) enum ClientStatus {
 /// One remembered client buffer: its framebuffer, or why it cannot be one.
 struct Remembered {
     buffer: WeakDmabuf,
+    /// The format the buffer was tried as.
+    fourcc: DrmFourcc,
     verdict: Result<Arc<ClientFramebuffer>, String>,
 }
 
@@ -453,26 +474,33 @@ pub(super) struct ClientPlane {
 }
 
 impl ClientPlane {
-    /// The framebuffer `dmabuf` scans out through, made and tried in a
-    /// `TEST_ONLY` commit the first time the buffer comes by; a refusal is
-    /// remembered as well, so a buffer the plane refused is not asked again.
+    /// The framebuffer `dmabuf` scans out through as `fourcc`
+    /// ([`scanout_fourcc`]), made and tried in a `TEST_ONLY` commit the first
+    /// time the buffer comes by as that format; a refusal is remembered as
+    /// well, so a buffer the plane refused is not asked again.
     pub fn framebuffer(
         &mut self,
         card: &Card,
         crtc: crtc::Handle,
         dmabuf: &Dmabuf,
+        fourcc: DrmFourcc,
     ) -> Result<Arc<ClientFramebuffer>, String> {
-        self.buffers.retain(|entry| !entry.buffer.is_gone());
         let weak = dmabuf.weak();
+        // A buffer tried as another format (its opaque region changed) is
+        // tried again as this one.
+        self.buffers.retain(|entry| {
+            !entry.buffer.is_gone() && (entry.buffer != weak || entry.fourcc == fourcc)
+        });
         if let Some(entry) = self.buffers.iter().find(|entry| entry.buffer == weak) {
             return entry.verdict.clone();
         }
-        let verdict = self.import(card, crtc, dmabuf);
+        let verdict = self.import(card, crtc, dmabuf, fourcc);
         if self.buffers.len() >= REMEMBERED_BUFFERS {
             self.buffers.remove(0);
         }
         self.buffers.push(Remembered {
             buffer: weak,
+            fourcc,
             verdict: verdict.clone(),
         });
         verdict
@@ -483,23 +511,19 @@ impl ClientPlane {
         card: &Card,
         crtc: crtc::Handle,
         dmabuf: &Dmabuf,
+        fourcc: DrmFourcc,
     ) -> Result<Arc<ClientFramebuffer>, String> {
         let plane = self
             .plane
             .get_or_insert_with(|| probe_primary_plane(card, crtc))
             .clone()?;
-        let format = dmabuf.format();
-        if !plane
-            .formats
-            .supports(format.code as u32, u64::from(format.modifier))
-        {
+        let modifier = u64::from(dmabuf.format().modifier);
+        if !plane.formats.supports(fourcc as u32, modifier) {
             return Err(format!(
-                "the primary plane does not scan out {:?} with modifier {:#x}",
-                format.code,
-                u64::from(format.modifier)
+                "the primary plane does not scan out {fourcc:?} with modifier {modifier:#x}"
             ));
         }
-        let framebuffer = ClientFramebuffer::import(card, dmabuf)?;
+        let framebuffer = ClientFramebuffer::import(card, dmabuf, fourcc)?;
         test_on_plane(card, &plane, framebuffer.handle())?;
         Ok(Arc::new(framebuffer))
     }
@@ -609,6 +633,62 @@ mod tests {
                 "{refusal:?} must composite"
             );
         }
+    }
+
+    /// The plane choice `present_client` makes for a fullscreen buffer of
+    /// `fourcc` on an output whose direct targets are `XRGB8888`: the format
+    /// it is scanned out as, or why it is composited.
+    fn plane_choice(fourcc: DrmFourcc, opaque: bool) -> Result<DrmFourcc, &'static str> {
+        let shown = scanout_fourcc(fourcc, opaque);
+        let eligibility = ClientEligibility {
+            opaque,
+            same_format: shown == DrmFourcc::Xrgb8888,
+            ..eligible()
+        };
+        client_scanout_rejection(eligibility).map_or(Ok(shown), Err)
+    }
+
+    #[test]
+    fn argb_scans_out_as_xrgb_only_when_declared_opaque() {
+        // Phase `argb_with_an_opaque_region_covering_the_surface`: what a
+        // fullscreen browser commits. Its alpha is padding, so KMS reads the
+        // same bytes as XRGB and the output's legacy flip keeps its format.
+        assert_eq!(
+            plane_choice(DrmFourcc::Argb8888, true),
+            Ok(DrmFourcc::Xrgb8888)
+        );
+        // Phase `argb_partly_translucent`: no or a partial opaque region
+        // (rounded corners, a shadow, a translucent terminal) composites.
+        assert_eq!(
+            plane_choice(DrmFourcc::Argb8888, false),
+            Err("the fullscreen client's buffer has an alpha channel")
+        );
+        // Phase `xrgb_unchanged`.
+        assert_eq!(
+            plane_choice(DrmFourcc::Xrgb8888, true),
+            Ok(DrmFourcc::Xrgb8888)
+        );
+        // Phase `abgr_declared_opaque`: its X twin is not the targets'
+        // format, and a legacy flip cannot change formats.
+        assert_eq!(
+            scanout_fourcc(DrmFourcc::Abgr8888, true),
+            DrmFourcc::Xbgr8888
+        );
+        assert_eq!(
+            plane_choice(DrmFourcc::Abgr8888, true),
+            Err("the client's buffer format differs from the output's")
+        );
+        // Phase `only_alpha_formats_change`.
+        assert_eq!(
+            scanout_fourcc(DrmFourcc::Argb8888, false),
+            DrmFourcc::Argb8888
+        );
+        assert_eq!(scanout_fourcc(DrmFourcc::Nv12, true), DrmFourcc::Nv12);
+        assert_eq!(
+            scanout_fourcc(DrmFourcc::Argb2101010, true),
+            DrmFourcc::Argb2101010,
+            "a 10-bit buffer is never a GpuFrame and never scanned out"
+        );
     }
 
     /// An `IN_FORMATS` blob: `formats`, then one `drm_format_modifier` per

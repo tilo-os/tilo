@@ -222,6 +222,43 @@ mod commit_damage_tests {
     }
 }
 
+/// What a commit says about its surface's opacity: the opaque region the
+/// commit applies and how its buffer maps onto the surface.
+struct DeclaredOpacity {
+    region: Option<wl_compositor::RegionAttributes>,
+    scale: i32,
+    transform: smithay::reexports::wayland_server::protocol::wl_output::Transform,
+}
+
+impl DeclaredOpacity {
+    fn of(attrs: &wl_compositor::SurfaceAttributes) -> Self {
+        Self {
+            region: attrs.opaque_region.clone(),
+            scale: attrs.buffer_scale,
+            transform: attrs.buffer_transform,
+        }
+    }
+
+    /// The opaque region covers the whole surface a `buffer` of this size
+    /// gives: the buffer's alpha is padding
+    /// ([`crate::compositor::opaque_region`]).
+    fn covers(
+        &self,
+        buffer: (u32, u32),
+        viewport: &smithay::wayland::viewporter::ViewportCachedState,
+    ) -> bool {
+        crate::compositor::opaque_region::covers(
+            self.region.as_ref(),
+            crate::compositor::opaque_region::surface_extent(
+                buffer,
+                self.scale,
+                self.transform,
+                viewport,
+            ),
+        )
+    }
+}
+
 use smithay::backend::allocator::Fourcc;
 use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::backend::allocator::{Buffer, Format, Modifier};
@@ -4222,6 +4259,7 @@ impl State {
                 }
             };
             let rects = pending_buffer_rects(attrs.pending(), pending_viewport(states));
+            let declared = DeclaredOpacity::of(attrs.pending());
             drop(attrs);
             let damage = rects.as_deref().map(buffer_damage);
             let regions = rects.as_deref().map(shm_regions);
@@ -4234,14 +4272,18 @@ impl State {
                     .get::<crate::wayland::color_management::ColorManagementSurfaceData>()
                     .and_then(crate::wayland::color_management::ColorManagementSurfaceData::current_colorimetry)
                     .map(|(colorimetry, _)| colorimetry);
+                let viewport = *states
+                    .cached_state
+                    .get::<smithay::wayland::viewporter::ViewportCachedState>()
+                    .pending();
+                let opaque = declared.covers((dmabuf.width(), dmabuf.height()), &viewport);
+                let commit = crate::compositor::foreign::DmabufCommit {
+                    buffer: dmabuf,
+                    colorimetry,
+                    opaque,
+                };
                 if let Some(capture) = crate::compositor::foreign::store()
-                    .prepare_dmabuf_capture_with_damage(
-                        surface_id,
-                        client,
-                        dmabuf,
-                        colorimetry,
-                        damage,
-                    )
+                    .prepare_dmabuf_capture_with_damage(surface_id, client, commit, damage)
                 {
                     // `with_states` holds Smithay's PrivateSurfaceData mutex.
                     // `add_blocker` takes that same non-reentrant mutex, so it

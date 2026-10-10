@@ -1196,6 +1196,21 @@ struct CaptureJob<T> {
     /// only when its fence could not be watched on the compositor loop; the
     /// worker then waits for it.
     readable: bool,
+    /// The commit declared every pixel opaque ([`DmabufCommit::opaque`]).
+    opaque: bool,
+}
+
+/// A dmabuf a surface commit attaches, with what the commit says about it.
+#[cfg(target_os = "linux")]
+pub struct DmabufCommit {
+    pub buffer: Dmabuf,
+    /// The surface's colour description, if it has one.
+    pub colorimetry: Option<crate::collab::colorimetry::Colorimetry>,
+    /// The commit's opaque region covers the whole surface
+    /// ([`crate::compositor::opaque_region`]): the buffer's alpha channel is
+    /// padding. The frame is drawn ignoring it, as an `X` format is, and a
+    /// fullscreen one may be scanned out as its `X` twin.
+    pub opaque: bool,
 }
 
 #[cfg(target_os = "linux")]
@@ -1628,7 +1643,7 @@ fn capture_dmabuf_job(job: DmabufJob, rgba: &mut Vec<u8>) -> (bool, Barrier, Cli
     if !job.readable {
         crate::shell::gpu_frames::wait_readable(&job.payload);
     }
-    if let Some(frame) = share_dmabuf(&job.payload, job.surface) {
+    if let Some(frame) = share_dmabuf(&job.payload, job.surface, job.opaque) {
         let accepted = store().stage_gpu_capture(job.surface, job.token, frame);
         return (accepted, job.barrier, job.client);
     }
@@ -1636,6 +1651,9 @@ fn capture_dmabuf_job(job: DmabufJob, rgba: &mut Vec<u8>) -> (bool, Barrier, Cli
     let mut hdr = None;
     let result = decode_dmabuf(&job.payload, rgba, colorimetry, &mut hdr)
         .map(|(width, height, route)| (width, height, CaptureRoute::Dmabuf(route)));
+    if result.is_ok() && hdr.is_none() && job.opaque {
+        declare_opaque(job.payload.format().code, rgba);
+    }
     let accepted = store().stage_dmabuf_capture(job.surface, job.token, result, rgba, hdr);
     (accepted, job.barrier, job.client)
 }
@@ -2192,6 +2210,22 @@ pub fn give_back_released_buffers() {
     }
 }
 
+/// Make a read-back frame of an alpha format opaque: its commit declared
+/// every pixel opaque, so its alpha is padding and is drawn as an `X`
+/// format's is, the same as the GPU route draws it
+/// ([`crate::shell::gpu_frames::import_dmabuf`]).
+#[cfg(target_os = "linux")]
+fn declare_opaque(fourcc: Fourcc, rgba: &mut [u8]) {
+    if !matches!(fourcc, Fourcc::Argb8888 | Fourcc::Abgr8888) {
+        return;
+    }
+    for texel in rgba.chunks_exact_mut(4) {
+        if let Some(alpha) = texel.get_mut(3) {
+            *alpha = u8::MAX;
+        }
+    }
+}
+
 #[cfg(any(test, target_os = "linux"))]
 fn recycle_dmabuf_pixels(surface: SurfaceId, rgba: Arc<Vec<u8>>) {
     #[cfg(not(target_os = "linux"))]
@@ -2248,9 +2282,10 @@ pub fn dmabuf_fence_unwatched(surface: SurfaceId, token: u64) {
 fn share_dmabuf(
     dmabuf: &Dmabuf,
     surface: SurfaceId,
+    opaque: bool,
 ) -> Option<Arc<crate::shell::gpu_frames::GpuFrame>> {
     static REPORTED: Mutex<Vec<String>> = Mutex::new(Vec::new());
-    match crate::shell::gpu_frames::import_dmabuf(dmabuf, surface) {
+    match crate::shell::gpu_frames::import_dmabuf(dmabuf, surface, opaque) {
         Ok(frame) => Some(frame),
         Err(reason) => {
             let mut reported = REPORTED
@@ -2550,7 +2585,12 @@ impl ForeignFrameStore {
         dmabuf: Dmabuf,
         colorimetry: Option<crate::collab::colorimetry::Colorimetry>,
     ) -> Option<PreparedDmabufCapture> {
-        self.prepare_dmabuf_capture_with_damage(id, client, dmabuf, colorimetry, None)
+        let commit = DmabufCommit {
+            buffer: dmabuf,
+            colorimetry,
+            opaque: false,
+        };
+        self.prepare_dmabuf_capture_with_damage(id, client, commit, None)
     }
 
     #[cfg(target_os = "linux")]
@@ -2558,10 +2598,14 @@ impl ForeignFrameStore {
         &self,
         id: SurfaceId,
         client: Client,
-        dmabuf: Dmabuf,
-        colorimetry: Option<crate::collab::colorimetry::Colorimetry>,
+        commit: DmabufCommit,
         damage: Option<Vec<Rect>>,
     ) -> Option<PreparedDmabufCapture> {
+        let DmabufCommit {
+            buffer: dmabuf,
+            colorimetry,
+            opaque,
+        } = commit;
         let token = self
             .next_capture
             .fetch_add(1, Ordering::Relaxed)
@@ -2590,6 +2634,7 @@ impl ForeignFrameStore {
                     barrier: barrier.clone(),
                     client,
                     readable: true,
+                    opaque,
                 };
                 if fence.is_some() {
                     worker.park(job);
