@@ -106,5 +106,6 @@ jobs:
           set -euo pipefail
           # shellcheck disable=SC2086
           bash tools/ci/measure.sh "web examples" -- \
-          bash scripts/ci-run.sh "tilo-app build --platform web (examples)" -- \
+            bash scripts/ci-run.sh "tilo-app build --platform web (examples)" -- \
             bash tools/ci/build-web-examples.sh $WEB_EXAMPLES
+
