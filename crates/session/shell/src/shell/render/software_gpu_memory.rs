@@ -299,7 +299,9 @@ mod tests {
             .copy_from_slice(&vec![0xA5; live_len]);
         let released = release_freed_memory(device).expect("lavapipe");
         assert!(
-            released.after_bytes <= baseline.saturating_add(9 * MIB),
+            // What is left is the live buffer and the staging copy wgpu maps
+            // it through at creation, 8 MiB each; the 24 MiB freed is gone.
+            released.after_bytes <= baseline.saturating_add(17 * MIB),
             "freed memory stayed allocated: baseline {baseline}, freed {freed}, {released:?}"
         );
         assert!(
