@@ -1,4 +1,4 @@
-//! When the broker re-checks what it already admitted (TIL-707).
+//! When the broker re-checks what it already admitted.
 //!
 //! Admitted native context subscribers, membership surfaces and the devices
 //! a channel steward lets read were re-checked once a second, forever, so an

@@ -577,7 +577,7 @@ mod tests {
         }
     }
 
-    /// TIL-707: channel stewards read the authenticated devices without a
+    /// channel stewards read the authenticated devices without a
     /// clock, so the store announces each change and names the instant its
     /// answer next changes by time alone.
     #[test]

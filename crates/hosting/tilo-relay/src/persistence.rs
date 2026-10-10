@@ -54,7 +54,7 @@ const RECLAIM_RETRY: std::time::Duration = std::time::Duration::from_millis(100)
 /// on disk. A restart continues past the reservation, at most this far
 /// ahead of the host clock. Sequences follow the clock, so a workspace that
 /// commits steadily renews the reservation once per this interval: at a
-/// second, a typing room paid a renewal every second (TIL-732).
+/// second, a typing room paid a renewal every second.
 const SEQUENCE_RESERVATION_NS: u64 = 10_000_000_000;
 /// One blocking-pool task runs a transaction's quanta for up to this long: a
 /// many-quantum transaction then pays a pool round trip per slice instead of

@@ -93,7 +93,7 @@ pub struct SessionEgress {
     /// Bytes written to the session's stream since it was authenticated.
     pub bytes_sent: u64,
     /// Writes that put those bytes on the stream. Each is handed to QUIC
-    /// whole, so frames written together can share a packet (TIL-776).
+    /// whole, so frames written together can share a packet.
     pub writes: u64,
 }
 

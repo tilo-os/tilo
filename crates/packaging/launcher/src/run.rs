@@ -1390,7 +1390,7 @@ mod system_bundle_tree_policy_tests {
 }
 
 /// A per-user runtime is writable by the user's unconfined processes, so a
-/// launch must prove every byte (TIL-594): sealed files by their signed
+/// launch must prove every byte: sealed files by their signed
 /// fs-verity digest without reading them, every other file by its hash.
 #[cfg(test)]
 #[cfg(unix)]

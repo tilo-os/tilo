@@ -4,6 +4,8 @@ set -euo pipefail
 root="$(git rev-parse --show-toplevel)"
 fail=0
 python3 "$root/tools/policy/check_source_content.py" --staged || fail=1
+# No tracker ids or private links: the repository is open source and stands alone.
+python3 "$root/tools/policy/check_self_contained.py" --staged || fail=1
 note() { printf '  %s\n' "$*" >&2; }
 
 # Every crate on disk must be a workspace member.

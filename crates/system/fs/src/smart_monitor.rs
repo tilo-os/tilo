@@ -123,7 +123,7 @@ pub async fn start(
             // Power and storage only matter to an open's predictions, so
             // they are sampled every interval while files are opened, and
             // at the first open after a quiet interval; an idle mount
-            // sleeps (TIL-774). That first open is judged by the previous
+            // sleeps. That first open is judged by the previous
             // sample, and a gate the fresh one closes cancels what it
             // queued. Network changes apply as signalled.
             let busy = heuristics.take_opened();

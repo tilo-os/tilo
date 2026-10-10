@@ -1,5 +1,5 @@
 //! What an active collaborator costs a relay: the hosting-cost load bench
-//! (TIL-592).
+//!.
 //!
 //! One relay runs in its own process, so its CPU time and memory are its
 //! own: this binary re-executes itself with `--serve`, which starts the
@@ -20,7 +20,7 @@
 //! - **idle** for the rest of the minute.
 //!
 //! That is 1,800 edits and 7,200 pointer moves per active hour, the cost
-//! model's assumptions (TIL-625). Collaborators start their minute at
+//! model's assumptions. Collaborators start their minute at
 //! staggered offsets, so the load is spread as people's would be.
 //!
 //! The first minute warms up; then each further minute is one sample window.

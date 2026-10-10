@@ -133,7 +133,7 @@ concurrency:
 env:
   TILO_ALLOW_PUBLIC_LENOVO_FIRMWARE: ${{ github.event.inputs.allow_public_lenovo_firmware || 'false' }}
   TILO_DEV_INPUT_COHORT: ${{ (inputs.fex_payload_candidate != '' || inputs.windows_guest_candidate != '') && github.run_id || '' }}
-  # Content-based layers for the generic OS image (TIL-747, "Rechunk the
+  # Content-based layers for the generic OS image ("Rechunk the
   # image" below). The repository variable TILO_RECHUNK=0 turns it off without
   # a commit: the image then keeps one layer per Containerfile instruction.
   TILO_RECHUNK: ${{ vars.TILO_RECHUNK || '1' }}
@@ -547,7 +547,7 @@ jobs:
           set -euo pipefail
           missing=()
           command -v skopeo >/dev/null || missing+=(skopeo)
-          # os/scripts/oci-rechunk.py reads the dev lane's zstd layers (TIL-747).
+          # os/scripts/oci-rechunk.py reads the dev lane's zstd layers.
           command -v zstd >/dev/null || python3 -c 'import compression.zstd' 2>/dev/null || missing+=(zstd)
           if (( ${#missing[@]} == 0 )); then
             exit 0
@@ -1304,7 +1304,7 @@ jobs:
             [[ $validate != true ]] \
               || echo 'TILO_IMAGE_OUTPUT=type=oci,dest=/var/tmp/tilo-image.tar,rewrite-timestamp=true' >> "$GITHUB_ENV"
           fi
-          # TIL-747: a generic image that leaves this job (tilo-ci, or a
+          # a generic image that leaves this job (tilo-ci, or a
           # release) is re-laid out by content before anything consumes it
           # ("Rechunk the image"). The dev lane's BuildKit then pushes the raw
           # image beside it as <series>-<arch>-layered.
@@ -2059,7 +2059,7 @@ jobs:
           cache-to: |
             type=gha,scope=tilo-os-${{ needs.plan.outputs.hardware-profile }}-rootfs-${{ matrix.arch }},mode=min,ignore-error=true
 
-      # Content-based layers (TIL-747). A Containerfile layer is a new blob
+      # Content-based layers. A Containerfile layer is a new blob
       # whenever its instruction runs again, so an update between two commits
       # that change one app pulled most of the image. os/dev/rechunk-image.sh
       # re-lays the image out by RPM package and large file with chunkah

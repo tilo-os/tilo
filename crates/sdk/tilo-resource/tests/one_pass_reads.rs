@@ -1,4 +1,4 @@
-//! A stored value read in one walk of each map (TIL-758) is exactly what
+//! A stored value read in one walk of each map is exactly what
 //! reading it key by key reads: the winning value of a conflict, a counter
 //! with its increments, the id of the op that wrote each key.
 

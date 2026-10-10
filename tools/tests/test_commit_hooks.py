@@ -17,7 +17,7 @@ class CommitHookTests(unittest.TestCase):
         self.git("init", "-q", "-b", "main")
         for key, value in (("user.name", "Test"), ("user.email", "test@example.org"), ("commit.gpgsign", "false")):
             self.git("config", key, value)
-        paths = ["tools/policy/check_source_content.py", "tools/policy/check_commit_message.py", "tools/policy/check_commit_policy.py", "tools/ci/check_changed_rust_allows.py", "tools/dev/install-git-hooks.py", ".githooks/commit-msg"]
+        paths = ["tools/policy/check_source_content.py", "tools/policy/check_commit_message.py", "tools/policy/check_self_contained.py", "tools/policy/check_commit_policy.py", "tools/ci/check_changed_rust_allows.py", "tools/dev/install-git-hooks.py", ".githooks/commit-msg"]
         for name in paths:
             dest = self.root / name
             dest.parent.mkdir(parents=True, exist_ok=True)
@@ -64,6 +64,16 @@ class CommitHookTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("fix(shell): preserve window identity", result.stderr)
         self.assertEqual(self.git("rev-parse", "HEAD").stdout, before)
+
+    def test_internal_references_in_subject_or_body_are_rejected(self):
+        self.stage("source", b"text\n")
+        # Spelled in pieces so this file does not trip the check it tests.
+        ident = "TI" + "L-" + "42"
+        for message in ("fix(ui): handle focus (" + ident + ")", "fix(ui): handle focus\n\nSee https://linear" + ".app/x/issue/" + ident):
+            with self.subTest(message=message):
+                result = self.git("commit", "-qm", message, check=False)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("internal reference", result.stderr)
 
     def test_unknown_type_empty_scope_and_missing_body_separator_fail(self):
         self.stage("source", b"text\n")

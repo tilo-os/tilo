@@ -9,7 +9,7 @@ app store, so the first environment opens offline. It is built from the same
 frozen RPM snapshot as the host, so most of its files are byte-identical to
 the host's /usr; but the store is copied into the rootfs in its own layer, and
 a hard link cannot reach a file in another layer, so every pull carried those
-bytes twice (TIL-735).
+bytes twice.
 
 `prune` runs on a copy of the store in a stage built on the rootfs's packages,
 before the COPY that takes the store into the image. For every env-runtime in
@@ -89,7 +89,7 @@ def prune(store: Path, host: Path) -> int:
                     continue
                 saved += path.stat().st_size
                 # Only the name goes: a hard-linked twin elsewhere in the
-                # tree (TIL-736) keeps its inode, its mode and its bytes.
+                # tree keeps its inode, its mode and its bytes.
                 path.unlink()
                 lines.append(f"{relative}\t/{relative}\t{digest}\n")
         if lines:

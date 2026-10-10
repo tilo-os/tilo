@@ -5,7 +5,7 @@
 //! wgpu initialises every backend it is asked for as the instance is made,
 //! and for OpenGL that means EGL, a Mesa driver and a GL context: on lavapipe
 //! +25 ms, +17 threads and +28 MB per process, in every app, on the thread
-//! whose device the first frame waits for (TIL-775). The adapter is Vulkan's
+//! whose device the first frame waits for. The adapter is Vulkan's
 //! whenever both backends offer one of the same kind, so OpenGL only wins when
 //! a GPU has an OpenGL driver and no Vulkan one. That cannot be the case when
 //!

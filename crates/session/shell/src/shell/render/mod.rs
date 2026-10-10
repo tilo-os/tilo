@@ -4,7 +4,7 @@ pub mod hdr_encode;
 pub mod icc_lut;
 pub mod orientation;
 pub mod paint;
-/// Returning the device memory a software GPU freed to the kernel (TIL-731).
+/// Returning the device memory a software GPU freed to the kernel.
 #[cfg(target_os = "linux")]
 pub mod software_gpu_memory;
 pub mod strip_layers;

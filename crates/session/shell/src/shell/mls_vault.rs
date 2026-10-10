@@ -300,7 +300,7 @@ fn legacy_secret_tool_load(locator: &str) -> Result<Option<Zeroizing<Vec<u8>>>, 
 mod tests {
     use super::*;
 
-    /// `registry.postcard` as the build before TIL-182 wrote it, holding one
+    /// `registry.postcard` as the build before the change wrote it, holding one
     /// record of each retired kind. Generated from that build's types.
     fn registry_before_til_182() -> Vec<u8> {
         let text = include_str!(concat!(

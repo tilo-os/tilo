@@ -408,7 +408,7 @@ pub async fn bind_endpoint_with_key(secret: iroh::SecretKey) -> Result<(Endpoint
 /// [`bind_endpoint_with_key`], with the default relays held back until
 /// something may need to dial this device: no home relay, net report,
 /// address discovery or port mapping until the returned
-/// [`crate::reachability::Reachability`] is woken (TIL-774). For a daemon
+/// [`crate::reachability::Reachability`] is woken. For a daemon
 /// that waits to be dialled (`fs serve`); one that dials out at once has
 /// no reason to wait.
 ///

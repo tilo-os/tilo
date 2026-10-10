@@ -1597,7 +1597,7 @@ fn ensure_bridge(paint: &mut Option<paint::VelloDrmBridge>, target_size: (u32, u
         return true;
     }
     // The driver starts its threads as the device opens: they take the driver's name, not
-    // `tilo-present`, so their CPU is not read as the present thread's (TIL-739).
+    // `tilo-present`, so their CPU is not read as the present thread's.
     match crate::shell::present::with_driver_thread_name(|| {
         paint::VelloDrmBridge::new(target_size.0, target_size.1)
     }) {
@@ -1668,7 +1668,7 @@ fn paint_scanouts(
         .is_some_and(paint::VelloDrmBridge::take_first_frame)
     {
         // A new renderer has compiled its pipelines and drawn its first frame. The driver's
-        // compile scratch is free now, but glibc would keep it (TIL-705).
+        // compile scratch is free now, but glibc would keep it.
         crate::shell::heap_trim::request();
     }
     if let Some(bridge) = paint.as_mut() {

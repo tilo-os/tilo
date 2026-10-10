@@ -6,6 +6,8 @@ import re
 import subprocess
 import sys
 
+from check_self_contained import ADVICE, find_reference
+
 TYPES = frozenset("build chore ci docs dev env feat fix perf refactor revert style test".split())
 HEADER = re.compile(r"([a-z][a-z0-9-]*)(?:\(([^()\r\n]+)\))?(!)?: (\S.*)")
 MERGE = re.compile(r"Merge (?:branch|remote-tracking branch|tag|pull request|commit|main) .+")
@@ -21,6 +23,9 @@ def validate(message, root, merge=False, parent=None):
     if not lines or not lines[0].strip():
         return "The subject is empty."
     subject = lines[0]
+    reference = find_reference(message)
+    if reference:
+        return f"The message points at an internal reference ({reference}). {ADVICE}"
     if "\r" in message or "\x00" in message:
         return "Commit messages must be text with LF line endings."
     match = HEADER.fullmatch(subject)

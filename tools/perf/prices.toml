@@ -1,8 +1,8 @@
-# Price sheet for the relay hosting-cost records (TIL-592), read by
+# Price sheet for the relay hosting-cost records, read by
 # tools/perf/adapters.py hosting-load.
 #
-# The VM prices are the cost model's assumptions (TIL-625, "Hosting cost model
-# ($/active user/month)", 2026-10-09). Change a price here, with its date and
+# The VM prices are the cost model's assumptions (dated 2026-10-09).
+# Change a price here, with its date and
 # source, when the provider changes it; the records name the sheet's date.
 #
 # How a measurement becomes dollars, per provider:
@@ -23,7 +23,7 @@
 
 checked = "2026-10-09"
 hours_per_month = 730.0
-# An active user: 4 collaborative hours a day, 22 days a month (TIL-625).
+# An active user: 4 collaborative hours a day, 22 days a month.
 active_hours_per_user_month = 88.0
 # Headroom: plan a VM to this share of its CPU and memory.
 target_utilisation = 0.7

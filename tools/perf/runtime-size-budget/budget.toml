@@ -1,5 +1,5 @@
 # Budgets for the shared app runtime, libruntime_dylib.so, per architecture.
-# tools/perf/runtime_size_ratchet.py reads this file (TIL-604).
+# tools/perf/runtime_size_ratchet.py reads this file.
 #
 # - Release / apps fails when the dylib it has just built is over a budget
 #   below plus every raise under raises/.
@@ -24,16 +24,16 @@ headroom = 0.01
 architectures = ["x86_64", "aarch64"]
 
 # Apps that play no media. Release / apps fails when a built one, or the
-# runtime itself, loads a library of needed_absent at exec (TIL-713). Only
+# runtime itself, loads a library of needed_absent at exec. Only
 # grows.
 apps_without_media = ["calculator", "clocks", "notes", "totp", "weather"]
 
-# What the runtime should cost (TIL-604): at most 150 MB, relocation tables
+# What the runtime should cost: at most 150 MB, relocation tables
 # under 1 MB, at most 4 MB of relocation-dirtied memory per app process, and
 # few enough symbol lookups for relocation to take under 3 ms. Every app loads
 # a DT_NEEDED library, so none of needed_absent belongs there: media libraries
 # are for the apps that play media, and the runtime loads them on first use
-# (tools/ci/runtime-dylib-lazy-link.py, TIL-713); the gates fail on one. The
+# (tools/ci/runtime-dylib-lazy-link.py); the gates fail on one. The
 # other targets are reported when not met; the budgets below are what fails.
 # Targets only tighten.
 [targets]
@@ -44,14 +44,14 @@ symbol_relocations = 5000
 needed_absent = ["libgst", "libglib-2.0", "libgobject-2.0", "libgio-2.0"]
 
 # Measured by Release / apps 90216 (x86_64) and 90299 (aarch64) with packed
-# relocations and -Bsymbolic-functions (TIL-604). The published runtime before
+# relocations and -Bsymbolic-functions. The published runtime before
 # them (so.tilo.runtime 0.1.90033) was 241944696 / 223411008 bytes, with
 # 10.1 MB of relocation tables and 62k symbol relocations on each. Symbol
-# relocations then fell with GLib and GStreamer loaded on first use (TIL-713,
-# Release / apps 90457 against 90458): 13558 -> 11970 (x86_64) and
-# 13571 -> 11983 (aarch64). TIL-353 then took the OS internals out
+# relocations then fell with GLib and GStreamer loaded on first use (Release / apps 90457
+# against 90458): 13558 -> 11970 (x86_64) and
+# 13571 -> 11983 (aarch64). A later change then took the OS internals out
 # (filesystem, launcher, app host, install CLI, peer transport), measured
-# before TIL-713 landed: x86_64 232303952 -> 204813024 bytes and 7663616 ->
+# before the change landed: x86_64 232303952 -> 204813024 bytes and 7663616 ->
 # 6873088 bytes of relocation-dirtied memory per app process (Release / apps
 # 90662 against 90776); aarch64 213053464 -> 188160992 bytes and 7380992 ->
 # 6615040 (90371 against 90511). Both together, Release / apps 90940:

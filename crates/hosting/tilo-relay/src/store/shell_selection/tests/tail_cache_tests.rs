@@ -1,4 +1,4 @@
-//! Plain route tails against a committed selection (TIL-623): no per-keystroke
+//! Plain route tails against a committed selection: no per-keystroke
 //! selection, and exactly the publication a full selection would choose.
 use super::*;
 use automerge::ReadDoc;

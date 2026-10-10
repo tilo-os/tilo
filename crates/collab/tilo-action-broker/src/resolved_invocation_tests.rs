@@ -597,7 +597,7 @@ async fn a_directory_invoke_naming_no_revision_resolves_the_directory_as_it_is_n
         .await;
 }
 
-/// TIL-652: an admission that named no revision is bound to the one its
+/// an admission that named no revision is bound to the one its
 /// owner resolved it at, so the journal records which directory state the
 /// action was admitted against and a host worker can refuse it once that
 /// state moved on.
@@ -663,7 +663,7 @@ async fn a_revisionless_invoke_an_owner_cannot_bind_is_refused() {
         .await;
 }
 
-/// TIL-652: a person's confirmation covers the action as they were shown
+/// a person's confirmation covers the action as they were shown
 /// it, which only the revision it was shown at identifies. A directory
 /// action that asks for confirmation is refused without one; with one it is
 /// admitted, and so is an action asking no confirmation without one.

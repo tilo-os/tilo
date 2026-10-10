@@ -12,7 +12,7 @@
 //! Nothing below a room directory is watched. The room's store creates,
 //! writes and removes directories and files for every delta; watching them
 //! recursively made each one an inotify watch or event the watcher thread
-//! had to handle, about a fifth of a loaded relay's CPU (TIL-725).
+//! had to handle, about a fifth of a loaded relay's CPU.
 //!
 //! The watch vouches for a room only while it is live. Before the first native
 //! watch is established, after the watch fails, and once the daemon stops the

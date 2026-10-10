@@ -151,7 +151,7 @@ def runtime_engines(directory):
 
 def native_dependencies(objects, dependency_env):
     """Collect the native closure of every ELF before signing its SDK, with the
-    libraries the toolkit loads on first use (GLib, GStreamer; TIL-713)."""
+    libraries the toolkit loads on first use (GLib, GStreamer)."""
     collector = runtime_dependencies()
     library_dirs = [Path(d) for d in dependency_env.get('LD_LIBRARY_PATH', '').split(':') if d]
     cache = {}

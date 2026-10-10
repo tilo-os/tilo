@@ -12,7 +12,7 @@ RemainAfterExit=yes
 # Applying is needed only when the predefined remotes changed (the first boot, an image
 # update) or the system repository is new. On every other boot the listing changes
 # nothing and only held the greeter (0.26 s, more on a loaded machine), so the unit skips
-# when the descriptors match the copy it kept after its last successful run (TIL-767).
+# when the descriptors match the copy it kept after its last successful run.
 ExecCondition=/bin/sh -c '[ -e /var/lib/flatpak/repo/config ] && cat /usr/share/flatpak/remotes.d/* /etc/flatpak/remotes.d/* 2>/dev/null | cmp -s - /var/lib/flatpak/.tilo-applied-remotes && exit 1; exit 0'
 ExecStart=/usr/bin/flatpak remotes --system --columns=name
 ExecStartPost=/bin/sh -c 'cat /usr/share/flatpak/remotes.d/* /etc/flatpak/remotes.d/* 2>/dev/null > /var/lib/flatpak/.tilo-applied-remotes; exit 0'

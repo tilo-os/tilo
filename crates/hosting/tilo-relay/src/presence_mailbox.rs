@@ -1,5 +1,5 @@
 //! Presence on its way to one connection: coalesced, paced and batched
-//! (TIL-710).
+//!.
 //!
 //! Every room a connection is subscribed to posts the presence it fans out
 //! into the connection's [`PresenceMailbox`] instead of its frame queue, and
@@ -28,7 +28,7 @@
 //!   arrivals, identity) is never coalesced, and is delivered after the
 //!   presence posted before it: when one is due, everything pending goes with
 //!   it, in posting order.
-//! - **Presence rides along (TIL-776).** A 27-byte batch costs about 35 bytes
+//! - **Presence rides along.** A 27-byte batch costs about 35 bytes
 //!   of QUIC packet on top, so presence that may go early goes with whatever
 //!   the connection writes next: a delta, or a batch that fell due
 //!   ([`PresenceMailbox::take`] with `ride`). Carets, selections, typing and

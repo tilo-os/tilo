@@ -16,7 +16,7 @@ files from the split-out kernel directory (/kernel/<kver>/, which `bootc
 container split-kernel-and-rootfs` leaves in the image) when it is there,
 otherwise from the UKI's own `.linux` or `.initrd` section. The production
 image keeps only vmlinuz there; its initramfs is the UKI's `.initrd`, byte for
-byte (TIL-733). It then removes every UKI, so nothing on the image claims a
+byte. It then removes every UKI, so nothing on the image claims a
 seal it no longer has. A root that is already unsealed (the `rootfs` build
 target) passes through unchanged. Every failure is fatal: a dev image that boots
 the wrong kernel, or no kernel, must not build.

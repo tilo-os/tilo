@@ -24,7 +24,7 @@ Build the `store` example `startup-layout-probe` with the configured Cargo imple
 
 A first frame here includes widget construction of the retained tree, layout and CPU scene recording. Warm profiler BuildLayout includes the Taffy solve. It excludes the framework app host, app worker, native surface/device creation, GPU rendering/presentation and OS services. It does not establish matched VM startup, physical GPU latency, frame rate, idle CPU or idle RAM. Guest wall-clock layout costs cannot be attributed to this native result without matching SDK/app provenance and guest CPU/phase samples. Initial-frame per-pass profiling is not available through the current harness; only the warm rebuild's passes are captured.
 
-## Font catalog verification (TIL-597, 2026-10-09)
+## Font catalog verification (2026-10-09)
 
 A large part of the 37–38 ms above was SHA-256 over the whole catalog: 36 files, 54,891,768 bytes. Every process hashed them before its first frame. A process now hashes only a catalog it cannot prove immutable (`tilo_font_catalog::Trust`). Such a catalog is root-owned, writable by nobody else and on a read-only mount, which on the image means `/usr`'s composefs/fs-verity tree or the launcher's read-only bind of a system runtime. For that catalog, the manifest is still compared byte for byte, file sizes and faces are still checked, and no font bytes are read. A checkout, a per-user runtime and any writable catalog are still hashed in full.
 

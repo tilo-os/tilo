@@ -1,4 +1,4 @@
-//! Delta coding for [`super::ALPN_CODED_DELTA_V1`] (TIL-755).
+//! Delta coding for [`super::ALPN_CODED_DELTA_V1`].
 //!
 //! Two keystrokes of one author repeat most of their frame byte for byte:
 //! the workspace and author keys, the retention channel, the app, cluster

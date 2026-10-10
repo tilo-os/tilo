@@ -30,7 +30,7 @@
 //! Set `TILO_UI_DASH_PEER=1` to add a collaborator whose pointer (dot and
 //! name) moves on every event, drawn through the framework's presence layer;
 //! `TILO_UI_DASH_PEER=full` repaints the window on every such frame instead,
-//! the rule before TIL-634, for comparison.
+//! the rule before the change, for comparison.
 //! Set `TILO_UI_DASH_VERIFY=1` to run a separate retained-damage pixel
 //! parity preflight. It compares 40 (configurable: 20..=100) already-built
 //! native scenes to a persistent full-render reference; it does not produce
@@ -882,7 +882,7 @@ struct BenchState<'a> {
 struct PeerBench {
     presence: PresenceCtx,
     layer: tilo_ui::presence::PresenceLayer,
-    /// `TILO_UI_DASH_PEER=full`: the rule before TIL-634, under which any
+    /// `TILO_UI_DASH_PEER=full`: the rule before the change, under which any
     /// visible collaborator repainted the whole window, for comparison.
     full_repaint: bool,
 }
@@ -2891,7 +2891,7 @@ pub fn run(_args: &[String]) {
         println!(
             "peer: a collaborator's pointer moves on every event ({})",
             if peer.full_repaint {
-                "full repaint while visible, the rule before TIL-634"
+                "full repaint while visible, the rule before the change"
             } else {
                 "presence-layer damage"
             }

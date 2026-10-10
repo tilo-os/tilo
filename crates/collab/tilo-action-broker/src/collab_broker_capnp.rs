@@ -7117,7 +7117,7 @@ impl CapnpBrokerState {
     }
 
     /// Re-check every membership surface and native context subscriber
-    /// (TIL-707), and register with
+    ///, and register with
     /// [`tilo_identity_host::policy_change::wake_at`] the first instant at
     /// which a time-bound input they read (a capability's expiry, a
     /// subscriber certificate's validity) changes the answer. Returns whether
@@ -12338,7 +12338,7 @@ async fn serve_broker_thread(
     };
     // Membership surfaces and native context subscribers are re-checked when
     // an input announces a change or a registered expiry comes due, not on a
-    // clock (TIL-707). The watch wakes this turn for the first announcement
+    // clock. The watch wakes this turn for the first announcement
     // after it is armed; the schedule coalesces the rest.
     let policy_turn = Arc::new(tokio::sync::Notify::new());
     let policy_watch = {

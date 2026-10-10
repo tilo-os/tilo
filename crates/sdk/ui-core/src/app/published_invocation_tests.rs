@@ -580,7 +580,7 @@ fn directory_permission_original_revision_checked_before_actual_handler() {
     }
 }
 
-/// TIL-652: a caller that names no revision is admitted against the one the
+/// a caller that names no revision is admitted against the one the
 /// owner resolved the action at, and the broker binds the admission to the
 /// revision that resolution names. When the directory moves on between that
 /// resolution and the host running the action (the owner's actions changed),

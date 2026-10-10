@@ -384,7 +384,7 @@ class HostingLoad(unittest.TestCase):
             adapters.hosting_load(report, self.prices, ENV)
 
     def test_an_older_bench_is_read_when_not_all_kpis_are_required(self):
-        """The A/B lane reads a bench from before a KPI existed (TIL-732's parent)."""
+        """The A/B lane reads a bench from before a KPI existed (the parent of the idle-barrier KPI)."""
         report = load_report()
         del report["kpis"]["hosting.relay.store_fsyncs_per_edit"]
         report["kpis"]["hosting.relay.future_metric"] = {"unit": "count", "samples": [1.0]}

@@ -808,7 +808,7 @@ fn cancelled_directory_rpc_does_not_consume_undelivered_cursor() {
 }
 
 /// Bare pointer motion keeps the published resource tree; every change an
-/// event can make to it still republishes within that event (TIL-628).
+/// event can make to it still republishes within that event.
 #[cfg(feature = "native")]
 mod input_publication {
     use super::*;
@@ -1051,7 +1051,7 @@ mod input_publication {
     }
 
     /// Every keystroke ends in a release. One that nothing consumed and that
-    /// moved nothing keeps the tree its press published (TIL-751).
+    /// moved nothing keeps the tree its press published.
     #[test]
     fn key_release_without_state_change_does_not_regenerate_declarations() {
         let (mut app, calls) = app();

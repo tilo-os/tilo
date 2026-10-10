@@ -229,7 +229,7 @@ class Closure(Scratch):
                                            [runtime / "notes"], [system])
         self.assertEqual(status, 1)
         self.assertIn("error: notes loads libgstreamer-1.0.so.0 at exec (libgstreamer-1.0.so.0 <- "
-                      "libbridge.so <- notes); none of libgst, libglib-2.0 may be (TIL-713)", lines)
+                      "libbridge.so <- notes); none of libgst, libglib-2.0 may be", lines)
 
     def test_an_engine_is_reported_and_loaded_only_by_its_app(self):
         runtime = self.tree({"libruntime_dylib.so": elf(needed=["libc.so.6"]),

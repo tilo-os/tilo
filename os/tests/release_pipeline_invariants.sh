@@ -102,7 +102,7 @@ grep -Fq 'scope=kernel-{0},mode=min,ignore-error=true' "$workflows/build-kernel.
 # A cache manifest naming a blob the registry lost fails a build only when the
 # layer's content is needed. The OS build treats exactly that as a cache miss:
 # rebuild without cache-from, rewrite every cache tag, consume either digest
-# (or the rechunked image's, TIL-747, which is made from either).
+# (or the rechunked image's, which is made from either).
 uncached=$(awk '/- name: Build the Tilo image without the damaged layer cache/,/# Dev VMs must not wait/' "$os")
 [ "$(grep -c "continue-on-error: true" <(awk '/- name: Build and cache the build toolchain/,/- name: Recognize a missing registry cache blob/' "$os"))" = 5 ] \
   && grep -Fq 'run: ./os/dev/recognize-missing-cache-blob.sh "$BUILDER_NAME"' "$os" \

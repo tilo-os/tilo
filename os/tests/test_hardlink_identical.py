@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""os/scripts/hardlink-identical.py merges only files no reader can tell apart (TIL-736)."""
+"""os/scripts/hardlink-identical.py merges only files no reader can tell apart."""
 import importlib.util
 import os
 from pathlib import Path
@@ -56,7 +56,7 @@ class HardlinkIdenticalTest(unittest.TestCase):
 
     def test_names_that_already_shared_an_inode_move_together(self):
         # The font catalog's three names are one inode before this runs
-        # (TIL-609); merging a fourth identical file must not split them.
+        #; merging a fourth identical file must not split them.
         catalog = write(self.root / "runtime/lib/fonts/Noto.ttf", b"font" * 500)
         os.link(catalog, self.root / "share-fonts-Noto.ttf")
         stray = write(self.root / "aaa/Noto.ttf", b"font" * 500)

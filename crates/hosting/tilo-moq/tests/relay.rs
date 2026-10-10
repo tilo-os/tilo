@@ -460,7 +460,7 @@ fn opus_object(sequence: u64, frame: u64, payload: usize) -> Vec<u8> {
 /// How a browser publisher sends 20 ms of voice.
 #[derive(Clone, Copy, Debug)]
 enum Publisher {
-    /// Before TIL-624: every frame, each datagram carrying it and the two
+    /// Before the change: every frame, each datagram carrying it and the two
     /// before it.
     TripleBundles,
     /// After: one object per datagram, and in silence only the encoder's
@@ -486,7 +486,7 @@ struct Cost {
     subscriber_objects: f64,
     subscriber_datagrams: f64,
     /// UDP plus IPv4 bytes the publisher sent: what a relay that forwards
-    /// bundles verbatim (before TIL-624) sends every subscriber.
+    /// bundles verbatim (before the change) sends every subscriber.
     publisher_wire: f64,
 }
 
@@ -584,7 +584,7 @@ async fn measure(
     }
 }
 
-/// TIL-624: the relay's egress for one forwarded voice stream, measured on
+/// the relay's egress for one forwarded voice stream, measured on
 /// a real QUIC connection (UDP payload bytes plus 28 bytes of IPv4/UDP
 /// header per datagram) at the subscriber. Run with `--nocapture` for the
 /// table.

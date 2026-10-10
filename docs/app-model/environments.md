@@ -63,7 +63,7 @@ Built from the same snapshot as the OS, most of an env-runtime's files are
 byte-identical to the host's own `/usr`. The OS image therefore ships its tree
 sparse: the files the host already has are left out and named, each with the
 host path that holds the same bytes, in the image's `host-sources` beside its
-signed metadata (`os/scripts/seed-env-runtime.py`, TIL-735). A sparse system
+signed metadata (`os/scripts/seed-env-runtime.py`). A sparse system
 tree is never handed out as it is: `materialized_tree` rebuilds it in the
 user's store from the tree and those host files, every byte checked against
 the image's signed hash, as for any system image (`local_materialized_tree`).

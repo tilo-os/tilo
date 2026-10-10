@@ -6,7 +6,7 @@
 An image layer carries each inode's bytes once, however many names point at
 it, but every separate inode in full: the same 2.6 MB LC_COLLATE under 19
 locales, the same mono assemblies under three API directories, were each a
-copy in every pull (TIL-736). The image build runs this over a tree it writes
+copy in every pull. The image build runs this over a tree it writes
 in one RUN, before the COPY that takes the tree into the rootfs, so the layer
 holds one copy. A hard link is a plain file to every reader: unlike a symlink
 it does not dangle in a sandbox that mounts only part of the tree, under

@@ -501,7 +501,7 @@ mod tests {
             .collect()
     }
 
-    /// TIL-608: the reconciliation loop asks for conflicts every pass.
+    /// the reconciliation loop asks for conflicts every pass.
     /// With nothing merged it examines no node and holds the lock once; a
     /// scan holds it a step at a time; a concurrent edit that arrives is
     /// found on the next pass.

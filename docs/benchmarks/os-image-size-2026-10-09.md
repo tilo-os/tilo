@@ -1,4 +1,4 @@
-# OS image size, 2026-10-09 (TIL-609)
+# OS image size, 2026-10-09
 
 This is a historical investigation. The nightly records
 `footprint.image.*` in `tilo-perf-results` hold the current values
@@ -61,7 +61,7 @@ deployed directories on x86_64:
 
 The largest packages are `wine-core` (1,420,588,763 B) and `wine-mono`
 (318,703,141 B). aarch64 carries `/usr/lib/tilo/windows-runners` and
-`/usr/share/virtio-win` as well. TIL-711 moves this stack to a downloaded
+`/usr/share/virtio-win` as well. A later change moves this stack to a downloaded
 system extension.
 
 **The font catalog was in three layers.** The same 54.4 MB was in the runtime

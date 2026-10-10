@@ -79,7 +79,7 @@ pub struct Hydrator {
         AsyncMutex<HashMap<(iroh_base::PublicKey, usize), iroh::endpoint::Connection>>,
     pub runtime_handle: tokio::runtime::Handle,
     /// Woken by the first peer: a device that knows a peer may be dialled
-    /// by it (TIL-774).
+    /// by it.
     reachability: crate::reachability::Reachability,
 }
 

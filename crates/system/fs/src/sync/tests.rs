@@ -3809,7 +3809,7 @@ async fn namespace_session_pass(
     Ok(generated().saturating_sub(before))
 }
 
-/// TIL-584. Two writers in sync, with 5,000 namespace changes behind them.
+/// Two writers in sync, with 5,000 namespace changes behind them.
 /// Every pass used to start both ends from a fresh Automerge sync state,
 /// whose first message carries a Bloom filter over the document's whole
 /// history (10 bits a change): 6 KB here, 62 KB at 50,000 changes, every
@@ -3934,7 +3934,7 @@ async fn revoked_writer_is_cut_off_with_persisted_state() {
     router.shutdown().await.unwrap();
 }
 
-/// TIL-745. The idle timer: three seconds after anything happens, doubling
+/// The idle timer: three seconds after anything happens, doubling
 /// per quiet timer pass to thirty; a change, a pass something started, or
 /// activity outside a pass brings it back to three; a failing exchange
 /// holds three seconds for a minute, then backs off as well.
@@ -4002,7 +4002,7 @@ fn idle_backoff_doubles_to_the_ceiling_and_resets_on_activity() {
     );
 }
 
-/// TIL-745. An idle exchange's replies carry the peer's heads; only one
+/// An idle exchange's replies carry the peer's heads; only one
 /// that brings changes reports any, so idle timer passes neither count as
 /// changes nor stop the timer backing off.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -4043,7 +4043,7 @@ async fn idle_namespace_exchange_reports_no_change() {
     router.shutdown().await.unwrap();
 }
 
-/// TIL-745. A peer's own pass that brings changes wakes this device's
+/// A peer's own pass that brings changes wakes this device's
 /// loop as an announcement does, so the records behind them are pulled now
 /// rather than at an idle timer pass up to 30 s later; an idle one does not.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -4097,7 +4097,7 @@ async fn a_peers_exchange_that_brings_changes_starts_a_pass() {
     router.shutdown().await.unwrap();
 }
 
-/// TIL-745. A timer pass skips the namespace exchange with a peer that
+/// A timer pass skips the namespace exchange with a peer that
 /// agreed on this device's heads at its last exchange in this loop: no sync
 /// message on either side. It never skips on the loop's first exchange with
 /// a peer, nor on a pass something started, nor once this device has a
@@ -4188,7 +4188,7 @@ async fn quiet_timer_pass_skips_the_namespace_exchange_with_a_peer_in_sync() {
     router.shutdown().await.unwrap();
 }
 
-/// TIL-745. A device restarted with its persisted sync progress resumes
+/// A device restarted with its persisted sync progress resumes
 /// its exchange with a peer over the production session: heads only,
 /// where a restart used to resend a summary of the whole history.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -4214,7 +4214,7 @@ async fn persisted_sync_progress_resumes_a_session_exchange_after_restart() {
         (device.save(), device.encode_peer_sync_states())
     };
     let restarted = || (Namespace::from_bytes("device", &saved).unwrap(), &progress);
-    // Without its progress (before TIL-745) the restart syncs in full.
+    // Without its progress (before the change) the restart syncs in full.
     let (forgetful, _) = restarted();
     let forgetful = Arc::new(Mutex::new(forgetful));
     let full = namespace_session_pass(pass, &forgetful, &host, &None)
@@ -4617,7 +4617,7 @@ async fn idle_workspace_cost_measurement() {
     eprintln!("MEASURE window begins");
     let before = direct_bytes_sent(&[&host_ep, &device_ep]);
     // Per-thread wakeups of this process (both nodes) over the window, on
-    // Linux, where /proc has them (TIL-750).
+    // Linux, where /proc has them.
     let threads_before = tilo_test_env::idle::sample_process(std::process::id());
     tokio::time::sleep(window).await;
     let sent = direct_bytes_sent(&[&host_ep, &device_ep]) - before;

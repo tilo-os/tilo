@@ -371,7 +371,7 @@ pub(crate) fn metadata(message: &NeighbourMsg) -> Result<(u64, [u8; 32], bool), 
 /// A content-key ciphertext the classifier calls a checkpoint (a sealed
 /// snapshot or compaction) is published as a delta instead: the host appends
 /// it after the record's checkpoint rather than letting a member's write
-/// replace it. This is the conservative choice (TIL-163) and keeps the class
+/// replace it. This is the conservative choice and keeps the class
 /// every sealed write had before the classifiers were unified, so stored
 /// outgoing entries still validate. Letting a member's sealed checkpoint
 /// compact the host's tail is a protocol decision this does not make.

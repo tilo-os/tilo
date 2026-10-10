@@ -1,5 +1,5 @@
 /// A component's published tree as a shared forest that each edit changes in
-/// a few nodes (TIL-766). After every edit of a random walk — a root or item
+/// a few nodes. After every edit of a random walk — a root or item
 /// relabelled, items added, removed, moved, given actions or children, a
 /// repeated id and a grant expiring and coming back — what is derived from it
 /// incrementally (its permission filtering, its controls' allowed addresses,
@@ -227,7 +227,7 @@ fn a_shared_forest_derives_exactly_what_a_fresh_tree_does_after_any_edit() {
 
 /// An edit to one item of a long list changes that item's semantic node and
 /// reports it alone; every other node is kept as it was, not rebuilt
-/// (TIL-766).
+///.
 #[test]
 fn an_item_edit_updates_that_items_semantic_node_only() {
     use crate::published::{SharedChildren, SharedResource};

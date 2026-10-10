@@ -5,9 +5,9 @@
 //! (the work every cache miss repeats), and what a pointer move over a real
 //! [`tilo_app::App`] costs through its production input path
 //! ([`tilo_app::App::surface_input`]), with how many publications those moves
-//! ran. Bare pointer motion must not republish (TIL-628). It also prints the
+//! ran. Bare pointer motion must not republish. It also prints the
 //! sync pass per frame while typing into the draft and while scrolling the
-//! list, which must stay flat as the list grows (TIL-621), and what opening
+//! list, which must stay flat as the list grows, and what opening
 //! the window over a record that already holds the list costs: the time to
 //! its first laid-out frame, the allocations that took, and the heap the
 //! open window holds per task. It also types into the draft of the live
@@ -16,8 +16,8 @@
 //! followed by the host's frame, [`tilo_app::App::surface_frame`], and its
 //! accessibility walk), and prints the time from key press to the end of
 //! the frame that shows the key, with how many publications one keystroke
-//! runs (TIL-751), and the time from the key's release to the end of the
-//! frame after it, a frame that changes nothing (TIL-761).
+//! runs, and the time from the key's release to the end of the
+//! frame after it, a frame that changes nothing.
 //!
 //! ```text
 //! cargo run --release -p tilo-app --features test-support \

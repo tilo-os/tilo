@@ -105,7 +105,7 @@ The branch also incorporates main's existing browser font-publication fix
 than duplicating those changes. No benchmark timings were refreshed by these
 integration merges.
 
-## Frame ownership since TIL-586
+## Frame ownership since the change
 
 The timings above predate shared frame ownership; they are not refreshed here.
 Stored frames are now `Arc<Vec<u8>>`: `publish_rgba` copies the caller's slice

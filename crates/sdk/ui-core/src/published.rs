@@ -5,7 +5,7 @@
 //! tree cannot share an item and nothing reading them can tell an unchanged
 //! item from a changed one without comparing it. A keystroke in a field no
 //! item depends on then rebuilt, copied, filtered and re-mirrored every item
-//! of a long list (TIL-766). A [`SharedResource`] holds the same tree with
+//! of a long list. A [`SharedResource`] holds the same tree with
 //! its children behind [`Rc`]s: a publisher hands over the very nodes of
 //! the last version where nothing changed, and every consumer — permission
 //! filtering, control availability, the accessibility tree — skips a subtree

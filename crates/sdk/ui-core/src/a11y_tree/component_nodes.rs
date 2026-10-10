@@ -30,9 +30,9 @@ enum Source {
 /// tree they were built from. Nothing else goes into them: an id, its actions
 /// and their bound targets come from the resource tree and the component's
 /// identity alone. So while the component hands over the same tree they are
-/// exactly what a rebuild would produce (TIL-761), and a tree that shares all
+/// exactly what a rebuild would produce, and a tree that shares all
 /// but a few subtrees with the last changes the nodes of those subtrees only
-/// (TIL-766).
+///.
 pub(super) struct ComponentNodes {
     source: Source,
     binding: CallbackBinding,

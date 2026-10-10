@@ -1,4 +1,4 @@
-//! Launch-path cost of verifying a per-user runtime (TIL-594).
+//! Launch-path cost of verifying a per-user runtime.
 //!
 //! Builds a signed bundle whose toolkit dylib is 256 MiB (the x86-64 runtime
 //! is 260 MB, 240 MB of it `libruntime_dylib.so`) and times, warm, the two
@@ -67,7 +67,7 @@ fn main() -> Result<(), Error> {
     );
 
     let full = median(RUNS, || verify_bundle_with(&bundle, &policy).map(|_| ()))?;
-    println!("full hash (launch before TIL-594):  {full:?}");
+    println!("full hash (launch before the change):  {full:?}");
     let (unsealed, check) = timed_verity(&bundle, &policy)?;
     println!("verity path, unsealed (fallback):   {unsealed:?}  {check:?}");
     // Manifest, signatures and one stat per file: the sealed path's work

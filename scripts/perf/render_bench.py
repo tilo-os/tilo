@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
-"""Render benchmarks at native 4K for the two performance lanes (TIL-582).
+"""Render benchmarks at native 4K for the two performance lanes.
 
-The KPI is "Frame time p99 at 4K/144 Hz" (Linear document "Performance and
-cost KPIs"): at most 6.9 ms for a damage-limited frame and 16.7 ms for a full
+The KPI is "Frame time p99 at 4K/144 Hz": at most 6.9 ms for a damage-limited frame and 16.7 ms for a full
 repaint. Two release harnesses measure it, and this script runs both the same
 way in every lane:
 
@@ -68,7 +67,7 @@ VERIFY = {**NATIVE_4K, "TILO_UI_DASH_VERIFY": "1", "TILO_UI_DASH_VERIFY_FRAMES":
 # one-million-event no-redraw gate, with fewer events: both are rates, and a
 # per-change run need not wait for the full count. The raster-pixel budget sits
 # about 30 % above the 95,000-116,000 px/redraw the lane measured in October
-# 2026 (TIL-744), where 600,000 let a redraw grow five-fold unnoticed.
+# 2026, where 600,000 let a redraw grow five-fold unnoticed.
 REDRAW_COUNTERS = {**NATIVE_4K, "TILO_UI_DASH_ITERS": "200",
                    "TILO_UI_DASH_ALLOC_CALL_BUDGET_PER_REDRAW": "650",
                    "TILO_UI_DASH_ALLOC_BYTE_BUDGET_PER_REDRAW": "70000",

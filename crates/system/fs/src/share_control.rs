@@ -130,7 +130,7 @@ impl ShareControlServer {
     }
 
     /// Wake `reachability` before a share is created: its recipient will
-    /// dial this device (TIL-774).
+    /// dial this device.
     #[must_use]
     pub fn with_reachability(mut self, reachability: crate::reachability::Reachability) -> Self {
         self.reachability = reachability;

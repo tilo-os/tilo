@@ -1,4 +1,4 @@
-# Idle wakeups, headless, 2026-10-09 (TIL-614)
+# Idle wakeups, headless, 2026-10-09
 
 The first measured number for "how often does an idle desktop wake the
 machine". The raw tables are in `idle-wakeups-2026-10-09.json`. The current
@@ -27,7 +27,7 @@ guest, debug build, headless backend, lavapipe):
    involuntary; CPU is utime+stime.
 
 The collaboration plane is measured separately by
-`shell::network::idle_quiet_tests` (TIL-613's two converged desktops on
+`shell::network::idle_quiet_tests` (two converged desktops on
 loopback, one minute): the same counters for every thread of the test process
 except the one driving the simulated 10 Hz frame loops.
 
@@ -42,7 +42,7 @@ Desktop with Notes and a Terminal, whole process tree:
 | 89409 | 0ac5ff2f54 | 1684.9 | (not sampled yet) | spinning (1752 per paint-stats line) |
 | 89647 | 303d0009d0 | 2008.2 | 86.4 | 945.9 |
 
-The spread is one bug, TIL-696: the Terminal's record is still `Saving` when
+The spread is one bug, the frame-loop spin: the Terminal's record is still `Saving` when
 it last draws, which leaves a wake deadline 100 ms after that sample that the
 compositor never re-samples. The frame loop then spins without painting until
 an unrelated paint makes the Terminal draw, and every iteration wakes the
@@ -61,36 +61,36 @@ With the loop parked (89704), by thread:
 | 2.0 | `tilo-identity-client` | identity broker client |
 | 1.0 | `tilo-settings-live` | settings file stamp poll, once a second |
 | 1.0 | `tilo-settings-read` | settings refresh, one per frame-loop wake |
-| 0.5 | `tilo-auto-brightness` | 2 s auto-brightness poll (TIL-205) |
+| 0.5 | `tilo-auto-brightness` | 2 s auto-brightness poll |
 | 0.4 | `tilo-session-audio-policy` | session audio policy |
 | 0.3 | `tilo-fs-authority-publish` | fs authority publication |
 | 0.2 | `tilo-secrets-bus` | secrets bus |
 | **60.3** | | |
 
-While TIL-696 spins (89647) the same desktop adds `tilo-settings-read`
+While the frame loop spins (89647) the same desktop adds `tilo-settings-read`
 1387/s and the compositor's main thread at 78 % of a core with 444
 preemptions/s, and `tilo-net-rt-0` rises from 4/s to 25/s.
 
 Two converged desktops on loopback (collaboration plane only): 9.9, 10.5 and
 11.6 wakeups/s (runs 89705, 89410, 89703), all of it the two network runtimes'
-workers; zero application messages and zero repaints, as TIL-613 requires.
+workers; zero application messages and zero repaints, as the gate requires.
 
 ## What the number does not include
 
-DRM-only services (power at 4 Hz, TIL-611; hotplug; the rotation sensor),
-out-of-process apps (the per-app key poll, TIL-598; child supervision, TIL-601),
-the standalone runtime daemon (TIL-607) and the OS egress reaper (TIL-612).
+DRM-only services (power at 4 Hz; hotplug; the rotation sensor),
+out-of-process apps (the per-app key poll; child supervision),
+the standalone runtime daemon and the OS egress reaper.
 Those are held by thread probes in their own crates.
 
 ## Budgets set from it
 
 - `IDLE_WAKEUP_BUDGET` 3000/s and `LOOP_TICK_BUDGET` 1500/s in
   `idle_wakeups.rs`: the spinning measurement plus a half, because whether a
-  run sees TIL-696 depends on the wall clock and a spin's rate on the
-  runner. TIL-696 dropped them to the parked measurement plus a quarter
-  and 1/s (see "TIL-696" below).
+  run sees the frame-loop spin depends on the wall clock and a spin's rate on the
+  runner. The spin fix dropped them to the parked measurement plus a quarter
+  and 1/s (see "The frame loop stops spinning" below).
 - `IDLE_WAKEUP_BUDGET` 15/s in `idle_quiet_tests.rs`: 11.6/s plus a quarter.
-  TIL-690 raised it to 21/s, the shell shard's measured p95 plus a quarter
+  A later change raised it to 21/s, the shell shard's measured p95 plus a quarter
   (see "The collaboration-plane gate in the shell shard").
 
 Each later fix lowers the matching budget in its own pull request: the
@@ -101,22 +101,22 @@ network runtime (−10/s) and the rest of the table.
 
 | fix | thread | before | after | parked desktop, whole tree |
 | -- | -- | --: | --: | --: |
-| TIL-704 | `tilo-audio-output-authority` | 20.1/s (run 89961) | 0.0/s (run 89960) | 31.9/s (run 89960) |
-| TIL-706 | `tilo-collab-drain` | 0.0/s (run 90040) | 0.0/s (run 90187) | unchanged |
-| TIL-707 | `tilo-collab-broker-capnp` | 20.1/s (run 90455) | 0.0/s (run 90830) | spinning, see TIL-696 |
+| audio-output watchdog | `tilo-audio-output-authority` | 20.1/s (run 89961) | 0.0/s (run 89960) | 31.9/s (run 89960) |
+| collaboration drain rename | `tilo-collab-drain` | 0.0/s (run 90040) | 0.0/s (run 90187) | unchanged |
+| collaboration broker change signals | `tilo-collab-broker-capnp` | 20.1/s (run 90455) | 0.0/s (run 90830) | spinning, see "The frame loop stops spinning" |
 
-TIL-704: the watchdog re-checks an open output's admission every 50 ms as
+The audio-output watchdog re-checks an open output's admission every 50 ms as
 before, and blocks on a condition variable while no output is open; `open`
 wakes it. The parked budget becomes 31.9/s plus a quarter, 40/s, once
-TIL-696 lets the gate use it.
+the spin fix lets the gate use it.
 
-TIL-706 split the collaboration broker's 20.8/s by renaming its drain
+The thread rename split the collaboration broker's 20.8/s by renaming its drain
 thread (`tilo-collab-drain`; the probe's 15-byte names had shown both
 threads as `tilo-collab-bro`). All of it is the capnp service thread,
 `tilo-collab-broker-capnp`: 19.9/s in run 90040 and 19.7/s in run 90187,
 two context switches for each turn of a loop that re-armed a 100 ms tick
-with nothing due. TIL-690 (#3983) removes that tick; with it the thread
-measured 2.3/s (run 90061), its 1 s membership refresh, which TIL-707
+with nothing due. A later change (#3983) removes that tick; with it the thread
+measured 2.3/s (run 90061), its 1 s membership refresh, which the change-signal rework
 replaces with change signals. The drain was already parked here: this
 desktop holds no encrypted channel. On a session that does, it pumped
 channel governance once a second; it now waits for the governance
@@ -125,7 +125,7 @@ backoff, nothing for a member holding its keys), so a member device's
 drain wakes only for frames. The gate cannot see that, so the budget
 does not move for it.
 
-TIL-707 takes the capnp service thread to 0.0/s. It re-checks what it
+The change-signal rework takes the capnp service thread to 0.0/s. It re-checks what it
 admitted (membership surfaces, native context subscribers, a steward's
 channel readers) when an input announces a policy change and at the first
 grant or certificate expiry it read, instead of once a second, and its turn
@@ -136,10 +136,10 @@ the overlay host's update), and the broker coalesced those announcements to
 one re-check a second, the old clock's cost. A write now announces only
 when it changed what authorization reads (owners, rosters, grants,
 permission profiles, tasks, admitted devices, stewarded rooms). The
-whole-tree budget does not move: run 90830 still spun at 1215/s (TIL-696),
-which the 3000/s spin budget covers; the parked budget drops with TIL-696.
+whole-tree budget does not move: run 90830 still spun at 1215/s,
+which the 3000/s spin budget covers; the parked budget drops with the spin fix.
 
-### TIL-702: the network runtime on an installed desktop
+### the network runtime on an installed desktop
 
 The headless gate above sees `tilo-net-rt` at 2.9/s (run 91403): it has no
 call device table and no third runtime thread. The VM does. In vm-acceptance
@@ -167,13 +167,13 @@ start, call or no call. That is also why `wireplumber` (0.43 %) and
 The workers' drop is #4044: gossip's per-topic cache sweep every second.
 
 What remains, named by counting tracing spans and events per thread in a
-lone desktop's process (a temporary probe on the TIL-702 branch, focused run
+lone desktop's process (a temporary probe on that branch, focused run
 91459): on loopback 0.95/s, the 5 s upkeep tick and the 10 s sweep. With the
 public relays (`Reach::Internet`, as the VM runs) 6.0/s, two thirds of it
 inside iroh's `net_report` `QADv4` span: every 20-26 s iroh re-runs its net
 report and opens fresh QUIC address-discovery connections to the relays
-(handshakes, then closes). Getting under TIL-702's 2/s target needs that
-deferred until something needs reachability (the issue's step 2), which is
+(handshakes, then closes). Getting under the 2/s target needs that
+deferred until something needs reachability (the second step), which is
 left for a follow-up.
 
 `idle_quiet_tests::a_lone_idle_desktop_keeps_its_network_runtime_asleep`
@@ -181,9 +181,9 @@ gates the loopback case at 2/s (measured 1.05/s, focused run 91528). The
 call table's parking is held by
 `devices::tests::the_refresh_loop_runs_only_while_a_call_watches`.
 
-### TIL-740: relays wait until something needs reachability
+### Relays wait until something needs reachability
 
-TIL-702's residue was iroh's net report: with a non-empty relay map, iroh
+The installed-desktop residue was iroh's net report: with a non-empty relay map, iroh
 re-runs it every 20-26 s (QAD handshakes to every relay, a port-mapping
 probe) and keeps a home relay connection alive. iroh skips all of that while
 the relay map is empty, so the endpoint now binds with N0's preset and
@@ -202,7 +202,7 @@ and asserts the relays are still held back after its idle window: 1.05/s
 startup predicate and a pair of desktops that hold their relays back, still
 sync, and then both wake them.
 
-### TIL-696: the frame loop stops spinning
+### The frame loop stops spinning
 
 An in-process app whose record was still `Saving` at its last frame left a
 wake deadline that only its next draw moved. `EmbeddedApp::update` now
@@ -216,7 +216,7 @@ an iteration no longer queues a settings refresh.
 | -- | -- | --: | --: | --: |
 | 89647 (before, spinning) | 303d0009d0 | 2008.2 | 86.4 | 945.9 |
 | 89957 | d6018b47e5 | 51.4 | 1.2 | 0 |
-| 92406 | 72e3096677 (on TIL-704/707/702/740) | 7.30 | 0.2 | 0 |
+| 92406 | 72e3096677 (on the audio-output, broker, network-runtime and relay changes) | 7.30 | 0.2 | 0 |
 | 92444 | 72e3096677 | 7.60 | 0.3 | 0 |
 | 92445 | 72e3096677 | 7.30 | 0.2 | 0 |
 | 92498 (shell shard, beside other tests) | 527f761a98 | 10.29 | 0.1 | 0 |
@@ -228,9 +228,9 @@ left: `ui-collab-shovel` 3.4/s, `tilo-identity-client` 2.0/s, the network
 runtime about 1/s, and a few tenths from the fs authority, session audio and
 secrets bus.
 
-### TIL-752: upkeep and gossip's sweep wait for a peer
+### Upkeep and gossip's sweep wait for a peer
 
-What TIL-702 left on loopback, about 1/s, was the network actor's 5 s
+What that work left on loopback, about 1/s, was the network actor's 5 s
 upkeep tick and iroh-gossip's 10 s cache sweep on each of the desktop's
 three topics (the compatibility topic, its room, the person's continuity
 topic). With nobody to talk to neither has work. The upkeep tick is now
@@ -350,6 +350,5 @@ still measured 15.82/s, with 0.7/s of involuntary switches. The extra
 wakeups are voluntary `tilo-net-rt` turns where the shard runs (its runner
 and `tools/test-env.sh`).
 
-By TIL-614's rule, measured p95 plus a quarter, set in the environment the
-gate runs in: shard p95 16.8/s → **21/s**. TIL-702, the network runtime's
-idle wakers, is what lowers it.
+By the gate's rule, measured p95 plus a quarter, set in the environment the
+gate runs in: shard p95 16.8/s → **21/s**. The network runtime's idle wakers are what lower it.

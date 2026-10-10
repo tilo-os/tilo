@@ -3,7 +3,7 @@
 //! Whatever keeps derived state in step with the namespace (the persister
 //! that writes it to disk, the pinned-hydration worker) needs to learn that
 //! it changed. Asking on a timer costs a wakeup per tick for the life of the
-//! mount, whether anything happened or not (TIL-750). Announcing at each of
+//! mount, whether anything happened or not. Announcing at each of
 //! the dozens of mutation sites would be fragile: a site that forgets loses
 //! a change from disk without a sound. So the document itself announces.
 //!

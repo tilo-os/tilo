@@ -4483,7 +4483,7 @@ fn typing_damages_only_its_row_and_the_cursor() {
     );
     let area: f64 = damage.iter().map(Rect::area).sum();
     eprintln!(
-        "TIL-579 terminal keystroke damage: {area} of {} px",
+        "terminal keystroke damage: {area} of {} px",
         viewport.area()
     );
     assert!(

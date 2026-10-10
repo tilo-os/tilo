@@ -954,7 +954,7 @@ async fn certified_local_host_open_list_and_invoke_cost() {
                     let _lease = local_host_lease(&rig, &caller, request.invocation).await;
                 }
                 eprintln!(
-                    "TIL-593 certified local host, {receipts} receipts: open+list {:?}/call, \
+                    "certified local host, {receipts} receipts: open+list {:?}/call, \
                      open+invoke admission {:?}/call",
                     listing.checked_div(LISTINGS).unwrap_or_default(),
                     invoking.checked_div(INVOKES).unwrap_or_default(),

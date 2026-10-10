@@ -983,7 +983,7 @@ impl Namespace {
 
     /// Whether this namespace has completed a sync exchange with any other
     /// device (restored progress included): someone has dialled it, or been
-    /// dialled, before (TIL-774, [`crate::reachability`]).
+    /// dialled, before ([`crate::reachability`]).
     #[must_use]
     pub fn has_synced_with_peers(&self) -> bool {
         !self.peer_sync_states.is_empty()
@@ -3039,7 +3039,7 @@ impl Namespace {
     /// document and to the sync progress beside it
     /// ([`Self::peer_sync_generation`]). It says that something may have
     /// changed, never what; compare [`Self::heads`] to know. Persisting
-    /// and repairing on it replaces polling (TIL-750).
+    /// and repairing on it replaces polling.
     #[must_use]
     pub fn subscribe_changes(&self) -> tokio::sync::watch::Receiver<()> {
         self.doc.subscribe()
@@ -4986,7 +4986,7 @@ mod tests {
         ns
     }
 
-    /// TIL-745. Sync progress persisted beside the document survives a
+    /// Sync progress persisted beside the document survives a
     /// restart of either side: the first exchange after it summarises only
     /// the heads, not the whole history, and still carries every change.
     #[test]
@@ -5038,7 +5038,7 @@ mod tests {
         assert!(converged(&mut device, &mut host));
     }
 
-    /// TIL-745. Persisted progress is never trusted: damaged bytes are
+    /// Persisted progress is never trusted: damaged bytes are
     /// refused whole and leave what is held alone; progress naming heads the
     /// document does not hold (another workspace's, or written after the
     /// copy the document was restored from) falls back to a full sync; older

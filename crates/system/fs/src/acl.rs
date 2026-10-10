@@ -333,7 +333,7 @@ impl WorkspaceAcl {
     /// room the mount does not prove). The shipped list, which grants the
     /// mount's own principal, names nobody else: then only the mount's own
     /// identity (the person's other devices) can be admitted, never another
-    /// party (TIL-774, [`crate::reachability`]).
+    /// party ([`crate::reachability`]).
     #[must_use]
     pub fn names_others(&self) -> bool {
         let own: HashSet<IdentityKey> = self.bindings.iter().map(|b| b.identity).collect();

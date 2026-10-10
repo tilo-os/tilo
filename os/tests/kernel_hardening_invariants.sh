@@ -269,7 +269,7 @@ for required in \
 done
 
 # Without kernel NFS the base image's NFS userspace can only fail at boot.
-# It is one step of the package RUN (TIL-733).
+# It is one step of the package RUN.
 grep -Fq '    && rpm -e nfs-utils nfs-client-utils nfsv3-client-utils nfsv4-client-utils' "$image_recipe" \
   && grep -Fq '        nfs-common-utils rpcbind \' "$image_recipe" \
   || bad 'the image keeps NFS userspace the kernel cannot serve (rpc_pipefs fails at boot)'

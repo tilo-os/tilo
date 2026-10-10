@@ -167,7 +167,7 @@ struct Outputs {
 /// Wakes the authority watchdog when there is something to watch again.
 ///
 /// With no output open there is no admission to re-check, so the watchdog
-/// blocks here instead of ticking (TIL-704): an idle desktop's audio
+/// blocks here instead of ticking: an idle desktop's audio
 /// authority costs no wakeups.
 #[derive(Default)]
 struct Watch {

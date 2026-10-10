@@ -19,7 +19,7 @@ sealing contract now has to reach all three, so this check fails when:
   * a `kernel` stage does not end in bootc's kernel split of the same root
     `split` builds on;
   * a `split` stage does not end in bootc's kernel split, optionally followed by
-    dropping the split-out initramfs the UKI carries (os/Containerfile, TIL-733),
+    dropping the split-out initramfs the UKI carries (os/Containerfile),
     or a `final` stage adds anything to the sealed rootfs beyond the UKI under
     /boot;
   * os/dev/uki-tools.packages is not in the frozen RPM snapshot's package set,
@@ -67,7 +67,7 @@ UKI_MOUNTS = (
 UKI_COMMAND = "bash /usr/local/bin/uki.sh"
 SPLIT_COMMAND = "bootc container split-kernel-and-rootfs --rootfs / --output /kernel"
 # What `split` may do after the split: drop the initramfs the UKI's .initrd
-# section already carries, so the image does not ship it twice (TIL-733).
+# section already carries, so the image does not ship it twice.
 SPLIT_DISCARD = "rm /kernel/*/initramfs.img"
 FINAL_UKI = "COPY --from=uki /out/*.efi /boot/EFI/Linux/"
 # What `final` may carry besides the UKI: metadata, never a rootfs change.

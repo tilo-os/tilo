@@ -1,6 +1,6 @@
 name: Perf / scheduled
 
-# The scheduled performance lane (TIL-580): every KPI benchmark writes its
+# The scheduled performance lane: every KPI benchmark writes its
 # results as records (tools/perf/record.py), compare.py checks them against
 # the store's rolling baseline and tools/perf/kpi-budgets.toml, and the
 # annotated records are appended to the store, the public generic package
@@ -17,7 +17,7 @@ name: Perf / scheduled
 # perf-<group>; a group must produce records whenever it is selected, or the
 # comparison fails it as missing.
 #
-# `mode: ab` is the same-job A/B lane (TIL-738; DEVELOPMENT.md, "Proving a
+# `mode: ab` is the same-job A/B lane (DEVELOPMENT.md, "Proving a
 # performance change"): instead of the nightly jobs, one `ab` job per selected
 # group builds ab_base and ab_candidate in one checkout and runs that group's
 # benchmark on both, alternating, ab_rounds times on one runner, through
@@ -294,7 +294,7 @@ jobs:
           python3 tools/perf/tapp_size_ratchet.py fleet "$RUNNER_TEMP/entries.json"
           --summary "$GITHUB_STEP_SUMMARY"
 
-      # The shared runtime (TIL-604; DEVELOPMENT.md, "Runtime size"): the
+      # The shared runtime (DEVELOPMENT.md, "Runtime size"): the
       # newest published libruntime_dylib.so of each architecture against
       # tools/perf/runtime-size-budget/, recorded as footprint.runtime.*.
       # Records are written before the gate's verdict, so a run over budget
@@ -319,7 +319,7 @@ jobs:
           path: perf/
           if-no-files-found: warn
 
-  # OS image size (TIL-609): main's newest production-layout image per
+  # OS image size: main's newest production-layout image per
   # architecture, the tilo-ci base that tilo-vm:main-ci names, streamed from
   # the registry and replayed layer by layer through tools/perf/image_size.py.
   # Compressed layer bytes (a full pull), unique content (what composefs holds
@@ -365,7 +365,7 @@ jobs:
           path: perf/
           if-no-files-found: warn
 
-  # Compositor-side input and workspace-switch latency (TIL-587): a headless
+  # Compositor-side input and workspace-switch latency: a headless
   # compositor driven through its control socket, rendering with lavapipe on
   # the shared `runner` class, through scripts/perf/latency_bench.py. The
   # compositor is ci-legacy-apps.yml's debug build with the same Cargo
@@ -416,7 +416,7 @@ jobs:
           path: perf/
           if-no-files-found: warn
 
-  # Render frame time at native 4K (TIL-582): the toolkit's dashboard harness
+  # Render frame time at native 4K: the toolkit's dashboard harness
   # (`ui-perf dashboard_perf_bench`, 1,000 events) and the shell's
   # `redraw_bench` (1,000 clicks through FrameBuilder, the DRM bridge's render,
   # readback and XRGB swizzle) and its `strip_pan_bench` (strip pans and
@@ -481,7 +481,7 @@ jobs:
             target/release/examples/redraw_bench --env-json perf/env.json --out perf \
             --strip-pan-bench target/release/examples/strip_pan_bench \
             --records perf/render.jsonl
-          # Opening a framework app over a long list (TIL-758).
+          # Opening a framework app over a long list.
           target/release/examples/framework-scaling 5000,50000 open | tee perf/framework-open.log
           python3 tools/perf/adapters.py framework-open --env-json perf/env.json \
             perf/framework-open.log >> perf/render.jsonl
@@ -502,7 +502,7 @@ jobs:
           path: perf/
           if-no-files-found: warn
 
-  # Idle wakeups (TIL-614): the shell integration gate
+  # Idle wakeups: the shell integration gate
   # crates/session/shell/tests/idle_wakeups.rs, which pull requests run with
   # a 10 s window whenever shell changes, here three times with a 60 s window
   # through adapters.py idle-wakeups. A debug `it` build with check.yml's
@@ -562,7 +562,7 @@ jobs:
           path: perf/
           if-no-files-found: warn
 
-  # What an active collaborator costs a relay (TIL-592): 100 collaborators in
+  # What an active collaborator costs a relay: 100 collaborators in
   # rooms of four type, point and idle through one relay process for ten
   # measured minutes, with authentication and the production co-edit path on
   # (crates/hosting/tilo-relay/examples/relay_load). Records CPU-seconds,
@@ -616,7 +616,7 @@ jobs:
           path: perf/
           if-no-files-found: warn
 
-  # The same-job A/B lane (TIL-738): one leg per selected group, each on one
+  # The same-job A/B lane: one leg per selected group, each on one
   # `runner` for its whole length, so both sides see the same machine. The
   # Cargo environment is the union of the nightly group jobs' (release with
   # thin LTO; debug without debug info), so the builds reuse their compiler

@@ -2826,7 +2826,7 @@ fn owner_takeover_follows_accepted_bound_actions_and_preserves_denials() {
     assert!(fixture.app.continuation.owner_view.pending.is_none());
 }
 
-/// Hover over bound components keeps their published snapshots (TIL-628).
+/// Hover over bound components keeps their published snapshots.
 /// The dispatch lends each owner its record, which advances the owner's
 /// admission generation whether or not anything was written; a record left
 /// unwritten carries the snapshot forward, a written one never does.
@@ -2930,7 +2930,7 @@ fn bound_hover_carries_snapshots_only_across_unwritten_records() {
 /// derived from it (the controls' allowed addresses, the component's semantic
 /// nodes) instead of copying and walking the whole published tree again, and
 /// a changed snapshot or permission still produces exactly what a fresh
-/// derivation would (TIL-761).
+/// derivation would.
 #[test]
 fn unchanged_component_snapshots_keep_their_controls_and_semantic_nodes() {
     let mut fixture = ActionFixture::new();

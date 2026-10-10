@@ -53,7 +53,7 @@ class Fetch(unittest.TestCase):
     def fetch(self, *extra: str) -> tuple[list[dict], str]:
         real = record.from_samples("footprint.tapp.bytes.x86_64", "bytes", [2_000_000.0], **ENV)
         fake = record.from_samples("footprint.tapp.bytes.x86_64", "bytes", [2_500_000.0],
-                                   meta={"synthetic_series": "til-580-check", "synthetic_factor": "1.25"}, **ENV)
+                                   meta={"synthetic_series": "synthetic-check", "synthetic_factor": "1.25"}, **ENV)
         with tempfile.TemporaryDirectory() as directory:
             month = store.months_back(datetime.datetime.now(datetime.timezone.utc))[0]
             (Path(directory) / month).mkdir()
