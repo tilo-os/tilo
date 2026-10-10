@@ -104,6 +104,18 @@ p99_tolerance = 2.0
 min_delta = 1.0
 source = "IDLE_SYNC_SLO"
 
+# A device's first exchange with a peer after a restart over a 50,000-file
+# namespace (TIL-745): resumed from the sync progress persisted beside the
+# document, so heads only; the gate also asserts the bytes.
+[kpi."fs.restart-resync-50k-files"]
+unit = "ms"
+max = 5.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1.0
+source = "RESTART_RESYNC_SLO"
+
 # The conflict step of a writer's reconciliation pass over a 50,000-file
 # workspace (TIL-608). Idle: the namespace merge generation under one lock hold,
 # no node examined (the gate also asserts that count). After a merge: the

@@ -2491,24 +2491,12 @@ pub struct CallbackBinding {
     /// intents by the shell that presents search.
     pub(crate) search_requests:
         Rc<RefCell<std::collections::VecDeque<crate::search::SearchRequest>>>,
-    #[allow(
-        dead_code,
-        reason = "binding retains original authority for the following typed-action provenance task"
-    )]
     pub(crate) instance_id: crate::application::InstanceId,
     pub(crate) app_id: String,
     pub(crate) records: RecordStore,
     pub(crate) checkout: RecordCheckout,
     pub(crate) permissions: Rc<RefCell<PermissionContext>>,
-    #[allow(
-        dead_code,
-        reason = "binding retains original authority for the following typed-action provenance task"
-    )]
     pub(crate) author: UserId,
-    #[allow(
-        dead_code,
-        reason = "binding retains original authority for the following typed-action provenance task"
-    )]
     pub(crate) operation_context: tilo_actions::ActionContext,
     /// Edits commit as the author's own writer on the record
     /// ([`crate::application::HostContext::write_as_author`]).

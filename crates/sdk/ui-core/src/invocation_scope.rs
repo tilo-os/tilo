@@ -961,12 +961,14 @@ impl InvocationProvenance {
             .map(|change| change.hash())
             .collect::<BTreeSet<_>>();
         let mut contributions: Vec<Contribution> = vec![];
+        #[cfg(feature = "broker-transport")]
         let mut acknowledgements = vec![];
         for hash in &exported {
             if let Some(retained) = self.contributions.get(hash) {
                 if retained.committed.load(Ordering::Acquire) {
                     continue;
                 }
+                #[cfg(feature = "broker-transport")]
                 acknowledgements.push(retained.committed.clone());
                 let lease = &retained.lease;
                 if let Some(group) = contributions
@@ -991,6 +993,7 @@ impl InvocationProvenance {
                 to: document.base_heads(),
                 exported,
                 contributions,
+                #[cfg(feature = "broker-transport")]
                 acknowledgements,
             },
         ))))
@@ -1008,10 +1011,7 @@ struct DocumentAuthorizationInner {
     to: Vec<ChangeHash>,
     exported: BTreeSet<ChangeHash>,
     contributions: Vec<Contribution>,
-    #[cfg_attr(
-        not(feature = "broker-transport"),
-        allow(dead_code, reason = "only the broker transport acknowledges commits")
-    )]
+    #[cfg(feature = "broker-transport")]
     acknowledgements: Vec<Arc<AtomicBool>>,
 }
 
@@ -1117,10 +1117,7 @@ impl DocumentAuthorization {
         Ok(())
     }
 
-    #[cfg_attr(
-        not(feature = "broker-transport"),
-        allow(dead_code, reason = "only the broker transport commits documents")
-    )]
+    #[cfg(feature = "broker-transport")]
     pub(crate) fn retained_bytes(&self) -> Option<usize> {
         let mut bytes = std::mem::size_of::<DocumentAuthorizationInner>();
         bytes = bytes

@@ -18,9 +18,7 @@ use clap::{Parser, Subcommand};
 use desktop_entry::launch::LaunchEnv;
 use launcher::landlock_shim::{SANDBOX_EXEC_SUBCOMMAND, run_sandbox_exec};
 use launcher::registration_gate::LAUNCH_REGISTRATION_FD_ENV;
-use launcher::run::{
-    IdentitySource, LaunchMode, RunError, RunOptions, launch_manifest, run_manifest,
-};
+use launcher::run::{IdentitySource, LaunchMode, RunOptions, launch_manifest, run_manifest};
 
 fn wait_for_registration_fd(fd: RawFd) -> std::io::Result<()> {
     if fd < 3 {
@@ -264,7 +262,7 @@ struct RunHostArgs {
 }
 
 /// Fold an `i32` exit code (from [`std::process::ExitStatus::code`] or
-/// [`RunError::to_exit_code`]) into the `u8` [`ExitCode`] takes. Both
+/// [`launcher::run::RunError::to_exit_code`]) into the `u8` [`ExitCode`] takes. Both
 /// sources are always in `0..=255` in practice — a POSIX wait status is
 /// already masked to the low byte, and `RunError`'s codes are small
 /// constants — so the `1` fallback (generic failure) never fires for a real
@@ -960,13 +958,6 @@ fn init_tracing() {
         .with_target(false)
         .try_init();
 }
-
-// Expose RunError so the binary can use #[derive] paths cleanly.
-#[allow(
-    dead_code,
-    reason = "the link-only helper keeps RunError reachable for derive-generated binary paths"
-)]
-fn _link_run_error(_: &RunError) {}
 
 #[cfg(test)]
 mod admit_share_tests {

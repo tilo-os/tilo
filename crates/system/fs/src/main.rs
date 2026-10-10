@@ -138,6 +138,70 @@ mod share_mount_tests {
         }
     }
 
+    /// TIL-745. The persister writes the sync progress with each peer
+    /// beside the namespace document, and a restart resumes it; damaged
+    /// progress, or progress beside a document recovered from an older
+    /// generation, is ignored, so every exchange starts with a full sync.
+    #[tokio::test(start_paused = true)]
+    async fn sync_progress_persists_beside_the_namespace_and_is_never_trusted() {
+        const PEER: [u8; 32] = [9; 32];
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("namespace.bin");
+        let progress = peer_sync_path(&path);
+        let namespace = Arc::new(Mutex::new(Namespace::new("persisted").unwrap()));
+        let agree_on_heads = |namespace: &Arc<Mutex<Namespace>>| {
+            let mut namespace = namespace.lock().unwrap();
+            let mut state = automerge::sync::State::new();
+            state.shared_heads = namespace.heads();
+            namespace.finish_sync_with(PEER, &state);
+        };
+        agree_on_heads(&namespace);
+        let persister = spawn_persist(Arc::clone(&namespace), path.clone());
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        persister.abort();
+        assert!(progress.exists(), "the persister wrote the sync progress");
+        assert_eq!(
+            std::fs::metadata(&progress).unwrap().permissions(),
+            std::fs::metadata(&path).unwrap().permissions(),
+            "the progress has the document's permissions"
+        );
+        let mut reopened = load_namespace(&path, "persisted".into()).unwrap();
+        assert!(
+            reopened.in_sync_with(&PEER),
+            "a restart resumes the progress"
+        );
+
+        // Phase `damaged_progress_is_ignored`.
+        let mut damaged = std::fs::read(&progress).unwrap();
+        let last = damaged.len() - 1;
+        damaged[last] ^= 1;
+        std::fs::write(&progress, &damaged).unwrap();
+        let mut reopened = load_namespace(&path, "persisted".into()).unwrap();
+        assert!(
+            !reopened.in_sync_with(&PEER),
+            "damaged progress was resumed"
+        );
+
+        // Phase `progress_beside_a_recovered_document_is_ignored`.
+        persist_peer_sync_states(&namespace, &progress);
+        namespace
+            .lock()
+            .unwrap()
+            .create_dir(fs::ROOT_INO, "newer", 1)
+            .unwrap();
+        persist_namespace_generation(&namespace, &path).unwrap();
+        std::fs::write(&path, b"damaged primary").unwrap();
+        let mut recovered = load_namespace(&path, "persisted".into()).unwrap();
+        assert!(
+            recovered.lookup(fs::ROOT_INO, "newer").is_none(),
+            "the older generation was recovered"
+        );
+        assert!(
+            !recovered.in_sync_with(&PEER),
+            "a recovered document resumed progress"
+        );
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn recipient_service_replaces_only_a_verified_stale_socket() {
@@ -3261,7 +3325,54 @@ fn load_namespace(path: &Path, author: String) -> Result<Namespace> {
     })?
     .with_context(|| format!("namespace disappeared while opening {}", path.display()))?;
     report_namespace_recovery(path, outcome.recovery.as_ref());
-    Ok(Namespace::from_bytes(author, &outcome.bytes)?)
+    let mut namespace = Namespace::from_bytes(author, &outcome.bytes)?;
+    // A document recovered from an older generation resumes no exchange:
+    // what peers agreed with it may be beyond what it now holds.
+    if outcome.recovery.is_none() {
+        restore_peer_sync_states(&mut namespace, &peer_sync_path(path));
+    }
+    Ok(namespace)
+}
+
+/// Where the sync progress with each peer is kept, beside the namespace
+/// document at `namespace_path` and with the same permissions.
+fn peer_sync_path(namespace_path: &Path) -> PathBuf {
+    namespace_path.with_file_name("peer-sync.bin")
+}
+
+/// Resumes the sync progress persisted at `path`, if any. Progress that
+/// cannot be read or decoded is discarded whole: every exchange then
+/// starts with a full sync, as after a first contact.
+fn restore_peer_sync_states(namespace: &mut Namespace, path: &Path) {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+        Err(error) => {
+            eprintln!("ignoring sync progress at {}: {error}", path.display());
+            return;
+        }
+    };
+    if let Err(error) = namespace.restore_peer_sync_states(&bytes) {
+        eprintln!(
+            "ignoring sync progress at {}: {error:#}; peers sync in full",
+            path.display()
+        );
+    }
+}
+
+/// Writes the sync progress beside the namespace document. Encoded under
+/// the namespace lock, written outside it.
+fn persist_peer_sync_states(namespace: &Arc<Mutex<Namespace>>, path: &Path) {
+    let bytes = namespace
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .encode_peer_sync_states();
+    if let Err(error) = tilo_files::native::atomic::write(path, &bytes) {
+        eprintln!(
+            "sync progress persist to {} failed: {error}",
+            path.display()
+        );
+    }
 }
 
 fn report_namespace_recovery(path: &Path, recovery: Option<&fs::durable_backup::RecoveryEvidence>) {
@@ -3287,18 +3398,36 @@ fn report_namespace_recovery(path: &Path, recovery: Option<&fs::durable_backup::
 fn spawn_persist(namespace: Arc<Mutex<Namespace>>, path: PathBuf) -> tokio::task::JoinHandle<()> {
     const QUIET: Duration = Duration::from_millis(500);
     const MAX_DELAY: Duration = Duration::from_secs(3);
+    let progress_path = peer_sync_path(&path);
     tokio::spawn(async move {
         let mut persisted = None;
         let mut seen = None;
         let mut seen_at = tokio::time::Instant::now();
         let mut dirty_since: Option<tokio::time::Instant> = None;
+        let mut progress_persisted = None;
+        let mut progress_written_at = tokio::time::Instant::now();
         loop {
             tokio::time::sleep(Duration::from_millis(100)).await;
-            let heads = namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .heads();
+            let (heads, progress) = {
+                let mut namespace = namespace
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                (namespace.heads(), namespace.peer_sync_generation())
+            };
             let now = tokio::time::Instant::now();
+            // Sync progress changes when an exchange agrees on new heads;
+            // an idle exchange leaves it, and so the file, alone. Written
+            // at most every `MAX_DELAY`, whether or not the document is:
+            // progress ahead of the persisted document names heads it lacks
+            // and is dropped at load, progress behind it resumes from
+            // further back. Losing the newest costs one fuller exchange.
+            if progress_persisted != Some(progress)
+                && now.duration_since(progress_written_at) >= MAX_DELAY
+            {
+                persist_peer_sync_states(&namespace, &progress_path);
+                progress_persisted = Some(progress);
+                progress_written_at = now;
+            }
             if seen.as_ref() != Some(&heads) {
                 seen = Some(heads.clone());
                 seen_at = now;

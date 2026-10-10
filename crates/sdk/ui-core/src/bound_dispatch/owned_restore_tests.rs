@@ -68,8 +68,6 @@ fn owned_restore_bound_applies_exact_spans_once_with_one_undo_boundary() {
             .restore_prepared(&mut outer, &admitted(&binding, &authority), &plan)
             .unwrap();
         assert!(receipt.changed);
-        assert_eq!(receipt.before, plan.current_heads());
-        assert_eq!(receipt.history_revision, before.revision + 1);
         assert_eq!(
             binding.generation().unwrap(),
             before.generation.map(|v| v + 1)
@@ -80,6 +78,7 @@ fn owned_restore_bound_applies_exact_spans_once_with_one_undo_boundary() {
                 assert_eq!(value(doc), "old");
                 assert_eq!(crate::record::identity(doc), Some(binding.checkout.clone()));
                 assert_eq!(doc.get_changes(plan.current_heads()).len(), 1);
+                assert_eq!(history.revision(), before.revision + 1);
                 let entry = history.peek_last_undo(doc).unwrap();
                 assert_eq!(entry.before, plan.current_heads());
                 assert_eq!(entry.after, receipt.after);
@@ -106,7 +105,7 @@ fn owned_restore_bound_applies_exact_spans_once_with_one_undo_boundary() {
             .with_action_state(&binding.checkout.id, |doc, history, _| {
                 assert_eq!(value(doc), "live");
                 assert_eq!(crate::record::identity(doc), Some(binding.checkout.clone()));
-                assert_eq!(history.revision(), receipt.history_revision + 1);
+                assert_eq!(history.revision(), before.revision + 2);
             })
             .unwrap();
         assert_eq!(outer.pending_ops(), 0);

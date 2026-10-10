@@ -255,18 +255,8 @@ pub(crate) fn restore_reviewed_record(
 }
 #[derive(Debug)]
 pub(crate) struct OwnedActionReceipt {
-    #[cfg_attr(
-        not(test),
-        allow(dead_code, reason = "retained in receipts for restore audit tests")
-    )]
-    pub(crate) before: Vec<ChangeHash>,
     pub(crate) after: Vec<ChangeHash>,
     pub(crate) changed: bool,
-    #[cfg_attr(
-        not(test),
-        allow(dead_code, reason = "retained in receipts for restore audit tests")
-    )]
-    pub(crate) history_revision: u64,
 }
 #[derive(Debug)]
 pub(crate) enum OwnedRestoreError {
@@ -384,10 +374,8 @@ impl<'a> OwnedContentAction<'a> {
         };
         match (outcome, self.doc.pending_ops() > 0) {
             (RestoreOutcome::Unchanged, false) => Ok(OwnedActionReceipt {
-                before: self.before.clone(),
                 after: self.before.clone(),
                 changed: false,
-                history_revision: self.history.revision(),
             }),
             (RestoreOutcome::Changed, true) => {
                 let Some(attribution) = self.attribution.take() else {
@@ -440,10 +428,8 @@ impl UndoLog {
             self.last_heads.clone_from(&after);
         }
         OwnedActionReceipt {
-            before,
             after,
             changed: committed,
-            history_revision: self.revision(),
         }
     }
 }
