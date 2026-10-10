@@ -458,6 +458,8 @@ jobs:
             cargo build --locked --release -p ui-examples --example ui-perf
           bash scripts/ci-run.sh "redraw_bench release build" -- \
             cargo build --locked --release -p shell --example redraw_bench
+          bash scripts/ci-run.sh "framework-scaling release build" -- \
+            cargo build --locked --release -p tilo-app --features test-support --example framework-scaling
 
       - name: Verify, time and record
         run: |
@@ -470,6 +472,10 @@ jobs:
           python3 scripts/perf/render_bench.py timing target/release/examples/ui-perf \
             target/release/examples/redraw_bench --env-json perf/env.json --out perf \
             --records perf/render.jsonl
+          # Opening a framework app over a long list (TIL-758).
+          target/release/examples/framework-scaling 5000,50000 open | tee perf/framework-open.log
+          python3 tools/perf/adapters.py framework-open --env-json perf/env.json \
+            perf/framework-open.log >> perf/render.jsonl
           cat perf/render.jsonl
 
       - name: Check the render counters
