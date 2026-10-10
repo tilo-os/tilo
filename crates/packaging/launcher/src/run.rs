@@ -18,7 +18,7 @@ use tilo_clock::unix_now;
 
 use crate::capabilities::{CapabilityPlan, load_capability_file};
 use crate::dbus_proxy::{self, DBusProxyGuard};
-use crate::manifest::{MinimalManifest, PortalPolicy, read_manifest};
+use crate::manifest::{ManifestView, PortalPolicy, read_manifest};
 use crate::sandbox::{DBusBindPlan, build_bwrap_argv};
 use crate::seccomp::compile_baseline;
 use crate::services::{
@@ -110,7 +110,7 @@ mod seccomp_fd_tests {
 #[derive(Debug, thiserror::Error)]
 pub enum RunError {
     #[error(transparent)]
-    Manifest(#[from] crate::manifest::ManifestError),
+    Manifest(#[from] crate::manifest::ManifestReadError),
     #[error("refusing to launch: {0}")]
     FsPolicy(#[from] crate::manifest::FsPolicyViolation),
     #[error(
@@ -392,7 +392,7 @@ fn gui_open_args(opts: &RunOptions) -> Vec<String> {
     }
 }
 
-fn validate_open_uri(manifest: &MinimalManifest, opts: &RunOptions) -> Result<(), RunError> {
+fn validate_open_uri(manifest: &ManifestView, opts: &RunOptions) -> Result<(), RunError> {
     let Some(uri) = opts.open_uri.as_deref() else {
         return Ok(());
     };
@@ -418,7 +418,7 @@ fn validate_open_uri(manifest: &MinimalManifest, opts: &RunOptions) -> Result<()
 
 /// The system interfaces `manifest` requires that `provided` does not serve.
 fn interfaces_unmet(
-    manifest: &MinimalManifest,
+    manifest: &ManifestView,
     provided: Option<&tilo_app_package::interfaces::ProvidedInterfaces>,
 ) -> Vec<tilo_app_package::interfaces::Unmet> {
     let Some(provided) = provided else {
@@ -446,7 +446,7 @@ fn interfaces_unmet(
 /// Refuse a package built against system interface versions this OS does
 /// not serve. The catalog already runs the image's copy instead of such an
 /// update; this is the same rule for every other way into a launch.
-fn validate_interfaces(manifest: &MinimalManifest) -> Result<(), RunError> {
+fn validate_interfaces(manifest: &ManifestView) -> Result<(), RunError> {
     let provided = package_store::interfaces::system_interfaces();
     let unmet = interfaces_unmet(manifest, provided.as_ref());
     if unmet.is_empty() {
@@ -458,7 +458,7 @@ fn validate_interfaces(manifest: &MinimalManifest) -> Result<(), RunError> {
     })
 }
 
-fn validate_launch_mode(manifest: &MinimalManifest, opts: &RunOptions) -> Result<(), RunError> {
+fn validate_launch_mode(manifest: &ManifestView, opts: &RunOptions) -> Result<(), RunError> {
     if let LaunchMode::Host { desktop_id } = &opts.mode {
         return Err(RunError::HostAppNotAPackage {
             desktop_id: desktop_id.clone(),
@@ -497,7 +497,7 @@ fn validate_launch_mode(manifest: &MinimalManifest, opts: &RunOptions) -> Result
     Ok(())
 }
 
-fn is_native_game_launch(manifest: &MinimalManifest, opts: &RunOptions) -> bool {
+fn is_native_game_launch(manifest: &ManifestView, opts: &RunOptions) -> bool {
     matches!(&opts.mode, LaunchMode::Gui)
         && manifest.category.as_deref().is_some_and(|category| {
             category.eq_ignore_ascii_case("game") || category.eq_ignore_ascii_case("games")
@@ -508,13 +508,12 @@ fn is_native_game_launch(manifest: &MinimalManifest, opts: &RunOptions) -> bool 
 mod resource_claim_tests {
     use super::*;
 
-    fn browser_manifest() -> MinimalManifest {
-        toml::from_str(
-            "package_id = \"so.tilo.browser\"\nversion = \"1\"\n\
-             [entrypoint]\nbin = \"bin/browser\"\n\
+    fn browser_manifest() -> ManifestView {
+        crate::manifest::test_manifest(
+            "id = \"so.tilo.browser\"\nversion = \"1\"\nkind = \"app\"",
+            "[entrypoint]\nbin = \"bin/browser\"\n\
              [providers]\nschemes = [\"https\"]\n",
         )
-        .unwrap()
     }
 
     #[test]
@@ -545,11 +544,10 @@ mod resource_claim_tests {
         }
         // Phase `only_gui_game_packages_receive_the_scheduler_hint`.
         {
-            let game: MinimalManifest = toml::from_str(
-                "[package]\nid = \"so.tilo.game\"\nversion = \"1\"\ncategory = \"Games\"\n\
-                 [entrypoint]\nbin = \"bin/game\"\n",
-            )
-            .unwrap();
+            let game: ManifestView = crate::manifest::test_manifest(
+                "id = \"so.tilo.game\"\nversion = \"1\"\nkind = \"app\"\ncategory = \"Games\"",
+                "[entrypoint]\nbin = \"bin/game\"\n",
+            );
             assert!(is_native_game_launch(&game, &RunOptions::default()));
             let service = RunOptions {
                 mode: LaunchMode::Service {
@@ -587,12 +585,11 @@ mod interface_tests {
 
     #[test]
     fn a_build_needing_an_interface_the_os_lacks_is_refused() {
-        let settings: MinimalManifest = toml::from_str(
-            "[package]\nid = \"so.tilo.settings\"\nversion = \"2\"\nkind = \"app\"\n\
-             [entrypoint]\nbin = \"bin/settings\"\n\
+        let settings: ManifestView = crate::manifest::test_manifest(
+            "id = \"so.tilo.settings\"\nversion = \"2\"\nkind = \"app\"",
+            "[entrypoint]\nbin = \"bin/settings\"\n\
              [sandbox.services]\nsystem = \"required@2\"\ncollab = \"optional@3\"\n",
-        )
-        .unwrap();
+        );
         let old_os = ProvidedInterfaces::new([("system", &[1][..]), ("collab", &[1][..])]);
         let new_os = ProvidedInterfaces::new([("system", &[1, 2][..])]);
         let unmet = interfaces_unmet(&settings, Some(&old_os));
@@ -615,12 +612,11 @@ mod interface_tests {
 mod managed_service_tests {
     use super::*;
 
-    fn manifest(kind: &str, entrypoint_type: &str) -> MinimalManifest {
-        toml::from_str(&format!(
-            "[package]\nid = \"so.tilo.worker\"\nversion = \"1\"\nkind = \"{kind}\"\n\
-             [entrypoint]\nbin = \"bin/worker\"\ntype = \"{entrypoint_type}\"\n"
-        ))
-        .unwrap()
+    fn manifest(kind: &str, entrypoint_type: &str) -> ManifestView {
+        crate::manifest::test_manifest(
+            &format!("id = \"so.tilo.worker\"\nversion = \"1\"\nkind = \"{kind}\""),
+            &format!("[entrypoint]\nbin = \"bin/worker\"\ntype = \"{entrypoint_type}\"\n"),
+        )
     }
 
     fn service_options() -> RunOptions {
@@ -715,7 +711,7 @@ mod managed_service_tests {
 
     #[test]
     fn signal_source_manifest_is_admitted_as_a_headless_managed_service() {
-        let manifest: MinimalManifest =
+        let manifest: ManifestView =
             toml::from_str(include_str!("../signal-provider.toml")).unwrap();
         let options = RunOptions {
             app_id: Some("so.tilo.signal-provider".into()),
@@ -791,7 +787,7 @@ mod managed_service_tests {
 
 /// Resolve the capability plan: read the compositor's file, evaluate it
 /// for this app now. Split out so [`run_with_captured`] and tests share it.
-pub fn resolve_capabilities(manifest: &MinimalManifest, opts: &RunOptions) -> CapabilityPlan {
+pub fn resolve_capabilities(manifest: &ManifestView, opts: &RunOptions) -> CapabilityPlan {
     let app_id = manifest.package_id.clone();
     let records = opts
         .capabilities_path
@@ -827,7 +823,7 @@ pub fn resolve_capabilities(manifest: &MinimalManifest, opts: &RunOptions) -> Ca
 /// the resolved bundle fails signature/publisher verification, or if no
 /// bundle is found and `opts.allow_missing_runtime` is unset.
 pub fn resolve_runtime_test_helper(
-    manifest: &crate::manifest::MinimalManifest,
+    manifest: &crate::manifest::ManifestView,
     opts: &RunOptions,
 ) -> Result<Option<(PathBuf, String)>, RunError> {
     resolve_runtime(manifest, opts)
@@ -840,7 +836,7 @@ pub fn resolve_runtime_test_helper(
 ///
 /// As [`splice_optional_runtimes`].
 pub fn optional_runtimes_test_helper(
-    manifest: &crate::manifest::MinimalManifest,
+    manifest: &crate::manifest::ManifestView,
     opts: &RunOptions,
 ) -> Result<(Vec<String>, Vec<String>), RunError> {
     let mut argv = vec!["entry".to_string()];
@@ -850,7 +846,7 @@ pub fn optional_runtimes_test_helper(
 
 /// Resolve/create/migrate the one directory this launch may write to,
 /// keyed by `opts.workspace_id` — no list to walk.
-fn resolve_app_dir(manifest: &MinimalManifest, opts: &RunOptions) -> Result<PathBuf, RunError> {
+fn resolve_app_dir(manifest: &ManifestView, opts: &RunOptions) -> Result<PathBuf, RunError> {
     let data_home = opts
         .data_home
         .clone()
@@ -874,7 +870,7 @@ fn resolve_app_dir(manifest: &MinimalManifest, opts: &RunOptions) -> Result<Path
 
 /// Resolve/create the directory the person's own records of this app are
 /// kept in: one for every room it is launched into.
-fn resolve_person_dir(manifest: &MinimalManifest, opts: &RunOptions) -> Result<PathBuf, RunError> {
+fn resolve_person_dir(manifest: &ManifestView, opts: &RunOptions) -> Result<PathBuf, RunError> {
     let data_home = opts
         .data_home
         .clone()
@@ -891,7 +887,7 @@ fn resolve_person_dir(manifest: &MinimalManifest, opts: &RunOptions) -> Result<P
 
 /// The room's app directory and the person directory a launch binds.
 fn resolve_launch_dirs(
-    manifest: &MinimalManifest,
+    manifest: &ManifestView,
     opts: &RunOptions,
 ) -> Result<(PathBuf, PathBuf), RunError> {
     Ok((
@@ -969,7 +965,7 @@ fn stop_identity_broker(control: Option<UnixStream>, thread: Option<std::thread:
 /// Derive GPU pinning, or `None` when nothing to pin. Every decline is
 /// logged — landing on the wrong GPU must never happen silently.
 pub fn resolve_gpu_selection(
-    manifest: &crate::manifest::MinimalManifest,
+    manifest: &crate::manifest::ManifestView,
     opts: &RunOptions,
 ) -> Option<crate::gpu::GpuSelection> {
     let node = opts.render_node.as_ref()?;
@@ -1003,7 +999,7 @@ pub fn resolve_gpu_selection(
 /// the resolved bundle fails signature/publisher verification, or if no
 /// bundle is found and `opts.allow_missing_runtime` is unset.
 pub fn resolve_runtime(
-    manifest: &crate::manifest::MinimalManifest,
+    manifest: &crate::manifest::ManifestView,
     opts: &RunOptions,
 ) -> Result<Option<(PathBuf, String)>, RunError> {
     // 1. Explicit override wins, verified against the same signature policy
@@ -1091,7 +1087,7 @@ fn valid_runtime_version(version: &str) -> bool {
 /// read.
 fn splice_runtime_mounts(
     argv: &mut Vec<String>,
-    manifest: &crate::manifest::MinimalManifest,
+    manifest: &crate::manifest::ManifestView,
     opts: &RunOptions,
     resolved_runtime_present: bool,
 ) -> Result<Vec<String>, RunError> {
@@ -1107,7 +1103,7 @@ fn splice_runtime_mounts(
 /// offers to install it. Returns the sandbox paths Landlock must let it read.
 fn splice_optional_runtimes(
     argv: &mut Vec<String>,
-    manifest: &crate::manifest::MinimalManifest,
+    manifest: &crate::manifest::ManifestView,
     opts: &RunOptions,
 ) -> Result<Vec<String>, RunError> {
     let mut mounts = Vec::new();
@@ -1594,7 +1590,7 @@ pub fn launch_manifest(
     manifest_path: &Path,
     payload_root: &Path,
     opts: &RunOptions,
-) -> Result<MinimalManifest, RunError> {
+) -> Result<ManifestView, RunError> {
     let manifest = if let Some(expected) = opts.expected_package_hash.as_deref() {
         verified_original_manifest(manifest_path, payload_root, opts, expected)?
     } else {
@@ -1611,7 +1607,7 @@ pub fn launch_manifest(
 ///
 /// As [`run`].
 pub fn run_manifest(
-    manifest: &MinimalManifest,
+    manifest: &ManifestView,
     payload_root: &Path,
     opts: &RunOptions,
 ) -> Result<ExitStatus, RunError> {
@@ -1623,7 +1619,7 @@ pub(crate) fn verified_original_manifest(
     payload_root: &Path,
     opts: &RunOptions,
     expected: &str,
-) -> Result<MinimalManifest, RunError> {
+) -> Result<ManifestView, RunError> {
     let refusal =
         || RunError::InvalidServiceLaunch("original signed package launch changed".into());
     let app = opts.app_id.as_deref().ok_or_else(refusal)?;
@@ -1638,7 +1634,7 @@ pub(crate) fn verified_launch_installation(
     manifest_path: &Path,
     payload_root: &Path,
     expected: &str,
-) -> Result<MinimalManifest, RunError> {
+) -> Result<ManifestView, RunError> {
     let refusal =
         || RunError::InvalidServiceLaunch("original signed package launch changed".into());
     if installed.package_id_hex != expected
@@ -1658,7 +1654,7 @@ pub(crate) fn verified_launch_installation(
         expected,
     )
     .map_err(|_| refusal())?;
-    let manifest: MinimalManifest =
+    let manifest: ManifestView =
         toml::from_str(std::str::from_utf8(&record.manifest_bytes).map_err(|_| refusal())?)
             .map_err(|_| refusal())?;
     if manifest.package_id != installed.id {
@@ -2054,7 +2050,7 @@ fn splice_session_settings(argv: &mut Vec<String>, package_id: &str) -> Result<(
 /// system-bus proxy alive and must outlive the child.
 fn splice_system_authority(
     argv: &mut Vec<String>,
-    manifest: &MinimalManifest,
+    manifest: &ManifestView,
 ) -> Result<
     (
         Option<crate::system_authority::SystemAuthorityPlan>,
@@ -2080,7 +2076,7 @@ fn splice_system_authority(
 /// replacement, so the containing directory—not one inode—is bound.
 fn splice_trusted_identities(
     argv: &mut Vec<String>,
-    manifest: &MinimalManifest,
+    manifest: &ManifestView,
     opts: &RunOptions,
 ) -> Result<(), RunError> {
     if manifest.package_id == "so.tilo.file-explorer"
@@ -2097,7 +2093,7 @@ fn splice_trusted_identities(
 /// revocation are visible without exposing the host capability store.
 fn splice_action_authority(
     argv: &mut Vec<String>,
-    manifest: &MinimalManifest,
+    manifest: &ManifestView,
     opts: &RunOptions,
 ) -> Result<(), RunError> {
     use collab_types::caps::action_authority::{
@@ -2169,7 +2165,7 @@ fn splice_net_gate_bind(
 /// selection, needed again by the shim's Landlock plan.
 fn splice_gpu(
     argv: &mut Vec<String>,
-    manifest: &MinimalManifest,
+    manifest: &ManifestView,
     opts: &RunOptions,
     capabilities: &CapabilityPlan,
 ) -> Result<(Option<crate::gpu::GpuSelection>, Option<PathBuf>), RunError> {
@@ -2208,7 +2204,7 @@ fn splice_gpu(
 
 /// Everything [`splice_sandbox_shim`] needs beyond `argv` and `opts`.
 struct ShimSpliceCtx<'a> {
-    manifest: &'a MinimalManifest,
+    manifest: &'a ManifestView,
     net_gate: &'a Option<crate::sandbox::NetGateBind>,
     runtime_arg: Option<(&'a Path, &'a str)>,
     extra_ro_paths: &'a [String],
@@ -2381,14 +2377,14 @@ fn push_runtime_landlock_rules(argv: &mut Vec<String>, runtime: Option<(&Path, &
     }
 }
 
-fn push_scratch_and_engine_rules(argv: &mut Vec<String>, manifest: &MinimalManifest) {
+fn push_scratch_and_engine_rules(argv: &mut Vec<String>, manifest: &ManifestView) {
     // Standard tmpfs mounts the app expects writable; --rw grants full FS
     // access, and both vanish with the process (scratch, not hidden state).
     for p in ["/tmp", "/dev"] {
         argv.push("--rw".to_string());
         argv.push(p.to_string());
     }
-    let profile = manifest.sandbox.seccomp_profile(&manifest.package_id);
+    let profile = crate::seccomp::manifest_profile(&manifest.sandbox, &manifest.package_id);
     for path in crate::profile::landlock_rw_nested_sandbox_paths(profile) {
         argv.push("--rw".to_string());
         argv.push(path.display().to_string());
@@ -2731,7 +2727,7 @@ fn spawn_and_wait(
 /// image decides whether this package may have it. An unrecognised name is a
 /// packaging mistake; a recognised-but-unentitled one is an app trying to
 /// lift a protection off itself — logged distinctly.
-fn stage_seccomp(manifest: &MinimalManifest) -> Result<SeccompFds, RunError> {
+fn stage_seccomp(manifest: &ManifestView) -> Result<SeccompFds, RunError> {
     let decision = crate::seccomp::resolve_profile(&manifest.sandbox.seccomp, &manifest.package_id);
     let profile = decision.applied;
     if decision.refused {
@@ -2803,7 +2799,7 @@ type BuiltArgv = (Vec<String>, Option<(String, String)>, Vec<String>);
 /// forwards passthrough argv. Returns `(argv, extra_setenv, passthrough)`.
 /// The payload-relative binary a launch in `mode` executes; `None` for a host
 /// application, which has no payload.
-fn launch_entry_bin<'a>(manifest: &'a MinimalManifest, mode: &LaunchMode) -> Option<&'a str> {
+fn launch_entry_bin<'a>(manifest: &'a ManifestView, mode: &LaunchMode) -> Option<&'a str> {
     match mode {
         LaunchMode::Gui => Some(
             manifest
@@ -2828,7 +2824,7 @@ fn launch_entry_bin<'a>(manifest: &'a MinimalManifest, mode: &LaunchMode) -> Opt
 /// a runtime bundle is checked: the host-library modes have no bundle the app
 /// could have been built against.
 fn preflight_runtime_libraries(
-    manifest: &MinimalManifest,
+    manifest: &ManifestView,
     payload_root: &Path,
     opts: &RunOptions,
     runtime: Option<(&Path, &str)>,
@@ -2868,7 +2864,7 @@ fn preflight_runtime_libraries(
 }
 
 fn build_initial_argv(
-    manifest: &MinimalManifest,
+    manifest: &ManifestView,
     payload_root: &Path,
     opts: &RunOptions,
     runtime_arg: Option<(&Path, &str)>,
@@ -2953,7 +2949,7 @@ fn build_initial_argv(
 /// any bind/runtime/identity/egress resolution step fails, or if spawning or
 /// waiting on the sandboxed process fails.
 pub fn run_with(
-    manifest: &MinimalManifest,
+    manifest: &ManifestView,
     payload_root: &Path,
     opts: &RunOptions,
 ) -> Result<ExitStatus, RunError> {
@@ -3068,7 +3064,7 @@ struct LaunchHost {
 /// Verify the runtime bundle, check the entrypoint's libraries against it,
 /// and create the app's directories (bwrap can only bind what exists).
 fn prepare_launch_host(
-    manifest: &MinimalManifest,
+    manifest: &ManifestView,
     payload_root: &Path,
     opts: &RunOptions,
     enrolled: Option<&crate::services::EnrolledServiceContext>,
@@ -3109,7 +3105,7 @@ fn prepare_launch_host(
 }
 
 pub(crate) fn run_enrolled(
-    manifest: &MinimalManifest,
+    manifest: &ManifestView,
     payload_root: &Path,
     opts: &RunOptions,
     services: &mut crate::services::EnrolledServiceContext,
@@ -3129,7 +3125,7 @@ pub(crate) fn run_enrolled(
     reason = "one ordered launch pipeline; splitting it would scatter the policy checks that must precede spawn"
 )]
 pub(crate) fn run_with_context(
-    manifest: &MinimalManifest,
+    manifest: &ManifestView,
     payload_root: &Path,
     opts: &RunOptions,
     mut enrolled: Option<(
@@ -3778,7 +3774,7 @@ type IdentityBrokerHandles = (
 /// element, so this would indicate a bug in that builder, not a runtime
 /// condition.
 pub fn run_with_captured(
-    manifest: &MinimalManifest,
+    manifest: &ManifestView,
     payload_root: &Path,
     opts: &RunOptions,
 ) -> Result<(ExitStatus, Vec<u8>), RunError> {
@@ -3794,7 +3790,7 @@ pub fn run_with_captured(
 /// Returns [`RunError`] when the plan is invalid, sandbox construction fails,
 /// or the bounded child cannot be spawned, supervised, or collected.
 pub fn run_with_captured_bounded(
-    manifest: &MinimalManifest,
+    manifest: &ManifestView,
     payload_root: &Path,
     opts: &RunOptions,
     plan: CapturedResourcePlan,
@@ -3825,7 +3821,7 @@ pub fn run_with_captured_bounded(
     reason = "the captured launch mirrors `run_with_context`'s ordered pipeline step for step"
 )]
 fn run_with_capture_spawn<T>(
-    manifest: &MinimalManifest,
+    manifest: &ManifestView,
     payload_root: &Path,
     opts: &RunOptions,
     spawn: impl FnOnce(
@@ -3853,9 +3849,10 @@ fn run_with_capture_spawn<T>(
     // reaching different conclusions would make capture a way around the filter.
     let seccomp_fds = SeccompFds {
         clone3_compat: stage_seccomp_blob(&crate::seccomp::compile_clone3_compat()?)?,
-        baseline: stage_seccomp_blob(&compile_baseline(
-            manifest.sandbox.seccomp_profile(&manifest.package_id),
-        )?)?,
+        baseline: stage_seccomp_blob(&compile_baseline(crate::seccomp::manifest_profile(
+            &manifest.sandbox,
+            &manifest.package_id,
+        ))?)?,
     };
 
     // Build the exact production sandbox shape. Capture changes stdout only.
@@ -4701,11 +4698,11 @@ mod identity_resolution_tests {
 mod app_dir_tests {
     use super::*;
 
-    fn manifest(id: &str) -> crate::manifest::MinimalManifest {
-        toml::from_str(&format!(
-            "[package]\nid = {id:?}\nversion = \"0.1.0\"\n\n[entrypoint]\nbin = \"bin/x\"\n"
-        ))
-        .expect("fixture manifest decodes")
+    fn manifest(id: &str) -> crate::manifest::ManifestView {
+        crate::manifest::test_manifest(
+            &format!("id = {id:?}\nversion = \"0.1.0\"\nkind = \"app\""),
+            "[entrypoint]\nbin = \"bin/x\"\n",
+        )
     }
 
     fn opts_in(room: Option<&str>) -> RunOptions {
@@ -5019,10 +5016,10 @@ mod action_authority_tests {
     fn action_authority_binding_is_readonly_scoped_and_separate_from_sandbox_grants() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("current.json");
-        let manifest: MinimalManifest = toml::from_str(
-            "[package]\nid = \"so.tilo.store\"\nversion = \"1.0\"\n[entrypoint]\nbin = \"store\"\n",
-        )
-        .unwrap();
+        let manifest: ManifestView = crate::manifest::test_manifest(
+            "id = \"so.tilo.store\"\nversion = \"1.0\"\nkind = \"app\"",
+            "[entrypoint]\nbin = \"store\"\n",
+        );
         let policy = AppActionAuthorityProjection {
             schema_version: 1,
             room: "room-a".into(),
@@ -5086,7 +5083,10 @@ mod mesa_seed_software_tests {
         let home = tilo_test_env::TestHome::new().unwrap();
         let source = home.runtime().join("tilo/pipeline-seed");
         std::fs::create_dir_all(&source).unwrap();
-        let manifest: MinimalManifest = toml::from_str("[package]\nid = \"io.tilo.seed-test\"\nversion = \"0.1.0\"\n[entrypoint]\nbin = \"bin/probe\"\n").unwrap();
+        let manifest: ManifestView = crate::manifest::test_manifest(
+            "id = \"io.tilo.seed-test\"\nversion = \"0.1.0\"\nkind = \"app\"",
+            "[entrypoint]\nbin = \"bin/probe\"\n",
+        );
         let opts = RunOptions::default();
         let mut argv = vec!["/app/probe".to_owned()];
         let (gpu, seed) =
@@ -5147,18 +5147,15 @@ mod launch_preflight_tests {
         std::fs::create_dir_all(socket.parent().unwrap()).unwrap();
         let listener = UnixListener::bind(socket).unwrap();
         listener.set_nonblocking(true).unwrap();
-        let manifest: MinimalManifest = toml::from_str(
-            r#"[package]
-id = "so.tilo.preflight"
-version = "1"
-[entrypoint]
+        let manifest: ManifestView = crate::manifest::test_manifest(
+            "id = \"so.tilo.preflight\"\nversion = \"1\"\nkind = \"app\"",
+            r#"[entrypoint]
 bin = "bin/preflight"
 type = "gui"
 [sandbox.services]
 collab = "required@1"
 "#,
-        )
-        .unwrap();
+        );
         let missing_runtime = root.path().join("missing-runtime");
         let options = RunOptions {
             runtime_root: Some(missing_runtime.clone()),
