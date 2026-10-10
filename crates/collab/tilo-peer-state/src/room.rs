@@ -12,7 +12,7 @@ pub use admit::{
 };
 use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value};
 use collab_types::Role;
-use collab_types::caps::{CapOverride, Effect, Principal, Scope, Subject, Verb};
+use collab_types::caps::CapOverride;
 use std::collections::BTreeMap;
 /// Every governed value a room document records, exactly as stored.
 ///
@@ -205,43 +205,7 @@ pub fn governance_unchanged(before: Option<&AutoCommit>, after: &AutoCommit) -> 
 }
 /// Exact native membership capability projection; a certificate alone has no role.
 pub fn role_of(owner: Option<&str>, caps: &[CapOverride], user: &str, now: u64) -> Option<Role> {
-    if owner == Some(user) {
-        return Some(Role::Owner);
-    }
-    let mut best: Option<Verb> = None;
-    let mut blocked = false;
-    for cap in caps {
-        let matches_person = match &cap.subject {
-            Subject::Principal(Principal::Person(person)) => person == user,
-            Subject::User(key) => hex::encode(key.as_bytes()) == user,
-            _ => false,
-        };
-        if !matches_person
-            || !cap.is_live_at(Some(now))
-            || !matches!(cap.scope, Scope::Room(_) | Scope::Workspace)
-        {
-            continue;
-        }
-        match cap.effect {
-            Effect::Grant => {
-                best = Some(match best {
-                    Some(prev) if prev.implies(cap.verb) => prev,
-                    _ => cap.verb,
-                });
-            }
-            Effect::Restrict if !cap.verb.implies(Verb::Read) => blocked = true,
-            Effect::Restrict => {}
-        }
-    }
-    if blocked {
-        return Some(Role::Denied);
-    }
-    best.map(|v| match v {
-        Verb::Admin => Role::Owner,
-        Verb::Write => Role::Editor,
-        Verb::Comment => Role::Commenter,
-        Verb::Read | Verb::Invite => Role::Viewer,
-    })
+    tilo_desktop_model::Workspace::role_for_membership_at(owner, caps, user, now)
 }
 /// The governance key holding effect receipts: `{invocation id → JSON receipt}`.
 const EFFECT_RECEIPTS: &str = "effect_receipts_v1";

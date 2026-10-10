@@ -24,6 +24,8 @@ mod cold_code;
 #[path = "native_exchange_tests/mounted_code.rs"]
 mod mounted_code;
 
+#[path = "native_exchange_tests/network_ownership.rs"]
+mod network_ownership;
 #[path = "native_exchange_tests/receipts.rs"]
 mod receipts;
 
@@ -408,9 +410,7 @@ async fn actual_exchange(restart: bool, cold_code: bool, mounted: Option<mounted
         last.unwrap().admit(&identity).is_err(),
         "closed session input cannot cross the owner again"
     );
-    drop(commands);
-    actor.abort();
-    let _ = actor.await;
+    retire_actor_before_endpoint_reuse(commands, actor).await;
     drop(received);
     if let Some(journey) = mounted {
         Box::pin(mounted_code::run(
@@ -463,4 +463,17 @@ async fn actual_exchange(restart: bool, cold_code: bool, mounted: Option<mounted
     publisher_endpoint.close().await;
     endpoint.close().await;
     relay.shutdown().await;
+}
+
+/// Retire the enrollment actor while keeping its endpoint for the next native session.
+async fn retire_actor_before_endpoint_reuse(
+    commands: impl Send,
+    actor: tokio::task::JoinHandle<()>,
+) {
+    // The actor's ordinary channel-closed exit shuts down its Router and
+    // closes the shared endpoint. Cancel and join while its last sender is
+    // still retained, then release that sender after router ownership ends.
+    actor.abort();
+    let _ = actor.await;
+    drop(commands);
 }

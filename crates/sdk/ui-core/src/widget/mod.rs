@@ -165,6 +165,35 @@ pub fn layout_rect(
     placed(&taffy.layout(node).copied().unwrap_or_default(), origin)
 }
 
+/// Route `event` through a container's children, first handler wins. A
+/// child latching a drag gets it exclusively, so the drag survives the
+/// cursor crossing a peer whose handler would otherwise claim it first; a
+/// child holding an open modal owns the input the same way, so nothing
+/// standing behind the sheet takes the press meant for it.
+pub fn route_to_children(
+    children: &mut [Box<dyn Widget>],
+    nodes: &[NodeId],
+    event: &WindowEvent,
+    ctx: &mut EventCtx<'_>,
+) {
+    let owner = children
+        .iter()
+        .position(|c| c.wants_pointer_capture())
+        .or_else(|| children.iter().position(|c| c.modal_capture().is_some()));
+    if let Some(idx) = owner {
+        if let (Some(child), Some(&node)) = (children.get_mut(idx), nodes.get(idx)) {
+            child.handle_event(event, &mut ctx.reborrow(ctx.path, node));
+        }
+        return;
+    }
+    for (child, &node) in children.iter_mut().zip(nodes) {
+        child.handle_event(event, &mut ctx.reborrow(ctx.path, node));
+        if *ctx.handled {
+            break;
+        }
+    }
+}
+
 /// What a gated, presence-publishing widget draws over itself once drawn:
 /// the denied-permission scrim, then the focus ring of the first peer on it.
 pub(crate) fn draw_gate_and_peer_focus(
@@ -2674,6 +2703,23 @@ pub trait TaffyTreeExt {
         let node = self.leaf_node(style);
         node_map.insert(node, std::ptr::from_mut(widget));
         node
+    }
+
+    /// [`Self::widget_leaf`] for a leaf that fills its parent's box: a
+    /// canvas, viewport or overlay that sizes and lays out its own content.
+    fn fill_leaf(
+        &mut self,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+        widget: &mut (dyn Widget + 'static),
+    ) -> NodeId {
+        let style = taffy::Style {
+            size: taffy::Size {
+                width: taffy::Dimension::percent(1.0),
+                height: taffy::Dimension::percent(1.0),
+            },
+            ..Default::default()
+        };
+        self.widget_leaf(style, node_map, widget)
     }
 
     /// Insert a parent node over `children` for `widget` and register it in

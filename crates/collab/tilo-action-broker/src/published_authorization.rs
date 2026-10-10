@@ -5,7 +5,7 @@
 use collab_types::caps::{CapDecision, ResourceRef, Verb};
 
 use crate::collab_broker_capnp::{PublishedAction, PublishedSurface};
-use crate::policy::WorkspacePolicy;
+use tilo_desktop_model::Workspace;
 
 /// Spelling of the package-primary record (route record `""`).
 const PRIMARY_RECORD_ALIAS: &str = "@tilo:package-primary";
@@ -18,8 +18,8 @@ const MAX_RECORD_ID_BYTES: usize = 128;
 ///
 /// Returns the refusal text when the route record is reserved or malformed,
 /// or when the policy denies the action or the record.
-pub fn authorize_person_published<W: WorkspacePolicy>(
-    workspace: &W,
+pub fn authorize_person_published(
+    workspace: &Workspace,
     now: u64,
     person: &str,
     capped: bool,

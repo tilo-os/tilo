@@ -881,10 +881,7 @@ impl RetainBuild {
             .as_ref()
             .and_then(super::shell_selection::Selection::publication_on_error)
     }
-    #[allow(
-        dead_code,
-        reason = "aggregate work statistics remain available alongside phase-specific diagnostics"
-    )]
+    #[cfg(test)]
     pub(crate) fn stats(&self) -> &super::bounded::WorkStats {
         self.selection
             .as_ref()
