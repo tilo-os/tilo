@@ -181,7 +181,7 @@ impl ContactsApp {
         }
         self.absorb_import_contacts(cards, &mut summary, &mut first_new);
         if let Some(id) = first_new {
-            self.selected = Some(id);
+            self.select_awaited(id);
         }
         if summary.created > 0 {
             self.show_import_summary(&summary);
@@ -207,7 +207,12 @@ impl ContactsApp {
     ) {
         let mut added = Vec::new();
         for c in cards {
-            if let Some(existing) = self.store.get(c.id) {
+            // A card earlier in this import counts as held already.
+            let held = self
+                .store
+                .contact(c.id)
+                .or_else(|| added.iter().find(|card: &&Contact| card.id == c.id));
+            if let Some(existing) = held {
                 if same_import_payload(existing, &c) {
                     summary.unchanged += 1;
                 } else {
@@ -228,16 +233,11 @@ impl ContactsApp {
                 }
                 continue;
             }
-            if self
-                .presented
-                .as_ref()
-                .is_some_and(|book| book.removed.contains(&c.id))
-            {
+            if self.store.removed.contains(&c.id) {
                 summary.errors += 1;
                 tracing::warn!(contact_id = %c.id, "contacts: import of a deleted contact");
                 continue;
             }
-            self.store.upsert(c.clone());
             added.push(c);
         }
         if added.is_empty() {
@@ -282,7 +282,7 @@ impl ContactsApp {
         let mut first_new = None;
         self.absorb_import_contacts(parsed.contacts, &mut summary, &mut first_new);
         if let Some(id) = first_new {
-            self.selected = Some(id);
+            self.select_awaited(id);
         }
         if summary.created > 0 {
             self.layout_dirty = true;
@@ -348,7 +348,7 @@ impl ContactsApp {
     ) -> Result<(Vec<u8>, usize), String> {
         let contacts: Vec<Contact> = ids
             .iter()
-            .filter_map(|id| self.store.get(*id).cloned())
+            .filter_map(|id| self.store.contact(*id).cloned())
             .collect();
         if contacts.is_empty() {
             return Err("there are no contacts to export".into());
@@ -509,7 +509,7 @@ impl ContactsApp {
 
 impl ContactsApp {
     pub(super) fn open_contact_export(&mut self, id: ContactId) -> Result<(), String> {
-        if self.store.get(id).is_none() {
+        if self.store.contact(id).is_none() {
             return Err("contact no longer exists".into());
         }
         if self.export.is_some() || self.portal_in_flight() {
@@ -517,7 +517,7 @@ impl ContactsApp {
         }
         let name = self
             .store
-            .get(id)
+            .contact(id)
             .map(Contact::display_name)
             .unwrap_or_default();
         self.open_export(vec![id], format!("{name} is saved as a vCard file."));
@@ -531,7 +531,7 @@ impl ContactsApp {
         _state: &ui::widget::Edits<'_>,
         id: ContactId,
     ) -> Result<bool, String> {
-        if self.store.get(id).is_none() {
+        if self.store.contact(id).is_none() {
             return Err("contact no longer exists".into());
         }
         let dispatcher = self

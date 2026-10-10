@@ -6,8 +6,8 @@
 //! carry the commands: search, more and new above the list; favorite, edit
 //! and delete above the person.
 //!
-//! The book is the [`Contacts`] record; the in-memory [`ContactStore`] is
-//! the working mirror the window reads. Every change to the book is one of
+//! The book is the [`Contacts`] record, read as it was last presented; the
+//! window keeps only its view of it (selection, filter, forms, dialogs). Every change to the book is one of
 //! its verbs or field edits, submitted through the window's dispatcher: the
 //! same door Ctrl+K and agents take.
 
@@ -39,7 +39,7 @@ use ui::widget::{
 };
 
 use crate::form::EditForm;
-use crate::model::{Contact, ContactId, ContactStore, Labeled, SortKey, group_names_equal};
+use crate::model::{Contact, ContactId, Labeled, SortKey, group_names_equal};
 use crate::vcard::VCardVersion;
 use crate::view::{Bridge, ContactList, EmptyPane, ListEntry, Request, Shared, queue};
 
@@ -159,7 +159,11 @@ enum HeaderKey {
     reason = "independent frame bookkeeping (list, structure, layout and paint staleness) and the seeding flags; none is a state machine"
 )]
 pub struct ContactsApp {
-    store: ContactStore,
+    /// The book as it was presented last.
+    pub(crate) store: Rc<Contacts>,
+    /// A contact this window just asked the book to add, selected before it
+    /// arrives.
+    awaiting: Option<ContactId>,
     selected: Option<ContactId>,
     mode: Mode,
     form: Option<EditForm>,
@@ -225,8 +229,6 @@ pub struct ContactsApp {
     pending_conflict_resolution: Option<(String, bool)>,
 
     dispatcher: Option<Dispatcher<Contacts>>,
-    /// The book as it was presented last.
-    pub(crate) presented: Option<Rc<Contacts>>,
     pub(crate) jobs: Option<Jobs<Contacts>>,
     pub(crate) account_editor: Option<crate::account_editor::Editor>,
     account_pane: Option<Element>,
@@ -326,11 +328,6 @@ impl ContactsApp {
         operation: &str,
         error: &ui::tilo_actions::ActionError,
     ) {
-        // Nothing changed: show the book as it stands again, in place of
-        // what the window assumed.
-        if let Some(book) = self.presented.clone() {
-            self.present_book(&book);
-        }
         self.show_toast(format!("Couldn't {operation}: {error}"));
     }
 
@@ -346,6 +343,15 @@ impl ContactsApp {
             .collect()
     }
 
+    /// Select `id`, a contact this window just asked the book to add, before
+    /// it arrives.
+    pub(super) fn select_awaited(&mut self, id: ContactId) {
+        if self.store.contact(id).is_none() {
+            self.awaiting = Some(id);
+        }
+        self.selected = Some(id);
+    }
+
     /// Show the contact a search hit or an agent's `open` names; a contact
     /// that is gone is refused.
     pub(crate) fn opener(
@@ -358,7 +364,7 @@ impl ContactsApp {
                 .as_str()
                 .parse::<ContactId>()
                 .ok()
-                .filter(|contact| shared.borrow().known.contains(contact))
+                .filter(|contact| shared.borrow().book.contact(*contact).is_some())
                 .ok_or_else(|| ui::tilo_resource::Refusal::new("no such contact"))?;
             shared.borrow_mut().push(Request::Reveal(contact));
             Ok(())
@@ -369,7 +375,7 @@ impl ContactsApp {
         self.dispatcher = Some(dispatcher);
     }
 
-    pub(crate) fn present_book(&mut self, state: &Contacts) {
+    pub(crate) fn present_book(&mut self, state: &Rc<Contacts>) {
         // A refused save re-presents the book too; keep its form for the
         // announcement that follows.
         if !self
@@ -379,8 +385,14 @@ impl ContactsApp {
         {
             self.unconfirmed_save = None;
         }
-        self.store.contacts.clone_from(&state.contacts);
-        self.shared.borrow_mut().known = state.contacts.iter().map(|contact| contact.id).collect();
+        self.store = Rc::clone(state);
+        self.shared.borrow_mut().book = Rc::clone(state);
+        if self
+            .awaiting
+            .is_some_and(|id| self.store.contact(id).is_some())
+        {
+            self.awaiting = None;
+        }
         self.duplicate_candidate = crate::actions::duplicate_candidates(&self.store.contacts, 1)
             .into_iter()
             .next();
@@ -392,18 +404,19 @@ impl ContactsApp {
         }
         // A merge the person confirmed has landed: its review is done.
         if let Some(review) = &self.duplicate_review
-            && self.store.get(review.source.id).is_none()
+            && self.store.contact(review.source.id).is_none()
         {
             self.selected = Some(review.survivor.id);
             self.duplicate_review = None;
         }
         if let Some(sel) = self.selected
-            && self.store.get(sel).is_none()
+            && self.store.contact(sel).is_none()
+            && self.awaiting != Some(sel)
         {
             self.selected = self.visible_ids().first().copied();
         }
         if let Some(form) = &mut self.form {
-            if let Some(canonical) = self.store.get(form.draft.id) {
+            if let Some(canonical) = self.store.contact(form.draft.id) {
                 if form.reconcile(canonical) {
                     self.form_epoch = self.form_epoch.wrapping_add(1);
                 }
@@ -443,7 +456,7 @@ impl ContactsApp {
         // record as it now stands, so the person's text is not lost.
         let base = self
             .store
-            .get(form.draft.id)
+            .contact(form.draft.id)
             .cloned()
             .unwrap_or_else(|| form.base.clone());
         self.form = Some(EditForm::with_base(base, form.draft, form.is_new));
@@ -499,7 +512,7 @@ impl ContactsApp {
     }
 
     fn configured() -> Self {
-        let store = ContactStore::new();
+        let store = Rc::default();
         let shared: Shared = std::rc::Rc::new(std::cell::RefCell::new(Bridge::default()));
         let destination = LocalState::new(Some(ALL_DESTINATION.to_owned()));
         let sort_choice = LocalState::new(sort_value(SortKey::Name).to_owned());
@@ -516,6 +529,7 @@ impl ContactsApp {
         shell.show(NavPane::Overview);
         Self {
             store,
+            awaiting: None,
             selected: None,
             mode: Mode::View,
             form: None,
@@ -557,7 +571,6 @@ impl ContactsApp {
             file_work: Rc::default(),
             opened_cards: None,
             dispatcher: None,
-            presented: None,
             jobs: None,
             account_editor: None,
             account_pane: None,
@@ -600,7 +613,8 @@ impl ContactsApp {
                 self.show_pane = Some(NavPane::Content);
             }
             "edit" | "calendar" => {
-                if let Some(contact) = self.selected.and_then(|id| self.store.get(id)).cloned() {
+                if let Some(contact) = self.selected.and_then(|id| self.store.contact(id)).cloned()
+                {
                     self.begin_edit(contact, false);
                     if scenario == "calendar"
                         && let Some(form) = &mut self.form
@@ -614,7 +628,8 @@ impl ContactsApp {
             }
             "export" => self.open_export_dialog(),
             "unsaved" => {
-                if let Some(contact) = self.selected.and_then(|id| self.store.get(id)).cloned() {
+                if let Some(contact) = self.selected.and_then(|id| self.store.contact(id)).cloned()
+                {
                     self.begin_edit(contact, false);
                     if let Some(form) = &self.form {
                         let title = format!("{} and Poet", form.value(crate::form::Slot::Title));
@@ -640,7 +655,8 @@ impl ContactsApp {
                 }
             }
             "import-conflict" => {
-                if let Some(existing) = self.selected.and_then(|id| self.store.get(id)).cloned() {
+                if let Some(existing) = self.selected.and_then(|id| self.store.contact(id)).cloned()
+                {
                     let mut incoming = existing.clone();
                     incoming.notes = "Met at the Royal Society; prefers letters to calls.".into();
                     self.import_conflicts = vec![ImportConflict {
@@ -652,7 +668,7 @@ impl ContactsApp {
             }
             "duplicate-review" => self.stage_duplicate_review(),
             "empty" => {
-                self.store = ContactStore::new();
+                self.store = Rc::default();
                 self.selected = None;
                 self.mode = Mode::View;
                 self.form = None;
@@ -785,7 +801,7 @@ impl ContactsApp {
             } else {
                 match Contacts::save(&form.base, &c) {
                     Some(invoke) => self.try_perform_action(doc, invoke),
-                    None if self.store.get(id).is_none() => Err(
+                    None if self.store.contact(id).is_none() => Err(
                         ui::tilo_actions::ActionError::Refused("no such contact".into()),
                     ),
                     None => Ok(()),
@@ -793,7 +809,9 @@ impl ContactsApp {
             };
             match saved {
                 Ok(()) => {
-                    self.store.upsert(c);
+                    if form.is_new {
+                        self.awaiting = Some(id);
+                    }
                     self.selected = Some(id);
                     self.show_toast(if form.is_new {
                         "Contact created"
@@ -810,7 +828,7 @@ impl ContactsApp {
                     // unsaved text in an editor rebased on the latest record.
                     let base = self
                         .store
-                        .get(id)
+                        .contact(id)
                         .cloned()
                         .unwrap_or_else(|| form.base.clone());
                     self.form = Some(EditForm::with_base(base, form.draft, form.is_new));
@@ -828,16 +846,13 @@ impl ContactsApp {
     /// Every header, semantic, keyboard, and menu affordance calls this so a
     /// stale local contact cannot mutate the projection after a refusal.
     fn toggle_favorite(&mut self, doc: &mut ui::widget::Edits<'_>, id: ContactId) -> bool {
-        let Some(favorite) = self.store.get(id).map(|contact| !contact.favorite) else {
+        let Some(favorite) = self.store.contact(id).map(|contact| !contact.favorite) else {
             return false;
         };
         let edit = Invoke::edit(&Contacts::favorite(id, favorite))
             .map_err(|error| ui::tilo_actions::ActionError::Refused(error.to_string()));
         match edit.and_then(|edit| self.try_perform_action(doc, edit)) {
             Ok(()) => {
-                if let Some(contact) = self.store.get_mut(id) {
-                    contact.favorite = favorite;
-                }
                 if let Some(form) = &mut self.form
                     && form.draft.id == id
                 {
@@ -876,7 +891,6 @@ impl ContactsApp {
             contact.id = uuid::Uuid::new_v4();
             self.try_perform_action(doc, Contacts::add(&contact))
                 .map_err(|error| error.to_string())?;
-            self.store.upsert(contact);
             self.show_toast("Imported as a new contact");
         } else {
             self.show_toast("Kept the existing contact");
@@ -904,7 +918,7 @@ impl ContactsApp {
         }
         form.collect();
         self.store
-            .get(form.draft.id)
+            .contact(form.draft.id)
             .is_none_or(|stored| *stored != form.draft)
     }
 
@@ -1007,7 +1021,7 @@ impl ContactsApp {
     ) {
         match action {
             ContextAction::Edit => {
-                if let Some(c) = self.store.get(target).cloned() {
+                if let Some(c) = self.store.contact(target).cloned() {
                     self.selected = Some(target);
                     self.begin_edit(c, false);
                 }
@@ -1171,7 +1185,7 @@ impl ContactsApp {
         if self.store.is_empty() {
             return ContentKey::FirstRun;
         }
-        match self.selected.and_then(|id| self.store.get(id)) {
+        match self.selected.and_then(|id| self.store.contact(id)) {
             Some(contact) => ContentKey::Contact(Box::new(contact.clone())),
             None => ContentKey::Nothing,
         }
@@ -1181,7 +1195,7 @@ impl ContactsApp {
         if self.mode == Mode::Edit && self.form.is_some() {
             return HeaderKey::Edit;
         }
-        match self.selected.and_then(|id| self.store.get(id)) {
+        match self.selected.and_then(|id| self.store.contact(id)) {
             Some(contact) if !self.store.is_empty() => HeaderKey::View {
                 favorite: contact.favorite,
             },
@@ -1235,7 +1249,7 @@ impl ContactsApp {
         let rows: Vec<ListEntry> = self
             .visible_ids()
             .into_iter()
-            .filter_map(|id| self.store.get(id))
+            .filter_map(|id| self.store.contact(id))
             .map(|contact| ListEntry {
                 id: contact.id,
                 name: contact.display_name(),
@@ -1320,7 +1334,10 @@ impl ContactsApp {
         }
         self.publish_overview_controls();
         self.publish_more();
-        if self.selected.is_some_and(|id| self.store.get(id).is_none()) {
+        if self
+            .selected
+            .is_some_and(|id| self.store.contact(id).is_none() && self.awaiting != Some(id))
+        {
             self.selected = self.visible_ids().first().copied();
         }
         {
@@ -1390,7 +1407,7 @@ impl ContactsApp {
         let mut built = ContextMenu::new();
         let open = match menu {
             PendingMenu::Contact(id) => {
-                let Some(contact) = self.store.get(id) else {
+                let Some(contact) = self.store.contact(id) else {
                     return;
                 };
                 let favorite = contact.favorite;
@@ -1481,18 +1498,18 @@ impl ContactsApp {
         match request {
             Request::Select(id) => self.request_select(id),
             Request::Reveal(id) => {
-                if self.store.get(id).is_some() {
+                if self.store.contact(id).is_some() {
                     self.reveal_contact(id);
                 }
             }
             Request::Edit(id) => {
-                if let Some(contact) = self.store.get(id).cloned() {
+                if let Some(contact) = self.store.contact(id).cloned() {
                     self.selected = Some(id);
                     self.begin_edit(contact, false);
                 }
             }
             Request::EditField(id, slot) => {
-                if let Some(contact) = self.store.get(id).cloned() {
+                if let Some(contact) = self.store.contact(id).cloned() {
                     self.selected = Some(id);
                     self.begin_edit(contact, false);
                     if let Some(form) = &mut self.form {
@@ -1532,7 +1549,8 @@ impl ContactsApp {
                 }
             }
             Request::EditSelected => {
-                if let Some(contact) = self.selected.and_then(|id| self.store.get(id)).cloned() {
+                if let Some(contact) = self.selected.and_then(|id| self.store.contact(id)).cloned()
+                {
                     self.begin_edit(contact, false);
                 }
             }
@@ -1653,7 +1671,8 @@ impl ContactsApp {
             }
             Key::Character(c) if c.eq_ignore_ascii_case("n") => self.begin_new_contact(),
             Key::Character(c) if c.eq_ignore_ascii_case("e") => {
-                let Some(contact) = self.selected.and_then(|id| self.store.get(id)).cloned() else {
+                let Some(contact) = self.selected.and_then(|id| self.store.contact(id)).cloned()
+                else {
                     return false;
                 };
                 self.begin_edit(contact, false);
