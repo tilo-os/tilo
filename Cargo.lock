@@ -14402,6 +14402,7 @@ dependencies = [
  "tilo-runtime",
  "tilo-seal",
  "tilo-search",
+ "tilo-secret-service",
  "tilo-secret-vault",
  "tilo-secrets",
  "tilo-startup-metrics",

@@ -577,30 +577,37 @@ async fn the_portal_host_gets_sandbox_secrets_from_the_same_store() {
 
     let portal = proxy(&shell, MANAGEMENT_PATH, "so.tilo.Secrets1").await;
     let one: Vec<u8> = portal
-        .call("SandboxSecret", &("so.tilo.notes",))
+        .call("SandboxSecret", &("so.tilo.notes", Vec::<u8>::new()))
         .await
         .unwrap();
     assert_eq!(one.len(), 32);
     assert_eq!(
         one,
         portal
-            .call::<_, _, Vec<u8>>("SandboxSecret", &("so.tilo.notes",))
+            .call::<_, _, Vec<u8>>("SandboxSecret", &("so.tilo.notes", Vec::<u8>::new()))
             .await
             .unwrap()
     );
     assert_ne!(
         one,
         portal
-            .call::<_, _, Vec<u8>>("SandboxSecret", &("so.tilo.chat",))
+            .call::<_, _, Vec<u8>>("SandboxSecret", &("so.tilo.chat", Vec::<u8>::new()))
             .await
             .unwrap()
     );
+    // A secret from the portal's earlier store is adopted for an app the
+    // vault has not seen.
+    let adopted: Vec<u8> = portal
+        .call("SandboxSecret", &("so.tilo.old", vec![7_u8; 32]))
+        .await
+        .unwrap();
+    assert_eq!(adopted, vec![7_u8; 32]);
     // Only the portal host may ask; Settings and strangers may not.
     for refused in [&settings, &intruder] {
         let management = proxy(refused, MANAGEMENT_PATH, "so.tilo.Secrets1").await;
         assert!(
             management
-                .call::<_, _, Vec<u8>>("SandboxSecret", &("so.tilo.notes",))
+                .call::<_, _, Vec<u8>>("SandboxSecret", &("so.tilo.notes", Vec::<u8>::new()))
                 .await
                 .is_err()
         );
@@ -621,7 +628,7 @@ async fn the_portal_host_gets_sandbox_secrets_from_the_same_store() {
         .unwrap();
     assert!(
         portal
-            .call::<_, _, Vec<u8>>("SandboxSecret", &("so.tilo.notes",))
+            .call::<_, _, Vec<u8>>("SandboxSecret", &("so.tilo.notes", Vec::<u8>::new()))
             .await
             .is_err()
     );
@@ -631,7 +638,7 @@ async fn the_portal_host_gets_sandbox_secrets_from_the_same_store() {
         .await
         .unwrap();
     let fresh: Vec<u8> = portal
-        .call("SandboxSecret", &("so.tilo.notes",))
+        .call("SandboxSecret", &("so.tilo.notes", Vec::<u8>::new()))
         .await
         .unwrap();
     assert_ne!(fresh, one);

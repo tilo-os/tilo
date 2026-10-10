@@ -279,9 +279,7 @@ fn a_modal_dialog_is_a_sheet_on_its_parent_tile_and_owns_its_input() {
 
 /// The strip state a dialog must leave alone: which workspace, strip and
 /// group are active (what the viewport follows) and how many groups exist.
-fn strip_view(
-    state: &shell::compositor::state::State,
-) -> String {
+fn strip_view(state: &shell::compositor::state::State) -> String {
     let tree = state.workspace_tree.read();
     let workspace = tree.desktop.active;
     let strip = tree.desktop.active_strip.get(&workspace).copied();
@@ -335,9 +333,17 @@ fn a_parentless_system_prompt_is_a_sheet_and_leaves_the_strip_alone() {
         2,
         "a system prompt is never a tab"
     );
-    assert_eq!(strip_view(&h.state), before, "the strip did not change or pan");
+    assert_eq!(
+        strip_view(&h.state),
+        before,
+        "the strip did not change or pan"
+    );
     let sheets = store().sheets_over(focused);
-    assert_eq!(sheets.len(), 1, "the prompt is a sheet over the focused window");
+    assert_eq!(
+        sheets.len(),
+        1,
+        "the prompt is a sheet over the focused window"
+    );
     drop(keep);
 }
 
@@ -362,7 +368,10 @@ fn a_system_prompt_with_no_window_to_sit_on_is_a_system_modal_overlay() {
     assert!(h.state.has_system_modal());
     let id = h.state.top_system_modal().expect("the prompt");
     assert!(!store().is_sheet(id));
-    assert!(h.state.is_transient_surface(id), "painted and hit above the desktop");
+    assert!(
+        h.state.is_transient_surface(id),
+        "painted and hit above the desktop"
+    );
 
     store().publish_rgba(id, &opaque(300, 200), 300, 200);
     assert_eq!(
