@@ -56,25 +56,6 @@ fn consume_record_requests(
     chrome: &Chrome,
     index: &std::rc::Rc<std::cell::RefCell<crate::shell::room_records::RoomRecords>>,
 ) {
-    #[allow(deprecated, reason = "drain the stable active-room compatibility API")]
-    let legacy = chrome.borrow_mut().take_record_requests();
-    if !legacy.is_empty() {
-        let room = {
-            let state = chrome.borrow();
-            let tree = state.tree();
-            tree.desktop
-                .active_workspace()
-                .map(|workspace| workspace.room)
-        };
-        if let Some(room) = room {
-            let mut index = index.borrow_mut();
-            for (id, kind) in legacy {
-                if let Some(record) = ui::record::RecordId::parse(&id) {
-                    index.reference(room, &record, &ui::record::RecordKind::new(kind));
-                }
-            }
-        }
-    }
     let requested = chrome.borrow_mut().take_tracked_record_requests();
     if requested.is_empty() {
         return;

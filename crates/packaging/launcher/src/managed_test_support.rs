@@ -3,7 +3,6 @@
 //! launcher, private-channel and kernel admission. Never shipped by default.
 use super::{InstalledManagedPackage, ManagedRuntime, PackageTrust};
 use std::{
-    fmt::Write as _,
     fs::{File, OpenOptions},
     io::{Read, Write},
     os::unix::fs::{OpenOptionsExt, PermissionsExt},
@@ -25,10 +24,7 @@ pub fn fixture_package(
         .map_err(|error| error.to_string())?;
     let key = ed25519_dalek::SigningKey::from_bytes(&seed);
     let public = key.verifying_key().to_bytes();
-    let mut public_hex = String::new();
-    for byte in public {
-        write!(&mut public_hex, "{byte:02x}").map_err(|error| error.to_string())?;
-    }
+    let public_hex = hex::encode(public);
     let manifest = tilo_app_package::Manifest::from_toml_str(&format!(
         r#"
 [package]

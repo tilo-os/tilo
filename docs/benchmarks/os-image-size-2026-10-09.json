@@ -1,0 +1,1518 @@
+{
+ "schema": 1,
+ "tool": "tools/perf/image_size.py",
+ "measurements": [
+  {
+   "label": "issue-x86_64",
+   "image": "registry.tilo.so/tilo/tilo-ci@sha256:a14338ea9d8a11055a923a8cf90141ee29e79c887ad15ad8a3c9626facc429aa",
+   "revision": "db91126b44d310d5ef5e85a6057238fe3d969e70",
+   "architecture": "x86_64",
+   "labels": {
+    "org.tilo.rust-lto": "off",
+    "org.tilo.with-windows": "1"
+   },
+   "totals": {
+    "layers": 206,
+    "compressed": 5184164673,
+    "payload": 13019826254,
+    "content": 11455711780,
+    "unique_content": 10915976405,
+    "undeployed": 419296484,
+    "redundant_payload": 1012013356,
+    "files": 76258,
+    "hard_links": 29802,
+    "packages": 1346
+   },
+   "largest_layers": [
+    {
+     "digest": "sha256:9bd7d8d238f47310b6028fc3fde168c168c195b2d4e41f9852ba97fabc51451f",
+     "compressed": 857064311,
+     "payload": 2585445040,
+     "created_by": "RUN /bin/sh -c test \"$(uname -m)\" = \"$TILO_WINDOWS_ARCH\" && case \"$(uname -m)\" in x86_64) vm_firmware=edk2-ovmf; windows_packages='wine wine-dxvk' ;; aarch64) v"
+    },
+    {
+     "digest": "sha256:f4fe738c2402cfd1a464424d32ef8481ca32275c297d4cb0306590ac318070b3",
+     "compressed": 477532130,
+     "payload": 1408013377,
+     "created_by": "COPY /out/proton/ /usr/lib/tilo/windows-runners/proton/"
+    },
+    {
+     "digest": "sha256:8eb4d7b68e6ba0bf9078a1110372fd94eea1a831250761f1e8bc76cca2711c08",
+     "compressed": 384683641,
+     "payload": 1235139854,
+     "created_by": "COPY / /"
+    },
+    {
+     "digest": "sha256:cb394d67e0b8fbc7fe1c88dda7f6132b16472bd3d3e3002fc98dfb7b58cd7069",
+     "compressed": 328125435,
+     "payload": 748090786,
+     "created_by": "COPY /usr/lib/tilo-runtime/ /usr/lib/tilo-runtime/"
+    },
+    {
+     "digest": "sha256:0d002d58a9391f3a2419fa3e6e53527306895bc93a15261645e8bed2ef38182a",
+     "compressed": 299360337,
+     "payload": 803971124,
+     "created_by": "COPY /out/steam-runtime/ /usr/lib/tilo/windows-runners/steam-runtime/"
+    },
+    {
+     "digest": "sha256:8b54c827f7caf9ae536fd66153b6e7bf380b4b5bb97164e3f1d50404b0ea5961",
+     "compressed": 263050623,
+     "payload": 312339864,
+     "created_by": "RUN /bin/sh -c set -eux; test -n \"$KERNEL_RPMS_REF\"; mkdir -p /etc/tilo-swap.d; printf '[frozen]\\nname=frozen\\nbaseurl=file:///frozen-repo\\ngpgcheck=0\\nenabled="
+    },
+    {
+     "digest": "sha256:f05de7ca82713095cd217d57bc624497d44c59da96dbd94b480ff81a6b6bdf4b",
+     "compressed": 238610988,
+     "payload": 877373440,
+     "created_by": "COPY /out/virtio-win.iso /usr/share/virtio-win/virtio-win.iso"
+    },
+    {
+     "digest": "sha256:6132377fb208d6eb81baf42452b6205999eb4a92c5764e924e4446cf7c852a02",
+     "compressed": 196102772,
+     "payload": 517243440,
+     "created_by": "COPY /usr/share/tilo-apps/ /usr/share/tilo-apps/"
+    },
+    {
+     "digest": "sha256:3d73f95c7c4b3709eada1d01c8844790a74b06069b7f1654ce2938753b5ed6ec",
+     "compressed": 158940331,
+     "payload": 409895869,
+     "created_by": "RUN /bin/sh -c dnf install -y --setopt=reposdir=/repo --exclude=libcanberra-gtk3 --exclude=xdg-desktop-portal-gtk gstreamer1 gstreamer1-plugins-base gstreamer1-"
+    },
+    {
+     "digest": "sha256:23c46baa9a2d77bba5344604e06d702fbcbab6a628cb8e96dab90c6a036181e0",
+     "compressed": 131443584,
+     "payload": 178403443,
+     "created_by": "initramfs (kernel 7.2.7-200.fc44.x86_64) and rpmostree-unpackaged-content"
+    },
+    {
+     "digest": "sha256:908141fd25c33cea9c5a74849286483425cd8477562caff79015514279eafdf8",
+     "compressed": 128355052,
+     "payload": 440631167,
+     "created_by": "RUN /bin/sh -c dnf install -y --setopt=reposdir=/repo mesa-dri-drivers mesa-vulkan-drivers libglvnd-egl harfbuzz-icu libatomic at-spi2-core plymouth plymouth-pl"
+    },
+    {
+     "digest": "sha256:121c5538e13013741b9156690b1630822466500307d011972c959d098a5b9a03",
+     "compressed": 113891089,
+     "payload": 116184284,
+     "created_by": "RUN /bin/sh -c test \"$(readlink /etc/resolv.conf)\" = ../run/NetworkManager/resolv.conf && mkdir /kernel && bootc container split-kernel-and-rootfs --rootfs / --"
+    },
+    {
+     "digest": "sha256:842ecd214b55888210c8d6de3f7e903e58b0ecd11429b5badda72e3e4fd3be00",
+     "compressed": 113695361,
+     "payload": 118659072,
+     "created_by": "COPY /out/*.efi /boot/EFI/Linux/"
+    },
+    {
+     "digest": "sha256:3512c8da9e960b5d3375f2b2593d8f9d020cba6a70be5095ece41e9a7e3d186c",
+     "compressed": 105972557,
+     "payload": 105924967,
+     "created_by": "nvidia-gpu-firmware-20260916-1.fc44.noarch"
+    },
+    {
+     "digest": "sha256:6acf7e32e7e43f25a23eb425790d1727a96c1b8911825957d605e3f372cb7df0",
+     "compressed": 86367297,
+     "payload": 248295218,
+     "created_by": "RUN /bin/sh -c dnf install -y --setopt=reposdir=/repo bubblewrap flatpak dbus-tools xdg-dbus-proxy distrobox cups cups-ipptool podman foot wl-clipboard NetworkM"
+    },
+    {
+     "digest": "sha256:65369f78a0b8f33a5333b3b407c1cd07c9e86c479a4a1212cc767f04814dd837",
+     "compressed": 77364160,
+     "payload": 76862989,
+     "created_by": "kernel-modules-7.2.7-200.fc44.x86_64"
+    },
+    {
+     "digest": "sha256:b759dd1cd0d6935497f7cd73380c7686500b7e0404f2cbceccb107dca294f1a0",
+     "compressed": 60646066,
+     "payload": 164929236,
+     "created_by": "RUN /bin/sh -c dnf install -y --setopt=reposdir=/repo alsa-ucm pipewire pipewire-pulseaudio pipewire-utils wireplumber v4l-utils sane-backends sane-backends-dri"
+    },
+    {
+     "digest": "sha256:518cd98fd2ba604f9b7406b1e79619c339d634f5852c9e016e5db622f9d6ffc7",
+     "compressed": 52247890,
+     "payload": 93919412,
+     "created_by": "12 components"
+    },
+    {
+     "digest": "sha256:e02e25bc047c5057385156ddab559e2a70b380c49da34c02235a6f0fef1f4c86",
+     "compressed": 51895049,
+     "payload": 126998723,
+     "created_by": "RUN /bin/sh -c dnf install -y --setopt=reposdir=/repo --exclude=fcitx5-configtool --exclude=fcitx5-gtk --exclude=fcitx5-qt --exclude=fcitx5-qt-module --exclude="
+    },
+    {
+     "digest": "sha256:705bc69270c695bc44213f80bfea62f5b3f15c84568ecf01e5954c572f3ceb4f",
+     "compressed": 50594726,
+     "payload": 55479448,
+     "created_by": "kernel-modules-core-7.2.7-200.fc44.x86_64"
+    }
+   ],
+   "directories": [
+    [
+     "/usr/lib/tilo",
+     2212151903
+    ],
+    [
+     "/usr/lib64/wine-wow64",
+     1499511780
+    ],
+    [
+     "/usr/share/virtio-win",
+     909015923
+    ],
+    [
+     "/usr/lib/tilo-runtime",
+     748090786
+    ],
+    [
+     "/usr/share/tilo-apps",
+     517243440
+    ],
+    [
+     "/usr/share/wine",
+     442194824
+    ],
+    [
+     "/sysroot/ostree/repo",
+     419296484
+    ],
+    [
+     "/usr/lib/firmware",
+     312961531
+    ],
+    [
+     "/usr/share/locale",
+     214463627
+    ],
+    [
+     "/usr/x86_64-w64-mingw32/sys-root",
+     194127564
+    ],
+    [
+     "/usr/lib/modules",
+     144973668
+    ],
+    [
+     "/usr/lib/python3.14",
+     140630987
+    ],
+    [
+     "/boot/EFI/Linux",
+     118659072
+    ],
+    [
+     "/usr/share/fonts",
+     89148636
+    ],
+    [
+     "/usr/lib/locale",
+     82512529
+    ],
+    [
+     "/usr/share/tilo",
+     68934511
+    ],
+    [
+     "/usr/lib64/python3.14",
+     59606052
+    ],
+    [
+     "/usr/share/hunspell",
+     51440098
+    ],
+    [
+     "/usr/share/rpm",
+     51023872
+    ],
+    [
+     "/usr/share/doc",
+     50660731
+    ]
+   ],
+   "packages": [
+    [
+     "wine-core",
+     1420588763
+    ],
+    [
+     "wine-mono",
+     318703141
+    ],
+    [
+     "mesa-vulkan-drivers",
+     182331338
+    ],
+    [
+     "tilo-kernel-core",
+     159291408
+    ],
+    [
+     "llvm-libs",
+     147275895
+    ],
+    [
+     "mingw64-crt",
+     141767574
+    ],
+    [
+     "python3-botocore",
+     122751302
+    ],
+    [
+     "nvidia-gpu-firmware",
+     105915244
+    ],
+    [
+     "qemu-system-x86-core",
+     63504893
+    ],
+    [
+     "mesa-dri-drivers",
+     55782311
+    ],
+    [
+     "mingw32-wine-gecko",
+     54809719
+    ],
+    [
+     "mingw64-wine-gecko",
+     52548727
+    ],
+    [
+     "podman",
+     51681862
+    ],
+    [
+     "atheros-firmware",
+     49377472
+    ],
+    [
+     "edk2-ovmf",
+     47634539
+    ],
+    [
+     "python3-libs",
+     46107600
+    ],
+    [
+     "libicu",
+     38393461
+    ],
+    [
+     "linux-firmware",
+     34629026
+    ],
+    [
+     "mt7xxx-firmware",
+     33180900
+    ],
+    [
+     "qemu-user-static-mips",
+     32881506
+    ]
+   ],
+   "redundant_by_directory": [
+    [
+     "/usr/share/rpm/rpmdb.sqlite",
+     247832576
+    ],
+    [
+     "/usr/lib/tilo/windows-runners",
+     179785563
+    ],
+    [
+     "/usr/share/tilo-apps/pkgs",
+     170552368
+    ],
+    [
+     "/kernel/7.2.8/initramfs.img",
+     101884636
+    ],
+    [
+     "/usr/lib/tilo-runtime/2026.07+native.080a931e23a0824bdd2317e92b335304",
+     75069324
+    ],
+    [
+     "/usr/share/tilo/font-catalogs",
+     54395508
+    ],
+    [
+     "/sysroot/ostree/repo/objects",
+     39814868
+    ],
+    [
+     "/etc/selinux/targeted/active",
+     32438940
+    ],
+    [
+     "/etc/selinux/targeted/policy",
+     15241561
+    ],
+    [
+     "/usr/lib/udev/hwdb.bin",
+     14372567
+    ],
+    [
+     "/kernel/7.2.8/vmlinuz",
+     14299648
+    ],
+    [
+     "/usr/share/adobe/resources",
+     8353020
+    ],
+    [
+     "/usr/lib/tilo-runtime/2026.10.9-chromium",
+     5918847
+    ],
+    [
+     "/usr/share/mime/application",
+     4200889
+    ],
+    [
+     "/usr/lib/locale/it_CH.utf8",
+     2587448
+    ]
+   ],
+   "why": {
+    "python3-botocore": [
+     "python3-botocore <- python3-s3transfer requires (python3.14dist(botocore) < 2~a0 with python3.14dist(botocore) >= 1.37.4)",
+     "  python3-s3transfer <- python3-boto3 requires (python3.14dist(s3transfer) < 0.20~~ with python3.14dist(s3transfer) >= 0.19)",
+     "    python3-boto3 <- sos recommends python3-boto3",
+     "      sos: nothing requires it (installed by name)",
+     "python3-botocore <- python3-boto3 requires (python3.14dist(botocore) < 1.44~~ with python3.14dist(botocore) >= 1.43.99) (seen above)"
+    ]
+   }
+  },
+  {
+   "label": "issue-aarch64",
+   "image": "registry.tilo.so/tilo/tilo-ci@sha256:d7d38d3d63f7ed16743e31ea7f94b9bbfc48729d6294d509580dac05758b3fd4",
+   "revision": "db91126b44d310d5ef5e85a6057238fe3d969e70",
+   "architecture": "aarch64",
+   "labels": {
+    "org.tilo.rust-lto": "off",
+    "org.tilo.with-windows": "0"
+   },
+   "totals": {
+    "layers": 206,
+    "compressed": 4304306967,
+    "payload": 11207984471,
+    "content": 9528195578,
+    "unique_content": 9067894573,
+    "undeployed": 497786155,
+    "redundant_payload": 1053367734,
+    "files": 71833,
+    "hard_links": 28339,
+    "packages": 1163
+   },
+   "largest_layers": [
+    {
+     "digest": "sha256:b54b9b1153bd483b40fd87e41039dc020785d0b9b4ee0441e5608215828d3e22",
+     "compressed": 477532136,
+     "payload": 1408013377,
+     "created_by": "COPY /out/proton/ /usr/lib/tilo/windows-runners/proton/"
+    },
+    {
+     "digest": "sha256:882856ea813584f95a318362b3fa3e2839fa07bf27fd31e04a767d17b58d9186",
+     "compressed": 376202474,
+     "payload": 1233204038,
+     "created_by": "COPY / /"
+    },
+    {
+     "digest": "sha256:ba9cd8b31d280f18970ab5fc2f94164da0fbf257ea6f0f85b08bcadf086a5caf",
+     "compressed": 321072861,
+     "payload": 749829878,
+     "created_by": "COPY /usr/lib/tilo-runtime/ /usr/lib/tilo-runtime/"
+    },
+    {
+     "digest": "sha256:35534880e662c89d9b9265642ba0b277d9001538a47ebc2e8b1dac8f9ed2e250",
+     "compressed": 299360348,
+     "payload": 803971124,
+     "created_by": "COPY /out/steam-runtime/ /usr/lib/tilo/windows-runners/steam-runtime/"
+    },
+    {
+     "digest": "sha256:fcdd2e3d8cd76c83e1234576c8f04ebd74e777ffd07b0f08d7c944032cf5e0b7",
+     "compressed": 248585393,
+     "payload": 419716808,
+     "created_by": "RUN /bin/sh -c set -eux; test -n \"$KERNEL_RPMS_REF\"; mkdir -p /etc/tilo-swap.d; printf '[frozen]\\nname=frozen\\nbaseurl=file:///frozen-repo\\ngpgcheck=0\\nenabled="
+    },
+    {
+     "digest": "sha256:bdfd0084333c56dd1126bf11a65da7b11f3503d6fedef9f8ec0493eb3d1eec5e",
+     "compressed": 238610988,
+     "payload": 877373440,
+     "created_by": "COPY /out/virtio-win.iso /usr/share/virtio-win/virtio-win.iso"
+    },
+    {
+     "digest": "sha256:823b68b26054f649235148cbb583d9271bb5c4067eef886b59dcfb0e3b66c13d",
+     "compressed": 200951221,
+     "payload": 490598936,
+     "created_by": "COPY /usr/share/tilo-apps/ /usr/share/tilo-apps/"
+    },
+    {
+     "digest": "sha256:b1fc6718de37a8af8152851db8977c447b6255a0276dfc131693e1a81e6ee472",
+     "compressed": 141905150,
+     "payload": 373342049,
+     "created_by": "RUN /bin/sh -c dnf install -y --setopt=reposdir=/repo --exclude=libcanberra-gtk3 --exclude=xdg-desktop-portal-gtk gstreamer1 gstreamer1-plugins-base gstreamer1-"
+    },
+    {
+     "digest": "sha256:0050827b219930d1f724e345551c9c4773c304b9981f6f01040d9099c0b45cee",
+     "compressed": 112448948,
+     "payload": 160676689,
+     "created_by": "initramfs (kernel 7.2.7-200.fc44.aarch64) and rpmostree-unpackaged-content"
+    },
+    {
+     "digest": "sha256:39feadbcda9c40b4ca9f0c043473c54f486b8140d70443112307d536b31f53b4",
+     "compressed": 109490552,
+     "payload": 373524438,
+     "created_by": "RUN /bin/sh -c dnf install -y --setopt=reposdir=/repo mesa-dri-drivers mesa-vulkan-drivers libglvnd-egl harfbuzz-icu libatomic at-spi2-core plymouth plymouth-pl"
+    },
+    {
+     "digest": "sha256:ef4f5bbdb12c4786aeb4a8efcf07aa3b414e89d169fddd3e495558ea6a3eaa2e",
+     "compressed": 107521239,
+     "payload": 605107454,
+     "created_by": "RUN /bin/sh -c test \"$(uname -m)\" = \"$TILO_WINDOWS_ARCH\" && case \"$(uname -m)\" in x86_64) vm_firmware=edk2-ovmf; windows_packages='wine wine-dxvk' ;; aarch64) v"
+    },
+    {
+     "digest": "sha256:3512c8da9e960b5d3375f2b2593d8f9d020cba6a70be5095ece41e9a7e3d186c",
+     "compressed": 105972557,
+     "payload": 105924967,
+     "created_by": "nvidia-gpu-firmware-20260916-1.fc44.noarch"
+    },
+    {
+     "digest": "sha256:3769810a718570a98d7b57425dab87f7be27e33acc87473270bf1183c825872b",
+     "compressed": 102401137,
+     "payload": 135335424,
+     "created_by": "COPY /out/*.efi /boot/EFI/Linux/"
+    },
+    {
+     "digest": "sha256:9c5b5ad035b6a2fc633de824d75ab97c593c754fea260f49b38321f888156c49",
+     "compressed": 102315668,
+     "payload": 132878811,
+     "created_by": "RUN /bin/sh -c test \"$(readlink /etc/resolv.conf)\" = ../run/NetworkManager/resolv.conf && mkdir /kernel && bootc container split-kernel-and-rootfs --rootfs / --"
+    },
+    {
+     "digest": "sha256:eb1f059c0e4f1b5e3de4091dd49f830641f605d16df9f2c18e487f6421f84cbe",
+     "compressed": 84928771,
+     "payload": 263079276,
+     "created_by": "RUN /bin/sh -c dnf install -y --setopt=reposdir=/repo bubblewrap flatpak dbus-tools xdg-dbus-proxy distrobox cups cups-ipptool podman foot wl-clipboard NetworkM"
+    },
+    {
+     "digest": "sha256:295e2f11cfb54cc8de591be9a361228a1d2153b4b90ca204190a53e3e24eecf2",
+     "compressed": 67758584,
+     "payload": 67263866,
+     "created_by": "kernel-modules-7.2.7-200.fc44.aarch64"
+    },
+    {
+     "digest": "sha256:e824dd5dd96424ae7e68057f6ae4efdd548bac09ccd84ee1b58304c5e429ee52",
+     "compressed": 57138561,
+     "payload": 172493458,
+     "created_by": "RUN /bin/sh -c dnf install -y --setopt=reposdir=/repo alsa-ucm pipewire pipewire-pulseaudio pipewire-utils wireplumber v4l-utils sane-backends sane-backends-dri"
+    },
+    {
+     "digest": "sha256:aaf9ba8ebaa1189ded77399f6396e044fa59a9cdf1a0008e431c425b4c8bbb36",
+     "compressed": 51917740,
+     "payload": 129746803,
+     "created_by": "RUN /bin/sh -c dnf install -y --setopt=reposdir=/repo --exclude=fcitx5-configtool --exclude=fcitx5-gtk --exclude=fcitx5-qt --exclude=fcitx5-qt-module --exclude="
+    },
+    {
+     "digest": "sha256:f11bf819fb0afa8c94f6008af3eb8ee12a0c613c1764674cd81fe05691e1c6a1",
+     "compressed": 50429915,
+     "payload": 107404690,
+     "created_by": "RUN /bin/sh -c dnf install -y --setopt=reposdir=/repo fontconfig adwaita-sans-fonts && dnf clean all && ${FINALIZE_RPMDB} && python3 /tilo-src/tools/font-catalo"
+    },
+    {
+     "digest": "sha256:f180c16999038ccfeaf7b3afefc2a4cc7a86450d0cfd82083ec2382603ef7a9d",
+     "compressed": 49444909,
+     "payload": 49356249,
+     "created_by": "atheros-firmware-20260916-1.fc44.noarch"
+    }
+   ],
+   "directories": [
+    [
+     "/usr/lib/tilo",
+     2212262319
+    ],
+    [
+     "/usr/share/virtio-win",
+     909015923
+    ],
+    [
+     "/usr/lib/tilo-runtime",
+     749829878
+    ],
+    [
+     "/sysroot/ostree/repo",
+     497786155
+    ],
+    [
+     "/usr/share/tilo-apps",
+     490598936
+    ],
+    [
+     "/usr/lib/firmware",
+     297180667
+    ],
+    [
+     "/usr/share/edk2",
+     293303485
+    ],
+    [
+     "/usr/lib/modules",
+     241075881
+    ],
+    [
+     "/usr/share/locale",
+     214148127
+    ],
+    [
+     "/usr/lib/python3.14",
+     140594626
+    ],
+    [
+     "/boot/EFI/Linux",
+     135335424
+    ],
+    [
+     "/usr/share/fonts",
+     85481050
+    ],
+    [
+     "/usr/lib/locale",
+     82512529
+    ],
+    [
+     "/usr/share/tilo",
+     68934619
+    ],
+    [
+     "/usr/lib64/python3.14",
+     61356379
+    ],
+    [
+     "/usr/share/hunspell",
+     51440098
+    ],
+    [
+     "/usr/share/doc",
+     46841442
+    ],
+    [
+     "/usr/share/rpm",
+     45625344
+    ],
+    [
+     "/usr/lib/sysimage",
+     35832458
+    ],
+    [
+     "/usr/share/systemtap",
+     28543115
+    ]
+   ],
+   "packages": [
+    [
+     "edk2-aarch64",
+     292198139
+    ],
+    [
+     "tilo-kernel-core",
+     289199957
+    ],
+    [
+     "llvm-libs",
+     141618287
+    ],
+    [
+     "mesa-vulkan-drivers",
+     130775238
+    ],
+    [
+     "python3-botocore",
+     122751302
+    ],
+    [
+     "nvidia-gpu-firmware",
+     105915244
+    ],
+    [
+     "atheros-firmware",
+     49377472
+    ],
+    [
+     "python3-libs",
+     47787119
+    ],
+    [
+     "podman",
+     47750382
+    ],
+    [
+     "mesa-dri-drivers",
+     41281634
+    ],
+    [
+     "libicu",
+     38307261
+    ],
+    [
+     "qemu-system-aarch64-core",
+     36852343
+    ],
+    [
+     "linux-firmware",
+     34629026
+    ],
+    [
+     "mt7xxx-firmware",
+     33180900
+    ],
+    [
+     "qemu-user-static-mips",
+     32151498
+    ],
+    [
+     "libvirt-libs",
+     31690332
+    ],
+    [
+     "amd-gpu-firmware",
+     29349014
+    ],
+    [
+     "anthy",
+     26404942
+    ],
+    [
+     "qemu-img",
+     25970479
+    ],
+    [
+     "libgs",
+     25138310
+    ]
+   ],
+   "redundant_by_directory": [
+    [
+     "/usr/share/rpm/rpmdb.sqlite",
+     257347584
+    ],
+    [
+     "/usr/share/tilo-apps/pkgs",
+     177994086
+    ],
+    [
+     "/usr/lib/modules/7.2.8",
+     92530604
+    ],
+    [
+     "/usr/lib/tilo/windows-runners",
+     91216982
+    ],
+    [
+     "/kernel/7.2.8/initramfs.img",
+     84772827
+    ],
+    [
+     "/usr/lib/tilo-runtime/2026.07+native.4906544bda36d5da295f59c50b0963bf",
+     76717948
+    ],
+    [
+     "/usr/share/tilo/font-catalogs",
+     54395508
+    ],
+    [
+     "/kernel/7.2.8/vmlinuz",
+     48105984
+    ],
+    [
+     "/sysroot/ostree/repo/objects",
+     42068766
+    ],
+    [
+     "/etc/selinux/targeted/active",
+     32438940
+    ],
+    [
+     "/etc/selinux/targeted/policy",
+     15241561
+    ],
+    [
+     "/usr/lib/udev/hwdb.bin",
+     14372567
+    ],
+    [
+     "/usr/share/adobe/resources",
+     8353020
+    ],
+    [
+     "/usr/lib/tilo-runtime/2026.10.9-chromium",
+     7816755
+    ],
+    [
+     "/usr/share/mime/application",
+     4200889
+    ]
+   ],
+   "why": {
+    "python3-botocore": [
+     "python3-botocore <- python3-s3transfer requires (python3.14dist(botocore) < 2~a0 with python3.14dist(botocore) >= 1.37.4)",
+     "  python3-s3transfer <- python3-boto3 requires (python3.14dist(s3transfer) < 0.20~~ with python3.14dist(s3transfer) >= 0.19)",
+     "    python3-boto3 <- sos recommends python3-boto3",
+     "      sos: nothing requires it (installed by name)",
+     "python3-botocore <- python3-boto3 requires (python3.14dist(botocore) < 1.44~~ with python3.14dist(botocore) >= 1.43.99) (seen above)"
+    ]
+   }
+  },
+  {
+   "label": "base-x86_64",
+   "image": "registry.tilo.so/tilo/tilo-ci@sha256:90df5d3a2f9d15e62ae94db17e5a5193029db3310f6a4e9bc7838627966d9c85",
+   "revision": "f2384475968c12cd8a327d9a64173718d6e0fef0",
+   "architecture": "x86_64",
+   "labels": {
+    "org.tilo.rust-lto": "off",
+    "org.tilo.with-windows": "1"
+   },
+   "totals": {
+    "layers": 205,
+    "compressed": 5238105634,
+    "payload": 13140745294,
+    "content": 11576609411,
+    "unique_content": 11036874036,
+    "undeployed": 419296484,
+    "redundant_payload": 1012034765,
+    "files": 76262,
+    "hard_links": 29802,
+    "packages": 1346
+   },
+   "largest_layers": [
+    {
+     "digest": "sha256:9bd7d8d238f47310b6028fc3fde168c168c195b2d4e41f9852ba97fabc51451f",
+     "compressed": 857064311,
+     "payload": 2585445040,
+     "created_by": "RUN /bin/sh -c test \"$(uname -m)\" = \"$TILO_WINDOWS_ARCH\" && case \"$(uname -m)\" in x86_64) vm_firmware=edk2-ovmf; windows_packages='wine wine-dxvk' ;; aarch64) v"
+    },
+    {
+     "digest": "sha256:131295fb2232de020a1f308ad4c8e64b92a468fc888d296e776e56da304206c9",
+     "compressed": 477532127,
+     "payload": 1408013377,
+     "created_by": "COPY /out/proton/ /usr/lib/tilo/windows-runners/proton/"
+    },
+    {
+     "digest": "sha256:b05370cd411de7296a9954c622cc6dad0ab238ce634e8b1c55c231c20e0dc8cb",
+     "compressed": 439752539,
+     "payload": 1367894076,
+     "created_by": "COPY / /"
+    },
+    {
+     "digest": "sha256:2bb8e669fc218cf73ea471517496e312c4a117794c8d1098716bfc84ec53b9eb",
+     "compressed": 326199619,
+     "payload": 736197994,
+     "created_by": "COPY /usr/lib/tilo-runtime/ /usr/lib/tilo-runtime/"
+    },
+    {
+     "digest": "sha256:3a4bc0afa2d00f8e4bc314d7737fe2ef5d016ac0ab7b9e673fafbf36781257b0",
+     "compressed": 299360340,
+     "payload": 803971124,
+     "created_by": "COPY /out/steam-runtime/ /usr/lib/tilo/windows-runners/steam-runtime/"
+    },
+    {
+     "digest": "sha256:ada27a640e40e45f2271d163fd8ad9e4b24a27c0c9a50523470bed262400bb71",
+     "compressed": 263051775,
+     "payload": 312339864,
+     "created_by": "RUN /bin/sh -c set -eux; test -n \"$KERNEL_RPMS_REF\"; mkdir -p /etc/tilo-swap.d; printf '[frozen]\\nname=frozen\\nbaseurl=file:///frozen-repo\\ngpgcheck=0\\nenabled="
+    },
+    {
+     "digest": "sha256:b30712ba1b44746634c289dc6d8cb9052312e798d51216095c8c53af8db2ddc3",
+     "compressed": 238610988,
+     "payload": 877373440,
+     "created_by": "COPY /out/virtio-win.iso /usr/share/virtio-win/virtio-win.iso"
+    },
+    {
+     "digest": "sha256:809cef25f745f083c160c49b7df16e212aa66c30e621ed31f881871849b11f29",
+     "compressed": 196866198,
+     "payload": 517281224,
+     "created_by": "COPY /usr/share/tilo-apps/ /usr/share/tilo-apps/"
+    },
+    {
+     "digest": "sha256:3d73f95c7c4b3709eada1d01c8844790a74b06069b7f1654ce2938753b5ed6ec",
+     "compressed": 158940331,
+     "payload": 409895869,
+     "created_by": "RUN /bin/sh -c dnf install -y --setopt=reposdir=/repo --exclude=libcanberra-gtk3 --exclude=xdg-desktop-portal-gtk gstreamer1 gstreamer1-plugins-base gstreamer1-"
+    },
+    {
+     "digest": "sha256:23c46baa9a2d77bba5344604e06d702fbcbab6a628cb8e96dab90c6a036181e0",
+     "compressed": 131443584,
+     "payload": 178403443,
+     "created_by": "initramfs (kernel 7.2.7-200.fc44.x86_64) and rpmostree-unpackaged-content"
+    },
+    {
+     "digest": "sha256:908141fd25c33cea9c5a74849286483425cd8477562caff79015514279eafdf8",
+     "compressed": 128355052,
+     "payload": 440631167,
+     "created_by": "RUN /bin/sh -c dnf install -y --setopt=reposdir=/repo mesa-dri-drivers mesa-vulkan-drivers libglvnd-egl harfbuzz-icu libatomic at-spi2-core plymouth plymouth-pl"
+    },
+    {
+     "digest": "sha256:3cf40a0cc248a494ec5365e05d38b0bc73539a73b7fd5d299458e97d00e90cf3",
+     "compressed": 113891084,
+     "payload": 116184284,
+     "created_by": "RUN /bin/sh -c test \"$(readlink /etc/resolv.conf)\" = ../run/NetworkManager/resolv.conf && mkdir /kernel && bootc container split-kernel-and-rootfs --rootfs / --"
+    },
+    {
+     "digest": "sha256:815208f51f9934782a25da0e8df6eb200d95625fe47594baf0d29daaf54c4bb3",
+     "compressed": 113695359,
+     "payload": 118659072,
+     "created_by": "COPY /out/*.efi /boot/EFI/Linux/"
+    },
+    {
+     "digest": "sha256:3512c8da9e960b5d3375f2b2593d8f9d020cba6a70be5095ece41e9a7e3d186c",
+     "compressed": 105972557,
+     "payload": 105924967,
+     "created_by": "nvidia-gpu-firmware-20260916-1.fc44.noarch"
+    },
+    {
+     "digest": "sha256:6acf7e32e7e43f25a23eb425790d1727a96c1b8911825957d605e3f372cb7df0",
+     "compressed": 86367297,
+     "payload": 248295218,
+     "created_by": "RUN /bin/sh -c dnf install -y --setopt=reposdir=/repo bubblewrap flatpak dbus-tools xdg-dbus-proxy distrobox cups cups-ipptool podman foot wl-clipboard NetworkM"
+    },
+    {
+     "digest": "sha256:65369f78a0b8f33a5333b3b407c1cd07c9e86c479a4a1212cc767f04814dd837",
+     "compressed": 77364160,
+     "payload": 76862989,
+     "created_by": "kernel-modules-7.2.7-200.fc44.x86_64"
+    },
+    {
+     "digest": "sha256:b759dd1cd0d6935497f7cd73380c7686500b7e0404f2cbceccb107dca294f1a0",
+     "compressed": 60646066,
+     "payload": 164929236,
+     "created_by": "RUN /bin/sh -c dnf install -y --setopt=reposdir=/repo alsa-ucm pipewire pipewire-pulseaudio pipewire-utils wireplumber v4l-utils sane-backends sane-backends-dri"
+    },
+    {
+     "digest": "sha256:518cd98fd2ba604f9b7406b1e79619c339d634f5852c9e016e5db622f9d6ffc7",
+     "compressed": 52247890,
+     "payload": 93919412,
+     "created_by": "12 components"
+    },
+    {
+     "digest": "sha256:e02e25bc047c5057385156ddab559e2a70b380c49da34c02235a6f0fef1f4c86",
+     "compressed": 51895049,
+     "payload": 126998723,
+     "created_by": "RUN /bin/sh -c dnf install -y --setopt=reposdir=/repo --exclude=fcitx5-configtool --exclude=fcitx5-gtk --exclude=fcitx5-qt --exclude=fcitx5-qt-module --exclude="
+    },
+    {
+     "digest": "sha256:705bc69270c695bc44213f80bfea62f5b3f15c84568ecf01e5954c572f3ceb4f",
+     "compressed": 50594726,
+     "payload": 55479448,
+     "created_by": "kernel-modules-core-7.2.7-200.fc44.x86_64"
+    }
+   ],
+   "directories": [
+    [
+     "/usr/lib/tilo",
+     2212151903
+    ],
+    [
+     "/usr/lib64/wine-wow64",
+     1499511780
+    ],
+    [
+     "/usr/share/virtio-win",
+     909015923
+    ],
+    [
+     "/usr/lib/tilo-runtime",
+     736197994
+    ],
+    [
+     "/usr/share/tilo-apps",
+     517281224
+    ],
+    [
+     "/usr/share/wine",
+     442194824
+    ],
+    [
+     "/sysroot/ostree/repo",
+     419296484
+    ],
+    [
+     "/usr/lib/firmware",
+     312961531
+    ],
+    [
+     "/usr/share/locale",
+     214463627
+    ],
+    [
+     "/usr/x86_64-w64-mingw32/sys-root",
+     194127564
+    ],
+    [
+     "/usr/lib/modules",
+     144973668
+    ],
+    [
+     "/usr/lib/python3.14",
+     140630987
+    ],
+    [
+     "/boot/EFI/Linux",
+     118659072
+    ],
+    [
+     "/usr/share/fonts",
+     89148636
+    ],
+    [
+     "/usr/lib/locale",
+     82512529
+    ],
+    [
+     "/usr/share/tilo",
+     68934511
+    ],
+    [
+     "/usr/lib64/python3.14",
+     59606052
+    ],
+    [
+     "/usr/share/hunspell",
+     51440098
+    ],
+    [
+     "/usr/share/rpm",
+     51023872
+    ],
+    [
+     "/usr/share/doc",
+     50661356
+    ]
+   ],
+   "packages": [
+    [
+     "wine-core",
+     1420588763
+    ],
+    [
+     "wine-mono",
+     318703141
+    ],
+    [
+     "mesa-vulkan-drivers",
+     182331338
+    ],
+    [
+     "tilo-kernel-core",
+     159291408
+    ],
+    [
+     "llvm-libs",
+     147275895
+    ],
+    [
+     "mingw64-crt",
+     141767574
+    ],
+    [
+     "python3-botocore",
+     122751302
+    ],
+    [
+     "nvidia-gpu-firmware",
+     105915244
+    ],
+    [
+     "qemu-system-x86-core",
+     63504893
+    ],
+    [
+     "mesa-dri-drivers",
+     55782311
+    ],
+    [
+     "mingw32-wine-gecko",
+     54809719
+    ],
+    [
+     "mingw64-wine-gecko",
+     52548727
+    ],
+    [
+     "podman",
+     51681862
+    ],
+    [
+     "atheros-firmware",
+     49377472
+    ],
+    [
+     "edk2-ovmf",
+     47634539
+    ],
+    [
+     "python3-libs",
+     46107600
+    ],
+    [
+     "libicu",
+     38393461
+    ],
+    [
+     "linux-firmware",
+     34629026
+    ],
+    [
+     "mt7xxx-firmware",
+     33180900
+    ],
+    [
+     "qemu-user-static-mips",
+     32881506
+    ]
+   ],
+   "redundant_by_directory": [
+    [
+     "/usr/share/rpm/rpmdb.sqlite",
+     247832576
+    ],
+    [
+     "/usr/lib/tilo/windows-runners",
+     179785563
+    ],
+    [
+     "/usr/share/tilo-apps/pkgs",
+     170552368
+    ],
+    [
+     "/kernel/7.2.8/initramfs.img",
+     101884636
+    ],
+    [
+     "/usr/lib/tilo-runtime/2026.07+native.44e1e2577e02fa711b8291841737255d",
+     75069324
+    ],
+    [
+     "/usr/share/tilo/font-catalogs",
+     54395508
+    ],
+    [
+     "/sysroot/ostree/repo/objects",
+     39814868
+    ],
+    [
+     "/etc/selinux/targeted/active",
+     32438940
+    ],
+    [
+     "/etc/selinux/targeted/policy",
+     15241561
+    ],
+    [
+     "/usr/lib/udev/hwdb.bin",
+     14372567
+    ],
+    [
+     "/kernel/7.2.8/vmlinuz",
+     14299648
+    ],
+    [
+     "/usr/share/adobe/resources",
+     8353020
+    ],
+    [
+     "/usr/lib/tilo-runtime/2026.10.9-chromium",
+     5918847
+    ],
+    [
+     "/usr/share/mime/application",
+     4200889
+    ],
+    [
+     "/usr/lib/locale/it_CH.utf8",
+     2587448
+    ]
+   ],
+   "why": {
+    "python3-botocore": [
+     "python3-botocore <- python3-s3transfer requires (python3.14dist(botocore) < 2~a0 with python3.14dist(botocore) >= 1.37.4)",
+     "  python3-s3transfer <- python3-boto3 requires (python3.14dist(s3transfer) < 0.20~~ with python3.14dist(s3transfer) >= 0.19)",
+     "    python3-boto3 <- sos recommends python3-boto3",
+     "      sos: nothing requires it (installed by name)",
+     "python3-botocore <- python3-boto3 requires (python3.14dist(botocore) < 1.44~~ with python3.14dist(botocore) >= 1.43.99) (seen above)"
+    ]
+   }
+  },
+  {
+   "label": "after-x86_64",
+   "image": "registry.tilo.so/tilo/tilo-ci@sha256:c5dc0c9eb5e392b05d064a5c755224985aff37b893cebeca5a95b3fa44bd3ba7",
+   "revision": "b15688ee1cd5e81800181372ff1d55184b564b9d",
+   "architecture": "x86_64",
+   "labels": {
+    "org.tilo.rust-lto": "off",
+    "org.tilo.with-windows": "1"
+   },
+   "totals": {
+    "layers": 204,
+    "compressed": 5168289107,
+    "payload": 13023180196,
+    "content": 11340619892,
+    "unique_content": 10909686891,
+    "undeployed": 545556816,
+    "redundant_payload": 900765406,
+    "files": 74377,
+    "hard_links": 27542,
+    "packages": 1342
+   },
+   "largest_layers": [
+    {
+     "digest": "sha256:eadb2972e23dbaccc48e001cb391a2540b941f69122ce47f361ae0e48ae55ad8",
+     "compressed": 856754080,
+     "payload": 2584769135,
+     "created_by": "RUN /bin/sh -c test \"$(uname -m)\" = \"$TILO_WINDOWS_ARCH\" && case \"$(uname -m)\" in x86_64) vm_firmware=edk2-ovmf; windows_packages='wine wine-dxvk' ;; aarch64) v"
+    },
+    {
+     "digest": "sha256:61c93d0d6c269458b5158320ac0f8f36e97a0dfe5d53b2bcd0f768ee4d9194d6",
+     "compressed": 477532142,
+     "payload": 1408013377,
+     "created_by": "COPY /out/proton/ /usr/lib/tilo/windows-runners/proton/"
+    },
+    {
+     "digest": "sha256:7d5e3d9ca614e361b59245cbea4d076678852d05c9d1235d1c03e9c848bf0832",
+     "compressed": 439752541,
+     "payload": 1367894076,
+     "created_by": "COPY / /"
+    },
+    {
+     "digest": "sha256:5e56332632d7b811c29b4ad1ebdcd71857e616204ab4a163fe76ff8a308cd7fb",
+     "compressed": 326728299,
+     "payload": 736915582,
+     "created_by": "COPY /image/usr/ /usr/"
+    },
+    {
+     "digest": "sha256:87157209afd03cc5e92327c369ac057d4115971206db66479b4ffe9721424f77",
+     "compressed": 299360338,
+     "payload": 803971124,
+     "created_by": "COPY /out/steam-runtime/ /usr/lib/tilo/windows-runners/steam-runtime/"
+    },
+    {
+     "digest": "sha256:5dc365e3ffd1cda261efd9d2d9286838ff41b23b891eff5dad69544a243e3b35",
+     "compressed": 262903293,
+     "payload": 311225489,
+     "created_by": "RUN /bin/sh -c set -eux; test -n \"$KERNEL_RPMS_REF\"; mkdir -p /etc/tilo-swap.d; printf '[frozen]\\nname=frozen\\nbaseurl=file:///frozen-repo\\ngpgcheck=0\\nenabled="
+    },
+    {
+     "digest": "sha256:30a60179ea56c5667966835a76550704bdbfbe330b767aef9ab1b78a27b2538d",
+     "compressed": 238610988,
+     "payload": 877373440,
+     "created_by": "COPY /out/virtio-win.iso /usr/share/virtio-win/virtio-win.iso"
+    },
+    {
+     "digest": "sha256:92f09f4ac8d448ef8d99474b553fc9eae6cd83a8de61d4421ecc9835c214d01d",
+     "compressed": 196299861,
+     "payload": 517281224,
+     "created_by": "COPY /usr/share/tilo-apps/ /usr/share/tilo-apps/"
+    },
+    {
+     "digest": "sha256:3d73f95c7c4b3709eada1d01c8844790a74b06069b7f1654ce2938753b5ed6ec",
+     "compressed": 158940331,
+     "payload": 409895869,
+     "created_by": "RUN /bin/sh -c dnf install -y --setopt=reposdir=/repo --exclude=libcanberra-gtk3 --exclude=xdg-desktop-portal-gtk gstreamer1 gstreamer1-plugins-base gstreamer1-"
+    },
+    {
+     "digest": "sha256:23c46baa9a2d77bba5344604e06d702fbcbab6a628cb8e96dab90c6a036181e0",
+     "compressed": 131443584,
+     "payload": 178403443,
+     "created_by": "initramfs (kernel 7.2.7-200.fc44.x86_64) and rpmostree-unpackaged-content"
+    },
+    {
+     "digest": "sha256:908141fd25c33cea9c5a74849286483425cd8477562caff79015514279eafdf8",
+     "compressed": 128355052,
+     "payload": 440631167,
+     "created_by": "RUN /bin/sh -c dnf install -y --setopt=reposdir=/repo mesa-dri-drivers mesa-vulkan-drivers libglvnd-egl harfbuzz-icu libatomic at-spi2-core plymouth plymouth-pl"
+    },
+    {
+     "digest": "sha256:a45d29285e1ab2e8cfd54b3edfc941fc06745c50b17ad6bdf3fbfcb4f096b076",
+     "compressed": 114100423,
+     "payload": 116401109,
+     "created_by": "RUN /bin/sh -c test \"$(readlink /etc/resolv.conf)\" = ../run/NetworkManager/resolv.conf && mkdir /kernel && bootc container split-kernel-and-rootfs --rootfs / --"
+    },
+    {
+     "digest": "sha256:be3aa3d4679a0e087cf6a239b247ce5abb9d70ba306919cdb1fa5f3953f1a9ef",
+     "compressed": 113911944,
+     "payload": 118875648,
+     "created_by": "COPY /out/*.efi /boot/EFI/Linux/"
+    },
+    {
+     "digest": "sha256:3512c8da9e960b5d3375f2b2593d8f9d020cba6a70be5095ece41e9a7e3d186c",
+     "compressed": 105972557,
+     "payload": 105924967,
+     "created_by": "nvidia-gpu-firmware-20260916-1.fc44.noarch"
+    },
+    {
+     "digest": "sha256:6acf7e32e7e43f25a23eb425790d1727a96c1b8911825957d605e3f372cb7df0",
+     "compressed": 86367297,
+     "payload": 248295218,
+     "created_by": "RUN /bin/sh -c dnf install -y --setopt=reposdir=/repo bubblewrap flatpak dbus-tools xdg-dbus-proxy distrobox cups cups-ipptool podman foot wl-clipboard NetworkM"
+    },
+    {
+     "digest": "sha256:65369f78a0b8f33a5333b3b407c1cd07c9e86c479a4a1212cc767f04814dd837",
+     "compressed": 77364160,
+     "payload": 76862989,
+     "created_by": "kernel-modules-7.2.7-200.fc44.x86_64"
+    },
+    {
+     "digest": "sha256:b759dd1cd0d6935497f7cd73380c7686500b7e0404f2cbceccb107dca294f1a0",
+     "compressed": 60646066,
+     "payload": 164929236,
+     "created_by": "RUN /bin/sh -c dnf install -y --setopt=reposdir=/repo alsa-ucm pipewire pipewire-pulseaudio pipewire-utils wireplumber v4l-utils sane-backends sane-backends-dri"
+    },
+    {
+     "digest": "sha256:518cd98fd2ba604f9b7406b1e79619c339d634f5852c9e016e5db622f9d6ffc7",
+     "compressed": 52247890,
+     "payload": 93919412,
+     "created_by": "12 components"
+    },
+    {
+     "digest": "sha256:e02e25bc047c5057385156ddab559e2a70b380c49da34c02235a6f0fef1f4c86",
+     "compressed": 51895049,
+     "payload": 126998723,
+     "created_by": "RUN /bin/sh -c dnf install -y --setopt=reposdir=/repo --exclude=fcitx5-configtool --exclude=fcitx5-gtk --exclude=fcitx5-qt --exclude=fcitx5-qt-module --exclude="
+    },
+    {
+     "digest": "sha256:705bc69270c695bc44213f80bfea62f5b3f15c84568ecf01e5954c572f3ceb4f",
+     "compressed": 50594726,
+     "payload": 55479448,
+     "created_by": "kernel-modules-core-7.2.7-200.fc44.x86_64"
+    }
+   ],
+   "directories": [
+    [
+     "/usr/lib/tilo",
+     2212151903
+    ],
+    [
+     "/usr/lib64/wine-wow64",
+     1499511780
+    ],
+    [
+     "/usr/share/virtio-win",
+     909015923
+    ],
+    [
+     "/usr/lib/tilo-runtime",
+     736197994
+    ],
+    [
+     "/sysroot/ostree/repo",
+     545556816
+    ],
+    [
+     "/usr/share/tilo-apps",
+     517281224
+    ],
+    [
+     "/usr/share/wine",
+     442194824
+    ],
+    [
+     "/usr/lib/firmware",
+     312961531
+    ],
+    [
+     "/usr/share/locale",
+     214463627
+    ],
+    [
+     "/usr/x86_64-w64-mingw32/sys-root",
+     194127564
+    ],
+    [
+     "/usr/lib/modules",
+     144973668
+    ],
+    [
+     "/boot/EFI/Linux",
+     118875648
+    ],
+    [
+     "/usr/lib/locale",
+     82512529
+    ],
+    [
+     "/usr/lib64/python3.14",
+     59605487
+    ],
+    [
+     "/usr/share/hunspell",
+     51440098
+    ],
+    [
+     "/usr/share/rpm",
+     49692672
+    ],
+    [
+     "/usr/share/doc",
+     48922909
+    ],
+    [
+     "/usr/share/edk2",
+     48668709
+    ],
+    [
+     "/usr/share/fonts",
+     34753128
+    ],
+    [
+     "/usr/lib/sysimage",
+     33718322
+    ]
+   ],
+   "packages": [
+    [
+     "wine-core",
+     1420588763
+    ],
+    [
+     "wine-mono",
+     318703141
+    ],
+    [
+     "mesa-vulkan-drivers",
+     182331338
+    ],
+    [
+     "tilo-kernel-core",
+     159291408
+    ],
+    [
+     "llvm-libs",
+     147275895
+    ],
+    [
+     "mingw64-crt",
+     141767574
+    ],
+    [
+     "nvidia-gpu-firmware",
+     105915244
+    ],
+    [
+     "qemu-system-x86-core",
+     63504893
+    ],
+    [
+     "mesa-dri-drivers",
+     55782311
+    ],
+    [
+     "mingw32-wine-gecko",
+     54809719
+    ],
+    [
+     "mingw64-wine-gecko",
+     52548727
+    ],
+    [
+     "podman",
+     51681862
+    ],
+    [
+     "atheros-firmware",
+     49377472
+    ],
+    [
+     "edk2-ovmf",
+     47634539
+    ],
+    [
+     "python3-libs",
+     46107600
+    ],
+    [
+     "libicu",
+     38393461
+    ],
+    [
+     "linux-firmware",
+     34629026
+    ],
+    [
+     "mt7xxx-firmware",
+     33180900
+    ],
+    [
+     "qemu-user-static-mips",
+     32881506
+    ],
+    [
+     "libvirt-libs",
+     31726180
+    ]
+   ],
+   "redundant_by_directory": [
+    [
+     "/usr/share/rpm/rpmdb.sqlite",
+     245137408
+    ],
+    [
+     "/usr/lib/tilo/windows-runners",
+     179785563
+    ],
+    [
+     "/usr/share/tilo-apps/pkgs",
+     170552368
+    ],
+    [
+     "/kernel/7.2.8/initramfs.img",
+     102101461
+    ],
+    [
+     "/sysroot/ostree/repo/objects",
+     39814868
+    ],
+    [
+     "/etc/selinux/targeted/active",
+     32438940
+    ],
+    [
+     "/usr/lib/tilo-runtime/2026.07+native.44e1e2577e02fa711b8291841737255d",
+     22130558
+    ],
+    [
+     "/etc/selinux/targeted/policy",
+     15241561
+    ],
+    [
+     "/usr/lib/udev/hwdb.bin",
+     14372567
+    ],
+    [
+     "/kernel/7.2.8/vmlinuz",
+     14299648
+    ],
+    [
+     "/usr/share/adobe/resources",
+     8353020
+    ],
+    [
+     "/usr/lib/tilo-runtime/2026.10.9-chromium",
+     5918847
+    ],
+    [
+     "/usr/share/mime/application",
+     4200889
+    ],
+    [
+     "/usr/lib/locale/it_CH.utf8",
+     2587448
+    ],
+    [
+     "/usr/lib/locale/fr_BE.utf8",
+     2587444
+    ]
+   ],
+   "why": {
+    "python3-botocore": [
+     "python3-botocore is not installed"
+    ]
+   }
+  }
+ ]
+}

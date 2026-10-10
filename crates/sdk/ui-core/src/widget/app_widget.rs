@@ -361,6 +361,25 @@ mod component_adapter {
                 relayout: false,
             }
         }
+
+        /// Run `f` on the component's root inside the component's record
+        /// frame, lending it the frame's edits at the record root. With no
+        /// root, or when the frame refuses, the answer is `R::default()`.
+        fn with_root_edits<R: Default>(
+            &mut self,
+            edits: &mut crate::widget::Edits<'_>,
+            f: impl FnOnce(&mut (dyn Widget + 'static), &mut crate::widget::Edits<'_>, &ObjId) -> R,
+        ) -> R {
+            let binding = self.component.callback_binding();
+            binding
+                .with_document(edits.document_mut(), |document, record_root| {
+                    let Some(root) = self.component.root.as_deref_mut() else {
+                        return R::default();
+                    };
+                    f(root, &mut crate::widget::Edits::lend(document), record_root)
+                })
+                .unwrap_or_default()
+        }
     }
 
     impl Continuable for BoundAppWidget {
@@ -385,24 +404,14 @@ mod component_adapter {
             state: &mut crate::widget::Edits<'_>,
             _path: &ObjId,
         ) -> bool {
-            let binding = self.component.callback_binding();
-            binding
-                .with_document(state.document_mut(), |document, record_root| {
-                    let Some(root) = self.component.root.as_deref_mut() else {
-                        return false;
-                    };
-                    let Some(continuable) =
-                        crate::widget::capability::capability_mut::<dyn Continuable>(&mut *root)
-                    else {
-                        return false;
-                    };
-                    continuable.restore_continuation_metadata(
-                        metadata,
-                        &mut crate::widget::Edits::lend(document),
-                        record_root,
-                    )
-                })
-                .unwrap_or(false)
+            self.with_root_edits(state, |root, edits, record_root| {
+                let Some(continuable) =
+                    crate::widget::capability::capability_mut::<dyn Continuable>(&mut *root)
+                else {
+                    return false;
+                };
+                continuable.restore_continuation_metadata(metadata, edits, record_root)
+            })
         }
 
         fn restore_live_continuation_metadata(
@@ -479,20 +488,15 @@ mod component_adapter {
             state: &mut crate::widget::Edits<'_>,
             _path: &ObjId,
         ) -> bool {
-            let binding = self.component.callback_binding();
-            binding
-                .with_document(state.document_mut(), |document, record_root| {
-                    self.component.root.as_deref_mut().is_some_and(|root| {
-                        root.perform_floating_surface_accessibility_action(
-                            id,
-                            target,
-                            action,
-                            &mut crate::widget::Edits::lend(document),
-                            record_root,
-                        )
-                    })
-                })
-                .unwrap_or(false)
+            self.with_root_edits(state, |root, edits, record_root| {
+                root.perform_floating_surface_accessibility_action(
+                    id,
+                    target,
+                    action,
+                    edits,
+                    record_root,
+                )
+            })
         }
 
         fn floating_surface_ime(
@@ -671,18 +675,9 @@ mod component_adapter {
             state: &mut crate::widget::Edits<'_>,
             _path: &ObjId,
         ) -> bool {
-            let binding = self.component.callback_binding();
-            binding
-                .with_document(state.document_mut(), |document, record_root| {
-                    self.component.root.as_deref_mut().is_some_and(|root| {
-                        root.handle_audience_presentation_event(
-                            event,
-                            &mut crate::widget::Edits::lend(document),
-                            record_root,
-                        )
-                    })
-                })
-                .unwrap_or(false)
+            self.with_root_edits(state, |root, edits, record_root| {
+                root.handle_audience_presentation_event(event, edits, record_root)
+            })
         }
 
         fn on_audience_presentation_closed(&mut self) {
@@ -1345,19 +1340,9 @@ mod component_adapter {
             state: &mut crate::widget::Edits<'_>,
             _path: &crate::widget::ModelPath,
         ) -> bool {
-            let binding = self.component.callback_binding();
-            binding
-                .with_document(state.document_mut(), |document, record_root| {
-                    let Some(root) = self.component.root.as_deref_mut() else {
-                        return false;
-                    };
-                    root.perform_action(
-                        action,
-                        &mut crate::widget::Edits::lend(document),
-                        record_root,
-                    )
-                })
-                .unwrap_or(false)
+            self.with_root_edits(state, |root, edits, record_root| {
+                root.perform_action(action, edits, record_root)
+            })
         }
         fn perform_action_at(
             &mut self,
@@ -1366,20 +1351,9 @@ mod component_adapter {
             state: &mut crate::widget::Edits<'_>,
             _path: &crate::widget::ModelPath,
         ) -> bool {
-            let binding = self.component.callback_binding();
-            binding
-                .with_document(state.document_mut(), |document, record_root| {
-                    let Some(root) = self.component.root.as_deref_mut() else {
-                        return false;
-                    };
-                    root.perform_action_at(
-                        action,
-                        key_path,
-                        &mut crate::widget::Edits::lend(document),
-                        record_root,
-                    )
-                })
-                .unwrap_or(false)
+            self.with_root_edits(state, |root, edits, record_root| {
+                root.perform_action_at(action, key_path, edits, record_root)
+            })
         }
         fn perform_semantic_action(
             &mut self,
@@ -1388,20 +1362,9 @@ mod component_adapter {
             state: &mut crate::widget::Edits<'_>,
             _path: &crate::widget::ModelPath,
         ) -> bool {
-            let binding = self.component.callback_binding();
-            binding
-                .with_document(state.document_mut(), |document, record_root| {
-                    let Some(root) = self.component.root.as_deref_mut() else {
-                        return false;
-                    };
-                    root.perform_semantic_action(
-                        target,
-                        action,
-                        &mut crate::widget::Edits::lend(document),
-                        record_root,
-                    )
-                })
-                .unwrap_or(false)
+            self.with_root_edits(state, |root, edits, record_root| {
+                root.perform_semantic_action(target, action, edits, record_root)
+            })
         }
         fn is_enabled(&self) -> bool {
             let binding = self.component.callback_binding();
@@ -1513,19 +1476,9 @@ mod component_adapter {
             state: &mut crate::widget::Edits<'_>,
             _root: &crate::widget::ModelPath,
         ) {
-            let binding = self.component.callback_binding();
-            binding
-                .with_document(state.document_mut(), |document, record_root| {
-                    let Some(root) = self.component.root.as_deref_mut() else {
-                        return;
-                    };
-                    root.on_external_event(
-                        payload,
-                        &mut crate::widget::Edits::lend(document),
-                        record_root,
-                    );
-                })
-                .unwrap_or(());
+            self.with_root_edits(state, |root, edits, record_root| {
+                root.on_external_event(payload, edits, record_root);
+            });
         }
         fn on_nav_gesture(
             &mut self,
@@ -1589,19 +1542,9 @@ mod component_adapter {
             type_id: &str,
             payload: &[u8],
         ) -> bool {
-            let binding = self.component.callback_binding();
-            binding
-                .with_document(doc.document_mut(), |document, _record_root| {
-                    let Some(root) = self.component.root.as_deref_mut() else {
-                        return false;
-                    };
-                    root.apply_room_action(
-                        &mut crate::widget::Edits::lend(document),
-                        type_id,
-                        payload,
-                    )
-                })
-                .unwrap_or(false)
+            self.with_root_edits(doc, |root, edits, _| {
+                root.apply_room_action(edits, type_id, payload)
+            })
         }
         fn start_operation(
             &mut self,
@@ -1673,19 +1616,9 @@ mod component_adapter {
             state: &mut crate::widget::Edits<'_>,
             _path: &crate::widget::ModelPath,
         ) {
-            let binding = self.component.callback_binding();
-            binding
-                .with_document(state.document_mut(), |document, record_root| {
-                    let Some(root) = self.component.root.as_deref_mut() else {
-                        return;
-                    };
-                    root.on_drop(
-                        payload,
-                        &mut crate::widget::Edits::lend(document),
-                        record_root,
-                    );
-                })
-                .unwrap_or(());
+            self.with_root_edits(state, |root, edits, record_root| {
+                root.on_drop(payload, edits, record_root);
+            });
         }
         fn wants_pointer_capture(&self) -> bool {
             let binding = self.component.callback_binding();
@@ -2026,20 +1959,14 @@ mod component_adapter {
             doc: &mut crate::widget::Edits<'_>,
             _path: &crate::widget::ModelPath,
         ) {
-            let binding = self.component.callback_binding();
-            binding
-                .with_document(doc.document_mut(), |document, record_root| {
-                    let Some(root) = self.component.root.as_deref_mut() else {
-                        return;
-                    };
-                    crate::search::capability::activate_search_result(
-                        root,
-                        action_id,
-                        &mut crate::widget::Edits::lend(document),
-                        record_root,
-                    );
-                })
-                .unwrap_or(());
+            self.with_root_edits(doc, |root, edits, record_root| {
+                crate::search::capability::activate_search_result(
+                    root,
+                    action_id,
+                    edits,
+                    record_root,
+                );
+            });
         }
     }
 

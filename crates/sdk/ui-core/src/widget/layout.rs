@@ -1493,6 +1493,36 @@ pub(super) fn allocation_or_content_size(
     }
 }
 
+/// A linear container's `(rect, paint_rect)` at `origin`: the rect spans
+/// [`allocation_or_content_size`], the paint rect the laid-out box grown to
+/// fit its content.
+pub(super) fn flow_rects(
+    tree: &TaffyTree<()>,
+    node: NodeId,
+    origin: vello::kurbo::Point,
+) -> (vello::kurbo::Rect, vello::kurbo::Rect) {
+    let layout = tree.layout(node).copied().unwrap_or_default();
+    let allocated = allocation_or_content_size(tree, node, &layout);
+    let location = vello::kurbo::Point::new(
+        origin.x + f64::from(layout.location.x),
+        origin.y + f64::from(layout.location.y),
+    );
+    let rect = vello::kurbo::Rect::new(
+        location.x,
+        location.y,
+        location.x + f64::from(allocated.width),
+        location.y + f64::from(allocated.height),
+    );
+    let paint_rect = vello::kurbo::Rect::from_origin_size(
+        location,
+        (
+            f64::from(layout.size.width.max(layout.content_size.width)),
+            f64::from(layout.size.height.max(layout.content_size.height)),
+        ),
+    );
+    (rect, paint_rect)
+}
+
 /// Lay `widget` out on its own at `rect`, in a layout tree of its own, with
 /// the passes the host runs (build, resolve, apply) but at a size the host
 /// did not give it: a capture drawing a scrolling document at its full

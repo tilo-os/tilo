@@ -717,8 +717,6 @@ pub struct ChromeState {
     /// "Send…" requests for the last screenshot from the action door,
     /// drained into the capture studio by the overlay host.
     screenshot_sends: Vec<ui::widget::ScreenshotSendTarget>,
-    /// Compatibility queue for callers of the original active-room API.
-    legacy_record_requests: Vec<(String, String)>,
     /// Tracked record actions retain the exact authorized destination until
     /// the overlay-owned room index consumes them on a later frame.
     tracked_record_requests: Vec<RecordRequest>,
@@ -898,7 +896,6 @@ impl ChromeState {
             presence_requests: Vec::new(),
             screenshot_sends: Vec::new(),
             wheel_summon: None,
-            legacy_record_requests: Vec::new(),
             tracked_record_requests: Vec::new(),
             record_request_results: BTreeMap::new(),
             next_record_request_id: 1,
@@ -1043,11 +1040,6 @@ impl ChromeState {
             actor,
         });
         request_id
-    }
-
-    #[deprecated(note = "use take_tracked_record_requests for authorization-aware requests")]
-    pub fn take_record_requests(&mut self) -> Vec<(String, String)> {
-        std::mem::take(&mut self.legacy_record_requests)
     }
 
     pub(crate) fn take_tracked_record_requests(&mut self) -> Vec<RecordRequest> {

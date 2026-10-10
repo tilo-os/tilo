@@ -29,6 +29,7 @@ BINARY_INPUTS = {
     "dist/apps/app-collections.toml",
     "tools/apps/app_package_isa.py",
     "tools/ci/rustc-thin-app-wrapper.sh",
+    "tools/ci/runtime-dylib-lazy-link.py",
     "os/scripts/build-thin-apps.sh",
     "os/Containerfile.builder",
     "os/external-assets/github-assets.tsv",

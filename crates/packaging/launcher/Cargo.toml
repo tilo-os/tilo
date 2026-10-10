@@ -40,10 +40,11 @@ path = "src/lib.rs"
 # honour them; shipped images never enable this.
 dev-overrides = ["package-store/dev-overrides"]
 # Explicit opt-in Linux process-tree qualification fixture.
-managed-tree-test = ["dep:ed25519-dalek"]
+managed-tree-test = ["dep:ed25519-dalek", "dep:hex"]
 
 [dependencies]
 ed25519-dalek = { workspace = true, optional = true }
+hex = { workspace = true, optional = true }
 # Kernel-authenticated custody of the executing native service peer.
 runtime-portal = { path = "../../runtime/runtime-portal", default-features = false }
 tilo-advisory-lock = { path = "../../system/advisory-lock" }

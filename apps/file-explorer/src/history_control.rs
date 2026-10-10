@@ -3,32 +3,6 @@ use std::path::Path;
 
 use crate::i18n::{arg, t, t_args};
 
-/// Request restoration through the original filesystem history-control
-/// attribute. New UI flows use the checked review/restore transport, but this
-/// entry point remains for applications compiled against the stable facade.
-///
-/// # Errors
-///
-/// Returns a localized error when the bounded request cannot be encoded or
-/// written to the file's history-control extended attribute.
-#[deprecated(note = "use the checked file-history transport for reviewed restores")]
-pub fn restore_version(path: &Path, version_id: fs_protocol::FileVersionId) -> Result<(), String> {
-    let request = fs_protocol::HistoryControlRequestV1 {
-        schema_version: fs_protocol::HISTORY_CONTROL_VERSION,
-        operation: fs_protocol::HistoryControlOperationV1::Restore { version_id },
-    };
-    let bytes = serde_json::to_vec(&request).map_err(|_| t("files-history-encode-failed"))?;
-    if bytes.len() > fs_protocol::MAX_HISTORY_CONTROL_BYTES {
-        return Err(t("files-history-request-too-large"));
-    }
-    xattr::set(path, crate::model::HISTORY_CONTROL_XATTR, &bytes).map_err(|error| {
-        t_args(
-            "files-history-restore-failed",
-            &[arg("error", error.to_string())],
-        )
-    })
-}
-
 /// Request resolution of one exact conflict member using `strategy`.
 ///
 /// # Errors

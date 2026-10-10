@@ -285,6 +285,8 @@ impl SharedOwner {
         for (room, view) in &current.rooms {
             self.notify(*room, view.continuity());
         }
+        drop(current);
+        tilo_identity_host::policy_change::announce();
     }
     fn fenced(&self, current: &Current, room: RoomId) -> bool {
         current.fenced || current.denied.contains(&room) || !self.store.healthy()
@@ -300,6 +302,9 @@ impl SharedOwner {
         if result.is_err() && !self.store.healthy() {
             self.fence_all();
         }
+        // A new publication can change a room's tasks, which the broker
+        // offers as actions: it re-checks on this rather than on a clock.
+        tilo_identity_host::policy_change::announce();
         result
     }
 }
@@ -515,6 +520,8 @@ impl NativeWorkspaceOwner {
         }
         let continuity = current.rooms.get(&room).map_or(0, |view| view.continuity());
         self.0.notify(room, continuity);
+        drop(current);
+        tilo_identity_host::policy_change::announce();
     }
     /// Admits genuine relay provenance; pending document prerequisites are also durable.
     ///

@@ -179,11 +179,8 @@ fn unhex_into(value: &str, out: &mut [u8]) -> Option<()> {
     }
     Some(())
 }
-fn hex(bytes: &[u8]) -> String {
-    hex::encode(bytes)
-}
 fn ops_name(record: &[u8; 32]) -> String {
-    format!("{OPS_PREFIX}{}", hex(record))
+    format!("{OPS_PREFIX}{}", hex::encode(record))
 }
 /// Parse a session header value.
 pub fn session_id(value: &str) -> Option<[u8; 16]> {

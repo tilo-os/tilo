@@ -38,6 +38,8 @@ mod launcher_message_publisher;
 #[path = "collab_broker_capnp/native_effect_recovery_tests.rs"]
 mod native_effect_recovery_tests;
 mod native_media;
+#[cfg(test)]
+mod policy_turn_tests;
 #[cfg(target_os = "linux")]
 mod process_binding;
 mod published_invocation;
@@ -7327,6 +7329,7 @@ impl CapnpBrokerState {
                 permissions: Vec::new(),
             });
         }
+        let certified = native.is_some();
         if let Ok(mut m) = self.channels.lock() {
             m.entry(channel_id.to_owned())
                 .or_insert_with(ChannelSubscribers::default)
@@ -7337,6 +7340,11 @@ impl CapnpBrokerState {
                     native,
                     private_alias: false,
                 });
+        }
+        if certified {
+            // A new admitted session brings its own certificate expiry: the
+            // policy turn re-checks, and from then on wakes at that expiry.
+            tilo_identity_host::policy_change::announce();
         }
         rx
     }
@@ -7553,6 +7561,103 @@ impl CapnpBrokerState {
             }
         }
         Ok(())
+    }
+
+    /// Re-check every membership surface and native context subscriber
+    /// (TIL-707), and register with
+    /// [`tilo_identity_host::policy_change::wake_at`] the first instant at
+    /// which a time-bound input they read (a capability's expiry, a
+    /// subscriber certificate's validity) changes the answer. Returns whether
+    /// the next re-check must come on the one-second clock instead of on an
+    /// announcement: an input nothing announces, or a check that failed.
+    fn refresh_policy_surfaces(self: &Arc<Self>) -> bool {
+        if self.membership.is_none() {
+            // No membership-backed surface or subscriber can be admitted:
+            // nothing here changes with policy.
+            return false;
+        }
+        // Sampled before anything is read: an expiry between this sample
+        // and a read is registered as well, so none is skipped.
+        let before = self.policy_now_ns();
+        let mut clocked = false;
+        if let Err(error) = self.refresh_workspace_membership_services() {
+            tracing::debug!(%error, "native membership surface could not be refreshed");
+            clocked = true;
+        }
+        if let Err(error) = self.refresh_workspace_context_services() {
+            tracing::debug!(%error, "native membership context could not be refreshed");
+            clocked = true;
+        }
+        if let Err(error) = self.publish_changed_action_catalogue_authority() {
+            tracing::debug!(%error, "action catalogue authority could not be refreshed");
+            clocked = true;
+        }
+        let announced = self
+            .membership
+            .as_ref()
+            .is_some_and(|membership| membership.announces_policy_changes())
+            && tilo_identity_host::policy_change::timers_reliable();
+        let Ok(before) = before else {
+            return true;
+        };
+        if clocked || !announced {
+            return true;
+        }
+        let Ok((next, reads_fleet)) = self.next_policy_change(before) else {
+            return true;
+        };
+        if reads_fleet && !tilo_identity_host::policy_change::identity_files_watched() {
+            // Another process may revoke a device in the fleet file; without
+            // its watch, the fleet is re-read every second as before.
+            return true;
+        }
+        if let Some(at) = next {
+            let Ok(policy_now) = self.policy_now_ns() else {
+                return true;
+            };
+            tilo_identity_host::policy_change::wake_at(crate::policy_schedule::wall_instant(
+                at,
+                policy_now,
+                tilo_clock::unix_now_ns(),
+            ));
+        }
+        false
+    }
+
+    /// The first policy instant (Unix nanoseconds) after `after` at which a
+    /// membership surface or a native context subscriber can be answered
+    /// differently with nothing written, and whether a subscriber's
+    /// revalidation reads the device fleet.
+    fn next_policy_change(&self, after: u64) -> Result<(Option<u64>, bool), String> {
+        let capabilities = match self.membership.as_ref() {
+            Some(membership) => membership
+                .decide_in_tree(|tree| tree.next_capability_expiry_after(after / 1_000_000_000))?
+                .map(|seconds| seconds.saturating_mul(1_000_000_000)),
+            None => None,
+        };
+        let fleet_authority = self.certificate_authority.get().is_some();
+        let mut reads_fleet = false;
+        let certificates = self
+            .channels
+            .lock()
+            .map_err(|_| "native context subscriptions unavailable")?
+            .values()
+            .flat_map(|subscribers| subscribers.context.iter())
+            .filter_map(|subscriber| subscriber.native.as_ref()?.admitted.certificate.as_ref())
+            .filter_map(|certificate| {
+                reads_fleet |= fleet_authority;
+                // Not yet valid until issued; no longer valid once expired.
+                [Some(certificate.issued_at_ns), certificate.expires_at_ns]
+                    .into_iter()
+                    .flatten()
+                    .filter(|at| *at > after)
+                    .min()
+            })
+            .min();
+        Ok((
+            capabilities.into_iter().chain(certificates).min(),
+            reads_fleet,
+        ))
     }
 
     /// Ask one local subscriber of every record channel in `cluster_id` for
@@ -13200,6 +13305,36 @@ impl CapnpBrokerState {
     }
 }
 
+/// Only a configured task service needs the task projection's refresh clock.
+fn initial_task_refresh_deadline(
+    services: &HostServices,
+    now: std::time::Instant,
+) -> Option<std::time::Instant> {
+    services.workspace_tasks.as_ref().map(|_| now)
+}
+
+/// When the broker's turn must wake with nothing arriving: the earliest
+/// policy re-check, invocation expiry or configured task projection, and
+/// never while none is due.
+fn broker_turn_deadline(
+    recheck: Option<std::time::Instant>,
+    invocation: Option<std::time::Instant>,
+    task_refresh: Option<std::time::Instant>,
+) -> Option<std::time::Instant> {
+    recheck
+        .into_iter()
+        .chain(invocation)
+        .chain(task_refresh)
+        .min()
+}
+
+/// Sleep until `deadline`; only polled while there is one.
+async fn sleep_until(deadline: Option<std::time::Instant>) {
+    if let Some(deadline) = deadline {
+        tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
+    }
+}
+
 /// One run of the broker thread: start the broker's own services, then
 /// accept and drive connections until asked to quit.
 #[expect(
@@ -13250,24 +13385,33 @@ async fn serve_broker_thread(
             return;
         }
     };
-    let mut next_membership_refresh = std::time::Instant::now();
+    // Membership surfaces and native context subscribers are re-checked when
+    // an input announces a change or a registered expiry comes due, not on a
+    // clock (TIL-707). The watch wakes this turn for the first announcement
+    // after it is armed; the schedule coalesces the rest.
+    let policy_turn = Arc::new(tokio::sync::Notify::new());
+    let policy_watch = {
+        let turn = Arc::clone(&policy_turn);
+        tilo_identity_host::policy_change::Watch::new(move || turn.notify_one())
+    };
+    let mut policy = crate::policy_schedule::PolicySchedule::default();
+    // Task progress is owned by the task service rather than the identity
+    // policy directory, so it retains its bounded refresh deadline. Policy
+    // surfaces themselves wake from the event-driven schedule below.
+    let mut next_task_refresh =
+        initial_task_refresh_deadline(&state.services, std::time::Instant::now());
     loop {
-        if std::time::Instant::now() >= next_membership_refresh {
-            if let Err(error) = state.refresh_workspace_membership_services() {
-                tracing::debug!(%error, "native membership surface could not be refreshed");
-            }
+        let now = std::time::Instant::now();
+        if next_task_refresh.is_some_and(|deadline| now >= deadline) {
             if let Err(error) = state.refresh_workspace_task_services() {
                 tracing::debug!(%error, "native task surface could not be refreshed");
             }
-            if let Err(error) = state.refresh_workspace_context_services() {
-                tracing::debug!(%error, "native membership context could not be refreshed");
-            }
-            if let Err(error) = state.publish_changed_action_catalogue_authority() {
-                tracing::debug!(%error, "action catalogue authority could not be refreshed");
-            }
-            next_membership_refresh = std::time::Instant::now()
-                .checked_add(Duration::from_secs(1))
-                .unwrap_or_else(std::time::Instant::now);
+            next_task_refresh = Some(now.checked_add(Duration::from_secs(1)).unwrap_or(now));
+        }
+        let epoch = tilo_identity_host::policy_change::epoch();
+        if policy.due(now, epoch).is_some_and(|due| due <= now) {
+            let clocked = state.refresh_policy_surfaces();
+            policy.checked(now, epoch, clocked);
         }
         #[cfg(test)]
         {
@@ -13317,19 +13461,24 @@ async fn serve_broker_thread(
         if quit.load(Ordering::Relaxed) {
             break;
         }
-        let deadline = state.next_invocation_deadline();
-        // The loop is also the broker's turn: in-process door
-        // calls and connected apps progress on it. Cap it at the
-        // old cadence, and sooner when an invocation is about to
-        // expire. `local_turn` wakes it immediately for queued work.
-        let tick = deadline
-            .map_or(Duration::from_millis(100), |deadline| {
-                deadline.saturating_duration_since(std::time::Instant::now())
-            })
-            .min(Duration::from_millis(100));
+        // Sleep until something here is due: the next task projection, policy
+        // re-check, or invocation expiry. Everything else the turn handles
+        // wakes it at once: queued directory work, in-process door calls and
+        // quit through `local_turn`, admitted workers through
+        // `worker_admitted`, policy announcements through `policy_turn`;
+        // connected apps run as tasks of this LocalSet.
+        let now = std::time::Instant::now();
+        let mut recheck = policy.due(now, tilo_identity_host::policy_change::epoch());
+        if recheck.is_none() && policy_watch.arm() != policy.epoch() {
+            // Announced between the check above and arming: nothing will
+            // wake the turn for it.
+            recheck = Some(now);
+        }
+        let deadline =
+            broker_turn_deadline(recheck, state.next_invocation_deadline(), next_task_refresh);
         let stream = tokio::select! {
             biased;
-            () = tokio::time::sleep(tick) => {
+            () = sleep_until(deadline), if deadline.is_some() => {
                 // Expiration must not depend on a caller polling
                 // status: completion waiters deserve a terminal
                 // answer even after an app goes silent.
@@ -13339,6 +13488,7 @@ async fn serve_broker_thread(
             conn = listener.accept() => conn,
             () = state.local_turn.notified() => continue,
             () = state.worker_admitted.notified() => continue,
+            () = policy_turn.notified() => continue,
         };
         let (stream, _) = match stream {
             Ok(s) => s,
