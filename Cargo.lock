@@ -17769,7 +17769,6 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
- "wire-frame",
  "workspace-hack",
 ]
 
