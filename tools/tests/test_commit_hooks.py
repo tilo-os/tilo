@@ -145,6 +145,58 @@ class CommitHookTests(unittest.TestCase):
         self.assertIn("intermediate.bin: non-text", result.stderr)
         self.assertIn("restored.txt: non-LF", result.stderr)
 
+    def main_binary_frontier(self):
+        self.git("branch", "candidate")
+        self.stage("approved.bin", b"\0main asset")
+        self.git("commit", "--no-verify", "-qm", "test: establish historical main asset")
+        frontier = self.git("rev-parse", "HEAD").stdout.strip()
+        self.git("branch", "imported-main", frontier)
+        self.git("rm", "--", "approved.bin")
+        self.git("commit", "-qm", "chore: encode main asset as text")
+        self.base = self.git("rev-parse", "HEAD").stdout.strip()
+        self.git("switch", "-q", "candidate")
+        self.stage("candidate.txt", b"candidate text\n")
+        self.git("commit", "-qm", "feat: establish candidate")
+        return frontier
+
+    def test_ci_allows_exact_main_ancestor_merge_assets_removed_from_current_base(self):
+        self.main_binary_frontier()
+        self.git("merge", "--no-verify", "--no-ff", "imported-main", "-m", "Merge branch 'imported-main'")
+        self.git("rm", "--", "approved.bin")
+        self.git("commit", "-qm", "chore: remove imported historical asset")
+        result = self.ci()
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_ci_rejects_binary_import_from_non_base_merge_parent(self):
+        self.git("branch", "candidate")
+        self.git("switch", "-qc", "untrusted")
+        self.stage("untrusted.bin", b"\0candidate asset")
+        self.git("commit", "--no-verify", "-qm", "test: bypass binary content hook")
+        self.git("switch", "-q", "candidate")
+        self.stage("candidate.txt", b"candidate text\n")
+        self.git("commit", "-qm", "feat: establish candidate")
+        self.git("merge", "--no-verify", "--no-ff", "untrusted", "-m", "Merge branch 'untrusted'")
+        merge = self.git("rev-parse", "HEAD").stdout.strip()[:12]
+        self.git("rm", "--", "untrusted.bin")
+        self.git("commit", "-qm", "chore: remove bypassed asset")
+        result = self.ci()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(merge + ": untrusted.bin: non-text", result.stderr)
+
+    def test_ci_rejects_changed_bytes_and_paths_in_main_ancestor_merge(self):
+        self.main_binary_frontier()
+        self.git("merge", "--no-verify", "--no-commit", "--no-ff", "imported-main")
+        self.stage("moved.bin", b"\0main asset")
+        self.stage("approved.bin", b"\0altered asset")
+        self.git("commit", "--no-verify", "-qm", "Merge branch 'imported-main'")
+        merge = self.git("rev-parse", "HEAD").stdout.strip()[:12]
+        self.git("rm", "--", "approved.bin", "moved.bin")
+        self.git("commit", "-qm", "chore: remove altered assets")
+        result = self.ci()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(merge + ": approved.bin: non-text", result.stderr)
+        self.assertIn(merge + ": moved.bin: non-text", result.stderr)
+
     def test_ci_batch_reader_rejects_missing_and_non_blob_objects(self):
         for oid in ("a" * 40, self.base):
             with self.subTest(oid=oid):

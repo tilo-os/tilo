@@ -62,6 +62,7 @@ def inspect(root, base, head="HEAD"):
         shallow_path = root / shallow_path
     shallow = set(shallow_path.read_text().splitlines()) if shallow_path.is_file() else set()
     failures = []
+    parent_blobs = {}
     with blob_reader(root) as read_blob:
         for commit in commits:
             raw = git(root, "cat-file", "commit", commit)
@@ -79,6 +80,24 @@ def inspect(root, base, head="HEAD"):
                 failure = "Commit message is not UTF-8 text."
             if failure:
                 failures.append(commit[:12] + ": " + failure)
+            inherited = set()
+            # A merge may import exact assets from an older main frontier that
+            # the comparison base has since removed or encoded as text. Only
+            # non-first parents proven in that base's history qualify; branch
+            # parents, moved paths and resolution edits confer no exception.
+            for parent in parents[1:]:
+                if parent not in ancestors:
+                    continue
+                if parent not in parent_blobs:
+                    entries = set()
+                    for record in git(root, "ls-tree", "-r", "-z", parent).split(b"\0"):
+                        if record:
+                            metadata, path = record.split(b"\t", 1)
+                            fields = metadata.split()
+                            if fields[1] == b"blob":
+                                entries.add((path, fields[2]))
+                    parent_blobs[parent] = entries
+                inherited.update(parent_blobs[parent])
             args = ("diff-tree", "-r", "--raw", "--no-abbrev", "-z", "--no-renames", "--no-commit-id")
             changes = git(root, *args, parents[0], commit) if parents else git(root, *args, "--root", commit)
             records = changes.split(b"\0")
@@ -94,7 +113,7 @@ def inspect(root, base, head="HEAD"):
                     failures.append(commit[:12] + ": uninspected submodule " + path.decode(errors="replace"))
                     continue
                 issues = content_issues(read_blob(oid))
-                if issues and baseline.get(path) != oid:
+                if issues and baseline.get(path) != oid and (path, oid) not in inherited:
                     failures.append(commit[:12] + ": " + path.decode(errors="replace") + ": " + ", ".join(issues) + "; new/modified non-text or non-LF blobs are forbidden")
     return failures, len(commits)
 
