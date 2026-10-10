@@ -247,9 +247,15 @@ impl Fixture {
             resumes: Box::leak(Box::default()),
             lag: Box::leak(Box::default()),
         };
-        write_state_delivery(delivery, &self.recipient, &session, wire)
-            .await
-            .unwrap();
+        write_state_delivery(
+            delivery,
+            &self.recipient,
+            &session,
+            &mut Default::default(),
+            wire,
+        )
+        .await
+        .unwrap();
     }
 }
 

@@ -816,6 +816,13 @@ impl Relay {
         };
         let mut router = Router::builder(endpoint.clone())
             .accept(
+                tilo_delivery_protocol::transport_v2::ALPN_CODED_DELTA_V1,
+                RelayProtocol {
+                    protocol: crate::peer::SessionProtocol::CODED_DELTA,
+                    ..handler.clone()
+                },
+            )
+            .accept(
                 tilo_delivery_protocol::transport_v2::ALPN_PRESENCE_BATCH_V1,
                 RelayProtocol {
                     protocol: crate::peer::SessionProtocol::PRESENCE_BATCH,
@@ -1415,6 +1422,7 @@ fn validate_additional_alpn(alpn: &[u8]) -> Result<(), RelayError> {
         tilo_delivery_protocol::transport_v2::ALPN_SIGNED_ACTIONS_V1,
         tilo_delivery_protocol::transport_v2::ALPN_COMPACT_STATE_V1,
         tilo_delivery_protocol::transport_v2::ALPN_PRESENCE_BATCH_V1,
+        tilo_delivery_protocol::transport_v2::ALPN_CODED_DELTA_V1,
         DISCOVERY_ALPN,
         MANAGEMENT_ALPN,
         COMPUTE_ALPN,
@@ -3969,6 +3977,7 @@ mod tests {
             tilo_delivery_protocol::transport_v2::ALPN_SIGNED_ACTIONS_V1,
             tilo_delivery_protocol::transport_v2::ALPN_COMPACT_STATE_V1,
             tilo_delivery_protocol::transport_v2::ALPN_PRESENCE_BATCH_V1,
+            tilo_delivery_protocol::transport_v2::ALPN_CODED_DELTA_V1,
             DISCOVERY_ALPN,
             MANAGEMENT_ALPN,
             COMPUTE_ALPN,
