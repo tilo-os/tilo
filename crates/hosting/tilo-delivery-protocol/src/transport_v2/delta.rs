@@ -39,9 +39,10 @@ pub const MAX_CODED_DELTA_BYTES: usize = 4096;
 const MIN_COPY: usize = 8;
 /// Bytes hashed to find copy candidates.
 const WINDOW: usize = 4;
-const HASH_BITS: u32 = 12;
+/// Buckets of the match index: 1,024, for frames of a few hundred bytes.
+const HASH_BITS: u32 = 10;
 /// Candidates followed per position, newest first.
-const MAX_CANDIDATES: usize = 16;
+const MAX_CANDIDATES: usize = 8;
 const NO_POSITION: u16 = u16::MAX;
 
 /// One piece of a [`super::EnvelopeV2::CodedDelta`]: bytes of the slot's
@@ -79,6 +80,8 @@ pub struct DeltaEncoder {
     index: HashMap<DeltaSlotKey, u16>,
     slots: Vec<EncodedSlot>,
     clock: u64,
+    /// The match index, rebuilt for each frame in buffers kept across frames.
+    matches: MatchIndex,
 }
 
 struct EncodedSlot {
@@ -137,7 +140,7 @@ impl DeltaEncoder {
         let (Ok(slot), Some(entry)) = (u16::try_from(index), self.slots.get_mut(index)) else {
             return Ok(None);
         };
-        let frame = encode_coded_delta(slot, &segments(&entry.last, &payload))?;
+        let frame = encode_coded_delta(slot, &self.matches.segments(&entry.last, &payload))?;
         entry.last = payload;
         entry.used = self.clock;
         Ok(Some(frame))
@@ -181,30 +184,48 @@ fn hash(window: &[u8]) -> usize {
     usize::try_from(mixed >> (32 - HASH_BITS)).unwrap_or(0)
 }
 
-/// `next` as copies from `base` and literals: greedy, the longest run of at
-/// least [`MIN_COPY`] bytes at each position, among the newest
-/// [`MAX_CANDIDATES`] places in `base` with the same leading bytes.
-fn segments(base: &[u8], next: &[u8]) -> Vec<DeltaSegment> {
-    // Both are at most MAX_CODED_DELTA_BYTES, so positions fit in a u16.
-    let mut head = vec![NO_POSITION; 1 << HASH_BITS];
-    let mut chain = vec![NO_POSITION; base.len()];
-    for (position, window) in base.windows(WINDOW).enumerate() {
-        let bucket = hash(window);
-        if let (Some(slot), Some(link), Ok(short)) = (
-            head.get_mut(bucket),
-            chain.get_mut(position),
-            u16::try_from(position),
-        ) {
-            *link = *slot;
-            *slot = short;
+/// Where each [`WINDOW`]-byte sequence occurs in a base frame: the newest
+/// position per hash bucket, and per position the next older one in its
+/// bucket. Positions fit in a `u16`, since a base is at most
+/// [`MAX_CODED_DELTA_BYTES`].
+#[derive(Default)]
+struct MatchIndex {
+    head: Vec<u16>,
+    chain: Vec<u16>,
+}
+
+impl MatchIndex {
+    /// `next` as copies from `base` and literals: greedy, the longest run of
+    /// at least [`MIN_COPY`] bytes at each position, among the newest
+    /// [`MAX_CANDIDATES`] places in `base` with the same leading bytes.
+    fn segments(&mut self, base: &[u8], next: &[u8]) -> Vec<DeltaSegment> {
+        self.head.clear();
+        self.head.resize(1 << HASH_BITS, NO_POSITION);
+        self.chain.clear();
+        self.chain.resize(base.len(), NO_POSITION);
+        for (position, window) in base.windows(WINDOW).enumerate() {
+            let bucket = hash(window);
+            if let (Some(slot), Some(link), Ok(short)) = (
+                self.head.get_mut(bucket),
+                self.chain.get_mut(position),
+                u16::try_from(position),
+            ) {
+                *link = *slot;
+                *slot = short;
+            }
         }
+        segments(base, next, &self.head, &self.chain)
     }
+}
+
+/// [`MatchIndex::segments`] against the index `head` and `chain` of `base`.
+fn segments(base: &[u8], next: &[u8], head: &[u16], chain: &[u16]) -> Vec<DeltaSegment> {
     let mut out = Vec::new();
     let mut literal = Vec::new();
     let mut at = 0;
     while at < next.len() {
         let rest = next.get(at..).unwrap_or_default();
-        let (offset, len) = longest_match(base, rest, &head, &chain);
+        let (offset, len) = longest_match(base, rest, head, chain);
         if len >= MIN_COPY {
             if !literal.is_empty() {
                 out.push(DeltaSegment::Literal(std::mem::take(&mut literal)));
