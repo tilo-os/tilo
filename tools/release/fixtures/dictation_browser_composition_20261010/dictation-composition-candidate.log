@@ -1,0 +1,17 @@
+✔ an unrelated custom-editor end cannot clear the original composition (4.417657ms)
+✔ overlapping custom-editor compositions end independently (0.997549ms)
+✔ a removed custom editor no longer blocks a fresh editable successor (3.694472ms)
+✔ removal and forged ends never certify trusted native composition as idle (1.169992ms)
+✔ document replacement remains unknown after all composition ends (0.853779ms)
+✔ unobservable composition targets and excess targets fail closed (1.665109ms)
+✔ the field consumer admits only the fresh successor after custom-editor removal (2.154727ms)
+✔ the field consumer still requires the original document-start observer (1.147671ms)
+✔ a fresh consumer remains blocked by trusted composition and protected fields (0.954518ms)
+ℹ tests 9
+ℹ suites 0
+ℹ pass 9
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 24.743859

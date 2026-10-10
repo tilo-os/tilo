@@ -250,7 +250,17 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
         "tilo-private-text-input");
     composition_scripts_->Attach();
     composition_scripts_->Configure(R"JS(globalThis.__tiloTextComposition = (() => {
-      let trusted = false, synthetic = false, unknown = false;
+      let trusted = false, unknown = false;
+      const synthetic = new Set();
+      const connected = Object.getOwnPropertyDescriptor(Node.prototype, 'isConnected').get;
+      const stillConnected = node => {
+        try { return Reflect.apply(connected, node, []); } catch { return false; }
+      };
+      const pruneSynthetic = () => {
+        // A removed custom editor cannot accept a final. Its original private
+        // lease stays retired; only a freshly prepared successor can proceed.
+        for (const target of synthetic) if (!stillConnected(target)) synthetic.delete(target);
+      };
       let root = null;
       // An initial about:blank iframe can retain its Window when it navigates.
       // Observe the native load on that Window, then bind its current Document.
@@ -271,13 +281,21 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       };
       addEventListener('DOMContentLoaded', loaded);
       addEventListener('compositionstart', event => {
-        if (event.isTrusted) trusted = true; else synthetic = true;
+        if (event.isTrusted) trusted = true;
+        else {
+          pruneSynthetic();
+          if (!stillConnected(event.target) || (synthetic.size >= 64 && !synthetic.has(event.target))) unknown = true;
+          else synthetic.add(event.target);
+        }
       }, true);
       addEventListener('compositionend', event => {
         // Page-generated end events cannot clear actual native composition.
-        if (event.isTrusted) trusted = false; else synthetic = false;
+        if (event.isTrusted) trusted = false; else synthetic.delete(event.target);
       }, true);
-      return Object.freeze({active: () => unknown || !root || root !== document.documentElement || trusted || synthetic});
+      return Object.freeze({active: () => {
+        pruneSynthetic();
+        return unknown || !root || root !== document.documentElement || trusted || synthetic.size > 0;
+      }});
     })())JS");
     navigation_history_=new tilo::NavigationHistory(browser,[this](const std::string& name,CefRefPtr<CefDictionaryValue> fields){Event(name,fields);});navigation_history_->Attach();
     page_automation_=new tilo::PageAutomation(browser,[this](const std::string& name,CefRefPtr<CefDictionaryValue> fields){Event(name,fields);},

@@ -1,0 +1,49 @@
+{
+  "baseline": "e0cf92a9482dcddcd131cab6076cacdf5b42c43b",
+  "native_Blink": false,
+  "profiles": [
+    {
+      "profile": "baseline",
+      "exit": 1,
+      "sources": {
+        "host.cc": "4397f77cbaed86358756c79befc91f2aa05e6c1f2562592f997fd311f64615b2",
+        "page_automation.js": "b16375c598cc6c4f85793fbcbfbfab3ce96accea03783b914b00b249dd16e911"
+      },
+      "log": "tools/release/fixtures/dictation_browser_composition_20261010/dictation-composition-baseline.log",
+      "sha256": "d8a1ae1e2d018e7618d9f6de1e7fbdb96b0241882f73a0c74f7727a03ff87d76",
+      "raw_sha256": "57e2b7b717c2a462a1b32cb8c211c2bfed734f6a5e654cd507c786a365b42da1"
+    },
+    {
+      "profile": "old-consumer",
+      "exit": 1,
+      "sources": {
+        "host.cc": "11de5ba9110c68cc88cb9c962284942669206c9daf17129afd63169f2d13ae5a",
+        "page_automation.js": "b16375c598cc6c4f85793fbcbfbfab3ce96accea03783b914b00b249dd16e911"
+      },
+      "log": "tools/release/fixtures/dictation_browser_composition_20261010/dictation-composition-old-consumer.log",
+      "sha256": "9174a7f4d153db899602b319ab43cdefa1191a00d0e62d400ad054eb5172ad1b",
+      "raw_sha256": "9174a7f4d153db899602b319ab43cdefa1191a00d0e62d400ad054eb5172ad1b"
+    },
+    {
+      "profile": "candidate",
+      "exit": 0,
+      "sources": {
+        "host.cc": "11de5ba9110c68cc88cb9c962284942669206c9daf17129afd63169f2d13ae5a",
+        "page_automation.js": "6c6b94597687b8c11466528f9dc3199e283035c2e3a282d1432c81a1581e2ce0"
+      },
+      "log": "tools/release/fixtures/dictation_browser_composition_20261010/dictation-composition-candidate.log",
+      "sha256": "184bc81f68da4bcfc3810f3e6435b82e81c13cbee10a046e31b20046d28d0a00",
+      "raw_sha256": "184bc81f68da4bcfc3810f3e6435b82e81c13cbee10a046e31b20046d28d0a00"
+    }
+  ],
+  "qualification": {
+    "production_javascript_cases": 9,
+    "candidate_pass": 9,
+    "native_cef_regressions_added": 2,
+    "native_cef_regressions_executed": false,
+    "native_cpp_compile_executed": false,
+    "mic_grant": false,
+    "model_acquisition": false
+  },
+  "log_normalization": "Owned temporary path redacted; line-end whitespace stripped. Raw digest refers to the redacted captured log before whitespace normalization."
+}
