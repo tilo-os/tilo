@@ -17,6 +17,8 @@ Totals, each in bytes:
   each file once however many hard links name it.
 - `unique_content`: `content` with identical files counted once, which is
   what composefs stores after install.
+- `usr_content`: `content` restricted to files `/usr` names (a file hard-linked
+  into `/usr` and elsewhere counts once). The image-size budget gates it.
 - `undeployed`: files only `/sysroot` names. The base image carries its own
   ostree repository there, hard-linked to its `/usr`; bootc does not deploy
   it, so removing a base package from `/usr` leaves its bytes here: pulled,
@@ -728,6 +730,10 @@ def report(image: Image, layers: list[Layer], root: Root) -> dict[str, Any]:
             "payload": payload,
             "content": sum(entry.size for entry, names in groups if deployed(names)),
             "unique_content": sum(unique.values()),
+            # What /usr alone holds, each hard-linked file once: the figure
+            # os/tests/image_size_budget.py holds to a per-flavour budget.
+            "usr_content": sum(entry.size for entry, names in groups
+                               if deployed(names) and any(name.startswith("usr/") for name in names)),
             "undeployed": sum(entry.size for entry, names in groups if not deployed(names)),
             "redundant_payload": payload - distinct,
             "files": sum(deployed(names) for _, names in groups),
