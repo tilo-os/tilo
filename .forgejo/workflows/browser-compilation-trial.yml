@@ -1,0 +1,78 @@
+name: CI / browser compilation trial
+on:
+  workflow_dispatch:
+concurrency:
+  group: browser-compilation-${{ github.ref }}
+  cancel-in-progress: false
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_TERM_COLOR: never
+  SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
+  WASM_BINDGEN_VERSION: "0.2.108"
+jobs:
+  builder:
+    runs-on: runner-quality
+    timeout-minutes: 5
+    container:
+      image: registry.tilo.so/tilo/ci-control@sha256:0f205596aa1753a7ca1f2f496aa25095f68668ff80a28acbfdc6d0f35f6dcfde
+    outputs:
+      image: ${{ steps.resolve.outputs.image }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - id: resolve
+        run: python3 tools/ci/resolve_builder.py
+  compare:
+    needs: [builder]
+    runs-on: runner
+    timeout-minutes: 90
+    container:
+      image: ${{ needs.builder.outputs.image }}
+    env:
+      CDP_PORT: "9333"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: ./.forgejo/actions/prepare-rust-build
+      - name: Web toolchain
+        run: |
+          rustup target add wasm32-unknown-unknown
+          if [ "$(wasm-bindgen --version 2>/dev/null)" != "wasm-bindgen $WASM_BINDGEN_VERSION" ]; then
+            cargo install --locked wasm-bindgen-cli --version "$WASM_BINDGEN_VERSION"
+          fi
+          command -v node || dnf install -y nodejs
+      - name: Build exact production desktop bundle
+        run: |
+          cargo build --locked -p tilo-app-cli --bin tilo-app
+          target/debug/tilo-app build --target web --bundle desktop apps/calculator
+      - name: Headless Chromium for Testing
+        run: |
+          dnf install -y nss atk at-spi2-atk cups-libs libdrm libXcomposite libXdamage \
+            libXrandr mesa-libgbm pango alsa-lib libxkbcommon || true
+          npx --yes @puppeteer/browsers@2 install chrome@stable --path "$RUNNER_TEMP/chrome" \
+            | tee "$RUNNER_TEMP/chrome.txt"
+          echo "CHROME=$(awk '{print $2}' "$RUNNER_TEMP/chrome.txt" | tail -n 1)" >> "$GITHUB_ENV"
+      - name: Compare unchanged full mount sweeps in ABBA order
+        shell: bash
+        run: |
+          set -euo pipefail
+          bundle=target/tilo-app/web/calculator/bundle
+          (cd "$bundle" && python3 -m http.server 7878 --bind 127.0.0.1) &
+          server=$!
+          trap 'kill "$server" 2>/dev/null || true; wait "$server" 2>/dev/null || true' EXIT
+          python3 tools/ci/browser_compilation_trial.py --bundle "$bundle" \
+            --output "$RUNNER_TEMP/compilation-trial"
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e
+        if: always()
+        with:
+          name: browser-compilation-trial
+          path: ${{ runner.temp }}/compilation-trial
+          if-no-files-found: error
+      - name: Report compiler cache
+        if: always()
+        run: bash tools/ci/sccache.sh report || true
