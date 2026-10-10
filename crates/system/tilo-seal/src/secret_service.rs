@@ -140,9 +140,12 @@ impl Handshake {
     /// force the shared secret to a known value.
     pub fn finish(self, peer_public: &[u8]) -> Result<TransportKey> {
         let p = prime();
+        // libsecret sends the value as a signed big-endian integer, so a
+        // value with its top bit set arrives with a leading zero byte:
+        // leading zeros carry no information and are not counted.
+        let digits = peer_public.iter().skip_while(|byte| **byte == 0).count();
         let peer = BigUint::from_bytes_be(peer_public);
-        if peer_public.len() > GROUP_LEN || peer < BigUint::from(2_u8) || peer >= Sub::sub(&p, 1_u8)
-        {
+        if digits > GROUP_LEN || peer < BigUint::from(2_u8) || peer >= Sub::sub(&p, 1_u8) {
             return Err(Error::InvalidKey);
         }
         let shared = padded(&peer.modpow(&self.private, &p));
@@ -272,6 +275,29 @@ mod tests {
             assert_ne!(base.expose_secret(), other.expose_secret());
         }
         assert!(store_key(&[1; 8], &[2; 32], b"1000").is_err());
+    }
+
+    /// Real libsecret (gcrypt's signed format) prefixes a zero byte when the
+    /// top bit is set, giving 129 bytes. That came out as "invalid public
+    /// value" in about half of all sessions.
+    #[test]
+    fn a_peer_value_with_leading_zero_bytes_gives_the_same_key() {
+        let peer = Handshake::from_exponent(&[0x22; GROUP_LEN]);
+        let plain = Handshake::from_exponent(&[0x11; GROUP_LEN])
+            .finish(peer.public())
+            .unwrap();
+        for zeros in 1..4 {
+            let mut padded = vec![0_u8; zeros];
+            padded.extend_from_slice(peer.public());
+            let key = Handshake::from_exponent(&[0x11; GROUP_LEN])
+                .finish(&padded)
+                .unwrap();
+            assert_eq!(key.bytes(), plain.bytes(), "{zeros} leading zero bytes");
+        }
+        // Zeros do not hide a value that is too large.
+        let mut oversized = vec![0_u8; 2];
+        oversized.extend_from_slice(&[0xff; GROUP_LEN + 1]);
+        assert!(Handshake::new().unwrap().finish(&oversized).is_err());
     }
 
     #[test]
