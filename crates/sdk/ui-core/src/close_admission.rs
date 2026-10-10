@@ -1,9 +1,14 @@
 //! Shared, device-local close admission. Saving an external document still
 //! goes through its declared action; host chrome owns only the close decision.
+#[cfg(not(target_arch = "wasm32"))]
 use crate::widget::{Button, Column, ModalDialog, Text, Widget};
+#[cfg(not(target_arch = "wasm32"))]
 use serde::{Deserialize, Serialize};
+#[cfg(not(target_arch = "wasm32"))]
 use std::{cell::RefCell, collections::VecDeque, rc::Rc};
-use tilo_actions::{ActionAddress, ActionSpec, OperationKind, Resource};
+use tilo_actions::ActionAddress;
+#[cfg(not(target_arch = "wasm32"))]
+use tilo_actions::{ActionSpec, OperationKind, Resource};
 
 /// An external editable document which cannot be replaced by an in-memory
 /// record flush or a lossy recovery export. `revision` identifies the exact
@@ -15,12 +20,15 @@ pub struct UnsavedDocument {
     pub revision: Vec<u8>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) const OPERATION: &str = "tilo.host.close";
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct Command {
     pub session: uuid::Uuid,
     pub choice: Choice,
 }
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Choice {
@@ -29,6 +37,7 @@ pub(crate) enum Choice {
     Retry,
     KeepEditing,
 }
+#[cfg(not(target_arch = "wasm32"))]
 impl Choice {
     pub(crate) fn id(self) -> &'static str {
         match self {
@@ -48,6 +57,7 @@ impl Choice {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct Admission {
     pub dialog: Option<Box<ModalDialog<Column>>>,
     pub reviewed: Vec<UnsavedDocument>,
@@ -64,6 +74,7 @@ pub(crate) struct Admission {
     choices: Vec<Choice>,
     pending: Rc<RefCell<VecDeque<Command>>>,
 }
+#[cfg(not(target_arch = "wasm32"))]
 impl Default for Admission {
     fn default() -> Self {
         Self {
@@ -84,6 +95,7 @@ impl Default for Admission {
         }
     }
 }
+#[cfg(not(target_arch = "wasm32"))]
 impl Admission {
     #[expect(
         clippy::expect_used,
@@ -178,6 +190,7 @@ impl Admission {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn resource_for(session: uuid::Uuid, choices: &[Choice]) -> Resource {
     let mut resource = Resource::new(
         format!("tilo.host.close:{session}"),

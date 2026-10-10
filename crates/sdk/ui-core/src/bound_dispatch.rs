@@ -165,6 +165,7 @@ impl BoundActionTarget {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn has_matching_broker_component(
     root: &dyn Widget,
     route: Option<&crate::collaboration::PrimaryRouteWitness>,
@@ -574,6 +575,7 @@ impl BoundPublication {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn validate_bound_resources(
     root: &mut dyn Widget,
     binding: &CallbackBinding,
@@ -653,6 +655,7 @@ fn provider_resource(
         .find_map(|provider| provider.resolve_action_resource(address))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn resolve_component_resource(
     root: &mut dyn Widget,
     doc: &AutoCommit,
@@ -686,6 +689,7 @@ pub(crate) fn resolve_component_resource(
     result.unwrap_or(Err(BoundDispatchError::ClosedLifetime))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn publication_visibility(
     root: &dyn Widget,
     doc: &AutoCommit,
@@ -739,6 +743,7 @@ pub(crate) fn publication_visibility(
 }
 
 /// Opaque legacy navigation remains scoped to the provider that produced it.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn activate_bound_search(
     root: &mut dyn Widget,
     doc: &mut AutoCommit,
@@ -786,6 +791,7 @@ pub(crate) fn activate_bound_search(
 }
 
 #[derive(Clone, PartialEq, Eq)]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct BoundDirectoryWitness {
     owner: uuid::Uuid,
     pub(crate) generation: Option<u64>,
@@ -793,7 +799,9 @@ pub(crate) struct BoundDirectoryWitness {
     revisions: Vec<Option<String>>,
     domains: Vec<crate::widget::ActionDirectoryInvocationDomain>,
 }
+#[cfg(not(target_arch = "wasm32"))]
 impl BoundDirectoryWitness {
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn supports_model_refresh(&self) -> bool {
         self.generation.is_some_and(|value| value != u64::MAX)
             && !self.domains.is_empty()
@@ -801,6 +809,7 @@ impl BoundDirectoryWitness {
     }
     /// Only used after fresh full declaration/effective-domain equality in one
     /// hosted model pass. Generation is bookkeeping, never document authority.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn same_model_owner_after(&self, before: &Self) -> bool {
         self.supports_model_refresh()
             && before.supports_model_refresh()
@@ -811,6 +820,7 @@ impl BoundDirectoryWitness {
             && matches!((before.generation, self.generation), (Some(old), Some(new)) if new >= old)
     }
 }
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn directory_witness(
     root: &dyn Widget,
     doc: &AutoCommit,
@@ -889,6 +899,7 @@ pub(crate) fn directory_witness(
 }
 
 #[derive(Default)]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct BoundResourceCache(RefCell<Vec<CachedBoundResources>>);
 
 /// One bound owner's admission generation and record frontier, read on each
@@ -975,6 +986,7 @@ impl BoundResourceCache {
         true
     }
 }
+#[cfg(not(target_arch = "wasm32"))]
 struct CachedBoundResources {
     snapshot: BoundResourceSnapshot,
     generation: u64,
@@ -987,6 +999,7 @@ struct CachedBoundResources {
     clippy::too_many_lines,
     reason = "private nested traversal and per-owner cache admission stay together"
 )]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn discover_cached_bound_resources(
     widget: &dyn Widget,
     doc: &AutoCommit,
@@ -1128,6 +1141,7 @@ pub(crate) fn discover_cached_bound_resources(
 
 /// Action-scoped authority shared by native and headless legacy hosts: the
 /// action `action` on the resource `resource_id`.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn permits_local_action(
     permissions: &PermissionContext,
     app_id: &str,
@@ -1660,7 +1674,9 @@ impl ControlWitness {
 
 #[derive(Clone)]
 pub(crate) enum ControlContinuationArguments {
+    #[cfg(not(target_arch = "wasm32"))]
     Immediate,
+    #[cfg(not(target_arch = "wasm32"))]
     Text(String),
     Json(serde_json::Map<String, serde_json::Value>),
 }
@@ -1673,14 +1689,18 @@ impl ControlContinuationArguments {
         Option<&serde_json::Map<String, serde_json::Value>>,
     ) {
         match self {
+            #[cfg(not(target_arch = "wasm32"))]
             Self::Immediate => (None, None),
+            #[cfg(not(target_arch = "wasm32"))]
             Self::Text(text) => (Some(text), None),
             Self::Json(json) => (None, Some(json)),
         }
     }
     fn query(&self) -> tilo_actions::ContinuationArguments<'_> {
         match self {
+            #[cfg(not(target_arch = "wasm32"))]
             Self::Immediate => tilo_actions::ContinuationArguments::Immediate,
+            #[cfg(not(target_arch = "wasm32"))]
             Self::Text(value) => tilo_actions::ContinuationArguments::Text(value),
             Self::Json(arguments) => tilo_actions::ContinuationArguments::Json(arguments),
         }
@@ -1714,7 +1734,9 @@ pub(crate) fn control_witness_with_arguments(
     let resources = resources_for_control_target(root, doc, target, &invocation.address)?;
     let (resource, spec) = unique_control_spec(&resources, &invocation.address)?;
     let (argument, arguments) = match original_arguments {
+        #[cfg(not(target_arch = "wasm32"))]
         ControlContinuationArguments::Immediate => (None, None),
+        #[cfg(not(target_arch = "wasm32"))]
         ControlContinuationArguments::Text(value) => (Some(value.as_str()), None),
         ControlContinuationArguments::Json(arguments) => (None, Some(arguments)),
     };
@@ -1860,6 +1882,7 @@ fn control_identity_from_spec(
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn control_draft_identity(
     root: &dyn Widget,
     doc: &AutoCommit,
@@ -2423,24 +2446,12 @@ pub struct CallbackBinding {
     /// intents by the shell that presents search.
     pub(crate) search_requests:
         Rc<RefCell<std::collections::VecDeque<crate::search::SearchRequest>>>,
-    #[allow(
-        dead_code,
-        reason = "binding retains original authority for the following typed-action provenance task"
-    )]
     pub(crate) instance_id: crate::application::InstanceId,
     pub(crate) app_id: String,
     pub(crate) records: RecordStore,
     pub(crate) checkout: RecordCheckout,
     pub(crate) permissions: Rc<RefCell<PermissionContext>>,
-    #[allow(
-        dead_code,
-        reason = "binding retains original authority for the following typed-action provenance task"
-    )]
     pub(crate) author: UserId,
-    #[allow(
-        dead_code,
-        reason = "binding retains original authority for the following typed-action provenance task"
-    )]
     pub(crate) operation_context: tilo_actions::ActionContext,
     /// Edits commit as the author's own writer on the record
     /// ([`crate::application::HostContext::write_as_author`]).
@@ -2577,6 +2588,7 @@ struct NativeTextPolicy {
 }
 
 pub(crate) struct RecordActionState {
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) invocation_provenance: Rc<RefCell<crate::invocation_scope::InvocationProvenance>>,
     pending: Option<PendingRecordAction>,
     pub(crate) generation: Option<u64>,
@@ -2585,6 +2597,7 @@ pub(crate) struct RecordActionState {
 impl Default for RecordActionState {
     fn default() -> Self {
         Self {
+            #[cfg(not(target_arch = "wasm32"))]
             invocation_provenance: Rc::default(),
             pending: None,
             generation: Some(0),
@@ -3394,6 +3407,7 @@ impl CallbackBinding {
     /// Queue a search for the host presenting this component. Only the
     /// latest request matters: an older one the host has not shown yet is
     /// replaced.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn request_search(&self, request: crate::search::SearchRequest) {
         let mut requests = self.search_requests.borrow_mut();
         requests.clear();
@@ -3421,6 +3435,7 @@ impl CallbackBinding {
         }
         self.records.admission_route(&self.checkout).ok()
     }
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn matches_broker_route(
         &self,
         witness: Option<&crate::collaboration::PrimaryRouteWitness>,
@@ -3428,6 +3443,7 @@ impl CallbackBinding {
         witness.is_some_and(|witness| self.matches_route(&witness.route))
     }
     /// Whether `route` is the broker route this binding names.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn matches_route(&self, route: &crate::collaboration::RouteSpec) -> bool {
         self.broker_route().as_ref() == Some(route)
             || self.admission_route().as_ref() == Some(route)
@@ -3539,6 +3555,7 @@ impl CallbackBinding {
         self.with_document(outer, |doc, _| self.finish_action_boundary(doc))?
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn history_request(
         &self,
         outer: &mut AutoCommit,
@@ -3549,6 +3566,7 @@ impl CallbackBinding {
 
     /// Outside changes need a new admitted history invocation: a local
     /// stack inversion has no current broker caller for its consequence.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn history_uses_compensation(
         &self,
         outer: &mut AutoCommit,
@@ -4412,6 +4430,7 @@ pub(crate) fn can_merge_remote_owned_document(
         .map_err(|error| RemoteApplyError::Unavailable(error.to_string()))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn merge_remote_owned_document(
     store: &RecordStore,
     checkout: &RecordCheckout,

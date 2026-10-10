@@ -1,7 +1,9 @@
 //! Opt-in receipt-to-scene identity; not evidence of input causality.
+use std::cell::RefCell;
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::OnceLock;
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::{cell::RefCell, sync::OnceLock};
 
 #[derive(Default)]
 struct SceneFrames {
@@ -28,6 +30,7 @@ impl SceneFrames {
     }
 }
 thread_local! { static DRAWN: RefCell<SceneFrames> = RefCell::default(); }
+#[cfg(not(target_arch = "wasm32"))]
 fn enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| std::env::var("TILO_WEBVIEW_FRAME_TRACE").is_ok_and(|v| v == "1"))

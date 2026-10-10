@@ -1,5 +1,6 @@
 //! Session-local native owner-view control. Documents retain their normal CRDT
 //! routes; these messages carry presentation only and grant no focus or input.
+#[cfg(not(target_arch = "wasm32"))]
 use super::ContinuationMetadata;
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -49,6 +50,7 @@ impl OwnerView {
 
 /// Device-local lifetime; never persisted as document state.
 #[derive(Default)]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct OwnerViewRuntime {
     pub(crate) last_generation: u64,
     pub(crate) last_claim_at: Option<crate::time::Instant>,

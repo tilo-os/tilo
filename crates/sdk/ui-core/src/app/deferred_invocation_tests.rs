@@ -219,7 +219,7 @@ fn check_deferred_bound_view_actor(foreign: bool, typed_empty: bool) {
     }
     let ledger = widget.ledger.clone();
     let (root, guard) = owned(widget, true);
-    let OwnerGuard::Component(binding, _) = &guard else {
+    let OwnerGuard::Component { binding, .. } = &guard else {
         unreachable!()
     };
     let target = crate::bound_dispatch::BoundActionTarget {

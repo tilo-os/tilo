@@ -377,6 +377,7 @@ pub enum LocalUndoStatus {
     Pending,
 }
 impl LocalUndoStatus {
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn key(&self) -> (bool, bool, bool) {
         match self {
             Self::Ready(status) => (true, status.can_undo, status.can_redo),

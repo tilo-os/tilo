@@ -259,6 +259,7 @@ impl PendingOperation {
         })
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn continuation_arguments(
         &self,
     ) -> Option<crate::bound_dispatch::ControlContinuationArguments> {
@@ -579,7 +580,9 @@ impl ActionPalette {
     ) {
         use crate::bound_dispatch::ControlContinuationArguments;
         let input = match &request.arguments {
+            #[cfg(not(target_arch = "wasm32"))]
             ControlContinuationArguments::Immediate => PendingInput::Immediate,
+            #[cfg(not(target_arch = "wasm32"))]
             ControlContinuationArguments::Text(value) => PendingInput::Text(value.clone()),
             ControlContinuationArguments::Json(value) => {
                 PendingInput::Json(serde_json::Value::Object(value.clone()).to_string())
@@ -622,6 +625,7 @@ impl ActionPalette {
 
     /// Capture a palette-row request immediately after the real argument/row
     /// transition, before any later host frame can change its owner or value.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn ordinary_capture_request(&self) -> Option<PendingOperation> {
         self.pending_dispatch
             .as_ref()
@@ -633,6 +637,7 @@ impl ActionPalette {
             })
             .cloned()
     }
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn retain_ordinary(&mut self, request: crate::bound_dispatch::OrdinaryConfirmation) {
         if let Some(p) = self.pending_dispatch.as_mut() {
             p.ordinary = Some(request);
@@ -758,6 +763,7 @@ impl ActionPalette {
                 .is_some_and(|arg| arg.history_target.is_some())
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn history_pending_bound_target(
         &self,
     ) -> Option<crate::bound_dispatch::BoundActionTarget> {
@@ -772,6 +778,7 @@ impl ActionPalette {
             .or_else(|| self.arg.as_ref().and_then(|arg| arg.bound.clone()))
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn history_pending_address(&self) -> Option<tilo_actions::ActionAddress> {
         self.pending_dispatch
             .as_ref()
@@ -784,6 +791,7 @@ impl ActionPalette {
             .or_else(|| self.arg.as_ref().map(|state| state.address.clone()))
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn history_pending_invocation(&self) -> Option<tilo_actions::ControlInvocation> {
         self.pending_dispatch
             .as_ref()
@@ -795,6 +803,7 @@ impl ActionPalette {
             })
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn history_pending_continuation_arguments(
         &self,
     ) -> Option<crate::bound_dispatch::ControlContinuationArguments> {
@@ -808,6 +817,7 @@ impl ActionPalette {
             })
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn history_exact_capture_request(
         &self,
     ) -> Option<(
@@ -829,6 +839,7 @@ impl ActionPalette {
         ))
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn retain_history_exact_witness(
         &mut self,
         witness: Result<crate::bound_dispatch::ControlWitness, String>,
@@ -871,6 +882,7 @@ impl ActionPalette {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn retain_history_resolution_error(&mut self, reason: impl Into<String>) {
         if !self.history_has_custody() {
             self.history_resolution_error = Some(reason.into());
@@ -925,6 +937,7 @@ impl ActionPalette {
 
     /// Open (focus) the palette: reset the query, argument, and any pending
     /// outcome, and rebuild the (empty-query) result set.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn load_bound_resources(
         &mut self,
         snapshots: Vec<crate::bound_dispatch::BoundResourceSnapshot>,
@@ -936,6 +949,7 @@ impl ActionPalette {
         let query = self.field.value().to_string();
         self.rebuild(&query);
     }
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn activate_bound(
         &mut self,
         target: &crate::bound_dispatch::BoundActionTarget,
@@ -1698,6 +1712,7 @@ impl ActionPalette {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn take_scoped_navigation(
         &mut self,
     ) -> Option<(String, Option<crate::bound_dispatch::CallbackBinding>)> {

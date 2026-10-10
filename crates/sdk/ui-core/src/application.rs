@@ -442,6 +442,7 @@ impl HostContext {
             retirement.retire();
         }
     }
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn bind_retirement(
         &mut self,
         retirement: crate::semantic_document_read::retirement::MountRetirement,
@@ -452,6 +453,7 @@ impl HostContext {
         self.retirement = Some(retirement);
         Ok(())
     }
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn require_invocation_provenance(&self) -> Result<(), crate::launch::LaunchError> {
         self.records
             .require_invocation_provenance(&self.record)
@@ -1173,6 +1175,7 @@ impl AppComponent {
             ),
         )
     }
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn take_root_retirement(
         &mut self,
     ) -> Option<crate::semantic_document_read::retirement::RootRetirementPrelude> {

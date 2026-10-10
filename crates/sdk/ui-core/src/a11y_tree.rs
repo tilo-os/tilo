@@ -327,6 +327,7 @@ impl SemanticTree {
     /// Unkeyed ancestors make every descendant non-durable, so their entire
     /// branch is absent from `action_resources`, irrespective of layout/focus.
     /// The full accessibility refresh remains independent of this projection.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn refresh_action_projection(
         &mut self,
         root: &dyn Widget,
@@ -365,6 +366,7 @@ impl SemanticTree {
             .map(|((id, _), target)| (id.clone(), target.clone()))
             .collect()
     }
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn bound_target(
         &self,
         id: &SemanticId,
