@@ -832,3 +832,20 @@ fn a_place_not_loaded_still_resolves_by_id() {
     let child = tilo_resource::child_by_id::<Pages>(&state, pages.doc(), id).expect("resolved");
     assert_eq!(child.label, "Chapter one");
 }
+
+/// An absent option given positionally is left out, as a parameter not
+/// given, rather than sent as `null` the door refuses.
+#[test]
+fn an_absent_positional_option_is_not_sent() {
+    let add: tilo_resource::ActionRef<Shelf, (String, Option<Colour>)> =
+        tilo_resource::ActionRef::new("add", &["title", "colour"]);
+    let arguments = add.arguments(&("Tea".to_owned(), None)).unwrap();
+    assert_eq!(arguments.len(), 1);
+    assert_eq!(arguments["title"], "Tea");
+    let single: tilo_resource::ActionRef<Shelf, Option<String>> =
+        tilo_resource::ActionRef::new("retitle", &["title"]);
+    assert!(single.arguments(&None).unwrap().is_empty());
+    let mut shelf = Replica::<Shelf>::new();
+    shelf.apply(add.with(("Tea".to_owned(), None))).unwrap();
+    assert_eq!(shelf.state().unwrap().cards.len(), 1);
+}
