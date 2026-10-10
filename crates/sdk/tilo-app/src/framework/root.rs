@@ -893,9 +893,17 @@ fn withhold_document_actions(resource: &mut tilo_actions::Resource, reason: &str
     }
 }
 
+/// The document actions of `resource` and its children that can queue an
+/// outside consequence (a verb taking an outbox, every action of a record
+/// with a `queue`, and undo, redo and restore, which queue the compensation
+/// of one), published as jobs: the invocation answers when what it queued
+/// has settled. Every other document action is deterministic and applies
+/// where it is invoked, at once.
 fn mark_document_jobs(resource: &mut tilo_actions::Resource) {
     for spec in &mut resource.actions {
-        if spec.kind == tilo_actions::OperationKind::Document {
+        let queues = spec.contract.kind == tilo_actions::ActionKind::Outside
+            || matches!(spec.id.as_str(), "undo" | "redo" | "restore");
+        if spec.kind == tilo_actions::OperationKind::Document && queues {
             spec.contract.execution = tilo_actions::ExecutionMode::Background { cancellable: true };
             if matches!(spec.contract.result, tilo_actions::ResultSpec::None) {
                 spec.contract.result = tilo_actions::ResultSpec::Job;

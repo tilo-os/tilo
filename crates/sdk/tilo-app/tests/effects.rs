@@ -1479,3 +1479,32 @@ fn background_effect_return_values_keep_their_declared_result_contract() {
         .validate(&tilo_actions::ActionOutput::default())
         .unwrap();
 }
+
+/// Only a verb that queues an outside consequence answers as a job; every
+/// other document action applies where it is invoked, at once, so a host
+/// that routes jobs elsewhere still applies it.
+#[test]
+fn only_verbs_that_queue_are_published_as_jobs() {
+    let mut app = TestApp::<CausalMailApp>::new().unwrap();
+    let resources = app.harness().resources();
+    let mailbox = resources
+        .iter()
+        .find(|resource| resource.kind == "test.mailbox")
+        .unwrap();
+    let execution = |id: &str| {
+        mailbox
+            .actions
+            .iter()
+            .find(|spec| spec.id == id)
+            .map(|spec| spec.contract.execution.clone())
+            .unwrap()
+    };
+    assert!(matches!(
+        execution("send"),
+        tilo_actions::ExecutionMode::Background { .. }
+    ));
+    assert_eq!(execution("fetched"), tilo_actions::ExecutionMode::Immediate);
+    app.call("fetched", serde_json::json!({"text": "now"}))
+        .unwrap();
+    assert_eq!(app.state().fetched, "now");
+}
