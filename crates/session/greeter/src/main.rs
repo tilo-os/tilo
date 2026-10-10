@@ -12,14 +12,7 @@
 //     …, see `ui::launch::LaunchArgs`) — render one login-card state
 //     into a PNG at `<PATH>` and exit. No window, no event loop. Headless
 //     snapshot for CI / visual inspection (identical output to the live
-//     binary). Scenarios: `form`, `hint`, `error`, `authenticating`,
-//     `fingerprint`, `starting`, `caps`, `longname`, `personal`, and
-//     `personal-no-fingerprint`, personal-device transient variants, and the
-//     personal-device errors `personal-locked`, `personal-session-failed`,
-//     `personal-service-down` and `personal-passcode-expired`, and
-//     `personal-sessions` with a second session installed,
-//     `personal-repeated-error`, and `accounts` for a machine with several
-//     accounts. Defaults to `form`.
+//     binary). `--scenario` names one of `SCENARIOS` and defaults to `form`.
 
 #![cfg_attr(
     test,
@@ -55,9 +48,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(out) = &args.shots {
         let scenario = match args.scenario.as_deref() {
             None => AuthScenario::Form,
-            Some(name) => {
-                scenario_named(name).ok_or_else(|| format!("unknown --scenario {name:?}"))?
-            }
+            Some(name) => scenario_named(name)?,
         };
         let mut widget = GreeterApp::for_shot(scenario);
         match args.value("--direction") {
@@ -126,54 +117,66 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// Start the console endpoints that exist here: the greeter user's private
 /// runtime socket, and the virtio port only a hypervisor can attach.
 fn serve_console(console: &console_control::ConsoleServer, proxy: EventLoopProxy<UserEvent>) {
-    let proxy = std::sync::Mutex::new(proxy);
     let waker: console_control::server::Waker = Arc::new(move || {
-        if let Ok(proxy) = proxy.lock() {
-            let _ = proxy.send_event(UserEvent::External(
-                greeter::greeter_app::CONSOLE_WAKE.to_owned(),
-            ));
-        }
+        let _ = proxy.send_event(UserEvent::External(
+            greeter::greeter_app::CONSOLE_WAKE.to_owned(),
+        ));
     });
-    let endpoints = console_control::Endpoint::discover(greeter::greeter_app::CONSOLE_PROVIDER);
-    let failed = console.serve_all(&endpoints, &waker);
-    for endpoint in &endpoints {
-        if let Some((_, error)) = failed.iter().find(|(candidate, _)| candidate == endpoint) {
-            tracing::warn!(?endpoint, %error, "greeter console endpoint unavailable");
-        } else {
-            tracing::info!(?endpoint, "greeter console listening");
-        }
-    }
+    console.serve_discovered(greeter::greeter_app::CONSOLE_PROVIDER, &waker);
 }
 
-/// The login-card state a `--scenario` name captures.
-fn scenario_named(name: &str) -> Option<AuthScenario> {
-    match name {
-        "form" => Some(AuthScenario::Form),
-        "error" => Some(AuthScenario::Error),
-        "authenticating" => Some(AuthScenario::Authenticating),
-        "fingerprint" => Some(AuthScenario::Fingerprint),
-        "caps" | "capslock" | "caps-lock" => Some(AuthScenario::CapsLock),
-        "hint" => Some(AuthScenario::Hint),
-        "starting" => Some(AuthScenario::Starting),
-        "longname" | "long-name" | "long" => Some(AuthScenario::LongName),
-        "personal" => Some(AuthScenario::Personal),
-        "personal-error" => Some(AuthScenario::PersonalError),
-        "personal-authenticating" => Some(AuthScenario::PersonalAuthenticating),
-        "personal-caps" | "personal-caps-lock" => Some(AuthScenario::PersonalCapsLock),
-        "personal-hint" => Some(AuthScenario::PersonalHint),
-        "personal-starting" => Some(AuthScenario::PersonalStarting),
-        "personal-no-fingerprint" | "personal-passcode" => {
-            Some(AuthScenario::PersonalNoFingerprint)
-        }
-        "personal-locked" => Some(AuthScenario::PersonalLocked),
-        "personal-session-failed" => Some(AuthScenario::PersonalSessionFailed),
-        "personal-service-down" => Some(AuthScenario::PersonalServiceDown),
-        "personal-passcode-expired" => Some(AuthScenario::PersonalPasscodeExpired),
-        "personal-sessions" => Some(AuthScenario::PersonalSessions),
-        "personal-repeated-error" => Some(AuthScenario::PersonalRepeatedError),
-        "accounts" => Some(AuthScenario::Accounts),
-        _ => None,
-    }
+/// Every `--scenario` name and the login-card state it captures.
+const SCENARIOS: [(&str, AuthScenario); 22] = [
+    ("form", AuthScenario::Form),
+    ("error", AuthScenario::Error),
+    ("authenticating", AuthScenario::Authenticating),
+    ("fingerprint", AuthScenario::Fingerprint),
+    ("caps", AuthScenario::CapsLock),
+    ("hint", AuthScenario::Hint),
+    ("starting", AuthScenario::Starting),
+    ("longname", AuthScenario::LongName),
+    ("personal", AuthScenario::Personal),
+    ("personal-error", AuthScenario::PersonalError),
+    (
+        "personal-authenticating",
+        AuthScenario::PersonalAuthenticating,
+    ),
+    ("personal-caps", AuthScenario::PersonalCapsLock),
+    ("personal-hint", AuthScenario::PersonalHint),
+    ("personal-starting", AuthScenario::PersonalStarting),
+    (
+        "personal-no-fingerprint",
+        AuthScenario::PersonalNoFingerprint,
+    ),
+    ("personal-locked", AuthScenario::PersonalLocked),
+    (
+        "personal-session-failed",
+        AuthScenario::PersonalSessionFailed,
+    ),
+    ("personal-service-down", AuthScenario::PersonalServiceDown),
+    (
+        "personal-passcode-expired",
+        AuthScenario::PersonalPasscodeExpired,
+    ),
+    ("personal-sessions", AuthScenario::PersonalSessions),
+    (
+        "personal-repeated-error",
+        AuthScenario::PersonalRepeatedError,
+    ),
+    ("accounts", AuthScenario::Accounts),
+];
+
+/// The login-card state a `--scenario` name captures; an unknown name's error
+/// lists the known ones.
+fn scenario_named(name: &str) -> Result<AuthScenario, String> {
+    SCENARIOS
+        .iter()
+        .find(|(known, _)| *known == name)
+        .map(|&(_, scenario)| scenario)
+        .ok_or_else(|| {
+            let known: Vec<&str> = SCENARIOS.iter().map(|(known, _)| *known).collect();
+            format!("unknown --scenario {name:?}; one of: {}", known.join(", "))
+        })
 }
 
 /// Credentials to seed for a `--shots` render, as `(username, password)`,
@@ -232,7 +235,7 @@ mod tests {
             ("personal-hint", AuthScenario::PersonalHint),
             ("personal-starting", AuthScenario::PersonalStarting),
         ] {
-            assert_eq!(scenario_named(name), Some(expected));
+            assert_eq!(scenario_named(name), Ok(expected));
         }
     }
 

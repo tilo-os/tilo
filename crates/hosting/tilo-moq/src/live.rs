@@ -676,8 +676,12 @@ impl LiveRelay {
                 server = server.with_subscriber(own);
             }
             if let Some(egress) = &scopes.egress {
-                let view =
-                    crate::mirror::Mirror::start(egress.clone(), VIEW_POOL_BYTES, EGRESS_RETAIN);
+                let view = crate::mirror::Mirror::start(
+                    egress.clone(),
+                    VIEW_POOL_BYTES,
+                    EGRESS_RETAIN,
+                    None,
+                );
                 server = server.with_publisher(view.consume());
                 scopes.view = Some(view);
             }

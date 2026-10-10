@@ -227,6 +227,55 @@ fn the_refreshed_state_equals_a_full_read_after_actions_and_merges() {
 }
 
 #[test]
+fn a_collection_keeps_its_membership_exactly_while_its_ids_hold() {
+    let ids = |notebook: &Notebook| notebook.notes.ids().cloned().collect::<Vec<_>>();
+    let mut rng = Lcg(23);
+    let mut replica = Replica::<Notebook>::new();
+    let live = replica.live().unwrap();
+    let mut last = (live.notes.membership(), ids(live));
+    let mut kept = 0_usize;
+    for step in 0..400 {
+        random_action(&mut replica, &mut rng, step);
+        let live = replica.live().unwrap();
+        let now = (live.notes.membership(), ids(live));
+        if now.0 == last.0 {
+            assert_eq!(
+                now.1, last.1,
+                "the same membership, other ids at step {step}"
+            );
+            kept = kept.saturating_add(1);
+        }
+        last = now;
+    }
+    assert!(kept > 0, "some steps edit without moving an item");
+
+    // Editing an item keeps the membership; adding, moving and removing
+    // one change it.
+    let notes = replica.state().unwrap().notes;
+    assert!(notes.len() > 1, "a move needs somewhere to go");
+    let last_place = notes.len();
+    let target = notes.ids().next().cloned().unwrap();
+    let before = replica.live().unwrap().notes.membership();
+    replica
+        .apply(Notebook::EDIT.with((target.clone(), "edited".into())))
+        .unwrap();
+    replica
+        .apply(Notebook::DECORATE.with((target.clone(), "blue".into())))
+        .unwrap();
+    replica.apply(Notebook::RENAME.with("Kept".into())).unwrap();
+    assert_eq!(replica.live().unwrap().notes.membership(), before);
+    for change in [
+        Notebook::ADD.with("another".into()),
+        Notebook::MOVE_NOTE.with((target.clone(), last_place)),
+        Notebook::DELETE.with(target),
+    ] {
+        let before = replica.live().unwrap().notes.membership();
+        replica.apply(change).unwrap();
+        assert_ne!(replica.live().unwrap().notes.membership(), before);
+    }
+}
+
+#[test]
 fn editing_one_note_of_many_reads_only_that_note() {
     let mut replica = Replica::<Notebook>::new();
     for n in 0..500 {

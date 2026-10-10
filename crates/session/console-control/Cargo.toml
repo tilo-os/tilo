@@ -16,6 +16,7 @@ path = "src/lib.rs"
 tilo-paths.workspace = true
 tilo-actions = { path = "../../collab/actions" }
 serde_json.workspace = true
+tracing.workspace = true
 rustix = { workspace = true, features = ["process"] }
 workspace-hack = { version = "0.1" }
 
