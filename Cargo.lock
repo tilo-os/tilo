@@ -16764,11 +16764,13 @@ dependencies = [
 name = "tilo-egress"
 version = "0.1.0"
 dependencies = [
+ "bounded-command",
  "collab-types",
  "libc",
  "tempfile",
  "thiserror 2.0.21",
  "tilo-clock",
+ "tilo-test-env",
  "tracing",
  "workspace-hack",
 ]
