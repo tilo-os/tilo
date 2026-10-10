@@ -1,4 +1,4 @@
-# OS image size, 2026-10-10 (TIL-733, TIL-736)
+# OS image size, 2026-10-10 (TIL-733, TIL-736, TIL-735)
 
 A follow-up of [the TIL-609 receipt](os-image-size-2026-10-09.md), whose
 "other redundant payload" table this change works down. The nightly records
@@ -82,3 +82,32 @@ landed) against the same "before" image, in bytes:
 Unique content counts identical files once already, so it barely moves; the
 pull and the deployed content shrink. The pull request built x86_64 only, so
 the aarch64 ceiling is left to the nightly records.
+
+## TIL-735: the env-runtime from the host's files
+
+The app store's env-runtime ships without the files the host already has,
+byte for byte: the `app-store` stage leaves them out and names each in the
+image's `host-sources`, and package-store imports them from the host, every
+byte checked against the image's signed hash. The build logged
+`2230 files, 167741166 bytes taken from the host`; the rootfs's final check
+put back 0 bytes. Measured on `tilo-ci:pr-4072-e90b144-x86_64` (revision
+`e90b144fa5`) against main with TIL-733 and TIL-736
+(`tilo-ci:main-e88a45c-x86_64`, three commits later, none touching `os/`), in
+bytes:
+
+| measure | before | after | change |
+|---|---:|---:|---:|
+| compressed | 4,755,833,467 | 4,711,047,974 | −44,785,493 |
+| payload | 11,903,191,234 | 11,789,027,884 | −114,163,350 |
+| content | 11,096,171,422 | 10,982,008,072 | −114,163,350 |
+| unique content | 10,803,193,523 | 10,803,689,053 | +495,530 |
+| redundant payload | 383,717,854 | 269,058,974 | −114,658,880 |
+
+Unique content grows by the `host-sources` listing. The pull request built
+x86_64 only.
+
+## Together (x86_64)
+
+From the TIL-609 follow-up's "before" (`main-9ce45bf`) to the image with all
+three changes: compressed 5,163,976,980 → 4,711,047,974 B (−452,929,006,
+−8.8 %), redundant payload 900,763,895 → 269,058,974 B.

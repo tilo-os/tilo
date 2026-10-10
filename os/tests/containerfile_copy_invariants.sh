@@ -150,7 +150,10 @@ containerfile="$repo/os/Containerfile"
 # The Plymouth theme arrives rendered from the plymouth-assets stage, which
 # replaces the context copy of its sources; make-plymouth-assets.py, which
 # rendered it inside the rootfs, no longer enters /usr/local/bin (TIL-733).
-expected_contract=389390d1eb903c3eef1af42e1b5f4b85bfc65028deb8ff4bc5fe17a026723ced
+# The app store arrives from the app-store stage, the builder's store with the
+# env-runtime's host-identical files left out and named in its host-sources
+# (TIL-735); the installed path is unchanged.
+expected_contract=2d0dd1ea813ea5c63d3b3a5c38ae6c73cefe768dd1e4e5b0b301c3fd0eb91400
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
