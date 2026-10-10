@@ -25,18 +25,15 @@ tilo-files = { path = "../../platform/tilo-files" }
 automerge.workspace = true
 chrono = { workspace = true, features = ["clock", "std"] }
 collab-types = { path = "../../collab/collab-types" }
-getrandom.workspace = true
 image.workspace = true
 tilo-doc = { path = "../../doc/tilo-doc" }
 serde_json.workspace = true
 taffy = { workspace = true, features = ["content_size"] }
 tempfile.workspace = true
-threshold-identity = { path = "../../collab/threshold-identity" }
 tilo-actions = { path = "../../collab/actions" }
 tilo-automerge.workspace = true
 tilo-resource = { path = "../../sdk/tilo-resource" }
 tilo-ui = { path = "../../sdk/ui-core", default-features = false }
-tilo-identity-ceremony = { path = "../../collab/tilo-identity-ceremony" }
 vello.workspace = true
 winit.workspace = true
 workspace-hack = { version = "0.1" }
