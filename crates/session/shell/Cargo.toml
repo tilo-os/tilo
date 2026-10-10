@@ -139,6 +139,8 @@ quick-xml.workspace = true
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["dmabuf-import"] }
 
 tilo-actions = { path = "../../collab/actions" }
+tilo-app = { path = "../../sdk/tilo-app" }
+chat = { path = "../../../apps/chat", default-features = false }
 console-control = { path = "../console-control" }
 tilo-automation = { path = "../../collab/automation" }
 # The record/room-index store. The compositor keeps one document per room

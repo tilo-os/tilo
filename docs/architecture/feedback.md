@@ -119,10 +119,30 @@ Live configuration must name the already-authorized room UUID, exact provider
 `record:so.tilo.chat:` and text channel ID, and select the already-certified
 reporter's root/device. These values are not present in the public demo's verified
 configuration. No destination, enrollment or grant is created by this feature.
-Native startup still needs its broker/identity-owned producer to call
-`InProcessApps::install_feedback_startup`; the browser producer does not establish
-native or deployed browser acceptance. Source tests use isolated certified HTTPS
-sessions and real retained storage, including a cold host restart.
+Native startup reads optional `feedback-destination.json` under the existing
+`org.tilo.Shell/apps` private profile. Its closed JSON contains only `room`,
+`provider` and `channel`; it contains no role, capability, identity or key. Missing
+configuration leaves feedback unconfigured. The compositor binds this selection
+to its original `ShellNetwork`. `feedback_custody` reads the committed enrolled
+room's governor and checks current selected reporter custody without a legacy
+identity fallback. The correlated owner response supplies admission; every use
+also compares current native role and capabilities, so a stale answer cannot
+survive policy change, revocation, selection change or an uncertain owner.
+
+The producer calls `InProcessApps::install_feedback_startup` and retains the
+private outbox. Its Chat publisher opens the existing record inside the
+original SDK committed-read bridge and invokes the registered local
+`submit-feedback` door as the original application person. The ordinary native
+broker model pump commits and publishes the edit without painting or pixels;
+no direct peer snapshot or replacement network bypasses that custody. Its
+presentation remains ephemeral inside the original checked namespace, so model
+service teardown cannot replace the user's saved Chat window view. Startup cannot
+create a missing Chat record. Cold restart requires fresh owner admission and
+current selected custody again.
+`NoCapture` remains mandatory until a durable screenshot content witness exists.
+Source qualification does not establish deployed native or browser acceptance.
+Tests use isolated certified sessions, the real native broker and retained storage,
+including cold application and owner restarts.
 
 A host must supply its existing durable profile store, an admitted
 `Destination { room, provider, channel }`, authenticated action transport,

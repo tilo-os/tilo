@@ -791,8 +791,18 @@ fn feedback_publisher(
         reveal: None,
     };
     let views = Rc::new(
-        InstanceViewStore::with_store(store, "feedback-publisher", uuid)
-            .map_err(|error| error.to_string())?,
+        InstanceViewStore::with_store(
+            store,
+            &hex::encode(
+                admission
+                    .reporter
+                    .device_public_key()
+                    .ok_or("reporter device absent")?,
+            ),
+            uuid,
+        )
+        .map_err(|error| error.to_string())?
+        .without_persistence(),
     );
     let context = HostContext::prepare(
         definition,

@@ -109,6 +109,7 @@ pub struct InstanceViewStore {
     portable: Option<crate::portable_storage::PortableStorage>,
     device_id: String,
     workspace_id: String,
+    ephemeral: bool,
     #[allow(
         dead_code,
         reason = "ownership of the profile resource, rather than access to it, keeps it alive"
@@ -163,6 +164,7 @@ impl InstanceViewStore {
             device_id: device_id.into(),
             workspace_id: workspace_id.into(),
             profile_lifetime: None,
+            ephemeral: false,
         })
     }
     /// Use the same explicit profile/device cache as the record owner.
@@ -182,8 +184,18 @@ impl InstanceViewStore {
             workspace_id: workspace.into(),
             portable: Some(cache),
             profile_lifetime: None,
+            ephemeral: false,
         })
     }
+    /// A model-only service keeps presentation ephemeral while retaining the
+    /// original profile/device/workspace binding. It never reads or replaces
+    /// a user's saved window view. Record persistence is unaffected.
+    #[must_use]
+    pub fn without_persistence(mut self) -> Self {
+        self.ephemeral = true;
+        self
+    }
+
     /// The explicit profile namespace these views are bound to; equal to the
     /// record owner's canonical namespace for the same profile.
     fn namespace(&self) -> String {
@@ -228,6 +240,9 @@ impl InstanceViewStore {
     /// Reports I/O, malformed/versioned envelopes, invalid geometry and foreign bindings.
     /// Invalid source bytes are never repaired or replaced.
     pub fn load(&self, instance_id: u64) -> Result<Option<SavedInstanceView>, ThawError> {
+        if self.ephemeral {
+            return Ok(None);
+        }
         let bytes = if let Some(cache) = &self.portable {
             let Some(value) = cache.get(&self.cache_key(instance_id)) else {
                 return Ok(None);
@@ -253,6 +268,9 @@ impl InstanceViewStore {
     /// on its host to commit is not a failure.
     pub fn save(&self, instance: &SavedInstanceView) -> Result<(), ThawError> {
         self.validate(instance, instance.instance_id)?;
+        if self.ephemeral {
+            return Ok(());
+        }
         let bytes = postcard::to_stdvec(instance).map_err(ThawError::Envelope)?;
         if let Some(cache) = &self.portable {
             let key = self.cache_key(instance.instance_id);
