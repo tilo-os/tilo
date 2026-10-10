@@ -160,6 +160,8 @@ pub struct NamedShareInbox {
     path: PathBuf,
     local_person: Ed25519PublicKey,
     entries: Mutex<BTreeMap<Uuid, NamedShareEnvelopeV1>>,
+    /// Rung when an envelope is accepted ([`Self::arrival`]).
+    arrivals: tokio::sync::Notify,
 }
 
 /// One crash-safe delivery job. A job is complete after one currently
@@ -186,6 +188,8 @@ struct OutboxDocumentV1 {
 pub struct NamedShareOutbox {
     path: PathBuf,
     entries: Mutex<BTreeMap<Uuid, NamedShareOutboxEntryV1>>,
+    /// Rung when a delivery is enqueued ([`Self::arrival`]).
+    arrivals: tokio::sync::Notify,
 }
 
 impl NamedShareOutbox {
@@ -226,6 +230,7 @@ impl NamedShareOutbox {
         let outbox = Self {
             path,
             entries: Mutex::new(entries),
+            arrivals: tokio::sync::Notify::new(),
         };
         if !outbox.path.exists() {
             outbox.persist(&BTreeMap::new())?;
@@ -282,7 +287,15 @@ impl NamedShareOutbox {
         );
         self.persist(&next)?;
         *current = next;
+        self.arrivals.notify_one();
         Ok(true)
+    }
+
+    /// Resolves once a delivery has been enqueued since the last time this
+    /// resolved (or since the outbox opened). The delivery loop waits on it
+    /// instead of polling an empty outbox (TIL-750).
+    pub async fn arrival(&self) {
+        self.arrivals.notified().await;
     }
 
     /// Return non-expired deliveries that have not yet succeeded.
@@ -731,6 +744,7 @@ impl NamedShareInbox {
             path,
             local_person,
             entries: Mutex::new(entries),
+            arrivals: tokio::sync::Notify::new(),
         };
         if !inbox.path.exists() {
             inbox.persist(&BTreeMap::new())?;
@@ -772,7 +786,15 @@ impl NamedShareInbox {
         next.insert(envelope.invite.id, envelope);
         self.persist(&next)?;
         *current = next;
+        self.arrivals.notify_one();
         Ok(true)
+    }
+
+    /// Resolves once an envelope has been accepted since the last time this
+    /// resolved (or since the inbox opened), so the recipient service mounts
+    /// it at once instead of on its next pass (TIL-750).
+    pub async fn arrival(&self) {
+        self.arrivals.notified().await;
     }
 
     /// Return envelopes that remain valid at `now_ms`.
