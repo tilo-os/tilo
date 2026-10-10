@@ -8552,9 +8552,10 @@ pub fn run() {
         initial_size,
         crate::shell::session_record_store(),
     );
-    frame_builder
-        .host_mut()
-        .set_pixel_aligned_strip_pan(backend.pixel_aligned_strip_pan());
+    frame_builder.set_strip_pan_presenter(
+        backend.pixel_aligned_strip_pan(),
+        backend.composites_strip_layers(),
+    );
     let clipboard_store = state.selection_store();
     frame_builder
         .host_mut()
