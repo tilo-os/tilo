@@ -209,6 +209,16 @@ try {
   stage('governed-revocation-refuses-link-reopen');
   writeFileSync(join(evidence, 'journey.json'), JSON.stringify({mode: fixture.encryptedRestart ? 'certified-browser-encrypted-cold' : fixture.disconnectRetry ? 'certified-browser-disconnect-retry' : 'certified-browser-viewer',
     app:'so.tilo.chat', stages}, null, 2) + '\n');
+} catch (error) {
+  const pageStatus = await Promise.race([
+    tab?.evaluate('document.querySelector("#status")?.textContent ?? ""', {timeout:250})
+      .catch(() => 'status unavailable'),
+    new Promise(resolve => setTimeout(() => resolve('status observation unavailable'), 250)),
+  ]);
+  writeFileSync(join(evidence, 'failure.json'), JSON.stringify({phase:'error',
+    lastStage:stages.at(-1) ?? null, pageStatus:String(pageStatus ?? '').slice(0, 500),
+    error:String(error).slice(0, 500)}, null, 2) + '\n');
+  throw error;
 } finally {
   clearTimeout(deadline);
   input.close();
