@@ -35,9 +35,9 @@ name = "launcher"
 path = "src/lib.rs"
 
 [features]
-# Honour the developer-only environment overrides (`src/dev_env.rs`, and the
-# system store's in `package-store`) in a release build. Debug builds always
-# honour them; shipped images never enable this.
+# Honour the developer-only environment overrides (`package_store::dev_env`)
+# in a release build. Debug builds always honour them; shipped images never
+# enable this.
 dev-overrides = ["package-store/dev-overrides"]
 # Explicit opt-in Linux process-tree qualification fixture.
 managed-tree-test = []

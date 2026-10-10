@@ -158,7 +158,7 @@ fn search_for(dir: &Path, name: &str, depth: usize) -> Option<PathBuf> {
 
 /// Decide the hardening for a package, reading the image's policy list.
 pub fn for_package(package_id: &str) -> RuntimeHardening {
-    let policy_path = crate::dev_env::dev_override(POLICY_PATH_ENV)
+    let policy_path = package_store::dev_env::dev_override(POLICY_PATH_ENV)
         .map_or_else(|| PathBuf::from(POLICY_PATH), PathBuf::from);
     let high_risk = match std::fs::read_to_string(&policy_path) {
         Ok(list) => policy_matches(&list, package_id),
