@@ -205,6 +205,22 @@ fn prepare_existing_chat(owner: &NativeWorkspaceOwner, key: &ed25519_dalek::Sign
                 let heads = document.get_heads();
                 let person = hex::encode(view.device().user_public_key);
                 let workspace = room.to_string();
+                // The room's seed holds a voice channel its media binding names.
+                // The chat's first state is written over what the record holds,
+                // keeping that channel's objects, so the binding still resolves.
+                {
+                    use tilo_resource::{Fields as _, Resource as _};
+                    let held = chat::Chat::read_fields(&document, &automerge::ROOT)
+                        .map_err(|error| error.to_string())?;
+                    held.write_fields(&mut document, &automerge::ROOT)
+                        .map_err(|error| error.to_string())?;
+                    tilo_resource::evolution::write_version(&mut document, chat::Chat::VERSION)
+                        .map_err(|error| error.to_string())?;
+                    document.commit_with(
+                        automerge::transaction::CommitOptions::default()
+                            .with_message(tilo_actions::FrameworkChange::Genesis.change_message()),
+                    );
+                }
                 chat::demo::start_in(
                     &mut document,
                     &person,

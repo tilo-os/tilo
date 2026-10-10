@@ -1029,7 +1029,11 @@ mod tests {
         let list = temp.path().join("fs-capabilities.json");
         std::fs::write(
             &list,
-            serde_json::to_vec(&[grant("/docs"), grant("/plans")]).unwrap(),
+            serde_json::to_vec(&collab_types::FsAuthority::from(vec![
+                grant("/docs"),
+                grant("/plans"),
+            ]))
+            .unwrap(),
         )
         .unwrap();
         let authority = Arc::new(
@@ -1067,7 +1071,7 @@ mod tests {
         assert!(handle.permits(&subject, "/plans/b.md", Access::Read));
 
         // What a reader sees if it catches an in-place rewrite midway.
-        std::fs::write(&list, b"[{\"subject\"").unwrap();
+        std::fs::write(&list, b"{\"capabilities\":[{\"subject\"").unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         assert_eq!(
             authority.current().unwrap().revision,
@@ -1076,7 +1080,11 @@ mod tests {
         );
 
         let written = std::time::Instant::now();
-        std::fs::write(&list, serde_json::to_vec(&[grant("/docs")]).unwrap()).unwrap();
+        std::fs::write(
+            &list,
+            serde_json::to_vec(&collab_types::FsAuthority::from(vec![grant("/docs")])).unwrap(),
+        )
+        .unwrap();
         while handle.permits(&subject, "/plans/b.md", Access::Read) {
             assert!(
                 written.elapsed() <= bound,

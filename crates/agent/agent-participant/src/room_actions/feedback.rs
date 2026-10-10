@@ -219,8 +219,11 @@ impl CanonicalReceiptSource for RetainedSource {
         let value = source
             .read(
                 &ActionAddress::new(
-                    format!("chat.feedback:{}", submission.id),
-                    "read-feedback-receipt",
+                    ui::feedback::destination::item(
+                        ui::feedback::destination::REPORTS,
+                        &submission.id,
+                    ),
+                    ui::feedback::destination::READ_RECEIPT,
                 ),
                 &arguments,
             )

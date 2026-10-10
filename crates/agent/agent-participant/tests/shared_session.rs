@@ -755,12 +755,13 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     // 11. A plan that takes a while (a model call) is made beside the loop:
     // the loop goes on pumping meanwhile, and the plan's first step runs as
     // soon as it is ready.
+    let (note, arguments) = common::scratchpad_body("Planned beside the loop");
     let planned_steps = serde_json::json!([{
         "app": SCRATCHPAD,
         "record": route.record,
         "resource": "scratchpad.note",
-        "action": "edit",
-        "arguments": {"text": "Planned beside the loop"},
+        "action": note.action,
+        "arguments": arguments,
     }]);
     let release_later = release_plan.clone();
     let releaser = std::thread::spawn(move || {
@@ -817,12 +818,13 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     // task's late plan is dropped. Each step goes through the agent's
     // action door while the loop pumps.
     let gated_edit = |text: &str| {
+        let (note, arguments) = common::scratchpad_body(text);
         serde_json::json!([{
             "app": SCRATCHPAD,
             "record": route.record,
             "resource": "scratchpad.note",
-            "action": "edit",
-            "arguments": {"text": text},
+            "action": note.action,
+            "arguments": arguments,
         }])
     };
     let task_of = |id: &str| {
