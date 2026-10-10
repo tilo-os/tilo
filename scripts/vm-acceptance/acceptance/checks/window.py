@@ -697,21 +697,23 @@ def animations(ctx, res):
         raise Unobservable("; ".join(unseen) + where)
 
 
-def _find_probe(ctx, name):
-    out = ctx.vm.exec(f'find "$HOME" /tmp -maxdepth 4 -name {name} 2>/dev/null | head -1; true')
-    return [l for l in out.splitlines() if l.strip() and not l.startswith("receipt:")]
-
-
 @check("W17", AREA, "Real keyboard: typed text, Space and Return reach the focused Terminal")
 def typing(ctx, res):
     ctx.reset()
+    shells = core.terminal_shells(ctx)
     ctx.new_terminal_window()
-    ctx.settle(2.0)
+    # Keys typed before the shell runs only echo; this check is about the keys.
+    ready = core.wait_new_terminal_shell(ctx, shells, core.TERMINAL_SHELL_S)
+    res.metrics["seconds_to_shell"] = ready
+    if ready is None:
+        ctx.write("W17-ush.txt", core.ush_diagnostics(ctx))
+        raise CheckFailed(f"no shell ran in the new Terminal within {core.TERMINAL_SHELL_S} s, "
+                          "so nothing could read the keys (W17-ush.txt shows the shell runtime)")
+    ctx.settle(1.0)
     probe = f"acc-kbd-{int(time.time())}"
     ctx.vm.input("type", f"echo ok > ~/{probe}")
     ctx.vm.key("Return")
-    time.sleep(2.0)
-    real = _find_probe(ctx, probe)
+    real = wait_until(lambda: core.terminal_probe(ctx, probe), 4, 0.5)
     ctx.shot("W17-typed")
     res.metrics["real_keyboard_ran_command"] = bool(real)
     if real:
@@ -721,10 +723,10 @@ def typing(ctx, res):
     probe2 = probe + "-ctl"
     ctx.vm.control("type", f"echo ok > ~/{probe2}")
     ctx.vm.control("key", "Enter")
-    time.sleep(2.0)
-    synthetic = bool(_find_probe(ctx, probe2))
+    synthetic = bool(wait_until(lambda: core.terminal_probe(ctx, probe2), 4, 0.5))
     res.metrics["control_socket_ran_command"] = synthetic
     ctx.shot("W17-after-control")
+    ctx.write("W17-ush.txt", core.ush_diagnostics(ctx))
     ctx.close_overlays()
     raise CheckFailed("the command typed on the real keyboard never ran in Terminal "
                       "(W17-typed shows what arrived: spaces and Return are the usual casualties)"
