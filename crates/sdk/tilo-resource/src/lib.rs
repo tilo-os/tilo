@@ -475,6 +475,7 @@ pub mod __private {
     ///
     /// # Errors
     /// Why `value` does not serialize.
+    #[inline(never)]
     pub fn json_via_bytes<T: serde::Serialize + ?Sized>(
         value: &T,
     ) -> Result<serde_json::Value, serde_json::Error> {
@@ -499,6 +500,28 @@ pub mod __private {
     }
 
     pub use crate::resource::default_search;
+
+    /// The action name and arguments of an action's JSON form
+    /// (`{"action": .., "args": ..}`, the arguments `null` when absent).
+    ///
+    /// # Errors
+    /// Why `value` is not an action.
+    #[inline(never)]
+    pub fn tagged(
+        value: serde_json::Value,
+    ) -> Result<(String, serde_json::Value), serde_json::Error> {
+        use serde::de::Error as _;
+        let serde_json::Value::Object(mut fields) = value else {
+            return Err(serde_json::Error::custom("an action is an object"));
+        };
+        let Some(serde_json::Value::String(action)) = fields.remove("action") else {
+            return Err(serde_json::Error::missing_field("action"));
+        };
+        Ok((
+            action,
+            fields.remove("args").unwrap_or(serde_json::Value::Null),
+        ))
+    }
 
     /// The JSON form's schema of a record of `shape`: each field's under its
     /// key, read from the shape so it is built by one function for every

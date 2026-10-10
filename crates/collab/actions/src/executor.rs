@@ -316,7 +316,11 @@ fn apply_under_envelope(
         // change under the pinned timestamp, content-addressed identical on
         // origin and every replaying replica.
         let mut options = CommitOptions::default().with_time(env.timestamp);
-        if let Some(message) = env.context.as_ref().and_then(ActionContext::change_message) {
+        if let Some(message) = env
+            .context
+            .as_ref()
+            .and_then(|context| entry_message(doc, &env.actor(), context))
+        {
             options = options.with_message(message);
         }
         doc.commit_with(options);
@@ -329,6 +333,88 @@ fn apply_under_envelope(
         abort_pinned_change(doc, prev_actor);
     }
     Ok(())
+}
+
+/// The message `context` is written with by `actor` on `doc`: as the
+/// continuation of the actor's previous entry when the change continues its
+/// gesture (a head of `doc` is the actor's, of the same gesture and step),
+/// else whole. A function of the document, so a replaying device writes the
+/// same message, hence the same change.
+#[must_use]
+pub fn entry_message(doc: &Doc, actor: &ActorId, context: &ActionContext) -> Option<String> {
+    if context.gesture.is_some() && context.compensation.is_none() {
+        let document = doc.committed_document();
+        let continuation = doc.committed_heads().into_iter().find_map(|head| {
+            let meta = document.get_change_meta_by_hash(&head)?;
+            if meta.actor.as_ref() != actor {
+                return None;
+            }
+            context.continuation_of(&entry_of(document, head)?)
+        });
+        if continuation.is_some() {
+            return continuation;
+        }
+    }
+    context.change_message()
+}
+
+/// How deep [`entry_of`] follows a gesture's continuations back to its
+/// first entry.
+const MAX_CONTINUATIONS: usize = 4096;
+
+/// The entry of the change `hash`: its message's, or for a continuation its
+/// gesture's first entry with the continuation's action (found by following
+/// its writer's earlier changes).
+#[must_use]
+pub fn entry_of(doc: &automerge::Automerge, hash: automerge::ChangeHash) -> Option<ActionContext> {
+    let meta = doc.get_change_meta_by_hash(&hash)?;
+    let message = meta.message.as_deref()?;
+    if let Some(entry) = ActionContext::from_change_message(message) {
+        return Some(entry);
+    }
+    let gesture = ActionContext::continued_gesture(message)?;
+    let actor = meta.actor.clone();
+    let mut at = meta.deps.clone();
+    for _ in 0..MAX_CONTINUATIONS {
+        let earlier = at.iter().find_map(|dep| {
+            let meta = doc.get_change_meta_by_hash(dep)?;
+            (meta.actor == actor).then_some(meta)
+        })?;
+        let text = earlier.message.as_deref()?;
+        if let Some(first) = ActionContext::from_change_message(text) {
+            return (first.gesture == Some(gesture))
+                .then(|| ActionContext::continued(message, &first))
+                .flatten();
+        }
+        if ActionContext::continued_gesture(text) != Some(gesture) {
+            return None;
+        }
+        at = earlier.deps.clone();
+    }
+    None
+}
+
+/// The entries of a document's changes read in causal order, each
+/// continuation folded into its gesture's first entry as it is read.
+#[derive(Default)]
+pub struct EntryReader {
+    firsts: std::collections::HashMap<(ActorId, ActionId), ActionContext>,
+}
+
+impl EntryReader {
+    /// The entry of a change by `actor` with `message`, read after every
+    /// change before it.
+    pub fn read(&mut self, actor: &ActorId, message: Option<&str>) -> Option<ActionContext> {
+        let message = message?;
+        if let Some(entry) = ActionContext::from_change_message(message) {
+            if let Some(gesture) = entry.gesture {
+                self.firsts.insert((actor.clone(), gesture), entry.clone());
+            }
+            return Some(entry);
+        }
+        let gesture = ActionContext::continued_gesture(message)?;
+        ActionContext::continued(message, self.firsts.get(&(actor.clone(), gesture))?)
+    }
 }
 
 /// Abandon a dispatch that produced no committed change, leaving the
@@ -516,11 +602,7 @@ pub fn verify_change(
         .get_change_meta_by_hash(&hash)
         .ok_or_else(|| ActionError::Refused("the change is not in the document".into()))?
         .into_owned();
-    let Some(context) = change
-        .message
-        .as_deref()
-        .and_then(ActionContext::from_change_message)
-    else {
+    let Some(context) = entry_of(doc.committed_document(), hash) else {
         return Ok(Verified::NothingRecorded);
     };
     let Some(recorded) = recorded_action(&context) else {
@@ -563,13 +645,9 @@ pub fn verified_compensation(
     hash: automerge::ChangeHash,
     registry: &ActionRegistry,
 ) -> Result<Option<Box<dyn Action>>, ActionError> {
-    let inverse = doc
-        .get_change_meta_by_hash(&hash)
-        .ok_or_else(|| ActionError::Refused("history change is unavailable".into()))?
-        .message
-        .as_deref()
-        .and_then(ActionContext::from_change_message)
-        .and_then(|context| context.compensation);
+    doc.get_change_meta_by_hash(&hash)
+        .ok_or_else(|| ActionError::Refused("history change is unavailable".into()))?;
+    let inverse = entry_of(doc.committed_document(), hash).and_then(|context| context.compensation);
     let Some(inverse) = inverse else {
         return Ok(None);
     };

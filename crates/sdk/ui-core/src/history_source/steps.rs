@@ -352,7 +352,7 @@ impl StepIndex {
             if self.positions.contains_key(&meta.hash) {
                 continue;
             }
-            let version = tilo_resource::history::version_of(meta);
+            let version = tilo_resource::history::version_of(document, meta);
             self.positions.insert(version.hash, self.versions.len());
             self.versions.push(version);
         }

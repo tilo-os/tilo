@@ -432,11 +432,7 @@ pub fn change_summary(doc: &mut AutoCommit, from: &[ChangeHash], to: &[ChangeHas
     // which an undo control asking every frame cannot afford.
     if let [head] = to
         && !from.contains(head)
-        && let Some(summary) = doc
-            .get_change_meta_by_hash(head)
-            .and_then(|meta| meta.message.as_deref().map(str::to_owned))
-            .as_deref()
-            .and_then(tilo_actions::ActionContext::from_change_message)
+        && let Some(summary) = tilo_actions::entry_of(doc.committed_document(), *head)
             .as_ref()
             .and_then(sentence::step_summary)
     {

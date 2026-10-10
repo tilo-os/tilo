@@ -1804,16 +1804,19 @@ impl<R: Resource> Effects<R> {
     }
 
     /// The jobs the views start on their own.
+    #[inline(never)]
     pub(crate) fn view_jobs(&self) -> Jobs<R> {
         self.jobs.borrow().jobs.clone()
     }
 
     /// Jobs for one surface, whose completions get `&mut` the surface.
+    #[inline(never)]
     pub(crate) fn surface_jobs(&self) -> Jobs<R> {
         Jobs::new(self.env.clone())
     }
 
     /// Take up and finish the views' jobs.
+    #[inline(never)]
     pub(crate) fn poll_jobs(&self) {
         self.jobs.borrow_mut().poll(&mut ());
         self.inner.borrow_mut().causal.poll();
@@ -1917,6 +1920,7 @@ impl<R: Resource> Effects<R> {
     }
 
     /// Every published effect, as callers see it now.
+    #[inline(never)]
     pub(crate) fn specs(&self) -> Vec<ActionSpec> {
         let mut inner = self.inner.borrow_mut();
         Self::prune(&mut inner);
@@ -1969,6 +1973,7 @@ impl<R: Resource> Effects<R> {
 
     /// Write the outbox settlements learned since the last settle pass, then
     /// tell the invocations waiting on them how they settled.
+    #[inline(never)]
     pub(crate) fn apply_settlements(&self, edits: &mut ui_core::widget::Edits<'_>) {
         let Some(env) = &self.env else {
             return;
@@ -1989,6 +1994,7 @@ impl<R: Resource> Effects<R> {
 
     /// Settle finished projection jobs, then start what the document at
     /// `revision` lists and is not running yet.
+    #[inline(never)]
     pub(crate) fn drain_projections(&self, state: &R::State, revision: u64) {
         let mut inner = self.inner.borrow_mut();
         if inner.drains.is_empty() {

@@ -335,10 +335,12 @@ impl HistoryLog {
             let context = if genesis {
                 Some(genesis_context())
             } else {
-                logged
-                    .message
-                    .as_deref()
-                    .and_then(tilo_actions::ActionContext::from_change_message)
+                match logged.message.as_deref() {
+                    Some(message) if message.starts_with(tilo_actions::CONTINUATION_PREFIX) => {
+                        tilo_actions::entry_of(doc.committed_document(), logged.hash)
+                    }
+                    message => message.and_then(tilo_actions::ActionContext::from_change_message),
+                }
             };
             let summary = if genesis {
                 crate::i18n::I18nManager::lookup_plain("history-genesis")

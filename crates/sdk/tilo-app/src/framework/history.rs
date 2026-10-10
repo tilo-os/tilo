@@ -626,6 +626,7 @@ impl HistoryFeeds {
     }
 
     /// Show the versions up to `doc`'s heads, when they moved.
+    #[inline(never)]
     pub(crate) fn refresh(&self, doc: &AutoCommit) {
         let mut list = self.0.borrow_mut();
         list.feeds.retain(|(alive, _, _)| alive.strong_count() > 0);

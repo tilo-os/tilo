@@ -226,7 +226,9 @@ fn build_op(
         OpKind::Change,
         t(10),
         seq,
-    );
+    )
+    // The notes app's surface (the test source returns it for any hash).
+    .with_surface(Some([1; 32]));
     sign_op(&mut op, author_sk).unwrap();
     op
 }
