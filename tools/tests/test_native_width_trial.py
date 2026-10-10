@@ -75,6 +75,14 @@ class NativeWidthTrial(unittest.TestCase):
             self.assertEqual(asset.read_bytes(), b'verified fixture')
             self.assertFalse((debug / 'compiled').exists())
 
+    def test_cache_observation_keeps_only_counters_and_rejects_missing_data(self):
+        public = 'Compile requests 10\nCompile requests executed 8\nCache hits 7\nCache misses 1\nCache errors 0\n'
+        actual = TRIAL.parse_cache_counts(public + 'Cache location private fixture transport\n')
+        self.assertEqual(actual['Cache hits'], 7)
+        self.assertEqual(len(actual), 5)
+        with self.assertRaises(RuntimeError):
+            TRIAL.parse_cache_counts('Cache hits 0\n')
+
     def test_missing_or_reset_observation_is_not_a_healthy_zero(self):
         for after in ({}, {'usage_usec': 9}):
             with self.assertRaises(ValueError):

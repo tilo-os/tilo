@@ -7,6 +7,7 @@ No required workflow, compiler flags, cache keys or test filters are changed.
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import signal
@@ -27,6 +28,26 @@ def difference(before, after):
     if before.keys() != after.keys() or any(after[k] < before[k] for k in before):
         raise ValueError('Missing or reset cgroup counter')
     return {key: after[key] - value for key, value in before.items()}
+
+
+def cache_counts():
+    client = os.environ.get('RUSTC_WRAPPER') or shutil.which('sccache')
+    if not client:
+        raise RuntimeError('Compiler cache observation unavailable')
+    output = subprocess.check_output([client, '--show-stats'], text=True, timeout=10)
+    return parse_cache_counts(output)
+
+
+def parse_cache_counts(output):
+    expected = {'Compile requests', 'Compile requests executed', 'Cache hits', 'Cache misses', 'Cache errors'}
+    result = {}
+    for line in output.splitlines():
+        match = re.fullmatch(r'(Compile requests|Compile requests executed|Cache hits|Cache misses|Cache errors)\s+(\d+)', line.strip())
+        if match:
+            result[match[1]] = int(match[2])
+    if result.keys() != expected:
+        raise RuntimeError('Missing compiler cache counters')
+    return result
 
 
 def reset_owned_target(target):
@@ -70,6 +91,7 @@ def binary_receipt(messages, target, package_ids):
 
 
 def build_phase(jobs, output, target, package_ids, root):
+    cache_before = cache_counts()
     before = {name: counters(root, name) for name in ('cpu.stat', 'memory.events', 'memory.stat')}
     peaks = {'memory_bytes': 0, 'swap_bytes': 0}
     errors = []
@@ -139,16 +161,17 @@ def build_phase(jobs, output, target, package_ids, root):
                     pipe.close()
         stop.set()
         sampler.join()
+    cache_delta = difference(cache_before, cache_counts())
     events = difference(before['memory.events'], counters(root, 'memory.events'))
     cpu = difference(before['cpu.stat'], counters(root, 'cpu.stat'))
-    receipt = {'jobs': jobs, 'wall_seconds': round(time.monotonic() - started, 3),
+    receipt = {'jobs': jobs, 'cache_delta': cache_delta, 'wall_seconds': round(time.monotonic() - started, 3),
                'cpu': cpu, 'memory_events': events, 'peaks': peaks,
                'memory_stat_before': before['memory.stat'],
                'memory_stat_after': counters(root, 'memory.stat'),
                'sampling_errors': errors + stderr_errors, 'exit': status, 'metadata_bytes': size}
     (output / 'receipt.json').write_text(json.dumps(receipt, indent=2) + '\n')
     print('NATIVE_WIDTH_TRIAL=' + json.dumps(receipt), flush=True)
-    if status or size > CAP or errors or stderr_errors or peaks['swap_bytes'] or any(events.get(key, 0) for key in ('max', 'oom', 'oom_kill')):
+    if status or size > CAP or errors or stderr_errors or cache_delta['Cache errors'] or peaks['swap_bytes'] or any(events.get(key, 0) for key in ('max', 'oom', 'oom_kill')):
         raise RuntimeError('Build or resource observation failed qualification')
     receipt['binaries'] = binary_receipt(b''.join(chunks).decode(), target, package_ids)
     (output / 'receipt.json').write_text(json.dumps(receipt, indent=2) + '\n')
