@@ -25,7 +25,9 @@
 //! Per window the parent asks the relay process for its CPU time, resident
 //! memory, egress counters and the bytes its iroh endpoint put on UDP, and
 //! divides by collaborators and hours. Fan-out latency is publish to receipt
-//! by each other member of the room.
+//! by each other member of the room. Store fsyncs per edit divides the file
+//! and directory barriers the relay's workspace stores issued by the deltas
+//! it committed.
 //!
 //! The samples go to `--out DIR/hosting-load.json` for
 //! `tools/perf/adapters.py hosting-load`, which turns them into records and
@@ -223,6 +225,9 @@ struct Window {
     transport_bytes: u64,
     app_bytes: u64,
     live_bytes: u64,
+    /// Deltas the relay committed and fanned out.
+    deltas: u64,
+    store_fsyncs: u64,
     hours: f64,
 }
 
@@ -236,6 +241,8 @@ impl Window {
                 .saturating_sub(before.transport_bytes_sent),
             app_bytes: after.bytes_sent.saturating_sub(before.bytes_sent),
             live_bytes: after.bytes_sent_live.saturating_sub(before.bytes_sent_live),
+            deltas: after.deltas_received.saturating_sub(before.deltas_received),
+            store_fsyncs: after.store_fsyncs.saturating_sub(before.store_fsyncs),
             hours: elapsed.as_secs_f64() / SECONDS_PER_HOUR,
         }
     }
@@ -304,6 +311,15 @@ impl Report {
         self.per_collaborator_hour(|window| float(window.live_bytes))
     }
 
+    /// Store fsyncs per committed delta: what durability costs an edit.
+    fn store_fsyncs_per_edit(&self) -> Vec<f64> {
+        self.windows
+            .iter()
+            .filter(|window| window.deltas > 0)
+            .map(|window| float(window.store_fsyncs) / float(window.deltas))
+            .collect()
+    }
+
     /// Resident memory each connected, active collaborator adds to the relay.
     fn rss_mib(&self) -> Vec<f64> {
         let collaborators = float(u64::try_from(self.collaborators).unwrap_or(u64::MAX));
@@ -332,6 +348,7 @@ impl Report {
                 "hosting.relay.egress_bytes_per_collab_hour": kpi("bytes", self.transport_bytes()),
                 "hosting.relay.frame_bytes_per_collab_hour": kpi("bytes", self.app_bytes()),
                 "hosting.relay.fanout_ms": kpi("ms", self.fanout_ms.clone()),
+                "hosting.relay.store_fsyncs_per_edit": kpi("count", self.store_fsyncs_per_edit()),
             },
         })
     }
@@ -341,7 +358,8 @@ impl Report {
             "HOSTING_LOAD collaborators={} rooms={} windows={} edits={} presence={} \
              undelivered_edits={} cpu_s_per_collab_hour_p50={:.3} rss_mib_per_collab_p50={:.3} \
              egress_mb_per_collab_hour_p50={:.3} frame_mb_per_collab_hour_p50={:.3} \
-             live_frame_mb_per_collab_hour_p50={:.3} fanout_ms_p50={:.1} fanout_ms_p99={:.1}",
+             live_frame_mb_per_collab_hour_p50={:.3} fanout_ms_p50={:.1} fanout_ms_p99={:.1} \
+             store_fsyncs_per_edit_p50={:.3}",
             self.collaborators,
             self.rooms,
             self.windows.len(),
@@ -355,6 +373,7 @@ impl Report {
             median(self.live_bytes()) / 1e6,
             nearest_rank(&self.fanout_ms, 50),
             nearest_rank(&self.fanout_ms, 99),
+            median(self.store_fsyncs_per_edit()),
         )
     }
 }

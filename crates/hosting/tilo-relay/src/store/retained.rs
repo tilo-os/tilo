@@ -384,7 +384,7 @@ fn records(generation: &Path) -> Result<Vec<Record>, StoreError> {
 pub(super) fn sync_dir(path: &Path) -> Result<(), StoreError> {
     #[cfg(test)]
     super::test_barrier::check(path, "sync-dir")?;
-    fs::File::open(path)?.sync_all()?;
+    crate::store::fsync(&fs::File::open(path)?)?;
     Ok(())
 }
 
@@ -438,7 +438,7 @@ fn sync_once(path: &Path) -> Result<(), StoreError> {
         {
             return Ok(());
         }
-        fs::File::open(path)?.sync_all()?;
+        crate::store::fsync(&fs::File::open(path)?)?;
         synced
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -447,7 +447,7 @@ fn sync_once(path: &Path) -> Result<(), StoreError> {
     }
     #[cfg(not(unix))]
     {
-        fs::File::open(path)?.sync_all()?;
+        crate::store::fsync(&fs::File::open(path)?)?;
         Ok(())
     }
 }
@@ -467,7 +467,7 @@ pub(super) fn create_dir(path: &Path) -> Result<(), StoreError> {
 }
 
 pub(super) fn durable_write(path: &Path, bytes: &[u8]) -> Result<(), StoreError> {
-    tilo_files::native::atomic::write(path, bytes)?;
+    crate::store::atomic_write(path, bytes)?;
     // native::atomic fsyncs the parent and fails when that fails. Apple's fsync
     // leaves the drive's cache unflushed, so there the barrier is repeated
     // with F_FULLFSYNC before destructive retirement relies on it.
