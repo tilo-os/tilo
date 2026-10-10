@@ -2868,6 +2868,10 @@ struct CatalogueState {
     external_tree_revision: u64,
     locale: String,
     peer_sync: bool,
+    /// Whether this device can issue an invitation into the active workspace
+    /// ([`crate::shell::invite_policy`]): the `peer.invite` rows are offered
+    /// only then, as the invite composer is.
+    invite_offered: bool,
     collab: bool,
     active_workspace: Option<crate::shell::state::WorkspaceId>,
     quick_settings: QuickSettingsKey,
@@ -3082,6 +3086,9 @@ impl ActionsProvider {
             external_tree_revision,
             locale: crate::shell::i18n::current_locale(),
             peer_sync: ctx.chrome.peer_sync_enabled,
+            invite_offered: ctx.chrome.peer_sync_enabled
+                && crate::shell::invite_policy::active_invite_route(ctx.chrome)
+                    .is_some_and(crate::shell::invite_policy::InviteRoute::issues_here),
             collab: ctx.chrome.collab_available(),
             active_workspace,
             quick_settings: self.qs_actions.catalogue_key(),
@@ -3160,6 +3167,12 @@ impl ActionsProvider {
             // A session not running peer sync has nothing to invite into.
             if (action.id.starts_with("peer.") || INVITATION_ACTION_IDS.contains(&action.id))
                 && !ctx.chrome.peer_sync_enabled
+            {
+                continue;
+            }
+            // The one invitation policy: no row for an invitation the issuer
+            // would refuse from here, as there is no composer for it.
+            if matches!(action.id, "peer.invite" | "peer.invite.named") && !key.state.invite_offered
             {
                 continue;
             }
@@ -3265,6 +3278,15 @@ impl ActionsProvider {
                                     return Err(ActionError::Refused(format!(
                                         "current workspace authority no longer permits {action_id}"
                                     )));
+                                }
+                                if action_id != "peer.connect"
+                                    && let Some(refusal) =
+                                        crate::shell::invite_policy::active_invite_route(&state)
+                                            .map_or(Some("no active workspace"), |route| {
+                                                route.refusal()
+                                            })
+                                {
+                                    return Err(ActionError::Refused(refusal.into()));
                                 }
                                 let request = match action_id {
                                     "peer.invite" => {
@@ -5091,6 +5113,47 @@ mod tests {
         );
     }
 
+    /// The palette offers the invite rows exactly where the one invitation
+    /// policy lets this device issue, as the invite composer is: not in a
+    /// room another person governs, where the issuer would refuse.
+    #[test]
+    fn invite_rows_follow_the_invitation_policy() {
+        use crate::shell::state::{PeerOrigin, RoomAuthority};
+
+        let provider = ActionsProvider::new();
+        let chrome = chrome_with_room();
+        chrome.borrow_mut().peer_sync_enabled = true;
+        let offers = |id: &str| row(&rows_for(&provider, &chrome, ""), id).is_some();
+        let route = || crate::shell::invite_policy::active_invite_route(&chrome.borrow());
+        assert_eq!(
+            route(),
+            Some(crate::shell::invite_policy::InviteRoute::ShareOnRelay),
+            "the owner of a room this device governs may invite"
+        );
+        assert!(offers("peer.invite"), "so the palette offers the composer");
+
+        let room = chrome
+            .borrow()
+            .tree()
+            .desktop
+            .active_workspace()
+            .expect("workspace")
+            .room;
+        let handle = chrome.borrow().tree_handle();
+        handle.write().room_authority.insert(
+            room,
+            RoomAuthority::Peer(PeerOrigin::peer(&iroh::SecretKey::generate().public())),
+        );
+        assert_eq!(
+            route(),
+            Some(crate::shell::invite_policy::InviteRoute::ViaGovernor),
+            "another device governs the room now"
+        );
+        assert!(!offers("peer.invite"), "so no invite row is offered");
+        assert!(!offers("peer.invite.named"), "named or not");
+        assert!(offers("peer.connect"), "joining a room is not inviting");
+    }
+
     #[test]
     fn catalogue_rebuilds_on_collaboration_and_search_sources() {
         // Peer sync and the collaboration broker.
@@ -5864,8 +5927,14 @@ mod tests {
                 );
             }
 
-            let on = chrome_rc();
+            // Invitations go into a room this device governs: a roomless
+            // session has nothing to invite into. Without a broker the agent
+            // row (also an "Invite …") stays out of this ranking, as it does
+            // for a roomless session.
+            let on = chrome_with_room();
             on.borrow_mut().peer_sync_enabled = true;
+            on.borrow_mut()
+                .set_collab_unavailable("this phase ranks the peer rows alone");
             let cs = on.borrow();
             let mut hits = query(&cs, "invite");
             hits.sort_by_key(|r| -r.score);

@@ -263,7 +263,7 @@ pub struct WorkspaceTask {
     pub resource: Option<WorkspaceTaskResource>,
     pub created_at: i64,
     pub updated_at: i64,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "crate::history::omitted")]
     pub audit: Vec<WorkspaceTaskAuditEvent>,
 }
 

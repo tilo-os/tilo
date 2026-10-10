@@ -6,11 +6,11 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, ensure};
 use clap::{Parser, Subcommand};
-use collab_types::{
+use ed25519_dalek::SigningKey;
+use fs_protocol::{
     FilePermission, FileRecordId, SHARE_CONTROL_VERSION, ShareControlOperationV1,
     ShareControlRequestV1, ShareControlResultV1,
 };
-use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use iroh_blobs::{Hash, api::blobs::BlobStatus};
 use tilo_user_identity::{

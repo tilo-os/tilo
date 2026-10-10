@@ -36,6 +36,7 @@ use std::rc::Rc;
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
+use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
 use taffy::style_helpers::{length, percent};
@@ -241,52 +242,46 @@ impl Widget for Stack {
             clippy::unwrap_used,
             reason = "every child node was just created in this same tree"
         )]
-        let node = taffy
-            .new_with_children(
-                Style {
-                    display: Display::Flex,
-                    flex_direction: self.direction,
-                    align_items: Some(self.align),
-                    justify_content: Some(self.justify),
-                    gap: Size {
-                        width: length(if row { self.gap } else { 0.0 }),
-                        height: length(if row { 0.0 } else { self.gap }),
-                    },
-                    padding: taffy::Rect {
-                        left: length(self.padding),
-                        right: length(self.padding),
-                        top: length(self.padding),
-                        bottom: length(self.padding),
-                    },
-                    size: Size {
-                        width: match (self.width, self.width_auto) {
-                            (Some(width), _) => length(width),
-                            (None, true) => Dimension::auto(),
-                            (None, false) => percent(1.0_f32),
-                        },
-                        height: if self.fill_height {
-                            percent(1.0_f32)
-                        } else {
-                            Dimension::auto()
-                        },
-                    },
-                    max_size: Size {
-                        width: self.max_width.map_or(Dimension::auto(), length),
-                        height: Dimension::auto(),
-                    },
-                    min_size: Size {
-                        width: Dimension::auto(),
-                        height: self.min_height.map_or(Dimension::auto(), length),
-                    },
-                    flex_grow: if self.grow { 1.0 } else { 0.0 },
-                    flex_shrink: if self.grow { 1.0 } else { 0.0 },
-                    ..Default::default()
+        let style = Style {
+            display: Display::Flex,
+            flex_direction: self.direction,
+            align_items: Some(self.align),
+            justify_content: Some(self.justify),
+            gap: Size {
+                width: length(if row { self.gap } else { 0.0 }),
+                height: length(if row { 0.0 } else { self.gap }),
+            },
+            padding: taffy::Rect {
+                left: length(self.padding),
+                right: length(self.padding),
+                top: length(self.padding),
+                bottom: length(self.padding),
+            },
+            size: Size {
+                width: match (self.width, self.width_auto) {
+                    (Some(width), _) => length(width),
+                    (None, true) => Dimension::auto(),
+                    (None, false) => percent(1.0_f32),
                 },
-                &child_nodes,
-            )
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+                height: if self.fill_height {
+                    percent(1.0_f32)
+                } else {
+                    Dimension::auto()
+                },
+            },
+            max_size: Size {
+                width: self.max_width.map_or(Dimension::auto(), length),
+                height: Dimension::auto(),
+            },
+            min_size: Size {
+                width: Dimension::auto(),
+                height: self.min_height.map_or(Dimension::auto(), length),
+            },
+            flex_grow: if self.grow { 1.0 } else { 0.0 },
+            flex_shrink: if self.grow { 1.0 } else { 0.0 },
+            ..Default::default()
+        };
+        taffy.widget_node(style, &child_nodes, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -2055,29 +2050,18 @@ impl Widget for GreeterApp {
 
         // `new_with_children` only fails when a child belongs to a different
         // tree; `child` was just built in this one above.
-        #[allow(
-            clippy::unwrap_used,
-            reason = "the child node was just created in this same tree"
-        )]
-        let root = taffy
-            .new_with_children(
-                Style {
-                    display: Display::Flex,
-                    flex_direction: FlexDirection::Column,
-                    justify_content: Some(JustifyContent::Center),
-                    align_items: Some(AlignItems::Center),
-                    size: Size {
-                        width: percent(1.0_f32),
-                        height: percent(1.0_f32),
-                    },
-                    ..Default::default()
-                },
-                &[child],
-            )
-            .unwrap();
-
-        node_map.insert(root, std::ptr::from_mut::<dyn Widget>(self));
-        root
+        let style = Style {
+            display: Display::Flex,
+            flex_direction: FlexDirection::Column,
+            justify_content: Some(JustifyContent::Center),
+            align_items: Some(AlignItems::Center),
+            size: Size {
+                width: percent(1.0_f32),
+                height: percent(1.0_f32),
+            },
+            ..Default::default()
+        };
+        taffy.widget_node(style, &[child], node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -2419,19 +2403,12 @@ mod tests {
     }
 
     fn key_event(key: Key, text: Option<&str>) -> WindowEvent {
-        use winit::keyboard::{KeyLocation, NativeKeyCode, PhysicalKey};
-
         // winit intentionally keeps the platform-specific key field private;
         // these are the same inert placeholders used by ui::App's key tests.
-        let mut event: KeyEvent = unsafe { std::mem::zeroed() };
-        event.logical_key = key;
-        event.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-        event.location = KeyLocation::Standard;
-        event.state = ElementState::Pressed;
-        event.repeat = false;
-        event.text = text.map(Into::into);
+        let event =
+            ui::synthetic_input::key_event(key, text.map(Into::into), ElementState::Pressed);
         WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             event,
             is_synthetic: false,
         }
@@ -2519,22 +2496,11 @@ mod tests {
         app.apply_layout(&taffy, node, Point::ZERO);
         set_focus_by_id(app, focused);
 
-        let mut handled = false;
-        let mut focus_target = None;
-        app.handle_event(
-            event,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::default(),
-                state: ui::widget::Edits::lend(state),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-        handled
+        ui::testing::Dispatch::new()
+            .doc(state)
+            .layout(&taffy, node)
+            .send(app, event)
+            .handled
     }
 
     /// How a widget identifies itself in a tree dump: its `test_id` when it
@@ -2701,21 +2667,10 @@ mod tests {
         }
 
         fn deliver(&self, app: &mut GreeterApp, doc: &mut AutoCommit, event: &WindowEvent) {
-            let mut handled = false;
-            let mut focus_target = None;
-            app.handle_event(
-                event,
-                &mut ui::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &winit::event::Modifiers::default(),
-                    state: ui::widget::Edits::lend(doc),
-                    path: &automerge::ROOT,
-                    handled: &mut handled,
-                    focus_target: &mut focus_target,
-                    node_id: self.node,
-                    taffy: &self.taffy,
-                },
-            );
+            ui::testing::Dispatch::new()
+                .doc(doc)
+                .layout(&self.taffy, self.node)
+                .send(app, event);
         }
     }
 

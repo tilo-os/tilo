@@ -2,6 +2,7 @@
 //! would erase Taffy's intrinsic-size cache and conceal stale paragraph heights.
 use super::*;
 use crate::bound_dispatch::BoundNodeMap;
+use crate::testing::Dispatch;
 use winit::event::MouseButton;
 use winit::keyboard::ModifiersState;
 
@@ -24,7 +25,7 @@ struct RetainedEditor {
 
 impl RetainedEditor {
     fn click(&mut self, point: Point) {
-        let device_id = unsafe { std::mem::zeroed() };
+        let device_id = winit::event::DeviceId::dummy();
         for event in [
             WindowEvent::CursorMoved {
                 device_id,
@@ -41,19 +42,10 @@ impl RetainedEditor {
                 button: MouseButton::Left,
             },
         ] {
-            self.editor.handle_event(
-                &event,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &Modifiers::default(),
-                    state: crate::widget::Edits::lend(&mut self.doc),
-                    path: &automerge::ROOT,
-                    handled: &mut false,
-                    focus_target: &mut None,
-                    node_id: self.root,
-                    taffy: &self.tree,
-                },
-            );
+            Dispatch::new()
+                .doc(&mut self.doc)
+                .layout(&self.tree, self.root)
+                .send(&mut *self.editor, &event);
             self.frame();
         }
     }
@@ -157,35 +149,27 @@ impl RetainedEditor {
     }
 
     fn key(&mut self, key: Key, modifiers: Modifiers) {
-        let mut event: KeyEvent = unsafe { std::mem::zeroed() };
-        event.text = match &key {
-            Key::Character(s) => Some(s.clone()),
-            _ => None,
-        };
-        event.logical_key = key;
-        event.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        event.location = winit::keyboard::KeyLocation::Standard;
-        event.state = ElementState::Pressed;
-        let mut handled = false;
-        self.editor.handle_event(
-            &WindowEvent::KeyboardInput {
-                device_id: unsafe { std::mem::zeroed() },
-                event,
-                is_synthetic: false,
+        let event = crate::synthetic_input::key_event(
+            key.clone(),
+            match &key {
+                Key::Character(s) => Some(s.clone()),
+                _ => None,
             },
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &modifiers,
-                state: crate::widget::Edits::lend(&mut self.doc),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut None,
-                node_id: self.root,
-                taffy: &self.tree,
-            },
+            ElementState::Pressed,
         );
+        let handled = Dispatch::new()
+            .modifiers(modifiers)
+            .doc(&mut self.doc)
+            .layout(&self.tree, self.root)
+            .send(
+                &mut *self.editor,
+                &WindowEvent::KeyboardInput {
+                    device_id: winit::event::DeviceId::dummy(),
+                    event,
+                    is_synthetic: false,
+                },
+            )
+            .handled;
         assert!(handled, "editor must receive each test keystroke");
         // Notes publishes edits into its document before the next layout.
         // Draining edit notifications must not drain intrinsic-size dirtiness.

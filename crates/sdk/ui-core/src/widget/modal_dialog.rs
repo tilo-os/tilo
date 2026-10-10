@@ -1042,11 +1042,6 @@ impl ModalSheet {
     pub fn focused_action(&self) -> Option<usize> {
         self.focus
     }
-
-    /// Put keyboard focus on an action (`None` clears it).
-    pub fn set_focused_action(&mut self, action: Option<usize>) {
-        self.focus = action;
-    }
 }
 
 /// One footer action of a [`ModalDialog`]. The dialog runs it from its own

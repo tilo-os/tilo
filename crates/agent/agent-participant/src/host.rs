@@ -5,10 +5,11 @@
 //! [`AgentHost`] owns an [`AgentSupervisor`] whose spawner starts one thread
 //! per agent. The thread mounts its apps, plans with the host's
 //! [`ModelChoice`] and pumps the participant until the agent stops or the
-//! host shuts down. A ticker settles expired grants (the agent stops and the
-//! host refuses its device) and writes the supervisor's snapshot to
-//! `agents.json` whenever it changed. The file holds the agents' device keys
-//! and is written owner-only.
+//! host shuts down, sleeping between pumps until its session or steering
+//! changes or its presence keep-alive is due. A ticker settles expired
+//! grants (the agent stops and the host refuses its device) and writes the
+//! supervisor's snapshot to `agents.json` whenever it changed. The file
+//! holds the agents' device keys and is written owner-only.
 //!
 //! On start the snapshot is restored ([`AgentSupervisor::restore`]):
 //! approved grants are registered with the host again, agents that were
@@ -36,8 +37,6 @@ use crate::participant::{AgentParticipant, ParticipantConfig};
 
 /// The file under the state directory.
 const STATE_FILE: &str = "agents.json";
-/// How often an agent's loop takes in its session and steps.
-const PUMP_INTERVAL: Duration = Duration::from_millis(20);
 /// How often grants are checked for expiry and the state written.
 const TICK_INTERVAL: Duration = Duration::from_millis(500);
 
@@ -76,7 +75,8 @@ struct Shared {
     /// The runtime agents' sessions run their I/O on.
     runtime: OnceLock<tokio::runtime::Handle>,
     stopping: AtomicBool,
-    threads: Mutex<Vec<JoinHandle<()>>>,
+    /// Each agent's thread, with its control to wake it for shutdown.
+    threads: Mutex<Vec<(JoinHandle<()>, Arc<AgentControl>)>>,
 }
 
 /// Every agent of one host.
@@ -215,7 +215,10 @@ impl AgentHost {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner),
         );
-        for thread in threads {
+        for (_, control) in &threads {
+            control.wake();
+        }
+        for (thread, _) in threads {
             let _ = thread.join();
         }
         persist(&self.supervisor, &self.state_file(), &self.written);
@@ -241,16 +244,17 @@ fn spawn_agent(
         .ok_or("the agent has no room")?;
     let thread_shared = shared.clone();
     let name = format!("agent-{}", identity.delegation.agent_id);
+    let thread_control = control.clone();
     let handle = std::thread::Builder::new()
         .name(name)
-        .spawn(move || run_agent(&thread_shared, endpoint, room, identity, &control))
+        .spawn(move || run_agent(&thread_shared, endpoint, room, identity, &thread_control))
         .map_err(|error| error.to_string())?;
     let mut threads = shared
         .threads
         .lock()
         .unwrap_or_else(PoisonError::into_inner);
-    threads.retain(|thread| !thread.is_finished());
-    threads.push(handle);
+    threads.retain(|(thread, _)| !thread.is_finished());
+    threads.push((handle, control));
     drop(threads);
     Ok(())
 }
@@ -292,14 +296,12 @@ fn run_agent(
         }
     };
     tracing::info!(agent = %agent_id, model = %shared.model.describe(), "agent joined its room");
-    while !shared.stopping.load(Ordering::Acquire) {
+    participant.run_until(None, |_| {
+        shared.stopping.load(Ordering::Acquire) || control.status() == AgentStatus::Stopped
+    });
+    if control.status() == AgentStatus::Stopped {
+        // One more pump publishes the cleared presence.
         participant.pump();
-        if control.status() == AgentStatus::Stopped {
-            // One more pump publishes the cleared presence.
-            participant.pump();
-            break;
-        }
-        std::thread::sleep(PUMP_INTERVAL);
     }
     participant.close();
     tracing::info!(agent = %agent_id, "agent left its room");

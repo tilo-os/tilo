@@ -716,7 +716,7 @@ mod tests {
     #[test]
     fn idle_status_thread_sleeps_between_reads() {
         let (wake_tx, wake_rx) = std::sync::mpsc::channel::<()>();
-        let (_bridge, tid) = crate::idle_thread_probe::spawned_thread("tilo-stat-wait", || {
+        let (_bridge, tid) = tilo_test_env::idle::spawned_thread("tilo-stat-wait", || {
             let bridge = StatusBridge::new();
             let poller = bridge.clone();
             std::thread::Builder::new()
@@ -728,7 +728,7 @@ mod tests {
                 .expect("status idle thread");
             bridge
         });
-        crate::idle_thread_probe::assert_stays_asleep(&tid, "status fallback wait");
+        tilo_test_env::idle::assert_stays_asleep(&tid, "status fallback wait");
         drop(wake_tx);
     }
 

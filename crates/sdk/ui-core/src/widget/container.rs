@@ -305,18 +305,6 @@ impl Container {
         self
     }
 
-    /// [`Self::interactive`] through an exported resource action.
-    #[must_use]
-    pub fn interactive_action(
-        mut self,
-        id: impl Into<String>,
-        binding: tilo_actions::ActionBinding<()>,
-    ) -> Self {
-        self.activation = crate::widget::activation::Activation::new(id);
-        self.activation.set_action(binding);
-        self
-    }
-
     /// The container's surface under its current interaction: the raised
     /// well when it has a background (lifted on hover and press), the
     /// ground's selection lift when it is bare and interactive.

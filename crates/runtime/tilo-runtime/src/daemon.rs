@@ -2,7 +2,7 @@
 use crate::{
     BLOB_SOCKET, COLLAB_SOCKET, IDENTITY_SOCKET, RuntimeServices,
     mcp::McpServer,
-    mcp_process::{Frame, read_frame, write_reply},
+    mcp_process::{Answer, Frame, mcp_answer, read_frame, serve_lines, spawn_reader},
     unix,
 };
 use serde::{Deserialize, Serialize};
@@ -775,15 +775,15 @@ impl<H: tilo_actions::remote::ActionHost + Clone + Send + Sync + 'static> Endpoi
                 .name("tilo-native-mcp".into())
                 .spawn(move || {
                     let _slot = slot;
-                    let mut server = match factory() {
-                        Ok(server) => server.with_computer(computer).with_media(media),
+                    let server = match factory() {
+                        Ok(server) => Arc::new(server.with_computer(computer).with_media(media)),
                         Err(error) => {
                             tracing::debug!(%error, "native MCP session admission unavailable");
                             return;
                         }
                     };
                     if let Err(error) =
-                        serve_connection(stream, &mut server, &status, joiner.as_ref(), &search)
+                        serve_connection(stream, &server, &status, joiner.as_ref(), &search)
                     {
                         tracing::debug!(%error, "native runtime client disconnected");
                     }
@@ -803,9 +803,11 @@ impl Drop for ConnectionSlot {
     }
 }
 
-fn serve_connection<H: tilo_actions::remote::ActionHost + Send + Sync>(
+/// Answer one native connection: the daemon's own requests in order, and
+/// MCP requests as [`serve_lines`] does, overlapping one another.
+fn serve_connection<H: tilo_actions::remote::ActionHost + Send + Sync + 'static>(
     mut stream: UnixStream,
-    server: &mut McpServer<H>,
+    server: &Arc<McpServer<H>>,
     status: &Status,
     joiner: Option<&crate::Joiner>,
     search: &tilo_os_search::OsSearch,
@@ -815,50 +817,50 @@ fn serve_connection<H: tilo_actions::remote::ActionHost + Send + Sync>(
     // Every connection thread waits on the one app runtime rather than
     // building a runtime per connection.
     let runtime = tilo_rt::try_app().map_err(io::Error::other)?;
-    let mut reader = BufReader::new(stream.try_clone()?);
-    loop {
-        let reply = match read_frame(&mut reader)? {
-            Frame::Eof => return Ok(()),
-            Frame::TooLong => Some(
-                json!({"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"request line exceeds 1 MiB"}}),
-            ),
-            Frame::Line(bytes) => match serde_json::from_slice::<Value>(&bytes) {
-                Ok(value) if value == json!({"native":"status"}) => {
-                    Some(serde_json::to_value(status).map_err(io::Error::other)?)
-                }
-                Ok(value) if value.get("native") == Some(&json!("activate")) => {
-                    let answer = match value.get("app_id").and_then(Value::as_str) {
-                        Some(app) if !app.is_empty() && app.len() <= 4096 => {
-                            match runtime.block_on(server.activate_existing(app)) {
-                                Ok(Ok(Some(peer))) => json!({"activated": true, "peer_id": peer}),
-                                Ok(Ok(None)) => json!({"activated": false}),
-                                Ok(Err(reason)) => json!({"error": reason}),
-                                Err(reason) => json!({"error": reason.to_string()}),
-                            }
-                        }
-                        _ => json!({"error": "activation needs an application identity"}),
-                    };
-                    Some(answer)
-                }
-                Ok(value) if value.get("native") == Some(&json!("join")) => {
-                    Some(answer_join(joiner, &value))
-                }
-                Ok(value) if value.get("native") == Some(&json!(tilo_host_search::OPEN)) => Some(
-                    runtime
-                        .block_on(answer_open(search, &value))
-                        .map_err(io::Error::other)?,
-                ),
-                Ok(value) => runtime
-                    .block_on(server.handle(value))
-                    .map_err(io::Error::other)?,
-                Err(_) => Some(
-                    json!({"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"Parse error"}}),
-                ),
-            },
-        };
-        if let Some(reply) = reply {
-            write_reply(&mut stream, &reply)?;
+    let input = spawn_reader(stream.try_clone()?)?;
+    let status = serde_json::to_value(status).map_err(io::Error::other)?;
+    let answer = |value: Value| {
+        let native = value.get("native").and_then(Value::as_str);
+        Answer::InOrder(match native {
+            Some("status") if value == json!({"native":"status"}) => {
+                let status = status.clone();
+                Box::pin(async move { Ok(Some(status)) })
+            }
+            Some("activate") => {
+                Box::pin(async move { Ok(Some(answer_activate(server, &value).await)) })
+            }
+            Some("join") => {
+                let answer = answer_join(joiner, &value);
+                Box::pin(async move { Ok(Some(answer)) })
+            }
+            Some(tilo_host_search::OPEN) => {
+                Box::pin(async move { Ok(Some(answer_open(search, &value).await)) })
+            }
+            _ => return mcp_answer(server, value),
+        })
+    };
+    let ended = serve_lines(runtime, input, &mut stream, answer, None);
+    // The reader thread holds a clone of the socket: shut it, so the reader
+    // sees its end and the client its connection close.
+    let _ = stream.shutdown(std::net::Shutdown::Both);
+    ended
+}
+
+/// A native activation request's answer: the newest live instance of the
+/// named application brought forward, or that none runs.
+async fn answer_activate<H: tilo_actions::remote::ActionHost + Send + Sync + 'static>(
+    server: &McpServer<H>,
+    request: &Value,
+) -> Value {
+    match request.get("app_id").and_then(Value::as_str) {
+        Some(app) if !app.is_empty() && app.len() <= 4096 => {
+            match server.activate_existing(app).await {
+                Ok(Some(peer)) => json!({"activated": true, "peer_id": peer}),
+                Ok(None) => json!({"activated": false}),
+                Err(reason) => json!({"error": reason}),
+            }
         }
+        _ => json!({"error": "activation needs an application identity"}),
     }
 }
 

@@ -380,6 +380,10 @@ pub enum PersonalFabricAction {
         address: String,
         authorization: [u8; 16],
     },
+    /// Inline fast path of the one Nearby transfer protocol: a file up to
+    /// [`MAX_NEARBY_DROP_BYTES`] rides in this action instead of an offer and
+    /// a byte stream, saving a round trip. It shares the transfer's consent
+    /// queue and integrity check; it is not a second protocol.
     NearbyDrop {
         file_name: String,
         content_hash: [u8; 32],
@@ -391,7 +395,8 @@ pub enum PersonalFabricAction {
         accepted: bool,
     },
     /// Durable object offer. The source path never leaves its device; the ID
-    /// addresses an immutable private spool object.
+    /// addresses an immutable private spool object. A `MediaHandoff` offer is
+    /// admitted by the `ResumeMedia` that named its ID, never by Files.
     NearbyTransferOffer {
         transfer_id: [u8; 16],
         name: String,
@@ -1467,10 +1472,6 @@ impl ClipboardHistory {
         };
         self.entries.remove(index);
         true
-    }
-
-    pub fn clear_unpinned(&mut self) {
-        self.entries.retain(|entry| entry.pinned);
     }
 }
 

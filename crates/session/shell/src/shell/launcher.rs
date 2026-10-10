@@ -23,7 +23,7 @@ use std::process::Command;
 use std::process::Stdio;
 
 use std::collections::{HashMap, HashSet};
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsStr;
 #[cfg(any(test, target_os = "linux"))]
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -116,6 +116,24 @@ struct LaunchedProcess {
 static LAUNCHED_PROCESSES: std::sync::LazyLock<Mutex<HashMap<u32, LaunchedProcess>>> =
     std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 static LAUNCH_RETIREMENT_CHANGED: std::sync::Condvar = std::sync::Condvar::new();
+/// Bumped whenever a launched process is registered, exits or is
+/// unregistered, so observers of the running set (the background portal)
+/// wait for a change instead of re-reading `/proc` on a timer.
+#[cfg(any(test, target_os = "linux"))]
+static RUNNING_CHANGES: std::sync::LazyLock<tokio::sync::watch::Sender<u64>> =
+    std::sync::LazyLock::new(|| tokio::sync::watch::Sender::new(0));
+
+#[cfg(any(test, target_os = "linux"))]
+fn note_running_changed() {
+    RUNNING_CHANGES.send_modify(|generation| *generation = generation.wrapping_add(1));
+}
+
+/// Wakes on every change to the launched-process registry; see
+/// [`verified_running_packages`] for the set itself.
+#[cfg(target_os = "linux")]
+pub(crate) fn subscribe_running_changes() -> tokio::sync::watch::Receiver<u64> {
+    RUNNING_CHANGES.subscribe()
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ServiceLaunchIdentity {
@@ -181,6 +199,7 @@ fn register_launched_process(
             },
         );
     }
+    note_running_changed();
 }
 
 /// Durable room ids for live, launcher-verified instances of `package_id`.
@@ -446,6 +465,7 @@ fn unregister_launched_process(pid: u32) {
     }
     lock(&TRUSTED_SERVICE_LAUNCHES).remove(&pid);
     LAUNCH_RETIREMENT_CHANGED.notify_all();
+    note_running_changed();
 }
 
 /// A native app's last toplevel is closing. Attribute retirement through
@@ -1800,12 +1820,6 @@ pub fn gui_apps() -> Vec<InstalledApp> {
     apps.retain(|a| a.has_gui);
     apps.sort_by(|a, b| a.display_name.cmp(&b.display_name));
     apps
-}
-
-/// Two packages can claim the same extension; the shared policy resolver uses
-/// personal/workspace defaults and a deterministic display-name fallback.
-pub fn app_for_extension(ext: &str) -> Option<InstalledApp> {
-    app_for_extension_with_policy(ext, "", None)
 }
 
 /// Resolve an extension through the shared personal/workspace policy engine.
@@ -3579,7 +3593,8 @@ fn start_launch(
     events: &LaunchSession,
     authority: Option<action_authority::Lease>,
 ) -> Result<(), String> {
-    #[cfg(all(test, not(target_os = "linux")))]
+    #[cfg(test)]
+    #[cfg(not(target_os = "linux"))]
     if !TEST_EXECUTION_PROGRAM.with(|slot| slot.borrow().as_ref() == Some(&command.program)) {
         return Err("Linux package execution provider is unavailable".into());
     }
@@ -3766,6 +3781,9 @@ fn start_launch(
 
         let launcher_pid = child.id();
         let status = child.wait();
+        // Reaped: the registry's liveness check now fails for this pid, even
+        // while a descendant keeps stderr open and delays unregistering it.
+        note_running_changed();
         // Every end of an app, clean or not, with how it ended (a signal has
         // no exit code). The session's default log passes errors only, so a
         // clean exit would otherwise leave no trace; stderr is recorded.
@@ -4573,14 +4591,6 @@ pub fn clear_pending_placements() {
 #[cfg(test)]
 pub(crate) fn set_wayland_socket_path(path: Option<PathBuf>) {
     *WAYLAND_SOCKET.lock().expect("WAYLAND_SOCKET poisoned") = path;
-}
-
-/// Rendered `OsString` form of the socket name for logging.
-pub fn wayland_socket_display() -> OsString {
-    wayland_socket().map_or_else(
-        || OsString::from("<none>"),
-        std::path::PathBuf::into_os_string,
-    )
 }
 
 /// Package processes require the Linux execution authority.
@@ -7162,6 +7172,27 @@ mod tests {
             "a second window of the same host app keeps the launch"
         );
         unregister_launched_process(standin.pid());
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[serial_test::serial(process_env)]
+    fn running_set_changes_wake_observers_on_launch_and_exit() {
+        // The background portal's monitor waits on exactly this receiver.
+        let mut changes = subscribe_running_changes();
+        changes.borrow_and_update();
+        let standin = LauncherStandIn::spawn();
+        register_launched_process(standin.pid(), "org.example.Running", None, true);
+        let launched = changes.has_changed().unwrap();
+        let running = verified_running_packages().contains(&"org.example.Running".to_string());
+        changes.borrow_and_update();
+        unregister_launched_process(standin.pid());
+        let exited = changes.has_changed().unwrap();
+        let gone = !verified_running_packages().contains(&"org.example.Running".to_string());
+        assert!(launched, "a launch must wake running-set observers");
+        assert!(running);
+        assert!(exited, "an exit must wake running-set observers");
+        assert!(gone);
     }
 
     #[test]

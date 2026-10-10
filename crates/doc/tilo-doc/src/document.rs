@@ -324,12 +324,6 @@ impl Document {
         self.doc.commit();
     }
 
-    pub fn insert_header_page_number(&mut self, block_id: &str, char_idx: usize) {
-        self.as_mut()
-            .insert_page_number_field(crate::model::Region::Header, block_id, char_idx);
-        self.doc.commit();
-    }
-
     pub fn insert_footer_page_number(&mut self, block_id: &str, char_idx: usize) {
         self.as_mut()
             .insert_page_number_field(crate::model::Region::Footer, block_id, char_idx);
@@ -630,11 +624,6 @@ impl Document {
         let a = self.materialize_at(from)?;
         let b = self.materialize_at(to)?;
         Ok(crate::diff::diff_snapshots(&a, &b))
-    }
-
-    /// Structural diff of this document's current state against another snapshot; `other` is the baseline (old), `self` is the new side.
-    pub fn diff_against(&self, other: &crate::snapshot::DocSnapshot) -> crate::diff::DocDiff {
-        crate::diff::diff_snapshots(other, &self.materialize())
     }
 
     /// Independent replica with a fresh actor id (distinct edit lineage).

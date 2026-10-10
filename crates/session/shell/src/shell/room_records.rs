@@ -851,11 +851,6 @@ pub fn room_label(tree: &crate::shell::state::WorkspaceTree, room: RoomId) -> Op
         .map(|w| w.name.clone())
 }
 
-/// Rooms in tree order (most-recently-active isn't knowable here).
-pub fn known_rooms(tree: &crate::shell::state::WorkspaceTree) -> BTreeSet<RoomId> {
-    tree.desktop.workspaces.iter().map(|w| w.room).collect()
-}
-
 #[cfg(test)]
 mod tests {
     use automerge::transaction::{CommitOptions, Transactable};

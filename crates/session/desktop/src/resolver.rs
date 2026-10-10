@@ -99,7 +99,7 @@ impl<H: ComponentContextSource> TileResolver for ApplicationCatalogTileResolver<
             };
         };
         let Ok(definition) = self.catalog.resolve(&id) else {
-            return if collab_types::first_party_app_ids::is_first_party_app_id(&id) {
+            return if tilo_desktop_model::first_party::is_first_party_app_id(&id) {
                 TileResolution::Unavailable {
                     title: request.tab.title.clone(),
                     detail: crate::i18n::t_args(

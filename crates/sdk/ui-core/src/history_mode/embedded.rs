@@ -6,9 +6,35 @@
 )]
 use super::*;
 use crate::{bound_dispatch::BoundNodeMap, widget::Widget};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use taffy::{NodeId, TaffyTree};
 use winit::event::{ElementState, WindowEvent};
+
+/// Focus eligibility for one recomputation of the current layout. This owns
+/// only node ids and never survives a layout or input-capture change.
+pub(crate) struct FocusRestrictions {
+    has_surfaces: bool,
+    denied: HashSet<NodeId>,
+}
+impl FocusRestrictions {
+    pub(crate) fn collect(root: &dyn Widget, tree: &TaffyTree<()>) -> Self {
+        let mut restrictions = Self {
+            has_surfaces: false,
+            denied: HashSet::new(),
+        };
+        crate::history_mode::capability::visit_framework_history(root, &mut |history, _| {
+            restrictions.has_surfaces = true;
+            history.extend_focus_denials(tree, &mut restrictions.denied);
+        });
+        restrictions
+    }
+    pub(crate) fn has_surfaces(&self) -> bool {
+        self.has_surfaces
+    }
+    pub(crate) fn allows(&self, node: NodeId) -> bool {
+        !self.denied.contains(&node)
+    }
+}
 
 pub(crate) fn has_surfaces(root: &dyn Widget) -> bool {
     let mut found = false;

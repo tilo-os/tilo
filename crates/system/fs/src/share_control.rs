@@ -9,10 +9,11 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+use collab_types::Ed25519PublicKey;
 #[cfg(test)]
-use collab_types::FilePermission;
-use collab_types::{Ed25519PublicKey, FileRecordId, SHARE_CONTROL_FRAMING};
-pub use collab_types::{
+use fs_protocol::FilePermission;
+use fs_protocol::{FileRecordId, SHARE_CONTROL_FRAMING};
+pub use fs_protocol::{
     MAX_SHARE_CONTROL_FRAME_BYTES, NamedGrantMetadataV1, NamedShareDeliveryStateV1,
     SHARE_CONTROL_VERSION, ShareControlErrorCode, ShareControlOperationV1, ShareControlRequestV1,
     ShareControlResponseV1, ShareControlResultV1,
@@ -408,7 +409,8 @@ pub enum ShareControlServerError {
 
 #[cfg(test)]
 mod tests {
-    use collab_types::{ContentHash, FileActor, FileMetadataV1, IndexStatus, generate_keypair};
+    use collab_types::generate_keypair;
+    use fs_protocol::{ContentHash, FileActor, FileMetadataV1, IndexStatus};
     use iroh::SecretKey;
 
     use tilo_clock::FixedClock;

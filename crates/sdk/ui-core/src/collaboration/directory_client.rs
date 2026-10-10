@@ -111,9 +111,12 @@ pub(super) fn resolution_bytes(
     resolution: &runtime_collab::ActionDirectoryResolution,
     meter: &mut ByteMeter,
 ) {
-    if let runtime_collab::ActionDirectoryResolution::Found(row) = resolution {
+    if let runtime_collab::ActionDirectoryResolution::Found { row, revision } = resolution {
         meter.add(std::mem::size_of::<runtime_collab::ActionDirectoryRow>());
         row_bytes(row, meter);
+        if let Some(revision) = revision {
+            meter.string_capacity(revision);
+        }
     }
 }
 

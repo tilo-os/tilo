@@ -17,6 +17,7 @@ use super::{
     TaffyTree, TextRenderer, TextStyle, Theme, View, Widget, elide, is_live_album_id, is_live_id,
     is_live_playlist_id, live_track_id, lyrics,
 };
+use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
 use ui::chrome::{self, HeaderRowFace, NavCount, NavRowFace, NavSectionFace, SelectionState};
@@ -953,20 +954,14 @@ impl Widget for MusicApp {
             clippy::expect_used,
             reason = "the child belongs to this same tree; Widget::build_layout has no error return"
         )]
-        let node = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::percent(1.0),
-                    },
-                    ..Default::default()
-                },
-                &children,
-            )
-            .expect("a parent and child in the same taffy tree");
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let style = Style {
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::percent(1.0),
+            },
+            ..Default::default()
+        };
+        taffy.widget_node(style, &children, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -1916,12 +1911,13 @@ impl MusicApp {
                         "repeat": self.pb.repeat.as_str(),
                         "requested_playing": self.pb.playing,
                         "confirmed_playing": self.audio.is_playing_real(),
+                        "control_pending": self.audio.is_control_pending(),
                         "resolving": self.active_resolve_request.is_some(),
                         "spotify_stage": self.audio.spotify_startup_stage(),
                         "rendered_buffers": self.audio.frames_rendered(),
                         "rendered_counter_unit": if media::audio_output::is_governed() { "host_pcm_frames" } else { "sink_buffers" },
                         "sink": self.audio.actual_audio_sink_name(),
-                        "position_ms": self.audio.position_ms(),
+                        "position_ms": self.observed_position_ms(),
                         "duration_ms": self.observed_duration_ms(),
                         "error": self.playback_error,
                     })),

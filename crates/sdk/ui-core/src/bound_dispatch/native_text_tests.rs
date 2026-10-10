@@ -129,6 +129,7 @@ fn edit(
                     &registry(),
                     wire,
                     ResourceOperation {
+                        target_route: None,
                         address: &tilo_actions::ActionAddress::new("burst", "text"),
                         resource: &resource,
                         spec: &spec,

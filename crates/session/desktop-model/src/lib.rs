@@ -10,24 +10,15 @@
 //! writes, and [`commands`] the vocabulary a desktop surface uses to ask a
 //! room's topology owner for a change, with the owner's pure reduction.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        clippy::panic,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 pub mod app;
 pub mod apps;
 pub mod capability;
 pub mod collaborator;
 pub mod commands;
 pub mod desktop_doc;
+pub mod first_party;
 pub mod grants;
+pub mod history;
 pub mod ids;
 pub mod layout;
 pub mod partition;

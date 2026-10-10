@@ -1335,9 +1335,7 @@ mod tests {
     use ui::framework::testing::TestApp;
 
     fn registry() -> ActionRegistry {
-        let mut r = ActionRegistry::new();
-        register(&mut r);
-        r
+        ActionRegistry::with(register)
     }
 
     fn invitation(events: &str) -> String {

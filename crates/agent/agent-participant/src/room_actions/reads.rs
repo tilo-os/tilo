@@ -1,22 +1,16 @@
 //! Registered reads over the host's verified retained source, never its peer cache.
+//!
+//! The policy checks run here, in the host; the component whose reads they
+//! are runs in a confined app worker ([`crate::worker::ConfinedRead`]), which
+//! is handed the retained source and the caller's current policy and nothing
+//! else.
 use super::{AppCatalogue, Caller, DocumentRoute, RoomRecordsLink, ViewReadPolicy};
-use std::{cell::RefCell, rc::Rc};
+use crate::worker::ConfinedRead;
 use tilo_actions::{
     ActionDescriptor, ActionOutput,
     door::{ActionAddress, DoorError},
 };
-use ui::{
-    application::{
-        ComponentRunnerInputs, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
-    },
-    application_view::InstanceViewStore,
-    headless::FrameHarness,
-    permissions::{PermissionContext, UserId},
-    portable_storage::{PortableStorage, StorageKey},
-    record::{RecordCheckout, RecordId, RecordOwners},
-};
-
-const INSTANCE: u64 = 1;
+use ui::record::RecordId;
 
 pub(super) fn record_id(wire: &str) -> Result<RecordId, String> {
     if wire.is_empty() {
@@ -27,8 +21,7 @@ pub(super) fn record_id(wire: &str) -> Result<RecordId, String> {
 }
 
 pub(super) struct CanonicalRead {
-    frame: FrameHarness,
-    permissions: Rc<RefCell<PermissionContext>>,
+    read: ConfinedRead,
     admitted: ViewReadPolicy,
     revision: String,
 }
@@ -46,76 +39,24 @@ impl CanonicalRead {
             .filter(|policy| policy.room == route.cluster_id)
             .ok_or("canonical read not permitted")?;
         // This source is replayed from retained, signature-verified host storage
-        // under current certified Read and existing keys. The disposable cache
-        // below carries that source; it never proves an uncommitted peer write.
+        // under current certified Read and existing keys. The worker's
+        // disposable cache carries that source; it never proves an
+        // uncommitted peer write.
         let source = link.view_document(workspace, caller, route)?;
         let definition = catalogue.get(&route.app_id).ok_or("unknown source app")?;
-        let checkout =
-            RecordCheckout::new(record_id(&route.record)?, definition.record_kind.clone());
-        if definition.keeps_room_record() != checkout.id.is_package_primary() {
+        let record = record_id(&route.record)?;
+        if definition.keeps_room_record() != record.is_package_primary() {
             return Err("source record scope mismatch".into());
         }
-        // Hydrate existing history; a new-record initializer must never replace
-        // its deterministic genesis actor with an arriving snapshot.
-        let cache = PortableStorage::new("canonical-reader", "canonical-reader")?;
-        let key = if checkout.id.is_package_primary() {
-            StorageKey::Primary {
-                package: definition.app_id.into(),
-                workspace: route.cluster_id.clone(),
-            }
-        } else {
-            StorageKey::Record {
-                package: definition.app_id.into(),
-                workspace: route.cluster_id.clone(),
-                record: checkout.id.as_str().into(),
-            }
-        };
-        cache.hydrate(
-            key,
+        let read = ConfinedRead::prepare(
+            definition.app_id,
+            &route.cluster_id,
+            &record,
             source.bytes,
-            Some(automerge::ActorId::random().to_bytes().to_vec()),
+            &admitted,
         )?;
-        let records = RecordOwners::portable(cache.clone())
-            .open(definition.app_id, &route.cluster_id)
-            .map_err(|error| error.to_string())?;
-        let views = Rc::new(
-            InstanceViewStore::portable(cache, &route.cluster_id)
-                .map_err(|error| error.to_string())?,
-        );
-        let permissions = Rc::new(RefCell::new(admitted.permissions()));
-        let target = LaunchTarget::Record {
-            checkout,
-            reveal: None,
-        };
-        let context = HostContext::prepare(
-            definition,
-            HostContextInputs {
-                records,
-                views,
-                device_id: "canonical-reader".into(),
-                instance_id: INSTANCE,
-                permissions: permissions.clone(),
-                author: UserId(admitted.person.clone()),
-                action_context: tilo_actions::ActionContext::default(),
-            },
-            &target,
-        )
-        .map_err(|error| error.to_string())?;
-        let component = definition
-            .instantiate(context, target, RestoreInput::None)
-            .map_err(|error| error.to_string())?;
-        let frame = FrameHarness::from_component(
-            component,
-            (1280, 720),
-            ComponentRunnerInputs {
-                theme: ui::Theme::default(),
-                text_renderer: ui::TextRenderer::new(),
-            },
-        )
-        .map_err(|error| error.to_string())?;
-        let read = Self {
-            frame,
-            permissions,
+        let mut read = Self {
+            read,
             admitted,
             revision: source.revision,
         };
@@ -127,15 +68,12 @@ impl CanonicalRead {
         &self.revision
     }
 
-    pub(super) fn operations(&self) -> Vec<ActionDescriptor> {
-        ui::semantic_document_read::registered_operations(
-            self.frame.root_widget(),
-            &self.frame.resources(),
-        )
+    pub(super) fn operations(&mut self) -> Vec<ActionDescriptor> {
+        self.read.operations().unwrap_or_default()
     }
 
     pub(super) fn recheck(
-        &self,
+        &mut self,
         link: &dyn RoomRecordsLink,
         workspace: u64,
         caller: &Caller,
@@ -151,8 +89,7 @@ impl CanonicalRead {
         {
             return Err("canonical read policy changed".into());
         }
-        *self.permissions.borrow_mut() = fresh.permissions();
-        Ok(())
+        self.read.set_policy(&fresh)
     }
 
     pub(super) fn invoke(
@@ -174,14 +111,7 @@ impl CanonicalRead {
         {
             return Err(refused());
         }
-        let started = self.frame.invoke_bound_action(
-            &ui::bound_dispatch::BoundActionAddress {
-                instance_id: INSTANCE,
-                address: address.clone(),
-            },
-            arguments,
-        )?;
-        let output = started.completed().ok_or_else(refused)?;
+        let output = self.read.invoke(address, arguments)?;
         self.recheck(link, workspace, caller, route)
             .map_err(|_| refused())?;
         if !self

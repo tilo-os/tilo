@@ -86,14 +86,6 @@ impl MasterPty for MockMasterShared {
     }
 }
 
-/// `DeviceId::dummy()` is gated behind a winit unstable feature; the
-/// regular constructor isn't pub. Match what
-/// `crates/sdk/ui-core/src/widget/date_picker.rs` does: zero-init the value, which
-/// `handle_event` never inspects for these tests.
-fn fake_device_id() -> winit::event::DeviceId {
-    unsafe { std::mem::zeroed() }
-}
-
 /// Construct a terminal widget with a writer that funnels bytes
 /// into a channel so tests can assert what was sent to the PTY.
 fn build_test_widget() -> (TerminalWidget, std::sync::mpsc::Receiver<Vec<u8>>) {
@@ -330,11 +322,13 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
                 request.contains("\"target\":{\"kind\":\"environment\"}"),
                 "{request}"
             );
-            let (master, _peer) = std::os::unix::net::UnixStream::pair().unwrap();
+            let pair = portable_pty::native_pty_system()
+                .openpty(portable_pty::PtySize::default())
+                .unwrap();
             runtime_portal::fd_transport::send_with_fd(
                 stream.as_raw_fd(),
-                b"{\"result\":\"session\",\"session\":\"test\",\"environment\":\"default\"}\n",
-                master.as_raw_fd(),
+                b"{\"result\":\"session\",\"session\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"environment\":\"default\"}\n",
+                pair.master.as_raw_fd().unwrap(),
             )
             .unwrap();
         });
@@ -418,87 +412,33 @@ pub(crate) fn drain_writes(rx: &std::sync::mpsc::Receiver<Vec<u8>>) -> Vec<u8> {
 }
 
 fn send_left_press(widget: &mut TerminalWidget, doc: &mut AutoCommit) {
-    use ui::widget::Widget;
-    use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
-    let mut handled = false;
-    let mut focus = None;
-    let modifiers = Modifiers::default();
-    let mut taffy = taffy::TaffyTree::<()>::new();
-    let node = taffy.new_leaf(taffy::Style::default()).unwrap();
+    use winit::event::{ElementState, MouseButton, WindowEvent};
     let ev = WindowEvent::MouseInput {
-        device_id: fake_device_id(),
+        device_id: winit::event::DeviceId::dummy(),
         state: ElementState::Pressed,
         button: MouseButton::Left,
     };
-    widget.handle_event(
-        &ev,
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &modifiers,
-            state: ui::widget::Edits::lend(doc),
-            path: &automerge::ROOT,
-            handled: &mut handled,
-            focus_target: &mut focus,
-            node_id: node,
-            taffy: &taffy,
-        },
-    );
+    ui::testing::Dispatch::new().doc(doc).send(widget, &ev);
 }
 
 fn send_left_release(widget: &mut TerminalWidget, doc: &mut AutoCommit) {
-    use ui::widget::Widget;
-    use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
-    let mut handled = false;
-    let mut focus = None;
-    let modifiers = Modifiers::default();
-    let mut taffy = taffy::TaffyTree::<()>::new();
-    let node = taffy.new_leaf(taffy::Style::default()).unwrap();
+    use winit::event::{ElementState, MouseButton, WindowEvent};
     let ev = WindowEvent::MouseInput {
-        device_id: fake_device_id(),
+        device_id: winit::event::DeviceId::dummy(),
         state: ElementState::Released,
         button: MouseButton::Left,
     };
-    widget.handle_event(
-        &ev,
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &modifiers,
-            state: ui::widget::Edits::lend(doc),
-            path: &automerge::ROOT,
-            handled: &mut handled,
-            focus_target: &mut focus,
-            node_id: node,
-            taffy: &taffy,
-        },
-    );
+    ui::testing::Dispatch::new().doc(doc).send(widget, &ev);
 }
 
 fn send_cursor_move(widget: &mut TerminalWidget, doc: &mut AutoCommit, x: f64, y: f64) {
-    use ui::widget::Widget;
     use winit::dpi::PhysicalPosition;
-    use winit::event::{Modifiers, WindowEvent};
-    let mut handled = false;
-    let mut focus = None;
-    let modifiers = Modifiers::default();
-    let mut taffy = taffy::TaffyTree::<()>::new();
-    let node = taffy.new_leaf(taffy::Style::default()).unwrap();
+    use winit::event::WindowEvent;
     let ev = WindowEvent::CursorMoved {
-        device_id: fake_device_id(),
+        device_id: winit::event::DeviceId::dummy(),
         position: PhysicalPosition::new(x, y),
     };
-    widget.handle_event(
-        &ev,
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &modifiers,
-            state: ui::widget::Edits::lend(doc),
-            path: &automerge::ROOT,
-            handled: &mut handled,
-            focus_target: &mut focus,
-            node_id: node,
-            taffy: &taffy,
-        },
-    );
+    ui::testing::Dispatch::new().doc(doc).send(widget, &ev);
 }
 
 fn send_mouse_button_mods(
@@ -508,58 +448,29 @@ fn send_mouse_button_mods(
     state: winit::event::ElementState,
     shift: bool,
 ) {
-    use ui::widget::Widget;
-    use winit::event::{Modifiers, WindowEvent};
+    use winit::event::WindowEvent;
     use winit::keyboard::ModifiersState;
-    let modifiers: Modifiers = if shift {
-        ModifiersState::SHIFT.into()
+    let modifiers = if shift {
+        ModifiersState::SHIFT
     } else {
-        ModifiersState::empty().into()
+        ModifiersState::empty()
     };
-    let mut handled = false;
-    let mut focus = None;
-    let mut taffy = taffy::TaffyTree::<()>::new();
-    let node = taffy.new_leaf(taffy::Style::default()).unwrap();
     let ev = WindowEvent::MouseInput {
-        device_id: fake_device_id(),
+        device_id: winit::event::DeviceId::dummy(),
         state,
         button,
     };
-    widget.handle_event(
-        &ev,
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &modifiers,
-            state: ui::widget::Edits::lend(doc),
-            path: &automerge::ROOT,
-            handled: &mut handled,
-            focus_target: &mut focus,
-            node_id: node,
-            taffy: &taffy,
-        },
-    );
+    ui::testing::Dispatch::new()
+        .modifiers(modifiers)
+        .doc(doc)
+        .send(widget, &ev);
 }
 
 fn send_focus(widget: &mut TerminalWidget, doc: &mut AutoCommit, focused: bool) {
-    use ui::widget::Widget;
-    use winit::event::{Modifiers, WindowEvent};
-    let mut handled = false;
-    let mut focus = None;
-    let mut taffy = taffy::TaffyTree::<()>::new();
-    let node = taffy.new_leaf(taffy::Style::default()).unwrap();
-    widget.handle_event(
-        &WindowEvent::Focused(focused),
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &Modifiers::default(),
-            state: ui::widget::Edits::lend(doc),
-            path: &automerge::ROOT,
-            handled: &mut handled,
-            focus_target: &mut focus,
-            node_id: node,
-            taffy: &taffy,
-        },
-    );
+    use winit::event::WindowEvent;
+    ui::testing::Dispatch::new()
+        .doc(doc)
+        .send(widget, &WindowEvent::Focused(focused));
 }
 
 fn send_key(
@@ -601,24 +512,9 @@ fn send_key_with_modifiers(
     key: winit::keyboard::Key,
     state: winit::keyboard::ModifiersState,
 ) {
-    use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
-    use winit::keyboard::{KeyLocation, PhysicalKey};
+    use winit::event::{ElementState, WindowEvent};
 
-    let modifiers: Modifiers = state.into();
-    let mut handled = false;
-    let mut focus = None;
-    let mut taffy = taffy::TaffyTree::<()>::new();
-    let node = taffy.new_leaf(taffy::Style::default()).unwrap();
-
-    // Construct over a zeroed buffer because winit's `KeyEventExtra`
-    // is `pub(crate)` — same trick `ui::widget::modal_dialog`'s tests
-    // and `crates/session/shell/tests/e2e_shell_flows.rs::key_press` use.
-    let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-    ev.logical_key = key;
-    ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-    ev.location = KeyLocation::Standard;
-    ev.state = ElementState::Pressed;
-    ev.repeat = false;
+    let mut ev = ui::synthetic_input::key_event(key, None, ElementState::Pressed);
     // Real winit delivers the committed text alongside a character key; the
     // terminal encodes that into the PTY bytes (and typing snaps the
     // scrollback back to the live bottom). Named keys carry no `text`.
@@ -628,23 +524,14 @@ fn send_key_with_modifiers(
     };
 
     let win_ev = WindowEvent::KeyboardInput {
-        device_id: fake_device_id(),
+        device_id: winit::event::DeviceId::dummy(),
         event: ev,
         is_synthetic: false,
     };
-    widget.handle_event(
-        &win_ev,
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &modifiers,
-            state: ui::widget::Edits::lend(doc),
-            path: &automerge::ROOT,
-            handled: &mut handled,
-            focus_target: &mut focus,
-            node_id: node,
-            taffy: &taffy,
-        },
-    );
+    ui::testing::Dispatch::new()
+        .modifiers(state)
+        .doc(doc)
+        .send(widget, &win_ev);
 }
 
 /// Same as [`send_key_with_modifiers`], but leave `KeyEvent::text` empty.
@@ -655,40 +542,20 @@ pub(crate) fn send_key_without_text(
     doc: &mut AutoCommit,
     key: winit::keyboard::Key,
 ) -> bool {
-    use ui::widget::Widget;
-    use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
-    use winit::keyboard::{KeyLocation, PhysicalKey};
+    use winit::event::{ElementState, WindowEvent};
 
-    let modifiers = Modifiers::default();
-    let mut handled = false;
-    let mut focus = None;
-    let mut taffy = taffy::TaffyTree::<()>::new();
-    let node = taffy.new_leaf(taffy::Style::default()).unwrap();
-    let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-    ev.logical_key = key;
-    ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-    ev.location = KeyLocation::Standard;
-    ev.state = ElementState::Pressed;
-    ev.repeat = false;
-    ev.text = None;
-    widget.handle_event(
-        &WindowEvent::KeyboardInput {
-            device_id: fake_device_id(),
-            event: ev,
-            is_synthetic: false,
-        },
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &modifiers,
-            state: ui::widget::Edits::lend(doc),
-            path: &automerge::ROOT,
-            handled: &mut handled,
-            focus_target: &mut focus,
-            node_id: node,
-            taffy: &taffy,
-        },
-    );
-    handled
+    let ev = ui::synthetic_input::key_event(key, None, ElementState::Pressed);
+    ui::testing::Dispatch::new()
+        .doc(doc)
+        .send(
+            widget,
+            &WindowEvent::KeyboardInput {
+                device_id: winit::event::DeviceId::dummy(),
+                event: ev,
+                is_synthetic: false,
+            },
+        )
+        .handled
 }
 
 /// Typed letters, Space and Enter must reach the PTY even when winit omits
@@ -2717,8 +2584,7 @@ fn mouse_tracking_padding_and_grid_hit_testing() {
 fn ime_and_accessibility_expose_terminal_semantics() {
     // Case `ime_commit_writes_composed_text_to_the_focused_terminal`.
     {
-        use ui::widget::Widget;
-        use winit::event::{Modifiers, WindowEvent};
+        use winit::event::WindowEvent;
 
         let (mut w, rx) = build_test_widget();
         let mut doc = AutoCommit::new();
@@ -2754,23 +2620,13 @@ fn ime_and_accessibility_expose_terminal_semantics() {
         );
         assert_eq!(drain_writes(&rx), b"typed");
 
-        let mut handled = false;
-        let mut focus = None;
-        let mut taffy = taffy::TaffyTree::<()>::new();
-        let node = taffy.new_leaf(taffy::Style::default()).unwrap();
-        w.handle_event(
-            &WindowEvent::Ime(winit::event::Ime::Commit("漢字".into())),
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &Modifiers::default(),
-                state: ui::widget::Edits::lend(&mut doc),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
+        let handled = ui::testing::Dispatch::new()
+            .doc(&mut doc)
+            .send(
+                &mut w,
+                &WindowEvent::Ime(winit::event::Ime::Commit("漢字".into())),
+            )
+            .handled;
 
         assert!(handled, "focused terminal consumes an IME commit");
         assert_eq!(drain_writes(&rx), "漢字".as_bytes());
@@ -3682,65 +3538,32 @@ fn keyboard_encoding_sends_expected_sequences() {
 
 /// Send a left press with explicit modifiers (for shift-extend).
 fn send_left_press_mods(widget: &mut TerminalWidget, doc: &mut AutoCommit, shift: bool) {
-    use ui::widget::Widget;
-    use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
+    use winit::event::{ElementState, MouseButton, WindowEvent};
     use winit::keyboard::ModifiersState;
-    let mut handled = false;
-    let mut focus = None;
     let mut state = ModifiersState::empty();
     if shift {
         state |= ModifiersState::SHIFT;
     }
-    let modifiers: Modifiers = state.into();
-    let mut taffy = taffy::TaffyTree::<()>::new();
-    let node = taffy.new_leaf(taffy::Style::default()).unwrap();
     let ev = WindowEvent::MouseInput {
-        device_id: fake_device_id(),
+        device_id: winit::event::DeviceId::dummy(),
         state: ElementState::Pressed,
         button: MouseButton::Left,
     };
-    widget.handle_event(
-        &ev,
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &modifiers,
-            state: ui::widget::Edits::lend(doc),
-            path: &automerge::ROOT,
-            handled: &mut handled,
-            focus_target: &mut focus,
-            node_id: node,
-            taffy: &taffy,
-        },
-    );
+    ui::testing::Dispatch::new()
+        .modifiers(state)
+        .doc(doc)
+        .send(widget, &ev);
 }
 
 /// Send a middle-button press (primary-selection paste).
 fn send_middle_press(widget: &mut TerminalWidget, doc: &mut AutoCommit) {
-    use ui::widget::Widget;
-    use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
-    let mut handled = false;
-    let mut focus = None;
-    let modifiers = Modifiers::default();
-    let mut taffy = taffy::TaffyTree::<()>::new();
-    let node = taffy.new_leaf(taffy::Style::default()).unwrap();
+    use winit::event::{ElementState, MouseButton, WindowEvent};
     let ev = WindowEvent::MouseInput {
-        device_id: fake_device_id(),
+        device_id: winit::event::DeviceId::dummy(),
         state: ElementState::Pressed,
         button: MouseButton::Middle,
     };
-    widget.handle_event(
-        &ev,
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &modifiers,
-            state: ui::widget::Edits::lend(doc),
-            path: &automerge::ROOT,
-            handled: &mut handled,
-            focus_target: &mut focus,
-            node_id: node,
-            taffy: &taffy,
-        },
-    );
+    ui::testing::Dispatch::new().doc(doc).send(widget, &ev);
 }
 
 /// Logical x for the centre of grid column `col` given `char_w=10`,
@@ -3904,9 +3727,8 @@ fn mouse_selection_gestures_select_extend_and_stay_anchored() {
 
     // Case `selection_highlight_is_produced_synchronously_on_drag`.
     {
-        use ui::widget::Widget;
         use winit::dpi::PhysicalPosition;
-        use winit::event::{Modifiers, WindowEvent};
+        use winit::event::WindowEvent;
 
         let (mut widget, _) = build_test_widget();
         let mut doc = AutoCommit::new();
@@ -3920,28 +3742,14 @@ fn mouse_selection_gestures_select_extend_and_stay_anchored() {
         // back whether it was `handled` (the App's incremental-redraw gate only
         // repaints a pointer move when the widget reports it, so a drag that
         // isn't handled would leave the highlight invisible until the next tick).
-        let mut taffy = taffy::TaffyTree::<()>::new();
-        let node = taffy.new_leaf(taffy::Style::default()).unwrap();
-        let modifiers = Modifiers::default();
-        let mut handled = false;
-        let mut focus = None;
         let ev = WindowEvent::CursorMoved {
-            device_id: fake_device_id(),
+            device_id: winit::event::DeviceId::dummy(),
             position: PhysicalPosition::new(4.0 + 20.0 * 10.0 + 1.0, 20.0 + 1.0),
         };
-        widget.handle_event(
-            &ev,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &modifiers,
-                state: ui::widget::Edits::lend(&mut doc),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
+        let handled = ui::testing::Dispatch::new()
+            .doc(&mut doc)
+            .send(&mut widget, &ev)
+            .handled;
 
         // The highlight span exists in the SAME event that moved the pointer —
         // no deferred re-layout, no debounce, no full-grid rework required.
@@ -4701,4 +4509,65 @@ fn cell_fills_snap_to_device_pixels_and_adjacent_cells_tile() {
             );
         }
     }
+}
+
+/// Typing repaints the row it lands on and the cursor, not the terminal:
+/// each row on screen and the cursor are damage parts the compositor
+/// compares frame to frame (`ui::scene_parts`).
+#[test]
+fn typing_damages_only_its_row_and_the_cursor() {
+    use ui::{Theme, presence::PresenceCtx, text_render::TextRenderer};
+    use vello::{Scene, kurbo::Affine};
+
+    let (mut widget, _) = build_test_widget();
+    let viewport = Rect::new(0.0, 0.0, 1600.0, 1000.0);
+    widget.force_geometry(viewport, 10.0, 20.0);
+    widget.feed(b"first line\r\nsecond line\r\n$ ");
+    let theme = Theme::dark();
+    let mut text = TextRenderer::new();
+    let mut frame = |widget: &mut TerminalWidget| {
+        let mut scene = Box::new(Scene::new());
+        let ((), parts) = ui::scene_parts::record(&mut scene, |scene| {
+            widget.draw(
+                scene,
+                Affine::IDENTITY,
+                &mut text,
+                &theme,
+                &PresenceCtx::empty(),
+            );
+        });
+        (scene, parts.expect("the terminal's parts are well nested"))
+    };
+    // The first draw measures the cell and resizes the grid to the
+    // viewport; the next output applies that size.
+    let _ = frame(&mut widget);
+    widget.feed(b"");
+    let (before, before_parts) = frame(&mut widget);
+    let (again, again_parts) = frame(&mut widget);
+    assert_eq!(
+        ui::scene_parts::damage(&before, &before_parts, &again, &again_parts),
+        Ok(Vec::new()),
+        "an unchanged terminal draws the same commands"
+    );
+    widget.feed(b"l");
+    let (after, after_parts) = frame(&mut widget);
+    let damage = ui::scene_parts::damage(&again, &again_parts, &after, &after_parts)
+        .expect("typing changes nothing outside the terminal's parts");
+    assert!(!damage.is_empty(), "the typed letter is repainted");
+    let (_, rows) = widget.grid_size();
+    let row_h = widget.grid_rect().height() / rows.max(1) as f64;
+    assert!(
+        damage.iter().all(|rect| rect.height() <= 3.0 * row_h + 2.0),
+        "typing repaints a row band and the cursor's cell, not the grid: {damage:?}"
+    );
+    let area: f64 = damage.iter().map(Rect::area).sum();
+    eprintln!(
+        "TIL-579 terminal keystroke damage: {area} of {} px",
+        viewport.area()
+    );
+    assert!(
+        area * 4.0 < viewport.area(),
+        "typing repaints a sliver of the terminal, not {area} of {} px: {damage:?}",
+        viewport.area()
+    );
 }

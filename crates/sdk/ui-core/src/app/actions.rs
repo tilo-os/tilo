@@ -292,8 +292,13 @@ impl App {
         {
             tracing::warn!(%error, "legacy control availability refused");
         }
+        // A first page's control availability took 246 ms in Settings; the
+        // startup file names the stage (TIL-691). Startup-only: this runs on
+        // every rebuild.
+        tilo_startup_metrics::startup_mark("actions-legacy-done");
         let trace = self.trace_resource_stage(Stage::BoundDiscovery);
         let history_door = self.refresh_history_controls();
+        tilo_startup_metrics::startup_mark("actions-history-done");
         let snapshots = crate::bound_dispatch::discover_cached_bound_resources(
             self.root_widget.as_ref(),
             &self.state.doc,
@@ -302,6 +307,7 @@ impl App {
         )
         .unwrap_or_default();
         trace.finish(CacheResult::NotObserved);
+        tilo_startup_metrics::startup_mark("actions-bound-discovery-done");
         let trace = self.trace_resource_stage(Stage::BoundControlProjection);
         let _ = crate::bound_dispatch::refresh_bound_controls(
             self.root_widget.as_mut(),
@@ -309,6 +315,7 @@ impl App {
             &history_door,
         );
         trace.finish(CacheResult::NotApplicable);
+        tilo_startup_metrics::startup_mark("actions-bound-projection-done");
         // Only ActionEmitter controls consume this address projection. Semantic,
         // document and legacy controls still use their normal invocation doors.
         // Recheck presence: widget-local changes can add/remove emitters.
@@ -318,6 +325,7 @@ impl App {
             return;
         }
         let cache_key = self.ensure_local_control_cache();
+        tilo_startup_metrics::startup_mark("actions-local-cache-done");
         let trace = self.trace_resource_stage(Stage::ControlCache);
         if self.actions.last_control_availability.as_ref() == Some(&cache_key) {
             trace.finish(CacheResult::Hit);
@@ -555,6 +563,7 @@ impl App {
                 .collect();
             Some(resource)
         }
+        self.refresh_local_undo_discovery();
         let key = self.ensure_resource_cache();
         let mut resources = self
             .actions
@@ -626,6 +635,12 @@ impl App {
             true,
         ) {
             resources.extend(legacy);
+        }
+        if crate::undo::local_undo_status(self.root_widget.as_ref()).is_some() {
+            let address = tilo_actions::ActionAddress::new("tilo.host:edit", "undo");
+            if let Some(edit) = self.edit_resource_for(&address) {
+                resources.push(edit);
+            }
         }
         resources
     }
@@ -1590,9 +1605,19 @@ impl App {
         let Ok(current) = self.try_action_directory_revision() else {
             return runtime_collab::ActionDirectoryResolution::Unavailable;
         };
-        if revision != current {
+        // No revision asks for the directory as it is now: a caller that
+        // names an action it already knows (an agent's) chose it from no
+        // page, and reading the revision first would cost it a round trip.
+        // The answer names the revision it resolved against either way, so
+        // the broker binds the admission to it and a host refuses to run
+        // the action once the directory moved on.
+        if !revision.is_empty() && revision != current {
             return runtime_collab::ActionDirectoryResolution::StaleRevision;
         }
+        let found = |row| runtime_collab::ActionDirectoryResolution::Found {
+            row: Box::new(row),
+            revision: Some(current.clone()),
+        };
         if let Some(row) = self
             .actions
             .action_directory_snapshot
@@ -1603,15 +1628,13 @@ impl App {
                     .get(&tilo_actions::ActionAddress::new(resource_id, action_id))
             })
         {
-            return runtime_collab::ActionDirectoryResolution::Found(Box::new(row.clone()));
+            return found(row.clone());
         }
         let resource = self.resolve_publication_resource(resource_id, action_id);
         resource
             .as_ref()
             .and_then(|resource| Self::directory_action_row(resource, action_id))
-            .map_or(runtime_collab::ActionDirectoryResolution::NotFound, |row| {
-                runtime_collab::ActionDirectoryResolution::Found(Box::new(row))
-            })
+            .map_or(runtime_collab::ActionDirectoryResolution::NotFound, found)
     }
 
     fn published_action_directory_page(
@@ -1649,7 +1672,11 @@ impl App {
         for request in self.collaboration.manager.take_action_directory_requests() {
             match request {
                 ActionDirectoryRequest::Query { query, reply } => {
-                    let _ = reply.send(self.published_action_directory_page(query));
+                    // A cancelled caller never receives this page. Do not consume
+                    // its one-use continuation before admitting a live response.
+                    if !reply.is_closed() {
+                        let _ = reply.send(self.published_action_directory_page(query));
+                    }
                 }
                 ActionDirectoryRequest::Resolve {
                     revision,
@@ -2065,6 +2092,7 @@ impl App {
                 context: None,
                 confirmation: Self::broker_confirmation(confirmation_evidence),
                 revision: None,
+                wait_ms: None,
             },
         );
         Ok(crate::widget::ResourceOperationStart::Accepted)
@@ -2166,8 +2194,10 @@ impl App {
         // edit intact; the executor still receives the same committed baseline.
         let before = self.state.doc.get_heads();
         let route = self.primary_document_route();
-        let started =
-            crate::invocation_scope::with_mounted_document(route, &mut self.state.doc, |doc| {
+        let started = crate::invocation_scope::with_mounted_document(
+            route.clone(),
+            &mut self.state.doc,
+            |doc| {
                 crate::bound_dispatch::execute_resource_operation(
                     self.root_widget.as_mut(),
                     doc,
@@ -2175,6 +2205,7 @@ impl App {
                     &self.actions.action_registry,
                     self.actions.action_transport.as_mut(),
                     crate::bound_dispatch::ResourceOperation {
+                        target_route: route.clone(),
                         address,
                         resource,
                         spec,
@@ -2188,7 +2219,8 @@ impl App {
                         scope,
                     },
                 )
-            })?;
+            },
+        )?;
         if before != self.state.doc.get_heads() {
             self.state.record_committed_action_authored(
                 before,
@@ -2558,6 +2590,9 @@ impl App {
                 resources.push(resource);
             }
         }
+        if crate::undo::local_undo_status(self.root_widget.as_ref()).is_some() {
+            resources.extend(self.edit_resource_for(address));
+        }
         let (typed_arguments, resource, resolved) = Self::resolve_resource_invocation(
             &resources,
             address,
@@ -2708,6 +2743,7 @@ impl App {
                 context: None,
                 confirmation: None,
                 revision: None,
+                wait_ms: None,
             };
             self.actions
                 .broker_requests
@@ -2861,28 +2897,33 @@ impl App {
             })()
         } else {
             let route = self.primary_document_route();
-            crate::invocation_scope::with_mounted_document(route, &mut self.state.doc, |doc| {
-                crate::bound_dispatch::execute_resource_operation(
-                    self.root_widget.as_mut(),
-                    doc,
-                    &self.state.root,
-                    &self.actions.action_registry,
-                    self.actions.action_transport.as_mut(),
-                    crate::bound_dispatch::ResourceOperation {
-                        address,
-                        resource,
-                        spec: resolved,
-                        encoded,
-                        actor,
-                        local_author: &self.collaboration.local_author.0,
-                        broker_admitted,
-                        invocation: operation_invocation,
-                        source_invocation: broker_admitted.then_some(operation_invocation),
-                        ambient: ambient_context,
-                        scope: None,
-                    },
-                )
-            })
+            crate::invocation_scope::with_mounted_document(
+                route.clone(),
+                &mut self.state.doc,
+                |doc| {
+                    crate::bound_dispatch::execute_resource_operation(
+                        self.root_widget.as_mut(),
+                        doc,
+                        &self.state.root,
+                        &self.actions.action_registry,
+                        self.actions.action_transport.as_mut(),
+                        crate::bound_dispatch::ResourceOperation {
+                            target_route: route.clone(),
+                            address,
+                            resource,
+                            spec: resolved,
+                            encoded,
+                            actor,
+                            local_author: &self.collaboration.local_author.0,
+                            broker_admitted,
+                            invocation: operation_invocation,
+                            source_invocation: broker_admitted.then_some(operation_invocation),
+                            ambient: ambient_context,
+                            scope: None,
+                        },
+                    )
+                },
+            )
         };
         let started = match operation_result {
             Ok(started) => started,
@@ -3538,6 +3579,7 @@ impl App {
             context,
             confirmation: None,
             revision: None,
+            wait_ms: None,
         };
         self.actions
             .broker_requests

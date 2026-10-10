@@ -16,7 +16,8 @@ use std::thread::{self, JoinHandle};
 use super::linux as platform;
 #[cfg(windows)]
 use super::windows as platform;
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 use tests::fixture as platform;
 
 static NEXT_OPERATION: AtomicU64 = AtomicU64::new(1);
@@ -647,5 +648,6 @@ fn transfer(
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 mod tests;

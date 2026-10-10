@@ -5,14 +5,32 @@ After=virtqemud.service virtnetworkd.service
 # No Windows VM may own an egress lease on the disposable installer. Avoid a
 # guaranteed controller failure; the installed UKI does not carry this marker.
 ConditionKernelCommandLine=!tilo.install
+# Never rate-limit starts: a start-limited reaper would leave the lease path
+# unit unable to start it, silently disarming lease expiry.
+StartLimitIntervalSec=0
 
 [Service]
-Type=oneshot
-ExecStart=/usr/libexec/tilo-windows-vm-control egress-reap
+# Started by tilo-windows-vm-egress-lease.path while a lease record exists and
+# by tilo-windows-vm-egress-reaper.timer on a provisioned machine. It retires
+# expired leases, refreshes the status summary, wakes every 5 s while a lease
+# record is left and exits once none is. A record it cannot retire for 10
+# minutes is moved out of the watched directory and logged, so it cannot keep
+# the reaper running.
+Type=exec
+ExecStart=/usr/libexec/tilo-windows-vm-control egress-reap --until-idle
+# A failure with a lease left is retried here rather than through the path
+# unit, which would restart it at once. Exit status 3 means no lease is left to
+# enforce but the last pass failed: reported, not retried.
+Restart=on-failure
+RestartSec=5s
+RestartPreventExitStatus=3
 NoNewPrivileges=yes
 CapabilityBoundingSet=
 AmbientCapabilities=
 ProtectSystem=strict
+# The controller lock, lease records and published summaries live here; the
+# rest of /run stays read-only under ProtectSystem=strict.
+ReadWritePaths=/run/tilo/windows-egress
 ProtectHome=yes
 PrivateTmp=yes
 PrivateDevices=yes
@@ -28,10 +46,11 @@ RestrictAddressFamilies=AF_UNIX
 RestrictNamespaces=yes
 LockPersonality=yes
 RestrictRealtime=yes
-# The controller repairs /run/tilo/windows-egress to mode 2750 before publishing
-# status for the tilo-identity group. RestrictSUIDSGID would make that defensive
-# chmod fail with EPERM even though tmpfiles normally creates the directory with
-# the same setgid mode.
+# The controller repairs /run/tilo/windows-egress to mode 2750 only when it
+# finds another mode; tmpfiles creates it 2750 for the tilo-identity group and a
+# correct directory is left alone. RestrictSUIDSGID would turn that repair into
+# EPERM. Without CAP_FSETID it cannot restore a lost setgid bit from this
+# sandbox either; that takes a tmpfiles run.
 MemoryDenyWriteExecute=yes
 SystemCallArchitectures=native
 SystemCallFilter=@system-service

@@ -1100,20 +1100,13 @@ impl SuperTap {
 #[cfg(test)]
 mod super_tap_tests {
     use super::*;
-    use winit::keyboard::{KeyLocation, PhysicalKey};
+    use winit::keyboard::KeyLocation;
 
     fn key(logical: Key, state: ElementState) -> WindowEvent {
-        // winit's `KeyEvent` has a private platform field, so the struct is
-        // zero-initialised and every public field overwritten.
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = logical;
-        ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        let mut ev = ui::synthetic_input::key_event(logical, None, state);
         ev.location = KeyLocation::Left;
-        ev.state = state;
-        ev.repeat = false;
-        ev.text = None;
         WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             event: ev,
             is_synthetic: false,
         }
@@ -1153,7 +1146,7 @@ mod super_tap_tests {
         let mut tap = SuperTap::default();
         tap.observe(&super_key(ElementState::Pressed));
         tap.observe(&WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Pressed,
             button: MouseButton::Left,
         });
@@ -1161,7 +1154,7 @@ mod super_tap_tests {
 
         tap.observe(&super_key(ElementState::Pressed));
         tap.observe(&WindowEvent::MouseWheel {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             delta: MouseScrollDelta::LineDelta(0.0, 1.0),
             phase: winit::event::TouchPhase::Moved,
         });
@@ -1186,20 +1179,18 @@ mod tests {
     use crate::shell::state::{AppKind, Strip, Workspace, WorkspaceId};
     use std::time::{Duration, Instant};
     use ui::widget::{WheelJumpAccum, wheel_jump_detents};
-    use winit::event::{DeviceId, KeyEvent};
+    use winit::event::DeviceId;
     use winit::keyboard::{KeyLocation, ModifiersState, PhysicalKey, SmolStr};
     fn key_event(logical: Key, pressed: bool) -> WindowEvent {
-        // Mirrors the synthesis helpers already used by the test-control executor: winit's `KeyEvent` has a private platform field, so the struct is zero-initialised.
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = logical;
-        ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-        ev.location = KeyLocation::Standard;
-        ev.state = if pressed {
-            ElementState::Pressed
-        } else {
-            ElementState::Released
-        };
-        ev.repeat = false;
+        let ev = ui::synthetic_input::key_event(
+            logical,
+            None,
+            if pressed {
+                ElementState::Pressed
+            } else {
+                ElementState::Released
+            },
+        );
         WindowEvent::KeyboardInput {
             device_id: unsafe { std::mem::zeroed::<DeviceId>() },
             event: ev,
@@ -1474,7 +1465,11 @@ mod tests {
         }
 
         fn evdev_keycode_prefers_the_physical_scancode() {
-            let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+            let mut ev = ui::synthetic_input::key_event(
+                winit::keyboard::Key::Unidentified(winit::keyboard::NativeKey::Unidentified),
+                None,
+                winit::event::ElementState::Pressed,
+            );
             // `KeyA` is evdev 30; the logical key deliberately disagrees so a fallback to the table would produce a different value.
             ev.physical_key = PhysicalKey::Code(winit::keyboard::KeyCode::KeyA);
             ev.logical_key = Key::Character(SmolStr::new("z"));
@@ -2602,7 +2597,7 @@ mod lock_chord_tests {
         /// A non-keyboard event (cursor move) is never the lock chord even with Super held.
         fn cursor_move_is_not_lock_chord() {
             let ev = WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 position: PhysicalPosition::new(10.0, 10.0),
             };
             assert!(!locks(&ev, mods_with_super(true)));

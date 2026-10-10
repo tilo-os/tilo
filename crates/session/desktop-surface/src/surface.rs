@@ -1189,11 +1189,6 @@ impl DesktopSurface {
         }
     }
 
-    /// The workspace shown, for hosts that label their chrome.
-    pub fn shown_workspace(&self) -> Option<WorkspaceId> {
-        Some(self.shared.borrow().tree.active_workspace()?.id)
-    }
-
     /// Whether the strip takes this wheel event. A trackpad's sideways swipe
     /// (pixel deltas) pans the strip under the fingers, 1:1 and through its
     /// momentum, when the strip can move that way; else it is the content's.
@@ -1589,20 +1584,16 @@ impl Widget for DesktopSurface {
             .chain(activity)
             .chain(notices)
             .collect();
-        let node = taffy.parent_node(
-            Style {
-                display: ui::taffy::Display::Flex,
-                flex_direction: ui::taffy::FlexDirection::Column,
-                size: ui::taffy::Size {
-                    width: ui::taffy::Dimension::percent(1.0),
-                    height: ui::taffy::Dimension::percent(1.0),
-                },
-                ..Default::default()
+        let style = Style {
+            display: ui::taffy::Display::Flex,
+            flex_direction: ui::taffy::FlexDirection::Column,
+            size: ui::taffy::Size {
+                width: ui::taffy::Dimension::percent(1.0),
+                height: ui::taffy::Dimension::percent(1.0),
             },
-            &children,
-        );
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+            ..Default::default()
+        };
+        taffy.widget_node(style, &children, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {

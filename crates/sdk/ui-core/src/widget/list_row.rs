@@ -1563,7 +1563,6 @@ enum Leading {
         on_toggle: Box<dyn FnMut(bool)>,
     },
     Swatch(Color),
-    Paint(Box<dyn Fn(&mut PaintCtx<'_>, Rect)>),
 }
 
 /// What a retained hover action runs.
@@ -1916,13 +1915,6 @@ impl ListRow {
     #[must_use]
     pub fn swatch(mut self, colour: Color) -> Self {
         self.leading = Some(Leading::Swatch(colour));
-        self
-    }
-
-    /// See [`RowLeading::Paint`].
-    #[must_use]
-    pub fn leading_paint(mut self, painter: impl Fn(&mut PaintCtx<'_>, Rect) + 'static) -> Self {
-        self.leading = Some(Leading::Paint(Box::new(painter)));
         self
     }
 
@@ -2311,7 +2303,6 @@ impl ListRow {
                 ),
                 Leading::Checkbox { checked, .. } => RowLeading::Checkbox { checked: *checked },
                 Leading::Swatch(colour) => RowLeading::Swatch(*colour),
-                Leading::Paint(paint) => RowLeading::Paint(paint.as_ref()),
             });
         }
         if let Some((kind, id)) = &self.status {
@@ -2605,18 +2596,14 @@ impl Widget for ListRow {
         }
         trailing.band = Some(band);
         trailing.node = Some(child);
-        let node = taffy.parent_node(
-            Style {
-                display: taffy::Display::Flex,
-                flex_direction: taffy::FlexDirection::Row,
-                flex_wrap: taffy::FlexWrap::Wrap,
-                align_items: Some(taffy::AlignItems::Center),
-                ..row_style
-            },
-            &[band, child],
-        );
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let style = Style {
+            display: taffy::Display::Flex,
+            flex_direction: taffy::FlexDirection::Row,
+            flex_wrap: taffy::FlexWrap::Wrap,
+            align_items: Some(taffy::AlignItems::Center),
+            ..row_style
+        };
+        taffy.widget_node(style, &[band, child], node_map, self)
     }
 
     fn adjust_layout_with_measure(

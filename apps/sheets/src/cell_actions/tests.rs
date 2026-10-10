@@ -47,8 +47,7 @@ fn invoke(doc: &mut AutoCommit, action: &str, args: &serde_json::Value) {
         "{action} refused: {}",
         String::from_utf8_lossy(&encoded.payload)
     );
-    let mut registry = ActionRegistry::new();
-    crate::actions::register(&mut registry);
+    let registry = ActionRegistry::with(crate::actions::register);
     let decoded = registry.decode(&encoded).unwrap();
     tilo_actions::apply_local(doc, decoded.as_ref(), encoded).unwrap();
 }

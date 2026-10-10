@@ -3,16 +3,10 @@
 //! for the highlight, painted only in the top layer.
 
 use super::*;
-use automerge::AutoCommit;
+use crate::testing::dispatch;
 use vello_encoding::DrawTag;
-use winit::event::{DeviceId, KeyEvent};
-use winit::keyboard::{KeyLocation, NativeKeyCode, PhysicalKey};
 
 const WINDOW: Rect = Rect::new(0.0, 0.0, 800.0, 600.0);
-
-fn synth_device() -> DeviceId {
-    unsafe { std::mem::zeroed() }
-}
 
 fn opened() -> Popover {
     let mut p = Popover::new().with_label("Refresh interval").with_items([
@@ -31,59 +25,23 @@ fn opened() -> Popover {
 
 fn cursor_at(pt: Point) -> WindowEvent {
     WindowEvent::CursorMoved {
-        device_id: synth_device(),
+        device_id: winit::event::DeviceId::dummy(),
         position: winit::dpi::PhysicalPosition::new(pt.x, pt.y),
     }
 }
 
-fn left_press() -> WindowEvent {
-    WindowEvent::MouseInput {
-        device_id: synth_device(),
-        state: ElementState::Pressed,
-        button: MouseButton::Left,
-    }
-}
+use crate::synthetic_input::mouse_press;
 
 fn key_event(logical: Key) -> WindowEvent {
-    let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-    ev.logical_key = logical;
-    ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-    ev.location = KeyLocation::Standard;
-    ev.state = ElementState::Pressed;
-    ev.repeat = false;
-    ev.text = None;
-    WindowEvent::KeyboardInput {
-        device_id: synth_device(),
-        event: ev,
-        is_synthetic: false,
-    }
+    crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
+        logical,
+        None,
+        ElementState::Pressed,
+    ))
 }
 
 fn key(named: NamedKey) -> WindowEvent {
     key_event(Key::Named(named))
-}
-
-fn dispatch<C: Widget + 'static>(p: &mut Popover<C>, event: &WindowEvent) -> bool {
-    let mut taffy = TaffyTree::<()>::new();
-    let node = taffy.leaf_node(Style::default());
-    let mut handled = false;
-    let mut focus = None;
-    let mut doc = AutoCommit::new();
-    let root = automerge::ROOT;
-    p.handle_event(
-        event,
-        &mut crate::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &winit::event::Modifiers::default(),
-            state: crate::widget::Edits::lend(&mut doc),
-            path: &root,
-            handled: &mut handled,
-            focus_target: &mut focus,
-            node_id: node,
-            taffy: &taffy,
-        },
-    );
-    handled
 }
 
 /// Paint the top layer over `WINDOW`, as hosts do.
@@ -209,7 +167,7 @@ fn menu_pointer_selection_and_dismissal() {
     );
     dispatch(&mut p, &cursor_at(row2.center()));
     assert_eq!(p.highlighted(), 2, "the pointer moves the highlight");
-    assert!(dispatch(&mut p, &left_press()));
+    assert!(dispatch(&mut p, &mouse_press()));
     assert_eq!(p.take_selection(), Some(2));
     assert!(!p.is_open());
 
@@ -219,7 +177,7 @@ fn menu_pointer_selection_and_dismissal() {
     let outside = Point::new(p.rect().x1 + 80.0, p.rect().y1 + 80.0);
     dispatch(&mut p, &cursor_at(outside));
     assert!(
-        dispatch(&mut p, &left_press()),
+        dispatch(&mut p, &mouse_press()),
         "the outside click is swallowed"
     );
     assert!(!p.is_open());

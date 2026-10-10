@@ -551,7 +551,8 @@ impl PcmSource for DecodedPcm {
 /// [`decode_pcm`] for tests that need to read audio back out of a file the
 /// export wrote. Same decode the mixer uses, so a stream it cannot read is a
 /// stream the editor cannot read either.
-#[cfg(all(test, any(feature = "gst", feature = "decode")))]
+#[cfg(test)]
+#[cfg(any(feature = "gst", feature = "decode"))]
 pub fn decode_pcm_for_test(uri: &str) -> Option<Vec<f32>> {
     decode_pcm(uri)
 }

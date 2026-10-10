@@ -8,7 +8,6 @@
 
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use tilo_content::ContentStore;
@@ -406,13 +405,6 @@ fn supported_image(path: &Path) -> bool {
                 "jpg" | "jpeg" | "png" | "webp"
             )
         })
-}
-
-/// A cheap cancellation handle for a UI worker. It is deliberately not a
-/// resource/action: cancellation affects only this device's in-flight job.
-#[must_use]
-pub fn cancellation_token() -> Arc<AtomicBool> {
-    Arc::new(AtomicBool::new(false))
 }
 
 #[cfg(test)]

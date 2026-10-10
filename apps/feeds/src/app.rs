@@ -1743,24 +1743,9 @@ impl FeedsApp {
         self.shell.snap();
     }
 
-    /// Open the add-subscription dialog with `url` typed into its field.
-    pub fn stage_add_subscription(&mut self, url: &str) {
-        self.core.borrow_mut().open_add_subscription();
-        self.take_pending_modal();
-        if let Some(m) = self.modal.as_mut() {
-            m.dialog.content_mut().set_value(url);
-        }
-    }
-
     /// Open the open article's tag editor.
     pub fn stage_tag_editor(&mut self) {
         self.core.borrow_mut().open_tag_editor();
-    }
-
-    /// Merge the bundled sample OPML into the store, as right after an import.
-    pub fn stage_post_import(&mut self) {
-        let parsed = opml::parse(opml::sample_opml());
-        opml::import_into(&mut self.core.borrow_mut().store, &parsed);
     }
 
     /// A refresh of every feed partway through: some done, some updated,
@@ -1777,25 +1762,6 @@ impl FeedsApp {
             new_items: done * 2,
             finished_at: None,
         };
-    }
-
-    pub fn set_read_theme(&mut self, theme: ReadTheme) {
-        self.core.borrow_mut().settings.theme = theme;
-    }
-
-    pub fn set_read_font(&mut self, font: ReadFont) {
-        self.core.borrow_mut().settings.font = font;
-    }
-
-    /// Give two feeds long titles, to check the sidebar elides them.
-    pub fn stage_long_sidebar_titles(&mut self) {
-        let long = [
-            "International Space Station Daily Operations and Mission Updates",
-            "The Exhaustively Comprehensive Front-End Engineering Weekly Digest",
-        ];
-        for (f, title) in self.core.borrow_mut().store.feeds.iter_mut().zip(long) {
-            f.title = title.to_string();
-        }
     }
 
     // --- framework host ---------------------------------------------------------
