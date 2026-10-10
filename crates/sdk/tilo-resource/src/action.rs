@@ -473,12 +473,54 @@ impl<R, P> Copy for Undoing<'_, R, P> {}
 
 /// A record operation with the origin's time attached: the replayable action
 /// of a `#[resource]` record.
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Clone, Debug)]
 pub struct Stamped<O> {
     #[serde(rename = "op")]
     pub operation: O,
     #[serde(rename = "at", default)]
     pub now_ms: i64,
+}
+
+// Decoded through a JSON value whatever the deserializer: the operation's
+// decoder, one per record type, is compiled for that one deserializer.
+impl<'de, O: DeserializeOwned> Deserialize<'de> for Stamped<O> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        Self::from_json(value).map_err(serde::de::Error::custom)
+    }
+}
+
+impl<O: DeserializeOwned> Stamped<O> {
+    /// The stamped operation in `value`, its JSON form.
+    ///
+    /// # Errors
+    /// Why `value` is not a stamped operation of `O`.
+    pub fn from_json(value: serde_json::Value) -> Result<Self, serde_json::Error> {
+        let (operation, now_ms) = stamped_parts(value)?;
+        Ok(Self {
+            operation: O::deserialize(operation)?,
+            now_ms,
+        })
+    }
+}
+
+/// The operation and time of a stamped operation's JSON form.
+#[inline(never)]
+fn stamped_parts(value: serde_json::Value) -> Result<(serde_json::Value, i64), serde_json::Error> {
+    use serde::de::Error as _;
+    let serde_json::Value::Object(mut fields) = value else {
+        return Err(serde_json::Error::custom(
+            "a stamped operation is an object",
+        ));
+    };
+    let operation = fields
+        .remove("op")
+        .ok_or_else(|| serde_json::Error::missing_field("op"))?;
+    let now_ms = match fields.remove("at") {
+        None | Some(serde_json::Value::Null) => 0,
+        Some(at) => i64::deserialize(at)?,
+    };
+    Ok((operation, now_ms))
 }
 
 /// Whether a field edit only records how an outbox entry settled or forgets

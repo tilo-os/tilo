@@ -445,7 +445,6 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
     let mut same = Vec::new();
     let mut refreshes = Vec::new();
     let mut texts = Vec::new();
-    let mut value_schemas = Vec::new();
     let mut shapes = Vec::new();
     let mut collections = Vec::new();
     let mut path_fields = Vec::new();
@@ -590,10 +589,6 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
             );
         }
         texts.push(quote!(#krate::Model::collect_text(&self.#ident, out);));
-        value_schemas.push(quote!(properties.insert(
-            ::std::string::String::from(#key),
-            <#ty as #krate::Model>::value_schema(),
-        );));
         get_arms.push(quote!(#key => #krate::Model::get_at(&self.#ident, rest),));
         op_coalesce_arms
             .push(quote!(#key => <#ty as #krate::Model>::op_coalesces(rest, previous, next),));
@@ -874,12 +869,14 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
                 }
             }
 
+            #[inline(never)]
             fn to_json(&self) -> #krate::__private::serde_json::Value {
                 let mut fields = #krate::__private::serde_json::Map::new();
                 #(#to_json)*
                 #krate::__private::serde_json::Value::Object(fields)
             }
 
+            #[inline(never)]
             fn from_json(
                 value: &#krate::__private::serde_json::Value,
             ) -> ::core::result::Result<Self, #krate::ModelError> {
@@ -951,6 +948,7 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
                 }
             }
 
+            #[inline(never)]
             fn diff<__E>(
                 &self,
                 after: &Self,
@@ -1043,10 +1041,9 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
             }
             #nested_fn
 
+            #[inline(never)]
             fn value_schema() -> #krate::__private::serde_json::Value {
-                let mut properties = #krate::__private::serde_json::Map::new();
-                #(#value_schemas)*
-                #krate::__private::serde_json::json!({"type": "object", "properties": properties})
+                #krate::__private::record_value_schema(<Self as #krate::Model>::SHAPE)
             }
             fn missing() -> ::core::result::Result<Self, #krate::ModelError> {
                 ::core::result::Result::Ok(Self { #(#missing,)* })
@@ -1098,6 +1095,7 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
         impl #impl_generics #krate::Fields for #name #type_generics #where_clause {
             const ITEM_FIELDS: &'static [&'static str] = Self::__COLLECTIONS;
 
+            #[inline(never)]
             fn read_fields(
                 doc: &#krate::Doc,
                 obj: &#krate::__private::ObjId,
@@ -1105,6 +1103,7 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
                 let _ = (&doc, &obj);
                 ::core::result::Result::Ok(Self { #(#reads,)* })
             }
+            #[inline(never)]
             fn write_fields(
                 &self,
                 doc: &mut #krate::Doc,
@@ -1114,6 +1113,7 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
                 #(#writes)*
                 ::core::result::Result::Ok(())
             }
+            #[inline(never)]
             fn write_changed_fields(
                 &self,
                 before: &Self,
@@ -1127,6 +1127,7 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
             }
 
             #[allow(unreachable_code, reason = "a record without fields has nothing to edit")]
+            #[inline(never)]
             fn edit_fields(
                 doc: &mut #krate::Doc,
                 obj: &#krate::__private::ObjId,
@@ -1166,6 +1167,7 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
             }
 
             #item_collections
+            #[inline(never)]
             fn refresh_fields(
                 &mut self,
                 doc: &#krate::Doc,

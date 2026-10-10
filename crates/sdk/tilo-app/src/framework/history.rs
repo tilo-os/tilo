@@ -169,11 +169,19 @@ impl<R> std::fmt::Debug for ResourceHistoryEdit<R> {
 
 impl<'de, R> Deserialize<'de> for ResourceHistoryEdit<R> {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = Value::deserialize(deserializer)?;
         Ok(Self {
-            edit: HistoryEdit::deserialize(deserializer)?,
+            edit: history_edit(value).map_err(serde::de::Error::custom)?,
             resource: std::marker::PhantomData,
         })
     }
+}
+
+/// A history edit from its JSON form, decoded by one function for every
+/// resource.
+#[inline(never)]
+fn history_edit(value: Value) -> Result<HistoryEdit, serde_json::Error> {
+    HistoryEdit::deserialize(value)
 }
 
 impl<R: tilo_resource::Resource> tilo_actions::Action for ResourceHistoryEdit<R> {
@@ -186,100 +194,8 @@ impl<R: tilo_resource::Resource> tilo_actions::Action for ResourceHistoryEdit<R>
     }
 
     fn apply(&self, doc: &mut tilo_actions::Doc) -> Result<(), ActionError> {
-        if let HistoryEdit::Redo { steps: count } = &self.edit {
-            let scope = Scope::invoking(doc);
-            let registry = tilo_actions::ActionRegistry::with(tilo_resource::group::register::<R>);
-            let mut original = doc.fork();
-            return steps::redo_with(doc, &scope, limit(*count, 1), |version| {
-                if tilo_actions::executor::verified_compensation(
-                    &mut original,
-                    version.hash,
-                    &registry,
-                )
-                .map_err(|error| error.to_string())?
-                .is_none()
-                {
-                    return Ok(None);
-                }
-                let recorded = version
-                    .context
-                    .as_ref()
-                    .and_then(|context| context.action.as_ref())
-                    .ok_or("verified redo action absent")?;
-                let action = registry
-                    .decode(recorded)
-                    .map_err(|error| error.to_string())?;
-                let restoration = action
-                    .redo_encoded(&original)
-                    .ok_or("redo requires the recorded outside operation's declared restoration")?;
-                let restoration = registry
-                    .decode(&restoration)
-                    .map_err(|error| error.to_string())?;
-                if restoration.locus() != ExecutionLocus::ClientLocal {
-                    return Err("history restoration requires another execution locus".into());
-                }
-                Ok(Some(steps::UndoCompensation {
-                    action: restoration,
-                    requires_settlement: action.inverse_requires_settlement(),
-                }))
-            })
-            .map(drop)
-            .map_err(ActionError::Refused);
-        }
-        let HistoryEdit::Undo {
-            steps: count,
-            run,
-            by,
-            to,
-        } = &self.edit
-        else {
-            return self.edit.apply(doc);
-        };
-        let (scope, default) = match run {
-            Some(run) => (Scope::Run(run.clone()), usize::MAX),
-            None => (
-                by.as_ref().map_or_else(
-                    || Scope::invoking(doc),
-                    |author| Scope::Invoker(author.clone()),
-                ),
-                1,
-            ),
-        };
-        let registry = tilo_actions::ActionRegistry::with(tilo_resource::group::register::<R>);
-        let mut original = doc.fork();
-        let compensate = |version: &Version| {
-            let Some(action) = tilo_actions::executor::verified_compensation(
-                &mut original,
-                version.hash,
-                &registry,
-            )
-            .map_err(|error| error.to_string())?
-            else {
-                return Ok(None);
-            };
-            if action.locus() != ExecutionLocus::ClientLocal {
-                return Err("history compensation requires another execution locus".into());
-            }
-            let requires_settlement = version
-                .context
-                .as_ref()
-                .and_then(|context| context.action.as_ref())
-                .map(|original| registry.decode(original))
-                .transpose()
-                .map_err(|error| error.to_string())?
-                .is_some_and(|original| original.inverse_requires_settlement());
-            Ok(Some(steps::UndoCompensation {
-                action,
-                requires_settlement,
-            }))
-        };
-        match to {
-            Some(to) => steps::resolve(doc, to)
-                .and_then(|heads| steps::undo_since_with(doc, &scope, &heads, compensate)),
-            None => steps::undo_with(doc, &scope, limit(*count, default), compensate),
-        }
-        .map(drop)
-        .map_err(ActionError::Refused)
+        self.edit
+            .apply_registered(doc, tilo_resource::group::register::<R>)
     }
 }
 
@@ -929,6 +845,112 @@ pub(crate) fn result(action: &str, doc: &AutoCommit, patches: &[Patch]) -> Optio
         _ => return None,
     };
     Some(value)
+}
+
+impl HistoryEdit {
+    /// Apply the edit, decoding recorded actions with the registry
+    /// `register` fills: one compiled copy for every resource.
+    #[inline(never)]
+    fn apply_registered(
+        &self,
+        doc: &mut tilo_actions::Doc,
+        register: fn(&mut tilo_actions::ActionRegistry),
+    ) -> Result<(), ActionError> {
+        if let HistoryEdit::Redo { steps: count } = self {
+            let scope = Scope::invoking(doc);
+            let registry = tilo_actions::ActionRegistry::with(register);
+            let mut original = doc.fork();
+            return steps::redo_with(doc, &scope, limit(*count, 1), |version| {
+                if tilo_actions::executor::verified_compensation(
+                    &mut original,
+                    version.hash,
+                    &registry,
+                )
+                .map_err(|error| error.to_string())?
+                .is_none()
+                {
+                    return Ok(None);
+                }
+                let recorded = version
+                    .context
+                    .as_ref()
+                    .and_then(|context| context.action.as_ref())
+                    .ok_or("verified redo action absent")?;
+                let action = registry
+                    .decode(recorded)
+                    .map_err(|error| error.to_string())?;
+                let restoration = action
+                    .redo_encoded(&original)
+                    .ok_or("redo requires the recorded outside operation's declared restoration")?;
+                let restoration = registry
+                    .decode(&restoration)
+                    .map_err(|error| error.to_string())?;
+                if restoration.locus() != ExecutionLocus::ClientLocal {
+                    return Err("history restoration requires another execution locus".into());
+                }
+                Ok(Some(steps::UndoCompensation {
+                    action: restoration,
+                    requires_settlement: action.inverse_requires_settlement(),
+                }))
+            })
+            .map(drop)
+            .map_err(ActionError::Refused);
+        }
+        let HistoryEdit::Undo {
+            steps: count,
+            run,
+            by,
+            to,
+        } = self
+        else {
+            return tilo_actions::Action::apply(self, doc);
+        };
+        let (scope, default) = match run {
+            Some(run) => (Scope::Run(run.clone()), usize::MAX),
+            None => (
+                by.as_ref().map_or_else(
+                    || Scope::invoking(doc),
+                    |author| Scope::Invoker(author.clone()),
+                ),
+                1,
+            ),
+        };
+        let registry = tilo_actions::ActionRegistry::with(register);
+        let mut original = doc.fork();
+        let compensate = |version: &Version| {
+            let Some(action) = tilo_actions::executor::verified_compensation(
+                &mut original,
+                version.hash,
+                &registry,
+            )
+            .map_err(|error| error.to_string())?
+            else {
+                return Ok(None);
+            };
+            if action.locus() != ExecutionLocus::ClientLocal {
+                return Err("history compensation requires another execution locus".into());
+            }
+            let requires_settlement = version
+                .context
+                .as_ref()
+                .and_then(|context| context.action.as_ref())
+                .map(|original| registry.decode(original))
+                .transpose()
+                .map_err(|error| error.to_string())?
+                .is_some_and(|original| original.inverse_requires_settlement());
+            Ok(Some(steps::UndoCompensation {
+                action,
+                requires_settlement,
+            }))
+        };
+        match to {
+            Some(to) => steps::resolve(doc, to)
+                .and_then(|heads| steps::undo_since_with(doc, &scope, &heads, compensate)),
+            None => steps::undo_with(doc, &scope, limit(*count, default), compensate),
+        }
+        .map(drop)
+        .map_err(ActionError::Refused)
+    }
 }
 
 #[cfg(test)]

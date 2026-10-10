@@ -199,6 +199,7 @@ impl<R: Resource> Reader<R> {
     /// Returns [`ModelError`] when the document no longer holds this
     /// resource; the state is left as it was last read successfully and the
     /// next sync reads it whole.
+    #[inline(never)]
     pub fn sync(&mut self, doc: &Doc) -> Result<bool, ModelError> {
         // An open transaction belongs to whoever opened it, and closing it
         // here would move their commit boundary. It has no version to diff
@@ -235,6 +236,7 @@ impl<R: Resource> Reader<R> {
         Ok(true)
     }
 
+    #[inline(never)]
     fn apply(&mut self, doc: &Doc, delta: &Delta) -> Result<(), ModelError> {
         let applied = self.apply_delta(doc, delta);
         self.unreadable = applied
@@ -276,6 +278,7 @@ impl<R: Resource> Reader<R> {
     ///
     /// # Errors
     /// Returns [`ModelError`] when the document does not hold this resource.
+    #[inline(never)]
     pub fn demand(&mut self, doc: &Doc, demand: Demand) -> Result<bool, ModelError>
     where
         R::State: Clone,

@@ -210,6 +210,46 @@ pub mod __private {
         }
     }
 
+    /// Where a declared parameter names a place in the record.
+    #[derive(Clone, Copy)]
+    pub enum PlaceIn {
+        /// It is no place.
+        Nowhere,
+        /// Anywhere in the record.
+        Record,
+        /// Among the items of this field.
+        Field(&'static str),
+    }
+
+    /// A verb's declared parameter, built by one function for every verb:
+    /// its schema is its type's, described, with the example when given.
+    #[must_use]
+    pub fn declared_param(
+        name: &'static str,
+        ty: ParamType,
+        description: &'static str,
+        schema: fn() -> serde_json::Value,
+        optional: bool,
+        place: PlaceIn,
+        example: Option<fn() -> serde_json::Value>,
+    ) -> ActionParam {
+        let param = if optional {
+            ActionParam::optional_owned(name, ty, description)
+        } else {
+            ActionParam::required_owned(name, ty, description)
+        }
+        .with_schema(param_schema(
+            schema(),
+            description,
+            example.map(|example| example()),
+        ));
+        match place {
+            PlaceIn::Nowhere => param,
+            PlaceIn::Record => param.as_place(),
+            PlaceIn::Field(field) => param.as_place_in(field),
+        }
+    }
+
     /// A parameter's schema: its type's, described, with an example.
     #[must_use]
     pub fn param_schema(
@@ -452,15 +492,26 @@ pub mod __private {
         arguments: &serde_json::Map<String, serde_json::Value>,
         now_ms: i64,
     ) -> Result<crate::Stamped<O>, String> {
-        let wire = serde_json::json!({
-            "op": { "action": id, "args": arguments },
-            "at": now_ms,
-        });
-        let bytes = serde_json::to_vec(&wire).map_err(|error| error.to_string())?;
-        serde_json::from_slice(&bytes).map_err(|error| error.to_string())
+        let operation = serde_json::json!({ "action": id, "args": arguments });
+        O::deserialize(operation)
+            .map(|operation| crate::Stamped { operation, now_ms })
+            .map_err(|error| error.to_string())
     }
 
     pub use crate::resource::default_search;
+
+    /// The JSON form's schema of a record of `shape`: each field's under its
+    /// key, read from the shape so it is built by one function for every
+    /// record type.
+    #[must_use]
+    pub fn record_value_schema(shape: crate::Shape) -> serde_json::Value {
+        let properties: serde_json::Map<String, serde_json::Value> = shape
+            .fields()
+            .iter()
+            .map(|field| (field.key.to_owned(), (field.schema)()))
+            .collect();
+        serde_json::json!({"type": "object", "properties": properties})
+    }
 
     /// The label an item is offered under: its `#[model(label)]`, else its
     /// first text, else its id.

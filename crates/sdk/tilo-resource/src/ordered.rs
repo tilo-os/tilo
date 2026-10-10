@@ -10,10 +10,9 @@
 //! deterministically and a delete never disturbs another item's identity —
 //! none of which a list stored by position can promise.
 
-use automerge::{ObjId, ObjType, ReadDoc, ScalarValue, Value};
+use automerge::ObjId;
 
-use crate::action::ActionCx;
-use crate::collection::{Id, ORDER, VALUE, key_at, store_in_order, stored_entries};
+use crate::collection::{Id, VALUE, store_in_order, stored_entries};
 use crate::keyed::{Identified, ItemStorage, Items, removed_and_changed};
 use crate::model::{Doc, Model, ModelError, Slot, read_key};
 use crate::path::{Edit, EditOp, Path, Segment};
@@ -49,6 +48,7 @@ impl ItemStorage for Arranged {
     const ARRANGED: bool = true;
     const NAME: &'static str = "arranged items";
 
+    #[inline(never)]
     fn load<T: Model + Identified>(doc: &Doc, map: &ObjId) -> Result<Vec<T>, ModelError> {
         stored_entries(doc, map)?
             .into_iter()
@@ -59,53 +59,22 @@ impl ItemStorage for Arranged {
             .collect()
     }
 
+    #[inline(never)]
     fn store<T: Model + Identified>(
         items: &[T],
         doc: &mut Doc,
         slot: Slot<'_>,
     ) -> Result<(), ModelError> {
         let ids: Vec<Id> = items.iter().map(Identified::id).collect();
-        let items: Vec<(&Id, &T)> = ids.iter().zip(items).collect();
+        let items: Vec<(&Id, &dyn crate::model::Stores)> = ids
+            .iter()
+            .zip(items)
+            .map(|(id, item)| (id, item as &dyn crate::model::Stores))
+            .collect();
         store_in_order(doc, slot, &items)
     }
 
-    fn edit_item<T: Model>(
-        doc: &mut Doc,
-        map: &ObjId,
-        id: &Id,
-        rest: &[Segment],
-        op: &EditOp,
-        cx: &mut ActionCx,
-    ) -> Result<(), ModelError> {
-        let Some((Value::Object(ObjType::Map), entry)) = doc.get(map, id.as_str())? else {
-            return Err(ModelError::invalid(format!("no item `{id}`")));
-        };
-        T::edit(doc, Slot::Key(&entry, VALUE), rest, op, cx)
-    }
-
-    fn insert<T: Model>(
-        doc: &mut Doc,
-        map: &ObjId,
-        id: &Id,
-        at: usize,
-        item: &T,
-    ) -> Result<(), ModelError> {
-        let stored = stored_entries(doc, map)?;
-        let key = key_at(&stored, at, None);
-        let entry = Slot::Key(map, id.as_str()).object(doc, ObjType::Map)?;
-        Slot::Key(&entry, ORDER).put_scalar(doc, ScalarValue::Str(key.into()))?;
-        item.store(doc, Slot::Key(&entry, VALUE))
-    }
-
-    fn move_to(doc: &mut Doc, map: &ObjId, id: &Id, at: usize) -> Result<(), ModelError> {
-        let stored = stored_entries(doc, map)?;
-        let Some(entry) = stored.iter().find(|entry| &entry.id == id) else {
-            return Err(ModelError::invalid(format!("no item `{id}`")));
-        };
-        let key = key_at(&stored, at, Some(id));
-        Slot::Key(&entry.entry, ORDER).put_scalar(doc, ScalarValue::Str(key.into()))
-    }
-
+    #[inline(never)]
     fn diff<T: Model + Identified, R>(
         before: &[T],
         after: &[T],

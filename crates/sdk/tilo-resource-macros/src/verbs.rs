@@ -1079,28 +1079,26 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
                 || quote!(::core::option::Option::None),
                 |example| {
                     quote!(::core::option::Option::Some(
-                        #krate::__private::serde_json::json!(#example)
+                        (|| #krate::__private::serde_json::json!(#example))
+                            as fn() -> #krate::__private::serde_json::Value
                     ))
                 },
             );
-            let constructor = if optional {
-                quote!(optional_owned)
-            } else {
-                quote!(required_owned)
-            };
             let place = match (&param.place_in, param.role == Role::Place) {
-                (Some(field), _) => Some(quote!(.as_place_in(#field))),
-                (None, true) => Some(quote!(.as_place())),
-                (None, false) => None,
+                (Some(field), _) => quote!(#krate::__private::PlaceIn::Field(#field)),
+                (None, true) => quote!(#krate::__private::PlaceIn::Record),
+                (None, false) => quote!(#krate::__private::PlaceIn::Nowhere),
             };
             quote! {
-                ::std::vec![#krate::__private::ActionParam::#constructor(#name, #param_ty, #description)
-                    .with_schema(#krate::__private::param_schema(
-                        <#ty as #krate::JsonSchema>::json_schema(),
-                        #description,
-                        #example,
-                    ))
-                    #place]
+                ::std::vec![#krate::__private::declared_param(
+                    #name,
+                    #param_ty,
+                    #description,
+                    <#ty as #krate::JsonSchema>::json_schema,
+                    #optional,
+                    #place,
+                    #example,
+                )]
             }
         });
         let destructive = verb.options.destructive.then(|| quote!(.destructive()));

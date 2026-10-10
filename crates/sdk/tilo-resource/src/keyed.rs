@@ -74,6 +74,7 @@ pub trait ItemStorage: 'static {
     ///
     /// # Errors
     /// Returns an item that does not read.
+    #[inline(never)]
     fn refresh<T: Model + Identified>(
         items: &mut Vec<T>,
         doc: &Doc,
@@ -84,42 +85,6 @@ pub trait ItemStorage: 'static {
             *items = Self::load(doc, map)?;
         }
         Ok(())
-    }
-
-    /// Apply `op` at `rest` inside the stored item `id` of `map`.
-    ///
-    /// # Errors
-    /// Returns why there is no such item, or the item's own error.
-    fn edit_item<T: Model>(
-        doc: &mut Doc,
-        map: &ObjId,
-        id: &Id,
-        rest: &[Segment],
-        op: &EditOp,
-        cx: &mut ActionCx,
-    ) -> Result<(), ModelError>;
-
-    /// Store the new `item` with id `id` at position `at`.
-    ///
-    /// # Errors
-    /// Returns the document's write error.
-    fn insert<T: Model>(
-        doc: &mut Doc,
-        map: &ObjId,
-        id: &Id,
-        at: usize,
-        item: &T,
-    ) -> Result<(), ModelError>;
-
-    /// Move the item `id` to position `at`, where there is an order.
-    ///
-    /// # Errors
-    /// Returns why the items cannot move.
-    fn move_to(doc: &mut Doc, map: &ObjId, id: &Id, at: usize) -> Result<(), ModelError> {
-        let _ = (doc, map, at);
-        Err(ModelError::invalid(format!(
-            "`{id}` cannot move: these items order themselves"
-        )))
     }
 
     /// The edits that turn `before` into `after`, below `path`.
@@ -316,6 +281,7 @@ impl ItemStorage for ById {
     const ARRANGED: bool = false;
     const NAME: &'static str = "keyed items";
 
+    #[inline(never)]
     fn load<T: Model + Identified>(doc: &Doc, map: &ObjId) -> Result<Vec<T>, ModelError> {
         let mut items = doc
             .keys(map)
@@ -325,6 +291,7 @@ impl ItemStorage for ById {
         Ok(items)
     }
 
+    #[inline(never)]
     fn store<T: Model + Identified>(
         items: &[T],
         doc: &mut Doc,
@@ -347,6 +314,7 @@ impl ItemStorage for ById {
         Ok(())
     }
 
+    #[inline(never)]
     fn refresh<T: Model + Identified>(
         items: &mut Vec<T>,
         doc: &Doc,
@@ -385,30 +353,7 @@ impl ItemStorage for ById {
         Ok(())
     }
 
-    fn edit_item<T: Model>(
-        doc: &mut Doc,
-        map: &ObjId,
-        id: &Id,
-        rest: &[Segment],
-        op: &EditOp,
-        cx: &mut ActionCx,
-    ) -> Result<(), ModelError> {
-        if doc.get(map, id.as_str())?.is_none() {
-            return Err(ModelError::invalid(format!("no item `{id}`")));
-        }
-        T::edit(doc, Slot::Key(map, id.as_str()), rest, op, cx)
-    }
-
-    fn insert<T: Model>(
-        doc: &mut Doc,
-        map: &ObjId,
-        id: &Id,
-        _at: usize,
-        item: &T,
-    ) -> Result<(), ModelError> {
-        item.store(doc, Slot::Key(map, id.as_str()))
-    }
-
+    #[inline(never)]
     fn diff<T: Model + Identified, R>(
         before: &[T],
         after: &[T],
@@ -429,6 +374,46 @@ impl ItemStorage for ById {
                 ));
             }
         }
+    }
+}
+
+/// [`Keyed`] editing: an item lives under its id, in no entry of its own.
+fn edit_by_id(
+    doc: &mut Doc,
+    slot: Slot<'_>,
+    path: &[Segment],
+    op: &EditOp,
+    cx: &mut ActionCx,
+    edits: &crate::collection::EntryEdits<'_>,
+) -> Result<(), ModelError> {
+    match (path.split_first(), op) {
+        (Some((Segment::Item(id), rest)), _) => {
+            let map = slot.object(doc, ObjType::Map)?;
+            if doc.get(&map, id.as_str())?.is_none() {
+                return Err(ModelError::invalid(format!("no item `{id}`")));
+            }
+            (edits.item)(doc, Slot::Key(&map, id.as_str()), rest, op, cx)
+                .map_err(|error| error.at(id.as_str()))
+        }
+        (None, EditOp::InsertItem { value, .. }) => {
+            let (id, item) = (edits.parse)(value)?;
+            let id = id.unwrap_or_else(|| cx.id());
+            let map = slot.object(doc, ObjType::Map)?;
+            if doc.get(&map, id.as_str())?.is_some() {
+                return Err(ModelError::invalid(format!("an item `{id}` exists")));
+            }
+            item.store_to(doc, Slot::Key(&map, id.as_str()))
+                .map_err(|error| error.at(id.as_str()))
+        }
+        (None, EditOp::RemoveItem { id }) => {
+            let map = slot.object(doc, ObjType::Map)?;
+            if doc.get(&map, id.as_str())?.is_none() {
+                return Err(ModelError::invalid(format!("no item `{id}`")));
+            }
+            doc.delete(&map, id.as_str())?;
+            Ok(())
+        }
+        _ => (edits.whole)(doc, slot, path, op),
     }
 }
 
@@ -464,10 +449,12 @@ impl<T: Model + Identified, S: ItemStorage> Model for Items<T, S> {
     const CHECKS: bool = T::CHECKS;
     crate::model::leaf_paths!();
 
+    #[inline(never)]
     fn to_json(&self) -> serde_json::Value {
         serde_json::Value::Array(self.items.iter().map(Model::to_json).collect())
     }
 
+    #[inline(never)]
     fn from_json(value: &serde_json::Value) -> Result<Self, ModelError> {
         match value {
             serde_json::Value::Array(items) => items
@@ -480,6 +467,7 @@ impl<T: Model + Identified, S: ItemStorage> Model for Items<T, S> {
         }
     }
 
+    #[inline(never)]
     fn load(doc: &Doc, value: &Value<'_>, id: &ObjId) -> Result<Self, ModelError> {
         if !matches!(value, Value::Object(ObjType::Map)) {
             return Err(ModelError::shape(S::NAME));
@@ -491,10 +479,12 @@ impl<T: Model + Identified, S: ItemStorage> Model for Items<T, S> {
         Ok(Self::default())
     }
 
+    #[inline(never)]
     fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
         S::store(&self.items, doc, slot)
     }
 
+    #[inline(never)]
     fn refresh(
         &mut self,
         doc: &Doc,
@@ -509,6 +499,7 @@ impl<T: Model + Identified, S: ItemStorage> Model for Items<T, S> {
         S::refresh(&mut self.items, doc, id, delta)
     }
 
+    #[inline(never)]
     fn edit(
         doc: &mut Doc,
         slot: Slot<'_>,
@@ -516,38 +507,26 @@ impl<T: Model + Identified, S: ItemStorage> Model for Items<T, S> {
         op: &EditOp,
         cx: &mut ActionCx,
     ) -> Result<(), ModelError> {
-        match (path.split_first(), op) {
-            (Some((Segment::Item(id), rest)), _) => {
-                let map = slot.object(doc, ObjType::Map)?;
-                S::edit_item::<T>(doc, &map, id, rest, op, cx)
-                    .map_err(|error| error.at(id.as_str()))
-            }
-            (None, EditOp::InsertItem { at, value, .. }) => {
+        let edits = crate::collection::EntryEdits {
+            item: &T::edit,
+            parse: &|value| {
                 let item = T::from_json(value)?;
                 item.check().map_err(ModelError::refused)?;
-                let map = slot.object(doc, ObjType::Map)?;
-                let id = item.id();
-                if doc.get(&map, id.as_str())?.is_some() {
-                    return Err(ModelError::invalid(format!("an item `{id}` exists")));
-                }
-                S::insert(doc, &map, &id, *at, &item).map_err(|error| error.at(id.as_str()))
-            }
-            (None, EditOp::RemoveItem { id }) => {
-                let map = slot.object(doc, ObjType::Map)?;
-                if doc.get(&map, id.as_str())?.is_none() {
-                    return Err(ModelError::invalid(format!("no item `{id}`")));
-                }
-                doc.delete(&map, id.as_str())?;
-                Ok(())
-            }
-            (None, EditOp::MoveTo { id, at }) if S::ARRANGED => {
-                let map = slot.object(doc, ObjType::Map)?;
-                S::move_to(doc, &map, id, *at)
-            }
-            _ => edit_whole::<Self>(doc, slot, path, op),
+                Ok((
+                    Some(item.id()),
+                    Box::new(item) as Box<dyn crate::model::Stores + '_>,
+                ))
+            },
+            whole: &edit_whole::<Self>,
+        };
+        if S::ARRANGED {
+            crate::collection::edit_entries(doc, slot, path, op, cx, &edits)
+        } else {
+            edit_by_id(doc, slot, path, op, cx, &edits)
         }
     }
 
+    #[inline(never)]
     fn diff<R>(&self, after: &Self, path: &[Segment], out: &mut Vec<Edit<R>>) {
         S::diff(&self.items, &after.items, path, out);
     }

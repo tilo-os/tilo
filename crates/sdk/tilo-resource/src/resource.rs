@@ -2057,6 +2057,7 @@ pub fn default_search<R: crate::Resource + crate::Fields>(
 /// An action offered on the items of a collection (see [`crate::items`])
 /// stays published on the record, with its id parameter, for scripts and
 /// agents; a person picks it on the item, so it is not a palette row here.
+#[inline(never)]
 pub fn publish<R: Resource>(id: &str, label: &str, state: &R::State) -> tilo_actions::Resource {
     publish_parts::<R>(id, label, Some(state))
 }
@@ -2064,6 +2065,7 @@ pub fn publish<R: Resource>(id: &str, label: &str, state: &R::State) -> tilo_act
 /// [`publish`], or without a state only what does not depend on one: the
 /// declared actions, [`APPLY`], [`GROUP`](crate::GROUP) and the local
 /// operations.
+#[inline(never)]
 pub(crate) fn publish_parts<R: Resource>(
     id: &str,
     label: &str,

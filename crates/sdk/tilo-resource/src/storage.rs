@@ -18,18 +18,22 @@ use crate::path::{EditOp, Segment, Settable};
 /// only orders ids (a [`Grid`]'s rows and columns).
 impl Model for () {
     crate::model::leaf_paths!();
+    #[inline(never)]
     fn to_json(&self) -> serde_json::Value {
         serde_json::Value::Null
     }
+    #[inline(never)]
     fn from_json(_: &serde_json::Value) -> Result<Self, ModelError> {
         Ok(())
     }
+    #[inline(never)]
     fn load(_: &Doc, _: &Value<'_>, _: &ObjId) -> Result<Self, ModelError> {
         Ok(())
     }
     fn missing() -> Result<Self, ModelError> {
         Ok(())
     }
+    #[inline(never)]
     fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
         slot.put_scalar(doc, ScalarValue::Null)
     }
@@ -68,18 +72,22 @@ impl Model for Counter {
         serde_json::json!({"type": "integer"})
     }
     crate::model::leaf_paths!();
+    #[inline(never)]
     fn to_json(&self) -> serde_json::Value {
         self.0.into()
     }
+    #[inline(never)]
     fn from_json(value: &serde_json::Value) -> Result<Self, ModelError> {
         i64::from_json(value).map(Self)
     }
+    #[inline(never)]
     fn load(doc: &Doc, value: &Value<'_>, id: &ObjId) -> Result<Self, ModelError> {
         i64::load(doc, value, id).map(Self)
     }
     fn missing() -> Result<Self, ModelError> {
         Ok(Self(0))
     }
+    #[inline(never)]
     fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
         let stored = match slot.current(doc)? {
             Some((value, id)) => i64::load(doc, &value, &id).unwrap_or(0),
@@ -94,6 +102,7 @@ impl Model for Counter {
         }
         slot.increment(doc, self.0.saturating_sub(if counter { stored } else { 0 }))
     }
+    #[inline(never)]
     fn edit(
         doc: &mut Doc,
         slot: Slot<'_>,
@@ -106,6 +115,7 @@ impl Model for Counter {
             other => Err(ModelError::unsupported(other)),
         }
     }
+    #[inline(never)]
     fn diff<R>(&self, after: &Self, path: &[Segment], out: &mut Vec<crate::Edit<R>>) {
         if self.0 != after.0 {
             out.push(crate::Edit::new(
@@ -208,9 +218,11 @@ impl<T: Model> Model for Set<T> {
     }
     const CHECKS: bool = T::CHECKS;
     crate::model::leaf_paths!();
+    #[inline(never)]
     fn to_json(&self) -> serde_json::Value {
         serde_json::Value::Array(self.elements.values().map(Model::to_json).collect())
     }
+    #[inline(never)]
     fn from_json(value: &serde_json::Value) -> Result<Self, ModelError> {
         match value {
             serde_json::Value::Array(values) => values
@@ -222,6 +234,7 @@ impl<T: Model> Model for Set<T> {
             _ => Err(ModelError::shape("a list of elements")),
         }
     }
+    #[inline(never)]
     fn load(doc: &Doc, value: &Value<'_>, id: &ObjId) -> Result<Self, ModelError> {
         if !matches!(value, Value::Object(ObjType::Map)) {
             return Err(ModelError::shape("a set"));
@@ -234,6 +247,7 @@ impl<T: Model> Model for Set<T> {
     fn missing() -> Result<Self, ModelError> {
         Ok(Self::new())
     }
+    #[inline(never)]
     fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
         let map = slot.object(doc, ObjType::Map)?;
         let stale: Vec<String> = doc
@@ -250,6 +264,7 @@ impl<T: Model> Model for Set<T> {
         }
         Ok(())
     }
+    #[inline(never)]
     fn refresh(
         &mut self,
         doc: &Doc,
@@ -272,6 +287,7 @@ impl<T: Model> Model for Set<T> {
         }
         Ok(())
     }
+    #[inline(never)]
     fn edit(
         doc: &mut Doc,
         slot: Slot<'_>,
@@ -304,6 +320,7 @@ impl<T: Model> Model for Set<T> {
         }
         Ok(())
     }
+    #[inline(never)]
     fn diff<R>(&self, after: &Self, path: &[Segment], out: &mut Vec<crate::Edit<R>>) {
         for (key, value) in &self.elements {
             if !after.elements.contains_key(key) {
@@ -430,6 +447,7 @@ impl Model for Bytes {
     crate::model::leaf_paths!();
     /// Inline data as `{ "inline": [bytes] }`, a reference as its
     /// `blake3:<hex>:<len>` string.
+    #[inline(never)]
     fn to_json(&self) -> serde_json::Value {
         match self {
             Self::Empty => serde_json::Value::Null,
@@ -437,6 +455,7 @@ impl Model for Bytes {
             Self::Blob { hash, len } => serde_json::Value::String(Self::reference(hash, *len)),
         }
     }
+    #[inline(never)]
     fn from_json(value: &serde_json::Value) -> Result<Self, ModelError> {
         match value {
             serde_json::Value::Null => Ok(Self::Empty),
@@ -461,6 +480,7 @@ impl Model for Bytes {
             _ => Err(ModelError::shape("bytes")),
         }
     }
+    #[inline(never)]
     fn load(_: &Doc, value: &Value<'_>, _: &ObjId) -> Result<Self, ModelError> {
         match value {
             Value::Scalar(scalar) => match scalar.as_ref() {
@@ -476,6 +496,7 @@ impl Model for Bytes {
     fn missing() -> Result<Self, ModelError> {
         Ok(Self::Empty)
     }
+    #[inline(never)]
     fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
         match self {
             Self::Empty => slot.put_scalar(doc, ScalarValue::Null),
@@ -660,6 +681,7 @@ fn grid_map(doc: &mut Doc, slot: Slot<'_>) -> Result<ObjId, ModelError> {
 impl<T: Model> Model for Grid<T> {
     const CHECKS: bool = T::CHECKS;
     crate::model::leaf_paths!();
+    #[inline(never)]
     fn diff<R>(&self, after: &Self, path: &[Segment], out: &mut Vec<crate::Edit<R>>) {
         let edit = |op| crate::Edit::new(path.to_vec(), op);
         for row in self.rows() {
@@ -748,6 +770,7 @@ impl<T: Model> Model for Grid<T> {
     fn op_schemas(prefix: &str, out: &mut Vec<(String, serde_json::Value)>) {
         T::op_schemas(&format!("{prefix}*."), out);
     }
+    #[inline(never)]
     fn to_json(&self) -> serde_json::Value {
         serde_json::json!({
             "rows": self.rows.ids().map(Id::as_str).collect::<Vec<_>>(),
@@ -762,6 +785,7 @@ impl<T: Model> Model for Grid<T> {
                 .collect::<Vec<_>>(),
         })
     }
+    #[inline(never)]
     fn from_json(value: &serde_json::Value) -> Result<Self, ModelError> {
         if value.is_null() {
             return Ok(Self::new());
@@ -801,6 +825,7 @@ impl<T: Model> Model for Grid<T> {
         }
         Ok(grid)
     }
+    #[inline(never)]
     fn load(doc: &Doc, value: &Value<'_>, id: &ObjId) -> Result<Self, ModelError> {
         if !matches!(value, Value::Object(ObjType::Map)) {
             return Err(ModelError::shape("a grid"));
@@ -814,6 +839,7 @@ impl<T: Model> Model for Grid<T> {
     fn missing() -> Result<Self, ModelError> {
         Ok(Self::new())
     }
+    #[inline(never)]
     fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
         let map = grid_map(doc, slot)?;
         write_key(doc, &map, ROWS, &self.rows)?;
@@ -835,6 +861,7 @@ impl<T: Model> Model for Grid<T> {
         }
         Ok(())
     }
+    #[inline(never)]
     fn refresh(
         &mut self,
         doc: &Doc,
@@ -855,6 +882,7 @@ impl<T: Model> Model for Grid<T> {
         clippy::too_many_lines,
         reason = "one arm per grid operation, read top to bottom"
     )]
+    #[inline(never)]
     fn edit(
         doc: &mut Doc,
         slot: Slot<'_>,
@@ -1047,17 +1075,21 @@ impl<O: Default> Settled<O> {
 /// device.
 impl<O: Serialize + serde::de::DeserializeOwned> Model for Settled<O> {
     crate::model::leaf_paths!();
+    #[inline(never)]
     fn to_json(&self) -> serde_json::Value {
         serde_json::to_value(self).unwrap_or(serde_json::Value::Null)
     }
+    #[inline(never)]
     fn from_json(value: &serde_json::Value) -> Result<Self, ModelError> {
         serde_json::from_value(value.clone())
             .map_err(|error| ModelError::invalid(error.to_string()))
     }
+    #[inline(never)]
     fn load(doc: &Doc, value: &Value<'_>, id: &ObjId) -> Result<Self, ModelError> {
         let text = String::load(doc, value, id)?;
         serde_json::from_str(&text).map_err(|error| ModelError::invalid(error.to_string()))
     }
+    #[inline(never)]
     fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
         let text =
             serde_json::to_string(self).map_err(|error| ModelError::invalid(error.to_string()))?;
@@ -1092,6 +1124,7 @@ fn settle_steps(doc: &mut Doc, steps: &[String]) {
 impl<T: Model, O: Serialize + serde::de::DeserializeOwned> Model for OutboxEntry<T, O> {
     const CHECKS: bool = T::CHECKS;
     crate::model::leaf_paths!();
+    #[inline(never)]
     fn to_json(&self) -> serde_json::Value {
         serde_json::json!({
             ENTRY_VALUE: self.value.to_json(),
@@ -1099,6 +1132,7 @@ impl<T: Model, O: Serialize + serde::de::DeserializeOwned> Model for OutboxEntry
             ENTRY_COMPENSATES: self.compensates.to_json(),
         })
     }
+    #[inline(never)]
     fn from_json(value: &serde_json::Value) -> Result<Self, ModelError> {
         let null = serde_json::Value::Null;
         Ok(Self {
@@ -1110,6 +1144,7 @@ impl<T: Model, O: Serialize + serde::de::DeserializeOwned> Model for OutboxEntry
             },
         })
     }
+    #[inline(never)]
     fn load(doc: &Doc, value: &Value<'_>, id: &ObjId) -> Result<Self, ModelError> {
         if !matches!(value, Value::Object(ObjType::Map)) {
             return Err(ModelError::shape("an outbox entry"));
@@ -1120,6 +1155,7 @@ impl<T: Model, O: Serialize + serde::de::DeserializeOwned> Model for OutboxEntry
             compensates: read_key(doc, id, ENTRY_COMPENSATES)?,
         })
     }
+    #[inline(never)]
     fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
         let map = slot.object(doc, ObjType::Map)?;
         let was_done = read_key::<Option<Settled<O>>>(doc, &map, ENTRY_SETTLED)
@@ -1274,21 +1310,26 @@ fn outbox_entry(doc: &mut Doc, slot: Slot<'_>, id: &Id) -> Result<(ObjId, ObjId)
 impl<T: Model, O: Serialize + serde::de::DeserializeOwned> Model for Outbox<T, O> {
     const CHECKS: bool = T::CHECKS;
     crate::model::leaf_paths!();
+    #[inline(never)]
     fn to_json(&self) -> serde_json::Value {
         self.entries.to_json()
     }
+    #[inline(never)]
     fn from_json(value: &serde_json::Value) -> Result<Self, ModelError> {
         Collection::from_json(value).map(|entries| Self { entries })
     }
+    #[inline(never)]
     fn load(doc: &Doc, value: &Value<'_>, id: &ObjId) -> Result<Self, ModelError> {
         Collection::load(doc, value, id).map(|entries| Self { entries })
     }
     fn missing() -> Result<Self, ModelError> {
         Ok(Self::new())
     }
+    #[inline(never)]
     fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
         self.entries.store(doc, slot)
     }
+    #[inline(never)]
     fn refresh(
         &mut self,
         doc: &Doc,
@@ -1300,6 +1341,7 @@ impl<T: Model, O: Serialize + serde::de::DeserializeOwned> Model for Outbox<T, O
     }
     /// Entries are queued by verbs; an edit settles one or forgets a
     /// settled one.
+    #[inline(never)]
     fn edit(
         doc: &mut Doc,
         slot: Slot<'_>,
@@ -1337,6 +1379,7 @@ impl<T: Model, O: Serialize + serde::de::DeserializeOwned> Model for Outbox<T, O
     fn check(&self) -> Result<(), Refusal> {
         self.entries.check()
     }
+    #[inline(never)]
     fn diff<R>(&self, after: &Self, path: &[Segment], out: &mut Vec<crate::Edit<R>>) {
         for (id, entry) in after.entries.iter() {
             if let (Some(outcome), Some(before)) = (&entry.settled, self.entries.get(id))

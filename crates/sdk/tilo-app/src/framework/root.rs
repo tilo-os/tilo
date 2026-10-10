@@ -416,6 +416,7 @@ impl<R: Resource> ResourceRoot<R> {
     /// One walk of the view asks every surface about every row, so binding
     /// costs the view plus surfaces × rows, never the view once per row. Each
     /// row binds its edits in tree order of the surfaces offering them.
+    #[inline(never)]
     fn bind_row_declarations(&self, rows: &mut [tilo_actions::Resource]) {
         // Every row, nested ones too (a playlist's tracks), asked of the
         // surfaces in one walk.
@@ -458,6 +459,7 @@ impl<R: Resource> ResourceRoot<R> {
     /// The resource as published: its own actions and children, the edits
     /// views and surfaces bound to where the user is, the live rows surfaces
     /// show, and the framework's operations every app answers.
+    #[inline(never)]
     fn publication(&self) -> tilo_actions::Resource {
         #[cfg(feature = "test-support")]
         let _profile = super::profiling::Scope::start("framework.publication");
@@ -469,6 +471,7 @@ impl<R: Resource> ResourceRoot<R> {
     /// `take` of the document-owned tree of the live `state`: the cached one
     /// when the resource opts in to reuse
     /// ([`Resource::publication_cache_epoch`]), else built afresh.
+    #[inline(never)]
     fn document_tree(
         &self,
         state: &R::State,
@@ -503,6 +506,7 @@ impl<R: Resource> ResourceRoot<R> {
 
     /// The document-owned part of what controls bind to: the live
     /// resource's identity and own actions, without its children.
+    #[inline(never)]
     fn binding_head(&self) -> BindingHead {
         let state = self.live.get();
         BindingHead {
@@ -515,6 +519,7 @@ impl<R: Resource> ResourceRoot<R> {
     /// published resource's identity and actions over `head`, exactly as
     /// [`Self::publication`] publishes them, without building or decorating
     /// its children.
+    #[inline(never)]
     fn binding_publication(&self, head: &BindingHead) -> tilo_actions::Resource {
         self.decorate_publication(&self.live.get(), head.resource.clone(), Decoration::Actions)
     }
@@ -522,6 +527,7 @@ impl<R: Resource> ResourceRoot<R> {
     /// Refresh the actions bound controls look up, reusing `head` while the
     /// live state and locale are those it was built at. Answers the head
     /// they were refreshed from.
+    #[inline(never)]
     fn refresh_bindings(&self, head: Option<BindingHead>) -> BindingHead {
         #[cfg(feature = "test-support")]
         let _profile = super::profiling::Scope::start("framework.action_bindings");
@@ -537,6 +543,7 @@ impl<R: Resource> ResourceRoot<R> {
     /// [`Self::publication`] of the resource as `doc` holds it now, which a
     /// change from another window or participant may have moved past what
     /// this view last synced.
+    #[inline(never)]
     fn current_publication(&self, doc: &AutoCommit) -> tilo_actions::Resource {
         if !self.live.follows(doc)
             && let Ok(current) = R::read(doc)
@@ -554,12 +561,14 @@ impl<R: Resource> ResourceRoot<R> {
         self.publication()
     }
 
+    #[inline(never)]
     fn publication_of(&self, state: &R::State) -> tilo_actions::Resource {
         #[cfg(feature = "test-support")]
         let _profile = super::profiling::Scope::start("framework.publication");
         self.decorate_publication(state, self.resource_tree(state), Decoration::Tree)
     }
 
+    #[inline(never)]
     fn resource_tree(&self, state: &R::State) -> tilo_actions::Resource {
         #[cfg(feature = "test-support")]
         let _profile = super::profiling::Scope::start("framework.resource_tree");
@@ -569,6 +578,7 @@ impl<R: Resource> ResourceRoot<R> {
     /// Add to `resource`, the document-owned tree, what the view and the
     /// framework publish on it. [`Decoration::Actions`] decorates only the
     /// resource's own actions; its children stay as they are.
+    #[inline(never)]
     fn decorate_publication(
         &self,
         state: &R::State,
@@ -680,6 +690,7 @@ impl<R: Resource> ResourceRoot<R> {
     /// The operation types of the views the resource's nested resources
     /// publish (the editor of a note's rich-text body): presentations of the
     /// resource this root has mounted, answered like its own.
+    #[inline(never)]
     fn nested_views(&self) -> Rc<HashSet<String>> {
         let revision = self.live.revision();
         let mut cached = self.nested_views.borrow_mut();
@@ -696,6 +707,7 @@ impl<R: Resource> ResourceRoot<R> {
     /// Show why the record does not read as the resource instead of the
     /// view while it does not, never the last state as if it were current,
     /// and refuse submissions with the same reason.
+    #[inline(never)]
     fn follow_readability(&mut self) {
         let reason = self.live.unreadable().map(|unreadable| unreadable.reason);
         if self.unreadable.as_ref().map(|(shown, _)| shown) == reason.as_ref() {

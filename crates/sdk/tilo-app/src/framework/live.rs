@@ -91,6 +91,7 @@ impl<R: Resource> Live<R> {
 
     /// Place every participant whose action the state now holds, where
     /// [`Resource::lands`] says it left them.
+    #[inline(never)]
     pub(crate) fn place_landings(&self) {
         let applied = std::mem::take(&mut self.places.borrow_mut().applied);
         if applied.is_empty() {
@@ -106,6 +107,7 @@ impl<R: Resource> Live<R> {
 
     /// Place `participant` at `place`: where an effect they told where to
     /// act acted ([`EffectCx::place`](super::EffectCx::place)).
+    #[inline(never)]
     pub(crate) fn land(&self, participant: tilo_actions::ParticipantId, place: Place) {
         let mut places = self.places.borrow_mut();
         let number = places.next;
@@ -184,6 +186,7 @@ impl<R: Resource> Live<R> {
     ///
     /// # Errors
     /// Returns [`ModelError`] when the document does not hold the resource.
+    #[inline(never)]
     pub fn demand(&self, doc: &Doc, demand: Demand) -> Result<bool, ModelError>
     where
         R::State: Clone,
@@ -216,6 +219,7 @@ impl<R: Resource> Live<R> {
     ///
     /// # Errors
     /// Returns [`ModelError`] when the document no longer holds the resource.
+    #[inline(never)]
     pub fn sync(&self, doc: &Doc) -> Result<bool, ModelError> {
         #[cfg(feature = "test-support")]
         let _profile = super::profiling::Scope::start("framework.live_sync");

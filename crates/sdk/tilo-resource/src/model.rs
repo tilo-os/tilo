@@ -62,6 +62,7 @@ impl ModelError {
 
     /// Prefix the location this error was found at, innermost last.
     #[must_use]
+    #[inline(never)]
     pub fn at(mut self, segment: &str) -> Self {
         match &mut self {
             Self::Shape { path, .. } | Self::Missing { path } | Self::Invalid { path, .. } => {
@@ -245,6 +246,7 @@ pub trait Model: Sized {
     ///
     /// # Errors
     /// Returns why the path or operation does not fit, or a refusal.
+    #[inline(never)]
     fn edit(
         doc: &mut Doc,
         slot: Slot<'_>,
@@ -260,6 +262,7 @@ pub trait Model: Sized {
     /// record: what a surface that edited a local copy submits. The default
     /// sets the value whole when it changed; containers and records edit
     /// only what differs, item by item and field by field.
+    #[inline(never)]
     fn diff<R>(&self, after: &Self, path: &[Segment], out: &mut Vec<crate::Edit<R>>) {
         let value = after.to_json();
         if self.to_json() != value {
@@ -384,6 +387,7 @@ pub trait Model: Sized {
     /// comparison, so an action that changed one item of a long collection
     /// does not visit the others. Must only answer `true` when `store` would
     /// write no operation; the default answers `false` (unknown).
+    #[inline(never)]
     fn stores_as(&self, before: &Self) -> bool {
         let _ = before;
         false
@@ -402,6 +406,7 @@ pub trait Model: Sized {
     ///
     /// # Errors
     /// Returns the document's write error.
+    #[inline(never)]
     fn store_changed(
         &self,
         before: &Self,
@@ -421,6 +426,7 @@ pub trait Model: Sized {
     ///
     /// # Errors
     /// Returns [`ModelError`] when the stored value has another shape.
+    #[inline(never)]
     fn refresh(
         &mut self,
         doc: &Doc,
@@ -526,6 +532,7 @@ pub trait Fields: Model {
 ///
 /// # Errors
 /// Returns [`ModelError`] located at `key`.
+#[inline(never)]
 pub fn read_key<T: Model>(doc: &Doc, obj: &ObjId, key: &str) -> Result<T, ModelError> {
     match doc.get(obj, key)? {
         Some((value, id)) => T::load(doc, &value, &id),
@@ -540,6 +547,7 @@ pub fn read_key<T: Model>(doc: &Doc, obj: &ObjId, key: &str) -> Result<T, ModelE
 ///
 /// # Errors
 /// Returns [`ModelError`] located at `key`.
+#[inline(never)]
 pub fn refresh_key<T: Model>(
     target: &mut T,
     doc: &Doc,
@@ -561,10 +569,23 @@ pub fn refresh_key<T: Model>(
     }
 }
 
+/// A value written through a vtable: code storing values of many types
+/// (the items of every collection) compiles once rather than per type.
+pub(crate) trait Stores {
+    fn store_to(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError>;
+}
+
+impl<T: Model> Stores for T {
+    fn store_to(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
+        self.store(doc, slot)
+    }
+}
+
 /// Write `value` under `key` of the map `obj`.
 ///
 /// # Errors
 /// Returns [`ModelError`] located at `key`.
+#[inline(never)]
 pub fn write_key<T: Model>(
     doc: &mut Doc,
     obj: &ObjId,
@@ -581,6 +602,7 @@ pub fn write_key<T: Model>(
 ///
 /// # Errors
 /// Returns why the path or operation does not fit, or a refusal.
+#[inline(never)]
 pub fn edit_whole<T: Model>(
     doc: &mut Doc,
     slot: Slot<'_>,
@@ -673,6 +695,7 @@ macro_rules! json_model {
 ///
 /// # Errors
 /// Returns [`ModelError`] located at `key`.
+#[inline(never)]
 pub fn write_key_changed<T: Model>(
     doc: &mut Doc,
     obj: &ObjId,
@@ -703,9 +726,11 @@ impl Model for bool {
         serde_json::json!({"type": "boolean"})
     }
     leaf_paths!();
+    #[inline(never)]
     fn to_json(&self) -> serde_json::Value {
         serde_json::Value::Bool(*self)
     }
+    #[inline(never)]
     fn from_json(value: &serde_json::Value) -> Result<Self, ModelError> {
         match value {
             serde_json::Value::Bool(value) => Ok(*value),
@@ -713,6 +738,7 @@ impl Model for bool {
             _ => Err(json_shape("a boolean")),
         }
     }
+    #[inline(never)]
     fn load(_: &Doc, value: &Value<'_>, _: &ObjId) -> Result<Self, ModelError> {
         match scalar(value) {
             Some(ScalarValue::Boolean(value)) => Ok(*value),
@@ -723,9 +749,11 @@ impl Model for bool {
     fn missing() -> Result<Self, ModelError> {
         Ok(false)
     }
+    #[inline(never)]
     fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
         slot.put_scalar(doc, ScalarValue::Boolean(*self))
     }
+    #[inline(never)]
     fn stores_as(&self, before: &Self) -> bool {
         self == before
     }
@@ -789,10 +817,12 @@ impl Model for f64 {
         serde_json::json!({"type": "number"})
     }
     leaf_paths!();
+    #[inline(never)]
     fn to_json(&self) -> serde_json::Value {
         serde_json::Number::from_f64(*self)
             .map_or(serde_json::Value::Null, serde_json::Value::Number)
     }
+    #[inline(never)]
     fn from_json(value: &serde_json::Value) -> Result<Self, ModelError> {
         match value {
             serde_json::Value::Number(number) => {
@@ -806,6 +836,7 @@ impl Model for f64 {
         clippy::cast_precision_loss,
         reason = "integers written by older schemas widen to the stored float"
     )]
+    #[inline(never)]
     fn load(_: &Doc, value: &Value<'_>, _: &ObjId) -> Result<Self, ModelError> {
         match scalar(value) {
             Some(ScalarValue::F64(value)) => Ok(*value),
@@ -818,9 +849,11 @@ impl Model for f64 {
     fn missing() -> Result<Self, ModelError> {
         Ok(0.0)
     }
+    #[inline(never)]
     fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
         slot.put_scalar(doc, ScalarValue::F64(*self))
     }
+    #[inline(never)]
     fn stores_as(&self, before: &Self) -> bool {
         self.to_bits() == before.to_bits()
     }
@@ -832,6 +865,7 @@ impl Model for f32 {
         serde_json::json!({"type": "number"})
     }
     leaf_paths!();
+    #[inline(never)]
     fn to_json(&self) -> serde_json::Value {
         f64::from(*self).to_json()
     }
@@ -839,6 +873,7 @@ impl Model for f32 {
         clippy::cast_possible_truncation,
         reason = "an f32 field stores what it wrote, widened"
     )]
+    #[inline(never)]
     fn from_json(value: &serde_json::Value) -> Result<Self, ModelError> {
         f64::from_json(value).map(|value| value as f32)
     }
@@ -846,15 +881,18 @@ impl Model for f32 {
         clippy::cast_possible_truncation,
         reason = "an f32 field stores what it wrote, widened"
     )]
+    #[inline(never)]
     fn load(doc: &Doc, value: &Value<'_>, id: &ObjId) -> Result<Self, ModelError> {
         f64::load(doc, value, id).map(|value| value as f32)
     }
     fn missing() -> Result<Self, ModelError> {
         Ok(0.0)
     }
+    #[inline(never)]
     fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
         f64::from(*self).store(doc, slot)
     }
+    #[inline(never)]
     fn stores_as(&self, before: &Self) -> bool {
         self.to_bits() == before.to_bits()
     }
@@ -870,9 +908,11 @@ impl Model for String {
         serde_json::json!({"type": "string"})
     }
     leaf_paths!();
+    #[inline(never)]
     fn to_json(&self) -> serde_json::Value {
         serde_json::Value::String(self.clone())
     }
+    #[inline(never)]
     fn from_json(value: &serde_json::Value) -> Result<Self, ModelError> {
         match value {
             serde_json::Value::String(text) => Ok(text.clone()),
@@ -880,6 +920,7 @@ impl Model for String {
             _ => Err(json_shape("text")),
         }
     }
+    #[inline(never)]
     fn edit(
         doc: &mut Doc,
         slot: Slot<'_>,
@@ -904,6 +945,7 @@ impl Model for String {
             other => ModelError::invalid(other.to_string()),
         })
     }
+    #[inline(never)]
     fn load(doc: &Doc, value: &Value<'_>, id: &ObjId) -> Result<Self, ModelError> {
         match value {
             Value::Object(ObjType::Text) => Ok(doc.text(id)?),
@@ -918,6 +960,7 @@ impl Model for String {
     fn missing() -> Result<Self, ModelError> {
         Ok(Self::new())
     }
+    #[inline(never)]
     fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
         let text = slot.object(doc, ObjType::Text)?;
         let current = doc.text(&text)?;
@@ -926,11 +969,13 @@ impl Model for String {
         }
         Ok(())
     }
+    #[inline(never)]
     fn stores_as(&self, before: &Self) -> bool {
         self == before
     }
     /// The one splice [`store`](Model::store) makes, found from `before`
     /// instead of reading the whole text back.
+    #[inline(never)]
     fn store_changed(
         &self,
         before: &Self,
@@ -1019,18 +1064,22 @@ impl Model for Atom {
         serde_json::json!({"type": "string"})
     }
     leaf_paths!();
+    #[inline(never)]
     fn to_json(&self) -> serde_json::Value {
         serde_json::Value::String(self.0.clone())
     }
+    #[inline(never)]
     fn from_json(value: &serde_json::Value) -> Result<Self, ModelError> {
         String::from_json(value).map(Self)
     }
+    #[inline(never)]
     fn load(doc: &Doc, value: &Value<'_>, id: &ObjId) -> Result<Self, ModelError> {
         String::load(doc, value, id).map(Self)
     }
     fn missing() -> Result<Self, ModelError> {
         Ok(Self::default())
     }
+    #[inline(never)]
     fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
         slot.put_scalar(doc, ScalarValue::Str(self.0.as_str().into()))
     }
@@ -1039,6 +1088,7 @@ impl Model for Atom {
             out.push(self.0.clone());
         }
     }
+    #[inline(never)]
     fn stores_as(&self, before: &Self) -> bool {
         self == before
     }
@@ -1050,9 +1100,11 @@ impl Model for uuid::Uuid {
         serde_json::json!({"type": "string", "format": "uuid"})
     }
     leaf_paths!();
+    #[inline(never)]
     fn to_json(&self) -> serde_json::Value {
         serde_json::Value::String(self.to_string())
     }
+    #[inline(never)]
     fn from_json(value: &serde_json::Value) -> Result<Self, ModelError> {
         match value {
             serde_json::Value::String(text) => {
@@ -1061,6 +1113,7 @@ impl Model for uuid::Uuid {
             _ => Err(json_shape("a uuid")),
         }
     }
+    #[inline(never)]
     fn load(_: &Doc, value: &Value<'_>, _: &ObjId) -> Result<Self, ModelError> {
         match scalar(value) {
             Some(ScalarValue::Str(text)) => {
@@ -1069,9 +1122,11 @@ impl Model for uuid::Uuid {
             _ => Err(ModelError::shape("a uuid")),
         }
     }
+    #[inline(never)]
     fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
         slot.put_scalar(doc, ScalarValue::Str(self.to_string().into()))
     }
+    #[inline(never)]
     fn stores_as(&self, before: &Self) -> bool {
         self == before
     }
@@ -1105,16 +1160,19 @@ impl<T: Model> Model for Option<T> {
     fn op_schemas(prefix: &str, out: &mut Vec<(String, serde_json::Value)>) {
         T::op_schemas(prefix, out);
     }
+    #[inline(never)]
     fn to_json(&self) -> serde_json::Value {
         self.as_ref()
             .map_or(serde_json::Value::Null, Model::to_json)
     }
+    #[inline(never)]
     fn from_json(value: &serde_json::Value) -> Result<Self, ModelError> {
         match value {
             serde_json::Value::Null => Ok(None),
             value => T::from_json(value).map(Some),
         }
     }
+    #[inline(never)]
     fn edit(
         doc: &mut Doc,
         slot: Slot<'_>,
@@ -1135,6 +1193,7 @@ impl<T: Model> Model for Option<T> {
     fn check(&self) -> Result<(), Refusal> {
         self.as_ref().map_or(Ok(()), Model::check)
     }
+    #[inline(never)]
     fn diff<R>(&self, after: &Self, path: &[Segment], out: &mut Vec<crate::Edit<R>>) {
         match (self, after) {
             (Some(before), Some(next)) => before.diff(next, path, out),
@@ -1160,6 +1219,7 @@ impl<T: Model> Model for Option<T> {
         self.as_ref().and_then(|value| value.get_at(path))
     }
 
+    #[inline(never)]
     fn load(doc: &Doc, value: &Value<'_>, id: &ObjId) -> Result<Self, ModelError> {
         if matches!(scalar(value), Some(ScalarValue::Null)) {
             return Ok(None);
@@ -1169,12 +1229,14 @@ impl<T: Model> Model for Option<T> {
     fn missing() -> Result<Self, ModelError> {
         Ok(None)
     }
+    #[inline(never)]
     fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
         match self {
             Some(value) => value.store(doc, slot),
             None => slot.remove(doc),
         }
     }
+    #[inline(never)]
     fn stores_as(&self, before: &Self) -> bool {
         match (self, before) {
             (Some(value), Some(before)) => value.stores_as(before),
@@ -1182,6 +1244,7 @@ impl<T: Model> Model for Option<T> {
             _ => false,
         }
     }
+    #[inline(never)]
     fn store_changed(
         &self,
         before: &Self,
@@ -1194,6 +1257,7 @@ impl<T: Model> Model for Option<T> {
             _ => self.store(doc, slot),
         }
     }
+    #[inline(never)]
     fn refresh(
         &mut self,
         doc: &Doc,
@@ -1248,12 +1312,15 @@ impl<T: Model> Model for Box<T> {
     fn paths_at<R>(path: Path<R, Self>) -> T::Paths<R> {
         T::paths_at(path.cast())
     }
+    #[inline(never)]
     fn to_json(&self) -> serde_json::Value {
         (**self).to_json()
     }
+    #[inline(never)]
     fn from_json(value: &serde_json::Value) -> Result<Self, ModelError> {
         T::from_json(value).map(Box::new)
     }
+    #[inline(never)]
     fn edit(
         doc: &mut Doc,
         slot: Slot<'_>,
@@ -1266,6 +1333,7 @@ impl<T: Model> Model for Box<T> {
     fn check(&self) -> Result<(), Refusal> {
         (**self).check()
     }
+    #[inline(never)]
     fn diff<R>(&self, after: &Self, path: &[Segment], out: &mut Vec<crate::Edit<R>>) {
         (**self).diff(after, path, out);
     }
@@ -1279,18 +1347,22 @@ impl<T: Model> Model for Box<T> {
         (**self).get_at(path)
     }
 
+    #[inline(never)]
     fn load(doc: &Doc, value: &Value<'_>, id: &ObjId) -> Result<Self, ModelError> {
         T::load(doc, value, id).map(Box::new)
     }
     fn missing() -> Result<Self, ModelError> {
         T::missing().map(Box::new)
     }
+    #[inline(never)]
     fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
         (**self).store(doc, slot)
     }
+    #[inline(never)]
     fn stores_as(&self, before: &Self) -> bool {
         (**self).stores_as(before)
     }
+    #[inline(never)]
     fn store_changed(
         &self,
         before: &Self,
@@ -1300,6 +1372,7 @@ impl<T: Model> Model for Box<T> {
     ) -> Result<(), ModelError> {
         (**self).store_changed(before, doc, slot, dirty)
     }
+    #[inline(never)]
     fn refresh(
         &mut self,
         doc: &Doc,
@@ -1325,9 +1398,11 @@ impl<T: Model> Model for Vec<T> {
     }
     const CHECKS: bool = T::CHECKS;
     leaf_paths!();
+    #[inline(never)]
     fn to_json(&self) -> serde_json::Value {
         serde_json::Value::Array(self.iter().map(Model::to_json).collect())
     }
+    #[inline(never)]
     fn from_json(value: &serde_json::Value) -> Result<Self, ModelError> {
         match value {
             serde_json::Value::Array(items) => items
@@ -1347,6 +1422,7 @@ impl<T: Model> Model for Vec<T> {
         }
         Ok(())
     }
+    #[inline(never)]
     fn load(doc: &Doc, value: &Value<'_>, id: &ObjId) -> Result<Self, ModelError> {
         if !matches!(value, Value::Object(ObjType::List)) {
             return Err(ModelError::shape("a list"));
@@ -1364,6 +1440,7 @@ impl<T: Model> Model for Vec<T> {
     fn missing() -> Result<Self, ModelError> {
         Ok(Self::new())
     }
+    #[inline(never)]
     fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
         let list = slot.object(doc, ObjType::List)?;
         let existing = doc.length(&list);
@@ -1381,6 +1458,7 @@ impl<T: Model> Model for Vec<T> {
         }
         Ok(())
     }
+    #[inline(never)]
     fn stores_as(&self, before: &Self) -> bool {
         self.len() == before.len()
             && self
@@ -1403,9 +1481,11 @@ impl<T: Model, const N: usize> Model for [T; N] {
     }
     const CHECKS: bool = T::CHECKS;
     leaf_paths!();
+    #[inline(never)]
     fn to_json(&self) -> serde_json::Value {
         serde_json::Value::Array(self.iter().map(Model::to_json).collect())
     }
+    #[inline(never)]
     fn from_json(value: &serde_json::Value) -> Result<Self, ModelError> {
         let items = Vec::<T>::from_json(value)?;
         let count = items.len();
@@ -1413,6 +1493,7 @@ impl<T: Model, const N: usize> Model for [T; N] {
             .try_into()
             .map_err(|_| ModelError::invalid(format!("expected {N} values, not {count}")))
     }
+    #[inline(never)]
     fn load(doc: &Doc, value: &Value<'_>, id: &ObjId) -> Result<Self, ModelError> {
         let items = Vec::<T>::load(doc, value, id)?;
         let count = items.len();
@@ -1428,6 +1509,7 @@ impl<T: Model, const N: usize> Model for [T; N] {
             .try_into()
             .map_err(|_| ModelError::invalid("an empty array"))
     }
+    #[inline(never)]
     fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
         let list = slot.object(doc, ObjType::List)?;
         let existing = doc.length(&list);
@@ -1487,6 +1569,7 @@ impl<T: Model> Model for BTreeMap<String, T> {
     fn op_schemas(prefix: &str, out: &mut Vec<(String, serde_json::Value)>) {
         T::op_schemas(&format!("{prefix}*."), out);
     }
+    #[inline(never)]
     fn to_json(&self) -> serde_json::Value {
         serde_json::Value::Object(
             self.iter()
@@ -1494,6 +1577,7 @@ impl<T: Model> Model for BTreeMap<String, T> {
                 .collect(),
         )
     }
+    #[inline(never)]
     fn from_json(value: &serde_json::Value) -> Result<Self, ModelError> {
         match value {
             serde_json::Value::Object(entries) => entries
@@ -1508,6 +1592,7 @@ impl<T: Model> Model for BTreeMap<String, T> {
             _ => Err(json_shape("a map")),
         }
     }
+    #[inline(never)]
     fn edit(
         doc: &mut Doc,
         slot: Slot<'_>,
@@ -1557,6 +1642,7 @@ impl<T: Model> Model for BTreeMap<String, T> {
             Some(_) => None,
         }
     }
+    #[inline(never)]
     fn diff<R>(&self, after: &Self, path: &[Segment], out: &mut Vec<crate::Edit<R>>) {
         for (key, before) in self {
             let mut at = path.to_vec();
@@ -1582,6 +1668,7 @@ impl<T: Model> Model for BTreeMap<String, T> {
             }
         }
     }
+    #[inline(never)]
     fn load(doc: &Doc, value: &Value<'_>, id: &ObjId) -> Result<Self, ModelError> {
         if !matches!(value, Value::Object(ObjType::Map)) {
             return Err(ModelError::shape("a map"));
@@ -1593,6 +1680,7 @@ impl<T: Model> Model for BTreeMap<String, T> {
     fn missing() -> Result<Self, ModelError> {
         Ok(Self::new())
     }
+    #[inline(never)]
     fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
         let map = slot.object(doc, ObjType::Map)?;
         let stale: Vec<String> = doc
@@ -1607,6 +1695,7 @@ impl<T: Model> Model for BTreeMap<String, T> {
         }
         Ok(())
     }
+    #[inline(never)]
     fn stores_as(&self, before: &Self) -> bool {
         self.len() == before.len()
             && self
@@ -1614,6 +1703,7 @@ impl<T: Model> Model for BTreeMap<String, T> {
                 .zip(before)
                 .all(|((key, value), (was, before))| key == was && value.stores_as(before))
     }
+    #[inline(never)]
     fn refresh(
         &mut self,
         doc: &Doc,
@@ -1660,14 +1750,17 @@ where
     T: serde::Serialize + serde::de::DeserializeOwned + Default,
 {
     leaf_paths!();
+    #[inline(never)]
     fn to_json(&self) -> serde_json::Value {
         serde_json::to_value(&self.0).unwrap_or(serde_json::Value::Null)
     }
+    #[inline(never)]
     fn from_json(value: &serde_json::Value) -> Result<Self, ModelError> {
         serde_json::from_value(value.clone())
             .map(Self)
             .map_err(|error| ModelError::invalid(error.to_string()))
     }
+    #[inline(never)]
     fn load(_: &Doc, value: &Value<'_>, _: &ObjId) -> Result<Self, ModelError> {
         match scalar(value) {
             Some(ScalarValue::Str(text)) => serde_json::from_str(text)
@@ -1680,6 +1773,7 @@ where
     fn missing() -> Result<Self, ModelError> {
         Ok(Self::default())
     }
+    #[inline(never)]
     fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
         let text = serde_json::to_string(&self.0)
             .map_err(|error| ModelError::invalid(error.to_string()))?;
