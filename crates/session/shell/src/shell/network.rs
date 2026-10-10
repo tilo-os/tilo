@@ -1584,7 +1584,8 @@ impl ShellNetwork {
         // report or port mapping until something needs this device
         // reachable, when `reachability` adds the held-back relays.
         let held_back = iroh::RelayMode::Custom(iroh::RelayMap::empty());
-        let (builder, deferred_relays) = match &reach {
+        let internet = matches!(reach, Reach::Internet);
+        let (builder, deferred_relays) = match reach {
             Reach::Internet => (
                 iroh::Endpoint::builder(presets::N0).relay_mode(held_back),
                 iroh::endpoint::default_relay_mode().relay_map(),
@@ -1602,7 +1603,7 @@ impl ShellNetwork {
                     .relay_mode(held_back)
                     .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
                     .map_err(|e| std::io::Error::other(format!("iroh bind: {e}")))?,
-                relays.clone(),
+                relays,
             ),
         };
         let endpoint = runtime
@@ -1619,7 +1620,7 @@ impl ShellNetwork {
             &deferred_relays,
             runtime.handle().clone(),
         );
-        let mdns = if matches!(reach, Reach::Internet) {
+        let mdns = if internet {
             init_lan_discovery(&endpoint)
         } else {
             None

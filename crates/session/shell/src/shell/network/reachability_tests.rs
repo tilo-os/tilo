@@ -21,11 +21,10 @@ use crate::shell::state::{RoomAuthority, RoomId, WorkspaceTree, WorkspaceTreeHan
 /// Relays nobody listens on, so a woken test desktop's probes fail at once
 /// and its peers are reached directly over loopback.
 pub(super) fn unused_relays() -> iroh::RelayMap {
-    iroh::RelayMap::from_iter(
-        ["http://127.0.0.1:9/", "http://127.0.0.1:10/"]
-            .into_iter()
-            .map(|url| url.parse::<iroh::RelayUrl>().unwrap()),
-    )
+    ["http://127.0.0.1:9/", "http://127.0.0.1:10/"]
+        .into_iter()
+        .map(|url| url.parse::<iroh::RelayUrl>().unwrap())
+        .collect()
 }
 
 const ME: &str = "this-endpoint";
@@ -119,9 +118,8 @@ fn two_desktops_holding_their_relays_back_still_sync_and_then_wake_them() {
     let home_workspace = first_tree.append_empty_workspace("Home");
     first_tree.adopt_ownerless_workspaces(&person);
     let room = first_tree.room_of(home_workspace).unwrap();
-    let first_tree = first_tree.shared();
     let first = device_reaching(
-        first_tree.clone(),
+        first_tree.shared(),
         &dir.path().join("first"),
         &root,
         DeviceCapabilities::primary(),
