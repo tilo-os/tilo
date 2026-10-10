@@ -935,6 +935,95 @@ impl ChangeGraphCols {
         graph
     }
 
+    /// Tilo patch (TILO-PATCH.md): whether `hashes` can stand for the hashes
+    /// rebuilding every change would compute: one per change, no two alike,
+    /// and the ones no change depends on are exactly the document's `heads`.
+    /// Only a change without dependencies after its actor's first can't take
+    /// them (its op count is not known without rebuilding it).
+    pub(crate) fn takes_known_hashes(&self, hashes: &[ChangeHash], heads: &[ChangeHash]) -> bool {
+        let graph = &self.0;
+        if hashes.len() != graph.len() {
+            return false;
+        }
+        let mut depended = vec![false; hashes.len()];
+        // `node_ids` counts hashes, which a graph read from columns has none of yet.
+        for node in (0..graph.len() as u32).map(NodeIdx) {
+            let mut deps = graph.parents(node).peekable();
+            if deps.peek().is_none() && graph.seq[node.0 as usize] != 1 {
+                return false;
+            }
+            for dep in deps {
+                depended[dep.0 as usize] = true;
+            }
+        }
+        let distinct = hashes.iter().collect::<HashSet<_>>().len() == hashes.len();
+        let derived: BTreeSet<_> = hashes
+            .iter()
+            .zip(depended)
+            .filter_map(|(hash, depended)| (!depended).then_some(*hash))
+            .collect();
+        distinct && derived == heads.iter().copied().collect()
+    }
+
+    /// Tilo patch (TILO-PATCH.md): [`Self::finalize`] with each change's
+    /// hash already known (see [`Self::takes_known_hashes`]) instead of
+    /// rebuilt. `first_counter[actor]` is the lowest counter of any op id
+    /// the document holds for that actor: where an actor's first change
+    /// starts when no dependency says so.
+    pub(crate) fn finalize_known(
+        self,
+        hashes: &[ChangeHash],
+        first_counter: &[u64],
+        authors: &mut Authors,
+    ) -> ChangeGraph {
+        let mut graph = self.0;
+        debug_assert_eq!(hashes.len(), graph.len());
+        debug_assert!(graph.hashes.is_empty());
+
+        // `load()` takes a change's op count from its dependencies' maximum
+        // op, which is where Automerge starts every change that has some.
+        // A first change without any starts at its actor's lowest counter.
+        let mut num_ops: Vec<u64> = graph.num_ops.iter().collect();
+        for i in 0..graph.len() {
+            if graph.parents[i].is_none() {
+                let max_op = graph.max_ops[i] as u64;
+                let start = first_counter
+                    .get(usize::from(graph.actors[i]))
+                    .copied()
+                    .unwrap_or(u64::MAX);
+                num_ops[i] = if start <= max_op {
+                    max_op - start + 1
+                } else {
+                    0
+                };
+            }
+        }
+        graph.num_ops = num_ops.into_iter().collect();
+
+        for (idx, hash) in hashes.iter().enumerate() {
+            graph.nodes_by_hash.insert(*hash, NodeIdx(idx as u32));
+            graph.hashes.push(*hash);
+            let extra = graph.extra_bytes_meta.get(idx).and_then(|meta| {
+                graph
+                    .extra_bytes_raw
+                    .get(meta.prefix() as usize..meta.total() as usize)
+            });
+            if let Some(author) = extra.and_then(crate::change::decode_author_footer) {
+                authors.assign_author(author.into_owned(), graph.actors[idx].into());
+            }
+        }
+
+        for n in 0..(graph.len() as u32) {
+            if (n + 1) % CACHE_STEP == 0 {
+                graph.cache_clock(NodeIdx(n));
+            }
+        }
+
+        graph.cache_fragments();
+
+        graph
+    }
+
     pub(crate) fn load(doc: &Document<'_>) -> Result<Self, LoadError> {
         use ids::*;
 
