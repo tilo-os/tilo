@@ -108,6 +108,8 @@ impl AgentHostLink for RelayAgentLink {
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(delegation.agent_device_public_key, Some(delegation.clone()));
+        // A replacement may narrow an earlier delegation's rooms.
+        crate::authority_epoch::bump();
         Ok(())
     }
 
@@ -116,6 +118,7 @@ impl AgentHostLink for RelayAgentLink {
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(agent_device_public_key, None);
+        crate::authority_epoch::bump();
     }
 }
 
@@ -188,6 +191,16 @@ impl RoomRecordsLink for RelayRecordsLink {
                 .ok_or("governed rooms unavailable")?
                 .resource_view_document(workspace, caller, source),
         )
+    }
+
+    fn steward_keys(
+        &self,
+        route: &tilo_browser_peer::DocumentRoute,
+        create: bool,
+    ) -> Option<Result<tilo_browser_peer::ChannelContentKeys, String>> {
+        self.member
+            .runtime
+            .block_on(self.rooms.as_ref()?.steward_endpoint_keys(route, create))
     }
 
     fn view_locator(

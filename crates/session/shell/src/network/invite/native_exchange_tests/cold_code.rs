@@ -217,6 +217,15 @@ pub(super) fn mount_with_network(
     profile: &Path,
     network: &Arc<crate::shell::network::ShellNetwork>,
 ) -> MountedCode {
+    mount_with_network_and_reads(owner, identity, profile, network, None)
+}
+pub(super) fn mount_with_network_and_reads(
+    owner: &NativeWorkspaceOwner,
+    identity: &HostIdentity,
+    profile: &Path,
+    network: &Arc<crate::shell::network::ShellNetwork>,
+    reads: Option<crate::shell::collab_broker::NativeReadHarnessWrapper>,
+) -> MountedCode {
     use std::{
         cell::{Cell, RefCell},
         os::unix::fs::PermissionsExt as _,
@@ -232,11 +241,12 @@ pub(super) fn mount_with_network(
         .tempdir_in(profile.parent().unwrap())
         .unwrap();
     let socket = runtime.path().join("c.sock");
-    let broker = crate::shell::collab_broker::spawn_native_owner_harness(
+    let broker = crate::shell::collab_broker::spawn_native_owner_harness_with_reads(
         socket.clone(),
         tree,
         vec![identity.device_cert.device_public_key],
         network,
+        reads,
     )
     .unwrap();
     let refusal = connect_manager(&socket, identity, false)
@@ -462,15 +472,47 @@ pub(super) fn prepare_offline_edits(
     governor.refresh_checkpoint().unwrap();
 }
 
+/// Sign `changes` to the Code record the way every SDK document signer signs
+/// a write outside its record owner's turn: with the process-wide unordered
+/// sequence, never the dense `floor + 1` an owner recovery projection may
+/// reserve in its own turn first.
+pub(super) fn unordered_document_message(
+    room: RoomId,
+    changes: Vec<u8>,
+    key: &ed25519_dalek::SigningKey,
+    now: SystemTime,
+) -> NeighbourMsg {
+    let room = room.to_string();
+    let author = collab_types::Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes());
+    let mut envelope = collab_types::SignedOp::new_unsigned(
+        collab_types::DocumentMutation::Incremental(changes)
+            .encode()
+            .unwrap(),
+        collab_types::document_artifact_id(APP, &room, RECORD),
+        author,
+        collab_types::document_attestation_id(APP, &room, RECORD),
+        collab_types::OpClass::Splice,
+        now,
+        collab_types::next_unordered_document_sequence(now),
+    );
+    collab_types::sign_op(&mut envelope, key).unwrap();
+    NeighbourMsg::AppDocument {
+        peer: tilo_peer_state::peer_handle(author.as_bytes()),
+        app_id: APP.into(),
+        cluster_id: room,
+        record_id: RECORD.into(),
+        envelope: Box::new(envelope),
+    }
+}
+
 fn offline_edit(
     owner: &NativeWorkspaceOwner,
     key: &ed25519_dalek::SigningKey,
     text: &str,
 ) -> NeighbourMsg {
-    use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
     let room = RoomId::parse(tilo_joined_room::testing::ROOM).unwrap();
     let now = SystemTime::now();
-    let message = owner
+    let changes = owner
         .with_current(room, |view| {
             let mut document =
                 AutoCommit::load(&view.peer().document(APP, RECORD).unwrap()).unwrap();
@@ -481,30 +523,12 @@ fn offline_edit(
             code_editor::actions::text_edit_action(FILE.into(), BODY, text)
                 .apply(&mut document)
                 .unwrap();
-            view.peer().clone().publish_incremental(
-                APP,
-                RECORD,
-                document.save_after(&heads),
-                key,
-                now,
-            )
+            Ok(document.save_after(&heads))
         })
         .unwrap();
-    let NeighbourMsg::AppDocument { envelope, .. } = &message else {
-        panic!("native edit must be signed app data")
-    };
+    let message = unordered_document_message(room, changes, key, now);
     owner
-        .commit_document(
-            OwnerCommitRequest {
-                room: room.to_string(),
-                operation: CommitOperation::Document {
-                    app: APP.into(),
-                    record: RECORD.into(),
-                    envelope: envelope.clone(),
-                },
-            },
-            now,
-        )
+        .commit_document(tilo_joined_room::testing::request(&message).unwrap(), now)
         .unwrap();
     owner
         .with_current(room, |view| {

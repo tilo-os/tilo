@@ -39,16 +39,10 @@ pub struct Apps {
     room: String,
     root: PathBuf,
     /// Where app containers live on macOS, beside the runtime profile.
-    #[cfg_attr(
-        not(target_os = "macos"),
-        expect(dead_code, reason = "macOS containers only")
-    )]
+    #[cfg(target_os = "macos")]
     data_home: PathBuf,
     /// Where `tilo-launcher` is looked for, in order.
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(dead_code, reason = "Linux launcher only")
-    )]
+    #[cfg(target_os = "linux")]
     launcher_candidates: Vec<PathBuf>,
     launched: Arc<Launched>,
     /// Who may capture from which device, in `state/device-grants` of the
@@ -81,11 +75,18 @@ impl Apps {
         data_home: PathBuf,
         launcher_candidates: Vec<PathBuf>,
     ) -> Self {
+        // Each place only matters on the platform whose launch path reads it.
+        #[cfg(not(target_os = "macos"))]
+        drop(data_home);
+        #[cfg(not(target_os = "linux"))]
+        drop(launcher_candidates);
         Self {
             catalog,
             room: room.to_owned(),
             root: profile.to_path_buf(),
+            #[cfg(target_os = "macos")]
             data_home,
+            #[cfg(target_os = "linux")]
             launcher_candidates,
             launched: Arc::default(),
             #[cfg(target_os = "macos")]
@@ -442,7 +443,7 @@ fn data_home(home: &Path) -> PathBuf {
 /// sandbox.
 fn launcher_candidates() -> Vec<PathBuf> {
     let mut out = Vec::new();
-    if launcher::dev_env::DEV_ENV_OVERRIDES
+    if package_store::dev_env::DEV_ENV_OVERRIDES
         && let Some(explicit) = std::env::var_os("TILO_LAUNCHER_BIN").filter(|v| !v.is_empty())
     {
         out.push(PathBuf::from(explicit));

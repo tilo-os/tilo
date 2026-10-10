@@ -53,8 +53,16 @@ entry; private drafts and captured context are not added to this index.
 `read-feedback-receipt` uses Chat's registered semantic reader over the canonical
 record at the SDK's stamped committed heads. The request binds to the published
 report resource and accepts no caller-selected heads, destination or source.
+`read-feedback-status` uses the same canonical basis and View permission to
+return that receipt-shaped identity plus the latest 128 attributed triage entries.
+Concurrent histories can exceed the per-writer limit; `earlierEntries` explicitly
+counts older entries omitted from this bounded status read. It preserves
+status changes, duplicate targets and typed task references without creating a
+task or granting access to one. The SDK supplies the actual source record stamp;
+a returning participant can read this history after reconnecting. As with the
+receipt projection, the returned JSON alone is not a durability witness.
 
-## Host integration still required
+## Host integration
 
 The SDK provides `feedback_composer::prepare`, a real shared resource component
 with the same semantic actions as its themed, localized controls. It always
@@ -83,8 +91,58 @@ wake pump; their launch configuration cannot supply a destination or adapter.
 Pending private writes schedule a storage wake independently of draft records;
 awaiting a destination receipt does not schedule automatic transport retries.
 An unconfigured entry refuses review/send rather than choosing a public room.
-The production startup still needs to install its authenticated adapter and
-admitted destination; the source acceptance uses isolated private fixtures.
+The relay supplies read-only feedback admission and acknowledgment on its existing
+`RemoteActionFrame` transport. `RelayRecordsLink` carries the existing certified
+caller and governor Read policy into `RoomActions`; it uses
+`Rooms::resource_view_document` and the retained store, never the app worker's
+cache as durability evidence. Selected manifests, files and directory ancestry
+must pass durability barriers. Registered Chat projection runs in a confined
+worker; only the purpose-specific receipt digest reaches the existing owner
+signer. `read-feedback-destination` confirms an existing text channel and
+`read-feedback-receipt` can require the exact attributed reporter root. A
+signed acknowledgment binds the owner, reporter, destination, publication verb,
+submission identity and approved digest. Screenshot receipts remain refused
+until an actual owner content store supplies a durable content witness.
+
+The browser's existing `CertifiedPeer.configureFeedback({room, provider, channel})`
+selects a destination before desktop mounting. `WasmPeer` requests admission from
+its connected host, matches both roots/devices against retained certificates,
+requires actual current role/capabilities, and installs the trusted Rust startup
+custody. The helper waits for this acknowledgment and never joins another room.
+Sending queues the registered ClientLocal action on the existing Chat record and
+uses the peer's ordinary Write publication. It does not invoke a document write
+on the host as another person. Receipt requests are bounded and retries preserve
+the approved submission identity; loss of session admission or stale policy fails
+closed. Description-only capture is the production default.
+
+Live configuration must name the already-authorized room UUID, exact provider
+`record:so.tilo.chat:` and text channel ID, and select the already-certified
+reporter's root/device. These values are not present in the public demo's verified
+configuration. No destination, enrollment or grant is created by this feature.
+Native startup reads optional `feedback-destination.json` under the existing
+`org.tilo.Shell/apps` private profile. Its closed JSON contains only `room`,
+`provider` and `channel`; it contains no role, capability, identity or key. Missing
+configuration leaves feedback unconfigured. The compositor binds this selection
+to its original `ShellNetwork`. `feedback_custody` reads the committed enrolled
+room's governor and checks current selected reporter custody without a legacy
+identity fallback. The correlated owner response supplies admission; every use
+also compares current native role and capabilities, so a stale answer cannot
+survive policy change, revocation, selection change or an uncertain owner.
+
+The producer calls `InProcessApps::install_feedback_startup` and retains the
+private outbox. Its Chat publisher opens the existing record inside the
+original SDK committed-read bridge and invokes the registered local
+`submit-feedback` door as the original application person. The ordinary native
+broker model pump commits and publishes the edit without painting or pixels;
+no direct peer snapshot or replacement network bypasses that custody. Its
+presentation remains ephemeral inside the original checked namespace, so model
+service teardown cannot replace the user's saved Chat window view. Startup cannot
+create a missing Chat record. Cold restart requires fresh owner admission and
+current selected custody again.
+`NoCapture` remains mandatory until a durable screenshot content witness exists.
+Source qualification does not establish deployed native or browser acceptance.
+Tests use isolated certified sessions, the real native broker and retained storage,
+including cold application and owner restarts.
 
 A host must supply its existing durable profile store, an admitted
 `Destination { room, provider, channel }`, authenticated action transport,
@@ -122,7 +180,10 @@ service's existing host-person invocation policy. A browser's existing
 ClientLocal Chat action still submits through its certified participant and
 normal peer publication. The signed HTTPS fixture retries one reviewed payload,
 checks opted-in personal context redaction and current/stale source revisions,
-reads a retained receipt and confirms that an unpublished local-only report
+reads a retained receipt, resumes an approved mutation after disconnecting before
+publication, retries that same identity once, and reads its attributed triage
+through the public status action after restarting the host. It also confirms
+that an unpublished local-only report
 cannot return a receipt. Host-side document actions retain their existing peer
 publication limitation: publish/local cache completion alone is not a durable
 commit acknowledgment. A separate writer correction requires qualification.
@@ -154,6 +215,68 @@ publishing, changing access policy or connecting personal resources/accounts.
 
 ## Focused verification
 
+### Authenticated startup and canonical acknowledgments
+
+`tilo_desktop::feedback::transport` supplies the production adapter and owner
+receipt primitive. Enrollment is a non-deserializable host input containing the
+already-admitted destination, certified owner and reporter `Caller`s, current
+permission context and actual publication requirement. Every send and receipt
+rechecks that admission. Browser Splice still requires Write; a Comment action
+does not supply it. Missing roles, changed routes and restricted actions refuse.
+Read-only admission can confirm a previously durable report through its exact
+receipt reader; it cannot resend the report or perform new publication.
+
+`SessionTransport` bridges existing session IO: queue the registered
+`submit-feedback` action with the retained provider and reporter, then read a
+bounded `SignedReceipt` from the pinned canonical owner. A dispatch acceptance,
+ordinary receipt projection or caller-supplied JSON cannot confirm delivery.
+The profile stores the destination, owner/reporter public identities and
+publication requirement under exclusive custody before transport can run. A
+restart restores the same approved outbox; another owner/device/route cannot
+silently adopt it. No capability or private signing key is persisted here.
+
+The owner constructs `CanonicalDestination` with its exact retained
+`CanonicalRecord`, `chat::feedback::canonical_feedback_projection` and existing
+purpose-specific `ReceiptSigner` service. It checks current canonical Saved
+status, record namespace, submission digest and attributed reporter before
+asking that service to sign. It checks current status/content and signer again
+after the callback. Signing requests are opaque and only this validated path
+creates them; private keys stay in the signing service. The versioned domain
+`tilo-feedback-canonical-receipt-v1` binds the destination, owner, reporter,
+publication class and receipt. Clients verify the pinned owner device signature
+and exact approved ID/digest/destination before confirming the outbox.
+
+Native startup consumes this custody through
+`InProcessApps::install_feedback_startup(authenticated_reporter, startup)`;
+another profile person/device and replacement are refused. The browser's Rust
+host hook `register_feedback_startup(peer, startup)` requires an existing
+certified peer, rejects replacement and is consumed by actual desktop mounting.
+Peer close retires unused custody. URL/JSON launch options have no authority
+fields. `NoCapture` explicitly supports description-only review until a qualified
+focused-surface capture/context adapter is supplied; opt-in capture then refuses.
+The canonical service refuses screenshot-bearing acknowledgments until a durable
+content witness is integrated; Saved report metadata alone cannot confirm an
+attachment.
+
+These are source hooks, not an enabled public guest endpoint. The current
+`RoomRecordsLink::view_document`/`RelayRecordsLink` interface carries verified
+source bytes and a revision, not a canonical Saved witness or signed feedback
+acknowledgment. The enrolled runtime must bind its existing action IO and serve
+`CanonicalDestination::receipt` through that owner's authenticated service;
+the browser bootstrap must register the resulting Rust startup custody. Do not
+reinterpret the current semantic-read projection as this service, inject role
+claims from public config, broaden host-person invocation policy or grant Write
+to make guest Splice pass. Live acceptance still needs the actual existing
+destination, permitted reporter role and this owner-service binding.
+
+The adapter's headless fixture dispatches the real Chat action, persists through
+filesystem-backed canonical/profile stores, loses its reply, retries the same
+reviewed payload across separate owner processes and reads one attributed
+durable report after another restart. Negative cases cover owner/reporter
+substitution, unsigned/projection acknowledgments, current undurable edits,
+destination restrictions, role loss and startup replacement. This is source
+qualification, not public guest or attachment-delivery qualification.
+
 Run with the configured cargo drop-in:
 
 ```sh
@@ -161,9 +284,10 @@ cargo test --locked -p tilo-feedback-review --lib
 cargo test --locked -p tilo-feedback --lib
 cargo test --locked -p tilo-app --lib feedback_composer::tests
 cargo test --locked -p shell --lib shell::in_process::feedback_tests::
+cargo test --locked -p tilo-desktop --lib feedback::transport::tests::
 cargo check --locked -p tilo-browser-runtime --target wasm32-unknown-unknown
 cargo test --locked -p chat --lib feedback::
-cargo clippy --locked -p tilo-feedback -p chat --all-targets -- -D warnings
+cargo clippy --locked -p tilo-feedback -p tilo-desktop -p chat --all-targets -- -D warnings
 cargo check --locked -p shell --tests
 ```
 

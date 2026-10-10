@@ -24,11 +24,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -36,6 +32,7 @@
 
 pub mod agent_transport;
 pub mod local_socket;
+pub mod pending_connection;
 pub mod process_binding;
 pub mod service_socket;
 pub mod tools;
@@ -394,6 +391,8 @@ mod tests {
 
 #[cfg(unix)]
 pub mod fd_transport;
+
+pub mod editor;
 
 #[cfg(all(unix, feature = "rpc"))]
 mod shared;

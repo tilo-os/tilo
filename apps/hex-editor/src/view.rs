@@ -35,9 +35,10 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::mpsc::TryRecvError;
 use ui::time::Instant;
+use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
@@ -866,31 +867,14 @@ impl Widget for HexView {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.layout_theme = theme.clone();
-        // `new_leaf` on a freshly created tree never fails.
-        #[allow(clippy::unwrap_used, reason = "new_leaf on a fresh tree cannot fail")]
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.fill_leaf(node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let Ok(l) = taffy.layout(node) else {
             return;
         };
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = ui::widget::placed(l, origin);
         self.relayout_now();
     }
 
@@ -1754,26 +1738,7 @@ mod tests {
 
     /// Send `event` to `view` the way the host does.
     fn send(view: &mut HexView, event: &WindowEvent) -> bool {
-        let mut doc = automerge::AutoCommit::new();
-        let root = automerge::ROOT;
-        let mut taffy = TaffyTree::<()>::new();
-        let node = taffy.new_leaf(Style::default()).unwrap();
-        let mods = winit::event::Modifiers::default();
-        let (mut handled, mut focus) = (false, None);
-        view.handle_event(
-            event,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &mods,
-                state: ui::widget::Edits::lend(&mut doc),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-        handled
+        ui::testing::dispatch(view, event)
     }
 
     /// Move the pointer to the middle of `rect` and click.

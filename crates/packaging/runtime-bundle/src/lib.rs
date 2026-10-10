@@ -13,17 +13,15 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
 )]
 
 pub mod component_pins;
+pub mod gc;
+pub mod verity;
 
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use std::collections::{BTreeMap, BTreeSet};
@@ -39,6 +37,10 @@ pub const BUNDLE_MANIFEST_FILENAME: &str = "bundle.toml";
 
 /// Domain-separation prefix for the bundle-signing preimage; bumped only on a wire-breaking change.
 pub const BUNDLE_SIGNING_DOMAIN: &[u8] = b"tilo-runtime-bundle-v1\0";
+
+/// Domain-separation prefix for the preimage of a bundle's fs-verity
+/// signature ([`BundleManifest::verity_signature_hex`]).
+pub const VERITY_SIGNING_DOMAIN: &[u8] = b"tilo-runtime-bundle-verity-v1\0";
 
 /// Domain-separation prefix of a runtime build's ABI digest.
 pub const ABI_DIGEST_DOMAIN: &[u8] = b"tilo-runtime-abi-v1\0";
@@ -106,6 +108,13 @@ pub struct BundleManifest {
     /// Optional Ed25519 signature over `blake3(DOMAIN || version || root_hash)`, hex-encoded (128 chars); present iff signed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signature_hex: Option<String>,
+    /// The same publisher's Ed25519 signature over [`verity_signing_preimage`]:
+    /// the version, the root hash and every file's [`BundleFile::verity`]
+    /// digest. A separate signature, so the root hash, the runtime's ABI
+    /// digest and the signature older launchers check are unchanged by it.
+    /// Absent on unsigned bundles and on bundles built before fs-verity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verity_signature_hex: Option<String>,
 }
 
 /// One `(payload-relative-path, hash)` entry.
@@ -117,6 +126,12 @@ pub struct BundleFile {
     pub hash: String,
     /// Size in bytes.
     pub size: u64,
+    /// The file's fs-verity digest (SHA-256, 4 KiB blocks, no salt; see
+    /// [`verity`]), hex. Covered by [`BundleManifest::verity_signature_hex`];
+    /// a launch that measures this digest on a verity-enabled file trusts
+    /// the file without reading it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verity: Option<String>,
 }
 
 /// Errors produced by the builder + verifier.
@@ -156,6 +171,8 @@ pub enum BundleError {
     NotSigned,
     #[error("bundle signature does not verify against embedded publisher")]
     BadSignature,
+    #[error("bundle fs-verity signature does not verify against embedded publisher")]
+    BadVeritySignature,
     #[error("bundle publisher {actual} does not match required {required}")]
     PublisherMismatch { required: String, actual: String },
     #[error("bundle arch {actual:?} does not match host arch {host:?}")]
@@ -276,10 +293,6 @@ pub const HOST_MINIMAL_PATHS_AARCH64: &[&str] = &[
     "/lib/aarch64-linux-gnu/libutil.so.1",
 ];
 
-/// Legacy alias for [`HOST_MINIMAL_PATHS_X86_64`]; new code should use [`host_minimal_paths_for`].
-#[deprecated(note = "use host_minimal_paths_for(arch) — HOST_MINIMAL_PATHS is x86_64-only")]
-pub const HOST_MINIMAL_PATHS: &[&str] = HOST_MINIMAL_PATHS_X86_64;
-
 /// Optional `/etc/ld.so.cache` — loader falls back to a slower search without it; include when present.
 pub const HOST_LD_SO_CACHE: &str = "/etc/ld.so.cache";
 
@@ -318,7 +331,7 @@ pub fn bundle_root_from(root_override: Option<std::ffi::OsString>) -> Result<Pat
     {
         return Ok(PathBuf::from(dir));
     }
-    Ok(xdg_paths::data_dir()
+    Ok(tilo_paths::data_dir()
         .ok_or(BundleError::NoDataDir)?
         .join("tilo-runtime"))
 }
@@ -355,20 +368,6 @@ pub fn system_bundle_path(version: &str) -> PathBuf {
 /// The image's list of runtime publishers the launcher accepts: one hex
 /// Ed25519 key per line, `#` comments.
 pub const TRUSTED_PUBLISHERS_FILE: &str = "/etc/tilo/runtime-bundle-trusted-publishers.txt";
-
-/// Read a trusted-publisher list, ignoring blank and `#` lines; `None` when
-/// the file is absent or unreadable.
-#[must_use]
-pub fn load_trusted_publishers(path: &Path) -> Option<Vec<String>> {
-    let text = fs::read_to_string(path).ok()?;
-    Some(
-        text.lines()
-            .map(str::trim)
-            .filter(|line| !line.is_empty() && !line.starts_with('#'))
-            .map(str::to_ascii_lowercase)
-            .collect(),
-    )
-}
 
 /// Walk the search path and return the first existing bundle dir with a `bundle.toml` (per-user, then system).
 pub fn resolve_bundle_path(version: &str) -> Option<PathBuf> {
@@ -481,6 +480,32 @@ pub fn signing_preimage(version: &str, root_hash_hex: &str) -> [u8; 32] {
     hasher.update(BUNDLE_SIGNING_DOMAIN);
     hasher.update(version.as_bytes());
     hasher.update(root_hash_hex.as_bytes());
+    *hasher.finalize().as_bytes()
+}
+
+/// Preimage of [`BundleManifest::verity_signature_hex`]:
+/// `blake3(VERITY_DOMAIN || version || 0 || root_hash || 0 || lines)`, where
+/// `lines` is `<path>\t<verity>\n` for every file with a digest, sorted by
+/// path. Payload paths hold no control characters, so the lines parse one way.
+pub fn verity_signing_preimage(
+    version: &str,
+    root_hash_hex: &str,
+    files: &[BundleFile],
+) -> [u8; 32] {
+    let mut sorted: Vec<&BundleFile> = files.iter().filter(|f| f.verity.is_some()).collect();
+    sorted.sort_by(|a, b| a.path.cmp(&b.path));
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(VERITY_SIGNING_DOMAIN);
+    hasher.update(version.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(root_hash_hex.as_bytes());
+    hasher.update(b"\0");
+    for file in sorted {
+        hasher.update(file.path.as_bytes());
+        hasher.update(b"\t");
+        hasher.update(file.verity.as_deref().unwrap_or_default().as_bytes());
+        hasher.update(b"\n");
+    }
     *hasher.finalize().as_bytes()
 }
 
@@ -630,14 +655,15 @@ fn stage_payload(
         });
     }
 
-    // Hash payload.
+    // Hash payload: BLAKE3 for identity, fs-verity for launches.
     let mut files: Vec<BundleFile> = Vec::with_capacity(written.len());
     for (rel, abs) in &written {
-        let (hash, size) = hash_file(abs)?;
+        let digests = digest_file(abs, true)?;
         files.push(BundleFile {
             path: rel.clone(),
-            hash,
-            size,
+            hash: digests.blake3,
+            size: digests.size,
+            verity: digests.verity,
         });
     }
     files.sort_by(|a, b| a.path.cmp(&b.path));
@@ -655,19 +681,24 @@ fn seal(
     let root_hash = compute_root_hash(&files);
 
     // Optional signing.
-    let (publisher_hex, signature_hex) = match identity {
+    let (publisher_hex, signature_hex, verity_signature_hex) = match identity {
         Some(id_path) => {
             use ed25519_dalek::Signer;
 
             let identity = Identity::load(id_path)?;
             let preimage = signing_preimage(&version, &root_hash);
             let sig = identity.signing_key.sign(&preimage);
+            let verity_sig = files.iter().any(|f| f.verity.is_some()).then(|| {
+                let preimage = verity_signing_preimage(&version, &root_hash, &files);
+                hex::encode(identity.signing_key.sign(&preimage).to_bytes())
+            });
             (
                 Some(identity.public_key_hex()),
                 Some(hex::encode(sig.to_bytes())),
+                verity_sig,
             )
         }
-        None => (None, None),
+        None => (None, None, None),
     };
 
     let manifest = BundleManifest {
@@ -678,6 +709,7 @@ fn seal(
         produced_at: produced_at()?,
         publisher_hex,
         signature_hex,
+        verity_signature_hex,
     };
 
     // Persist bundle.toml.
@@ -739,13 +771,79 @@ pub fn verify_bundle_with(
     root: &Path,
     opts: &VerifyOptions,
 ) -> Result<BundleManifest, BundleError> {
-    verify_bundle_impl(root, opts, true)
+    verify_bundle_impl(root, opts, PayloadMode::Hash).map(|(manifest, _)| manifest)
+}
+
+/// How a verification established the payload bytes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PayloadCheck {
+    /// Files accepted by their kernel-measured fs-verity digest, unread.
+    pub by_verity: usize,
+    /// Files whose bytes were read and BLAKE3-hashed.
+    pub hashed: usize,
+    /// Payload bytes read to hash them.
+    pub hashed_bytes: u64,
+}
+
+/// [`verify_bundle_with`] for the launch path: the same checks and the same
+/// guarantee that every payload byte is the signed byte, without reading
+/// the files fs-verity already vouches for.
+///
+/// A file is accepted unread only when the manifest's
+/// [`BundleManifest::verity_signature_hex`] verifies against the bundle's
+/// publisher, the file has fs-verity enabled, and the kernel's measured
+/// digest equals the signed [`BundleFile::verity`]. fs-verity makes such a
+/// file's contents immutable and checks every page read against the
+/// measured tree, so equal digests mean equal bytes for as long as the file
+/// exists. Every other file (no digest in the manifest, no fs-verity on the
+/// filesystem, a digest that differs) is BLAKE3-hashed as
+/// [`verify_bundle_with`] does, so this never accepts a byte the full
+/// verification would refuse.
+///
+/// # Errors
+///
+/// Everything [`verify_bundle_with`] returns, plus
+/// [`BundleError::BadVeritySignature`] for a verity signature that does not
+/// verify.
+pub fn verify_bundle_verity_with(
+    root: &Path,
+    opts: &VerifyOptions,
+) -> Result<(BundleManifest, PayloadCheck), BundleError> {
+    verify_bundle_impl(root, opts, PayloadMode::Verity)
+}
+
+/// Enable fs-verity on every payload file of the bundle at `root` that
+/// `manifest` gives a digest, so [`verify_bundle_verity_with`] can trust it
+/// unread. Enabling makes the file immutable and has the kernel read it once
+/// to build its Merkle tree. Call it after a full verification: it does not
+/// check the bytes itself (a file whose bytes differ measures a different
+/// digest and is hashed at launch, then refused).
+///
+/// # Errors
+///
+/// The first file the kernel refuses: `ErrorKind::Unsupported` where the
+/// filesystem has no fs-verity (launches then hash the payload as before), or
+/// `InvalidInput` for a manifest path that leaves the bundle.
+pub fn enable_bundle_verity(root: &Path, manifest: &BundleManifest) -> std::io::Result<usize> {
+    let mut enabled = 0usize;
+    for file in manifest.files.iter().filter(|f| f.verity.is_some()) {
+        if !valid_payload_path(&file.path) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("payload path {} leaves the bundle", file.path),
+            ));
+        }
+        verity::enable(&root.join(&file.path))?;
+        enabled = enabled.saturating_add(1);
+    }
+    Ok(enabled)
 }
 
 /// Verify a bundle's signed manifest, file set and sizes without reading every
 /// payload byte. This is appropriate only when the caller independently proves
 /// the payload is immutable (the launcher uses it for root-owned system
-/// bundles). User-controlled bundles must use [`verify_bundle_with`].
+/// bundles). User-controlled bundles must use [`verify_bundle_with`] or
+/// [`verify_bundle_verity_with`].
 ///
 /// # Errors
 ///
@@ -757,14 +855,25 @@ pub fn verify_bundle_metadata_with(
     root: &Path,
     opts: &VerifyOptions,
 ) -> Result<BundleManifest, BundleError> {
-    verify_bundle_impl(root, opts, false)
+    verify_bundle_impl(root, opts, PayloadMode::Size).map(|(manifest, _)| manifest)
+}
+
+/// How [`verify_bundle_impl`] establishes each payload file.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PayloadMode {
+    /// Read and hash every byte.
+    Hash,
+    /// Compare sizes only; the caller proves immutability.
+    Size,
+    /// Trust a signed, kernel-measured fs-verity digest; hash otherwise.
+    Verity,
 }
 
 fn verify_bundle_impl(
     root: &Path,
     opts: &VerifyOptions,
-    hash_payload: bool,
-) -> Result<BundleManifest, BundleError> {
+    mode: PayloadMode,
+) -> Result<(BundleManifest, PayloadCheck), BundleError> {
     let manifest_path = root.join(BUNDLE_MANIFEST_FILENAME);
     if !manifest_path.exists() {
         return Err(BundleError::ManifestMissing {
@@ -784,6 +893,13 @@ fn verify_bundle_impl(
             host: required.to_string(),
         });
     }
+
+    // A launch checks the verity signature before it relies on any digest
+    // under it; the other modes check it last, after the signature they
+    // always checked. Every mode refuses a bad one, so the install-time
+    // verification vouches for what a launch trusts.
+    let verity_signed = mode == PayloadMode::Verity && verify_verity_signature(&manifest)?;
+    let mut check = PayloadCheck::default();
 
     // Recompute per-file hashes and compare against disk: a listed file
     // missing on disk is corruption; an unlisted file present is suspect
@@ -811,21 +927,30 @@ fn verify_bundle_impl(
                 path: expected.path.clone(),
             });
         }
-        if hash_payload {
-            let (hash, _size) = hash_file(&abs)?;
-            if hash != expected.hash {
-                return Err(BundleError::HashMismatch {
-                    expected: expected.hash.clone(),
-                    computed: hash,
-                });
-            }
-        } else {
+        let by_verity = verity_signed
+            && expected
+                .verity
+                .as_deref()
+                .is_some_and(|digest| verity_vouches(&abs, expected.size, digest));
+        if by_verity {
+            check.by_verity = check.by_verity.saturating_add(1);
+        } else if mode == PayloadMode::Size {
             let actual = abs.metadata()?.len();
             if actual != expected.size {
                 return Err(BundleError::SizeMismatch {
                     path: expected.path.clone(),
                     expected: expected.size,
                     actual,
+                });
+            }
+        } else {
+            let digests = digest_file(&abs, false)?;
+            check.hashed = check.hashed.saturating_add(1);
+            check.hashed_bytes = check.hashed_bytes.saturating_add(digests.size);
+            if digests.blake3 != expected.hash {
+                return Err(BundleError::HashMismatch {
+                    expected: expected.hash.clone(),
+                    computed: digests.blake3,
                 });
             }
         }
@@ -850,7 +975,56 @@ fn verify_bundle_impl(
     verify_abi_digest(&manifest)?;
 
     verify_manifest_signature(&manifest, opts)?;
-    Ok(manifest)
+    if mode != PayloadMode::Verity {
+        verify_verity_signature(&manifest)?;
+    }
+    Ok((manifest, check))
+}
+
+/// Whether the file at `path` is a regular file of `size` bytes whose
+/// kernel-measured fs-verity digest is `expected`. Reads no file data.
+fn verity_vouches(path: &Path, size: u64, expected: &str) -> bool {
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+    }
+    let Ok(file) = options.open(path) else {
+        return false;
+    };
+    file.metadata()
+        .is_ok_and(|meta| meta.is_file() && meta.len() == size)
+        && verity::measure(&file).is_some_and(|digest| hex::encode(digest) == expected)
+}
+
+/// Whether the manifest carries a valid fs-verity signature: `false` when it
+/// has none, an error when it has one that does not verify against the
+/// embedded publisher.
+fn verify_verity_signature(manifest: &BundleManifest) -> Result<bool, BundleError> {
+    use ed25519_dalek::Verifier;
+
+    let Some(sig_hex) = manifest.verity_signature_hex.as_deref() else {
+        return Ok(false);
+    };
+    let publisher_hex = manifest
+        .publisher_hex
+        .as_deref()
+        .ok_or(BundleError::BadVeritySignature)?;
+    let pub_bytes: [u8; 32] = decode_fixed_hex(publisher_hex, "publisher_hex")?;
+    let sig_bytes: [u8; 64] = decode_fixed_hex(sig_hex, "verity_signature_hex")?;
+    let vk = ed25519_dalek::VerifyingKey::from_bytes(&pub_bytes).map_err(|e| {
+        BundleError::SignatureFieldMalformed {
+            field: "publisher_hex",
+            reason: e.to_string(),
+        }
+    })?;
+    let sig = ed25519_dalek::Signature::from_bytes(&sig_bytes);
+    let preimage = verity_signing_preimage(&manifest.version, &manifest.root_hash, &manifest.files);
+    vk.verify(&preimage, &sig)
+        .map(|()| true)
+        .map_err(|_| BundleError::BadVeritySignature)
 }
 
 /// A version that names an ABI digest must name its own payload's: the
@@ -918,6 +1092,7 @@ fn valid_payload_path(path: &str) -> bool {
     !path.is_empty()
         && path != BUNDLE_MANIFEST_FILENAME
         && !path.contains('\\')
+        && !path.chars().any(char::is_control)
         && path
             .split('/')
             .all(|component| !component.is_empty() && component != "." && component != "..")
@@ -983,10 +1158,23 @@ fn compute_root_hash(files: &[BundleFile]) -> String {
     hasher.finalize().to_hex().to_string()
 }
 
-fn hash_file(path: &Path) -> Result<(String, u64), BundleError> {
+/// A payload file's digests.
+struct FileDigests {
+    /// BLAKE3, hex: the file's identity in the manifest and the root hash.
+    blake3: String,
+    /// fs-verity digest, hex, when asked for.
+    verity: Option<String>,
+    size: u64,
+}
+
+/// Read `path` once, BLAKE3-hashing it and, with `with_verity`, computing its
+/// fs-verity digest.
+fn digest_file(path: &Path, with_verity: bool) -> Result<FileDigests, BundleError> {
     let mut f = fs::File::open(path)?;
     let mut hasher = blake3::Hasher::new();
-    let mut buf = [0u8; 8192];
+    let mut verity = with_verity.then(verity::VerityHasher::new);
+    // Large reads let BLAKE3 hash many chunks in parallel SIMD lanes.
+    let mut buf = vec![0u8; 64 * 1024];
     let mut total = 0u64;
     loop {
         let n = f.read(&mut buf)?;
@@ -996,10 +1184,18 @@ fn hash_file(path: &Path) -> Result<(String, u64), BundleError> {
         // `Read::read` never returns more bytes than the buffer it was
         // given, so `n` is always in-bounds; `.get()` + an empty
         // fallback avoids indexing without changing behaviour.
-        hasher.update(buf.get(..n).unwrap_or_default());
+        let bytes = buf.get(..n).unwrap_or_default();
+        hasher.update(bytes);
+        if let Some(verity) = verity.as_mut() {
+            verity.update(bytes);
+        }
         total = total.saturating_add(n as u64);
     }
-    Ok((hasher.finalize().to_hex().to_string(), total))
+    Ok(FileDigests {
+        blake3: hasher.finalize().to_hex().to_string(),
+        verity: verity.map(|verity| hex::encode(verity.finalize())),
+        size: total,
+    })
 }
 
 /// Extra libs (libstd, `libruntime_dylib.so`) copy verbatim to the top of
@@ -1112,6 +1308,61 @@ fn produced_at_from(value: Result<String, std::env::VarError>) -> Result<u64, Bu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sdk_font_catalog_is_signed_and_corruption_does_not_change_a_retained_sdk() {
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let work = tempfile::tempdir().unwrap();
+        let fonts = work.path().join("fonts");
+        let prepared = std::process::Command::new("python3")
+            .arg(repo.join("tools/font-catalog.py"))
+            .arg("prepare")
+            .arg(repo.join("crates/sdk/ui-core/assets/fonts"))
+            .arg(&fonts)
+            .args(["--scope", "product"])
+            .output()
+            .unwrap();
+        assert!(
+            prepared.status.success(),
+            "{}",
+            String::from_utf8_lossy(&prepared.stderr)
+        );
+        let identity = Identity::generate();
+        let identity_path = work.path().join("identity.json");
+        fs::write(&identity_path, identity.to_json_bytes()).unwrap();
+        let bundles = work.path().join("bundles");
+        let includes = [fonts];
+        let options = BuildOptions {
+            identity: Some(&identity_path),
+            extra_libs: &includes,
+            ..Default::default()
+        };
+        let (_, held) = build_abi_bundle(&bundles, "held", &options).unwrap();
+        let (_, current) = build_abi_bundle(&bundles, "current", &options).unwrap();
+        let verification = VerifyOptions {
+            require_publisher: Some(identity.public_key_hex()),
+            require_signature: true,
+            require_arch: None,
+        };
+        let manifest = verify_bundle_with(&current, &verification).unwrap();
+        assert!(
+            manifest
+                .files
+                .iter()
+                .any(|file| file.path == "lib/fonts/manifest.toml")
+        );
+        let original = fs::read(held.join("lib/fonts/NotoSansMath-Regular.ttf")).unwrap();
+        let changed = current.join("lib/fonts/NotoSansMath-Regular.ttf");
+        let mut bytes = fs::read(&changed).unwrap();
+        bytes[0] ^= 1;
+        fs::write(changed, bytes).unwrap();
+        assert!(verify_bundle_with(&current, &verification).is_err());
+        verify_bundle_with(&held, &verification).unwrap();
+        assert_eq!(
+            fs::read(held.join("lib/fonts/NotoSansMath-Regular.ttf")).unwrap(),
+            original
+        );
+    }
 
     #[test]
     fn an_abi_bundle_is_named_by_its_payload_and_cannot_claim_another_build() {
@@ -1860,11 +2111,12 @@ mod tests {
             Err(BundleError::FileUnlisted { path }) if path == "unexpected-link"
         ));
 
-        let (hash, size) = hash_file(&out.path().join("unexpected-link")).unwrap();
+        let digests = digest_file(&out.path().join("unexpected-link"), false).unwrap();
         manifest.files.push(BundleFile {
             path: "unexpected-link".to_string(),
-            hash,
-            size,
+            hash: digests.blake3,
+            size: digests.size,
+            verity: None,
         });
         manifest.files.sort_by(|a, b| a.path.cmp(&b.path));
         manifest.root_hash = compute_root_hash(&manifest.files);

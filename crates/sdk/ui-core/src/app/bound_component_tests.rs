@@ -996,6 +996,7 @@ include!("owner_publication_tests.rs");
 include!("action_directory_snapshot_bound_tests.rs");
 include!("bound_record_sync_tests.rs");
 include!("standalone_history_record_restore_tests.rs");
+include!("shared_forest_tests.rs");
 
 #[test]
 fn background_document_job_is_broker_admitted_before_its_canonical_edit() {
@@ -1123,7 +1124,7 @@ fn bound_publication_and_cache_keep_contracts_and_id_lifetimes() {
             fixture
                 .app
                 .resolve_action_directory(&revision, &second, "follow-up"),
-            runtime_collab::ActionDirectoryResolution::Found(_)
+            runtime_collab::ActionDirectoryResolution::Found { .. }
         ));
         fixture
             .app
@@ -1294,9 +1295,18 @@ fn bound_publication_and_cache_keep_contracts_and_id_lifetimes() {
             });
         assert_eq!(second.rows.len(), 1);
         assert_ne!(first.rows[0].resource, second.rows[0].resource);
-        assert_eq!(first.rows[0].visibility_action.as_deref(), Some("view"));
         assert_eq!(
-            second.rows[0].visibility_action.as_deref(),
+            first.rows[0]
+                .visibility
+                .as_ref()
+                .map(|visibility| visibility.action.as_str()),
+            Some("view")
+        );
+        assert_eq!(
+            second.rows[0]
+                .visibility
+                .as_ref()
+                .map(|visibility| visibility.action.as_str()),
             Some("follow-up")
         );
         let eager = fixture.app.publication_resources();
@@ -2251,6 +2261,7 @@ fn bound_broker_routes_keep_the_chosen_contract_and_refuse_bad_witnesses() {
                             source_invocation: None,
                             ambient: None,
                             scope: None,
+                            route: None,
                         },
                     );
                     doc.put(ROOT, "after-nested", "A").unwrap();
@@ -2846,4 +2857,200 @@ fn owner_takeover_follows_accepted_bound_actions_and_preserves_denials() {
     assert!(!fixture.app.continuation.owner_view.following);
     assert!(fixture.app.continuation.owner_view.awaiting_claim);
     assert!(fixture.app.continuation.owner_view.pending.is_none());
+}
+
+/// Hover over bound components keeps their published snapshots (TIL-628).
+/// The dispatch lends each owner its record, which advances the owner's
+/// admission generation whether or not anything was written; a record left
+/// unwritten carries the snapshot forward, a written one never does.
+#[cfg(feature = "native")]
+#[test]
+fn bound_hover_carries_snapshots_only_across_unwritten_records() {
+    struct Surface;
+    impl crate::app::AppSurface for Surface {
+        fn scale_factor(&self) -> f64 {
+            1.0
+        }
+        fn inner_size(&self) -> winit::dpi::PhysicalSize<u32> {
+            winit::dpi::PhysicalSize::new(800, 600)
+        }
+        fn request_redraw(&self) {}
+        fn set_cursor(&self, _: CursorIcon) {}
+    }
+    let mut fixture = ActionFixture::new();
+    let resources = fixture.app.collect_resources();
+    assert!(
+        tilo_actions::door::resolve(
+            &resources,
+            &tilo_actions::ActionAddress::new("bound:probe", "view")
+        )
+        .is_some(),
+        "the bound probes publish"
+    );
+    DISCOVERY_COUNT.set(0);
+    let first = DISCOVERY_COUNT.get();
+    let generation = fixture
+        .records
+        .action_generation(&fixture.bindings[0].checkout.id)
+        .unwrap();
+    for step in 0..50 {
+        fixture.app.surface_input(
+            &Surface,
+            WindowEvent::CursorMoved {
+                device_id: winit::event::DeviceId::dummy(),
+                position: winit::dpi::PhysicalPosition::new(20.0 + f64::from(step), 20.0),
+            },
+            false,
+        );
+    }
+    assert_ne!(
+        fixture
+            .records
+            .action_generation(&fixture.bindings[0].checkout.id)
+            .unwrap(),
+        generation,
+        "hover lends the owner its record"
+    );
+    let _ = fixture.app.collect_resources();
+    assert_eq!(
+        DISCOVERY_COUNT.get(),
+        first,
+        "hover over bound components must not rediscover their resources"
+    );
+
+    let marks = |app: &App| {
+        crate::bound_dispatch::bound_owner_marks(app.root_widget.as_ref(), &app.state.doc)
+    };
+    let before = marks(&fixture.app);
+    fixture.bindings[0]
+        .with_document(&mut fixture.app.state.doc, |_, _| {})
+        .unwrap();
+    let after = marks(&fixture.app);
+    assert!(
+        fixture
+            .app
+            .actions
+            .bound_resource_cache
+            .carry_across_input(&before, &after),
+        "an unwritten loan carries the snapshot"
+    );
+    let _ = fixture.app.collect_resources();
+    assert_eq!(DISCOVERY_COUNT.get(), first);
+
+    let before = marks(&fixture.app);
+    fixture.bindings[0]
+        .with_document(&mut fixture.app.state.doc, |doc, _| {
+            doc.put(ROOT, "hovered", true).unwrap();
+        })
+        .unwrap();
+    let after = marks(&fixture.app);
+    assert!(
+        !fixture
+            .app
+            .actions
+            .bound_resource_cache
+            .carry_across_input(&before, &after),
+        "a written record is never carried"
+    );
+    let _ = fixture.app.collect_resources();
+    assert!(
+        DISCOVERY_COUNT.get() > first,
+        "the written record is rediscovered"
+    );
+}
+
+/// A frame that hands over the same component snapshot reuses what was
+/// derived from it (the controls' allowed addresses, the component's semantic
+/// nodes) instead of copying and walking the whole published tree again, and
+/// a changed snapshot or permission still produces exactly what a fresh
+/// derivation would (TIL-761).
+#[test]
+fn unchanged_component_snapshots_keep_their_controls_and_semantic_nodes() {
+    let mut fixture = ActionFixture::new();
+    let at = |fixture: &ActionFixture, time| {
+        let moved = fixture.permissions.borrow().clone().at_unix_time(time);
+        *fixture.permissions.borrow_mut() = moved;
+    };
+    let availability = |fixture: &mut ActionFixture| {
+        CONTROL_AUTHORITY.with_borrow_mut(Vec::clear);
+        fixture.app.refresh_control_action_availability();
+        CONTROL_AUTHORITY.with_borrow(Clone::clone)
+    };
+    assert_eq!(
+        availability(&mut fixture),
+        vec![(false, true), (true, true)]
+    );
+    assert_eq!(
+        availability(&mut fixture),
+        vec![(false, true), (true, true)],
+        "a reused derivation answers as the first did"
+    );
+    at(&fixture, 120);
+    assert_eq!(
+        availability(&mut fixture),
+        vec![(false, false), (true, false)],
+        "an expired grant withdraws the controls"
+    );
+    at(&fixture, 100);
+    assert_eq!(
+        availability(&mut fixture),
+        vec![(false, true), (true, true)]
+    );
+
+    fixture.app.refresh_semantic_tree();
+    let (id, _) = fixture
+        .app
+        .accessibility
+        .semantic_tree
+        .bound_actions_for_test()
+        .into_iter()
+        .find(|(_, target)| target.address.instance_id == 11)
+        .expect("a bound component action in the semantic tree");
+    let before = std::ptr::from_ref(
+        fixture
+            .app
+            .accessibility
+            .semantic_tree
+            .node(&id)
+            .expect("the component's resource node"),
+    );
+    assert!(
+        fixture.app.refresh_semantic_tree().is_empty(),
+        "nothing changed"
+    );
+    assert!(
+        std::ptr::eq(
+            before,
+            fixture
+                .app
+                .accessibility
+                .semantic_tree
+                .node(&id)
+                .expect("the component's resource node"),
+        ),
+        "an unchanged snapshot keeps its nodes rather than rebuilding them"
+    );
+
+    at(&fixture, 120);
+    assert!(
+        !fixture.app.refresh_semantic_tree().is_empty(),
+        "withdrawn actions change the tree"
+    );
+    let content = |tree: &crate::a11y_tree::SemanticTree| {
+        let mut bound = tree
+            .bound_actions_for_test()
+            .into_iter()
+            .map(|(id, target)| (id, target.address.address.action))
+            .collect::<Vec<_>>();
+        bound.sort();
+        (tree.iter().cloned().collect::<Vec<_>>(), bound, tree.len())
+    };
+    let retained = content(&fixture.app.accessibility.semantic_tree);
+    fixture.app.accessibility.semantic_tree = crate::a11y_tree::SemanticTree::new();
+    fixture.app.refresh_semantic_tree();
+    assert_eq!(
+        retained,
+        content(&fixture.app.accessibility.semantic_tree),
+        "the retained tree is the tree a fresh refresh builds"
+    );
 }

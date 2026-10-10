@@ -8,13 +8,12 @@ use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
 use crate::automerge::{AutoCommit, ObjId};
-use crate::kurbo::{Affine, Point, Rect};
+use crate::kurbo::Rect;
 use crate::taffy::{NodeId, TaffyTree};
 use crate::tilo_actions::{
     ActionBinding, ActionBindingError, ActionContract, ActionOutput, ActionParam, ActionSpec,
     DiscoveryScope, EncodedAction, ExecutionMode, OperationKind, ParamType, Resource, ResultSpec,
 };
-use crate::vello::Scene;
 use crate::widget::{ResourceOperation, ResourceOperationStart, TaffyTreeExt, Widget};
 
 /// Shared effect-operation type used by the one-resource app host.
@@ -355,75 +354,17 @@ impl Widget for ResourceActionHost {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let child = self.root.build_layout(taffy, theme, node_map);
-        let node = taffy.parent_node(
-            crate::taffy::Style {
-                size: crate::taffy::Size {
-                    width: crate::taffy::style_helpers::percent(1.0_f32),
-                    height: crate::taffy::style_helpers::percent(1.0_f32),
-                },
-                ..Default::default()
+        let style = crate::taffy::Style {
+            size: crate::taffy::Size {
+                width: crate::taffy::style_helpers::percent(1.0_f32),
+                height: crate::taffy::style_helpers::percent(1.0_f32),
             },
-            &[child],
-        );
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+            ..Default::default()
+        };
+        taffy.widget_node(style, &[child], node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x + layout.size.width),
-            origin.y + f64::from(layout.location.y + layout.size.height),
-        );
-        if let Ok(children) = taffy.children(node)
-            && let Some(child) = children.first()
-        {
-            self.root
-                .apply_layout(taffy, *child, Point::new(self.rect.x0, self.rect.y0));
-        }
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut crate::text_render::TextRenderer,
-        theme: &crate::Theme,
-        presence: &crate::presence::PresenceCtx,
-    ) {
-        self.root
-            .draw(scene, transform, text_renderer, theme, presence);
-    }
-
-    fn handle_event(
-        &mut self,
-        event: &crate::winit::event::WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
-    ) {
-        let node_id = ctx
-            .taffy
-            .children(ctx.node_id)
-            .ok()
-            .and_then(|children| children.first().copied())
-            .unwrap_or(ctx.node_id);
-        let path = ctx.path;
-        self.root
-            .handle_event(event, &mut ctx.reborrow(path, node_id));
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        vec![self.root.as_ref()]
-    }
-
-    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
-        visitor(self.root.as_ref());
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        vec![self.root.as_mut()]
-    }
+    crate::forward_to_child!(root, rect);
 
     fn is_focusable(&self) -> bool {
         self.root.is_focusable()
@@ -452,6 +393,10 @@ impl Widget for ResourceActionHost {
 
     fn ime_purpose(&self) -> Option<crate::winit::window::ImePurpose> {
         self.root.ime_purpose()
+    }
+
+    fn ime_multiline(&self) -> bool {
+        self.root.ime_multiline()
     }
 
     fn traps_focus(&self) -> bool {
@@ -555,10 +500,6 @@ impl Widget for ResourceActionHost {
 
     fn name(&self) -> &'static str {
         "ResourceActionHost"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 }
 

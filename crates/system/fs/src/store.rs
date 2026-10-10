@@ -99,21 +99,21 @@ pub enum BlobRecordLookupError {
     Namespace(#[from] LiveRecordBlobScanError),
     #[error("live record {record_id:?} manifest {manifest} is not locally available")]
     ManifestUnavailable {
-        record_id: collab_types::FileRecordId,
+        record_id: fs_protocol::FileRecordId,
         manifest: Hash,
     },
     #[error("live record {record_id:?} manifest exceeds {limit} encoded bytes")]
     ManifestTooLarge {
-        record_id: collab_types::FileRecordId,
+        record_id: fs_protocol::FileRecordId,
         limit: usize,
     },
     #[error("live record {record_id:?} has a malformed manifest")]
     MalformedManifest {
-        record_id: collab_types::FileRecordId,
+        record_id: fs_protocol::FileRecordId,
     },
     #[error("live record {record_id:?} manifest exceeds {limit} chunks")]
     TooManyChunks {
-        record_id: collab_types::FileRecordId,
+        record_id: fs_protocol::FileRecordId,
         limit: usize,
     },
 }
@@ -371,7 +371,8 @@ impl ContentStore {
         &self.files
     }
 
-    #[cfg(all(test, feature = "filesystem"))]
+    #[cfg(test)]
+    #[cfg(feature = "filesystem")]
     #[allow(clippy::unwrap_used, reason = "test fixture")]
     fn memory_with_gc_interval(gc_interval: Duration) -> Self {
         let scratch = tempfile::tempdir().unwrap();
@@ -617,6 +618,25 @@ impl ContentStore {
         }
     }
 
+    /// Make the writes just made durable now or, inside a deferred-durability
+    /// group ([`Self::defer_sync`]), leave the one sync to the group's end.
+    async fn sync_unless_deferred(&self) -> Result<()> {
+        let deferred = {
+            let mut deferred = self
+                .deferred
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if deferred.0 > 0 {
+                deferred.1 = true;
+            }
+            deferred.0 > 0
+        };
+        if !deferred {
+            self.store().sync_db().await?;
+        }
+        Ok(())
+    }
+
     async fn persist_owned(&self, data: Bytes) -> Result<Hash> {
         self.persist_owned_batch(vec![data])
             .await?
@@ -659,19 +679,7 @@ impl ContentStore {
         // in-memory backend. Inside a deferred-durability group the group's
         // end syncs once instead; the owned tags are already installed, so
         // nothing collects the blobs meanwhile.
-        let deferred = {
-            let mut deferred = self
-                .deferred
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if deferred.0 > 0 {
-                deferred.1 = true;
-            }
-            deferred.0 > 0
-        };
-        if !deferred {
-            self.store().sync_db().await?;
-        }
+        self.sync_unless_deferred().await?;
         let hashes = protected
             .iter()
             .map(|(temporary, _)| temporary.hash())
@@ -708,7 +716,7 @@ impl ContentStore {
         namespace: &Namespace,
         requested: Hash,
         limits: BlobRecordLookupLimits,
-    ) -> std::result::Result<Vec<collab_types::FileRecordId>, BlobRecordLookupError> {
+    ) -> std::result::Result<Vec<fs_protocol::FileRecordId>, BlobRecordLookupError> {
         if limits.max_manifest_bytes == 0
             || limits.max_manifest_bytes > MAX_BLOB_LOOKUP_MANIFEST_BYTES
             || limits.max_chunks_per_record == 0
@@ -729,7 +737,7 @@ impl ContentStore {
         roots: Vec<LiveRecordBlobRoots>,
         requested: Hash,
         limits: BlobRecordLookupLimits,
-    ) -> std::result::Result<Vec<collab_types::FileRecordId>, BlobRecordLookupError> {
+    ) -> std::result::Result<Vec<fs_protocol::FileRecordId>, BlobRecordLookupError> {
         if limits.max_manifest_bytes == 0
             || limits.max_manifest_bytes > MAX_BLOB_LOOKUP_MANIFEST_BYTES
             || limits.max_chunks_per_record == 0
@@ -791,8 +799,8 @@ impl ContentStore {
     #[cfg(feature = "filesystem")]
     pub async fn inspect_version_payload(
         &self,
-        record_id: collab_types::FileRecordId,
-        version_id: collab_types::FileVersionId,
+        record_id: fs_protocol::FileRecordId,
+        version_id: fs_protocol::FileVersionId,
         manifest_hash: Hash,
     ) -> Result<VersionPayload> {
         let manifest_bytes = self
@@ -837,7 +845,7 @@ impl ContentStore {
     #[cfg(feature = "filesystem")]
     pub async fn verify_durable_revision(
         &self,
-        revision: &collab_types::ContentRevisionV1,
+        revision: &fs_protocol::ContentRevisionV1,
     ) -> Result<()> {
         revision.validate()?;
         let Some(content_hash) = revision.content_hash else {
@@ -1306,8 +1314,8 @@ mod tests {
             let manifest_hash = store.write_content(&data).await.unwrap().unwrap();
             let payload = store
                 .inspect_version_payload(
-                    collab_types::FileRecordId::new(),
-                    collab_types::FileVersionId::new(),
+                    fs_protocol::FileRecordId::new(),
+                    fs_protocol::FileVersionId::new(),
                     manifest_hash,
                 )
                 .await
@@ -1341,13 +1349,13 @@ mod tests {
                 }],
             );
             let manifest_hash = store.ingest(Bytes::from(manifest.encode())).await.unwrap();
-            let revision = collab_types::ContentRevisionV1 {
-                schema_version: collab_types::CONTENT_REVISION_VERSION,
-                record_id: collab_types::FileRecordId::new(),
-                version_id: collab_types::FileVersionId::new(),
-                content_hash: Some(collab_types::ContentHash(*manifest_hash.as_bytes())),
+            let revision = fs_protocol::ContentRevisionV1 {
+                schema_version: fs_protocol::CONTENT_REVISION_VERSION,
+                record_id: fs_protocol::FileRecordId::new(),
+                version_id: fs_protocol::FileVersionId::new(),
+                content_hash: Some(fs_protocol::ContentHash(*manifest_hash.as_bytes())),
                 byte_len: 13,
-                metadata_hash: collab_types::ContentHash([1; 32]),
+                metadata_hash: fs_protocol::ContentHash([1; 32]),
             };
             assert!(store.verify_durable_revision(&revision).await.is_err());
         }
@@ -1358,8 +1366,8 @@ mod tests {
             let store = ContentStore::memory();
             let hash = store.ingest(Bytes::from_static(b"keep me")).await.unwrap();
             let plan = EvictionPlan {
-                record_id: collab_types::FileRecordId::new(),
-                version_id: collab_types::FileVersionId::new(),
+                record_id: fs_protocol::FileRecordId::new(),
+                version_id: fs_protocol::FileVersionId::new(),
                 mode: EvictionMode::DestructiveOverride,
                 reclaimable: vec![BlobExtent {
                     hash,
@@ -1396,8 +1404,8 @@ mod tests {
             let mut queue = EvictionQueue::open(temp.path().join("evictions.json")).unwrap();
 
             let make_plan = |hash| EvictionPlan {
-                record_id: collab_types::FileRecordId::new(),
-                version_id: collab_types::FileVersionId::new(),
+                record_id: fs_protocol::FileRecordId::new(),
+                version_id: fs_protocol::FileVersionId::new(),
                 mode: EvictionMode::Safe,
                 reclaimable: vec![BlobExtent {
                     hash,
@@ -1472,10 +1480,10 @@ mod tests {
                 .await
                 .unwrap();
 
-            let target_id = collab_types::FileRecordId::new();
-            let target_version = collab_types::FileVersionId::new();
-            let other_id = collab_types::FileRecordId::new();
-            let other_version = collab_types::FileVersionId::new();
+            let target_id = fs_protocol::FileRecordId::new();
+            let target_version = fs_protocol::FileVersionId::new();
+            let other_id = fs_protocol::FileRecordId::new();
+            let other_version = fs_protocol::FileVersionId::new();
             let mut registry =
                 AvailabilityRegistry::open(temp.path().join("availability.json")).unwrap();
             let mut target = RecordAvailability::new(target_id, RecordKind::File);
@@ -1614,10 +1622,10 @@ mod tests {
                 .ingest(Bytes::from_static(b"other root"))
                 .await
                 .unwrap();
-            let target_id = collab_types::FileRecordId::new();
-            let target_version = collab_types::FileVersionId::new();
-            let other_id = collab_types::FileRecordId::new();
-            let other_version = collab_types::FileVersionId::new();
+            let target_id = fs_protocol::FileRecordId::new();
+            let target_version = fs_protocol::FileVersionId::new();
+            let other_id = fs_protocol::FileRecordId::new();
+            let other_version = fs_protocol::FileVersionId::new();
             let mut registry =
                 AvailabilityRegistry::open(temp.path().join("availability.json")).unwrap();
             let mut target = RecordAvailability::new(target_id, RecordKind::File);
@@ -1713,8 +1721,8 @@ mod tests {
                 .await
                 .unwrap();
 
-            let record_id = collab_types::FileRecordId::new();
-            let version_id = collab_types::FileVersionId::new();
+            let record_id = fs_protocol::FileRecordId::new();
+            let version_id = fs_protocol::FileVersionId::new();
             let mut registry =
                 AvailabilityRegistry::open(temp.path().join("availability.json")).unwrap();
             let mut record = RecordAvailability::new(record_id, RecordKind::File);

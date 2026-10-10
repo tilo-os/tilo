@@ -16,54 +16,21 @@
 use crate::framework_support::{add_note, notes, open, send as dispatch, surface};
 use ui::widget::BlockKind;
 use winit::event::{ElementState, MouseButton, WindowEvent};
-use winit::keyboard::{Key, NamedKey, SmolStr};
+use winit::keyboard::NamedKey;
 
-fn cursor_moved(x: f64, y: f64) -> WindowEvent {
-    WindowEvent::CursorMoved {
-        device_id: unsafe { std::mem::zeroed() },
-        position: winit::dpi::PhysicalPosition::new(x, y),
-    }
-}
+use ui::synthetic_input::cursor_moved;
 
 fn mouse(state: ElementState) -> WindowEvent {
     WindowEvent::MouseInput {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         state,
         button: MouseButton::Left,
     }
 }
 
-fn char_key(s: &str) -> WindowEvent {
-    let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-    ev.logical_key = Key::Character(SmolStr::new(s));
-    ev.physical_key =
-        winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-    ev.location = winit::keyboard::KeyLocation::Standard;
-    ev.state = ElementState::Pressed;
-    ev.repeat = false;
-    ev.text = Some(SmolStr::new(s));
-    WindowEvent::KeyboardInput {
-        device_id: unsafe { std::mem::zeroed() },
-        event: ev,
-        is_synthetic: false,
-    }
-}
+use ui::synthetic_input::char_key;
 
-fn named_key(key: NamedKey) -> WindowEvent {
-    let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-    ev.logical_key = Key::Named(key);
-    ev.physical_key =
-        winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-    ev.location = winit::keyboard::KeyLocation::Standard;
-    ev.state = ElementState::Pressed;
-    ev.repeat = false;
-    ev.text = None;
-    WindowEvent::KeyboardInput {
-        device_id: unsafe { std::mem::zeroed() },
-        event: ev,
-        is_synthetic: false,
-    }
-}
+use ui::synthetic_input::named_key;
 
 #[test]
 fn slash_menu_owns_arrow_and_enter_keys() {
@@ -99,7 +66,7 @@ fn slash_menu_owns_arrow_and_enter_keys() {
                 .main_panel_mut()
                 .editor()
                 .slash_menu()
-                .highlighted_kind()
+                .highlighted()
                 .cloned()),
             Some(BlockKind::Paragraph),
             "the menu starts on the first row"
@@ -117,7 +84,7 @@ fn slash_menu_owns_arrow_and_enter_keys() {
                 .main_panel_mut()
                 .editor()
                 .slash_menu()
-                .highlighted_kind()
+                .highlighted()
                 .cloned()),
             Some(BlockKind::Heading(1)),
             "ArrowDown advances the block-menu highlight"

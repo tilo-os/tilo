@@ -34,19 +34,50 @@ pub trait ServiceAuthority: Send + Sync {
     /// Refuses retired original authority.
     fn check(&self) -> io::Result<()>;
 }
+/// How often a running service's supervisor re-checks [`ServiceAuthority`]
+/// and the host lifetime of [`ServiceCancellation::for_owner`]. Neither can
+/// ring the supervisor when it changes, so this bounds how long a retired
+/// grant or host keeps the service running. An explicit
+/// [`ServiceCancellation::cancel`] (and so every consent revocation built on
+/// it) wakes the supervisor at once. The previous 10 ms poll woke the host
+/// 100 times a second for a session-long service.
+const AUTHORITY_RECHECK: Duration = Duration::from_millis(250);
+/// SIGTERM grace before the private namespace init is killed.
+const STOP_GRACE: Duration = Duration::from_secs(3);
+#[derive(Default)]
+struct CancelState {
+    cancelled: AtomicBool,
+    /// Supervisors to ring on [`ServiceCancellation::cancel`]; dead entries
+    /// are pruned whenever another supervisor subscribes.
+    waiters: Mutex<Vec<std::sync::Weak<bounded_command::WakeFd>>>,
+}
 #[derive(Clone, Default)]
 pub struct ServiceCancellation {
-    cancelled: Arc<AtomicBool>,
+    state: Arc<CancelState>,
     owner: Option<std::sync::Weak<()>>,
     parent: Option<Arc<Self>>,
 }
 impl ServiceCancellation {
     pub fn cancel(&self) {
-        self.cancelled.store(true, Ordering::Release);
+        self.state.cancelled.store(true, Ordering::Release);
+        let waiters = self
+            .state
+            .waiters
+            .lock()
+            .map(|waiters| {
+                waiters
+                    .iter()
+                    .filter_map(std::sync::Weak::upgrade)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        for waiter in waiters {
+            waiter.ring();
+        }
     }
     pub fn for_owner(owner: std::sync::Weak<()>) -> Self {
         Self {
-            cancelled: Arc::default(),
+            state: Arc::default(),
             owner: Some(owner),
             parent: None,
         }
@@ -54,13 +85,24 @@ impl ServiceCancellation {
     #[must_use]
     pub fn child(&self) -> Self {
         Self {
-            cancelled: Arc::default(),
+            state: Arc::default(),
             owner: self.owner.clone(),
             parent: Some(Arc::new(self.clone())),
         }
     }
+    /// Ring `wake` when this cancellation or any parent is cancelled. Check
+    /// [`Self::is_cancelled`] after subscribing so no cancel is missed.
+    fn subscribe(&self, wake: &Arc<bounded_command::WakeFd>) {
+        if let Ok(mut waiters) = self.state.waiters.lock() {
+            waiters.retain(|waiter| waiter.strong_count() > 0);
+            waiters.push(Arc::downgrade(wake));
+        }
+        if let Some(parent) = &self.parent {
+            parent.subscribe(wake);
+        }
+    }
     pub fn is_cancelled(&self) -> bool {
-        self.cancelled.load(Ordering::Acquire)
+        self.state.cancelled.load(Ordering::Acquire)
             || self
                 .parent
                 .as_ref()
@@ -382,26 +424,48 @@ impl EnrolledProcessObserver for NamespaceOwner {
                 cancellation: self.cancellation.clone(),
             })?;
         }
+        // Sleep on the outer child's exit and on cancellation; wake on a
+        // timer only to re-check what cannot ring (AUTHORITY_RECHECK).
+        let wake = Arc::new(bounded_command::WakeFd::new()?);
+        self.cancellation.subscribe(&wake);
         let mut stopping = None;
         let mut forced = false;
+        // The first wait only probes: the checks below run at once.
+        let mut recheck = Instant::now();
         loop {
-            if let Some(status) = owned.child.try_wait()? {
-                let init = owned.init.as_ref().ok_or(io::ErrorKind::InvalidData)?;
-                if status.success() && !forced && exited(init)? {
-                    self.quiescent.store(true, Ordering::Release);
-                    owned.init.take();
+            let (ring, deadline) = match stopping {
+                None => (Some(wake.fd()), Some(recheck)),
+                Some(grace) if !forced => (None, Some(grace)),
+                // Killed: nothing is left to do but observe the exit.
+                Some(_) => (None, None),
+            };
+            match bounded_command::wait_child_or(&mut owned.child, ring, deadline)? {
+                bounded_command::Wakeup::Exited(status) => {
+                    let init = owned.init.as_ref().ok_or(io::ErrorKind::InvalidData)?;
+                    if status.success() && !forced && exited(init)? {
+                        self.quiescent.store(true, Ordering::Release);
+                        owned.init.take();
+                    }
+                    // An outer failure is not proof that the private namespace
+                    // stopped. Retain the init pidfd so Drop kills only that init.
+                    return Ok(status);
                 }
-                // An outer failure is not proof that the private namespace
-                // stopped. Retain the init pidfd so Drop kills only that init.
-                return Ok(status);
+                // Drain before checking, so a cancel racing the check rings again.
+                bounded_command::Wakeup::Woken => wake.drain(),
+                bounded_command::Wakeup::Deadline => {}
+            }
+            let now = Instant::now();
+            if stopping.is_none() && now >= recheck {
+                recheck = now
+                    .checked_add(AUTHORITY_RECHECK)
+                    .ok_or(io::ErrorKind::InvalidData)?;
             }
             if stopping.is_none()
                 && (self.cancellation.is_cancelled() || self.authority.check().is_err())
             {
                 owned.signal(libc::SIGTERM)?;
                 stopping = Some(
-                    Instant::now()
-                        .checked_add(Duration::from_secs(3))
+                    now.checked_add(STOP_GRACE)
                         .ok_or(io::ErrorKind::InvalidData)?,
                 );
             }
@@ -409,7 +473,6 @@ impl EnrolledProcessObserver for NamespaceOwner {
                 owned.signal(libc::SIGKILL)?;
                 forced = true;
             }
-            std::thread::sleep(Duration::from_millis(10));
         }
     }
 }
@@ -546,7 +609,10 @@ mod tests {
     struct Running {
         root: tempfile::TempDir,
         owner: Arc<NamespaceOwner>,
+        authority: Arc<Authority>,
         worker: Option<std::thread::JoinHandle<io::Result<ExitStatus>>>,
+        /// Kernel thread id of the supervising worker.
+        worker_tid: libc::pid_t,
         outer: u32,
         endpoint: ServiceEndpoint,
     }
@@ -561,9 +627,8 @@ mod tests {
         }
         fn with_cancellation(script: &str, cancellation: ServiceCancellation) -> Self {
             let root = tempfile::tempdir().unwrap();
-            let mut owner =
-                NamespaceOwner::new(Arc::new(Authority(AtomicBool::new(true))), cancellation)
-                    .unwrap();
+            let authority = Arc::new(Authority(AtomicBool::new(true)));
+            let mut owner = NamespaceOwner::new(authority.clone(), cancellation).unwrap();
             owner.endpoint = root.path().join("provider.sock");
             let (send, receive) = std::sync::mpsc::sync_channel(1);
             owner.connected = Mutex::new(Some(Box::new(move |endpoint| {
@@ -619,7 +684,9 @@ mod tests {
             let outer = child.id();
             owner.child_created();
             let observed = owner.clone();
+            let (tid_send, tid_receive) = std::sync::mpsc::sync_channel(1);
             let worker = std::thread::spawn(move || {
+                tid_send.send(unsafe { libc::gettid() }).unwrap();
                 let result = observed.supervise(child);
                 if let Err(error) = &result {
                     eprintln!("actual owned namespace supervision failed: {error}");
@@ -629,7 +696,9 @@ mod tests {
             let running = Self {
                 root,
                 owner,
+                authority,
                 worker: Some(worker),
+                worker_tid: tid_receive.recv_timeout(Duration::from_secs(5)).unwrap(),
                 outer,
                 endpoint: receive.recv_timeout(Duration::from_secs(5)).unwrap(),
             };
@@ -743,6 +812,63 @@ mod tests {
         let descendant = running.orphan_handle();
         running.owner.cancellation.cancel();
         let status = running.worker.take().unwrap().join().unwrap().unwrap();
+        assert!(status.success());
+        assert!(running.owner.quiescent.load(Ordering::Acquire));
+        assert!(exited(&descendant).unwrap());
+    }
+    use tilo_test_env::idle::context_switches;
+
+    #[test]
+    fn owned_service_supervisor_sleeps_while_child_runs() {
+        let mut running = Running::with_script(
+            "trap 'touch /fixture/termed; exit 0' TERM; @WRITER@ while :; do sleep 0.02; done",
+        );
+        let tid = running.worker_tid.to_string();
+        let before = context_switches(&tid);
+        std::thread::sleep(Duration::from_millis(400));
+        let idle = context_switches(&tid).saturating_sub(before);
+        // Only the authority recheck may wake it; the 10 ms poll this
+        // replaces switched about forty times here.
+        let allowed = u64::try_from(400 / AUTHORITY_RECHECK.as_millis() + 1).unwrap();
+        assert!(
+            idle <= allowed,
+            "idle supervisor woke {idle} times in 400 ms"
+        );
+        // Cancel right after a recheck: only the cancellation ring, not the
+        // next recheck, can then deliver SIGTERM well inside one period.
+        let ticked = context_switches(&tid);
+        let deadline = Instant::now().checked_add(Duration::from_secs(2)).unwrap();
+        while context_switches(&tid) == ticked && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let cancelled = Instant::now();
+        running.owner.cancellation.cancel();
+        let termed = running.root.path().join("termed");
+        while !termed.exists() && cancelled.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let latency = cancelled.elapsed();
+        let status = running.worker.take().unwrap().join().unwrap().unwrap();
+        assert!(termed.exists(), "cancellation must reach the provider");
+        assert!(
+            latency < Duration::from_millis(150),
+            "cancellation took {latency:?} to reach the provider"
+        );
+        assert!(status.success());
+        assert!(running.owner.quiescent.load(Ordering::Acquire));
+    }
+    #[test]
+    fn revoked_authority_stops_the_service_within_one_recheck() {
+        let mut running = Running::start();
+        let descendant = running.orphan_handle();
+        let revoked = Instant::now();
+        running.authority.0.store(false, Ordering::Release);
+        let status = running.worker.take().unwrap().join().unwrap().unwrap();
+        assert!(
+            revoked.elapsed() < AUTHORITY_RECHECK + Duration::from_secs(2),
+            "revocation took {:?}",
+            revoked.elapsed()
+        );
         assert!(status.success());
         assert!(running.owner.quiescent.load(Ordering::Acquire));
         assert!(exited(&descendant).unwrap());

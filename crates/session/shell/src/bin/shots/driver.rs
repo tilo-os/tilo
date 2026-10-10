@@ -17,8 +17,8 @@ use automerge::{AutoCommit, ObjId};
 use vello::Scene;
 use vello::kurbo::{Point, Rect};
 use winit::dpi::PhysicalPosition;
-use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
-use winit::keyboard::{Key, KeyLocation, ModifiersState, NamedKey, PhysicalKey};
+use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
+use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 #[cfg(target_os = "linux")]
 use shell::compositor::capture::CaptureExecutor;
@@ -309,16 +309,16 @@ impl ShellDriver {
     /// would on real hardware.
     pub fn click_at(&mut self, p: Point) {
         self.dispatch(&WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             position: PhysicalPosition::new(p.x, p.y),
         });
         self.dispatch(&WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Pressed,
             button: MouseButton::Left,
         });
         self.dispatch(&WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Released,
             button: MouseButton::Left,
         });
@@ -332,7 +332,7 @@ impl ShellDriver {
     /// concept-faithful with the strip's per-line factor.
     pub fn mouse_wheel(&mut self, dx: f32, dy: f32) {
         self.dispatch(&WindowEvent::MouseWheel {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             delta: winit::event::MouseScrollDelta::LineDelta(dx, dy),
             phase: winit::event::TouchPhase::Moved,
         });
@@ -345,7 +345,7 @@ impl ShellDriver {
     /// follow-up `mouse_wheel()` lands at the new position.
     pub fn move_cursor(&mut self, p: Point) {
         self.dispatch(&WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             position: PhysicalPosition::new(p.x, p.y),
         });
     }
@@ -355,7 +355,7 @@ impl ShellDriver {
     /// once the drag is complete.
     pub fn press(&mut self) {
         self.dispatch(&WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Pressed,
             button: MouseButton::Left,
         });
@@ -364,7 +364,7 @@ impl ShellDriver {
     /// Synthesise a left-button `Released` at the current cursor.
     pub fn release(&mut self) {
         self.dispatch(&WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Released,
             button: MouseButton::Left,
         });
@@ -385,11 +385,11 @@ impl ShellDriver {
 
     fn drag_with_button(&mut self, from: Point, to: Point, steps: u32, button: MouseButton) {
         self.dispatch(&WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             position: PhysicalPosition::new(from.x, from.y),
         });
         self.dispatch(&WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Pressed,
             button,
         });
@@ -398,12 +398,12 @@ impl ShellDriver {
             let t = f64::from(s) / n;
             let p = Point::new(from.x + (to.x - from.x) * t, from.y + (to.y - from.y) * t);
             self.dispatch(&WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 position: PhysicalPosition::new(p.x, p.y),
             });
         }
         self.dispatch(&WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Released,
             button,
         });
@@ -1468,6 +1468,17 @@ impl ShellDriver {
             "emoji-picker" => self.scene_emoji_picker(),
             "display-confirm" => self.scene_display_confirm(),
             "portal-permission" => self.scene_portal_permission(),
+            "dictation-consent"
+            | "dictation-listening"
+            | "dictation-finishing"
+            | "dictation-model-required" => {
+                #[cfg(debug_assertions)]
+                self.host_mut()
+                    .seed_dictation_for_shots(name)
+                    .map_err(str::to_owned)?;
+                #[cfg(not(debug_assertions))]
+                return Err("dictation shots require a debug build".into());
+            }
             "room-activity" => self.scene_room_activity(),
             "room-activity-named" => self.scene_room_activity_named(),
             "room-activity-all" => self.scene_room_activity_all(),
@@ -1660,12 +1671,14 @@ impl ShellDriver {
                     ssid: "Conference-room-very-long-5GHz-network-name".into(),
                     signal: 4,
                     secure: true,
+                    security: os_actions::WifiSecurity::Wpa2,
                     connected: true,
                 },
                 shell::shell::quick_settings::WifiNetwork {
                     ssid: "Café Gäste-WLAN mit einem außergewöhnlich langen Namen".into(),
                     signal: 2,
                     secure: false,
+                    security: os_actions::WifiSecurity::Open,
                     connected: false,
                 },
             ];
@@ -2019,9 +2032,7 @@ impl ShellDriver {
             peer.set_actor(automerge::ActorId::from("ada".as_bytes()));
             if peer.apply_incoming(base).is_ok() {
                 const DAY: i64 = 86_400;
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
+                let now = tilo_clock::unix_now_i64();
                 for (days_ago, title) in
                     [(11_i64, "Q3 budget"), (5, "Onboarding notes"), (1, "Retro")]
                 {
@@ -2687,6 +2698,10 @@ impl ShellDriver {
         "emoji-picker",
         "display-confirm",
         "portal-permission",
+        "dictation-consent",
+        "dictation-listening",
+        "dictation-finishing",
+        "dictation-model-required",
         "notifications",
         "notifications-one",
         "notifications-dnd",
@@ -2770,18 +2785,8 @@ impl ShellDriver {
 // `compositor::test_control` and the in-process ShellDriver share one
 // implementation. See `crates/session/shell/src/compositor/frame.rs`.
 
-/// Synthesise a `WindowEvent::KeyboardInput { state: Pressed }` for
-/// `key`. winit's `KeyEvent` has a `pub(crate)` field
-/// (`platform_specific`) so we zero-init the struct + overwrite the
-/// fields the shell actually reads. Same workaround the e2e harness
-/// uses (see `tests/e2e_shell_flows.rs::escape_event`).
 pub fn key_press_event(key: &Key) -> WindowEvent {
-    let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-    ev.logical_key = key.clone();
-    ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-    ev.location = KeyLocation::Standard;
-    ev.state = ElementState::Pressed;
-    ev.repeat = false;
+    let mut ev = ui::synthetic_input::key_event(key.clone(), None, ElementState::Pressed);
     // `text` is `Option<SmolStr>` — for ASCII characters we mirror what
     // winit normally fills so the palette's character-input branch
     // sees the same glyph it would on real hardware.
@@ -2791,7 +2796,7 @@ pub fn key_press_event(key: &Key) -> WindowEvent {
         None
     };
     WindowEvent::KeyboardInput {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         event: ev,
         is_synthetic: false,
     }
@@ -2817,6 +2822,8 @@ mod tests {
 
     #[test]
     fn driver_scene_setup_covers_the_catalogue_and_keeps_pending_invites_out_of_presence() {
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_UI_DEBUG", "1");
         // Phase `driver_scene_setup_covers_catalogue`.
         // Smoke for `scene_setup` — drive every named scene and verify it
         // returns Ok, then verify a fresh driver returns Err for an

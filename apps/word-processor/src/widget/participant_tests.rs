@@ -324,9 +324,9 @@ fn the_view_map_is_bounded_expires_and_caps_find() {
     let (_wp, state, ids) = widget_with(&["abc"]);
     let doc = &state.doc;
     let mut views = ParticipantViews::default();
-    let start = ui::clock::Instant::now();
+    let start = ui::time::Instant::now();
     for i in 0..=MAX_PARTICIPANT_VIEWS {
-        let at = start + ui::clock::Duration::from_millis(u64::try_from(i).unwrap());
+        let at = start + ui::time::Duration::from_millis(u64::try_from(i).unwrap());
         views.set(&pid(&format!("p{i}")), &caret(&ids[0], 1), doc, at);
     }
     assert_eq!(views.len(), MAX_PARTICIPANT_VIEWS);
@@ -336,7 +336,7 @@ fn the_view_map_is_bounded_expires_and_caps_find() {
     );
     assert!(views.contains(&pid(&format!("p{MAX_PARTICIPANT_VIEWS}"))));
 
-    let later = start + PARTICIPANT_VIEW_TTL + ui::clock::Duration::from_secs(1);
+    let later = start + PARTICIPANT_VIEW_TTL + ui::time::Duration::from_secs(1);
     views.touch(&pid("p5"), later);
     views.expire(later);
     assert_eq!(views.len(), 1);
@@ -373,12 +373,11 @@ enum Input {
 /// Drive one real key press through `handle_event`.
 fn press(wp: &mut WordProcessorWidget, state: &mut ui::State, input: &Input) {
     use winit::keyboard::{ModifiersState, NativeKeyCode, PhysicalKey, SmolStr};
-    let taffy: TaffyTree<()> = TaffyTree::new();
-    let mut handled = false;
-    let mut focus: Option<NodeId> = None;
-    // SAFETY: as in `widget::tests::type_char` — every public field tolerates
-    // the zero bit pattern and the ones `handle_event` reads are overwritten.
-    let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+    let mut ev = ui::synthetic_input::key_event(
+        winit::keyboard::Key::Unidentified(winit::keyboard::NativeKey::Unidentified),
+        None,
+        winit::event::ElementState::Pressed,
+    );
     ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
     let mut mods = Modifiers::default();
     match input {
@@ -399,23 +398,18 @@ fn press(wp: &mut WordProcessorWidget, state: &mut ui::State, input: &Input) {
     ev.location = winit::keyboard::KeyLocation::Standard;
     ev.state = ElementState::Pressed;
     ev.repeat = false;
-    wp.handle_event(
-        &WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        },
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &mods,
-            state: Edits::lend(&mut state.doc),
-            path: &state.root,
-            handled: &mut handled,
-            focus_target: &mut focus,
-            node_id: NodeId::new(0),
-            taffy: &taffy,
-        },
-    );
+    ui::testing::Dispatch::new()
+        .modifiers(mods)
+        .doc(&mut state.doc)
+        .path(&state.root)
+        .send(
+            wp,
+            &WindowEvent::KeyboardInput {
+                device_id: winit::event::DeviceId::dummy(),
+                event: ev,
+                is_synthetic: false,
+            },
+        );
 }
 
 type Step = Box<dyn Fn(&ParticipantView, &AutoCommit) -> crate::actions::editing::EditResult>;

@@ -811,31 +811,75 @@ fn watch_app() -> TubeApp {
 #[test]
 
 fn share_copies_a_link_through_a_real_click() {
+    use tracing_subscriber::layer::SubscriberExt;
+    let subscriber = tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::filter::Targets::new()
+                .with_target("tube::share", tracing::Level::DEBUG),
+        )
+        .with(tracing_subscriber::fmt::layer().with_test_writer());
+    let _trace = tracing::subscriber::set_default(subscriber);
     let mut app = live_catalogue();
     app.effect(&tube::actions::TubeEffect::OpenVideo {
         video: WATCH_ID.into(),
     })
     .unwrap();
     app.settle();
-    // settle() flushes effects but does not wait for the NavShell entrance.
-    // click_named reads the current rectangle, then each pointer event runs
-    // another production frame. An entrance can move that rectangle between
-    // hover and press, preventing the Share action from being submitted.
-    // Wait for actual stable presentation before targeting the real button;
-    // extending the later notice timeout cannot recover a missed click.
-    assert!(
-        app.harness()
-            .settle_for_capture(ui::time::Duration::from_secs(5)),
-        "the watch page must finish its entrance before clicking Share"
-    );
     assert!(
         app.with_surface::<TubeApp, _>(|viewer| !viewer.model_for_test().is_liked(WATCH_ID))
             .unwrap(),
         "not liked to start"
     );
-    // Start observing immediately after the real pointer sequence, rather
-    // than flushing extra frames against the three-second toast lifetime.
+    // with_surface runs another host tick and relayout, which can start new
+    // presentation work. Settle after that final inspection so click_named's
+    // target rectangle stays valid through the real hover/press/release path.
+    // settle() above flushes effects but does not await the NavShell entrance.
+    assert!(
+        app.harness()
+            .settle_for_capture(ui::time::Duration::from_secs(5)),
+        "the watch page must finish its entrance before clicking Share"
+    );
+    // Observe the real effect through the published accessibility notice.
+    // Under a busy shard, the click can enqueue work beyond the next host
+    // tick, so inspect the model only after that effect has appeared.
+    tracing::debug!(target: "tube::share", at = ?ui::time::now(), "real share click begins");
     app.harness().click_named("watch_copy_link").unwrap();
+    tracing::debug!(target: "tube::share", at = ?ui::time::now(), "real share click returned");
+    let observed = app
+        .harness()
+        .wait_until(ui::time::Duration::from_secs(5), |h| {
+            h.a11y_nodes().iter().any(|(_, node)| {
+                node.label() == Some("Notifications")
+                    && node.value().is_some_and(|value| {
+                        value.contains("Link copied") && value.contains(WATCH_ID)
+                    })
+            })
+        });
+    if !observed {
+        let notices: Vec<_> = app
+            .harness()
+            .a11y_nodes()
+            .into_iter()
+            .filter(|(_, node)| node.label() == Some("Notifications"))
+            .map(|(_, node)| node.value().map(str::to_owned))
+            .collect();
+        eprintln!(
+            "share timeout at {:?}; a11y notices: {notices:?}",
+            ui::time::now()
+        );
+        app.with_surface::<TubeApp, _>(|viewer| {
+            eprintln!(
+                "share timeout route: {:?}; model notices: {:?}",
+                viewer.route_for_test(),
+                viewer.model_for_test().notices
+            );
+        })
+        .unwrap();
+    }
+    assert!(
+        observed,
+        "the real click must publish the copied-link notice before inspecting the model"
+    );
     app.with_surface::<TubeApp, _>(|viewer| {
         assert!(
             viewer
@@ -847,18 +891,6 @@ fn share_copies_a_link_through_a_real_click() {
         );
     })
     .unwrap();
-    assert!(
-        app.harness()
-            .wait_until(ui::time::Duration::from_secs(5), |h| {
-                h.a11y_nodes().iter().any(|(_, node)| {
-                    node.label() == Some("Notifications")
-                        && node.value().is_some_and(|value| {
-                            value.contains("Link copied") && value.contains(WATCH_ID)
-                        })
-                })
-            }),
-        "the real click must publish the copied-link notice before inspecting the model"
-    );
 
     app.with_surface::<TubeApp, _>(|viewer| {
         assert!(

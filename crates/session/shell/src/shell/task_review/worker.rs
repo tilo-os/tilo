@@ -189,6 +189,17 @@ impl Worker {
             return Err("selected person changed; review before changing this task".into());
         }
         let command = match &request.command {
+            TaskReviewCommand::Approve {
+                task_id,
+                agent_id,
+                run_epoch,
+                after_revision,
+            } => WorkspaceTaskCommand::ApproveRun {
+                task_id: task_id.clone(),
+                agent_id: agent_id.clone(),
+                expected_run_epoch: *run_epoch,
+                after_revision: *after_revision,
+            },
             TaskReviewCommand::Inspect { .. } => {
                 return Err("inspection does not mutate task state".into());
             }

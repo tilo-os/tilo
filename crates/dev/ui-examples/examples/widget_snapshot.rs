@@ -12,6 +12,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use tilo_ui::widget::TaffyTreeExt;
 
 use automerge::AutoCommit;
 use chrono::NaiveDate;
@@ -139,21 +140,14 @@ impl Widget for TinyText {
         // `new_leaf` only fails for a child `NodeId` belonging to a
         // different tree, which can't happen for a freshly created leaf
         // with no children.
-        #[allow(
-            clippy::unwrap_used,
-            reason = "new_leaf cannot fail for a childless leaf node"
-        )]
-        let node = taffy
-            .new_leaf(taffy::Style {
-                size: Size {
-                    width: taffy::Dimension::percent(1.0),
-                    height: taffy::Dimension::percent(1.0),
-                },
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let style = taffy::Style {
+            size: Size {
+                width: taffy::Dimension::percent(1.0),
+                height: taffy::Dimension::percent(1.0),
+            },
+            ..Default::default()
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
     fn measure(
         &mut self,
@@ -168,13 +162,7 @@ impl Widget for TinyText {
         }
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = tilo_ui::widget::layout_rect(taffy, node, origin);
     }
     fn draw(
         &mut self,
@@ -592,16 +580,7 @@ pub fn run(_args: &[String]) {
     // are the switches every other capture honours; default stays dark at
     // 1×, and motion is reduced like a real capture so nothing mid-animation
     // lands in the still.
-    let text_scale = std::env::var("TILO_SHOTS_TEXT_SCALE").ok();
-    let theme = std::env::var("TILO_SHOTS_THEME")
-        .ok()
-        .and_then(|name| Theme::named(&name))
-        .unwrap_or_else(Theme::dark)
-        .with_text_scale(tilo_ui::launch::shot_text_scale(
-            None,
-            text_scale.as_deref(),
-        ))
-        .with_reduce_motion(true);
+    let theme = crate::registry::shot_theme().with_reduce_motion(true);
     let mut tr = TextRenderer::new();
     let mut scene = Scene::new();
     let mut doc = AutoCommit::new();

@@ -36,6 +36,7 @@ use crate::categories::Category;
 use crate::panes;
 use crate::sidebar;
 use ui::tokens::Metrics;
+use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 use ui::widget::{Column, Container, NavPane, NavShell, Scrollable, Widget};
 use ui::widget::{NavMode, SearchField};
@@ -129,6 +130,8 @@ pub struct SettingsApp {
     accounts: panes::accounts::AccountsArea,
     displays: panes::display::DisplayArea,
     network: panes::network::NetworkArea,
+    /// When the areas above read what their live rows show.
+    area_reads: crate::effects::AreaReads,
     /// The text scale the shell was built for. A large-text preference widens
     /// the docked sidebar and its breakpoint with the type (the same policy
     /// the Store applies to its card grid), so a change rebuilds the shell.
@@ -160,6 +163,9 @@ impl SettingsApp {
         let cx = crate::host::PaneCx::detached(ui::storage::AppStorage::for_app(
             <crate::resource::SettingsShell as ui::framework::ResourceApp>::ID,
         ));
+        // A detached app reaches no device, so it probes for no installed
+        // software either: what a host reaches is read when it attaches.
+        let software = panes::accessibility::Software::for_host(&cx);
         Self {
             notifications: panes::notifications::NotificationsArea::new(&cx),
             default_apps: panes::personal_apps::DefaultAppsArea::new(&cx),
@@ -182,6 +188,7 @@ impl SettingsApp {
                 .with_account_root(account_root.clone()),
             displays: panes::display::DisplayArea::new(&cx),
             network: panes::network::NetworkArea::new(&cx),
+            area_reads: crate::effects::AreaReads::of(&cx),
             selected: Category::DEFAULT,
             structure_dirty: false,
             cx,
@@ -196,7 +203,7 @@ impl SettingsApp {
             shell: None,
             shell_text_scale: 1.0,
             wallpaper_status: ui::LocalState::new(None),
-            software: panes::accessibility::Software::installed(),
+            software,
         }
     }
 
@@ -358,14 +365,7 @@ impl SettingsApp {
     pub(crate) fn publish_browser_identity(&self, origin: String) -> Result<(), String> {
         let identity =
             ui::local_identity::bound().ok_or("Sign in before publishing this identity")?;
-        let root = identity
-            .group_public_key
-            .iter()
-            .fold(String::new(), |mut text, byte| {
-                use std::fmt::Write as _;
-                let _ = write!(text, "{byte:02x}");
-                text
-            });
+        let root = hex::encode(identity.group_public_key);
         self.account_root
             .publish_browser_identity(root, origin, identity.display_name)
     }
@@ -412,10 +412,31 @@ impl SettingsApp {
             panes::accounts::AccountsArea::new(&cx).with_account_root(self.account_root.clone());
         self.displays = panes::display::DisplayArea::new(&cx);
         self.network = panes::network::NetworkArea::new(&cx);
+        self.area_reads = crate::effects::AreaReads::of(&cx);
         self.software = panes::accessibility::Software::for_host(&cx);
         self.cx = cx;
         self.structure_dirty = true;
         self.refresh_shell_children();
+    }
+
+    /// Whether the published live rows include `area`'s: those of an area
+    /// that has read and of the pane shown, which reads it anyway — every
+    /// area's when reading is not put off ([`crate::effects::AreaReads`]).
+    pub(crate) fn publishes_area(&self, area: &crate::effects::LiveArea) -> bool {
+        !self.area_reads.deferred() || area.pane == self.selected || (area.is_open)(self)
+    }
+
+    /// Read on after the first frame, so the published rows fill in an area
+    /// at a time: the device reads that block run on the background
+    /// executor ([`crate::effects::AreaReads::step`]). Once every area has
+    /// read, the input sources are read the same way, last, so the Mouse &
+    /// Keyboard pane opens on them.
+    fn read_on(&self) {
+        match self.area_reads.step(self) {
+            crate::effects::Step::Read => self.area_reads.wake(),
+            crate::effects::Step::Waiting => {}
+            crate::effects::Step::Done => self.input.prefetch_catalog(),
+        }
     }
 
     /// Where the last wallpaper request stands.
@@ -790,6 +811,11 @@ impl Widget for SettingsApp {
         self.accounts.poll();
         self.displays.poll();
         self.network.poll();
+        // After the first frame, the areas read one at a time until every
+        // area's rows are published.
+        if self.area_reads.take_due() {
+            self.read_on();
+        }
         // A sidebar row opens its pane through the pane row's open effect;
         // only a bare app outside a host selects here. Search is local
         // presentation state: no CRDT text, collaboration traffic or undo.
@@ -861,11 +887,7 @@ impl Widget for SettingsApp {
         // different tree, which never happens here — see
         // `ui::widget::TaffyTreeExt`. Fall back to the child directly rather
         // than panic, on the off chance that ever changes.
-        let node = taffy
-            .new_with_children(style, &[shell_node])
-            .unwrap_or(shell_node);
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_node(style, &[shell_node], node_map, self)
     }
 
     fn apply_layout(
@@ -876,13 +898,7 @@ impl Widget for SettingsApp {
     ) {
         // `taffy.layout(...)` only errors for a `NodeId` from a different
         // tree, which never happens here — see `ui::widget::TaffyTreeExt`.
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = vello::kurbo::Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         let origin = vello::kurbo::Point::new(self.rect.x0, self.rect.y0);
         if let (Ok(children), Some(shell)) = (taffy.children(node), &mut self.shell)
             && let Some(&shell_node) = children.first()
@@ -902,6 +918,8 @@ impl Widget for SettingsApp {
         if let Some(shell) = &mut self.shell {
             shell.draw(scene, transform, text_renderer, theme, presence);
         }
+        self.area_reads.presented();
+        self.area_reads.wake();
     }
 
     fn draw_with_presence(
@@ -923,6 +941,8 @@ impl Widget for SettingsApp {
                 permissions,
             );
         }
+        self.area_reads.presented();
+        self.area_reads.wake();
     }
 
     fn observe_physical_input(&mut self, input: ui::widget::PhysicalInput) {

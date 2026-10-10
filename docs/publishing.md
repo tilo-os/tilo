@@ -146,17 +146,6 @@ A Tilo OS package declares the one architecture it carries: the level
 `[package.isa]` names for it, else `v3` on x86_64 and `aarch64` (ARMv8-A) on
 ARM, the floor the scaffolded `.cargo/config.toml` builds at.
 
-A web package, `dist/<package>-web-wasm32.tapp`, carries the app as a
-WebAssembly side module of the browser's toolkit core
-([The web](app-development.md#the-web)). Its signed `[target]` names the
-`web` platform, `wasm32`, the WebAssembly features the module uses and the
-core's runtime ABI id (`tilo-runtime/2026.07+wasm.<id>`). The registry lists
-it beside the app's other builds, and a page installs it only into a core with
-that id, so a module built against another core is refused before it links.
-The core itself is Tilo's to publish (`so.tilo.runtime.web`); an app never
-ships one. That core exports what Tilo's own web apps import, so a module
-that needs more of a shared crate than they do does not link in it yet.
-
 An Android package, `dist/<package>-android-<arch>.tapp`, carries the
 release-signed APK as `bin/<package>.apk`; the `.apk` and the `.aab` beside it
 are for sideloading and for Google Play. Its signed `[target]` names the
@@ -260,7 +249,10 @@ constraint of the design, and may change before Tilo leaves alpha.
 4. **The registry hosts the bytes.** `publish` uploads each package, signed by
    your key, and the entry points at
    `https://apps.tilo.so/artifacts/<blake3>.tapp`. An upload stays private
-   until review approves the entry that names it.
+   until review approves the entry that names it. The registry then also
+   serves a compressed copy at `<url>.zst`, which clients download and
+   decompress before checking it against your signed hash; your signature
+   covers only the package.
 5. **One key per publisher.** The same Ed25519 key signs packages and registry
    requests, kept in your secret store or, in CI, in
    `$TILO_PUBLISHER_KEY`. The App Publisher app manages keys on Tilo OS.

@@ -62,14 +62,14 @@ fn menu(app: &mut TestApp<notes::NotesShell>, item: usize) {
     app.harness().set_modifiers(&[]);
     app.harness().dispatch_to_root_with(
         &WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             position: ui::winit::dpi::PhysicalPosition::new(rect.x0 + 20.0, rect.y0 + 10.0),
         },
         &Modifiers::default(),
     );
     app.harness().dispatch_to_root_with(
         &WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Pressed,
             button: MouseButton::Right,
         },

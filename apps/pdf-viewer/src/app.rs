@@ -14,10 +14,11 @@ use ui::icons::Icon;
 use ui::tokens::TextRole;
 #[cfg(test)]
 use ui::widget::Edits;
+use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ChangeHash};
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{BlendMode, Fill, ImageData as PenikoImage};
@@ -180,11 +181,7 @@ const APP_ID: &str = "so.tilo.pdf-viewer";
 
 /// Wall-clock unix milliseconds, for stamping authored markup.
 fn now_ms() -> i64 {
-    ui::time::wall()
-        .duration_since(ui::time::UNIX_EPOCH)
-        .ok()
-        .and_then(|d| i64::try_from(d.as_millis()).ok())
-        .unwrap_or(0)
+    i64::try_from(ui::time::unix_now_ms()).unwrap_or(0)
 }
 
 /// Today's local date as `YYYY-MM-DD`, through the toolkit clock: the
@@ -529,7 +526,6 @@ pub struct PdfApp {
     shots_context_menu: bool,
     shots_panel: Option<SidebarTab>,
     shots_colours: bool,
-    shots_no_comments: bool,
     shots_selection: bool,
     // CRDT-backed caches (refreshed from the shared document each frame).
     annotations: Vec<Annotation>,
@@ -1002,34 +998,6 @@ impl PdfApp {
         self.sig_strokes = crate::scenarios::sample_drawn_signature();
     }
 
-    /// Screenshot-only: the Signatures panel composing a typed signature.
-    pub fn arm_shots_sign_type(&mut self) {
-        self.show_sidebar = true;
-        self.shots_panel = Some(SidebarTab::Signatures);
-        self.tool = Tool::Sign;
-        self.sig_mode = SigMode::Type;
-    }
-
-    /// Screenshot-only: the review panel open on `tab`.
-    pub fn arm_shots_panel(&mut self, tab: SidebarTab) {
-        self.show_sidebar = true;
-        self.shots_panel = Some(tab);
-    }
-
-    /// Screenshot-only: the Highlight tool armed with its colour popover
-    /// open under the toolbar's colour well.
-    pub fn arm_shots_marker_colours(&mut self) {
-        self.tool = Tool::Highlight;
-        self.shots_colours = true;
-    }
-
-    /// Screenshot-only: the demonstration markup with no comments yet, so
-    /// the Comments tab shows its empty state.
-    pub fn arm_shots_no_comments(&mut self) {
-        self.shots_no_comments = true;
-        self.arm_shots_panel(SidebarTab::Comments);
-    }
-
     /// Screenshot-only: stage a settled text selection over a word of page
     /// 1's first paragraph, so a still frame shows the shared selection HUD —
     /// highlight swatches + Copy + Note — over the page. The glyph layer is
@@ -1140,7 +1108,6 @@ impl PdfApp {
             shots_context_menu: false,
             shots_panel: None,
             shots_colours: false,
-            shots_no_comments: false,
             shots_selection: false,
             annotations: Vec::new(),
             comments: Vec::new(),
@@ -5114,21 +5081,7 @@ impl Widget for PdfApp {
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.layout_theme = theme.clone();
-        #[allow(
-            clippy::unwrap_used,
-            reason = "Widget::build_layout is infallible by trait contract; inserting a leaf with a fixed Style cannot fail short of an already-corrupted taffy arena, which nothing here could recover from"
-        )]
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.fill_leaf(node_map, self)
     }
 
     #[allow(
@@ -5137,12 +5090,7 @@ impl Widget for PdfApp {
     )]
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = ui::widget::placed(l, origin);
         self.reconcile_overlay();
         self.recompute_regions();
         self.sync_viewport_frame();
@@ -6213,6 +6161,7 @@ mod links_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use taffy::{Dimension, Size};
     use ui::search::SearchProvider as _;
 
     /// The app's search source as the framework builds it from what the open
@@ -6756,8 +6705,7 @@ mod tests {
             let mut state_b = ui::State::new();
             state_b.doc = AutoCommit::load(&base).expect("clone shared base");
             let (mut b, _) = app_with_state();
-            let mut registry = tilo_actions::ActionRegistry::new();
-            crate::actions::register(&mut registry);
+            let registry = tilo_actions::ActionRegistry::with(crate::actions::register);
 
             // One peer authors an ordered duplicate/reorder sequence. The envelope
             // carries the generated occurrence id, so the other replica need not

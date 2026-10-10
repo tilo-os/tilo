@@ -91,11 +91,13 @@ struct HostedPumpFixture {
     pending_label: std::rc::Rc<RefCell<Option<String>>>,
     sent: std::rc::Rc<RefCell<Vec<CollabRequest>>>,
     events: std::rc::Rc<RefCell<Vec<CollabEvent>>>,
+    directory: std::rc::Rc<RefCell<Vec<crate::collaboration::ActionDirectoryRequest>>>,
 }
 
 struct HostedPumpTransport {
     sent: std::rc::Rc<RefCell<Vec<CollabRequest>>>,
     events: std::rc::Rc<RefCell<Vec<CollabEvent>>>,
+    directory: std::rc::Rc<RefCell<Vec<crate::collaboration::ActionDirectoryRequest>>>,
 }
 impl crate::collaboration::PeerTransport for HostedPumpTransport {
     fn is_connected(&self) -> bool {
@@ -110,6 +112,11 @@ impl crate::collaboration::PeerTransport for HostedPumpTransport {
     }
     fn publish_action_directory(&mut self, _: String) -> Result<(), String> {
         Ok(())
+    }
+    fn take_action_directory_requests(
+        &mut self,
+    ) -> Vec<crate::collaboration::ActionDirectoryRequest> {
+        std::mem::take(&mut *self.directory.borrow_mut())
     }
 }
 
@@ -136,10 +143,12 @@ impl HostedPumpFixture {
             .register::<CounterAction>(COUNTER_TYPE);
         let sent = std::rc::Rc::new(RefCell::new(vec![]));
         let events = std::rc::Rc::new(RefCell::new(vec![]));
+        let directory = std::rc::Rc::new(RefCell::new(vec![]));
         app.collaboration.manager =
             CollaborationManager::with_peer_transport(HostedPumpTransport {
                 sent: sent.clone(),
                 events: events.clone(),
+                directory: directory.clone(),
             });
         app.init_layout();
         let mut fixture = Self {
@@ -150,6 +159,7 @@ impl HostedPumpFixture {
             pending_label,
             sent,
             events,
+            directory,
         };
         // Construction wakes and the first publication settle here.
         fixture.app.pump_hosted_model_as(false);
@@ -557,4 +567,445 @@ fn hosted_pump_action_authority_revoke_refreshes_without_forced_sync() {
     );
     assert_ne!(fixture.app.actions.resource_generation.get(), generation);
     fixture.assert_idle();
+}
+
+/// The broker uses an event-only wake for pull-directory requests. Route the
+/// real queue through the owner pump, rather than calling the page helper alone.
+#[test]
+fn hosted_directory_rpc_wake_preserves_no_change_cursor_and_rejects_model_change() {
+    let mut fixture = HostedPumpFixture::new(1);
+    fixture.app.state.doc.put(ROOT, "more", true).unwrap();
+    fixture.wake.wake();
+    fixture.pump();
+    fixture.pump();
+    let before = fixture.app.state.doc.save();
+    let mut query = directory_query("", "", 1, 8192, 8);
+    let mut revision = None;
+    let mut rows = Vec::new();
+    for _ in 0..4 {
+        let (reply, mut response) = tokio::sync::oneshot::channel();
+        fixture
+            .directory
+            .borrow_mut()
+            .push(crate::collaboration::ActionDirectoryRequest::Query {
+                query: query.clone(),
+                reply,
+            });
+        fixture.wake.notify_events();
+        let report = fixture.pump();
+        let page = response
+            .try_recv()
+            .expect("owner pump answers the actual queued request");
+        assert!(
+            !page.stale_cursor,
+            "metadata-only owner wakes keep consecutive pages valid"
+        );
+        assert!(
+            !report.synced,
+            "directory event wake alone must not force model sync"
+        );
+        assert!(
+            !report.published,
+            "directory reads must not republish declarations"
+        );
+        if let Some(revision) = &revision {
+            assert_eq!(&page.revision, revision);
+        } else {
+            revision = Some(page.revision.clone());
+        }
+        rows.extend(page.rows);
+        if page.exhausted {
+            break;
+        }
+        query.revision = page.revision;
+        query.cursor = page.next_cursor;
+    }
+    assert_eq!(
+        rows.len(),
+        3,
+        "all declared roots appear once across real queue turns"
+    );
+    assert_eq!(
+        rows.iter()
+            .map(|row| row.resource.as_str())
+            .collect::<Vec<_>>(),
+        ["probe:0", "probe:1", "probe:2"]
+    );
+    assert_eq!(fixture.app.state.doc.save(), before);
+    let page = fixture
+        .app
+        .action_directory_page(directory_query("", "", 1, 8192, 8));
+    assert!(!page.next_cursor.is_empty());
+    *fixture.pending_label.borrow_mut() = Some("Changed".into());
+    fixture.wake.wake();
+    assert!(fixture.pump().synced);
+    let (reply, mut response) = tokio::sync::oneshot::channel();
+    let mut query = directory_query(&page.revision, "", 1, 8192, 8);
+    query.cursor = page.next_cursor;
+    fixture
+        .directory
+        .borrow_mut()
+        .push(crate::collaboration::ActionDirectoryRequest::Query { query, reply });
+    fixture.wake.notify_events();
+    fixture.pump();
+    assert!(
+        response.try_recv().unwrap().stale_cursor,
+        "a real changed model still invalidates the old cursor"
+    );
+}
+
+#[test]
+fn cancelled_directory_rpc_does_not_consume_undelivered_cursor() {
+    let mut fixture = HostedPumpFixture::new(1);
+    fixture.app.state.doc.put(ROOT, "more", true).unwrap();
+    fixture.wake.wake();
+    fixture.pump();
+    fixture.pump();
+    let cursors = fixture.app.actions.action_directory_cursors.len();
+    let (reply, response) = tokio::sync::oneshot::channel();
+    drop(response);
+    fixture
+        .directory
+        .borrow_mut()
+        .push(crate::collaboration::ActionDirectoryRequest::Query {
+            query: directory_query("", "", 1, 8192, 8),
+            reply,
+        });
+    fixture.wake.notify_events();
+    let report = fixture.pump();
+    assert!(!report.synced && !report.published);
+    assert_eq!(
+        fixture.app.actions.action_directory_cursors.len(),
+        cursors,
+        "a cancelled root request must not allocate an undeliverable cursor"
+    );
+    let page = fixture
+        .app
+        .action_directory_page(directory_query("", "", 1, 8192, 8));
+    assert!(!page.next_cursor.is_empty());
+    let mut query = directory_query(&page.revision, "", 1, 8192, 8);
+    query.cursor = page.next_cursor;
+    let (reply, response) = tokio::sync::oneshot::channel();
+    drop(response);
+    fixture
+        .directory
+        .borrow_mut()
+        .push(crate::collaboration::ActionDirectoryRequest::Query {
+            query: query.clone(),
+            reply,
+        });
+    fixture.wake.notify_events();
+    let report = fixture.pump();
+    assert!(!report.synced && !report.published);
+    let (reply, mut response) = tokio::sync::oneshot::channel();
+    fixture
+        .directory
+        .borrow_mut()
+        .push(crate::collaboration::ActionDirectoryRequest::Query {
+            query: query.clone(),
+            reply,
+        });
+    fixture.wake.notify_events();
+    fixture.pump();
+    let next = response.try_recv().unwrap();
+    assert!(
+        !next.stale_cursor,
+        "a request cancelled before owner admission must not consume the offered continuation"
+    );
+    assert_eq!(next.rows.len(), 1);
+    assert_eq!(next.rows.first().unwrap().resource, "probe:1");
+    let (reply, mut response) = tokio::sync::oneshot::channel();
+    fixture
+        .directory
+        .borrow_mut()
+        .push(crate::collaboration::ActionDirectoryRequest::Query { query, reply });
+    fixture.wake.notify_events();
+    fixture.pump();
+    assert!(
+        response.try_recv().unwrap().stale_cursor,
+        "a delivered continuation remains strictly one-use"
+    );
+}
+
+/// Bare pointer motion keeps the published resource tree; every change an
+/// event can make to it still republishes within that event (TIL-628).
+#[cfg(feature = "native")]
+mod input_publication {
+    use super::*;
+    use std::rc::Rc;
+    use winit::dpi::PhysicalPosition;
+    use winit::event::{DeviceId, ElementState, MouseButton};
+
+    /// Publishes one resource whose label shows every piece of state an
+    /// input can move: a press switches its tab without marking the event
+    /// handled; hovering past x = 500 opens a menu, reported as a
+    /// presentation change; motion with a button held drags, unreported;
+    /// hovering below y = 500 writes the document. Releasing `t` switches
+    /// its tab and marks the release handled; releasing `w` writes the
+    /// document; releasing any other key changes nothing.
+    struct InputProbe {
+        calls: Rc<Cell<usize>>,
+        tab: usize,
+        menu_open: bool,
+        pressed: bool,
+        drag_x: Option<f64>,
+    }
+
+    impl Widget for InputProbe {
+        crate::provides!(dyn crate::resources::PublishesResources);
+
+        crate::testing::inert_widget_methods!(
+            unregistered_leaf_layout,
+            apply_layout,
+            draw,
+            get_rect,
+            name = "input-publication-probe"
+        );
+
+        fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+            &[COUNTER_TYPE]
+        }
+
+        fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+            match event {
+                WindowEvent::MouseInput { state, .. } => {
+                    self.pressed = *state == ElementState::Pressed;
+                    if self.pressed {
+                        self.tab += 1;
+                    }
+                }
+                WindowEvent::CursorMoved { position, .. } => {
+                    if self.pressed {
+                        self.drag_x = Some(position.x);
+                    }
+                    if position.x > 500.0 && !self.menu_open {
+                        self.menu_open = true;
+                        crate::widget::note_resource_presentation_changed();
+                    }
+                    if position.y > 500.0 {
+                        ctx.state.document_mut().put(ROOT, "hovered", true).unwrap();
+                    }
+                }
+                WindowEvent::KeyboardInput { event, .. }
+                    if event.state == ElementState::Released =>
+                {
+                    if event.logical_key == winit::keyboard::Key::Character("t".into()) {
+                        self.tab += 1;
+                        *ctx.handled = true;
+                    } else if event.logical_key == winit::keyboard::Key::Character("w".into()) {
+                        ctx.state.document_mut().put(ROOT, "hovered", true).unwrap();
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    impl crate::resources::PublishesResources for InputProbe {
+        fn resources(&self, doc: &automerge::AutoCommit) -> Vec<Resource> {
+            self.calls.set(self.calls.get() + 1);
+            let hovered = doc.get(ROOT, "hovered").unwrap().is_some();
+            let label = format!(
+                "tab {} menu {} drag {:?} hovered {hovered}",
+                self.tab, self.menu_open, self.drag_x
+            );
+            vec![
+                Resource::new("probe", "probe", label).with_action(
+                    ActionSpec::operation(
+                        "inspect",
+                        "Inspect",
+                        OperationKind::View,
+                        COUNTER_TYPE,
+                        &CounterAction::Bump,
+                    )
+                    .unwrap()
+                    .with_contract(tilo_actions::ActionContract::view()),
+                ),
+            ]
+        }
+    }
+
+    struct Surface;
+
+    impl AppSurface for Surface {
+        fn scale_factor(&self) -> f64 {
+            1.0
+        }
+        fn inner_size(&self) -> winit::dpi::PhysicalSize<u32> {
+            winit::dpi::PhysicalSize::new(1000, 1000)
+        }
+        fn request_redraw(&self) {}
+        fn set_cursor(&self, _: CursorIcon) {}
+    }
+
+    fn app() -> (App, Rc<Cell<usize>>) {
+        let calls = Rc::new(Cell::new(0));
+        let mut app = App::from_scoped_parts_with_controlled_inputs(
+            crate::wake::WakeScope::new(),
+            State::new(),
+            Box::new(InputProbe {
+                calls: calls.clone(),
+                tab: 0,
+                menu_open: false,
+                pressed: false,
+                drag_x: None,
+            }),
+        );
+        app.action_registry_mut()
+            .register::<CounterAction>(COUNTER_TYPE);
+        app.init_layout();
+        (app, calls)
+    }
+
+    fn move_to(app: &mut App, x: f64, y: f64) {
+        app.surface_input(
+            &Surface,
+            WindowEvent::CursorMoved {
+                device_id: DeviceId::dummy(),
+                position: PhysicalPosition::new(x, y),
+            },
+            false,
+        );
+    }
+
+    fn button(app: &mut App, state: ElementState) {
+        app.surface_input(
+            &Surface,
+            WindowEvent::MouseInput {
+                device_id: DeviceId::dummy(),
+                state,
+                button: MouseButton::Left,
+            },
+            false,
+        );
+    }
+
+    fn release(app: &mut App, key: &str) {
+        app.surface_input(
+            &Surface,
+            crate::synthetic_input::key_input(
+                &winit::keyboard::Key::Character(key.into()),
+                ElementState::Released,
+            ),
+            false,
+        );
+    }
+
+    /// The probe's label in the tree an agent reads now, with no frame or
+    /// sync in between.
+    fn published(app: &App) -> String {
+        app.collect_resources()
+            .into_iter()
+            .find(|resource| resource.id.as_str() == "probe")
+            .expect("the probe stays published")
+            .label
+    }
+
+    #[test]
+    fn pointer_motion_without_state_change_does_not_regenerate_declarations() {
+        let (mut app, calls) = app();
+        assert_eq!(published(&app), "tab 0 menu false drag None hovered false");
+        let generation = app.actions.resource_generation.get();
+        let before = calls.get();
+        for step in 0..100 {
+            move_to(&mut app, f64::from(step), 20.0);
+        }
+        let regenerated = calls.get() - before;
+        assert!(
+            regenerated <= 1,
+            "100 hover moves regenerated declarations {regenerated} times"
+        );
+        assert_eq!(app.actions.resource_generation.get(), generation);
+        assert_eq!(published(&app), "tab 0 menu false drag None hovered false");
+        assert_eq!(
+            calls.get() - before,
+            regenerated,
+            "reading the kept tree regenerates nothing"
+        );
+    }
+
+    #[test]
+    fn presentation_only_change_still_republishes() {
+        let (mut app, _) = app();
+        move_to(&mut app, 10.0, 20.0);
+        assert_eq!(published(&app), "tab 0 menu false drag None hovered false");
+        // The probe switches tabs on a press it does not mark handled.
+        button(&mut app, ElementState::Pressed);
+        button(&mut app, ElementState::Released);
+        assert_eq!(published(&app), "tab 1 menu false drag None hovered false");
+    }
+
+    #[test]
+    fn hover_that_reports_a_presentation_change_republishes() {
+        let (mut app, _) = app();
+        move_to(&mut app, 10.0, 20.0);
+        assert_eq!(published(&app), "tab 0 menu false drag None hovered false");
+        move_to(&mut app, 600.0, 20.0);
+        assert_eq!(published(&app), "tab 0 menu true drag None hovered false");
+    }
+
+    #[test]
+    fn hover_that_edits_the_document_republishes() {
+        let (mut app, _) = app();
+        move_to(&mut app, 10.0, 20.0);
+        assert_eq!(published(&app), "tab 0 menu false drag None hovered false");
+        move_to(&mut app, 10.0, 600.0);
+        assert_eq!(published(&app), "tab 0 menu false drag None hovered true");
+    }
+
+    #[test]
+    fn drag_motion_republishes_without_being_reported() {
+        let (mut app, _) = app();
+        move_to(&mut app, 10.0, 20.0);
+        button(&mut app, ElementState::Pressed);
+        assert_eq!(published(&app), "tab 1 menu false drag None hovered false");
+        move_to(&mut app, 50.0, 20.0);
+        assert_eq!(
+            published(&app),
+            "tab 1 menu false drag Some(50.0) hovered false"
+        );
+        button(&mut app, ElementState::Released);
+        move_to(&mut app, 70.0, 20.0);
+        assert_eq!(
+            published(&app),
+            "tab 1 menu false drag Some(50.0) hovered false",
+            "released, motion is hover again"
+        );
+    }
+
+    /// Every keystroke ends in a release. One that nothing consumed and that
+    /// moved nothing keeps the tree its press published (TIL-751).
+    #[test]
+    fn key_release_without_state_change_does_not_regenerate_declarations() {
+        let (mut app, calls) = app();
+        assert_eq!(published(&app), "tab 0 menu false drag None hovered false");
+        let generation = app.actions.resource_generation.get();
+        let before = calls.get();
+        for _ in 0..100 {
+            release(&mut app, "k");
+        }
+        let regenerated = calls.get() - before;
+        assert!(
+            regenerated <= 1,
+            "100 key releases regenerated declarations {regenerated} times"
+        );
+        assert_eq!(app.actions.resource_generation.get(), generation);
+        assert_eq!(published(&app), "tab 0 menu false drag None hovered false");
+    }
+
+    #[test]
+    fn consumed_key_release_still_republishes() {
+        let (mut app, _) = app();
+        assert_eq!(published(&app), "tab 0 menu false drag None hovered false");
+        release(&mut app, "t");
+        assert_eq!(published(&app), "tab 1 menu false drag None hovered false");
+    }
+
+    #[test]
+    fn key_release_that_edits_the_document_republishes() {
+        let (mut app, _) = app();
+        assert_eq!(published(&app), "tab 0 menu false drag None hovered false");
+        release(&mut app, "w");
+        assert_eq!(published(&app), "tab 0 menu false drag None hovered true");
+    }
 }

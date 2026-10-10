@@ -174,7 +174,7 @@ impl FrameHarness {
         self.visit_publication_locus(
             self.root.as_ref(),
             &target,
-            &snapshot.resources,
+            snapshot.resources(),
             &mut result,
         );
         if result.len() == 1 {
@@ -344,20 +344,6 @@ impl FrameHarness {
                 }
             })
             .collect()
-    }
-
-    /// Where the control a projected `ui:` resource names is on the surface.
-    pub fn projected_control_bounds(&self, resource: &str) -> Option<Rect> {
-        let id = resource
-            .strip_prefix(CONTROL_RESOURCE_PREFIX)
-            .and_then(|encoded| {
-                percent_encoding::percent_decode_str(encoded)
-                    .decode_utf8()
-                    .ok()
-            })?;
-        self.semantic_tree()
-            .node(&SemanticId(id.into_owned()))?
-            .bounds
     }
 
     /// The control `id` names, if the current frame has it.

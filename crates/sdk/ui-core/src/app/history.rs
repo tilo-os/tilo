@@ -233,7 +233,10 @@ impl App {
         self.layout.structure_dirty = true;
         self.layout.layout_dirty = true;
     }
-    pub(super) fn update_history_focus_order(&mut self) {
+    pub(super) fn update_history_focus_order(
+        &mut self,
+        restrictions: &crate::history_mode::embedded::FocusRestrictions,
+    ) {
         self.focusable_order.clear();
         let root = self
             .history
@@ -244,13 +247,10 @@ impl App {
             || (Vec::new(), false),
             |root| {
                 crate::focus_navigation::mapped_order(root, &self.layout.taffy, |node| {
-                    let allowed = crate::history_mode::embedded::allows_focus(
-                        self.root_widget.as_ref(),
-                        node,
-                        &self.layout.taffy,
-                    ) && self.history.as_ref().is_none_or(|history| {
-                        !history.captures_input() || history.owns_node(node, &self.layout.taffy)
-                    });
+                    let allowed = restrictions.allows(node)
+                        && self.history.as_ref().is_none_or(|history| {
+                            !history.captures_input() || history.owns_node(node, &self.layout.taffy)
+                        });
                     self.inspect_node(node, |widget| {
                         (
                             allowed && widget.is_focusable() && widget.is_enabled(),

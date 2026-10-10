@@ -48,11 +48,9 @@ use ui::tilo_resource::{self, Effect};
 
 use crate::doc::SheetsDoc;
 use crate::doc::{ChartKind, ChartSnapshot, CommentReply, CommentThread};
-use crate::model::{
-    Addr, CellFormat, Currency, DateStyle, GridEdit, TimeStyle, a1_to_addr, col_to_letters,
-    letters_to_col,
-};
+use crate::model::{Addr, CellFormat, GridEdit, a1_to_addr, col_to_letters, letters_to_col};
 use crate::settings::DocSettings;
+use tilo_locale::{Currency, DateStyle, TimeStyle};
 
 /// Registry `type_id` for every Sheets action.
 pub const SHEETS_ACTION_TYPE: &str = "sheets.action";
@@ -1661,22 +1659,6 @@ pub fn set_cell_action(
     }
 }
 
-/// Set a cell's display format only.
-pub fn set_format_action(
-    sheet: usize,
-    sheet_id: impl Into<String>,
-    addr: Addr,
-    fmt: CellFormat,
-) -> SheetsAction {
-    SheetsAction::SetFormat {
-        sheet,
-        sheet_id: sheet_id.into(),
-        col: addr.0,
-        row: addr.1,
-        fmt: fmt.as_str(),
-    }
-}
-
 /// Write a batch of cells (paste / fill / `AutoSum` totals) in one change. Each
 /// entry is `(addr, raw, optional format)`; an empty `raw` clears the cell.
 pub fn set_cells_action(
@@ -2301,9 +2283,7 @@ mod tests {
     use ui::tilo_resource::Resource as _;
 
     fn registry() -> ActionRegistry {
-        let mut r = ActionRegistry::new();
-        register(&mut r);
-        r
+        ActionRegistry::with(register)
     }
 
     /// Dispatch an action through the executor, as the on-screen affordance path

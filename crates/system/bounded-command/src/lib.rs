@@ -18,6 +18,11 @@ use std::time::{Duration, Instant};
 use thiserror::Error;
 use zeroize::Zeroizing;
 
+#[cfg(unix)]
+mod child_wait;
+#[cfg(unix)]
+pub use child_wait::{WakeFd, Wakeup, wait_child_or};
+
 /// Start `command`'s child as the leader of its own process tree, so
 /// [`kill_tree`] also reaches every descendant it starts. On Unix this is a
 /// new process group named after the child's pid.
@@ -521,7 +526,8 @@ fn run_prepared_inner(
     })
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 mod tests {
     use super::*;
     use std::fs;

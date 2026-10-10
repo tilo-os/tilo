@@ -71,18 +71,6 @@ fn role_from_label(label: &str) -> Option<DeviceRole> {
     }
 }
 
-#[allow(
-    dead_code,
-    reason = "tests pin the persisted English replication identifiers"
-)]
-fn replication_label(intent: &ReplicationIntent) -> &'static str {
-    match intent {
-        ReplicationIntent::WorkspaceOnly => REPLICATION_WORKSPACE,
-        ReplicationIntent::FullWorkspace => REPLICATION_FULL,
-        ReplicationIntent::OnDemand | ReplicationIntent::Resources(_) => REPLICATION_ON_DEMAND,
-    }
-}
-
 fn replication_shown(intent: &ReplicationIntent) -> String {
     t(match intent {
         ReplicationIntent::WorkspaceOnly => "mesh-repl-workspace",
@@ -370,6 +358,13 @@ impl DeviceMeshArea {
         if let Some(model) = self.model.get() {
             model.borrow_mut().poll_background_tasks();
         }
+    }
+
+    /// Whether the area has read what its rows show: its pane was shown,
+    /// an effect or a row lookup reached it, or the window read it after
+    /// its first frame ([`crate::effects::LIVE_AREAS`]).
+    pub(crate) fn is_open(&self) -> bool {
+        self.model.get().is_some()
     }
 
     /// One row per discovered workspace, personal device and home server.
@@ -684,11 +679,7 @@ fn save_home_peer_last_seen(last_seen: &HashMap<String, u64>) {
 }
 
 fn last_seen_label(last_seen_ms: u64) -> String {
-    let now_ms = ui::time::wall()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map_or(0, |duration| {
-            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
-        });
+    let now_ms = ui::time::unix_now_ms();
     let minutes = now_ms.saturating_sub(last_seen_ms) / 60_000;
     if minutes == 0 {
         t("mesh-last-seen-now")
@@ -1986,11 +1977,7 @@ impl DeviceMeshModel {
                                 "Online. Syncing files".into()
                             },
                         );
-                        let now_ms = ui::time::wall()
-                            .duration_since(SystemTime::UNIX_EPOCH)
-                            .map_or(0, |duration| {
-                                u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
-                            });
+                        let now_ms = ui::time::unix_now_ms();
                         self.home_peer_last_seen.insert(device, now_ms);
                         save_home_peer_last_seen(&self.home_peer_last_seen);
                         self.home_peers = registered_home_peers();
@@ -2215,10 +2202,6 @@ mod tests {
 
     /// Relay config shape, honest missing config, file policy intents and non-blocking coalesced applies.
     #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "cases merged from separate tests; each case stays self-contained"
-    )]
     fn relay_config_edits_are_real_honest_and_coalesced() {
         // Case `edits_write_the_real_relay_config_shape`.
         {
@@ -2293,14 +2276,6 @@ mod tests {
             assert_eq!(
                 replication_from_label(REPLICATION_FULL),
                 Some(ReplicationIntent::FullWorkspace)
-            );
-            assert_eq!(
-                replication_label(&ReplicationIntent::OnDemand),
-                REPLICATION_ON_DEMAND
-            );
-            assert_eq!(
-                replication_label(&ReplicationIntent::FullWorkspace),
-                REPLICATION_FULL
             );
             assert!(
                 replication_description(&ReplicationIntent::OnDemand)

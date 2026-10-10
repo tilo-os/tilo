@@ -23,8 +23,9 @@ use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
 use ui::doc::{read_bool, read_i64_coerced, read_str};
 
-use crate::model::{Addr, CellFormat, Currency, DateStyle, GridEdit, TimeStyle};
+use crate::model::{Addr, CellFormat, GridEdit};
 use crate::settings::DocSettings;
+use tilo_locale::{Currency, DateStyle, TimeStyle};
 
 /// One sheet's snapshot pulled out of the CRDT for rendering.
 #[derive(Clone, Debug, Default)]
@@ -210,21 +211,6 @@ impl SheetsDoc {
         Self::sheets(doc).map_or(0, |sheets| doc.length(&sheets))
     }
 
-    /// Whether `idx` still identifies a concrete sheet map. This is the
-    /// read-only counterpart to `sheet_map`, for atomic action validation.
-    pub fn sheet_exists(doc: &AutoCommit, idx: usize) -> bool {
-        let Ok(Some((Value::Object(ObjType::Map), wb))) = doc.get(&ROOT, "wb") else {
-            return false;
-        };
-        let Ok(Some((Value::Object(ObjType::List), sheets))) = doc.get(&wb, "sheets") else {
-            return false;
-        };
-        matches!(
-            doc.get(&sheets, idx),
-            Ok(Some((Value::Object(ObjType::Map), _)))
-        )
-    }
-
     /// Whether the workbook has been seeded at all.
     pub fn is_empty(doc: &AutoCommit) -> bool {
         Self::sheet_count(doc) == 0
@@ -331,12 +317,6 @@ impl SheetsDoc {
         if let Some(sheet) = Self::sheet_map(doc, idx) {
             let _ = doc.put(&sheet, "source", source);
         }
-    }
-
-    /// The first sheet imported from `source`.
-    pub fn sheet_index_by_source(doc: &AutoCommit, source: &str) -> Option<usize> {
-        (0..Self::sheet_count(doc))
-            .find(|&idx| Self::sheet_source(doc, idx).as_deref() == Some(source))
     }
 
     /// The `cells` Map for sheet `idx`, creating it if missing.

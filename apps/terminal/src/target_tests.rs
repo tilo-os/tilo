@@ -337,8 +337,8 @@ fn the_picker_lists_environments_the_host_and_legacy_vms_only_when_reported() {
     );
     widget.open_target_menu();
     let labels = widget.target_menu_labels().unwrap();
-    let host = ui::i18n::I18nManager::lookup("terminal-target-host", None);
-    let manage = ui::i18n::I18nManager::lookup("terminal-target-manage", None);
+    let host = crate::i18n::t("terminal-target-host");
+    let manage = crate::i18n::t("terminal-target-manage");
     assert_eq!(labels[0], "Default");
     assert_eq!(labels[1], "Work");
     assert_eq!(
@@ -615,7 +615,7 @@ fn the_picker_offers_run_on_for_the_persons_relays_and_agents_name_one() {
     widget.sync(&doc, &ROOT);
     widget.open_target_menu();
     let labels = widget.target_menu_labels().unwrap();
-    let run_on = ui::i18n::I18nManager::lookup("terminal-run-on", None);
+    let run_on = crate::i18n::t("terminal-run-on");
     assert!(
         !labels.iter().any(|l| l.contains(&run_on)),
         "without relays there is nowhere else to run: {labels:?}"
@@ -627,7 +627,7 @@ fn the_picker_offers_run_on_for_the_persons_relays_and_agents_name_one() {
     }]);
     widget.open_target_menu();
     let labels = widget.target_menu_labels().unwrap();
-    let here = ui::i18n::I18nManager::lookup("terminal-run-on-this-device", None);
+    let here = crate::i18n::t("terminal-run-on-this-device");
     assert!(labels.contains(&format!("✓ {run_on} {here}")), "{labels:?}");
     assert!(labels.contains(&format!("{run_on} Home")), "{labels:?}");
 
@@ -975,4 +975,55 @@ fn owner_fixture_sessions(gate: Rc<std::cell::Cell<bool>>) -> Sessions {
         crate::inner::TerminalBackend::with_command(command)
             .map_err(|error| OpenError::Failed(error.to_string()))
     })
+}
+
+#[test]
+fn published_run_and_read_follow_actual_pty_output_into_the_shared_session() {
+    use crate::resource::TerminalEffect;
+    let sessions = Sessions::scripted(RecentTarget::none(), |target, _, _| {
+        assert_eq!(target, &SessionTarget::default_environment());
+        let mut command = portable_pty::CommandBuilder::new("/usr/bin/bash");
+        command.args(["--noprofile", "--norc", "-i"]);
+        command.env("PS1", "[Default fixture]$ ");
+        crate::inner::TerminalBackend::with_command(command)
+            .map_err(|error| OpenError::Failed(error.to_string()))
+    });
+    let mut app = App::new().unwrap();
+    app.with_surface(|terminal: &mut TerminalWidget| terminal.set_sessions(sessions))
+        .unwrap();
+    app.settle();
+    let inspected = app.effect(&TerminalEffect::InspectSession).unwrap();
+    let session = inspected.value.unwrap()["session"].clone();
+    app.effect_confirmed(&TerminalEffect::Run {
+        command: "printf 'TILO_%s\\n' OWNED_PTY_OUTPUT".into(),
+    })
+    .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut observed = false;
+    while std::time::Instant::now() < deadline {
+        app.settle();
+        let read = app.call("read", serde_json::json!({})).unwrap().unwrap();
+        let output = read["output"].as_str().unwrap();
+        assert_eq!(read["session"], session);
+        let lines: Vec<_> = output.lines().collect();
+        if let Some(index) = lines
+            .iter()
+            .position(|line| *line == "TILO_OWNED_PTY_OUTPUT")
+            && lines[index + 1..].contains(&"[Default fixture]$")
+        {
+            let local = app
+                .with_surface(|terminal: &mut TerminalWidget| terminal.grid_text())
+                .unwrap();
+            assert!(local.lines().any(|line| line == "TILO_OWNED_PTY_OUTPUT"));
+            observed = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    app.effect_confirmed(&TerminalEffect::Run {
+        command: "exit".into(),
+    })
+    .unwrap();
+    wait_for_owner_shell(&mut app, session.as_str().unwrap(), true);
+    assert!(observed, "canonical retained PTY output/prompt absent");
 }

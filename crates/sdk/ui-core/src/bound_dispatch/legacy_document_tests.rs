@@ -50,6 +50,7 @@ pub(crate) struct Probe {
     pub(crate) eager: Rc<Cell<bool>>,
     pub(crate) declarations: Rc<Cell<usize>>,
     pub(crate) starts: Rc<Cell<usize>>,
+    targets: Rc<RefCell<Vec<crate::host_operation::OperationTarget>>>,
     pub(crate) polls: Rc<Cell<usize>>,
     pub(crate) ready: Rc<Cell<bool>>,
     pub(crate) invocation: Rc<Cell<Option<tilo_actions::InvocationId>>>,
@@ -70,6 +71,7 @@ impl Probe {
             eager: Rc::new(Cell::new(true)),
             declarations: Rc::new(Cell::new(1)),
             starts: Rc::default(),
+            targets: Rc::default(),
             polls: Rc::default(),
             ready: Rc::default(),
             invocation: Rc::default(),
@@ -171,6 +173,9 @@ impl Widget for Probe {
         }
         if doc.get(ROOT, "owner").unwrap().unwrap().0.as_u64() != Some(self.expected_owner.get()) {
             return Err("wrong owner at start".into());
+        }
+        if let Some(target) = op.target() {
+            self.targets.borrow_mut().push(target.clone());
         }
         self.starts.set(self.starts.get() + 1);
         self.invocation.set(Some(invocation));
@@ -317,9 +322,6 @@ impl Fixture {
             probe,
         }
     }
-    pub(crate) fn _temp_path_for_test(&self) -> std::path::PathBuf {
-        self._temp.path().join("profile")
-    }
     pub(crate) fn into_closed_profile(self) -> (tempfile::TempDir, RecordCheckout) {
         (self._temp, self.checkout)
     }
@@ -379,11 +381,7 @@ fn retained_policy_time_document_door_denies_delayed_grant_without_mutation() {
         Arc,
         atomic::{AtomicU64, Ordering},
     };
-    let expiry = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs()
-        + 3600;
+    let expiry = crate::time::try_unix_now().unwrap() + 3600;
     let time = Arc::new(AtomicU64::new(expiry - 1));
     let clock = time.clone();
     let authority = PermissionContext::from_capabilities(
@@ -1274,4 +1272,63 @@ pub(crate) fn independent_batch_fixture(
         b,
         Column::new().push(Box::new(first)).push(Box::new(second)),
     )
+}
+
+#[test]
+fn legacy_effect_dispatch_captures_exact_selected_record_without_sibling_fallback() {
+    let room = uuid::Uuid::new_v4().to_string();
+    let mut first = Fixture::in_room(951, &room);
+    let mut second = Fixture::in_room(952, &room);
+    let first_route = first.store.route(&first.checkout).unwrap();
+    let second_route = second.store.route(&second.checkout).unwrap();
+    assert_eq!(first_route.app_id, second_route.app_id);
+    assert_ne!(first_route.record, second_route.record);
+    let first_target = first.target.clone();
+    let second_target = second.target.clone();
+    let mut root = Column::new()
+        .push(Box::new(first.take_tile()))
+        .push(Box::new(second.take_tile()));
+    let encoded = EncodedAction {
+        type_id: "controlled.effect".into(),
+        payload: b"null".to_vec(),
+    };
+    let mut outer = AutoCommit::new();
+    for target in [&first_target, &second_target] {
+        invoke_legacy_effect(
+            &mut root,
+            target,
+            tilo_actions::InvocationId::new(),
+            tilo_actions::OperationKind::Effect,
+            &encoded,
+            &mut outer,
+        )
+        .unwrap();
+    }
+    let captured_first = first.probe.targets.borrow();
+    let captured_second = second.probe.targets.borrow();
+    assert_eq!(captured_first.len(), 1);
+    assert_eq!(captured_second.len(), 1);
+    assert_eq!(captured_first[0].route(), &first_route);
+    assert_eq!(captured_second[0].route(), &second_route);
+    assert_eq!(captured_first[0].address(), &first_target.address);
+    assert_eq!(captured_second[0].address(), &second_target.address);
+    drop(captured_first);
+    drop(captured_second);
+    crate::component_lifecycle::close_components(&mut root);
+    assert!(
+        invoke_legacy_effect(
+            &mut root,
+            &first_target,
+            tilo_actions::InvocationId::new(),
+            tilo_actions::OperationKind::Effect,
+            &encoded,
+            &mut outer,
+        )
+        .is_err()
+    );
+    assert_eq!(
+        first.probe.targets.borrow().len(),
+        1,
+        "retired owner supplies no routing facts"
+    );
 }

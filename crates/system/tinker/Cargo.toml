@@ -16,7 +16,7 @@ path = "src/main.rs"
 
 [dependencies]
 tilo-clock = { path = "../../platform/tilo-clock" }
-tilo-xdg-paths = { path = "../xdg-paths" }
+tilo-paths.workspace = true
 anyhow = { workspace = true }
 bounded-command = { path = "../bounded-command" }
 clap = { workspace = true }

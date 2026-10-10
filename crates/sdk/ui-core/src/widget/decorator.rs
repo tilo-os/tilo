@@ -494,12 +494,28 @@ pub trait Decorator {
         self.inner().is_enabled()
     }
 
+    fn ime_requires_deferred_ack(&self) -> bool {
+        self.inner().ime_requires_deferred_ack()
+    }
+
+    fn start_deferred_text(&mut self) -> Option<crate::webview::text_input::Receipt> {
+        self.inner_mut().start_deferred_text()
+    }
+
+    fn commit_deferred_text(&mut self, text: &str) -> Option<crate::webview::text_input::Receipt> {
+        self.inner_mut().commit_deferred_text(text)
+    }
+
     fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
         self.inner().ime_edit_fingerprint(key)
     }
 
     fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
         self.inner().ime_purpose()
+    }
+
+    fn ime_multiline(&self) -> bool {
+        self.inner().ime_multiline()
     }
 
     fn presented(&self) -> bool {
@@ -718,6 +734,12 @@ pub trait Decorator {
 
     fn native_view_frame_start(&mut self) {
         self.inner_mut().native_view_frame_start()
+    }
+
+    /// Decorators must opt in themselves: an outer handler can change what
+    /// its inner widget declares even when the inner scroll is view-only.
+    fn view_only_scroll(&self, _event: &WindowEvent) -> bool {
+        false
     }
 
     fn primary_vertical_scroll(&self) -> Option<PrimaryScrollRegion> {
@@ -1120,12 +1142,28 @@ impl<T: Decorator + 'static> Widget for T {
         Decorator::is_enabled(self)
     }
 
+    fn ime_requires_deferred_ack(&self) -> bool {
+        Decorator::ime_requires_deferred_ack(self)
+    }
+
+    fn start_deferred_text(&mut self) -> Option<crate::webview::text_input::Receipt> {
+        Decorator::start_deferred_text(self)
+    }
+
+    fn commit_deferred_text(&mut self, text: &str) -> Option<crate::webview::text_input::Receipt> {
+        Decorator::commit_deferred_text(self, text)
+    }
+
     fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
         Decorator::ime_edit_fingerprint(self, key)
     }
 
     fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
         Decorator::ime_purpose(self)
+    }
+
+    fn ime_multiline(&self) -> bool {
+        Decorator::ime_multiline(self)
     }
 
     fn presented(&self) -> bool {
@@ -1343,6 +1381,10 @@ impl<T: Decorator + 'static> Widget for T {
 
     fn native_view_frame_start(&mut self) {
         Decorator::native_view_frame_start(self)
+    }
+
+    fn view_only_scroll(&self, event: &WindowEvent) -> bool {
+        Decorator::view_only_scroll(self, event)
     }
 
     fn primary_vertical_scroll(&self) -> Option<PrimaryScrollRegion> {

@@ -3,12 +3,16 @@
 // in as modules (`pub`, so what each file exported stays exported). nextest
 // still runs each test in its own process.
 
+#[path = "apply_cache.rs"]
+pub mod apply_cache;
 #[path = "golden_path.rs"]
 pub mod golden_path;
 #[path = "incremental.rs"]
 pub mod incremental;
 #[path = "kinds.rs"]
 pub mod kinds;
+#[path = "one_pass_reads.rs"]
+pub mod one_pass_reads;
 #[path = "schema.rs"]
 pub mod schema;
 #[path = "shape.rs"]

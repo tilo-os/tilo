@@ -32,12 +32,9 @@ use smithay::reexports::drm as drm_re;
 use smithay::reexports::input::Libinput;
 use winit::dpi::PhysicalPosition;
 use winit::event::{
-    ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, Touch, TouchPhase,
-    WindowEvent,
+    ElementState, Modifiers, MouseButton, MouseScrollDelta, Touch, TouchPhase, WindowEvent,
 };
-use winit::keyboard::{
-    Key, KeyLocation, ModifiersState, NamedKey, NativeKey, PhysicalKey, SmolStr,
-};
+use winit::keyboard::{Key, ModifiersState, NamedKey, NativeKey, PhysicalKey, SmolStr};
 use winit::platform::scancode::PhysicalKeyExtScancode as _;
 
 use super::access_keys::{
@@ -67,6 +64,7 @@ use crate::compositor::backend::{
     BackendEvent, GestureEvent, Output, OutputId, OutputIdentity, PointerConstraintRegion,
     TabletPhase, TouchEvent as TiloTouchEvent,
 };
+use crate::shell::render::icc_lut::IccLut;
 
 /// One held repeatable key. Kept independent of xkb translation so timing is
 /// deterministic and unit-testable without a seat or keyboard device.
@@ -336,6 +334,9 @@ pub struct DrmDispatchState {
     pub signal_status: BTreeMap<String, OutputSignalStatus>,
     /// Receiving end of the presenter's signalling reports.
     pub signal_reports: Option<Receiver<SignalReport>>,
+    /// What each output's primary plane offers fullscreen clients, as the
+    /// presenter last learned it ([`super::client_scanout::ClientPlanes`]).
+    pub client_planes: super::client_scanout::ClientPlanes,
 }
 
 /// What the DRM backend keeps for drawing tablets.
@@ -1208,6 +1209,7 @@ impl DrmDispatchState {
             fullscreen_output: None,
             signal_status: BTreeMap::new(),
             signal_reports: None,
+            client_planes: super::client_scanout::ClientPlanes::default(),
         }
     }
 
@@ -1631,6 +1633,8 @@ impl DrmDispatchState {
             // A replugged or rebuilt output gets a fresh chance at what an
             // earlier generation of it failed to drive.
             self.signal_status.remove(&build.config_key);
+            // Its plane is probed again by the first fullscreen client on it.
+            self.client_planes.publish(id, None);
             self.live.push(LiveEntry {
                 key,
                 id,
@@ -1663,6 +1667,8 @@ impl DrmDispatchState {
                 color_profile: None,
                 color_transform: None,
                 color_buffer: Vec::new(),
+                color_lut: None,
+                direct_calibration: None,
                 direct_targets: None,
                 direct_ineligible: None,
                 present_by_readback: false,
@@ -2058,10 +2064,7 @@ impl DrmDispatchState {
 
     /// Perform one step of the pause/resume sequence the session state machine asked for.
     fn with_presentations_quiesced<T>(gate: Option<&Arc<Mutex<()>>>, f: impl FnOnce() -> T) -> T {
-        let _present_guard = gate.map(|gate| {
-            gate.lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-        });
+        let _quiesced = super::quiesce_presentations(gate);
         f()
     }
 
@@ -2466,7 +2469,7 @@ impl DrmDispatchState {
             dy_unaccel: dy,
             time_usec: crate::shell::network::fabric_monotonic_us(),
         });
-        self.push(BackendEvent::Input(cursor_moved_event(x, y)));
+        self.push(BackendEvent::Input(cursor_moved(x, y)));
     }
 
     fn push_mouse_keys_button(&mut self, edge: ButtonEdge) {
@@ -3369,7 +3372,7 @@ impl DrmDispatchState {
                 let requested = (event.x_transformed(w.max(1)), event.y_transformed(h.max(1)));
                 self.set_pointer_logical(layout::clamp_to_outputs(&placements, requested));
                 let (x, y) = self.confine_pointer(previous);
-                self.push(BackendEvent::Input(cursor_moved_event(x, y)));
+                self.push(BackendEvent::Input(cursor_moved(x, y)));
             }
             // Relative motion (mouse): accumulate in logical pixels, clamp to
             // the logical outputs, then present in the scene.
@@ -3390,7 +3393,7 @@ impl DrmDispatchState {
                 let previous = self.pointer;
                 self.move_pointer_by((event.delta_x(), event.delta_y()));
                 let (x, y) = self.confine_pointer(previous);
-                self.push(BackendEvent::Input(cursor_moved_event(x, y)));
+                self.push(BackendEvent::Input(cursor_moved(x, y)));
             }
             InputEvent::PointerButton { event } => {
                 if let Some(button) = map_mouse_button(event.button()) {
@@ -3697,13 +3700,20 @@ pub struct ScanoutEntry {
     pub position: (i32, i32),
     pub transform: settings_store::hardware::OutputTransform,
     pub color_profile: Option<String>,
+    /// The profile's qcms transform, which the readback presenter runs on the CPU.
     pub color_transform: Option<qcms::Transform>,
     pub color_buffer: Vec<u8>,
+    /// The same transform sampled for the direct path's final GPU pass.
+    pub color_lut: Option<IccLut>,
+    /// The [`IccLut::id`] the direct path last rendered this output through, `None` for no
+    /// profile. When it is not `color_lut`'s, the profile changed and the next frame renders
+    /// in full instead of keeping the image calibrated for the old one.
+    pub direct_calibration: Option<u64>,
     /// Lazily created same-device GBM/Vulkan targets. `None` means the safe
     /// readback presenter remains authoritative.
     pub direct_targets: Option<DirectScanoutTargets>,
-    /// Why this output's current shape cannot use direct scanout (a rotation,
-    /// an ICC profile, ...). Re-evaluated every frame.
+    /// Why this output cannot use direct scanout (no cursor plane, no page-flip
+    /// events, another GPU, ...). Re-evaluated every frame.
     pub direct_ineligible: Option<&'static str>,
     /// The current frame presents this output through the combined readback:
     /// it is powered and its direct frame was not, or could not be, submitted.
@@ -3802,19 +3812,54 @@ impl ScanoutEntry {
             return;
         }
         self.color_profile = profile;
-        self.color_transform = self.color_profile.as_deref().and_then(|path| {
-            let input = qcms::Profile::new_sRGB();
-            let output = qcms::Profile::new_from_path(path)?;
-            qcms::Transform::new(
-                &input,
-                &output,
-                qcms::DataType::RGBA8,
-                qcms::Intent::Perceptual,
-            )
-        });
-        if self.color_profile.is_some() && self.color_transform.is_none() {
+        let calibration = self.color_profile.as_deref().and_then(color_calibration);
+        if self.color_profile.is_some() && calibration.is_none() {
             tracing::warn!(profile = ?self.color_profile, "DRM display: rejected invalid ICC profile");
         }
+        (self.color_transform, self.color_lut) = calibration.unzip();
+    }
+}
+
+/// The ICC profile at `path` as both presenters apply it: the qcms transform from sRGB to
+/// the panel (perceptual) that the readback runs on the CPU, and the same transform sampled
+/// for the direct path's final GPU pass. `None` when qcms cannot read the profile.
+fn color_calibration(path: &str) -> Option<(qcms::Transform, IccLut)> {
+    let input = qcms::Profile::new_sRGB();
+    let output = qcms::Profile::new_from_path(path)?;
+    let transform = qcms::Transform::new(
+        &input,
+        &output,
+        qcms::DataType::RGBA8,
+        qcms::Intent::Perceptual,
+    )?;
+    let lut = IccLut::from_transform(&transform);
+    Some((transform, lut))
+}
+
+#[cfg(test)]
+mod color_calibration_tests {
+    use super::color_calibration;
+    use crate::shell::render::icc_lut::tests::lut16;
+
+    #[test]
+    fn a_profile_file_calibrates_the_readback_and_the_direct_path_alike() {
+        let dir = tempfile::tempdir().unwrap();
+        let panel = lut16();
+        let path = dir.path().join("panel.icc");
+        std::fs::write(&path, panel.lut16_profile()).unwrap();
+        let (transform, _) = color_calibration(path.to_str().unwrap())
+            .expect("a readable profile yields the qcms transform and its LUT");
+        // The readback's transform is the one the profile defines.
+        let colours = [[12_u8, 200, 90, 255], [255, 255, 255, 255], [0, 0, 0, 255]];
+        let mut readback = colours.concat();
+        let mut reference = colours.concat();
+        transform.apply(&mut readback);
+        panel.transform().apply(&mut reference);
+        assert_eq!(readback, reference);
+
+        std::fs::write(&path, b"not an ICC profile").unwrap();
+        assert!(color_calibration(path.to_str().unwrap()).is_none());
+        assert!(color_calibration(dir.path().join("missing.icc").to_str().unwrap()).is_none());
     }
 }
 
@@ -4256,7 +4301,7 @@ impl DrmRuntime {
         let dispatch = &mut self.dispatch;
         dispatch.set_pointer_scene((x, y));
         let (x, y) = dispatch.pointer;
-        dispatch.push(BackendEvent::Input(cursor_moved_event(x, y)));
+        dispatch.push(BackendEvent::Input(cursor_moved(x, y)));
     }
 
     pub fn cancel_touch(&mut self) {
@@ -4607,22 +4652,24 @@ impl DrmRuntime {
         self.dispatch.pump_mouse_keys(now);
     }
 
-    /// Test-only seam: construct a `DrmRuntime`-shaped dispatch state with the given output set already populated, used by `super::mod` tests to verify `DrmBackend::outputs()` without real hardware.
+    /// Test-only seam: a dispatch state driving `outputs` — `(connector name, mode size)`, in
+    /// enumeration order — as if each had just been modeset, laid out with no saved
+    /// arrangement. `super::mod` tests use it to drive `DrmBackend` without real hardware.
     #[cfg(test)]
-    pub fn synthesize_for_tests(outputs: Vec<(OutputId, Output)>) -> DrmDispatchState {
-        let mut registry = OutputRegistry::new();
-        // Re-intern so the registry's `next_id` is consistent with the synthesised ids — arbitrary keys, since the test only cares about `output_meta`.
-        for (id, _) in &outputs {
-            registry.intern(super::outputs::DrmOutputKey {
+    pub(super) fn synthesize_for_tests(outputs: &[(&str, (u32, u32))]) -> DrmDispatchState {
+        let mut state = DrmDispatchState::default();
+        for (connector, (name, size)) in (0_u32..).zip(outputs) {
+            let id = state.outputs.intern(DrmOutputKey {
                 device: 0,
-                connector: id.0,
+                connector,
             });
+            state.live.push(tests::named(
+                tests::entry_on_device(0, id.0, connector, *size, None),
+                name,
+            ));
         }
-        DrmDispatchState {
-            outputs: registry,
-            output_meta: outputs.into_iter().collect(),
-            ..Default::default()
-        }
+        state.relayout_with(&settings_store::hardware::DisplayConfig::default());
+        state
     }
 }
 
@@ -5012,20 +5059,12 @@ where
     )
 }
 
-/// Build a `WindowEvent::CursorMoved` for the compositor's input wire. `device_id` is zeroed — the host path never inspects it (mirrors `native::execute_planned_action`).
-fn cursor_moved_event(x: f64, y: f64) -> WindowEvent {
-    WindowEvent::CursorMoved {
-        device_id: unsafe { std::mem::zeroed() },
-        position: PhysicalPosition::new(x, y),
-    }
-}
+use ui::synthetic_input::cursor_moved;
 
-/// Build a `WindowEvent::Touch` for the shell's direct-touch arena. DRM has
-/// no winit window, so its device id is the same inert zero value used by the
-/// other synthetic input adapters; touch identity is carried by `slot`.
+/// Build a `WindowEvent::Touch` for the shell's direct-touch arena.
 fn touch_input_event(slot: u32, x: f64, y: f64, phase: TouchPhase) -> WindowEvent {
     WindowEvent::Touch(Touch {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         phase,
         location: PhysicalPosition::new(x, y),
         force: None,
@@ -5061,7 +5100,7 @@ fn device_input_capabilities(device: &smithay::reexports::input::Device) -> ui::
 /// Build a `WindowEvent::MouseInput`.
 fn mouse_input_event(state: ElementState, button: MouseButton) -> WindowEvent {
     WindowEvent::MouseInput {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         state,
         button,
     }
@@ -5087,7 +5126,7 @@ fn mouse_wheel_event(source: AxisSource, dx: f64, dy: f64) -> WindowEvent {
         }
     };
     WindowEvent::MouseWheel {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         delta,
         phase: TouchPhase::Moved,
     }
@@ -5429,31 +5468,25 @@ fn text_for(ch: Option<char>, mods: ModifiersState) -> Option<SmolStr> {
     }
 }
 
-/// Build a `WindowEvent::KeyboardInput`. Mirrors the zero-init workaround
-/// in `compositor::native::keyboard_input_event`/`overlay_host::key_press`: winit's `pub(crate)` `platform_specific` field tolerates the zeroed struct.
+/// Build a `WindowEvent::KeyboardInput` from the evdev key `evdev_keycode`.
 fn keyboard_input_event(
     logical_key: Key,
     text: Option<SmolStr>,
     pressed: bool,
     evdev_keycode: u32,
 ) -> WindowEvent {
-    // SAFETY: every public field of `KeyEvent` is overwritten below, and
-    // the only non-public field (`platform_specific: KeyEventExtra`)
-    // tolerates the all-zero bit pattern — the same invariant the two
-    // existing `KeyEvent`-building helpers in this crate rely on.
-    let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-    ev.logical_key = logical_key;
+    let mut ev = ui::synthetic_input::key_event(
+        logical_key,
+        text,
+        if pressed {
+            ElementState::Pressed
+        } else {
+            ElementState::Released
+        },
+    );
     ev.physical_key = PhysicalKey::from_scancode(evdev_keycode);
-    ev.location = KeyLocation::Standard;
-    ev.state = if pressed {
-        ElementState::Pressed
-    } else {
-        ElementState::Released
-    };
-    ev.repeat = false;
-    ev.text = text;
     WindowEvent::KeyboardInput {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         event: ev,
         is_synthetic: false,
     }
@@ -5785,7 +5818,7 @@ mod tests {
             let mut s = DrmDispatchState::default();
             // `BackendEvent::Input` carries the actual `WindowEvent`; synthesise a minimal CursorMoved so the variant constructs.
             let fake = winit::event::WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 position: winit::dpi::PhysicalPosition::new(0.0, 0.0),
             };
             s.push(BackendEvent::Input(fake));
@@ -6473,7 +6506,7 @@ mod tests {
 
             // The runtime feeds these exact values to both delivery paths.
             let touch = TiloTouchEvent::Motion { slot: 4, x, y };
-            let pointer = cursor_moved_event(x, y);
+            let pointer = cursor_moved(x, y);
             assert_eq!(
                 touch,
                 TiloTouchEvent::Motion {
@@ -6507,7 +6540,7 @@ mod tests {
     /// Fake one modeset output without a real card.  Giving the fixture a
     /// device id lets topology tests cover the exact identity boundary where
     /// DRM connector and CRTC handles restart on a second GPU.
-    fn entry_on_device(
+    pub(super) fn entry_on_device(
         device: u64,
         id: u32,
         connector: u32,
@@ -7189,20 +7222,52 @@ mod tests {
                 "a user who set a scale is not asking for a second opinion"
             );
         }
-        // Phase `synthesize_for_tests_populates_output_meta`.
+        // Phase `synthesize_for_tests_publishes_its_outputs`.
         {
-            let outs = vec![
-                (OutputId(0), Output::new(OutputId(0), (1920, 1080), 1.0)),
-                (OutputId(1), Output::new(OutputId(1), (1280, 720), 1.0)),
-            ];
-            let state = DrmRuntime::synthesize_for_tests(outs);
+            let state =
+                DrmRuntime::synthesize_for_tests(&[("eDP-1", (1920, 1080)), ("DP-2", (1280, 720))]);
             assert_eq!(state.output_meta.len(), 2);
-            assert!(state.output_meta.contains_key(&OutputId(0)));
-            assert!(state.output_meta.contains_key(&OutputId(1)));
+            assert_eq!(
+                state
+                    .output_table()
+                    .iter()
+                    .map(|output| (output.id, output.size))
+                    .collect::<Vec<_>>(),
+                [(OutputId(0), (1920, 1080)), (OutputId(1), (1280, 720))],
+                "the seam must publish through the live set, as hardware bring-up does"
+            );
         }
     }
 
-    fn named(mut entry: LiveEntry, connector: &str) -> LiveEntry {
+    #[test]
+    fn output_table_publishes_live_outputs_in_layout_order() {
+        let (mut state, _rx) = dispatch_with_channel();
+        // The external monitor enumerated first.
+        state.live = vec![
+            named(entry(0, 10, (2560, 1440), None), "DP-2"),
+            named(entry(1, 11, (1920, 1080), None), "eDP-1"),
+        ];
+        state.relayout_with(&settings_store::hardware::DisplayConfig::default());
+        // A record for an output no longer driven — unplugged or powered off since the last
+        // relayout — must not be advertised to clients.
+        state
+            .output_meta
+            .insert(OutputId(7), Output::new(OutputId(7), (3840, 2160), 1.0));
+
+        let table = state.output_table();
+        assert_eq!(
+            table
+                .iter()
+                .map(|output| (output.id, output.size))
+                .collect::<Vec<_>>(),
+            [(OutputId(1), (1920, 1080)), (OutputId(0), (2560, 1440))],
+            "the built-in panel is published first, the external after it, and only live outputs"
+        );
+        assert_eq!(table[0].position, (0, 0));
+        assert_eq!(table[1].position, (1920, 0));
+    }
+
+    pub(super) fn named(mut entry: LiveEntry, connector: &str) -> LiveEntry {
         entry.connector_name = connector.into();
         entry.config_key = connector.into();
         entry

@@ -76,7 +76,9 @@ pub fn parse_settings_uri(uri: &str) -> Result<SettingsEffect, String> {
         }
         .into());
     }
-    let pane = rest.split('/').next().unwrap_or_default();
+    // Pane links only select a view; query and fragment metadata do not
+    // change that selection. Model links retain their stricter id validation.
+    let pane = rest.split(['/', '?', '#']).next().unwrap_or_default();
     // Camera and other apps link to the privacy controls by their common
     // name; the pane is Permissions.
     let pane = match pane {
@@ -110,7 +112,14 @@ impl ResourceApp for SettingsShell {
     const ARGUMENTS: usize = 1;
 
     fn view(cx: &mut ViewCx<Settings>) -> Element {
-        cx.surface(SettingsApp::new())
+        // Private host profiles also own their account stores and mutation journal.
+        let app = match cx.storage().settings_document() {
+            ui::storage::SettingsDocument::Session => SettingsApp::new(),
+            ui::storage::SettingsDocument::File(path) => {
+                SettingsApp::with_config_root(path.parent().unwrap_or(path.as_path()))
+            }
+        };
+        cx.surface(app)
     }
 
     /// `settings://models/<id>` opens Agent Models at that model's card and
@@ -145,7 +154,7 @@ impl ResourceSurface<Settings, SettingsEffect> for SettingsApp {
     fn present(&mut self, _state: &Rc<()>) {}
 
     fn take_host_intent(&mut self) -> Option<ui::widget::AppHostIntent> {
-        self.displays().model().borrow_mut().take_host_intent()
+        self.displays().take_host_intent()
     }
 
     fn attach(&mut self, cx: SurfaceCx<Settings>) {
@@ -181,6 +190,83 @@ impl ResourceSurface<Settings, SettingsEffect> for SettingsApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_pane_launch_is_applied_once_and_does_not_leak_to_another_window() {
+        use ui::framework::testing::TestApp;
+
+        let mut app = TestApp::<SettingsShell>::launched(&["settings://updates"])
+            .expect("the actual framework launch");
+        assert_eq!(
+            app.with_widget::<SettingsApp, _>(|settings| settings.selected()),
+            Some(Category::Updates),
+            "the launch link opens its named pane"
+        );
+        app.effect(&SettingsEffect::from(NavigationEffect::OpenPane {
+            pane: "power".into(),
+        }))
+        .expect("the normal public navigation effect");
+        for _ in 0..3 {
+            app.harness().relayout();
+            assert_eq!(
+                app.with_widget::<SettingsApp, _>(|settings| settings.selected()),
+                Some(Category::Power),
+                "later host frames must not replay the consumed Updates launch"
+            );
+        }
+        let mut reopened = app
+            .reopen()
+            .expect("reopen the same profile without arguments");
+        assert_eq!(
+            reopened.with_widget::<SettingsApp, _>(|settings| settings.selected()),
+            Some(Category::DEFAULT),
+            "the previous launch argument is not pending on the reopened window"
+        );
+        let mut other = TestApp::<SettingsShell>::new().expect("another ordinary window");
+        assert_eq!(
+            other.with_widget::<SettingsApp, _>(|settings| settings.selected()),
+            Some(Category::DEFAULT),
+            "a launch belongs to its window, not a global pane mailbox"
+        );
+        let mut invalid = TestApp::<SettingsShell>::launched(&["--shots"])
+            .expect("an argument that is not a Settings link");
+        assert_eq!(
+            invalid.with_widget::<SettingsApp, _>(|settings| settings.selected()),
+            Some(Category::DEFAULT),
+            "the original non-link argument never selects a pane"
+        );
+    }
+
+    #[test]
+    fn pane_links_preserve_query_and_fragment_compatibility() {
+        for uri in [
+            "settings://power?x=1",
+            "settings:power?x=1",
+            "settings://power#battery",
+            "settings://power?x=1#battery",
+        ] {
+            assert_eq!(
+                parse_settings_uri(uri),
+                Ok(NavigationEffect::OpenPane {
+                    pane: "power".into(),
+                }
+                .into()),
+                "{uri}"
+            );
+        }
+        for uri in [
+            "settings://nope?pane=power",
+            "settings://Power#battery",
+            "settings://?pane=power",
+            "settings://user@power?x=1",
+            "settings://power:443#battery",
+            "settings:///power?x=1",
+            "settings://models/u2net-subject?x=1",
+            "settings://models/u2net-subject#card",
+        ] {
+            assert!(parse_settings_uri(uri).is_err(), "{uri}");
+        }
+    }
 
     /// Model links name a validated model id, pane links a known pane, and
     /// anything else is refused rather than guessed.

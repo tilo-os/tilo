@@ -7,11 +7,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -44,8 +40,8 @@ struct Cli {
     /// are evicted least recently used first until the total drops below
     /// the cap. Pinned packages are never evicted. Pass `0` to disable the
     /// sweep; explicit `diskUsage` reports still work.
-    /// Default: 4 GiB.
-    #[arg(long, default_value_t = 4 * 1024 * 1024 * 1024)]
+    /// Default: 4 GiB, the cap `tilo-install` applies too.
+    #[arg(long, default_value_t = package_store::DEFAULT_MAX_STORE_BYTES)]
     max_store_bytes: u64,
 }
 
@@ -53,7 +49,10 @@ fn main() -> anyhow::Result<()> {
     init_tracing();
 
     let cli = Cli::parse();
-    let socket = cli.socket.unwrap_or_else(default_socket_path);
+    let socket = cli
+        .socket
+        .or_else(default_socket_path)
+        .ok_or_else(|| anyhow::anyhow!("XDG_RUNTIME_DIR not set: pass --socket"))?;
     let root = cli
         .store
         .or_else(package_store::layout::default_user_root)

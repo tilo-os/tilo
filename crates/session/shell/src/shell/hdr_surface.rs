@@ -47,7 +47,11 @@ use crate::shell::color_pipeline::{
 use crate::shell::hdr_tonemap::{HdrTonemapConfig, tonemap_rgb_signal_to_sdr_linear};
 
 /// The GPU composite for PQ outputs; mirrors [`composite_hdr_pixel`].
-pub const COMPOSITE_SHADER_SOURCE: &str = include_str!("hdr_composite.wgsl");
+pub const COMPOSITE_SHADER_SOURCE: &str = concat!(
+    include_str!("output_orientation.wgsl"),
+    "\n",
+    include_str!("hdr_composite.wgsl")
+);
 
 /// Layers one frame can composite: one per weight channel.
 pub const MAX_HDR_LAYERS: usize = 3;

@@ -317,15 +317,6 @@ impl FrameHarness {
         self.relayout();
         Ok(())
     }
-    pub fn toggle_global_search_all(&mut self) -> Result<(), String> {
-        if self.system_search.overlay.is_some() {
-            self.close_system_search();
-            self.relayout();
-            Ok(())
-        } else {
-            self.open_global_search_all("")
-        }
-    }
     pub fn take_global_search_intent(&mut self) -> Option<GlobalSearchIntent> {
         self.system_search.pending.take()
     }
@@ -539,7 +530,7 @@ impl FrameHarness {
                         snapshots
                             .iter()
                             .filter(|snapshot| snapshot.binding.same_component(&binding))
-                            .flat_map(|snapshot| &snapshot.resources)
+                            .flat_map(|snapshot| snapshot.resources().iter())
                             .find(|resource| {
                                 tilo_actions::door::resolve(
                                     std::slice::from_ref(resource),

@@ -8,7 +8,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use collab_types::Ed25519PublicKey;
+use fs_protocol::Ed25519PublicKey;
 use tilo_clock::try_unix_now_ns;
 use tilo_user_identity::{
     MAX_TRUSTED_IDENTITY_DISPLAY_NAME_BYTES, MAX_TRUSTED_IDENTITY_PROJECTION_BYTES,

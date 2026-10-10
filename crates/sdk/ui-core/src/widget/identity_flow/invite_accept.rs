@@ -15,10 +15,11 @@
 
 use crate::time::SystemTime;
 use crate::widget::{AppModel, ModelPath};
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 use collab_types::{ChannelEvent, Ed25519PublicKey};
-use taffy::{Dimension, Display, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
@@ -30,15 +31,15 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
+use crate::widget::identity_flow::ScreenOutcome;
 use crate::widget::identity_flow::sheet::{
-    Align, BodyScroll, FORM_SHEET_WIDTH, Resolved, Role, Rows, SheetSpec, edited, line_height,
-    paint_text, paragraph_height, place_field, resolve, with_layout_renderer,
-};
-use crate::widget::identity_flow::{
-    IdentityFlowError, InviteEnvelope, ScreenOutcome, build_attestation_from_invite,
+    Align, BodyScroll, Resolved, Role, Rows, SheetFrame, SheetScreen, draw_screen, edited,
+    field_leaf, layout_screen, line_height, paint_text, paragraph_height, place_field,
+    screen_style,
 };
 use crate::widget::modal_dialog::ModalAction;
 use crate::widget::text_input::TextInput;
+use tilo_identity_ceremony::{IdentityFlowError, InviteEnvelope, build_attestation_from_invite};
 
 const TITLE: &str = "Accept channel invite";
 const LINK_LABEL: &str = "Invite link";
@@ -55,7 +56,7 @@ const ACTION_ACCEPT: usize = 1;
 
 /// Every rect the screen paints and hit-tests, from one pass over the rows.
 #[derive(Clone, Debug, Default)]
-struct Plan {
+pub(super) struct Plan {
     link_label: Rect,
     url: Rect,
     /// The parsed invite's banner and expiry, when a valid link is present.
@@ -68,7 +69,7 @@ struct Plan {
 }
 
 pub struct InviteAcceptScreen {
-    rect: Rect,
+    frame: SheetFrame,
     /// The invite-link field: the shared text input, embedded. Read it
     /// with [`Self::url`], seed it with [`Self::set_url`].
     url: TextInput,
@@ -88,11 +89,6 @@ pub struct InviteAcceptScreen {
     pub last_accepted_event: Option<ChannelEvent>,
     accept_error: Option<String>,
     last_cursor: Point,
-    /// The theme `build_layout` saw, so `apply_layout` can resolve the rows
-    /// without waiting for a paint.
-    layout_theme: Option<Theme>,
-    scroll: BodyScroll,
-    body_height: f64,
 }
 
 impl Default for InviteAcceptScreen {
@@ -111,7 +107,7 @@ impl InviteAcceptScreen {
             .with_accessible_name(LINK_LABEL);
         url.set_focus(true);
         Self {
-            rect: Rect::ZERO,
+            frame: SheetFrame::default(),
             url,
             url_node: None,
             last_url: String::new(),
@@ -125,9 +121,6 @@ impl InviteAcceptScreen {
             last_accepted_event: None,
             accept_error: None,
             last_cursor: Point::ZERO,
-            layout_theme: None,
-            scroll: BodyScroll::default(),
-            body_height: 0.0,
         }
     }
 
@@ -292,7 +285,7 @@ impl InviteAcceptScreen {
                     },
                 ..
             } => {
-                if self.scroll.key(logical_key, self.body_height) {
+                if self.frame.key(logical_key) {
                     *handled = true;
                     return ScreenOutcome::Stay;
                 }
@@ -305,7 +298,7 @@ impl InviteAcceptScreen {
                 ScreenOutcome::Stay
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                if self.scroll.wheel(delta) {
+                if self.frame.wheel(delta) {
                     *handled = true;
                 }
                 ScreenOutcome::Stay
@@ -330,50 +323,6 @@ impl InviteAcceptScreen {
         if edited(&mut self.url, &mut self.last_url) {
             self.parse();
         }
-    }
-
-    /// One geometry pass for both `apply_layout` and `draw`; hit rects are
-    /// clipped to the visible body.
-    fn resolve(&mut self, theme: &Theme, text_renderer: &mut TextRenderer) -> Resolved<Plan> {
-        let actions = self.actions();
-        let spec = SheetSpec {
-            title: TITLE,
-            max_width: FORM_SHEET_WIDTH,
-            actions: &actions,
-        };
-        let mut scroll = self.scroll;
-        let resolved = resolve(
-            self.rect,
-            &spec,
-            &mut scroll,
-            text_renderer,
-            theme,
-            |rows, control_h, tr, theme| {
-                let plan = self.plan(rows, control_h, tr, theme);
-                let bottom = plan.bottom;
-                (plan, bottom)
-            },
-        );
-        self.scroll = scroll;
-        let body = resolved.sheet.body();
-        self.body_height = body.height();
-        // An accessibility `SetValue` lands outside the event path; the
-        // layout pass that follows it is where the link gets re-read.
-        self.reparse_if_edited();
-        place_field(&mut self.url, resolved.plan.url);
-        self.url_rect = BodyScroll::visible(body, resolved.plan.url);
-        self.decline_rect = resolved.sheet.action(ACTION_DECLINE);
-        self.accept_rect = resolved.sheet.action(ACTION_ACCEPT);
-        resolved
-    }
-
-    fn actions(&self) -> [ModalAction<'static>; 2] {
-        [
-            ModalAction::secondary(DECLINE_LABEL).hovered(self.decline_hovered),
-            ModalAction::primary(ACCEPT_LABEL)
-                .enabled(self.parsed.is_some())
-                .hovered(self.accept_hovered),
-        ]
     }
 
     /// What the status row says: who invited, or why the link failed, or
@@ -402,7 +351,32 @@ impl InviteAcceptScreen {
         .to_rfc3339();
         Some((banner, format!("Expires {when}")))
     }
+}
 
+impl SheetScreen for InviteAcceptScreen {
+    type Plan = Plan;
+    type Actions = [ModalAction<'static>; 2];
+
+    fn frame(&self) -> &SheetFrame {
+        &self.frame
+    }
+
+    fn frame_mut(&mut self) -> &mut SheetFrame {
+        &mut self.frame
+    }
+
+    fn title(&self) -> Cow<'static, str> {
+        TITLE.into()
+    }
+
+    fn actions(&self) -> [ModalAction<'static>; 2] {
+        [
+            ModalAction::secondary(DECLINE_LABEL).hovered(self.decline_hovered),
+            ModalAction::primary(ACCEPT_LABEL)
+                .enabled(self.parsed.is_some())
+                .hovered(self.accept_hovered),
+        ]
+    }
     /// Walk the body rows once: the link field, then what the link means.
     fn plan(
         &self,
@@ -451,6 +425,58 @@ impl InviteAcceptScreen {
             bottom: rows.bottom(),
         }
     }
+
+    fn bottom(plan: &Plan) -> f64 {
+        plan.bottom
+    }
+
+    fn place(
+        &mut self,
+        resolved: &Resolved<Plan>,
+        _text_renderer: &mut TextRenderer,
+        _theme: &Theme,
+    ) {
+        let body = resolved.sheet.body();
+        // An accessibility `SetValue` lands outside the event path; the
+        // layout pass that follows it is where the link gets re-read.
+        self.reparse_if_edited();
+        place_field(&mut self.url, resolved.plan.url);
+        self.url_rect = BodyScroll::visible(body, resolved.plan.url);
+        self.decline_rect = resolved.sheet.action(ACTION_DECLINE);
+        self.accept_rect = resolved.sheet.action(ACTION_ACCEPT);
+    }
+
+    fn paint_body(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        presence: &PresenceCtx,
+        resolved: &Resolved<Plan>,
+    ) {
+        let plan = &resolved.plan;
+        paint_text(
+            ctx,
+            plan.link_label,
+            LINK_LABEL,
+            Role::Label,
+            Align::Start,
+            false,
+        );
+        self.url
+            .draw(ctx.scene, ctx.transform, ctx.text, ctx.theme, presence);
+        if let Some((banner, expires)) = self.banner_text() {
+            if let Some(rect) = plan.banner {
+                paint_text(ctx, rect, &banner, Role::Value, Align::Start, true);
+            }
+            if let Some(rect) = plan.expires {
+                paint_text(ctx, rect, &expires, Role::Caption, Align::Start, false);
+            }
+        } else if let (Some(rect), Some((text, role))) = (plan.status, self.status_text()) {
+            paint_text(ctx, rect, &text, role, Align::Start, true);
+        }
+        if let (Some(rect), Some(err)) = (plan.error, self.accept_error.as_deref()) {
+            paint_text(ctx, rect, err, Role::Error, Align::Start, true);
+        }
+    }
 }
 
 impl Widget for InviteAcceptScreen {
@@ -462,45 +488,15 @@ impl Widget for InviteAcceptScreen {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        self.layout_theme = Some(theme.clone());
-        // The field is a child node of its own — placed by the sheet, not
-        // by taffy (`Display::None`), but present in the tree so the host's
-        // focus order and the accessibility tree line up with `children()`.
-        let field = taffy.leaf_node(Style {
-            display: Display::None,
-            ..Default::default()
-        });
+        self.frame.layout_theme = Some(theme.clone());
+        let field = field_leaf(taffy);
         node_map.insert(field, std::ptr::from_mut::<dyn Widget>(&mut self.url));
         self.url_node = Some(field);
-        // The screen owns the viewport, so the sheet centres on the window
-        // rather than inside a fixed box at the origin.
-        let node = taffy.parent_node(
-            Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
-                ..Default::default()
-            },
-            &[field],
-        );
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_node(screen_style(), &[field], node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
-        if let Some(theme) = self.layout_theme.clone() {
-            with_layout_renderer(&theme, |tr| {
-                self.resolve(&theme, tr);
-            });
-        }
+        layout_screen(self, taffy, node, origin);
     }
 
     fn draw(
@@ -511,75 +507,7 @@ impl Widget for InviteAcceptScreen {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        // Identity ceremonies, invites and joins are security surfaces:
-        // every look-alike letter is set apart.
-        text_renderer.security_surface(|text_renderer| {
-            let resolved = self.resolve(theme, text_renderer);
-            let actions = self.actions();
-            let spec = SheetSpec {
-                title: TITLE,
-                max_width: FORM_SHEET_WIDTH,
-                actions: &actions,
-            };
-            let sheet = &resolved.sheet;
-            let plan = &resolved.plan;
-
-            sheet.paint_frame(scene, transform, text_renderer, theme, &spec);
-            sheet.clip_body(scene, transform);
-            paint_text(
-                &mut PaintCtx::new(scene, transform, text_renderer, theme),
-                plan.link_label,
-                LINK_LABEL,
-                Role::Label,
-                Align::Start,
-                false,
-            );
-            self.url
-                .draw(scene, transform, text_renderer, theme, presence);
-            if let Some((banner, expires)) = self.banner_text() {
-                if let Some(rect) = plan.banner {
-                    paint_text(
-                        &mut PaintCtx::new(scene, transform, text_renderer, theme),
-                        rect,
-                        &banner,
-                        Role::Value,
-                        Align::Start,
-                        true,
-                    );
-                }
-                if let Some(rect) = plan.expires {
-                    paint_text(
-                        &mut PaintCtx::new(scene, transform, text_renderer, theme),
-                        rect,
-                        &expires,
-                        Role::Caption,
-                        Align::Start,
-                        false,
-                    );
-                }
-            } else if let (Some(rect), Some((text, role))) = (plan.status, self.status_text()) {
-                paint_text(
-                    &mut PaintCtx::new(scene, transform, text_renderer, theme),
-                    rect,
-                    &text,
-                    role,
-                    Align::Start,
-                    true,
-                );
-            }
-            if let (Some(rect), Some(err)) = (plan.error, self.accept_error.as_deref()) {
-                paint_text(
-                    &mut PaintCtx::new(scene, transform, text_renderer, theme),
-                    rect,
-                    err,
-                    Role::Error,
-                    Align::Start,
-                    true,
-                );
-            }
-            scene.pop_layer();
-            sheet.paint_actions(scene, transform, text_renderer, theme, &spec);
-        });
+        draw_screen(self, scene, transform, text_renderer, theme, presence);
     }
 
     fn name(&self) -> &'static str {
@@ -609,7 +537,7 @@ impl Widget for InviteAcceptScreen {
     }
 
     fn get_rect(&self) -> Rect {
-        self.rect
+        self.frame.rect
     }
 
     fn needs_redraw(&self) -> bool {
@@ -627,9 +555,10 @@ mod tests {
     use crate::time::Duration;
     use automerge::AutoCommit;
     use collab_types::{ChannelId, Role as ChannelRole, generate_keypair};
+    use taffy::Size;
 
     fn fixture_url(now: SystemTime) -> String {
-        use crate::widget::identity_flow::mint_invite;
+        use tilo_identity_ceremony::mint_invite;
         let (sk, pk) = generate_keypair();
         let env = mint_invite(
             ChannelId::new(),

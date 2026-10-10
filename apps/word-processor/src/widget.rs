@@ -8,11 +8,12 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 #[cfg(test)]
 use ui::widget::Edits;
+use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ChangeHash, ObjId};
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{Color, Fill};
@@ -3095,20 +3096,6 @@ impl WordProcessorWidget {
     /// examples, visual regression shots and embedders.
     pub fn set_styles_panel_open(&mut self, open: bool) {
         self.view.styles_panel_visible = open;
-        self.lifecycle.dirty = true;
-    }
-
-    /// Edit the page margins on the page, as choosing Margins in the status
-    /// band does.
-    pub fn set_margins_mode(&mut self) {
-        self.toggle_layout_mode(LayoutMode::Margins);
-    }
-
-    /// Show or hide the document outline.
-    pub fn set_outline_open(&mut self, open: bool) {
-        if self.outline.is_open() != open {
-            self.outline.toggle();
-        }
         self.lifecycle.dirty = true;
     }
 
@@ -10251,26 +10238,7 @@ impl Widget for WordProcessorWidget {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.window_history.tree_rebuilt();
-        // `new_leaf` is typed `-> TaffyResult<NodeId>` for API generality but
-        // cannot actually return `Err` for a fresh leaf (see the
-        // `TaffyTreeExt` doc comment in `ui::widget::mod`), and
-        // `Widget::build_layout` returns a bare `NodeId` across every
-        // implementor, so there is nowhere to surface a theoretical error.
-        #[allow(
-            clippy::unwrap_used,
-            reason = "taffy::TaffyTree::new_leaf cannot return Err; see ui::widget::TaffyTreeExt"
-        )]
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.fill_leaf(node_map, self)
     }
 
     /// Authored chrome keeps its retained toolkit children available to the
@@ -10312,13 +10280,7 @@ impl Widget for WordProcessorWidget {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -11380,7 +11342,7 @@ impl WordProcessorWidget {
     pub(crate) fn remote_typing_overlays(
         &self,
         presence: &PresenceCtx,
-        now: ui::clock::Instant,
+        now: ui::time::Instant,
     ) -> Vec<(UserId, Vec<(Rect, f32)>)> {
         let mut out = Vec::new();
         for l in &self.laid {

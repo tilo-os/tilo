@@ -8,6 +8,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use tilo_ui::widget::TaffyTreeExt;
 
 use automerge::AutoCommit;
 use chrono::NaiveDate;
@@ -61,21 +62,14 @@ impl Widget for LabelTile {
         // taffy 0.10's `new_leaf` always inserts and returns `Ok` for a
         // fresh tree; see `tilo_ui::widget::TaffyTreeExt`'s doc comment (not
         // usable here — it's `pub(crate)` and this is an example binary).
-        #[allow(
-            clippy::unwrap_used,
-            reason = "new_leaf cannot fail on a freshly built taffy tree"
-        )]
-        let node = taffy
-            .new_leaf(taffy::Style {
-                size: Size {
-                    width: taffy::Dimension::percent(1.0),
-                    height: taffy::Dimension::percent(1.0),
-                },
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let style = taffy::Style {
+            size: Size {
+                width: taffy::Dimension::percent(1.0),
+                height: taffy::Dimension::percent(1.0),
+            },
+            ..Default::default()
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
     fn measure(
         &mut self,
@@ -90,13 +84,7 @@ impl Widget for LabelTile {
         }
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = tilo_ui::widget::layout_rect(taffy, node, origin);
     }
     fn draw(
         &mut self,
@@ -399,7 +387,7 @@ pub fn run(_args: &[String]) {
     // LineDelta(0, -30) = scroll down 30 lines (~600 px after Scrollable's
     // 20× line multiplier). Negative y = "scroll down" in winit's model.
     let wheel = WindowEvent::MouseWheel {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         delta: MouseScrollDelta::LineDelta(0.0, -30.0),
         phase: winit::event::TouchPhase::Moved,
     };

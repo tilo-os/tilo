@@ -25,6 +25,14 @@ executable stand-alone; the higher-level flow is described below.
   already-built binaries and an existing app store, so it does not build an
   RPM or image.
 
+- `latency_bench.py` — the nightly `latency` KPI group: a headless compositor
+  times 600 pointer moves (input to finished frame, from the frame trace) and
+  100 workspace switches (the compositor's `WORKSPACE-SWITCH` lines: chord to
+  first frame, to the resting frame, dropped intervals), and writes records.
+  `device_latency_bench.py` is its weekly hardware counterpart (kernel input to
+  KMS presentation, through `tilo-vm`); see
+  [reference hardware](../../docs/benchmarks/reference-hardware.md).
+
 - `binary-sizes.sh [target-dir]` — walk `target/release/` (or the
   given dir) for shell + terminal + file-explorer + tilo-relay + fs +
   tilo-install, emit a `{name: bytes}` JSON blob on stdout.
@@ -46,6 +54,26 @@ executable stand-alone; the higher-level flow is described below.
 
 - `compare.sh <base.json> <cur.json>` — diff two runs (either output
   format) and print a percentage-change table.
+
+- `agent_rtt.py (--socket PATH | --spawn SHELL)` — the agent round trip:
+  actions list, state dump, a no-op invoke (accepted, and completed through
+  `wait_ms`), throughput under eight clients and the no-op through the MCP
+  server. Each is timed from the client's side of the control socket, after
+  100 warm-up calls, with 1,000 samples. `--app PROVIDER:ID` adds an app
+  action. With `--env-json` it writes `tools/perf/record.py` records.
+  **Perf / scheduled** runs it nightly as the `agent` group.
+
+- `agent_task.py (--socket PATH | --spawn SHELL [--seeder EXAMPLE])` — a
+  whole agent task: a scripted model, streamed like the Messages API from a
+  loopback fake, creates a note in Notes, writes its body, finds it by
+  search and opens it, one tool call per turn over the control socket.
+  Records the task's wall time, the time in Tilo, in the (fake) model and in
+  the agent loop, the turns and each step; `--split-repetitions` also times
+  each invoke's accept and apply apart. `--think-ms` and `--tokens-per-s`
+  model a real provider; both default to 0. `--spawn` seeds a
+  signed-in Notes desktop with the `agent_task_desktop` example of `shell`.
+  It joins the `agent` group once a whole task settles: today a listing
+  stops settling after the first new note (TIL-759).
 
 ## Optimise (three-step PGO + optional BOLT)
 
@@ -124,3 +152,10 @@ certify performance.
 Measurements are workload- and host-dependent. Record the image revision,
 CPU/memory/KVM settings, adapter, and `TILO_DISTROBOX` value with each result;
 do not treat an old run as a repository baseline.
+
+`tools/perf/record.py` writes that environment into every result as a record.
+`tools/perf/compare.py` compares a record only with stored records from the same
+environment. Scheduled results and their baselines are kept in the
+`tilo-perf-results` package; see
+[Performance results](../../DEVELOPMENT.md#performance-results). Use
+`compare.sh` for a one-off diff of two local runs.

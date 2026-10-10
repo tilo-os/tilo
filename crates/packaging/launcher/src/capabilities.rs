@@ -363,7 +363,7 @@ pub fn host_device_paths(device: &str) -> Vec<PathBuf> {
         }
         "microphone" => {
             let mut out = Vec::new();
-            let runtime_dir = xdg_paths::xdg::runtime_dir().unwrap_or_else(|| {
+            let runtime_dir = tilo_paths::xdg::runtime_dir().unwrap_or_else(|| {
                 // SAFETY: getuid always succeeds.
                 PathBuf::from(format!("/run/user/{}", unsafe { libc::getuid() }))
             });

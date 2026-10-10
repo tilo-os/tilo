@@ -1,4 +1,13 @@
 //! Host-local invocation custody. No wire caller can manufacture these checks.
+
+/// A typed host check response, suitable for an existing effect worker.
+pub type ApprovedCheckFuture = std::pin::Pin<
+    Box<
+        dyn std::future::Future<Output = Result<runtime_collab::approved_checks::Receipt, String>>
+            + Send,
+    >,
+>;
+
 /// Inert delivered inputs. Only the registered host can associate these with
 /// an original admitted caller, contract and exact worker connection.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -620,6 +629,39 @@ impl ResourceInvocationScope {
         self.lease.request.invocation
     }
 
+    /// Queue only a check ID under this exact admitted effect's record route.
+    /// The host resolves commands and execution bounds and rechecks custody.
+    ///
+    /// # Errors
+    /// Refuses absent transport, changed custody, malformed IDs or a full lane.
+    pub fn approved_check(&self, check_id: &str) -> Result<ApprovedCheckFuture, String> {
+        self.check()?;
+        #[cfg(feature = "broker-transport")]
+        {
+            let scope = self.effect_scope()?;
+            let request = runtime_collab::approved_checks::Request {
+                version: 1,
+                invocation: self.invocation().0.to_string(),
+                check_id: check_id.into(),
+            };
+            let receive = crate::collaboration::approved_checks::enqueue(
+                &self.route().channel_id(),
+                request,
+            )?;
+            Ok(Box::pin(async move {
+                let receipt = receive
+                    .await
+                    .map_err(|_| "approved-check transport retired")??;
+                scope.with_effect(|| Ok(receipt))
+            }))
+        }
+        #[cfg(not(feature = "broker-transport"))]
+        {
+            let _ = check_id;
+            Err("approved project checks require the admitted native broker transport".into())
+        }
+    }
+
     /// The canonical record route construction verified against the owner.
     pub(crate) fn route(&self) -> &RouteSpec {
         &self.lease.route
@@ -918,12 +960,14 @@ impl InvocationProvenance {
             .map(|change| change.hash())
             .collect::<BTreeSet<_>>();
         let mut contributions: Vec<Contribution> = vec![];
+        #[cfg(feature = "broker-transport")]
         let mut acknowledgements = vec![];
         for hash in &exported {
             if let Some(retained) = self.contributions.get(hash) {
                 if retained.committed.load(Ordering::Acquire) {
                     continue;
                 }
+                #[cfg(feature = "broker-transport")]
                 acknowledgements.push(retained.committed.clone());
                 let lease = &retained.lease;
                 if let Some(group) = contributions
@@ -948,6 +992,7 @@ impl InvocationProvenance {
                 to: document.base_heads(),
                 exported,
                 contributions,
+                #[cfg(feature = "broker-transport")]
                 acknowledgements,
             },
         ))))
@@ -965,10 +1010,7 @@ struct DocumentAuthorizationInner {
     to: Vec<ChangeHash>,
     exported: BTreeSet<ChangeHash>,
     contributions: Vec<Contribution>,
-    #[cfg_attr(
-        not(feature = "broker-transport"),
-        allow(dead_code, reason = "only the broker transport acknowledges commits")
-    )]
+    #[cfg(feature = "broker-transport")]
     acknowledgements: Vec<Arc<AtomicBool>>,
 }
 
@@ -987,46 +1029,6 @@ impl DocumentAuthorization {
     pub fn frontiers(&self) -> (&[ChangeHash], &[ChangeHash]) {
         (&self.0.from, &self.0.to)
     }
-    /// Check the concrete committer's returned operation against the exact
-    /// captured body (including its encoded causal dependencies) and route.
-    /// Actual bounded graph/basis admission is still the final owner's job.
-    #[cfg_attr(
-        not(feature = "broker-transport"),
-        allow(dead_code, reason = "only the broker transport commits documents")
-    )]
-    pub(crate) fn check_committed_operation(
-        &self,
-        route: &RouteSpec,
-        operation: &collab_types::SignedOp,
-    ) -> Result<(), String> {
-        let room = route.cluster_id.to_string();
-        let record = route.record.as_deref().unwrap_or("");
-        if route != &self.0.route
-            || operation.encryption.is_some()
-            || operation.op_class != collab_types::OpClass::Splice
-            || operation.artifact
-                != collab_types::document_artifact_id(&route.app_id, &room, record)
-            || operation.attestation_id
-                != collab_types::document_attestation_id(&route.app_id, &room, record)
-            || blake3::hash(&operation.payload).as_bytes() != &self.0.body
-        {
-            return Err("scoped owner returned a different document operation".into());
-        }
-        Ok(())
-    }
-
-    // Private SDK-only confirmation, after exact scoped durable success and
-    // matching receipt handoff. A handler or terminal receipt cannot set it.
-    #[cfg_attr(
-        not(feature = "broker-transport"),
-        allow(dead_code, reason = "only the broker transport commits documents")
-    )]
-    pub(crate) fn acknowledge_committed(&self) {
-        for acknowledgement in &self.0.acknowledgements {
-            acknowledgement.store(true, Ordering::Release);
-        }
-    }
-
     /// This verifies body binding and current contributors, not graph coverage.
     /// The concrete owner must ALSO call validate_owner_base with the actual
     /// bounded admission/parser's complete mutation range under its owner turn.
@@ -1114,10 +1116,7 @@ impl DocumentAuthorization {
         Ok(())
     }
 
-    #[cfg_attr(
-        not(feature = "broker-transport"),
-        allow(dead_code, reason = "only the broker transport commits documents")
-    )]
+    #[cfg(feature = "broker-transport")]
     pub(crate) fn retained_bytes(&self) -> Option<usize> {
         let mut bytes = std::mem::size_of::<DocumentAuthorizationInner>();
         bytes = bytes

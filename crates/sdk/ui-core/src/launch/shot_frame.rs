@@ -54,7 +54,6 @@ pub struct ShotFrame {
     pub permission: PermissionContext,
     viewport: (u32, u32),
     layout_mode: ShotLayout,
-    resync_after_build: bool,
     taffy: TaffyTree<()>,
     node_map: HashMap<NodeId, *mut dyn Widget>,
     child: Option<NodeId>,
@@ -80,7 +79,6 @@ impl ShotFrame {
             permission: PermissionContext::permissive(),
             viewport,
             layout_mode: ShotLayout::Settled,
-            resync_after_build: false,
             taffy: TaffyTree::new(),
             node_map: HashMap::new(),
             child: None,
@@ -88,29 +86,10 @@ impl ShotFrame {
         }
     }
 
-    /// Leave the text renderer at its unit scale whatever the theme's text
-    /// scale. For widgets that pass already-scaled theme token sizes straight
-    /// to the renderer, where the renderer's own multiplier would scale text
-    /// a second time.
-    #[must_use]
-    pub fn with_unscaled_text(mut self) -> Self {
-        self.text.set_text_scale(1.0);
-        self
-    }
-
     /// Choose the layout solver (default [`ShotLayout::Settled`]).
     #[must_use]
     pub fn with_layout(mut self, layout: ShotLayout) -> Self {
         self.layout_mode = layout;
-        self
-    }
-
-    /// Sync the widget again between `build_layout` and the layout pass, so
-    /// children composed inside `build_layout` pull their values from the
-    /// document before they are measured, as the live per-frame sync does.
-    #[must_use]
-    pub fn with_resync_after_build(mut self) -> Self {
-        self.resync_after_build = true;
         self
     }
 
@@ -168,9 +147,6 @@ impl ShotFrame {
         self.taffy = TaffyTree::new();
         self.node_map = HashMap::new();
         let child = widget.build_layout(&mut self.taffy, &self.theme, &mut self.node_map);
-        if self.resync_after_build {
-            self.sync(widget);
-        }
         let root = self.taffy.new_with_children(
             Style {
                 size: Size {
@@ -306,16 +282,6 @@ impl ShotFrame {
         self.write_png_on(scene, self.theme.tokens.colors.surfaces.content, out);
     }
 
-    /// [`ShotFrame::write_png`] over a transparent background, for a capture
-    /// that is composited onto something else afterwards.
-    ///
-    /// # Panics
-    ///
-    /// As [`ShotFrame::write_png`].
-    pub fn write_png_transparent(&self, scene: &Scene, out: &Path) {
-        self.write_png_on(scene, vello::peniko::Color::TRANSPARENT, out);
-    }
-
     fn write_png_on(&self, scene: &Scene, background: vello::peniko::Color, out: &Path) {
         if let Some(parent) = out.parent() {
             let _ = std::fs::create_dir_all(parent);
@@ -359,13 +325,10 @@ mod tests {
 
     #[test]
     fn shot_frames_follow_the_theme_scale_and_lay_out_inside_the_viewport() {
-        // phase: text_scale_follows_the_theme_unless_asked_not_to
+        // phase: text_scale_follows_the_theme
         {
-            let theme = Theme::dark().with_text_scale(2.0);
-            let frame = ShotFrame::new((100, 100), theme.clone());
+            let frame = ShotFrame::new((100, 100), Theme::dark().with_text_scale(2.0));
             assert!((frame.text.text_scale() - 2.0).abs() < f32::EPSILON);
-            let frame = ShotFrame::new((100, 100), theme).with_unscaled_text();
-            assert!((frame.text.text_scale() - 1.0).abs() < f32::EPSILON);
         }
         // phase: both_solvers_lay_the_widget_out_inside_the_viewport
         {

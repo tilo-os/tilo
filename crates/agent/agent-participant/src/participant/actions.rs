@@ -63,6 +63,14 @@ impl AgentParticipant {
             return;
         };
         let reply = match frame.message {
+            RemoteActionMessage::FeedbackRequest { correlation, .. } => {
+                RemoteActionMessage::FeedbackResponse {
+                    correlation,
+                    result: Err(ActionHostError::Unavailable {
+                        reason: "agents do not own canonical feedback delivery".into(),
+                    }),
+                }
+            }
             RemoteActionMessage::CatalogueRequest { correlation, query } => {
                 RemoteActionMessage::CatalogueResponse {
                     correlation,
@@ -72,7 +80,7 @@ impl AgentParticipant {
             RemoteActionMessage::Invoke(request) => {
                 RemoteActionMessage::Receipt(self.invoke_remote(request))
             }
-            RemoteActionMessage::Observe { invocation } => RemoteActionMessage::Update {
+            RemoteActionMessage::Observe { invocation, .. } => RemoteActionMessage::Update {
                 invocation,
                 state: None,
             },
@@ -90,7 +98,8 @@ impl AgentParticipant {
                     }),
                 }
             }
-            RemoteActionMessage::CatalogueResponse { .. }
+            RemoteActionMessage::FeedbackResponse { .. }
+            | RemoteActionMessage::CatalogueResponse { .. }
             | RemoteActionMessage::RecordResponse { .. }
             | RemoteActionMessage::Receipt(_)
             | RemoteActionMessage::Update { .. }
@@ -212,7 +221,7 @@ impl AgentParticipant {
             .iter()
             .find(|(earlier, _)| earlier.invocation == request.invocation)
         {
-            return if *earlier == request {
+            return if earlier.same_invocation(&request) {
                 receipt.clone()
             } else {
                 rejected(&request, ActionHostError::InvocationConflict)

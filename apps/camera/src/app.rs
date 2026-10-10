@@ -313,11 +313,6 @@ pub struct CameraApp {
     /// Where capture bytes live; documents carry only their `media_id`. The
     /// worker holds a clone.
     content: tilo_content::ContentStore,
-    #[allow(
-        dead_code,
-        reason = "seed for screen; kept for restore after framework cutover"
-    )]
-    initial_screen: Screen,
 
     screen: Screen,
     mode: CaptureMode,
@@ -506,7 +501,6 @@ impl CameraApp {
             storage,
             worker: crate::worker::CameraWorker::new(content.clone()),
             content,
-            initial_screen,
             screen: initial_screen,
             mode: CaptureMode::Photo,
             facing: Facing::Back,
@@ -2900,12 +2894,7 @@ impl Widget for CameraApp {
         let Ok(layout) = taffy.layout(node) else {
             return;
         };
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = ui::widget::placed(layout, origin);
         if self.built_with_document {
             let placed = Self::document_layout(self.rect, &self.layout_theme);
             for (field, rect) in self.document_controls.fields.iter_mut().zip(placed.fields) {
@@ -3743,25 +3732,11 @@ mod tests {
     }
 
     fn drive(app: &mut CameraApp, ev: &WindowEvent, doc: &mut AutoCommit, root: &ObjId) -> bool {
-        let mods = winit::event::Modifiers::default();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let node = taffy.new_leaf(Style::default()).unwrap();
-        let mut handled = false;
-        let mut focus = None;
-        app.handle_event(
-            ev,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &mods,
-                state: Edits::lend(doc),
-                path: root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-        handled
+        ui::testing::Dispatch::new()
+            .doc(doc)
+            .path(root)
+            .send(app, ev)
+            .handled
     }
 
     /// Every control the camera exposes, by semantic target.
@@ -3930,11 +3905,11 @@ mod tests {
             assert!(sheet.y0 >= 0.0 && sheet.y1 <= 600.0);
             let center = sheet.center();
             Framed::harness_mut(&mut app).dispatch_to_root(&WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 position: winit::dpi::PhysicalPosition::new(center.x, center.y),
             });
             Framed::harness_mut(&mut app).dispatch_to_root(&WindowEvent::MouseWheel {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 delta: winit::event::MouseScrollDelta::LineDelta(0.0, -10.0),
                 phase: winit::event::TouchPhase::Moved,
             });
@@ -4223,8 +4198,8 @@ mod tests {
         }
         // Phase `disk_shutter_writes_a_real_jpeg_via_handle_event`.
         {
-            use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
-            use winit::keyboard::{Key, NamedKey, PhysicalKey};
+            use winit::event::{ElementState, WindowEvent};
+            use winit::keyboard::{Key, NamedKey};
 
             let dir =
                 std::env::temp_dir().join(format!("camera-shutter-test-{}", std::process::id()));
@@ -4243,40 +4218,17 @@ mod tests {
             // Simulate a camera frame arriving.
             app.push_camera_frame(frame::viewfinder(1, 64, 48));
 
-            // Press Space through the real event path. `KeyEvent` carries a
-            // non-exhaustive field, so build it via the zeroed-struct idiom used
-            // across the toolkit's own tests.
-            let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-            ev.logical_key = Key::Named(NamedKey::Space);
-            ev.physical_key =
-                PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-            ev.location = winit::keyboard::KeyLocation::Standard;
-            ev.state = ElementState::Pressed;
-            ev.repeat = false;
-            ev.text = None;
+            let ev = ui::synthetic_input::key_event(
+                Key::Named(NamedKey::Space),
+                None,
+                ElementState::Pressed,
+            );
             let event = WindowEvent::KeyboardInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 event: ev,
                 is_synthetic: false,
             };
-            let mods = Modifiers::default();
-            let mut taffy: TaffyTree<()> = TaffyTree::new();
-            let node = taffy.new_leaf(Style::default()).unwrap();
-            let mut handled = false;
-            let mut focus = None;
-            app.handle_event(
-                &event,
-                &mut ui::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &mods,
-                    state: Edits::lend(&mut doc),
-                    path: &root,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: node,
-                    taffy: &taffy,
-                },
-            );
+            let handled = drive(&mut app, &event, &mut doc, &root);
             assert!(handled, "space should be handled on the camera screen");
 
             // Saving is now bounded background work; pump the real sync boundary
@@ -4847,7 +4799,7 @@ mod tests {
 
             fn touch(phase: TouchPhase, point: Point) -> WindowEvent {
                 WindowEvent::Touch(winit::event::Touch {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: winit::event::DeviceId::dummy(),
                     phase,
                     location: winit::dpi::PhysicalPosition::new(point.x, point.y),
                     force: None,

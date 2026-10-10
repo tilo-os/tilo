@@ -11,12 +11,12 @@ use crate::record_repository::{RecordRepositoryKey, RepositoryLease};
 #[cfg(test)]
 use crate::record_transaction::RecordTransactionJournalEntry;
 use crate::record_transaction::RecordTransactionPhase as Phase;
-use collab_types::files::{
+use fs_protocol::files::{
     CheckedHistoryOperationV1 as Operation, CheckedHistoryOutcomeV1 as Outcome,
     CheckedHistoryRequestV1 as CheckedRequest, FileRestoreReceiptV1 as Receipt,
     FileRestoreReviewV1 as Review,
 };
-use collab_types::{
+use fs_protocol::{
     ContentHash, ContentRevisionV1, FileMutationOperation, FileMutationParticipant,
     FileMutationParticipantRole, FileMutationTransactionManifest, FileProvenance, FileVersionV1,
 };
@@ -88,7 +88,7 @@ fn receipt(entry: &RecordTransactionJournalEntry) -> Option<Receipt> {
         record_id: request.review.record_id,
         selected_version: *selected_version,
         prior_revision: *prior_revision,
-        prior_reference: collab_types::files::FileRestorePriorReferenceV1::ObservedRevision,
+        prior_reference: fs_protocol::files::FileRestorePriorReferenceV1::ObservedRevision,
         restored_revision: entry
             .transaction
             .manifest
@@ -297,7 +297,7 @@ impl QuickFS {
             .ok_or(Outcome::Unavailable)?;
         let head = version.id;
         Ok(ContentRevisionV1 {
-            schema_version: collab_types::CONTENT_REVISION_VERSION,
+            schema_version: fs_protocol::CONTENT_REVISION_VERSION,
             record_id: history.record_id,
             version_id: head,
             content_hash: hash,
@@ -526,7 +526,7 @@ impl QuickFS {
     }
 
     pub(super) fn checked_restore_xattr(&self, ino: u64, value: &[u8]) -> Result<(), i32> {
-        if value.len() > collab_types::files::MAX_CHECKED_HISTORY_REQUEST_BYTES {
+        if value.len() > fs_protocol::files::MAX_CHECKED_HISTORY_REQUEST_BYTES {
             return Err(EINVAL);
         }
         let request: Request = serde_json::from_slice(value).map_err(|_| EINVAL)?;
@@ -622,7 +622,7 @@ impl QuickFS {
         ))
     }
 
-    fn project_checked_availability(&self, record_id: collab_types::FileRecordId) {
+    fn project_checked_availability(&self, record_id: fs_protocol::FileRecordId) {
         let Some(registry) = &self.availability else {
             return;
         };
@@ -662,7 +662,7 @@ impl QuickFS {
         runtime: &super::ReplacementTransactionRuntime,
         ino: u64,
         request: Request,
-    ) -> Result<(collab_types::FileVersionId, Option<uuid::Uuid>), Outcome> {
+    ) -> Result<(fs_protocol::FileVersionId, Option<uuid::Uuid>), Outcome> {
         let journal = runtime.journal.lock().map_err(|_| Outcome::Unavailable)?;
         Ok(match request.operation {
             Operation::Restore { version_id } => (version_id, None),
@@ -868,7 +868,7 @@ impl QuickFS {
                 review: current_review,
             });
         }
-        if state.heads.len() > collab_types::files::MAX_VERSION_PARENTS {
+        if state.heads.len() > fs_protocol::files::MAX_VERSION_PARENTS {
             return Err(Outcome::Unavailable);
         }
         if journal.retained_count() >= crate::record_transaction::MAX_RECORD_TRANSACTION_ENTRIES {
@@ -895,7 +895,7 @@ impl QuickFS {
                 .as_bytes(),
         );
         let proposed = FileVersionV1 {
-            id: collab_types::FileVersionId::new(),
+            id: fs_protocol::FileVersionId::new(),
             record_id: request.review.record_id,
             parents: state.heads,
             actor: *actor,
@@ -905,7 +905,7 @@ impl QuickFS {
             provenance: FileProvenance::Restore { from: selected_id },
         };
         let revision = ContentRevisionV1 {
-            schema_version: collab_types::CONTENT_REVISION_VERSION,
+            schema_version: fs_protocol::CONTENT_REVISION_VERSION,
             record_id: proposed.record_id,
             version_id: proposed.id,
             content_hash: proposed.content_hash,
@@ -942,9 +942,9 @@ impl QuickFS {
             selected_version: selected_id,
             prior_revision: prior,
             prior_reference: if namespace.content_revision_for(ino).is_some() {
-                collab_types::files::FileRestorePriorReferenceV1::ObservedRevision
+                fs_protocol::files::FileRestorePriorReferenceV1::ObservedRevision
             } else {
-                collab_types::files::FileRestorePriorReferenceV1::LegacyContentRepresentative
+                fs_protocol::files::FileRestorePriorReferenceV1::LegacyContentRepresentative
             },
             restored_revision: revision,
             compensates,
@@ -952,7 +952,7 @@ impl QuickFS {
         let mut entry =
             if let (Some(publisher), Some(repository)) = (publisher, repository.as_ref()) {
                 let manifest = FileMutationTransactionManifest {
-                    schema_version: collab_types::files::FILE_MUTATION_TRANSACTION_VERSION_V3,
+                    schema_version: fs_protocol::files::FILE_MUTATION_TRANSACTION_VERSION_V3,
                     transaction_id: request.intent_id,
                     workspace_id: key.workspace_id,
                     actor: *actor,

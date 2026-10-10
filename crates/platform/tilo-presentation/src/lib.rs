@@ -2,6 +2,7 @@
 //! Missing protocol support returns false while still presenting the buffer.
 pub mod clock;
 mod damage;
+pub mod text_input;
 
 pub use damage::DamageRect;
 #[cfg(all(feature = "gpu-damage", not(target_arch = "wasm32")))]
@@ -74,7 +75,8 @@ pub fn present(
     }
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 mod wayland_tests {
     use std::time::Duration;
     use winit::platform::wayland::WaylandPresentation;

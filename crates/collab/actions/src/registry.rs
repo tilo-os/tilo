@@ -24,6 +24,14 @@ impl ActionRegistry {
         Self::default()
     }
 
+    /// A registry holding what `register` adds, such as an app's action set.
+    #[must_use]
+    pub fn with(register: impl FnOnce(&mut Self)) -> Self {
+        let mut registry = Self::new();
+        register(&mut registry);
+        registry
+    }
+
     /// Register `A` under `type_id`; a later [`decode`](Self::decode) of an
     /// [`EncodedAction`] carrying this `type_id` deserializes the payload
     /// into an `A` and boxes it as `dyn Action`.

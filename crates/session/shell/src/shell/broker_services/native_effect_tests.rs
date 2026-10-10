@@ -28,11 +28,12 @@ fn native_member_terminal_audit_uses_installed_governor_and_original_retry_recei
         None,
     );
     let invocation = tilo_actions::InvocationId::new();
-    let effect = tilo_action_broker::policy::redacted_effect_receipt(
+    let effect = tilo_desktop_model::WorkspaceEffectReceipt::redacted(
         invocation,
         &hex::encode(fixture.certificate.user_public_key),
         tilo_actions::ActionContext::default(),
         tilo_actions::EffectReceiptStatus::Succeeded,
+        tilo_clock::unix_now_i64(),
     );
     let request = OwnerCommitRequest {
         room: fixture.room.to_string(),
@@ -570,6 +571,7 @@ fn failed_effect(
         confirmation: None,
         revision: None,
         on_behalf_of: None,
+        wait_ms: None,
     };
     let mut pending = host.invoke(&caller, request);
     let deadline = Instant::now().checked_add(Duration::from_secs(3)).unwrap();

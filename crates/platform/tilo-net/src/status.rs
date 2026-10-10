@@ -4,8 +4,8 @@
 //! [`Connectivity::Online`] means "worth trying", and a failed request
 //! remains the real answer. On the desktop it means a route to the public
 //! internet exists (IPv4 or IPv6); in a page it is `navigator.onLine`.
-//! Linux follows the session `NetworkMonitor` portal without subprocesses.
-//! Metering comes from that portal on Linux and the Network Information
+//! Linux follows host hints or the session `NetworkMonitor` portal without
+//! subprocesses. Metering comes from those hints and the Network Information
 //! API in a page; macOS does not say.
 //!
 //! ```no_run
@@ -29,11 +29,15 @@
 //! wakes only on configuration/owner changes; fallback checks retry every five
 //! seconds. These hints cannot establish that a particular server is reachable.
 //!
-//! The standard portal exposes metering as a boolean: `Some(false)` means the
-//! portal reports unmetered, not that the SDK independently established it.
-//! `GLib` can collapse unknown `NetworkManager` metering to false. Use the richer
-//! host-owned network state for policies requiring proven unmetered transport;
-//! this portable hint does not replace that policy or a network permission.
+//! On Tilo, the authenticated host supplies lossless connectivity and metering
+//! to network-enabled native app launches. Unknown metering stays `None`; known
+//! unmetered is `Some(false)`. These updates share the existing shell channel.
+//! Older hosts and ordinary Linux desktops use the standard portal. Its `true`
+//! means metered; `false` stays `None` because `GLib` can collapse unknown
+//! `NetworkManager` metering to false. Host transport loss clears the richer
+//! snapshot. The native App then stays on portable fallback until a normal
+//! launcher-mediated relaunch supplies a new connection. These hints never
+//! grant network permission.
 
 /// Whether the device has a network path.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -62,12 +66,31 @@ impl NetStatus {
     }
 }
 
-/// The latest status. Linux starts a shared background portal subscription on
-/// first use; until it answers, connectivity uses the route fallback and
-/// metering is unknown. This function never waits for D-Bus.
+/// The latest status. Linux reads host hints when supplied; otherwise it starts
+/// a shared background portal subscription on first use. Until that answers,
+/// connectivity uses the route fallback and metering is unknown. This function
+/// never waits for D-Bus.
 #[must_use]
 pub fn current() -> NetStatus {
     imp::current()
+}
+
+/// Install the authenticated Tilo host's lossless status in this app process.
+/// Host integration only: an absent reading is unknown, not unmetered. This
+/// does not grant network access. Clear it when the host transport disconnects.
+#[doc(hidden)]
+pub fn set_host_status(available: Option<bool>, metered: Option<bool>) {
+    #[cfg(target_os = "linux")]
+    linux::set_host(available, metered);
+    #[cfg(not(target_os = "linux"))]
+    let _ = (available, metered);
+}
+
+/// Forget a disconnected/unsupported host and resume portable status hints.
+#[doc(hidden)]
+pub fn clear_host_status() {
+    #[cfg(target_os = "linux")]
+    linux::clear_host();
 }
 
 /// Whether requests are worth trying now; see [`NetStatus::online`].
@@ -111,12 +134,12 @@ impl Watch {
     /// Wait until the status differs from [`last`](Self::last), and return it.
     pub async fn changed(&mut self) -> NetStatus {
         loop {
-            self.inner.wait().await;
             let now = current();
             if now != self.last {
                 self.last = now;
                 return now;
             }
+            self.inner.wait().await;
         }
     }
 }
@@ -255,7 +278,8 @@ mod imp {
     }
 }
 
-#[cfg(all(test, not(target_family = "wasm")))]
+#[cfg(test)]
+#[cfg(not(target_family = "wasm"))]
 mod tests {
     use super::*;
 

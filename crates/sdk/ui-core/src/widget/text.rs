@@ -358,14 +358,6 @@ impl Text {
         self
     }
 
-    /// Force a remeasure/repaint after mutating engine state through a shared
-    /// owner whose revision cannot be observed automatically.
-    pub fn invalidate_layout_engine(&mut self) {
-        self.dirty = true;
-        self.layout_dirty = true;
-        self.prepared_input = None;
-    }
-
     fn observe_engine_revision(&mut self) {
         let Some(engine) = self.layout_engine.as_deref() else {
             return;
@@ -870,7 +862,7 @@ impl Widget for Text {
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.observe_theme(theme);
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             display: self.flow_display(),
             size: Size {
                 width: taffy::Dimension::auto(),
@@ -881,9 +873,8 @@ impl Widget for Text {
             flex_shrink: 1.0,
             flex_grow: 0.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     /// A bound text that has nothing to say leaves its container's flow,
@@ -956,13 +947,7 @@ impl Widget for Text {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = vello::kurbo::Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         // Without this, scrolling a 1000-widget tree would invalidate every
         // cache every frame and the per-widget cache goes net-negative.
         // Exact equality is the point — this is change detection for the
@@ -1146,42 +1131,21 @@ impl Widget for Text {
         presence: &crate::presence::PresenceCtx,
         permissions: &crate::permissions::PermissionContext,
     ) {
-        if presence.should_cull(self.get_rect()) {
-            return;
-        }
-        self.draw(scene, transform, text_renderer, theme, presence);
-
-        if let Some(scope) = crate::permissions::capability::permission_scope(self)
-            && !permissions.check(&scope)
-        {
-            let overlay = crate::tokens::colors::PERMISSION_DENIED_SCRIM;
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                overlay,
-                None,
-                &self.rect,
-            );
-        }
-
-        if let Some(key) = crate::presence::capability::presence_key(self)
-            && let Some(peers) = presence.here.get(&key)
-            && let Some(user) = peers.first()
-        {
-            presence.draw_peer_focus(scene, theme, user, self.rect);
-        }
+        crate::widget::draw_gated_leaf(
+            self,
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            presence,
+            permissions,
+        );
     }
 }
 
 impl crate::presence::capability::PublishesPresence for Text {
     fn presence_key(&self) -> Option<PresenceKey> {
-        if self.presence_path.is_empty() {
-            None
-        } else {
-            Some(PresenceKey::Widget {
-                path: self.presence_path.clone(),
-            })
-        }
+        PresenceKey::widget(&self.presence_path)
     }
 }
 

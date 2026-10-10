@@ -7,7 +7,10 @@ folder listing and GPU adapter verdicts.
 import contextlib
 import io
 import json
+import os
+import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -17,7 +20,8 @@ from acceptance import gpu  # noqa: E402
 from acceptance.checks.apps import (FLAT_STDDEV, AppLaunch, Proc, app_launch,  # noqa: E402
                                     first_textured, lingering, parse_procs)
 from acceptance.checks.startup import (ATSPI_PROBE, first_frame_budget, judge_listing,  # noqa: E402
-                                       parse_launch_latency, parse_startup_marks)
+                                       kpi_p95_target, open_segments, p95, parse_launch_latencies,
+                                       parse_launch_latency, parse_startup_marks, segment_series)
 import gpu_check  # noqa: E402
 import run  # noqa: E402
 
@@ -203,6 +207,60 @@ class StartupMarksTests(unittest.TestCase):
         got = parse_startup_marks(marks_line("startup-1.json", 5_000, [("main-start", 0)]), 4_000)
         self.assertNotIn("first-frame-presented", got["events"])
 
+    def test_a_file_from_before_launcher_marks_reads_as_unsplit(self):
+        got = parse_startup_marks(marks_line("startup-1.json", 5_000, [("first-frame-presented", 1)]), 4_000)
+        self.assertEqual((got["origin_epoch_us"], got["launcher"], got["exec_to_main_us"]),
+                         (5_000_000, [], None))
+        self.assertIsNone(open_segments(4_000, got))
+
+
+# One warm open: requested at 10 000 ms, the launcher ran 10 120–10 190 ms, bubblewrap
+# until 10 200 ms, the Landlock shim exec'd the app at 10 215 ms, its main ran at
+# 10 230.5 ms and its first frame 400 ms later.
+SPLIT_OPEN = {
+    "origin_epoch_ms": 10_230, "origin_epoch_us": 10_230_500,
+    "launcher": [{"name": "launcher-start", "epoch_us": 10_120_000},
+                 {"name": "package-verified", "epoch_us": 10_150_000},
+                 {"name": "dbus-proxies-ready", "epoch_us": 10_175_000},
+                 {"name": "sandbox-argv-ready", "epoch_us": 10_190_000},
+                 {"name": "sandbox-entered", "epoch_us": 10_200_000},
+                 {"name": "sandbox-exec", "epoch_us": 10_215_000}],
+    "events": [{"name": "app-launch-start", "ns": 10_000}, {"name": "first-frame-presented", "ns": 400_000_000}],
+}
+
+
+class OpenSegmentTests(unittest.TestCase):
+    def marks(self):
+        return parse_startup_marks(f"{ROOMS}/startup-9.json\t{json.dumps(SPLIT_OPEN)}", 10_000)
+
+    def test_the_segments_add_up_to_the_open(self):
+        got = open_segments(10_000, self.marks())
+        self.assertEqual(got, {"request_to_launcher": 120.0, "launcher": 70.0, "sandbox_to_main": 40.5,
+                               "main_to_first_frame": 400.0, "exec_to_main": 15.5,
+                               "launcher_phases": {"package-verified": 30.0, "dbus-proxies-ready": 25.0,
+                                                   "sandbox-argv-ready": 15.0, "sandbox-entered": 10.0,
+                                                   "sandbox-exec": 15.0}})
+        whole = sum(got[name] for name in ("request_to_launcher", "launcher", "sandbox_to_main",
+                                           "main_to_first_frame"))
+        self.assertAlmostEqual(whole, 630.5)
+
+    def test_series_name_each_segment_once_per_open(self):
+        open_ = {"segments": open_segments(10_000, self.marks()),
+                 "compositor": {"request_to_spawn": 9.0, "spawn_to_map": 500.0}}
+        unsplit = {"segments": None, "compositor": {"request_to_spawn": 8.0}}
+        series = segment_series([open_, unsplit])
+        self.assertEqual(series["request_to_launcher"], [120.0])
+        self.assertEqual(series["launcher_phase.dbus-proxies-ready"], [25.0])
+        self.assertEqual(series["exec_to_main"], [15.5])
+        self.assertEqual(series["request_to_spawn"], [9.0, 8.0])
+        self.assertNotIn("main_to_first_frame", series)
+
+    def test_the_gpu_target_is_the_kpi_documents(self):
+        self.assertEqual(kpi_p95_target("app.open.warm_ms.settings"), 300.0)
+        self.assertIsNone(kpi_p95_target("app.open.launcher_ms.settings"))
+        self.assertEqual(p95([float(v) for v in range(1, 11)]), 10.0)
+        self.assertEqual(p95([float(v) for v in range(1, 21)]), 19.0)
+
 
 class LaunchLatencyTests(unittest.TestCase):
     LINE = ("\x1b[2m2026-10-03T10:00:00Z\x1b[0m \x1b[32m INFO\x1b[0m tilo::launch_latency: "
@@ -220,6 +278,18 @@ class LaunchLatencyTests(unittest.TestCase):
     def test_absent_without_info_logging(self):
         self.assertIsNone(parse_launch_latency("", "so.tilo.file-explorer"))
 
+    def test_every_compositor_segment_of_one_open(self):
+        log = "\n".join([
+            "INFO tilo::launch_latency: application launcher spawned package_id=so.tilo.notes pid=9 "
+            "request_to_spawn_us=8400",
+            "INFO tilo::launch_latency: application toplevel mapped package_id=so.tilo.notes surface_id=3 "
+            "request_to_map_us=610000 spawn_to_map_us=601600",
+            self.LINE.format(pkg="so.tilo.notes"),
+        ])
+        self.assertEqual(parse_launch_latencies(log, "so.tilo.notes"),
+                         {"request_to_spawn": 8.4, "spawn_to_map": 601.6,
+                          "request_to_first_present": 2140.0})
+
 
 class FirstFrameBudgetTests(unittest.TestCase):
     def test_hardware_gets_the_hardware_budget_and_a_vm_the_generous_one(self):
@@ -234,7 +304,9 @@ class FirstFrameBudgetTests(unittest.TestCase):
         ids = {c.id for c in run.core.REGISTRY}
         self.assertLessEqual({"A14", "R05"}, ids)
         self.assertLess(run.ORDER.index("A14"), run.ORDER.index("R02"))
-        self.assertEqual(run.ORDER[-2:], ["R05", "P03"])
+        # R05 reads the adapter line of every app the run opened; R08 opens none in the slot
+        # (it signs seat0's greeter in), so only it and P03 may follow R05.
+        self.assertEqual(run.ORDER[-3:], ["R05", "R08", "P03"])
         self.assertEqual(sorted(run.ORDER), sorted(ids - set(run.DE_PASS)))
 
 
@@ -252,8 +324,45 @@ class ListingTests(unittest.TestCase):
     def test_an_unreadable_tree_is_unobservable(self):
         self.assertEqual(judge_listing({"error": "no AT-SPI bus"}, "m")[0], "unobservable")
 
-    def test_the_guest_probe_is_valid_python(self):
-        compile(ATSPI_PROBE, "atspi-probe", "exec")
+
+class GuestAtspiProbeTests(unittest.TestCase):
+    def probe(self, client, no_commands):
+        proc = subprocess.run(
+            [sys.executable, "-", "file-explorer", "Files activity", "Files", "0"],
+            input=ATSPI_PROBE, text=True, capture_output=True, timeout=10,
+            env={**os.environ, "TILO_ATSPI_CLIENT": str(client), "PATH": str(no_commands)})
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        return json.loads(proc.stdout)
+
+    def test_the_guest_probe_loads_the_real_client(self):
+        client = Path(__file__).resolve().parents[2] / "tools/atspi_external_client.py"
+        with tempfile.TemporaryDirectory() as empty:
+            probe = self.probe(client, empty)
+        self.assertTrue(probe["error"].startswith("no AT-SPI bus:"), probe)
+        self.assertIn("gdbus", probe["error"])
+        self.assertEqual(judge_listing(probe, "m")[0], "unobservable")
+
+    def test_a_missing_client_reports_its_path(self):
+        with tempfile.TemporaryDirectory() as empty:
+            client = Path(empty) / "missing.py"
+            probe = self.probe(client, empty)
+        self.assertTrue(probe["error"].startswith(f"no AT-SPI client at {client}:"), probe)
+
+    def test_an_existing_client_import_error_is_a_load_failure(self):
+        with tempfile.TemporaryDirectory() as empty:
+            client = Path(empty) / "broken.py"
+            client.write_text("raise RuntimeError('broken client')\n")
+            probe = self.probe(client, empty)
+        self.assertIn("failed to load: RuntimeError: broken client", probe["error"])
+        self.assertNotIn("no AT-SPI client", probe["error"])
+
+    def test_a_missing_import_dependency_is_a_load_failure(self):
+        with tempfile.TemporaryDirectory() as empty:
+            client = Path(empty) / "dependency.py"
+            client.write_text(f"open({str(Path(empty) / 'missing-data')!r})\n")
+            probe = self.probe(client, empty)
+        self.assertIn("failed to load: FileNotFoundError:", probe["error"])
+        self.assertNotIn("no AT-SPI client", probe["error"])
 
 
 def adapter_line(app, kind, name="llvmpipe (LLVM 19.1.7, 256 bits)", backend="Vulkan", driver="llvmpipe"):
@@ -336,6 +445,24 @@ class GpuTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("::notice::", text)
         self.assertEqual(gate(f"{OK}\n{gpu.LOG_SEPARATOR}\n")[0], 1)
+
+
+class TerminalShellPerformanceTests(unittest.TestCase):
+    def test_old_baseline_fails_even_within_readiness_timeout(self):
+        from acceptance import core
+        self.assertLess(39.6, core.TERMINAL_SHELL_S)
+        with self.assertRaises(core.CheckFailed):
+            core.assert_terminal_shell_performance(39.6)
+
+    def test_measured_batched_import_passes(self):
+        from acceptance import core
+        core.assert_terminal_shell_performance(21.0)
+
+    def test_missing_readiness_and_performance_boundary_fail(self):
+        from acceptance import core
+        for seconds in (None, core.TERMINAL_SHELL_PERFORMANCE_S):
+            with self.subTest(seconds=seconds), self.assertRaises(core.CheckFailed):
+                core.assert_terminal_shell_performance(seconds)
 
 
 if __name__ == "__main__":

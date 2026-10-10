@@ -240,7 +240,7 @@ fn readable_output(screen: &Screen) -> (String, bool) {
 /// process or the clipboard asks for confirmation when the palette, an agent
 /// or a script invokes it; a person's own keystrokes and gestures reach the
 /// process directly.
-#[derive(Clone, Debug, PartialEq, Eq, Effect)]
+#[derive(Clone, PartialEq, Eq, Effect)]
 #[effect(operation = "terminal.effects")]
 pub enum TerminalEffect {
     /// Inspect session
@@ -249,6 +249,23 @@ pub enum TerminalEffect {
     /// The shared screen is read separately through the resource's Read action.
     #[effect(returns, permission = "read")]
     InspectSession,
+    /// Inspect editable field
+    ///
+    /// Participant-private native editor metadata; never the surrounding buffer.
+    #[effect(returns, device_only, permission = "read")]
+    InspectEditor,
+    /// Replace editor selection
+    ///
+    /// Literally replace the original qualified editor selection without execution.
+    #[effect(job, device_only, destructive)]
+    ReplaceEditorSelection {
+        #[param("Original local terminal session")]
+        session: String,
+        #[param("Exact lease returned by Inspect editable field")]
+        lease: String,
+        #[param(secret, "Literal replacement, without control characters")]
+        text: String,
+    },
     /// Send text
     ///
     /// Writes reviewed text without pressing Enter.
@@ -354,6 +371,13 @@ pub enum TerminalEffect {
     },
 }
 
+impl std::fmt::Debug for TerminalEffect {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Effect arguments may be participant-private transcripts or commands.
+        formatter.write_str(<Self as ui::tilo_resource::Effect>::id(self))
+    }
+}
+
 /// Framework app: the terminal widget is the surface over [`Terminal`].
 pub struct TerminalShell;
 
@@ -384,10 +408,13 @@ impl ResourceApp for TerminalShell {
         // screenshot, a participant who may only view, and this crate's own
         // tests present a terminal with no process behind it.
         // Mounted in the shell, sessions open through the supervisor
-        // connection the shell lent; in its own process, locally.
+        // service permission or connection the shell lent; in its own process, locally.
         let lent = cx.take_lent::<crate::HostedProcessServices>();
+        let deferred = cx.take_lent::<crate::HostedSessionSource>().is_some();
         let widget = if cx.read_only() {
             TerminalWidget::spawn_headless()
+        } else if deferred {
+            Ok(TerminalWidget::spawn_hosted_deferred())
         } else if let Some(services) = lent {
             TerminalWidget::spawn_hosted(services)
                 .map_err(|error| anyhow::anyhow!(error.to_string()))
@@ -461,6 +488,9 @@ fn session_fields(doc: &Doc, obj: &ObjId) -> SessionState {
 }
 
 impl ResourceSurface<Terminal, TerminalEffect> for TerminalWidget {
+    fn read_only_changed(&mut self, read_only: bool) {
+        self.native_editor_read_only_changed(read_only);
+    }
     fn supports_device_shell(&self) -> bool {
         true
     }
@@ -497,10 +527,22 @@ impl ResourceSurface<Terminal, TerminalEffect> for TerminalWidget {
     fn effect(
         &mut self,
         effect: TerminalEffect,
-        _cx: &mut EffectCx<Terminal, Self>,
+        cx: &mut EffectCx<Terminal, Self>,
     ) -> EffectAnswer {
         if effect == TerminalEffect::InspectSession {
             return Ok(Effected::value(self.inspect_session()));
+        }
+        if effect == TerminalEffect::InspectEditor {
+            return Ok(Effected::value(self.inspect_editor()));
+        }
+        if let TerminalEffect::ReplaceEditorSelection {
+            session,
+            lease,
+            text,
+        } = effect
+        {
+            self.replace_editor_selection(&session, &lease, text, cx.reply())?;
+            return Ok(Effected::Pending);
         }
         self.perform(effect).map(|()| Effected::done())
     }
@@ -519,6 +561,10 @@ impl ResourceSurface<Terminal, TerminalEffect> for TerminalWidget {
 }
 
 impl ResourceSurface<Terminal, TerminalEffect> for crate::TerminalView {
+    fn read_only_changed(&mut self, read_only: bool) {
+        self.terminal_mut()
+            .native_editor_read_only_changed(read_only);
+    }
     fn supports_device_shell(&self) -> bool {
         true
     }
@@ -555,10 +601,23 @@ impl ResourceSurface<Terminal, TerminalEffect> for crate::TerminalView {
     fn effect(
         &mut self,
         effect: TerminalEffect,
-        _cx: &mut EffectCx<Terminal, Self>,
+        cx: &mut EffectCx<Terminal, Self>,
     ) -> EffectAnswer {
         if effect == TerminalEffect::InspectSession {
             return Ok(Effected::value(self.inspect_session()));
+        }
+        if effect == TerminalEffect::InspectEditor {
+            return Ok(Effected::value(self.terminal_mut().inspect_editor()));
+        }
+        if let TerminalEffect::ReplaceEditorSelection {
+            session,
+            lease,
+            text,
+        } = effect
+        {
+            self.terminal_mut()
+                .replace_editor_selection(&session, &lease, text, cx.reply())?;
+            return Ok(Effected::Pending);
         }
         self.perform(effect).map(|()| Effected::done())
     }
@@ -620,6 +679,31 @@ mod tests {
         assert!(truncated);
         assert_eq!(output.len(), 64 * 1024);
         assert!(output.chars().all(|character| character == 'é'));
+    }
+
+    #[test]
+    fn native_replacement_preserves_private_effect_contract() {
+        use ui::tilo_resource::Effect as _;
+        let effect = TerminalEffect::ReplaceEditorSelection {
+            session: "original-session".into(),
+            lease: "private-lease".into(),
+            text: "private transcript".into(),
+        };
+        let debug = format!("{effect:?}");
+        assert!(!debug.contains("private"));
+        assert!(!debug.contains("original-session"));
+        let declaration = TerminalEffect::declarations()
+            .into_iter()
+            .find(|declaration| declaration.id == effect.id())
+            .unwrap();
+        assert!(declaration.device_only);
+        let text = declaration
+            .params
+            .iter()
+            .find(|param| param.name == "text")
+            .unwrap();
+        assert_eq!(text.ty, ui::tilo_actions::ParamType::Secret);
+        assert_eq!(effect.arguments()["text"], "private transcript");
     }
 
     #[test]

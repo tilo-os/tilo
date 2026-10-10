@@ -184,7 +184,7 @@ fn listing_cache_path() -> Option<PathBuf> {
     if let Some(path) = std::env::var_os("TILO_APP_CACHE_FILE") {
         return Some(PathBuf::from(path));
     }
-    xdg_paths::cache_dir().map(|dir| dir.join("tilo-store/catalogue.json"))
+    tilo_paths::cache_dir().map(|dir| dir.join("tilo-store/catalogue.json"))
 }
 
 fn read_cached_listing(path: &std::path::Path) -> Result<CatalogueListing, String> {

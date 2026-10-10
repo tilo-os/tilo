@@ -5,25 +5,23 @@
     reason = "statistical calculation and plot projection are bounded floating-point operations"
 )]
 
-use std::collections::HashMap;
-
 use crate::widget::ModelPath;
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::event::WindowEvent;
 
 use crate::a11y::{AccessNode, AccessState, Role};
 use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
-use crate::text_render::{TextRenderer, TextWeight};
+use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
+use crate::widget::Widget;
+use crate::widget::chart_labels::format_compact;
 use crate::widget::chart_navigation::{
-    ChartNavAction, ChartTouchAction, ChartTouchTracker, chart_nav_action, moved_item,
+    ChartNavAction, ChartTouchTracker, InteractiveChart, handle_chart_event, moved_item,
 };
-use crate::widget::{TaffyTreeExt, Widget};
 
 #[derive(Clone, Debug)]
 pub struct DistributionSeries {
@@ -290,26 +288,6 @@ impl DistributionChart {
         self.plot_rect().x0
             + (f64::from(u32::try_from(index).unwrap_or(u32::MAX)) + 0.5) * self.slot_width()
     }
-    fn update_hover(&mut self) {
-        if !self.plot_rect().contains(self.pointer) {
-            self.hovered = None;
-            return;
-        }
-        self.hovered = self
-            .series
-            .iter()
-            .enumerate()
-            .filter(|(_, series)| !series.samples.is_empty())
-            .min_by(|(left, _), (right, _)| {
-                (self.center_x(*left) - self.pointer.x)
-                    .abs()
-                    .total_cmp(&(self.center_x(*right) - self.pointer.x).abs())
-            })
-            .and_then(|(index, _)| {
-                ((self.center_x(index) - self.pointer.x).abs() <= self.slot_width() / 2.0)
-                    .then_some(index)
-            });
-    }
 
     fn violin_path(&self, summary: &Summary, index: usize, range: (f64, f64)) -> BezPath {
         let count = self.style.violin_samples.clamp(12, 96);
@@ -366,32 +344,63 @@ impl DistributionChart {
     }
 }
 
+impl InteractiveChart for DistributionChart {
+    fn interaction(&mut self) -> (&mut Point, &mut bool, &mut ChartTouchTracker) {
+        (
+            &mut self.pointer,
+            &mut self.keyboard_inspection,
+            &mut self.touch,
+        )
+    }
+    fn update_hover(&mut self) {
+        if !self.plot_rect().contains(self.pointer) {
+            self.hovered = None;
+            return;
+        }
+        self.hovered = self
+            .series
+            .iter()
+            .enumerate()
+            .filter(|(_, series)| !series.samples.is_empty())
+            .min_by(|(left, _), (right, _)| {
+                (self.center_x(*left) - self.pointer.x)
+                    .abs()
+                    .total_cmp(&(self.center_x(*right) - self.pointer.x).abs())
+            })
+            .and_then(|(index, _)| {
+                ((self.center_x(index) - self.pointer.x).abs() <= self.slot_width() / 2.0)
+                    .then_some(index)
+            });
+    }
+    fn clear_hover(&mut self) {
+        self.hovered = None;
+    }
+    fn activate_hovered(&mut self) -> bool {
+        let Some(series) = self.hovered.and_then(|index| self.series.get(index)) else {
+            return false;
+        };
+        self.activated = Some(series.id.clone());
+        true
+    }
+    fn move_keyboard_inspection(&mut self, action: ChartNavAction) -> bool {
+        let candidates = self
+            .summaries()
+            .iter()
+            .enumerate()
+            .filter(|(_, summary)| summary.is_some())
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        self.hovered = moved_item(self.hovered, &candidates, action);
+        if let Some(index) = self.hovered {
+            self.pointer = Point::new(self.center_x(index), self.plot_rect().center().y);
+        }
+        self.hovered.is_some()
+    }
+}
+
 impl Widget for DistributionChart {
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let node = taffy.leaf_node(Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::length(self.height),
-            },
-            ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
-    }
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x + layout.size.width),
-            origin.y + f64::from(layout.location.y + layout.size.height),
-        );
-    }
+    crate::widget::chart_navigation::chart_leaf!();
+
     #[allow(
         clippy::too_many_lines,
         reason = "distribution grid, density, box summaries and inspector share one paint pass"
@@ -586,113 +595,20 @@ impl Widget for DistributionChart {
             } else {
                 series.detail.clone()
             };
-            let (tw, _) = tr.measure_style(&series.label, None, &theme.text(TextRole::Caption));
-            let (dw, _) = tr.measure_style(&detail, None, &theme.text(TextRole::Caption));
-            let width = f64::from(tw.max(dw)).max(210.0) + 28.0;
-            let mut x = self.pointer.x + 16.0;
-            let mut y = self.pointer.y + 16.0;
-            if x + width > self.rect.x1 {
-                x = self.pointer.x - width - 16.0;
-            }
-            if y + 66.0 > self.rect.y1 {
-                y = self.pointer.y - 76.0;
-            }
-            let tooltip = Rect::new(x, y, x + width, y + 64.0);
-            scene.fill(
-                Fill::NonZero,
+            crate::widget::chart_labels::draw_tooltip(
+                scene,
                 transform,
-                theme.tokens.colors.surfaces.overlay,
-                None,
-                &RoundedRect::from_rect(tooltip, f64::from(theme.tokens.radii.control)),
-            );
-            tr.draw_style(
-                scene,
-                &series.label,
-                theme.tokens.colors.text_primary,
-                transform * Affine::translate((x + 14.0, y + 11.0)),
-                None,
-                &theme
-                    .text(TextRole::Label)
-                    .with_weight(TextWeight::Semibold),
-            );
-            tr.draw_style(
-                scene,
-                &detail,
-                theme.tokens.colors.text_dim,
-                transform * Affine::translate((x + 14.0, y + 37.0)),
-                None,
-                &theme.text(TextRole::Caption),
+                tr,
+                theme,
+                self.pointer,
+                self.rect,
+                210.0,
+                (&series.label, &detail),
             );
         }
     }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        if let Some(action) = self.touch.handle(event, ctx.scale_factor) {
-            match action {
-                ChartTouchAction::Inspect(point) => {
-                    self.pointer = point;
-                    self.update_hover();
-                    self.keyboard_inspection = false;
-                }
-                ChartTouchAction::Activate(point) => {
-                    self.pointer = point;
-                    self.update_hover();
-                    if let Some(series) = self.hovered.and_then(|index| self.series.get(index)) {
-                        self.activated = Some(series.id.clone());
-                        *ctx.handled = true;
-                        *ctx.focus_target = Some(ctx.node_id);
-                    }
-                }
-                ChartTouchAction::Clear => self.hovered = None,
-            }
-            return;
-        }
-        match event {
-            WindowEvent::CursorMoved { position, .. } => {
-                self.pointer =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
-                self.update_hover();
-                self.keyboard_inspection = false;
-            }
-            WindowEvent::CursorLeft { .. } if !self.keyboard_inspection => self.hovered = None,
-            WindowEvent::MouseInput {
-                state: ElementState::Released,
-                button: MouseButton::Left,
-                ..
-            } => {
-                if let Some(series) = self.hovered.and_then(|index| self.series.get(index)) {
-                    self.activated = Some(series.id.clone());
-                    *ctx.handled = true;
-                    *ctx.focus_target = Some(ctx.node_id);
-                }
-            }
-            _ if chart_nav_action(event).is_some() => {
-                let Some(action) = chart_nav_action(event) else {
-                    return;
-                };
-                if action == ChartNavAction::Activate {
-                    if let Some(series) = self.hovered.and_then(|index| self.series.get(index)) {
-                        self.activated = Some(series.id.clone());
-                    }
-                } else {
-                    let candidates = self
-                        .summaries()
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, summary)| summary.is_some())
-                        .map(|(index, _)| index)
-                        .collect::<Vec<_>>();
-                    self.hovered = moved_item(self.hovered, &candidates, action);
-                    self.keyboard_inspection = self.hovered.is_some();
-                    if let Some(index) = self.hovered {
-                        self.pointer =
-                            Point::new(self.center_x(index), self.plot_rect().center().y);
-                    }
-                }
-                *ctx.handled = true;
-                *ctx.focus_target = Some(ctx.node_id);
-            }
-            _ => {}
-        }
+        handle_chart_event(self, event, ctx);
     }
     fn accessibility(&self) -> Option<AccessNode> {
         let children = self
@@ -735,45 +651,21 @@ impl Widget for DistributionChart {
         _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
-        if !matches!(action, crate::a11y::Action::Activate) {
-            return false;
-        }
-        let Some(key) = key_path.last() else {
+        let Some(id) = crate::widget::chart_navigation::activated_id(
+            action,
+            key_path,
+            self.series.iter().map(|series| &series.id),
+        ) else {
             return false;
         };
-        if let Some(series) = self
-            .series
-            .iter()
-            .find(|series| crate::a11y::hash_key(&series.id) == *key)
-        {
-            self.activated = Some(series.id.clone());
-            return true;
-        }
-        false
+        self.activated = Some(id.clone());
+        true
     }
     fn name(&self) -> &'static str {
         "DistributionChart"
     }
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
     fn is_focusable(&self) -> bool {
         true
-    }
-    fn is_layout_dirty(&self) -> bool {
-        self.rect == Rect::ZERO
-    }
-}
-
-fn format_compact(value: f64) -> String {
-    if value.abs() >= 1_000_000.0 {
-        format!("{:.1}M", value / 1_000_000.0)
-    } else if value.abs() >= 1_000.0 {
-        format!("{:.1}K", value / 1_000.0)
-    } else if value.abs() >= 10.0 {
-        format!("{value:.0}")
-    } else {
-        format!("{value:.1}")
     }
 }
 

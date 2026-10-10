@@ -398,6 +398,12 @@ class ProvenanceTests(unittest.TestCase):
                     json.dumps(value).encode()).decode()})
             good = proof.checked_slsa_attestation(wrapped(statement), digest, [], "lenovo-83ed")
             self.assertEqual(good["firmware_candidate"], candidate)
+            successor = copy.deepcopy(statement)
+            successor["predicate"]["buildDefinition"]["externalParameters"]["generation"] = 2
+            accepted = proof.checked_slsa_attestation(wrapped(successor), digest, [], "lenovo-83ed")
+            self.assertEqual(accepted["generation"], 2)
+            self.assertEqual(accepted["source_revision"], "d" * 40)
+            self.assertEqual(accepted["firmware_candidate"], candidate)
             current = copy.deepcopy(statement)
             metadata = current["predicate"]["runDetails"]["metadata"]
             metadata["invocationID"] = metadata.pop("invocationId")
@@ -419,7 +425,7 @@ class ProvenanceTests(unittest.TestCase):
                 ("profile", lambda d: d["predicate"]["buildDefinition"]["externalParameters"].update(hardwareProfile="other")),
                 ("architecture", lambda d: d["predicate"]["buildDefinition"]["externalParameters"].update(architecture="x86_64")),
                 ("firmware", lambda d: d["predicate"]["buildDefinition"]["resolvedDependencies"][-1].update(uri="local")),
-                ("generation", lambda d: d["predicate"]["buildDefinition"]["externalParameters"].update(generation=2))):
+                ("generation", lambda d: d["predicate"]["buildDefinition"]["externalParameters"].update(generation=0))):
                 with self.subTest(name=name):
                     bad = copy.deepcopy(statement)
                     change(bad)

@@ -38,11 +38,7 @@ fn installed_bytes(binary: &[u8]) -> (tempfile::TempDir, InstalledManagedPackage
     let root = tempfile::tempdir().unwrap();
     let key = ed25519_dalek::SigningKey::from_bytes(&[31; 32]);
     let public = key.verifying_key().to_bytes();
-    let hex: String = public.iter().fold(String::new(), |mut out, b| {
-        use std::fmt::Write as _;
-        let _ = write!(out, "{b:02x}");
-        out
-    });
+    let hex = hex::encode(public);
     let manifest = tilo_app_package::Manifest::from_toml_str(&format!(
         r#"
 [package]

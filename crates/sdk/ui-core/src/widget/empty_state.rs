@@ -613,15 +613,6 @@ impl EmptyState {
         self
     }
 
-    /// An illustration the app paints into the slot above the title (twice
-    /// the icon's size), from theme values. It is the first thing shed when
-    /// the pane is short.
-    #[must_use]
-    pub fn with_illustration(mut self, paint: impl Fn(&mut PaintCtx<'_>, Rect) + 'static) -> Self {
-        self.illustration = Some(Box::new(paint));
-        self
-    }
-
     /// One sentence under the title, in secondary ink.
     #[must_use]
     pub fn with_message(mut self, message: impl Into<String>) -> Self {
@@ -879,7 +870,7 @@ impl Widget for EmptyState {
         // Auto height contributes wrapped content to a Scrollable's extent;
         // the percentage minimum still fills a normal definite-height pane.
         // An inline empty state hugs its content.
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             flex_grow: if self.inline { 0.0 } else { 1.0 },
             flex_shrink: if self.inline { 0.0 } else { 1.0 },
             size: taffy::Size {
@@ -895,9 +886,8 @@ impl Widget for EmptyState {
                 },
             },
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn measure(
@@ -939,13 +929,7 @@ impl Widget for EmptyState {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         self.layout_dirty = false;
     }
 
@@ -1211,6 +1195,7 @@ impl crate::widget::controls::ActionControls for EmptyState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::dispatch;
     use vello_encoding::DrawTag;
 
     fn lay_out(w: &mut dyn Widget, vw: f32, vh: f32) {
@@ -1245,44 +1230,13 @@ mod tests {
         scene
     }
 
-    fn synth() -> winit::event::DeviceId {
-        unsafe { std::mem::zeroed() }
-    }
     fn cursor(p: Point) -> WindowEvent {
         WindowEvent::CursorMoved {
-            device_id: synth(),
+            device_id: winit::event::DeviceId::dummy(),
             position: winit::dpi::PhysicalPosition::new(p.x, p.y),
         }
     }
-    fn press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: synth(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
-    fn dispatch(w: &mut dyn Widget, e: &WindowEvent) -> bool {
-        let mut taffy = TaffyTree::<()>::new();
-        let node = taffy.leaf_node(Style::default());
-        let mut handled = false;
-        let mut ft = None;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        w.handle_event(
-            e,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut ft,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-        handled
-    }
+    use crate::synthetic_input::mouse_press;
 
     /// Representative numbers: the dark theme's `xl` title and `sm` message at
     /// the spacing scale a docked panel is drawn with.
@@ -1534,7 +1488,7 @@ mod tests {
             assert!(target.x > 0.0, "action rect must resolve after draw");
             dispatch(&mut es, &cursor(target));
             assert!(
-                dispatch(&mut es, &press()),
+                dispatch(&mut es, &mouse_press()),
                 "click on the action pill is consumed"
             );
             assert!(es.take_action(), "the action signal fires");
@@ -1548,7 +1502,7 @@ mod tests {
             // Top-left corner is well outside the centered pill.
             dispatch(&mut es, &cursor(Point::new(2.0, 2.0)));
             assert!(
-                !dispatch(&mut es, &press()),
+                !dispatch(&mut es, &mouse_press()),
                 "click away from the pill is not consumed"
             );
             assert!(!es.take_action());
@@ -1648,7 +1602,7 @@ mod tests {
 
             let target = es.action_rect().center();
             dispatch(&mut es, &cursor(target));
-            assert!(dispatch(&mut es, &press()));
+            assert!(dispatch(&mut es, &mouse_press()));
             let invocation = crate::widget::controls::take_control_invocation(&mut es)
                 .expect("canonical invocation");
             assert_eq!(
@@ -1677,7 +1631,7 @@ mod tests {
             // A press anywhere is ignored when there's no action.
             let center = es.get_rect().center();
             dispatch(&mut es, &cursor(center));
-            assert!(!dispatch(&mut es, &press()));
+            assert!(!dispatch(&mut es, &mouse_press()));
             assert!(!es.take_action());
         }
 

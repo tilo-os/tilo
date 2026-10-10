@@ -162,12 +162,3 @@ impl std::fmt::Display for Route {
         }
     }
 }
-
-/// Nanoseconds since the Unix epoch, for certificate validity.
-pub fn now_ns() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()
-        .and_then(|elapsed| u64::try_from(elapsed.as_nanos()).ok())
-        .unwrap_or(0)
-}

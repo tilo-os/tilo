@@ -15,12 +15,14 @@ path = "src/lib.rs"
 [dependencies]
 # Desktop backends block on IPC; the async API runs them on the app runtime's
 # blocking pool.
+tilo-platform-caps = { version = "0.1.0", path = "../tilo-platform-caps" }
 tilo-rt = { version = "0.1.0", path = "../tilo-rt" }
 # Secret bytes are wiped from memory when dropped.
 zeroize.workspace = true
 
 # A machine without a keychain keeps its secrets in sealed owner-only files.
 [target.'cfg(unix)'.dependencies]
+hex.workspace = true
 tilo-seal = { version = "0.1.0", path = "../../system/tilo-seal" }
 sha2.workspace = true
 libc.workspace = true

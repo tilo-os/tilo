@@ -19,3 +19,20 @@ pub(crate) struct InputContext<'a> {
     pub(crate) node_id: NodeId,
     pub(crate) taffy: &'a TaffyTree<()>,
 }
+
+impl InputContext<'_> {
+    /// The toolkit's event context for this input, for handing the event to
+    /// one of Calendar's widgets.
+    pub(crate) fn event_ctx(&mut self) -> ui::widget::EventCtx<'_> {
+        ui::widget::EventCtx {
+            scale_factor: self.scale_factor,
+            modifiers: &self.modifiers,
+            state: self.state.reborrow(),
+            path: self.path,
+            handled: self.handled,
+            focus_target: self.focus_target,
+            node_id: self.node_id,
+            taffy: self.taffy,
+        }
+    }
+}

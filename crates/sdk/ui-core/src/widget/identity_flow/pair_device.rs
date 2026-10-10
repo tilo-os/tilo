@@ -24,11 +24,13 @@
 //! steps back and clears the one before it.
 
 use crate::widget::{AppModel, ModelPath};
+use std::borrow::Cow;
 use std::collections::HashMap;
 
+#[cfg(not(target_arch = "wasm32"))]
 use getrandom::{SysRng, rand_core::UnwrapErr};
-use taffy::{Dimension, Display, NodeId, Size, Style, TaffyTree};
-use threshold_identity::{DkgSession, EnrolmentRound1, ThresholdIdentity};
+use taffy::{NodeId, TaffyTree};
+use threshold_identity::ThresholdIdentity;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
@@ -40,17 +42,17 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
+use crate::widget::identity_flow::ScreenOutcome;
 use crate::widget::identity_flow::sheet::{
-    Align, BodyScroll, FORM_SHEET_WIDTH, Resolved, Role, Rows, SheetSpec, code_cell_side, edited,
-    line_height, paint_cell, paint_text, paragraph_height, place_code_cell, place_field, resolve,
-    with_layout_renderer,
-};
-use crate::widget::identity_flow::{
-    IdentityFlowError, PairingHandshake, PairingPayload, ScreenOutcome, derive_pairing_code,
-    format_pairing_code,
+    Align, BodyScroll, Resolved, Role, Rows, SheetFrame, SheetScreen, code_cell_side, draw_screen,
+    edited, field_leaf, layout_screen, line_height, paint_cell, paint_text, paragraph_height,
+    place_code_cell, place_field, screen_style,
 };
 use crate::widget::modal_dialog::ModalAction;
 use crate::widget::text_input::TextInput;
+use tilo_identity_ceremony::{
+    IdentityFlowError, PairingHandshake, PairingPayload, derive_pairing_code, format_pairing_code,
+};
 
 /// The pairing code is exactly six digits, one per input box.
 const CODE_LEN: usize = 6;
@@ -103,7 +105,7 @@ fn box_index_to_f64(n: usize) -> f64 {
 
 /// Every rect the screen paints and hit-tests, from one pass over the rows.
 #[derive(Clone, Debug, Default)]
-struct Plan {
+pub(super) struct Plan {
     status: Rect,
     code_label: Rect,
     boxes: [Rect; CODE_LEN],
@@ -114,7 +116,7 @@ struct Plan {
 }
 
 pub struct PairDeviceScreen {
-    rect: Rect,
+    frame: SheetFrame,
     /// The six digit cells, one shared text input each. Read them with
     /// [`Self::code_string`] / [`Self::parse_code`].
     cells: [TextInput; CODE_LEN],
@@ -139,11 +141,6 @@ pub struct PairDeviceScreen {
     error: Option<String>,
     /// Once `true`, the container advances on the next event tick.
     completed: bool,
-    /// The theme `build_layout` saw, so `apply_layout` can resolve the rows
-    /// without waiting for a paint.
-    layout_theme: Option<Theme>,
-    scroll: BodyScroll,
-    body_height: f64,
 }
 
 impl Default for PairDeviceScreen {
@@ -162,7 +159,7 @@ impl PairDeviceScreen {
             first.set_focus(true);
         }
         Self {
-            rect: Rect::ZERO,
+            frame: SheetFrame::default(),
             cells,
             cell_nodes: [None; CODE_LEN],
             last_digits: [const { String::new() }; CODE_LEN],
@@ -181,9 +178,6 @@ impl PairDeviceScreen {
             status: "Enter the 6-digit code shown on the other device.".to_string(),
             error: None,
             completed: false,
-            layout_theme: None,
-            scroll: BodyScroll::default(),
-            body_height: 0.0,
         }
     }
 
@@ -214,22 +208,6 @@ impl PairDeviceScreen {
             acc = acc.saturating_mul(10).saturating_add(digit);
         }
         Some(acc)
-    }
-
-    pub fn set_payload_text(&mut self, payload: impl Into<String>) {
-        let payload = payload.into();
-        if payload.len() > MAX_PAIRING_PAYLOAD_TEXT_BYTES {
-            self.error = Some(PAYLOAD_TOO_LARGE.to_string());
-            return;
-        }
-        self.payload.set_text(&payload);
-        self.payload.set_cursor_pos(payload.len());
-        self.payload_ok = payload;
-        self.error = None;
-    }
-
-    pub fn payload_text(&self) -> &str {
-        self.payload.value()
     }
 
     /// The cell whose field holds keyboard focus, if any.
@@ -357,10 +335,6 @@ impl PairDeviceScreen {
         self.error.as_deref()
     }
 
-    pub fn is_completed(&self) -> bool {
-        self.completed
-    }
-
     /// Sanity check that the typed code matches the payload's derived
     /// code, before launching the DKG.
     ///
@@ -449,7 +423,12 @@ impl PairDeviceScreen {
                         "DKG produced no round-2 reply to share 1".into(),
                     )
                 })?;
-            let mac = super::pairing_transcript_mac(payload, "pairer-to-host", &my_round1, &reply)?;
+            let mac = tilo_identity_ceremony::pairing_transcript_mac(
+                payload,
+                "pairer-to-host",
+                &my_round1,
+                &reply,
+            )?;
             // Publication is one acknowledged, idempotent exchange. A transient
             // TLS timeout must not strand round 1 or round 2 while both screens
             // continue to say they are waiting for the other device.
@@ -479,8 +458,12 @@ impl PairDeviceScreen {
                 })?;
             loop {
                 if let Some((r, host_mac)) = hs.take_host_round2(&nonce) {
-                    let expected =
-                        super::pairing_transcript_mac(payload, "host-to-pairer", &my_round1, &r)?;
+                    let expected = tilo_identity_ceremony::pairing_transcript_mac(
+                        payload,
+                        "host-to-pairer",
+                        &my_round1,
+                        &r,
+                    )?;
                     if expected != host_mac {
                         return Err(IdentityFlowError::PairingMacInvalid);
                     }
@@ -530,19 +513,6 @@ impl PairDeviceScreen {
         }
     }
 
-    /// Companion to `perform_pairing` that *exposes* the round-1 the
-    /// pairer would send, for tests that inspect the wire format.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`IdentityFlowError`] when bootstrapping the device identity or
-    /// beginning its enrolment round fails.
-    pub fn produce_pairer_round1() -> Result<(DkgSession, EnrolmentRound1), IdentityFlowError> {
-        let mut rng = UnwrapErr(SysRng);
-        let mut id = ThresholdIdentity::bootstrap_single_device(&mut rng)?;
-        Ok(id.begin_enrolment(2, 2, 2, &mut rng)?)
-    }
-
     // Mirrors `Widget::handle_event`'s parameter list on purpose --
     // this is invoked from the trait impl, forwarding the same event,
     // scale, modifiers, CRDT handle, and out-params the screen host
@@ -582,7 +552,7 @@ impl PairDeviceScreen {
                     },
                 ..
             } => {
-                if self.scroll.key(logical_key, self.body_height)
+                if self.frame.key(logical_key)
                     || self.backspace_steps_back(logical_key, ctx.focus_target)
                 {
                     *ctx.handled = true;
@@ -592,7 +562,7 @@ impl PairDeviceScreen {
                 ScreenOutcome::Stay
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                if self.scroll.wheel(delta) {
+                if self.frame.wheel(delta) {
                     *ctx.handled = true;
                 }
                 ScreenOutcome::Stay
@@ -628,51 +598,6 @@ impl PairDeviceScreen {
         }
         self.focus_cell(prev, focus_target);
         true
-    }
-
-    /// One geometry pass for both `apply_layout` and `draw`; hit rects are
-    /// clipped to the visible body.
-    fn resolve(&mut self, theme: &Theme, text_renderer: &mut TextRenderer) -> Resolved<Plan> {
-        let actions = self.actions();
-        let spec = SheetSpec {
-            title: TITLE,
-            max_width: FORM_SHEET_WIDTH,
-            actions: &actions,
-        };
-        let mut scroll = self.scroll;
-        let resolved = resolve(
-            self.rect,
-            &spec,
-            &mut scroll,
-            text_renderer,
-            theme,
-            |rows, control_h, tr, theme| {
-                let plan = self.plan(rows, control_h, tr, theme);
-                let bottom = plan.bottom;
-                (plan, bottom)
-            },
-        );
-        self.scroll = scroll;
-        let body = resolved.sheet.body();
-        self.body_height = body.height();
-        // An accessibility `SetValue` lands outside the event path; the
-        // layout pass that follows it is where its digits settle into the
-        // cells. Focus is the host's here and is not moved.
-        self.settle(None);
-        for (cell, rect) in self.cells.iter_mut().zip(resolved.plan.boxes.iter()) {
-            place_code_cell(cell, *rect, text_renderer, theme);
-        }
-        place_field(&mut self.payload, resolved.plan.payload);
-        for (slot, rect) in self
-            .code_box_rects
-            .iter_mut()
-            .zip(resolved.plan.boxes.iter())
-        {
-            *slot = BodyScroll::visible(body, *rect);
-        }
-        self.payload_rect = BodyScroll::visible(body, resolved.plan.payload);
-        self.submit_rect = resolved.sheet.action(0);
-        resolved
     }
 
     /// `MouseInput` arm of [`Self::handle_event_screen`]: focuses a code
@@ -716,6 +641,41 @@ impl PairDeviceScreen {
         ScreenOutcome::Stay
     }
 
+    /// The six digit cells: the field frame, focused or not, with the
+    /// shared input seated in it by `resolve` (plain chrome, `Code` role,
+    /// centred on the cell).
+    fn draw_code_boxes(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+        plan: &Plan,
+    ) {
+        for (cell, r) in self.cells.iter_mut().zip(plan.boxes.iter()) {
+            paint_cell(scene, transform, theme, *r, cell.is_focused());
+            cell.draw(scene, transform, text_renderer, theme, presence);
+        }
+    }
+}
+
+impl SheetScreen for PairDeviceScreen {
+    type Plan = Plan;
+    type Actions = [ModalAction<'static>; 1];
+
+    fn frame(&self) -> &SheetFrame {
+        &self.frame
+    }
+
+    fn frame_mut(&mut self) -> &mut SheetFrame {
+        &mut self.frame
+    }
+
+    fn title(&self) -> Cow<'static, str> {
+        TITLE.into()
+    }
+
     fn actions(&self) -> [ModalAction<'static>; 1] {
         let label = if self.completed {
             CONTINUE_LABEL
@@ -724,7 +684,6 @@ impl PairDeviceScreen {
         };
         [ModalAction::primary(label).hovered(self.submit_hovered)]
     }
-
     /// Walk the body rows once: status, the six digit boxes under their
     /// label, the payload field under its label, then any error.
     fn plan(
@@ -783,21 +742,79 @@ impl PairDeviceScreen {
         }
     }
 
-    /// The six digit cells: the field frame, focused or not, with the
-    /// shared input seated in it by `resolve` (plain chrome, `Code` role,
-    /// centred on the cell).
-    fn draw_code_boxes(
+    fn bottom(plan: &Plan) -> f64 {
+        plan.bottom
+    }
+
+    fn place(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
+        resolved: &Resolved<Plan>,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        presence: &PresenceCtx,
-        plan: &Plan,
     ) {
-        for (cell, r) in self.cells.iter_mut().zip(plan.boxes.iter()) {
-            paint_cell(scene, transform, theme, *r, cell.is_focused());
-            cell.draw(scene, transform, text_renderer, theme, presence);
+        let body = resolved.sheet.body();
+        // An accessibility `SetValue` lands outside the event path; the
+        // layout pass that follows it is where its digits settle into the
+        // cells. Focus is the host's here and is not moved.
+        self.settle(None);
+        for (cell, rect) in self.cells.iter_mut().zip(resolved.plan.boxes.iter()) {
+            place_code_cell(cell, *rect, text_renderer, theme);
+        }
+        place_field(&mut self.payload, resolved.plan.payload);
+        for (slot, rect) in self
+            .code_box_rects
+            .iter_mut()
+            .zip(resolved.plan.boxes.iter())
+        {
+            *slot = BodyScroll::visible(body, *rect);
+        }
+        self.payload_rect = BodyScroll::visible(body, resolved.plan.payload);
+        self.submit_rect = resolved.sheet.action(0);
+    }
+
+    fn paint_body(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        presence: &PresenceCtx,
+        resolved: &Resolved<Plan>,
+    ) {
+        let plan = &resolved.plan;
+        paint_text(
+            ctx,
+            plan.status,
+            &self.status,
+            Role::Body,
+            Align::Start,
+            true,
+        );
+        paint_text(
+            ctx,
+            plan.code_label,
+            CODE_LABEL,
+            Role::Label,
+            Align::Start,
+            false,
+        );
+        self.draw_code_boxes(
+            ctx.scene,
+            ctx.transform,
+            ctx.text,
+            ctx.theme,
+            presence,
+            plan,
+        );
+        paint_text(
+            ctx,
+            plan.payload_label,
+            PAYLOAD_LABEL,
+            Role::Label,
+            Align::Start,
+            false,
+        );
+        self.payload
+            .draw(ctx.scene, ctx.transform, ctx.text, ctx.theme, presence);
+        if let (Some(rect), Some(err)) = (plan.error, self.error.as_deref()) {
+            paint_text(ctx, rect, err, Role::Error, Align::Start, true);
         }
     }
 }
@@ -811,16 +828,13 @@ impl Widget for PairDeviceScreen {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        self.layout_theme = Some(theme.clone());
+        self.frame.layout_theme = Some(theme.clone());
         // One child node per field — the six cells in code order, then the
         // payload — placed by the sheet, not by taffy (`Display::None`), but
         // present so focus and accessibility walks line up with `children()`.
         let mut leaves = Vec::with_capacity(CODE_LEN.saturating_add(1));
         for i in 0..CODE_LEN {
-            let leaf = taffy.leaf_node(Style {
-                display: Display::None,
-                ..Default::default()
-            });
+            let leaf = field_leaf(taffy);
             if let Some(cell) = self.cells.get_mut(i) {
                 node_map.insert(leaf, std::ptr::from_mut::<dyn Widget>(cell));
             }
@@ -829,42 +843,15 @@ impl Widget for PairDeviceScreen {
             }
             leaves.push(leaf);
         }
-        let payload = taffy.leaf_node(Style {
-            display: Display::None,
-            ..Default::default()
-        });
+        let payload = field_leaf(taffy);
         node_map.insert(payload, std::ptr::from_mut::<dyn Widget>(&mut self.payload));
         self.payload_node = Some(payload);
         leaves.push(payload);
-        // The screen owns the viewport, so the sheet centres on the window
-        // rather than inside a fixed box at the origin.
-        let node = taffy.parent_node(
-            Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
-                ..Default::default()
-            },
-            &leaves,
-        );
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_node(screen_style(), &leaves, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
-        if let Some(theme) = self.layout_theme.clone() {
-            with_layout_renderer(&theme, |tr| {
-                self.resolve(&theme, tr);
-            });
-        }
+        layout_screen(self, taffy, node, origin);
     }
 
     fn draw(
@@ -875,61 +862,7 @@ impl Widget for PairDeviceScreen {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        // Identity ceremonies, invites and joins are security surfaces:
-        // every look-alike letter is set apart.
-        text_renderer.security_surface(|text_renderer| {
-            let resolved = self.resolve(theme, text_renderer);
-            let actions = self.actions();
-            let spec = SheetSpec {
-                title: TITLE,
-                max_width: FORM_SHEET_WIDTH,
-                actions: &actions,
-            };
-            let sheet = &resolved.sheet;
-            let plan = &resolved.plan;
-
-            sheet.paint_frame(scene, transform, text_renderer, theme, &spec);
-            sheet.clip_body(scene, transform);
-            paint_text(
-                &mut PaintCtx::new(scene, transform, text_renderer, theme),
-                plan.status,
-                &self.status,
-                Role::Body,
-                Align::Start,
-                true,
-            );
-            paint_text(
-                &mut PaintCtx::new(scene, transform, text_renderer, theme),
-                plan.code_label,
-                CODE_LABEL,
-                Role::Label,
-                Align::Start,
-                false,
-            );
-            self.draw_code_boxes(scene, transform, text_renderer, theme, presence, plan);
-            paint_text(
-                &mut PaintCtx::new(scene, transform, text_renderer, theme),
-                plan.payload_label,
-                PAYLOAD_LABEL,
-                Role::Label,
-                Align::Start,
-                false,
-            );
-            self.payload
-                .draw(scene, transform, text_renderer, theme, presence);
-            if let (Some(rect), Some(err)) = (plan.error, self.error.as_deref()) {
-                paint_text(
-                    &mut PaintCtx::new(scene, transform, text_renderer, theme),
-                    rect,
-                    err,
-                    Role::Error,
-                    Align::Start,
-                    true,
-                );
-            }
-            scene.pop_layer();
-            sheet.paint_actions(scene, transform, text_renderer, theme, &spec);
-        });
+        draw_screen(self, scene, transform, text_renderer, theme, presence);
     }
 
     fn name(&self) -> &'static str {
@@ -975,7 +908,7 @@ impl Widget for PairDeviceScreen {
     }
 
     fn get_rect(&self) -> Rect {
-        self.rect
+        self.frame.rect
     }
 
     fn needs_redraw(&self) -> bool {

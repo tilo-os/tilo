@@ -1864,6 +1864,14 @@ impl Widget for Toolbar {
             .draw_overlay(scene, transform, text, theme, presence);
     }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        if (self.focused || self.traps_focus())
+            && matches!(event, WindowEvent::KeyboardInput { event, .. }
+                if event.repeat && event.state == ElementState::Pressed
+                    && matches!(event.logical_key, Key::Named(NamedKey::Enter | NamedKey::Space)))
+        {
+            *ctx.handled = true;
+            return;
+        }
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.pointer = Some(Point::new(
                 position.x / ctx.scale_factor,
@@ -2440,6 +2448,65 @@ mod tests {
     }
 
     #[test]
+    fn held_activation_keys_do_not_repeat_admitted_toolbar_commands() {
+        use crate::headless::Framed;
+        use std::cell::Cell;
+        use std::rc::Rc;
+        let press = || WindowEvent::KeyboardInput {
+            device_id: winit::event::DeviceId::dummy(),
+            event: crate::synthetic_input::key_event(
+                Key::Named(NamedKey::Enter),
+                None,
+                ElementState::Pressed,
+            ),
+            is_synthetic: true,
+        };
+        for width in [800, 100] {
+            let calls = Rc::new(Cell::new(0));
+            let count = Rc::clone(&calls);
+            let toolbar = Toolbar::new(Orientation::Horizontal)
+                .push_button("Open workspace settings", move || {
+                    count.set(count.get() + 1)
+                })
+                .with_view("test.workspace-settings");
+            let mut frame = Framed::new(crate::State::new(), toolbar, (width, 480), Theme::dark());
+            assert!(Framed::harness(&frame).native_app_audit().is_certified());
+            if width == 100 {
+                Framed::harness_mut(&mut frame)
+                    .perform_named("toolbar.overflow", &Action::Activate)
+                    .unwrap();
+                Framed::harness_mut(&mut frame).poll_frame().unwrap();
+            }
+            Framed::harness_mut(&mut frame)
+                .perform_named("toolbar.item.0", &Action::Focus)
+                .unwrap();
+            let mut held = press();
+            if let WindowEvent::KeyboardInput { event, .. } = &mut held {
+                event.repeat = true;
+            }
+            Framed::harness_mut(&mut frame).send_host_event(&held);
+            Framed::harness_mut(&mut frame).poll_frame().unwrap();
+            assert_eq!(
+                calls.get(),
+                0,
+                "{width}: a held key cannot start a new command"
+            );
+            Framed::harness_mut(&mut frame).send_host_event(&press());
+            Framed::harness_mut(&mut frame).poll_frame().unwrap();
+            assert_eq!(
+                calls.get(),
+                1,
+                "{width}: one deliberate key press invokes once"
+            );
+            for _ in 0..3 {
+                Framed::harness_mut(&mut frame).send_host_event(&held);
+                Framed::harness_mut(&mut frame).poll_frame().unwrap();
+            }
+            assert_eq!(calls.get(), 1, "{width}: repetition must not invoke again");
+        }
+    }
+
+    #[test]
     fn native_commands_are_admitted_and_operate_in_the_row_and_overflow() {
         use crate::headless::Framed;
         use std::cell::Cell;
@@ -2944,7 +3011,7 @@ mod lifecycle_tests {
     use automerge::AutoCommit;
     use std::cell::RefCell;
     use std::rc::Rc;
-    use winit::event::{DeviceId, KeyEvent};
+    use winit::event::DeviceId;
 
     fn settle(tb: &mut Toolbar, width: f32, height: f32, scale: f32) {
         let theme = Theme::dark().with_text_scale(scale);
@@ -3022,22 +3089,7 @@ mod lifecycle_tests {
     }
 
     fn dispatch(tb: &mut Toolbar, event: WindowEvent) -> bool {
-        let mut tree = TaffyTree::new();
-        let node = tree.leaf_node(Style::default());
-        let mut handled = false;
-        tb.handle_event(
-            &event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &Default::default(),
-                state: crate::widget::Edits::lend(&mut AutoCommit::new()),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut None,
-                node_id: node,
-                taffy: &tree,
-            },
-        );
+        let handled = crate::testing::dispatch(tb, &event);
         drain_native_controls(tb);
         handled
     }
@@ -3061,16 +3113,9 @@ mod lifecycle_tests {
         )
     }
     fn key_event(key: NamedKey) -> WindowEvent {
-        let mut event: KeyEvent = unsafe { std::mem::zeroed() };
-        event.logical_key = Key::Named(key);
-        event.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        event.location = winit::keyboard::KeyLocation::Standard;
-        event.state = ElementState::Pressed;
-        event.text = None;
+        let event = crate::synthetic_input::key_event(Key::Named(key), None, ElementState::Pressed);
         WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             event,
             is_synthetic: true,
         }
@@ -3488,22 +3533,12 @@ mod lifecycle_tests {
                 ));
                 drain_native_controls(&mut host);
                 let send = |host: &mut crate::widget::Row, event: WindowEvent| {
-                    host.handle_event(
-                        &event,
-                        &mut crate::widget::EventCtx {
-                            scale_factor: 1.0,
-                            modifiers: &Default::default(),
-                            state: crate::widget::Edits::lend(&mut AutoCommit::new()),
-                            path: &automerge::ROOT,
-                            handled: &mut false,
-                            focus_target: &mut None,
-                            node_id: node,
-                            taffy: &tree,
-                        },
-                    );
+                    crate::testing::Dispatch::new()
+                        .layout(&tree, node)
+                        .send(host, &event);
                 };
                 let mouse_event = |button, state| WindowEvent::MouseInput {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: winit::event::DeviceId::dummy(),
                     button,
                     state,
                 };
@@ -3521,7 +3556,7 @@ mod lifecycle_tests {
                 send(
                     &mut host,
                     WindowEvent::CursorMoved {
-                        device_id: unsafe { std::mem::zeroed() },
+                        device_id: winit::event::DeviceId::dummy(),
                         position: winit::dpi::PhysicalPosition::new(point.x, point.y),
                     },
                 );
@@ -3613,7 +3648,7 @@ mod lifecycle_tests {
 mod command_state_tests {
     use super::*;
     use crate::icons::Icon;
-    use automerge::AutoCommit;
+    use crate::testing::dispatch;
     use std::cell::Cell;
     use std::rc::Rc;
     use winit::event::DeviceId;
@@ -3621,26 +3656,6 @@ mod command_state_tests {
     fn lay(tb: &mut Toolbar, width: f64) {
         let mut text = TextRenderer::new();
         tb.lay_out_in(Rect::new(0.0, 0.0, width, 40.0), &mut text, &Theme::dark());
-    }
-
-    fn dispatch(tb: &mut Toolbar, event: &WindowEvent) -> bool {
-        let mut tree = TaffyTree::new();
-        let node = tree.leaf_node(Style::default());
-        let mut handled = false;
-        tb.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &Default::default(),
-                state: crate::widget::Edits::lend(&mut AutoCommit::new()),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut None,
-                node_id: node,
-                taffy: &tree,
-            },
-        );
-        handled
     }
 
     fn click(tb: &mut Toolbar, p: Point) {

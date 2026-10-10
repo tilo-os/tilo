@@ -633,13 +633,6 @@ impl MailApp {
         self.dirty = true;
     }
 
-    /// Push the message in and snap it (narrow "reading a message" shot).
-    pub fn prime_detail_shot(&mut self) {
-        self.nav.show(NavPane::Content);
-        self.nav.snap();
-        self.dirty = true;
-    }
-
     /// A blank "Add account" sheet with an email typed and its servers
     /// filled in, focus on a server field so its focus ring shows.
     fn stage_setup_add(&mut self) {
@@ -744,78 +737,6 @@ impl MailApp {
         self.dirty = true;
     }
 
-    /// Open the same menu a row right-click produces, on the selected row,
-    /// once the list has been laid out.
-    pub fn prime_context_menu_shot(&mut self) {
-        self.pending_menu = self.shared.borrow().selected;
-        self.dirty = true;
-    }
-
-    /// Open the account-setup sheet (setup shot).
-    pub fn prime_setup_shot(&mut self) {
-        let active = self.shared.borrow().accounts.active;
-        self.open_setup_edit(Some(active));
-    }
-
-    /// Open a blank "Add account" sheet with an email typed + servers
-    /// autofilled, so the shot shows the add flow with single-border fields.
-    pub fn prime_setup_add_shot(&mut self) {
-        self.open_setup_edit(None);
-        self.set_setup_input(0, "Alex Morgan");
-        self.set_setup_input(1, "alex@fastmail.com");
-        self.maybe_autofill();
-    }
-
-    /// Open a blank "Add account" sheet with a Gmail address — which presets to
-    /// OAuth — so the shot shows the OAuth sign-in flow.
-    pub fn prime_setup_oauth_shot(&mut self) {
-        self.open_setup_edit(None);
-        self.set_setup_input(0, "Alex Morgan");
-        self.set_setup_input(1, "alex.morgan@gmail.com");
-        self.maybe_autofill();
-    }
-
-    /// Select the bundled HTML newsletter so the reader renders it through the
-    /// sandboxed `WebView` (HTML-mail shot). Also demonstrates the filled-star
-    /// action (the newsletter is starred).
-    pub fn prime_html_mail_shot(&mut self) {
-        let id = {
-            let st = self.shared.borrow();
-            st.mailbox
-                .messages
-                .values()
-                .find(|m| m.from.email == "hello@fieldnotes.example")
-                .map(|m| m.id)
-        };
-        if let Some(id) = id {
-            let mut doc = automerge::AutoCommit::new();
-            self.shared
-                .borrow_mut()
-                .select_message(&mut ui::widget::Edits::lend(&mut doc), id);
-            self.process_intents();
-        }
-        self.dirty = true;
-    }
-
-    /// A configured mailbox before any messages have arrived.
-    pub fn prime_empty_shot(&mut self) {
-        let mut st = self.shared.borrow_mut();
-        let account = st.mailbox.account.clone();
-        st.mailbox = crate::model::Mailbox::new(account);
-        st.selected = None;
-        st.folder = Folder::Inbox;
-        st.dirty = true;
-        drop(st);
-        self.dirty = true;
-    }
-
-    /// A real in-flight sync indication over cached mail.
-    pub fn prime_loading_shot(&mut self) {
-        self.awaiting_engine = true;
-        self.shared.borrow_mut().status = Some("Syncing Inbox…".into());
-        self.dirty = true;
-    }
-
     /// Queue one worker request and account for it exactly once.  Every engine
     /// backend emits a matching `EngineEvent::Completed` after handling the
     /// request, including successful flag/move/purge writes.
@@ -841,23 +762,6 @@ impl MailApp {
     /// out-of-order result must not update a different operation's UI state.
     fn expects_engine_event(&self, request_id: EngineRequestId, kind: EngineRequestKind) -> bool {
         self.pending_engine_requests.get(&request_id) == Some(&kind)
-    }
-
-    /// Cached mail remains usable while connectivity is unavailable.
-    pub fn prime_offline_shot(&mut self) {
-        self.shared.borrow_mut().status =
-            Some("You’re offline. Downloaded mail is still here.".into());
-        self.dirty = true;
-    }
-
-    /// A recoverable account error: the configuration stays open and editable.
-    pub fn prime_error_shot(&mut self) {
-        self.prime_setup_add_shot();
-        self.set_setup_error(Some(
-            "Couldn’t connect to IMAP. Check the server, port, and TLS settings, then try again."
-                .into(),
-        ));
-        self.dirty = true;
     }
 
     /// Open the sidebar drawer once the window has its size (narrow drawer
@@ -3600,19 +3504,11 @@ impl Widget for MailApp {
             },
             ..Default::default()
         };
-        let node = taffy.parent_node(style, &children);
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_node(style, &children, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         let inner = Point::new(self.rect.x0, self.rect.y0);
         if let Some(first_run_node) = self.first_run_node {
             self.first_run.apply_layout(taffy, first_run_node, inner);
@@ -5053,59 +4949,19 @@ impl MailApp {
 mod tests {
     use super::*;
     use automerge::ReadDoc;
-    use winit::event::{DeviceId, Modifiers, MouseButton};
 
-    fn synth_device() -> DeviceId {
-        unsafe { std::mem::zeroed() }
-    }
     fn cursor_at(p: Point) -> WindowEvent {
         WindowEvent::CursorMoved {
-            device_id: synth_device(),
+            device_id: winit::event::DeviceId::dummy(),
             position: winit::dpi::PhysicalPosition::new(p.x, p.y),
         }
     }
-    fn left_press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: synth_device(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
+    use ui::synthetic_input::mouse_press;
     fn esc_event() -> WindowEvent {
         named_key(NamedKey::Escape)
     }
-    fn named_key(k: NamedKey) -> WindowEvent {
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Named(k);
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = None;
-        WindowEvent::KeyboardInput {
-            device_id: synth_device(),
-            event: ev,
-            is_synthetic: false,
-        }
-    }
-    fn char_key(s: &str) -> WindowEvent {
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Character(s.into());
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = Some(s.into());
-        WindowEvent::KeyboardInput {
-            device_id: synth_device(),
-            event: ev,
-            is_synthetic: false,
-        }
-    }
+    use ui::synthetic_input::char_key;
+    use ui::synthetic_input::named_key;
 
     /// Route `ev` to the app through the tree it was last laid out in (a
     /// bare node before any layout).
@@ -5115,34 +4971,18 @@ mod tests {
             let node = taffy.new_leaf(Style::default()).unwrap();
             (taffy, node)
         });
-        let mut handled = false;
-        let mut focus = None;
-        app.handle_event(
-            ev,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &Modifiers::default(),
-                state: ui::widget::Edits::lend(doc),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
+        let handled = ui::testing::Dispatch::new()
+            .doc(doc)
+            .layout(&taffy, node)
+            .send(app, ev)
+            .handled;
         if app.test_layout.is_none() {
             app.test_layout = Some((taffy, node));
         }
         handled
     }
 
-    fn left_release() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: synth_device(),
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        }
-    }
+    use ui::synthetic_input::mouse_release;
 
     fn app() -> (MailApp, AutoCommit) {
         let mut app = MailApp::new_sample();
@@ -5387,8 +5227,8 @@ mod tests {
 
     fn click_at(app: &mut MailApp, doc: &mut AutoCommit, p: Point) -> bool {
         dispatch(app, &cursor_at(p), doc);
-        let pressed = dispatch(app, &left_press(), doc);
-        let released = dispatch(app, &left_release(), doc);
+        let pressed = dispatch(app, &mouse_press(), doc);
+        let released = dispatch(app, &mouse_release(), doc);
         pressed || released
     }
 

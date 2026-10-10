@@ -30,7 +30,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::future::Future;
-use std::io;
+use std::io::{self, Read as _};
 use std::os::fd::{IntoRawFd, RawFd};
 use std::os::unix::net::UnixStream as StdUnixStream;
 use std::path::Path;
@@ -167,6 +167,8 @@ pub enum BlobError {
     Refused(String),
     /// No service, or the connection is gone.
     Disconnected(String),
+    /// The caller's own reader failed while its content was being stored.
+    Input(String),
 }
 
 impl std::fmt::Display for BlobError {
@@ -179,6 +181,7 @@ impl std::fmt::Display for BlobError {
             }
             Self::Refused(message) => write!(f, "blob service refused: {message}"),
             Self::Disconnected(message) => write!(f, "blob service unavailable: {message}"),
+            Self::Input(message) => write!(f, "reading the content to store failed: {message}"),
         }
     }
 }
@@ -654,13 +657,11 @@ impl session_blobs::Server for SessionServer {
 
 type Reply<T> = std::sync::mpsc::SyncSender<Result<T, BlobError>>;
 
+/// One request to the connection's driver thread. Every job is one round
+/// trip: content larger than a message travels as a sequence of upload jobs,
+/// so a long transfer never holds the driver while other callers wait.
 enum Job {
-    Put {
-        target: u64,
-        bytes: Vec<u8>,
-        mime: String,
-        reply: Reply<BlobRef>,
-    },
+    Store(StoreJob),
     Read {
         target: u64,
         hash: String,
@@ -684,6 +685,34 @@ enum Job {
     },
 }
 
+/// Storing content: one message, or an upload of several.
+enum StoreJob {
+    Put {
+        target: u64,
+        bytes: Vec<u8>,
+        mime: String,
+        reply: Reply<BlobRef>,
+    },
+    Begin {
+        target: u64,
+        mime: String,
+        reply: Reply<u64>,
+    },
+    Write {
+        upload: u64,
+        bytes: Vec<u8>,
+        reply: Reply<()>,
+    },
+    Finish {
+        upload: u64,
+        reply: Reply<BlobRef>,
+    },
+    /// Release an upload that will not finish; nothing it wrote is stored.
+    Abort {
+        upload: u64,
+    },
+}
+
 /// The root capability of a connection's own principal.
 const ROOT: u64 = 0;
 
@@ -696,7 +725,9 @@ struct Worker {
 ///
 /// Cheap to clone; clones share one connection and its driver thread. Every
 /// call blocks for at most one local round trip to the daemon (a remote
-/// fetch answers [`ReadOutcome::Pending`] rather than waiting).
+/// fetch answers [`ReadOutcome::Pending`] rather than waiting); streaming
+/// calls ([`put_reader`](Self::put_reader), [`BlobReader`]) make one round
+/// trip per chunk.
 #[derive(Clone)]
 pub struct BlobClient {
     worker: Arc<Worker>,
@@ -795,21 +826,100 @@ impl BlobClient {
     /// Returns [`BlobError::TooLarge`] above [`MAX_BLOB_BYTES`], or the
     /// service's refusal.
     pub fn put(&self, bytes: &[u8], mime: &str) -> Result<BlobRef, BlobError> {
-        let target = self.data_target()?;
         if bytes.len() as u64 > MAX_BLOB_BYTES {
             return Err(BlobError::TooLarge {
                 len: bytes.len() as u64,
                 limit: MAX_BLOB_BYTES,
             });
         }
-        let bytes = bytes.to_vec();
-        let mime = mime.to_owned();
-        self.call(|reply| Job::Put {
-            target,
-            bytes,
-            mime,
-            reply,
-        })
+        let mut reader = bytes;
+        self.put_reader(&mut reader, mime)
+    }
+
+    /// Store everything `reader` yields, [`MAX_PUT_CHUNK`] at a time: this
+    /// holds one chunk, never the whole content, and hashes it as it goes so
+    /// the reference the store answers is checked against the bytes sent.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BlobError::TooLarge`] as soon as `reader` yields more than
+    /// [`MAX_BLOB_BYTES`] (having read at most one byte past it),
+    /// [`BlobError::Input`] when `reader` fails, a refusal when the store
+    /// answers a reference for other content, or a connection error. A
+    /// failed put stores nothing.
+    pub fn put_reader(&self, reader: &mut dyn io::Read, mime: &str) -> Result<BlobRef, BlobError> {
+        let target = self.data_target()?;
+        let mut reader = reader.take(MAX_BLOB_BYTES.saturating_add(1));
+        let mut hasher = blake3::Hasher::new();
+        let mut total: u64 = 0;
+        let mut upload: Option<OpenUpload<'_>> = None;
+        loop {
+            let chunk = next_chunk(&mut reader)?;
+            total = total.saturating_add(chunk.len() as u64);
+            if total > MAX_BLOB_BYTES {
+                return Err(BlobError::TooLarge {
+                    len: total,
+                    limit: MAX_BLOB_BYTES,
+                });
+            }
+            hasher.update(&chunk);
+            let last = chunk.len() < MAX_PUT_CHUNK;
+            let id = match upload.as_ref().map(|open| open.id) {
+                Some(id) => id,
+                None if last => {
+                    // The whole content fits one message.
+                    let mime = mime.to_owned();
+                    let stored = self.call(|reply| {
+                        Job::Store(StoreJob::Put {
+                            target,
+                            bytes: chunk,
+                            mime,
+                            reply,
+                        })
+                    })?;
+                    return checked_ref(stored, &hasher, total);
+                }
+                None => {
+                    let mime = mime.to_owned();
+                    let id = self.call(|reply| {
+                        Job::Store(StoreJob::Begin {
+                            target,
+                            mime,
+                            reply,
+                        })
+                    })?;
+                    upload = Some(OpenUpload {
+                        client: self,
+                        id,
+                        open: true,
+                    });
+                    id
+                }
+            };
+            if !chunk.is_empty() {
+                self.call(|reply| {
+                    Job::Store(StoreJob::Write {
+                        upload: id,
+                        bytes: chunk,
+                        reply,
+                    })
+                })?;
+            }
+            if last {
+                break;
+            }
+        }
+        let Some(mut open) = upload else {
+            return Err(BlobError::Refused("upload was never opened".into()));
+        };
+        open.open = false;
+        let stored = self.call(|reply| {
+            Job::Store(StoreJob::Finish {
+                upload: open.id,
+                reply,
+            })
+        })?;
+        checked_ref(stored, &hasher, total)
     }
 
     /// Read one range.
@@ -832,6 +942,38 @@ impl BlobClient {
         })
     }
 
+    /// A reader over `hash` that fetches [`MAX_READ_CHUNK`] ranges as it is
+    /// read, or `None` when the content is pending or unavailable. Only the
+    /// first range is read before this returns.
+    ///
+    /// The reader does not hash what it returns: a consumer verifies it (as
+    /// [`read_all`](Self::read_all) does) or hands it to something that does.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BlobError::InvalidHash`], [`BlobError::TooLarge`] for
+    /// content above [`MAX_BLOB_BYTES`], or a connection error.
+    pub fn open_reader(&self, hash: &str) -> Result<Option<BlobReader>, BlobError> {
+        Ok(self.start_read(hash)?.ok())
+    }
+
+    fn start_read(&self, hash: &str) -> Result<Result<BlobReader, ReadOutcome>, BlobError> {
+        let outcome = self.read(hash, 0, MAX_READ_CHUNK)?;
+        if !matches!(outcome, ReadOutcome::Ready { .. }) {
+            return Ok(Err(outcome));
+        }
+        let mut reader = BlobReader {
+            client: self.clone(),
+            hash: hash.to_owned(),
+            total_len: None,
+            next_offset: 0,
+            chunk: Vec::new(),
+            at: 0,
+        };
+        reader.accept(outcome)?;
+        Ok(Ok(reader))
+    }
+
     /// Read the whole content, range by range, and verify it against `hash`.
     ///
     /// # Errors
@@ -839,34 +981,12 @@ impl BlobClient {
     /// Returns [`BlobError::InvalidHash`], [`BlobError::TooLarge`], a
     /// refusal for content that fails verification, or a connection error.
     pub fn read_all(&self, hash: &str) -> Result<ReadOutcome, BlobError> {
-        let mut bytes = Vec::new();
-        let mut total = None;
-        loop {
-            match self.read(hash, bytes.len() as u64, MAX_READ_CHUNK)? {
-                ReadOutcome::Ready {
-                    bytes: chunk,
-                    total_len,
-                } => {
-                    if total_len > MAX_BLOB_BYTES {
-                        return Err(BlobError::TooLarge {
-                            len: total_len,
-                            limit: MAX_BLOB_BYTES,
-                        });
-                    }
-                    if *total.get_or_insert(total_len) != total_len {
-                        return Err(BlobError::Refused("blob length changed mid-read".into()));
-                    }
-                    if chunk.is_empty() && (bytes.len() as u64) < total_len {
-                        return Err(BlobError::Refused("blob read made no progress".into()));
-                    }
-                    bytes.extend_from_slice(&chunk);
-                    if bytes.len() as u64 >= total_len {
-                        break;
-                    }
-                }
-                other => return Ok(other),
-            }
-        }
+        let mut reader = match self.start_read(hash)? {
+            Ok(reader) => reader,
+            Err(outcome) => return Ok(outcome),
+        };
+        let mut bytes = Vec::with_capacity(usize::try_from(reader.len()).unwrap_or(0));
+        io::Read::read_to_end(&mut reader, &mut bytes).map_err(|error| blob_error(&error))?;
         if blake3::hash(&bytes).to_hex().as_str() != hash {
             return Err(BlobError::Refused("content does not match its hash".into()));
         }
@@ -930,6 +1050,183 @@ impl BlobClient {
     }
 }
 
+/// Up to one message of content from `reader`; shorter only at its end.
+fn next_chunk(reader: &mut impl io::Read) -> Result<Vec<u8>, BlobError> {
+    let mut chunk = Vec::with_capacity(MAX_PUT_CHUNK);
+    reader
+        .take(MAX_PUT_CHUNK as u64)
+        .read_to_end(&mut chunk)
+        .map_err(|error| BlobError::Input(error.to_string()))?;
+    Ok(chunk)
+}
+
+/// The reference goes into a document; one naming other bytes would poison
+/// every replica that later reads it.
+fn checked_ref(stored: BlobRef, sent: &blake3::Hasher, len: u64) -> Result<BlobRef, BlobError> {
+    if stored.hash != sent.finalize().to_hex().as_str() || stored.len != len {
+        return Err(BlobError::Refused(
+            "store answered a reference for other content".into(),
+        ));
+    }
+    Ok(stored)
+}
+
+/// An upload that has begun; released on the driver unless it finished.
+struct OpenUpload<'a> {
+    client: &'a BlobClient,
+    id: u64,
+    open: bool,
+}
+
+impl Drop for OpenUpload<'_> {
+    fn drop(&mut self) {
+        if self.open {
+            let _ = self
+                .client
+                .worker
+                .jobs
+                .send(Job::Store(StoreJob::Abort { upload: self.id }));
+        }
+    }
+}
+
+/// Content read range by range as it is consumed ([`BlobClient::open_reader`]).
+///
+/// It holds at most one [`MAX_READ_CHUNK`] range. A blob whose length changes
+/// mid-read, a range that makes no progress or content that stops being
+/// readable fails the read. The bytes are **not** verified here.
+pub struct BlobReader {
+    client: BlobClient,
+    hash: String,
+    total_len: Option<u64>,
+    /// Where the range after `chunk` starts.
+    next_offset: u64,
+    chunk: Vec<u8>,
+    /// How much of `chunk` was returned.
+    at: usize,
+}
+
+impl std::fmt::Debug for BlobReader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BlobReader")
+            .field("hash", &self.hash)
+            .field("total_len", &self.total_len)
+            .field("next_offset", &self.next_offset)
+            .finish_non_exhaustive()
+    }
+}
+
+impl BlobReader {
+    /// The content's whole length, as the store reported it.
+    pub fn len(&self) -> u64 {
+        self.total_len.unwrap_or(0)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Take one answered range as the next chunk.
+    fn accept(&mut self, outcome: ReadOutcome) -> Result<(), BlobError> {
+        let ReadOutcome::Ready { bytes, total_len } = outcome else {
+            return Err(BlobError::Refused(
+                "blob stopped being readable mid-read".into(),
+            ));
+        };
+        if total_len > MAX_BLOB_BYTES {
+            return Err(BlobError::TooLarge {
+                len: total_len,
+                limit: MAX_BLOB_BYTES,
+            });
+        }
+        if *self.total_len.get_or_insert(total_len) != total_len {
+            return Err(BlobError::Refused("blob length changed mid-read".into()));
+        }
+        let end = self.next_offset.saturating_add(bytes.len() as u64);
+        if bytes.is_empty() && self.next_offset < total_len {
+            return Err(BlobError::Refused("blob read made no progress".into()));
+        }
+        if end > total_len {
+            return Err(BlobError::Refused("blob read ran past its length".into()));
+        }
+        self.next_offset = end;
+        self.chunk = bytes;
+        self.at = 0;
+        Ok(())
+    }
+}
+
+impl io::Read for BlobReader {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if self.at >= self.chunk.len() {
+            if self.next_offset >= self.len() || buf.is_empty() {
+                return Ok(0);
+            }
+            let outcome = self
+                .client
+                .read(&self.hash, self.next_offset, MAX_READ_CHUNK)
+                .map_err(io_error)?;
+            self.accept(outcome).map_err(io_error)?;
+        }
+        let rest = self.chunk.get(self.at..).unwrap_or_default();
+        let n = rest.len().min(buf.len());
+        buf.get_mut(..n)
+            .unwrap_or_default()
+            .copy_from_slice(rest.get(..n).unwrap_or_default());
+        self.at = self.at.saturating_add(n);
+        Ok(n)
+    }
+}
+
+fn io_error(error: BlobError) -> io::Error {
+    let kind = match error {
+        BlobError::Refused(_) | BlobError::TooLarge { .. } => io::ErrorKind::InvalidData,
+        _ => io::ErrorKind::Other,
+    };
+    io::Error::new(kind, error)
+}
+
+fn blob_error(error: &io::Error) -> BlobError {
+    error
+        .get_ref()
+        .and_then(|inner| inner.downcast_ref::<BlobError>())
+        .cloned()
+        .unwrap_or_else(|| BlobError::Disconnected(error.to_string()))
+}
+
+/// What the driver thread holds for one connection.
+struct Connection {
+    /// The principal's root, for a session connection.
+    session_root: Option<session_blobs::Client>,
+    scopes: RefCell<HashMap<u64, document_blobs::Client>>,
+    uploads: RefCell<HashMap<u64, blob_upload::Client>>,
+    next_id: Cell<u64>,
+}
+
+impl Connection {
+    fn issue_id(&self) -> u64 {
+        let id = self.next_id.get();
+        self.next_id.set(id.saturating_add(1));
+        id
+    }
+
+    fn scope(&self, target: u64) -> Result<document_blobs::Client, BlobError> {
+        self.scopes
+            .borrow()
+            .get(&target)
+            .cloned()
+            .ok_or(BlobError::InvalidScope)
+    }
+
+    fn upload(&self, id: u64) -> Result<blob_upload::Client, BlobError> {
+        self.uploads
+            .borrow()
+            .get(&id)
+            .cloned()
+            .ok_or_else(|| BlobError::Refused("no such upload".into()))
+    }
+}
+
 fn drive(fd: RawFd, session: bool, mut jobs: tokio::sync::mpsc::UnboundedReceiver<Job>) {
     let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -940,68 +1237,42 @@ fn drive(fd: RawFd, session: bool, mut jobs: tokio::sync::mpsc::UnboundedReceive
     };
     let local = tokio::task::LocalSet::new();
     local.block_on(&runtime, async move {
-        let Ok(connection) = runtime_portal::UnixCapnpClient::from_connected_fd(
+        let Ok(rpc) = runtime_portal::UnixCapnpClient::from_connected_fd(
             fd,
             rpc_twoparty_capnp::Side::Client,
         ) else {
             return;
         };
-        let scopes: Rc<RefCell<HashMap<u64, document_blobs::Client>>> =
-            Rc::new(RefCell::new(HashMap::new()));
+        let mut scopes = HashMap::new();
         let session_root: Option<session_blobs::Client> = if session {
-            Some(connection.bootstrap())
+            Some(rpc.bootstrap())
         } else {
-            let root: document_blobs::Client = connection.bootstrap();
-            scopes.borrow_mut().insert(ROOT, root);
+            let root: document_blobs::Client = rpc.bootstrap();
+            scopes.insert(ROOT, root);
             None
         };
-        let next_scope = Rc::new(Cell::new(ROOT.saturating_add(1)));
+        let connection = Rc::new(Connection {
+            session_root,
+            scopes: RefCell::new(scopes),
+            uploads: RefCell::new(HashMap::new()),
+            next_id: Cell::new(ROOT.saturating_add(1)),
+        });
         while let Some(job) = jobs.recv().await {
-            let scopes = Rc::clone(&scopes);
-            let session_root = session_root.clone();
-            let next_scope = Rc::clone(&next_scope);
+            let connection = Rc::clone(&connection);
             tokio::task::spawn_local(async move {
-                run_job(job, &scopes, session_root.as_ref(), &next_scope).await;
+                run_job(job, &connection).await;
             });
         }
     });
-}
-
-fn target_client(
-    scopes: &RefCell<HashMap<u64, document_blobs::Client>>,
-    target: u64,
-) -> Result<document_blobs::Client, BlobError> {
-    scopes
-        .borrow()
-        .get(&target)
-        .cloned()
-        .ok_or(BlobError::InvalidScope)
 }
 
 #[allow(
     clippy::future_not_send,
     reason = "capnp-rpc clients are Rc-based and driven on this thread's LocalSet"
 )]
-async fn run_job(
-    job: Job,
-    scopes: &RefCell<HashMap<u64, document_blobs::Client>>,
-    session_root: Option<&session_blobs::Client>,
-    next_scope: &Cell<u64>,
-) {
+async fn run_job(job: Job, connection: &Connection) {
     match job {
-        Job::Put {
-            target,
-            bytes,
-            mime,
-            reply,
-        } => {
-            let result = async {
-                let client = target_client(scopes, target)?;
-                put_on(&client, &bytes, &mime).await
-            }
-            .await;
-            let _ = reply.send(result);
-        }
+        Job::Store(job) => store(job, connection).await,
         Job::Read {
             target,
             hash,
@@ -1010,7 +1281,7 @@ async fn run_job(
             reply,
         } => {
             let result = async {
-                let client = target_client(scopes, target)?;
+                let client = connection.scope(target)?;
                 let mut request = client.get_request();
                 {
                     let mut params = request.get();
@@ -1041,7 +1312,7 @@ async fn run_job(
             reply,
         } => {
             let result = async {
-                let client = target_client(scopes, target)?;
+                let client = connection.scope(target)?;
                 let mut request = client.has_request();
                 request.get().set_hash(hash.as_str());
                 let answer = request.send().promise.await?;
@@ -1056,7 +1327,7 @@ async fn run_job(
             reply,
         } => {
             let result = async {
-                let client = target_client(scopes, target)?;
+                let client = connection.scope(target)?;
                 let mut request = client.size_request();
                 request.get().set_hash(hash.as_str());
                 let answer = request.send().promise.await?;
@@ -1068,7 +1339,10 @@ async fn run_job(
         }
         Job::Scope { scope, reply } => {
             let result = async {
-                let root = session_root.ok_or(BlobError::InvalidScope)?;
+                let root = connection
+                    .session_root
+                    .as_ref()
+                    .ok_or(BlobError::InvalidScope)?;
                 let mut request = root.scope_request();
                 {
                     let mut params = request.get();
@@ -1077,13 +1351,89 @@ async fn run_job(
                 }
                 let answer = request.send().promise.await?;
                 let client = answer.get()?.get_blobs()?;
-                let id = next_scope.get();
-                next_scope.set(id.saturating_add(1));
-                scopes.borrow_mut().insert(id, client);
+                let id = connection.issue_id();
+                connection.scopes.borrow_mut().insert(id, client);
                 Ok(id)
             }
             .await;
             let _ = reply.send(result);
+        }
+    }
+}
+
+#[allow(
+    clippy::future_not_send,
+    reason = "capnp-rpc clients are Rc-based and driven on this thread's LocalSet"
+)]
+async fn store(job: StoreJob, connection: &Connection) {
+    match job {
+        StoreJob::Put {
+            target,
+            bytes,
+            mime,
+            reply,
+        } => {
+            let result = async {
+                let client = connection.scope(target)?;
+                let mut request = client.put_request();
+                {
+                    let mut params = request.get();
+                    params.set_bytes(&bytes);
+                    params.set_mime(mime.as_str());
+                }
+                drop(bytes);
+                let answer = request.send().promise.await?;
+                blob_ref_from(answer.get()?.get_ref()?)
+            }
+            .await;
+            let _ = reply.send(result);
+        }
+        StoreJob::Begin {
+            target,
+            mime,
+            reply,
+        } => {
+            let result = async {
+                let client = connection.scope(target)?;
+                let mut request = client.upload_request();
+                request.get().set_mime(mime.as_str());
+                let answer = request.send().promise.await?;
+                let upload = answer.get()?.get_upload()?;
+                let id = connection.issue_id();
+                connection.uploads.borrow_mut().insert(id, upload);
+                Ok(id)
+            }
+            .await;
+            let _ = reply.send(result);
+        }
+        StoreJob::Write {
+            upload,
+            bytes,
+            reply,
+        } => {
+            let result = async {
+                let upload = connection.upload(upload)?;
+                let mut request = upload.write_request();
+                request.get().set_bytes(&bytes);
+                drop(bytes);
+                request.send().promise.await?;
+                Ok(())
+            }
+            .await;
+            let _ = reply.send(result);
+        }
+        StoreJob::Finish { upload, reply } => {
+            let result = async {
+                let client = connection.upload(upload)?;
+                connection.uploads.borrow_mut().remove(&upload);
+                let answer = client.finish_request().send().promise.await?;
+                blob_ref_from(answer.get()?.get_ref()?)
+            }
+            .await;
+            let _ = reply.send(result);
+        }
+        StoreJob::Abort { upload } => {
+            connection.uploads.borrow_mut().remove(&upload);
         }
     }
 }
@@ -1104,48 +1454,6 @@ fn blob_ref_from(reader: crate::blobs_capnp::blob_ref::Reader<'_>) -> Result<Blo
         len: reader.get_len(),
         mime,
     })
-}
-
-#[allow(
-    clippy::future_not_send,
-    reason = "capnp-rpc clients are Rc-based and driven on this thread's LocalSet"
-)]
-async fn put_on(
-    client: &document_blobs::Client,
-    bytes: &[u8],
-    mime: &str,
-) -> Result<BlobRef, BlobError> {
-    let expected = blake3::hash(bytes).to_hex().to_string();
-    let stored = if bytes.len() <= MAX_PUT_CHUNK {
-        let mut request = client.put_request();
-        {
-            let mut params = request.get();
-            params.set_bytes(bytes);
-            params.set_mime(mime);
-        }
-        let answer = request.send().promise.await?;
-        blob_ref_from(answer.get()?.get_ref()?)?
-    } else {
-        let mut request = client.upload_request();
-        request.get().set_mime(mime);
-        let answer = request.send().promise.await?;
-        let upload = answer.get()?.get_upload()?;
-        for chunk in bytes.chunks(MAX_PUT_CHUNK) {
-            let mut write = upload.write_request();
-            write.get().set_bytes(chunk);
-            write.send().promise.await?;
-        }
-        let answer = upload.finish_request().send().promise.await?;
-        blob_ref_from(answer.get()?.get_ref()?)?
-    };
-    // The reference goes into a document; one naming other bytes would
-    // poison every replica that later reads it.
-    if stored.hash != expected || stored.len != bytes.len() as u64 {
-        return Err(BlobError::Refused(
-            "store answered a reference for other content".into(),
-        ));
-    }
-    Ok(stored)
 }
 
 #[cfg(test)]

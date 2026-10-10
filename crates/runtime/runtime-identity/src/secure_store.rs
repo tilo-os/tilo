@@ -87,7 +87,7 @@ impl SecretServiceProvider {
     }
 
     /// Whether the store answers on this session.
-    #[cfg_attr(test, allow(dead_code, reason = "tests use the broker file provider"))]
+    #[cfg(not(test))]
     fn available(&self) -> bool {
         self.store.probe_blocking().is_ok()
     }
@@ -96,6 +96,14 @@ impl SecretServiceProvider {
 /// The key under which the store holds `locator`'s secret.
 fn secret_key(locator: &str) -> String {
     format!("{PURPOSE_ATTRIBUTE}.{}", locator.to_ascii_lowercase())
+}
+
+// Attribute names recorded by secret-tool before the platform store existed.
+fn legacy_attributes(locator: &str) -> [(&str, &str); 2] {
+    [
+        ("tilo-purpose", PURPOSE_ATTRIBUTE),
+        ("tilo-identity-key", locator),
+    ]
 }
 
 fn store_error(error: SecretError) -> io::Error {
@@ -162,7 +170,7 @@ impl SecretProvider for SecretServiceProvider {
         validate_software_locator(locator)?;
         let stored = self
             .store
-            .get_blocking(&secret_key(locator))
+            .get_with_legacy_blocking(&secret_key(locator), &legacy_attributes(locator))
             .map_err(store_error)?
             .ok_or_else(crate::secret_service_unavailable_error)?;
         // Corruption must surface; never mask it by generating a replacement key.
@@ -182,7 +190,7 @@ impl SecretProvider for SecretServiceProvider {
     fn remove(&self, locator: &str) -> io::Result<()> {
         validate_software_locator(locator)?;
         self.store
-            .delete_blocking(&secret_key(locator))
+            .delete_with_legacy_blocking(&secret_key(locator), &legacy_attributes(locator))
             .map_err(store_error)
     }
 }
@@ -394,7 +402,8 @@ pub(crate) fn fallback_provider(identity_dir: &Path) -> BrokerFileProvider {
     BrokerFileProvider::new(identity_dir)
 }
 
-#[cfg(all(test, target_os = "macos"))]
+#[cfg(test)]
+#[cfg(target_os = "macos")]
 mod tests {
     /// A dev build (cargo's test binaries included) has only the linker's
     /// ad-hoc signature, so its Keychain items would not outlive it.

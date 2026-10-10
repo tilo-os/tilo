@@ -16,6 +16,46 @@ use crate::context::Worktree;
 use crate::error::CliError;
 use crate::hypervisor::{CommandLine, Runner};
 
+/// Resolve the source feature graph and output directory before admitting a build.
+/// Metadata is read-only; a failed command or incomplete response must not
+/// silently choose different features or Cargo's fallback output directory.
+///
+/// # Errors
+/// Cargo cannot start, fails, or returns invalid or incomplete metadata.
+pub fn cargo_metadata(runner: &mut impl Runner) -> Result<Value, CliError> {
+    let command = CommandLine::new(
+        &cargo_program(),
+        &["metadata", "--locked", "--no-deps", "--format-version", "1"],
+    );
+    let output = runner.output(&command)?;
+    if !output.success {
+        return Err(CliError::CommandFailed {
+            command: command.display(),
+            status: output.status,
+            stderr: output.stderr.trim().to_owned(),
+        });
+    }
+    let metadata: Value =
+        serde_json::from_str(&output.stdout).map_err(|error| CliError::CommandFailed {
+            command: command.display(),
+            status: "invalid metadata JSON".into(),
+            stderr: error.to_string(),
+        })?;
+    if !metadata.get("packages").is_some_and(Value::is_array)
+        || metadata
+            .get("target_directory")
+            .and_then(Value::as_str)
+            .is_none_or(str::is_empty)
+    {
+        return Err(CliError::CommandFailed {
+            command: command.display(),
+            status: "incomplete metadata response".into(),
+            stderr: "cargo metadata must provide packages and target_directory".into(),
+        });
+    }
+    Ok(metadata)
+}
+
 /// `pkg/dev-overrides` for each of `packages` that declares the feature,
 /// read from `cargo metadata`. Production images never enable it.
 pub fn dev_features(metadata: &Value, packages: &[String]) -> Vec<String> {
@@ -47,6 +87,29 @@ pub fn cargo_build(component: &Component, extra_features: &[String]) -> CommandL
     let mut command = CommandLine::new(&cargo_program(), &[]);
     command.args = component.cargo_args(extra_features);
     command
+}
+
+/// Build outputs a component ships that cargo does not make: where the file
+/// is installed, where the installer finds it under the profile directory,
+/// and the script the image build runs to make it (`os/Containerfile`).
+const NATIVE_OUTPUTS: &[(&str, &str, &str)] = &[(
+    "/usr/lib/tilo/ush/bash-editor.so",
+    "ush-editor/bash-editor.so",
+    "crates/runtime/ush/native/build.py",
+)];
+
+/// The non-cargo builds `component` needs before the installer can lay it
+/// out, each writing into `target_dir`'s profile directory.
+pub fn native_builds(component: &Component, target_dir: &str) -> Vec<CommandLine> {
+    NATIVE_OUTPUTS
+        .iter()
+        .filter(|(installed, ..)| component.paths.iter().any(|path| path == installed))
+        .map(|(_, output, script)| {
+            CommandLine::new("python3", &[script])
+                .arg("--out")
+                .arg(format!("{target_dir}/{}/{output}", component.profile_dir()))
+        })
+        .collect()
 }
 
 pub fn install(component: &Component, target_dir: &str, dest: &Path) -> CommandLine {
@@ -382,6 +445,30 @@ mod tests {
             assert_eq!(target_dir(&json!(null)), "target");
         }
 
+        // Phase: native_outputs_are_built_before_the_installer_needs_them.
+        {
+            let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+            let manifest =
+                Manifest::parse(&std::fs::read_to_string(repo.join("os/components.toml")).unwrap())
+                    .unwrap();
+            let ush = &manifest.components["ush"];
+            let builds: Vec<String> = native_builds(ush, "/t")
+                .iter()
+                .map(CommandLine::display)
+                .collect();
+            assert_eq!(
+                builds,
+                [
+                    "python3 crates/runtime/ush/native/build.py --out /t/release/ush-editor/bash-editor.so"
+                ]
+            );
+            for (_, _, script) in NATIVE_OUTPUTS {
+                assert!(repo.join(script).is_file(), "{script}");
+            }
+            let fs = component("[[component]]\nname = \"fs\"\npackages = [\"fs\"]\n");
+            assert!(native_builds(&fs, "/t").is_empty());
+        }
+
         // Phase: apps_package_with_their_own_tools.
         {
             let package = app_package("target", "notes", Path::new("/w/notes.tapp"));
@@ -392,6 +479,86 @@ mod tests {
             let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
             assert!(apps_in(&repo).contains(&"notes".to_owned()));
         }
+    }
+
+    #[test]
+    fn metadata_requires_successful_complete_json_and_preserves_launch_errors() {
+        struct MetadataRunner {
+            response: Option<Result<crate::hypervisor::Output, CliError>>,
+            observed: Vec<CommandLine>,
+            builds: usize,
+        }
+        impl Runner for MetadataRunner {
+            fn output(
+                &mut self,
+                line: &CommandLine,
+            ) -> Result<crate::hypervisor::Output, CliError> {
+                self.observed.push(line.clone());
+                self.response
+                    .take()
+                    .ok_or_else(|| CliError::InvalidInput("unexpected command".into()))?
+            }
+            fn interactive(&mut self, _: &CommandLine) -> Result<bool, CliError> {
+                self.builds += 1;
+                Err(CliError::InvalidInput("unexpected builder".into()))
+            }
+        }
+        for (success, stdout, status) in [
+            (
+                false,
+                r#"{"packages":[],"target_directory":"/owned/target"}"#,
+                "exit 73",
+            ),
+            (true, "not JSON", "invalid metadata JSON"),
+            (true, "null", "incomplete metadata response"),
+            (true, "{}", "incomplete metadata response"),
+        ] {
+            let mut runner = MetadataRunner {
+                observed: Vec::new(),
+                builds: 0,
+                response: Some(Ok(crate::hypervisor::Output {
+                    success,
+                    stdout: stdout.into(),
+                    status: "exit 73".into(),
+                    stderr: "source graph refused".into(),
+                })),
+            };
+            let CliError::CommandFailed { status: actual, .. } =
+                cargo_metadata(&mut runner).unwrap_err()
+            else {
+                panic!("typed failure required")
+            };
+            assert_eq!(actual, status);
+            assert_eq!(runner.observed.len(), 1);
+            assert_eq!(
+                runner.observed[0].display(),
+                "cargo metadata --locked --no-deps --format-version 1"
+            );
+            assert!(runner.observed[0].env.is_empty());
+            assert_eq!(runner.builds, 0);
+        }
+        let mut runner = MetadataRunner {
+            observed: Vec::new(),
+            builds: 0,
+            response: Some(Err(CliError::ToolMissing {
+                tool: "cargo".into(),
+                purpose: "metadata".into(),
+            })),
+        };
+        assert!(matches!(
+            cargo_metadata(&mut runner),
+            Err(CliError::ToolMissing { .. })
+        ));
+        let mut runner = MetadataRunner { observed: Vec::new(), builds: 0, response: Some(Ok(crate::hypervisor::Output {
+            success: true, status: "exit 0".into(), stderr: String::new(),
+            stdout: r#"{"packages":[{"name":"shell","features":{"dev-overrides":[]}}],"target_directory":"/owned/target"}"#.into(),
+        })) };
+        let metadata = cargo_metadata(&mut runner).unwrap();
+        assert_eq!(target_dir(&metadata), "/owned/target");
+        assert_eq!(
+            dev_features(&metadata, &["shell".into()]),
+            ["shell/dev-overrides"]
+        );
     }
 
     fn component(text: &str) -> Component {

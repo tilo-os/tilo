@@ -17,7 +17,6 @@
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
-use ui::time::UNIX_EPOCH;
 use ui::widget::{AppModel, ModelPath};
 
 use taffy::{NodeId, TaffyTree};
@@ -48,14 +47,6 @@ use crate::widgets::SharedPlayer;
 use ui::tilo_resource::{ActionDecl, Invoke};
 
 pub(crate) const QUALITIES: [&str; 4] = ["1080p", "720p", "480p", "auto"];
-
-fn history_now_ms() -> u64 {
-    ui::time::wall()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| {
-            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
-        })
-}
 
 /// Pull the frames the player's engine decoded into its surface, as the
 /// player's own `sync` does every frame; it reads no document.
@@ -350,9 +341,11 @@ impl TubeApp {
                 self.model.playing = self.player.borrow().is_playing();
             }
             TubeEffect::Share { video } => {
+                tracing::debug!(target: "tube::share", %video, at = ?ui::time::now(), "share effect entered");
                 let url = format!("https://youtu.be/{video}");
                 ui::clipboard_copy(&url);
                 self.model.push_notice(format!("Link copied: {url}"));
+                tracing::debug!(target: "tube::share", %video, at = ?ui::time::now(), "share model notice created");
             }
             TubeEffect::Download { video } => {
                 // Published as unavailable; a caller that invokes it anyway
@@ -362,7 +355,7 @@ impl TubeApp {
                 ));
             }
             TubeEffect::MarkWatched { video } => {
-                let at_ms = history_now_ms();
+                let at_ms = ui::time::unix_now_ms();
                 self.edit_history(&WatchHistory::RECORD.with((video, at_ms)));
             }
             TubeEffect::ForgetWatched { video } => {
@@ -558,7 +551,7 @@ impl TubeApp {
                 && self.change_preferences(|current| *current = settings)
         });
 
-        let watched_at_ms = history_now_ms();
+        let watched_at_ms = ui::time::unix_now_ms();
         let pulled: Vec<(String, u64)> = remote
             .watch_history
             .into_iter()
@@ -765,10 +758,16 @@ impl TubeApp {
 
     /// Supply a deterministic catalogue in a hosted test without changing its
     /// dispatcher, effect admission, or shared library. Live launch stays empty.
+    ///
+    /// A live window has already spawned its fetch worker on its first frame.
+    /// Retire it with the live catalogue: its startup notes, its status and
+    /// the feed it fetched would otherwise land whenever the network answers,
+    /// rebuild the staged page and drop a click made in between.
     pub fn stage_model_for_test(&mut self, model: TubeModel) {
         self.search_query.set(model.search_query.clone());
         self.model = model;
         self.online = false;
+        self.worker = None;
         self.shell_stale = true;
     }
 
@@ -859,28 +858,10 @@ impl TubeApp {
         self.follow_history();
     }
 
-    /// `--shots` builder: start on an EMPTY Home in its loading state, so a still
-    /// captures the skeleton the real (online) app shows on a cold start before
-    /// live results land — proving the no-fake-content default reads as
-    /// "loading", not a blank page.
-    #[must_use]
-    pub fn with_loading_home_shot(mut self) -> Self {
-        self.show_loading_home();
-        self
-    }
-
     fn show_loading_home(&mut self) {
         self.model = TubeModel::default();
         self.model.feed_loading = true;
         self.model.route = Route::Home;
-    }
-
-    /// `--shots` builder for the terminal offline/empty state after a live
-    /// fetch failed. Kept distinct from the cold-start loading skeleton.
-    #[must_use]
-    pub fn with_empty_home_shot(mut self) -> Self {
-        self.show_empty_home();
-        self
     }
 
     fn show_empty_home(&mut self) {
@@ -931,16 +912,6 @@ impl TubeApp {
         self.model.route = route;
     }
 
-    /// Secret-free offscreen proof of the real device lifecycle surface. The
-    /// route is scrolled to the card so wide and narrow screenshots exercise
-    /// pending approval, active sync, revocation, and broker-key messaging.
-    #[cfg(feature = "grayjay-sync")]
-    #[must_use]
-    pub fn with_device_sync_shot(mut self) -> Self {
-        self.show_device_sync_sample();
-        self
-    }
-
     #[cfg(feature = "grayjay-sync")]
     fn show_device_sync_sample(&mut self) {
         self.model.route = Route::Settings;
@@ -949,26 +920,6 @@ impl TubeApp {
         self.scroll_cells
             .borrow_mut()
             .insert("settings".into(), Rc::new(Cell::new((0.0, f32::MAX))));
-    }
-
-    /// Test/shots hook: the first video's watch page as playback starts,
-    /// opened from Home. Without a network there is no stream to decode, so
-    /// the player shows the video's art in its place, as it does in the live
-    /// app until the first frame arrives; a hermetic capture never shows a
-    /// synthesized picture as if it were the video. (The real decode path is
-    /// captured by `with_live_frame_for_shot` under `--live-shots`.)
-    #[must_use]
-    pub fn with_playing_demo_for_test(self) -> Self {
-        let id = self
-            .model
-            .videos
-            .first()
-            .map_or_else(|| "vid_donut".to_string(), |v| v.id.clone());
-        let mut app = self.with_route_shot(Route::Watch(id.clone()));
-        app.player_video = Some(id);
-        // A video just started shows its transport, as the live player does.
-        app.player.borrow_mut().reveal_controls();
-        app
     }
 
     /// `--live-shots` hook: open the shared player on a real, directly-playable
@@ -1495,10 +1446,16 @@ impl TubeApp {
         if current != self.toasted {
             if let Some(notice) = self.model.notices.first() {
                 self.toasts.push(notice.clone(), ToastKind::Info);
+                tracing::debug!(target: "tube::share", at = ?ui::time::now(), count = self.toasts.len(), "notice toast created");
             }
             self.toasted = current;
         }
-        self.toasts.advance(ui::time::now());
+        let before = self.toasts.len();
+        let now = ui::time::now();
+        self.toasts.advance(now);
+        if self.toasts.len() < before {
+            tracing::debug!(target: "tube::share", at = ?now, before, remaining = self.toasts.len(), "notice toast expired");
+        }
     }
 
     /// If the playhead sits inside an enabled `SponsorBlock` segment, jump the
@@ -1556,12 +1513,14 @@ impl TubeApp {
     /// Shared by the card and search-result open paths and by autoplay-next so they stay
     /// in lockstep.
     fn open_video(&mut self, id: String) {
-        let watched_at_ms = history_now_ms();
+        let watched_at_ms = ui::time::unix_now_ms();
         self.edit_history(&WatchHistory::RECORD.with((id.clone(), watched_at_ms)));
         self.navigate_to(Route::Watch(id.clone()));
         self.model.playhead = 0.0;
         self.model.playing = true;
-        self.request(Request::Branding(id.clone()));
+        // SponsorBlock, DeArrow and dislikes come from the network, so an
+        // offline window (a capture, a staged test) asks for none of them.
+        self.request_live(Request::Branding(id.clone()));
         // Fetch the uploader's real avatar + subscriber count when we only hold a
         // name stub (feed/search items don't carry the channel's avatar or subs),
         // so the watch-page channel row shows a real photo + count rather than an
@@ -1706,6 +1665,7 @@ impl TubeApp {
                 }
             }
             Action::Share(id) => {
+                tracing::debug!(target: "tube::share", video = %id, route = ?self.model.route, at = ?ui::time::now(), "share action dispatched");
                 // Share belongs to the open watch page. Refuse a stale leaf
                 // event rather than copying a link for a video no longer shown.
                 if matches!(&self.model.route, Route::Watch(current) if current == &id) {
@@ -2199,12 +2159,7 @@ impl Widget for TubeApp {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = crate::widgets::node_layout(taffy, node);
-        let rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        let rect = ui::widget::placed(layout, origin);
         // A new window size re-sizes the width-driven watch page.
         if rect.size() != self.rect.size() {
             self.shell_stale = true;
@@ -2514,6 +2469,60 @@ mod tests {
             .borrow_mut()
             .set_engine(media::MediaEngine::new_synthesized());
         (app, doc)
+    }
+
+    #[test]
+    fn a_staged_catalogue_retires_the_live_worker_and_fetches_nothing() {
+        // A live window has spawned its fetch worker by its first frame.
+        let mut app = TubeApp::new().online();
+        app.worker = Some(Worker::spawn());
+        app.stage_model_for_test(crate::sample::model());
+        assert!(
+            app.worker.is_none(),
+            "a staged catalogue must not keep the live worker, whose late results rebuild the page"
+        );
+        app.open_video("vid_rust_async".into());
+        assert!(
+            matches!(&app.model.route, Route::Watch(id) if id == "vid_rust_async"),
+            "the staged watch page opens"
+        );
+        assert!(
+            app.worker.is_none(),
+            "an offline watch page asks the network for no SponsorBlock or DeArrow branding"
+        );
+    }
+
+    #[test]
+    fn a_fresh_share_notice_survives_a_delayed_previous_toast_frame() {
+        let (mut app, _doc) = fresh();
+        app.model.route = Route::Watch("vid_donut".into());
+        app.toasts.push("Previous notice", ToastKind::Info);
+        // A frame can resume after the old toast's lifetime elapsed. The new
+        // share notice must not inherit the time before its own creation.
+        let earlier = ui::time::now()
+            .checked_sub(app.toasts.default_ttl() + ui::time::Duration::from_secs(1))
+            .expect("the fixture can represent the previous toast frame");
+        app.toasts.advance(earlier);
+        app.perform(TubeEffect::Share {
+            video: "vid_donut".into(),
+        })
+        .unwrap();
+        app.show_new_notices();
+        let published = app.accessibility().unwrap();
+        assert!(
+            published.children.iter().any(|node| {
+                node.name.as_deref() == Some("Notifications")
+                    && node.value.as_deref().is_some_and(|value| {
+                        value.contains("Link copied") && value.contains("vid_donut")
+                    })
+            }),
+            "the fresh share notice must reach accessibility after an old frame stalls"
+        );
+        assert_eq!(
+            app.toasts.len(),
+            1,
+            "creating a new share notice must not renew the expired previous notice"
+        );
     }
 
     #[test]

@@ -32,12 +32,12 @@
 )]
 use super::*;
 use super::{
-    AUTHORITY_INTERVAL, Arc, AuthorizationStatus, Duration, HashMap, Ingress, Inner, Instant,
-    LiveRelay, LiveSession, MAX_DATAGRAM_FRAME_BYTES, MAX_LIVE_SESSIONS, MAX_OPEN_RECORDS,
-    MAX_STREAM_FRAME_BYTES, Mutex, NAMESPACE_ROOT, OPS_PREFIX, Ordering, PRESENCE_RETRY,
-    PRESENCE_TRACK, REANNOUNCE_AFTER, RECORD_TRACK, Task, Weak, hex64, ingress_origin, record_path,
-    subtree,
+    Arc, Duration, HashMap, Ingress, Inner, Instant, LiveRelay, LiveSession,
+    MAX_DATAGRAM_FRAME_BYTES, MAX_LIVE_SESSIONS, MAX_OPEN_RECORDS, MAX_STREAM_FRAME_BYTES, Mutex,
+    NAMESPACE_ROOT, OPS_PREFIX, Ordering, PRESENCE_RETRY, PRESENCE_TRACK, REANNOUNCE_AFTER,
+    RECORD_TRACK, Task, Weak, hex64, ingress_origin, record_path, subtree,
 };
+use crate::session_authority::{AuthorityDriver, Verdict};
 use bytes::Bytes;
 use std::collections::VecDeque;
 use std::sync::PoisonError;
@@ -106,7 +106,7 @@ pub enum FallbackError {
     Denied,
     /// Unknown or ended session (404): open a new one with a fresh grant.
     Gone,
-    /// Session capacity or bounded contention (503).
+    /// Session capacity or a session id collision (503).
     Busy,
     /// Malformed frames (400).
     Invalid,
@@ -179,11 +179,8 @@ fn unhex_into(value: &str, out: &mut [u8]) -> Option<()> {
     }
     Some(())
 }
-fn hex(bytes: &[u8]) -> String {
-    hex::encode(bytes)
-}
 fn ops_name(record: &[u8; 32]) -> String {
-    format!("{OPS_PREFIX}{}", hex(record))
+    format!("{OPS_PREFIX}{}", hex::encode(record))
 }
 /// Parse a session header value.
 pub fn session_id(value: &str) -> Option<[u8; 16]> {
@@ -345,10 +342,10 @@ impl LiveRelay {
     ///
     /// # Errors
     ///
-    /// Returns [`FallbackError::Busy`] at capacity or under contention, and
+    /// Returns [`FallbackError::Busy`] at capacity or on a session id collision, and
     /// [`FallbackError::Denied`] or [`FallbackError::Invalid`] for a refused token
     /// or malformed request.
-    pub async fn fallback_open(
+    pub fn fallback_open(
         &self,
         token: &[u8],
         id: [u8; 16],
@@ -368,7 +365,7 @@ impl LiveRelay {
             inner.counters.rejected.fetch_add(1, Ordering::Relaxed);
             return Err(FallbackError::Busy);
         };
-        let Some(scopes) = self.scopes(token).await else {
+        let Some(scopes) = self.scopes(token) else {
             inner.counters.rejected.fetch_add(1, Ordering::Relaxed);
             return Err(FallbackError::Denied);
         };
@@ -422,7 +419,9 @@ impl LiveRelay {
         tokio::spawn(async move {
             let _permit = permit;
             let _watch = watch;
-            relay.fallback_life(life, scopes.session).await;
+            relay
+                .fallback_life(life, scopes.session, scopes.authority)
+                .await;
         });
         Ok(Self::fallback_stream(&session))
     }
@@ -637,29 +636,25 @@ impl LiveRelay {
 
     /// Lifecycle: lease/roster observations exactly as a WebTransport session,
     /// resume grace, and cleanup (revocation withdraws only this namespace).
-    async fn fallback_life(&self, session: Arc<Fallback>, permit: Arc<dyn LiveSession>) {
+    async fn fallback_life(
+        &self,
+        session: Arc<Fallback>,
+        permit: Arc<dyn LiveSession>,
+        mut authority: AuthorityDriver,
+    ) {
         let inner = &self.0;
-        let mut validity = tokio::time::interval(AUTHORITY_INTERVAL);
-        validity.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        let mut unavailable: Option<Instant> = None;
         let revoked = loop {
             tokio::select! {
                 () = session.end.notified() => break false,
-                _ = validity.tick() => {
+                verdict = authority.next(|| permit.status()) => {
                     if session.ended.load(Ordering::SeqCst) {
                         break false;
                     }
-                    let now = Instant::now();
-                    if unavailable.is_some_and(|deadline| now >= deadline) {
+                    if verdict == Verdict::Revoked {
                         break true;
                     }
-                    match permit.status() {
-                        AuthorizationStatus::Current => unavailable = None,
-                        AuthorizationStatus::Unavailable { expires_at } => unavailable = Some(expires_at),
-                        AuthorizationStatus::Denied => break true,
-                    }
                     let detached = session.stream.lock().unwrap_or_else(PoisonError::into_inner).1;
-                    if detached.is_some_and(|at| now.duration_since(at) >= RESUME_GRACE) {
+                    if detached.is_some_and(|at| at.elapsed() >= RESUME_GRACE) {
                         break false;
                     }
                 }

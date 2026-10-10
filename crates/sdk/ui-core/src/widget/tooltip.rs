@@ -258,9 +258,30 @@ pub fn draw_hover_tooltip_on(
     label: &str,
     viewport: Rect,
 ) {
-    let size = chip_size_in_viewport(label, text_renderer, theme, viewport);
-    let rect = chip_rect_on(anchor.1, anchor.0, size, viewport);
+    let rect = hover_chip_rect_on(text_renderer, theme, anchor, label, viewport);
     draw_chip(scene, transform, text_renderer, theme, rect, label);
+}
+
+/// Where [`draw_hover_tooltip_on`] places the chip for `label`.
+pub fn hover_chip_rect_on(
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+    anchor: (Rect, TooltipSide),
+    label: &str,
+    viewport: Rect,
+) -> Rect {
+    let size = chip_size_in_viewport(label, text_renderer, theme, viewport);
+    chip_rect_on(anchor.1, anchor.0, size, viewport)
+}
+
+/// Every pixel [`draw_chip`] can paint for a chip at `rect`: the chip, its
+/// edge and snapping, and the floating shadow under it.
+pub fn chip_paint_bounds(rect: Rect, theme: &Theme) -> Rect {
+    // The chip snaps to whole pixels and strokes its edge on the outline:
+    // two pixels cover both, antialiasing included.
+    let chip = rect.inflate(2.0, 2.0);
+    crate::surface::shadow_bounds(rect, &theme.tokens.elevation.floating)
+        .map_or(chip, |shadow| shadow.union(chip))
 }
 
 use crate::presence::PresenceCtx;
@@ -379,25 +400,18 @@ impl Widget for Tooltip {
         } else {
             (0.0, 0.0)
         };
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: Dimension::length(w),
                 height: Dimension::length(h),
             },
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
     }
 
     fn draw(
@@ -804,32 +818,13 @@ mod host_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use automerge::AutoCommit;
 
     fn feed(t: &mut Tooltip, p: Point) {
-        let mut tree = TaffyTree::<()>::new();
-        let node = tree.leaf_node(Style::default());
-        let mut handled = false;
-        let mut focus = None;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
         let ev = WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             position: (p.x, p.y).into(),
         };
-        t.handle_event(
-            &ev,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &tree,
-            },
-        );
+        crate::testing::dispatch(t, &ev);
     }
 
     #[test]

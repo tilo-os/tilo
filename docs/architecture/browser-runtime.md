@@ -157,7 +157,7 @@ With these, `tilo-ui --no-default-features` and `tilo-relay-client` (iroh
 | Gap | Where | Browser implementation |
 |---|---|---|
 | Threads | `render_thread` (`ui-render`), `tilo_rt::app()` (a dedicated thread), `cpu_pool` (rayon), `ThreadPool` background executor, collaboration broker worker | *Done except the broker.* Render on the page thread (`FrameHarness` + Vello on the canvas). `tilo_rt::app()` on wasm is a `LocalSet` polled by one `wasm_bindgen_futures::spawn_local` task (same `spawn`/`spawn_then`/`spawn_blocking` signatures; `block_on` refuses with `UiThread`; tokio `time`/`net` have no driver). `cpu()` runs as an app task, `cpu_pool()` is the page thread alone, `tilo_rt::io` refuses. `tilo-host`'s default `Background` on wasm is `PageExecutor` (microtasks + `setTimeout`). The broker worker is behind `broker-transport` (milestone 5). Frames follow input, component wakes, animation and wake deadlines only (`FrameHarness::frame_schedule`, as the native runner): an idle mount presents nothing. |
-| Files | `settings-store`, `app-state::FsStore`, `xdg-paths`, `tilo_files::native::atomic`, `advisory-lock`, `font_catalog` file sources | *Done.* `DurableStore` = `MemoryStore::queued` per profile/device, committed by `web/durable-host.mjs` in strict IndexedDB transactions under the `tilo-writer:[profile,device]` Web Lock; the store's write hook schedules commits, `flush()` resolves when durable. Settings: `settings_store::SettingsSource`, installed by the page as a `HostDocument` kept in the same store (`StorageKey::Package("so.tilo.settings")`), optionally seeded by the host. Fonts from bytes (`load_browser_startup_bytes`). |
+| Files | `settings-store`, `app-state::FsStore`, `tilo-paths`, `tilo_files::native::atomic`, `advisory-lock`, `font_catalog` file sources | *Done.* `DurableStore` = `MemoryStore::queued` per profile/device, committed by `web/durable-host.mjs` in strict IndexedDB transactions under the `tilo-writer:[profile,device]` Web Lock; the store's write hook schedules commits, `flush()` resolves when durable. Settings: `settings_store::SettingsSource`, installed by the page as a `HostDocument` kept in the same store (`StorageKey::Package("so.tilo.settings")`), optionally seeded by the host. Fonts from bytes (`load_browser_startup_bytes`). |
 | Local daemons | none linked (milestone 5) | `CollaborationManager::with_transport` with a relay-backed `CollabTransport` (not wired yet); the certified peer installs its user as `ui::local_identity` ([Seams](#seams-the-page-installs)). |
 | Fonts | cosmic-text `fontconfig` finds nothing | Verified product fonts from the manifest loaded as bytes before first frame. |
 | Speech, spellcheck | `tts`, `spellcheck` | *Done.* `NullSpeaker`. The English dictionary is compiled in, so spell checking works in-process; the warm-up thread is skipped on wasm. Other languages would need dictionaries fetched as assets. |
@@ -209,10 +209,10 @@ for capnp, not at all, so the linker already discarded them.
 Still in the wasm graph, left for later:
 
 - `app-state` → `cli` → `runtime-portal` (discovery only), `advisory-lock`,
-  `xdg-paths`: `FsStore` and the package path helpers share
+  `tilo-paths`: `FsStore` and the package path helpers share
   `app-state/src/lib.rs` with `DocOwner`/`DocWriter`. Splitting `FsStore`
   behind an `app-state` feature would drop `cli`, `advisory-lock` and
-  `anyhow`; `xdg-paths` stays through `spellcheck`.
+  `anyhow`; `tilo-paths` stays through `spellcheck`.
 - `tts`: on wasm only its vocabulary (`Speaker`, `Priority`, `NullSpeaker`)
   compiles; the SSIP backend is `cfg(unix)`.
 - `spellcheck`: pure Rust, but embeds a ~690 KB word list. Candidate for a
@@ -243,21 +243,22 @@ host) and the carrier.
   barrier runs before the change counts as delivered.
 - **Durable plane: signed Automerge changes over an HTTPS delivery
   carrier.** The browser uploads its own signed changes from a durable
-  outbox (`POST /peer/v3/state`). It reads the host-ordered replay through
-  held long-poll chains (`/peer/v3/events`) starting at a host-signed opaque
-  cursor, and acknowledges consumption (`/peer/v3/acks`). A reconnecting
-  browser resumes from its cursor and re-uploads anything unacknowledged.
-  The host de-duplicates by digest/operation id. When history is gone it
-  answers with a reset to a snapshot (`/peer/v3/snapshots`). Every request
-  carries a device-signed HTTP proof.
+  outbox. It reads the host-ordered replay through held long polls starting
+  at a host-signed opaque cursor, and acknowledges consumption. A
+  reconnecting browser resumes from its cursor and re-uploads anything
+  unacknowledged. The host de-duplicates by digest/operation id. When
+  history is gone it answers with a reset to a snapshot. `main` does not
+  serve 541's routes or its HTTP request proofs: its routes are the
+  `/peer/v1` carrier below (`tilo_relay_protocol::web`).
 - **Conflicts** are CRDT merges (Automerge: deterministic per-property
   last-writer-wins, the same outcome on every replica). The host decides
   *admission*, not merge results.
-- **Live plane (`LIVE_V1`).** Ephemeral and never authority
-  (`tilo-delivery-protocol::delivery_v3::live_wire`):
+- **Live plane (`LIVE_V1`).** Ephemeral and never authority. The frames
+  are `tilo-relay-protocol::live`, the one copy the relay and the browser
+  speak:
   - A latest-value `presence` track (datagrams): `PresenceFrame {seq,
-    sent_at_ms, focus, pointer, selection anchors, drag}`. Receivers drop
-    older sequence numbers.
+    sent_at_ms, focus, pointer, selection anchors, drag, participant}`.
+    Receivers drop older sequence numbers.
   - One ordered `ops/<record>` track per record: `OpsFrame::Preview` (text
     preview ops against CRDT anchors) and `OpsFrame::SignedChange`, an
     early forward of a durable change.
@@ -266,10 +267,11 @@ host) and the carrier.
     the publisher namespace.
   - The shared `LiveService` (commit `67c31b331`) issues 60-second
     host-signed live grants and re-checks each session's current roster
-    permission from one shared owner turn every 50 ms, so revocation cuts
-    live sessions within about 100 ms.
+    permission from one shared owner turn whenever an authority change is
+    announced, so revocation cuts live sessions within about 100 ms.
   - The carrier is moq-lite over WebTransport (`/moq/live`), with an HTTPS
-    streaming fallback (`/peer/v3/live/fallback/*`). There are no WebSockets.
+    streaming fallback (`/peer/v3/live/fallback/*`, the paths `main` still
+    serves). There are no WebSockets.
 - **Browser speculation.** `peer_live/speculation.rs` keeps a *durable
   basis* plus an in-memory *view*: basis + early-forwarded changes. The
   view is what renders. A durable cut settles each outstanding change:
@@ -348,7 +350,13 @@ rather than a second host:
     `CoverageStatement` naming the retained entries (by digest of their
     body) it had delivered or published before the request. The host
     removes exactly those. Rooms whose replay a native shell selects
-    (`shell_authority`) are left to that selection.
+    (`shell_authority`) are left to that selection. It runs for
+    checkpoints, room frames and before every replay, not per keystroke:
+    a signed route increment that sorts after the route's
+    accepted tails and applies to them is published as an original from an
+    in-memory cursor the last clean selection left behind
+    (`store/shell_selection/tail_cache.rs`), since a selection could only
+    have listed it.
 - **Live plane over WebTransport.** It uses 541's `LIVE_V1` relay
   (`crates/hosting/tilo-moq`, ported from `qos-moq`), `moq-lite` at
   `/moq/live` on the same port number over UDP.
@@ -356,12 +364,15 @@ rather than a second host:
     with the host's canonical codec.
   - A grant (`/live/grant`) is bound to the HTTPS session and presented in
     the carrier's admission preface.
-  - One observer checks every grant every 50 ms (session open, device not
-    revoked, still admitted), and the relay re-checks each session against
-    that snapshot. This is 541's batched `LiveService` observation, run on a
-    tokio interval.
+  - One observer checks every grant (session open, device not revoked,
+    still admitted), and the relay re-checks each session against that
+    snapshot. This is 541's batched `LiveService` observation, run when
+    something it reads announces a change — the relay's authority epoch
+    (`tilo-relay/src/authority_epoch.rs`), a session ending or running out, a
+    grant issued — and on the 5 s session sweep as a backstop.
   - Browsers without WebTransport use 541's HTTPS stream fallback
-    (`/peer/v1/live/fallback/{open,send,resume}`) with the same frames.
+    (`/peer/v3/live/fallback/{open,send,resume}`, outside `API_PREFIX`;
+    `tilo-moq` `live/fallback.rs`) with the same frames.
   - Live frames from iroh peers are bridged into the relay, so native and
     browser members share one live room.
 - **Early forwarding is dropped.** In 541 it hid long-poll latency. Here a
@@ -373,8 +384,8 @@ rather than a second host:
   synchronously inside a `tokio::select!` loop and retried with
   `std::thread::sleep`. Here every handler is async and awaits the relay's
   own locks, workspace I/O already runs on the blocking pool, and the only
-  periodic work (the 50 ms observation and the session janitor) runs on
-  tokio intervals. No thread ever sleeps in async code.
+  periodic work (the session janitor, which also backstops the grant
+  observation) runs on a tokio interval. No thread ever sleeps in async code.
 - **The browser side** is `crates/browser/tilo-browser-peer`: custody,
   session, outbox and replay, live state, and the `CollabTransport`.
   - It reaches the host through an `HttpClient` seam (`fetch` in the page).
@@ -787,7 +798,8 @@ approves proposals as they come; a production approver shows them.
 `Relay::register_agent` verifies the delegation against the host's user:
 
 - The device is refused outside its rooms, at subscribe and on every
-  one-second access audit.
+  access audit: registering, replacing or withdrawing a delegation starts
+  one, and so does its expiry.
 - `Relay::withdraw_agent` refuses it entirely.
 - Remote actions from the device carry `Caller::delegated_agent`: the
   agent is its own principal, never the person who delegated it.
@@ -869,11 +881,28 @@ and no control was projected for it.
 
 `crates/agent/agent-participant/src/host.rs` runs a supervisor in a host
 process. Each agent's participant runs on its own thread with the host's
-model, pumping its session until it stops or the host shuts down. Grants
+model, pumping its session until it stops or the host shuts down. Between
+pumps the thread sleeps until its session or steering changes or its
+presence keep-alive is due, never on an interval; a pump runs a plan's local
+steps back to back for up to 5 ms. Model calls run on the agent's planner
+thread, so a plan that takes seconds holds back no pump: remote actions,
+presence, pause and stop are taken in meanwhile, and the planner wakes the
+loop the moment the plan is ready. Steps written out in the task (JSON) are
+taken at once, without the planner. Records the
+agent has not opened are held as their documents, history kept and each
+change once, so opening one seeds its replica with exactly what its changes
+made: the shared desktop live, its changes merged once per pump, its tabs
+read only when it changed; every other record saved, with the changes since
+merged in one load once they outweigh it (or 64 KiB). Those changes come
+from room members, so every merge goes through `tilo-automerge-isolate`
+first and none decodes in the host process; a change the isolate refuses is
+dropped, and with no isolate the record does not open. Grants
 (agent key, certificate, delegation) and agents (status, room, task log,
-conversation) are kept in `<state>/agents/agents.json` (owner-only). A
-ticker settles expired grants: the agent stops and the relay refuses its
-device. On start the file is restored: approved grants are registered again,
+conversation) are kept in `<state>/agents/agents.json` (owner-only), written
+when they change (at most every 500 ms). The thread that writes it also
+settles expired grants: the agent stops and the relay refuses its device. It
+sleeps until something changes or the next grant expires, never on an
+interval. On start the file is restored: approved grants are registered again,
 agents that were neither stopped nor failed start again with their queued
 tasks, a task that was running at shutdown is marked failed, paused agents
 come back paused, a grant still waiting for its approver is denied.
@@ -896,9 +925,22 @@ it. `--agent-model` chooses the planner:
 `ModelPlanner` also offers the room's existing records of an app before a
 new one, so "add a sheet named …" edits the sheet people already have.
 
-**Agents run no app's code.** An agent holds records as replicas of their
-resources, so nothing it does reads the host user's files or secret store;
-it plans with the host's model.
+**App code runs in confined workers, never in the host.** An agent holds
+records as replicas of their resources, and a replica runs the app's own
+resource code (its operations, seed and presence). Each record an agent or
+the host's room actions hold lives in its own app worker
+(`tilo_agent_participant::worker`, `ConfinedReplica`): the host's executable
+started again, which confines itself before it reads a request: no path
+opened or changed, no socket, no exec, no signal to another process. The
+same goes for a record's registered reads and its view discovery. The host
+keeps the device keys and signs; the worker returns unsigned Automerge
+bytes, which the host admits through `tilo-automerge-isolate` before it
+signs them. So nothing an agent does reads the host user's files, secret
+store or the agents' keys; it plans with the host's model. Every binary that
+hosts agents calls `tilo_agent_participant::worker::dispatch_early()` first
+thing in `main` (a test crate, `app_worker!()`); see
+`docs/architecture/security.md`, "App workers for host agents and room
+actions".
 
 `host_agents` covers it end to end: a page requests a grant, a laptop
 approves it with its delegation, the page spawns with a plain-words task, the

@@ -628,7 +628,7 @@ impl InputCaptureBackend {
         ) {
             return (2, HashMap::new());
         }
-        let allowed = flow::resolve_local(
+        let allowed = flow::resolve(
             &self.ctx,
             auth.caller.clone(),
             CapabilityKind::InputCapture,
@@ -1511,12 +1511,11 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn idle_emitters_stay_asleep_until_a_signal_is_queued() {
-        use std::time::Duration;
         use tokio::net::UnixStream;
         use zbus::connection::Builder;
 
         const COMM: &str = "tilo-idle-emit";
-        let (runtime, tid) = crate::idle_thread_probe::spawned_thread(COMM, || {
+        let (runtime, tid) = tilo_test_env::idle::spawned_thread(COMM, || {
             tokio::runtime::Builder::new_multi_thread()
                 .worker_threads(1)
                 .enable_all()
@@ -1560,14 +1559,12 @@ mod tests {
                 ),
             );
         });
-        crate::idle_thread_probe::assert_stays_asleep(&tid, "portal and notification emitters");
-        let parked = crate::idle_thread_probe::context_switches(&tid);
+        tilo_test_env::idle::assert_stays_asleep(&tid, "portal and notification emitters");
+        let parked = tilo_test_env::idle::context_switches(&tid);
         capture.wake.poke();
-        std::thread::sleep(Duration::from_millis(50));
-        let woke = crate::idle_thread_probe::context_switches(&tid).saturating_sub(parked);
-        assert!(
-            woke > 0,
-            "a queued input-capture signal must wake the emitter, woke {woke}"
+        tilo_test_env::hang::wait_until(
+            "a queued input-capture signal to wake the emitter",
+            || tilo_test_env::idle::context_switches(&tid) > parked,
         );
         drop(runtime);
     }

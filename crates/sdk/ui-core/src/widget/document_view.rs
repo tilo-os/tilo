@@ -11,8 +11,7 @@ use crate::widget::{AppModel, ModelPath};
 use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
-use winit::event::WindowEvent;
+use vello::kurbo::{Affine, Rect};
 
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
@@ -283,9 +282,12 @@ where
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let child = self.child.build_layout(taffy, theme, node_map);
-        let node = taffy.parent_node(boundary_style(taffy.style(child).ok()), &[child]);
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_node(
+            boundary_style(taffy.style(child).ok()),
+            &[child],
+            node_map,
+            self,
+        )
     }
 
     /// A child that left the flow (an absent element, bound text with
@@ -309,61 +311,10 @@ where
         }
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x + layout.size.width),
-            origin.y + f64::from(layout.location.y + layout.size.height),
-        );
-        if let Ok(children) = taffy.children(node)
-            && let Some(child) = children.first()
-        {
-            self.child
-                .apply_layout(taffy, *child, Point::new(self.rect.x0, self.rect.y0));
-        }
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        self.child
-            .draw(scene, transform, text_renderer, theme, presence);
-    }
-
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        if let Ok(children) = ctx.taffy.children(ctx.node_id)
-            && let Some(child) = children.first()
-        {
-            self.child
-                .handle_event(event, &mut ctx.reborrow(ctx.path, *child));
-        }
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        vec![self.child.as_ref()]
-    }
-
-    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
-        visitor(self.child.as_ref());
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        vec![self.child.as_mut()]
-    }
+    crate::forward_to_child!(child, rect);
 
     fn name(&self) -> &'static str {
         "ModelView"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 
     fn take_focus_reset(&mut self) -> bool {
@@ -542,6 +493,7 @@ mod tests {
     use automerge::{ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
 
     use super::*;
+    use vello::kurbo::Point;
 
     #[test]
     fn deadline_reconciles_an_idle_projection_through_the_real_frame_host() {

@@ -6,7 +6,7 @@
 
 use crate::authority::WorkspaceAuthority as _;
 use crate::i18n::{t, t_args};
-use ui::clock::{Duration, Instant};
+use ui::time::{Duration, Instant};
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
@@ -407,14 +407,6 @@ impl WorkspaceSettingsOverlay {
         &self.device_toggle_rects
     }
 
-    pub fn move_workspace_rects(&self) -> [Rect; 2] {
-        self.move_rects
-    }
-
-    pub fn delete_workspace_rect(&self) -> Rect {
-        self.delete_rect
-    }
-
     pub fn name_rect(&self) -> Rect {
         let body = self.general_body_rect();
         Rect::new(
@@ -694,23 +686,7 @@ impl WorkspaceSettingsOverlay {
         // Panel role (HIG §9.1–§9.3): the Panel radius, an elevation-token
         // shadow that follows the sheet's own corners and fades with it,
         // `panel_ground` and the derived Panel border.
-        let radius = ui::chrome::ChromeRole::Panel.radius(theme, rect.height());
-        ui::chrome::shell::panel_shadow(scene, panel_transform, rect, radius, theme, alpha);
-        let card = RoundedRect::from_rect(rect, radius);
-        scene.fill(
-            Fill::NonZero,
-            panel_transform,
-            ui::chrome::shell::panel_ground(theme),
-            None,
-            &card,
-        );
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            panel_transform,
-            ui::chrome::shell::panel_border(theme),
-            None,
-            &card,
-        );
+        ui::chrome::shell::paint_panel(scene, panel_transform, rect, theme, alpha);
         Some(DrawPlan {
             transform: panel_transform,
             layered: in_flight,
@@ -1008,23 +984,7 @@ impl WorkspaceSettingsOverlay {
         // Panel role (HIG §9.1–§9.3): Panel radius, elevation-token shadow,
         // `panel_ground` and the derived border — not a sprite shadow off a
         // ramp slot over a declared border.
-        let sheet_radius = ui::chrome::ChromeRole::Panel.radius(theme, card.height());
-        let surface = RoundedRect::from_rect(card, sheet_radius);
-        ui::chrome::shell::panel_shadow(scene, transform, card, sheet_radius, theme, 1.0);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            ui::chrome::shell::panel_ground(theme),
-            None,
-            &surface,
-        );
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
-            ui::chrome::shell::panel_border(theme),
-            None,
-            &surface,
-        );
+        ui::chrome::shell::paint_panel(scene, transform, card, theme, 1.0);
 
         let (title, description, subject): (String, String, Option<String>) = match &sheet {
             MemberSheet::Role(user) => {

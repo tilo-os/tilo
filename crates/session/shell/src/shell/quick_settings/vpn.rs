@@ -6,7 +6,7 @@
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use winit::keyboard::{Key, NamedKey};
+use winit::keyboard::Key;
 
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
@@ -223,23 +223,12 @@ impl QuickSettingsVpnPane {
         profiles: &mut [os_actions::VpnConnectionInfo],
         actions: &dyn QsActions,
     ) -> Option<VpnPaneOutcome> {
-        match logical_key {
-            Key::Named(NamedKey::Tab) => {
+        match super::PaneKey::of(logical_key, backwards)? {
+            super::PaneKey::Focus(backwards) => {
                 self.focus_next(panel, profiles, backwards);
                 Some(VpnPaneOutcome::DrillIn(DrillInOutcome::None))
             }
-            Key::Named(NamedKey::ArrowUp | NamedKey::ArrowLeft) => {
-                self.focus_next(panel, profiles, true);
-                Some(VpnPaneOutcome::DrillIn(DrillInOutcome::None))
-            }
-            Key::Named(NamedKey::ArrowDown | NamedKey::ArrowRight) => {
-                self.focus_next(panel, profiles, false);
-                Some(VpnPaneOutcome::DrillIn(DrillInOutcome::None))
-            }
-            Key::Named(NamedKey::Enter | NamedKey::Space) => {
-                Some(self.activate_focused(panel, profiles, actions))
-            }
-            _ => None,
+            super::PaneKey::Activate => Some(self.activate_focused(panel, profiles, actions)),
         }
     }
 
@@ -394,6 +383,7 @@ impl QuickSettingsVpnPane {
 mod tests {
     use super::*;
     use std::cell::RefCell;
+    use winit::keyboard::NamedKey;
 
     #[derive(Default)]
     struct RecordingActions {

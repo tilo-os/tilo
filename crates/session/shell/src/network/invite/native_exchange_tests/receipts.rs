@@ -100,11 +100,16 @@ impl OwnerCommitService for Governor {
             super::refresh::publish_committed(state, &self.publisher);
             Ok(receipt)
         })();
+        // The broker answers every refusal with one opaque code; keep the
+        // actual reason in the test output.
+        if let Err(error) = &result {
+            eprintln!("receipt governor refused a member audit: {error}");
+        }
         Box::pin(async move { result })
     }
 }
 
-pub(super) fn attach(
+pub(super) async fn attach(
     directory: &std::path::Path,
     authority: ActualAuthority,
     publisher: Arc<tilo_relay::RelayCoeditSession>,
@@ -173,16 +178,31 @@ pub(super) fn attach(
     .unwrap();
     let actions = broker.app_action_broker().unwrap();
     let (queue, host) = actions.peer_action_attachment().unwrap();
+    let (ready_tx, mut ready_rx) = tokio::sync::watch::channel(false);
     let task = tokio::spawn(async move {
-        queue
-            .serve(
-                publisher,
+        let result = queue
+            .serve_with_readiness(
+                publisher.clone(),
                 uuid::Uuid::parse_str(tilo_joined_room::testing::ROOM).unwrap(),
                 host,
+                ready_tx,
             )
-            .await
-            .unwrap();
+            .await;
+        publisher.close().await;
+        result.unwrap();
     });
+    tilo_test_env::within(
+        "the certified native effect broker to acknowledge registration",
+        async {
+            while !*ready_rx.borrow_and_update() {
+                ready_rx
+                    .changed()
+                    .await
+                    .expect("native effect broker registration ended");
+            }
+        },
+    )
+    .await;
     Attached {
         owner,
         broker,

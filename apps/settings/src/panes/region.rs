@@ -1,6 +1,6 @@
 //! Region & Formats pane — the editor for the person's **locale**.
 //!
-//! This panel edits [`crate::region::Locale`], the `locale` section of the
+//! This panel edits [`tilo_locale::Locale`], the `locale` section of the
 //! person's settings, which every app's toolkit follows. The Sheets app reads
 //! `locale.currency` / `locale.date_format` / `locale.time_format` for its
 //! cell formatting, and the Weather app reads `locale.measurement` for its
@@ -18,19 +18,16 @@ use ui::framework::{EffectAnswer, EffectCx};
 use ui::theme::Theme;
 use ui::tilo_resource;
 use ui::widget::{AppModel, Dropdown, ModelPath, Widget};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
-use winit::event::WindowEvent;
 
 use crate::effects::effect;
 use crate::host::{Followed, PaneCx};
 use crate::i18n::t;
-use crate::region::{
-    Currency, DateStyle, FirstDayOfWeek, Locale, Measurement, NumberStyle, TimeStyle,
-};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{caption, card, rows};
+use tilo_locale::{
+    Currency, DateStyle, FirstDayOfWeek, Locale, Measurement, NumberStyle, TimeStyle,
+};
 
 fn date_label(style: DateStyle) -> String {
     t(match style {
@@ -218,8 +215,7 @@ pub struct RegionPane {
     locale: Followed<Locale>,
     shown: Shown,
     structure_dirty: bool,
-    composed: Option<Box<dyn Widget>>,
-    rect: Rect,
+    composed: ui::widget::Composed,
 }
 
 impl RegionPane {
@@ -232,8 +228,7 @@ impl RegionPane {
             locale,
             shown,
             structure_dirty: false,
-            composed: None,
-            rect: Rect::ZERO,
+            composed: ui::widget::Composed::default(),
         }
     }
 
@@ -385,9 +380,7 @@ impl Widget for RegionPane {
             // The preview card follows the values.
             self.structure_dirty = true;
         }
-        if let Some(c) = &mut self.composed {
-            c.sync(state, root);
-        }
+        self.composed.sync(state, root);
     }
 
     fn build_layout(
@@ -396,91 +389,22 @@ impl Widget for RegionPane {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let mut composed = self.build_composition();
-        let child = composed.build_layout(taffy, theme, node_map);
-        self.composed = Some(composed);
-        let style = taffy::Style {
-            display: taffy::Display::Flex,
-            flex_direction: taffy::FlexDirection::Column,
-            size: taffy::Size {
-                width: taffy::Dimension::percent(1.0),
-                height: taffy::Dimension::auto(),
-            },
-            ..Default::default()
-        };
-        let node = taffy.new_with_children(style, &[child]).unwrap_or(child);
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let composition = self.build_composition();
+        let child = self
+            .composed
+            .build_layout(composition, taffy, theme, node_map);
+        crate::panes::pane_node(taffy, child, node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
-        if let Some(c) = &mut self.composed
-            && let Ok(children) = taffy.children(node)
-            && let Some(&cn) = children.first()
-        {
-            c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
-        }
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut ui::text_render::TextRenderer,
-        theme: &Theme,
-        presence: &ui::presence::PresenceCtx,
-    ) {
-        if let Some(c) = &mut self.composed {
-            c.draw(scene, transform, text_renderer, theme, presence);
-        }
-    }
-
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        if let Some(c) = &mut self.composed
-            && let Ok(children) = ctx.taffy.children(ctx.node_id)
-            && let Some(&cn) = children.first()
-        {
-            c.handle_event(event, &mut ctx.reborrow(ctx.path, cn));
-        }
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        self.composed
-            .as_ref()
-            .map(|c| c.as_ref() as &dyn Widget)
-            .into_iter()
-            .collect()
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.composed
-            .as_mut()
-            .map(|c| c.as_mut() as &mut (dyn Widget + '_))
-            .into_iter()
-            .collect()
-    }
+    ui::forward_to_composed!(composed);
 
     fn name(&self) -> &'static str {
         "RegionPane"
     }
 
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-
     fn take_structure_dirty(&mut self) -> bool {
         let own = std::mem::take(&mut self.structure_dirty);
-        let child = self
-            .composed
-            .as_mut()
-            .is_some_and(|c| c.take_structure_dirty());
+        let child = self.composed.take_structure_dirty();
         own || child
     }
 }

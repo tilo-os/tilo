@@ -8,7 +8,7 @@ use crate::i18n::I18nManager;
 use crate::undo::{UndoRequest, UndoStatus};
 
 pub(crate) const EDIT_RESOURCE: &str = "tilo.host:edit";
-pub(crate) const EDIT_OPERATION: &str = "tilo.host.edit";
+pub(crate) use crate::undo::EDIT_OPERATION;
 
 /// Undo and Redo for the local author, titled with the change each would
 /// revert and unavailable when there is none.

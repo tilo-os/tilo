@@ -43,21 +43,39 @@ impl<S> WorkspaceJoinProtocol<S> {
 #[cfg(not(target_arch = "wasm32"))]
 impl<S: WorkspaceJoinService> ProtocolHandler for WorkspaceJoinProtocol<S> {
     async fn accept(&self, connection: iroh::endpoint::Connection) -> Result<(), AcceptError> {
-        let _permit = self.exchanges.clone().try_acquire_owned().map_err(|_| {
-            AcceptError::from_err(std::io::Error::other(
-                "workspace join exchange concurrency limit reached",
-            ))
-        })?;
-        n0_future::time::timeout(EXCHANGE_TIMEOUT, self.exchange(&connection))
-            .await
-            .map_err(|_| {
-                AcceptError::from_err(std::io::Error::new(
-                    std::io::ErrorKind::TimedOut,
-                    "workspace join exchange timed out",
-                ))
-            })?
-            .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))
+        bounded_accept(
+            &self.exchanges,
+            EXCHANGE_TIMEOUT,
+            "workspace join exchange",
+            self.exchange(&connection),
+        )
+        .await
     }
+}
+
+/// Run one `what` exchange under a slot of `exchanges` and `timeout`,
+/// refusing it outright when every slot is taken.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) async fn bounded_accept<E: std::fmt::Display>(
+    exchanges: &Arc<tokio::sync::Semaphore>,
+    timeout: std::time::Duration,
+    what: &str,
+    exchange: impl Future<Output = Result<(), E>>,
+) -> Result<(), AcceptError> {
+    let _permit = exchanges.clone().try_acquire_owned().map_err(|_| {
+        AcceptError::from_err(std::io::Error::other(format!(
+            "{what} concurrency limit reached"
+        )))
+    })?;
+    n0_future::time::timeout(timeout, exchange)
+        .await
+        .map_err(|_| {
+            AcceptError::from_err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!("{what} timed out"),
+            ))
+        })?
+        .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -71,7 +89,7 @@ impl<S: WorkspaceJoinService> WorkspaceJoinProtocol<S> {
             .accept_bi()
             .await
             .map_err(|error| WorkspaceJoinError::Transport(error.to_string()))?;
-        let bytes = crate::framing::read_frame(&mut recv, MAX_WORKSPACE_JOIN_REQUEST_BYTES)
+        let bytes = crate::frame::read_frame(&mut recv, MAX_WORKSPACE_JOIN_REQUEST_BYTES)
             .await
             .map_err(|error| WorkspaceJoinError::Transport(error.to_string()))?;
         let request = postcard::from_bytes(&bytes)
@@ -84,7 +102,7 @@ impl<S: WorkspaceJoinService> WorkspaceJoinProtocol<S> {
                 "workspace join response exceeds the wire limit".into(),
             ));
         }
-        crate::framing::write_frame(&mut send, &bytes)
+        crate::frame::write_frame(&mut send, &bytes)
             .await
             .map_err(|error| WorkspaceJoinError::Transport(error.to_string()))?;
         send.finish()
@@ -94,7 +112,8 @@ impl<S: WorkspaceJoinService> WorkspaceJoinProtocol<S> {
     }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};

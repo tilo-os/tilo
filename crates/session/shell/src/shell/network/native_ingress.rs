@@ -1,6 +1,28 @@
-use super::*;
+use super::{
+    InboundChannelGovernance, NeighbourMsg, NetCmd, RoomId, ShellNetwork, SystemTime, room_topic_id,
+};
 use crate::{network::actor::native_ingress, shell::native_workspace_owner::NativeWorkspaceOwner};
 impl ShellNetwork {
+    /// Existing enrolled governor and current selected native reporter custody.
+    /// No identity selection, enrollment or grant is performed here.
+    pub(crate) fn feedback_custody(
+        &self,
+        room: RoomId,
+    ) -> Result<
+        (
+            tilo_user_identity::DeviceCert,
+            tilo_user_identity::DeviceCert,
+        ),
+        String,
+    > {
+        let owner = self.native_owner()?;
+        self.check_native_custody(&owner, room)?;
+        owner.with_current(room, |view| {
+            view.peer()
+                .permissions(view.governor().device_public_key, SystemTime::now())?;
+            Ok((view.device().clone(), view.governor().clone()))
+        })
+    }
     pub(crate) fn prepare_native_application(
         &self,
         owner: &NativeWorkspaceOwner,

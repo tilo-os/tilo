@@ -81,6 +81,19 @@ fails unless every requested swap is the layer its slot runs; the report's heade
 the swaps. A base more than 20 commits behind `ref` gets a warning at the top of the
 summary: everything not swapped is the base's code.
 
+For a composed ref containing `tilo-vm swap-artifact`, integration can opt into
+`prebuilt_cohort=true` when dispatching an `apps+runtime` swap. The existing native
+CI identity builds full signed layers with the maintained packer, including
+matching launcher, install and shell prerequisites. Pinned same-run artifact
+actions transfer only layers, inventories and the v1 manifest. Its expected SHA256
+comes from the producer step output; the consumer checks source, immutable builder,
+workflow API run ID/attempt, architecture and component completeness before VM
+creation. The CLI verifies and imports through the normal signed cohort path.
+The acceptance user needs no remote builder credentials. Any artifact error fails
+without a build fallback; slot readback and P01 still describe installed layers.
+The default workflow and local host/remote swap behavior remain available when
+artifact mode is absent. Only integration dispatches the qualification run.
+
 The VM is a libvirt session VM, the way `tilo-vm` runs on a laptop: the job installs
 libvirt's QEMU driver, passt, OVMF and Pillow (pixel checks), and runs `run.py` as an
 unprivileged user (root cannot hand passt its socket in a session). The runners have no
@@ -134,6 +147,101 @@ changes in its history is part of every judged run. Under TCG it reports without
   | python3 scripts/vm-acceptance/app_startup_check.py --require so.tilo.notes
 ```
 
+### Installed-desktop gates (R06, R07, R08, A15, A16)
+
+The checks `build-image.yml` runs on an installed image, which per-push dev builds skip,
+run here on every full run instead, on the dev disk under KVM:
+
+- R06 runs the image's boot gate (`/usr/libexec/tilo/boot-performance-gate.sh`, from
+  `os/tests/boot_performance_gate.sh`) as root: kernel and userspace to greetd's login
+  endpoint within `boot_to_greeter_s` (20 s), with the image's boot contract. It reads the
+  VM's boot timestamps, so where it runs in the order does not matter. Every run also
+  writes where the boot's time went (`R06-boot-analysis.txt`: `systemd-analyze time`,
+  `critical-chain` of greetd and of graphical.target, `blame`; and `R06-boot-plot.svg`),
+  holds userspace start to greetd active to `userspace_to_greeter_s` (10 s), and fails
+  when the network (NetworkManager, firewalld, `network.target`) is on greetd's critical
+  chain: greetd waits for `systemd-user-sessions.service`, which upstream orders after
+  `network.target`, so a network start queued before logins are allowed holds the greeter
+  until NetworkManager is up (TIL-767).
+- R07 runs `tilo-session-report --render-gate` in the slot's session with the KVM
+  budgets (`render_frame_ms` 1000, `render_frame_work_ms` 100).
+- A15 opens Files, Notes and Settings once unmeasured and then ten times each. Every
+  open is requested from inside the session (`date +%s%3N; tilo-control actions invoke
+  applications <app>`) and timed to the app's own `first-frame-presented` startup mark,
+  so the time holds the compositor's dispatch, the launcher and the sandbox as well as
+  the app's start; it waits for the app's processes to exit before the next open. The
+  median is held to the app's budget on the session's renderer (`app_startup.budget_ms`);
+  on a GPU the p95 is also held to the KPI document's target (`tools/perf/kpi-budgets.toml`).
+  Each open is split into segments that add up to it (`open_segments`): request to the
+  launcher's start, the launcher's own phases (the marks it hands the app in
+  `TILO_STARTUP_LAUNCHER_MARKS`), the launcher's hand-off to the app's `main` (bubblewrap,
+  the Landlock shim and the dynamic loader: the shim marks `sandbox-entered` and
+  `sandbox-exec`, so `exec_to_main` is the loader alone) and `main` to the first frame.
+  The compositor's
+  `tilo::launch_latency` lines, which it logs whatever `RUST_LOG` says, add its own
+  request→spawn→map→first-present split. An open without either is unobservable.
+- A16 is `app_startup_check.py`'s judgement over every app the run launched.
+- R08 signs the dev account (`os/account.env`) in at seat0's greeter through its console
+  action `sign-in@greeter`, as a person's passcode does, and times each step from the
+  request: the user manager, the `tilo-session` wrapper, the compositor process, its first
+  presented frame (the `FRAME-LIFECYCLE serial=1` line's `monotonic_us`, on the clock the
+  probe reads from `/proc/timer_list`) and its control socket answering `state-dump`.
+  Usable is the later of the last two. It does so twice, the account's first sign-in (cold
+  caches and first-login setup) and, after signing out, the next one, held to
+  `sign_in_first_usable_s` and `sign_in_again_usable_s` (10 s each). It starts a second
+  compositor, so it runs after everything that measures the slot. A disk whose compositor
+  predates `monotonic_us` leaves the first frame untimed, and R08 unobservable.
+
+The greeter keystroke check (`os/dev/greeter-acceptance.py`) needs QEMU's monitor, which
+a `tilo-vm` VM does not expose, so it stays in `build-image.yml`.
+
+### Performance records
+
+`run.py --records FILE` writes one record per KPI (`tools/perf/record.py`) from what the
+checks measured, whether they passed or not; the CI run's `perf` job compares them with
+the store (DEVELOPMENT.md, "Performance results") and publishes the nightly run's.
+
+| KPI | Unit | Check | What |
+|---|---|---|---|
+| `boot.to_greeter_s`, `boot.{kernel,initrd,userspace}_s` | s | R06 | kernel+userspace to a usable greeter, and its phases |
+| `boot.greeter_s`, `boot.userspace_to_greeter_s` | s | R06 | kernel start, and userspace start, to greetd.service active |
+| `session.sign_in_{first,again}.{shell,first_frame,usable}_s` | s | R08 | greeter sign-in request to the compositor process, its first presented frame, and a usable desktop |
+| `idle.shell_cpu_pct`, `idle.session_cpu_pct` | percent | R01 | compositor and whole session CPU over the idle window |
+| `idle.gpu_driver_cpu_pct` | percent | R01 | the part of `idle.shell_cpu_pct` on threads the GPU driver started (`llvmpipe-N`, and `tilo-gpu-driver`, the name the compositor gives threads started while it opens the device). On lavapipe this is the window's frames rasterised, a GPU's work on real hardware, so R01 and R02 judge a software renderer's compositor CPU without it; with no frame painted it must stay under `idle_software_raster_cpu_pct` (TIL-739) |
+| `idle.wakeups_per_s.shell`, `idle.loop_ticks_per_s` | per_s | R01 | context switches of the compositor's loop thread; loop ticks |
+| `idle.wakeups_per_s.shell_threads` | per_s | R01 | context switches of every thread of the compositor process |
+| `idle.frames` | count | R01 | frames painted while still |
+| `idle.ram_mib` | MiB | R01 | guest `MemTotal - MemAvailable` with no app open |
+| `idle.ram_mib.{anon,shmem,kernel}` | MiB | R01 | `/proc/meminfo` AnonPages, Shmem and unreclaimable kernel memory (SUnreclaim, KernelStack, PageTables, SecPageTables, VmallocUsed, Percpu) |
+| `idle.ram_mib.harness`, `idle.ram_mib.installed` | MiB | R01 | anon + shmem + kernel of what only the dev VM runs (seat0's greeter, the dev image's sshd, tilo-device-admin and tilo-vmd units, root's ssh sessions); `idle.ram_mib` less it |
+| `memory.idle_mib.<bucket>`, `memory.idle_mib.unattributed` | MiB | R01 | anon + shmem + kernel per bucket of cgroups (`compositor`, `apps`, `session_services`, `system`, `greeter`, `harness`); the guest's that no process's cgroup is charged |
+| `idle.ram_mib.{reserve,untracked}` | MiB | R01 | what MemAvailable withholds (the zones' reserve from `/proc/zoneinfo`, and min(half, low watermarks) of the file LRU and reclaimable kernel memory); the rest, pages no meminfo counter names |
+| `memory.idle_anon_mib.<process>` | MiB | R01 | anonymous RSS of the ten largest process names, every user's |
+| `idle.*.four_apps`, `memory.idle_*.four_apps` | | R02 | the same with Terminal, Files, Settings and Notes open |
+| `idle.ram_mib.after_close`, `idle.ram_mib.*.after_close`, `memory.idle_*.after_close` | MiB | R03 | the same once R03 has closed the four apps |
+| `memory.shell_anon_mib.per_open_close` | MiB | A15 | least-squares growth of the compositor's anonymous RSS per warm open and close |
+| `memory.shell_anon_mib`, `memory.session_mib`, `memory.app_mib.<app>`, `memory.app_anon_mib.<app>` | MiB | R03 | the compositor's anonymous RSS; the compositor's and apps' cgroups |
+| `disk.runtime_mib.per_user`, `disk.runtime_builds.per_user`, `disk.app_store_mib.per_user` | MiB, count | R03 | the slot user's downloaded runtime builds (`$XDG_DATA_HOME/tilo-runtime`) and app store (`$XDG_DATA_HOME/tilo-apps`) after the apps closed: what collection after each change leaves |
+| `memory.shell_anon_mib.empty` | MiB | R01 | the compositor's anonymous RSS with no app open |
+| `memory.compositor_memfd_mib{,.four_apps,.after_close}` | MiB | R01, R03 | shmem allocated to the memfds and `/dev/shm` files the compositor holds open, mapped or not (`stat -L` through `/proc/PID/fd`); `R0x-shell-smaps*.json` `shm_by_name` splits it by memfd name and `shm_fds` lists every memfd, dma-buf and DRM fd with its fdinfo (TIL-731) |
+| `app.open.warm_ms.<app>` | ms | A15 | open request to first presented frame, ten warm opens |
+| `app.startup_ms.<app>`, `app.startup_ms.file-explorer.first_in_session` | ms | A15, A14 | process start to first presented frame |
+| `app.open.{request_to_launcher,launcher,sandbox_to_main,exec_to_main}_ms.<app>` | ms | A15 | the open before the app's `main`, by segment |
+| `app.open.launcher_phase_ms.<app>.<mark>` | ms | A15 | each launcher phase, the interval ending at its mark |
+| `app.open.{request_to_spawn,spawn_to_map,map_to_first_present,request_to_first_present}_ms.<app>` | ms | A15 | the compositor's own split of the open |
+| `render.frame_cpu_ms` | ms | R04 | compositor CPU per painted frame during interactions |
+
+`idle.ram_mib` stays the guest-wide figure the KPI document defines. Beside it, R01, R02
+and R03 write `R0x-footprint*.json` (`resources.footprint`): every user's processes by RSS
+split into anon, file and shmem (Tilo's kernel has no smaps, so there is no PSS), every
+cgroup's anon, file, shmem and kernel charge grouped into the buckets above, each tmpfs's
+use, and the guest's meminfo and zoneinfo split. A tilo-vm guest runs seat0's greeter
+beside the slot, which an installed machine ends at login, so `idle.ram_mib.installed` is
+the number to hold against the target.
+
+The records name the commit whose code ran (the swapped ref's, else the disk's) and keep
+the base disk's commit, the swapped components and the booted image digest in `meta`.
+
 ## Provenance
 
 A dev image does not carry the commit it was built from, so `build-disk.sh` writes
@@ -153,11 +261,11 @@ fail P01 if the VM booted anything else, was moved onto another image since, or 
 | Area | Checks |
 |---|---|
 | provenance | P01 image ↔ commit, P02 headful slot on two outputs with an identity, P03 no failed or restart-looping session units |
-| window | W01–W21: open/focus, move, resize, maximize, full screen, tabs, strips, workspaces, two outputs, overview, workspace wheel, touch, touchpad, animation pacing (frame trace), real keyboard typing, touch that never drives the cursor (a launchpad card tapped open, the cursor hidden until the mouse moves), the on-screen keyboard (shown for a tapped field, typing into it, hidden by the physical keyboard), the on-screen keyboard typing into the shell's own search field, unlocking the session by touch on the lock screen's own keyboard |
+| window | W01–W21: open/focus, move, resize, maximize, full screen, tabs, strips, workspaces, two outputs, overview, workspace wheel, touch, touchpad, animation pacing (frame trace), real keyboard typing, touch that never drives the cursor (a launchpad card tapped open, the cursor hidden until the mouse moves), the on-screen keyboard (shown for a tapped field, typing into it, hidden by the physical keyboard), the on-screen keyboard typing into the shell's own search field, unlocking the session by touch on the lock screen's own keyboard (and the lock refusing a control-socket snapshot) |
 | ui | U01 theme and language through actions, U02/U03 Settings, quick settings, workspace settings, overview in light/dark/high-contrast (en, de) with layout checks on `list-targets` rects, U04 German action titles |
-| apps | A01–A07: Terminal (live shell), Files, Settings, Notes, Store, a host Wayland app, an X11 app — first frame, placement, focus, exit on close, no false toasts. A08–A13, the apps used every day, one per toolkit and protocol path: Chromium on Wayland (A08, the engine Electron apps ship) and forced onto X11 (A09), GNOME Text Editor (A10, GTK4/libadwaita), FeatherPad (A11, Qt6 Wayland), alacritty (A12, winit/OpenGL), glxgears (A13, OpenGL X11 like games) — window in the current strip with focus, a first frame with content, the right buffer scale on both outputs as it moves between them, real-keyboard typing, copy to and paste from Tilo's clipboard, exit on close; A13 also full screen and back. A14 Files' first launch: process start to first presented frame within budget, and its folder listing read off its AT-SPI tree |
+| apps | A01–A07: Terminal (live shell), Files, Settings, Notes, Store, a host Wayland app, an X11 app — first frame, placement, focus, exit on close, no false toasts. A08–A13, the apps used every day, one per toolkit and protocol path: Chromium on Wayland (A08, the engine Electron apps ship) and forced onto X11 (A09), GNOME Text Editor (A10, GTK4/libadwaita), FeatherPad (A11, Qt6 Wayland), alacritty (A12, winit/OpenGL), glxgears (A13, OpenGL X11 like games) — window in the current strip with focus, a first frame with content, the right buffer scale on both outputs as it moves between them, real-keyboard typing, copy to and paste from Tilo's clipboard, exit on close; A13 also full screen and back. A14 Files' first launch: process start to first presented frame within budget, and its folder listing read off its AT-SPI tree. A15 ten warm opens each of Files, Notes and Settings, request to first frame; A16 every launch of the run within its app's budget |
 | search | S01–S09: empty-query view, English and German names, launch from search, windows, actions, files, room activity, workspace history |
-| resources | R01/R02 idle CPU, wakeups and frames with no apps and with several, R03 memory per open app from its own cgroup (memory.current, anon/file) plus the compositor's anonymous RSS, R04 frame CPU p50/p95/p99 during interactions (wall time on real display hardware), R05 every app window renders on the machine's GPU, not a CPU fallback; the renderer and whether the display is real hardware are recorded |
+| resources | R01/R02 idle CPU, wakeups and frames with no apps and with several (`R01-idle-empty.json`/`R02-idle-apps.json` carry CPU and context switches per thread of the compositor, `shell_threads` and `shell_thread_groups`, and of any other process above 0.5%, plus the compositor's age when the window opened, `session_age_s`; the compositor is the slot user's `shell` with no `shell` above it, so its own shader-seed child is never taken for it; an over-budget compositor names its busiest threads), R03 memory per open app from its own cgroup (memory.current, anon/file) plus the compositor's anonymous RSS; R01 and R03 also write the compositor's `smaps_rollup`, status lines and 20 largest anonymous mappings (`R01-shell-smaps.json`/`R03-shell-smaps.json`), so R03 less R01 is what four windows cost and a growing `[heap]` or run of glibc arenas reads apart from one GPU buffer, R04 frame CPU p50/p95/p99 during interactions (wall time on real display hardware), R05 every app window renders on the machine's GPU, not a CPU fallback; the renderer and whether the display is real hardware are recorded; R06 boot to a usable greeter and where its time went, R07 the render-path gate, R08 greeter sign-in to a usable desktop |
 | basics | B01 brightness, B02 Wi-Fi, B03 Bluetooth (unavailable without hardware, no fake controls), B04 de nodeadkeys + compose applied to the physical keys, B05 display arrangement, B06 hotplug, B07 GNOME keyboard import (host-desktop installs only, so unobservable in a VM) |
 
 The everyday apps (A08–A13) come with the dev image (`os/Containerfile.dev`, about 600 MiB,
@@ -169,6 +277,31 @@ back from `wp_fractional_scale_v1`), X11 clients at 1 or a whole scale, sized to
 Text goes in on the real keyboard (see W17), and the clipboard is read and written through
 the control socket's `clipboard_paste`/`clipboard_copy`, the in-process route Tilo's own apps
 use; alacritty copies through OSC 52.
+
+Every check runs in the one session the run shares, so every check must leave it unlocked:
+while locked the compositor refuses every action invocation and snapshot with
+`session_locked` (on purpose; W21 asserts the snapshot refusal), and each later check would
+report that instead of its subject. The harness enforces it: after every check `run_check`
+reads the state dump, and a check that ended with the session locked fails ("left the
+session locked") and the slot's session is restarted (`tilo-vm slot restart`) before the next
+one; the report's `session_recovered_after` lists those checks. W21, the one check that locks
+on purpose, unlocks in a `finally` the way a person would (the passcode on the real
+keyboard), falls back to the restart, and records the route in its `unlock_recovery` metric.
+Nothing goes around the lock. The guard is unit-tested in `test_lock_guard.py`.
+
+For the same reason no check may leave a modal, overlay, prompt or dialog open: each takes
+the keyboard from the window behind it, and the next check's typing lands in it (run 89618's
+A01 typed its Terminal command into the Invite composer W20's first touch had opened on the
+launchpad). After the lock guard, `run_check` reads the state dump again (`core.open_surfaces`:
+the `overlays`, search, the window switcher, the Invite composer and Join card in `peer_sync`,
+`portal_dialog`, pending permission prompts, the workspace-name editor, the `input_capture`
+surfaces, and any other surface for which `input_capture.chrome` says the shell holds input,
+pointer hover over a maximized window's controls aside). A check that ended with one open
+fails ("left a dialog open (…)"), and the harness closes it the way a person cancels: Escape,
+then a slot session restart if Escape does not do it. Nothing is ever confirmed to clean up. The
+report's `dialog_recovered_after` lists each such check, what was open and how it was closed.
+`ctx.reset()` dismisses the same surfaces. A touch that is not itself under test lands where it
+activates nothing (W20 picks a point on no launchpad card). Unit-tested in `test_dialog_guard.py`.
 
 Budgets live in `run.py` (`BUDGETS`). The German pass (U03, U04, S03) runs after the
 English one: the shell takes its language from the session's environment, so the run
@@ -422,3 +555,14 @@ Browser fresh-open attribution uses the new tab's public
 is not its record instance. Unrelated existing pages publishing late do not
 become candidates, and missing/foreign launch associations fail without another
 Open or navigation of an existing page.
+
+When the published base disk uses a different management protocol, CI builds a
+second `tilo-vm` from that exact base commit. It creates and starts the throwaway
+VM with that client, then runs the ordinary `swap vmd --slot vm --builder host`
+from the clean target checkout. The target client must read back the VM-wide
+management layer before any session is created. P01 records this explicit
+management swap even with `swap=none`; equal-protocol `swap=none` tests the base
+without a management swap. Failures abort P00 instead of relaxing the protocol
+check. For a local older fixture, pass `--bootstrap-tilo-vm <matching-client>`
+and `--bootstrap-from <clean-target-checkout>` together. This bootstrap uses
+the existing layer admission and activation path, and does not reboot.

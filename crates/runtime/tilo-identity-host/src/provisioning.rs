@@ -12,9 +12,9 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use threshold_identity::ThresholdIdentity;
+use tilo_identity_ceremony::IdentityRecord;
 use tilo_user_identity::persist::DeviceKeyCustody;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, IdentityPaths, persist};
-use ui::widget::identity_flow::IdentityRecord;
 
 /// Where a newly provisioned personal identity's private share is kept.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -150,21 +150,6 @@ pub const PRIMARY_IDENTITY_FILE: &str = "primary.json";
 /// is a hard link, not this name; `create_new` simply prevents a stale temp
 /// file from ever being overwritten.
 static OWNER_CLAIM_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-
-/// Current wall-clock time as nanoseconds since the epoch, clamped to
-/// `u64::MAX` rather than truncated — a value that large is centuries past
-/// any real device-cert issuance this crate computes against.
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "clamped to 0..=u64::MAX immediately above, so it always fits u64"
-)]
-fn now_ns_u64() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos()
-        .min(u128::from(u64::MAX)) as u64
-}
 
 /// Result of the "make sure a primary identity exists" step, exposed so
 /// tests can distinguish "we created one" from "one was already there".
@@ -861,7 +846,7 @@ fn ensure_collaboration_identity_in_context(
 ) -> Result<ProvisionOutcome, io::Error> {
     prepare_identity_directory(identity_dir)?;
 
-    match persist::joined_device_is_ready(paths, now_ns_u64()) {
+    match persist::joined_device_is_ready(paths, tilo_clock::unix_now_ns()) {
         Ok(true) => return Ok(ProvisionOutcome::Existing),
         Ok(false) => {}
         Err(error) => {
@@ -1163,7 +1148,7 @@ fn issue_device_certificate(
         device_public_key,
         device_label: device_label.into(),
         capabilities: class.capabilities(),
-        issued_at_ns: now_ns_u64(),
+        issued_at_ns: tilo_clock::unix_now_ns(),
         expires_at_ns: None,
         signature: [0; 64],
     };
@@ -1358,7 +1343,7 @@ mod tests {
         assert_eq!(outcome, ProvisionOutcome::Existing);
         assert!(!identity_dir.join(PRIMARY_IDENTITY_FILE).exists());
         assert!(!paths.user_privkey.exists());
-        assert!(persist::joined_device_is_ready(&paths, now_ns_u64()).unwrap());
+        assert!(persist::joined_device_is_ready(&paths, tilo_clock::unix_now_ns()).unwrap());
     }
 
     /// A device approved from a nearby device: a public-only record selected
@@ -1494,7 +1479,9 @@ mod tests {
             "joined device must not reuse the setup machine's device key"
         );
         let target_system = IdentityPaths::under(dir.path().join("var/lib/tilo"));
-        assert!(persist::joined_device_is_ready(&target_system, now_ns_u64()).unwrap());
+        assert!(
+            persist::joined_device_is_ready(&target_system, tilo_clock::unix_now_ns()).unwrap()
+        );
         assert!(!target_system.user_privkey.exists());
         let identity_dir = dir.path().join("var/home/quser/.config/tilo/identity");
         let registry = crate::registry::IdentityRegistryStore::at(&identity_dir)
@@ -1654,7 +1641,9 @@ mod tests {
         assert_ne!(cert.device_public_key, local_cert.device_public_key);
         assert_eq!(cert.user_public_key, local_cert.user_public_key);
         let target_system = IdentityPaths::under(dir.path().join("var/lib/tilo"));
-        assert!(persist::joined_device_is_ready(&target_system, now_ns_u64()).unwrap());
+        assert!(
+            persist::joined_device_is_ready(&target_system, tilo_clock::unix_now_ns()).unwrap()
+        );
         assert!(!target_system.user_privkey.exists());
         assert!(cert.capabilities.can_read_all_workspaces);
     }

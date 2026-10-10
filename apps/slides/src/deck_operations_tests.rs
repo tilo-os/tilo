@@ -31,8 +31,7 @@ impl Participant {
         SlidesDoc::seed(&mut doc, &seed_deck());
         doc.commit();
         doc.set_actor(ActorId::from(AGENT));
-        let mut registry = ActionRegistry::new();
-        actions::register(&mut registry);
+        let registry = ActionRegistry::with(actions::register);
         Self { doc, registry }
     }
 

@@ -69,14 +69,15 @@ impl WorkspaceJoinClient {
             .open_bi()
             .await
             .map_err(|error| WorkspaceJoinError::Transport(error.to_string()))?;
-        crate::framing::write_frame(&mut send, &bytes)
+        tilo_relay_client::frame::write_frame(&mut send, &bytes)
             .await
             .map_err(|error| WorkspaceJoinError::Transport(error.to_string()))?;
         send.finish()
             .map_err(|error| WorkspaceJoinError::Transport(error.to_string()))?;
-        let response = crate::framing::read_frame(&mut recv, MAX_WORKSPACE_JOIN_RESPONSE_BYTES)
-            .await
-            .map_err(|error| WorkspaceJoinError::Transport(error.to_string()))?;
+        let response =
+            tilo_relay_client::frame::read_frame(&mut recv, MAX_WORKSPACE_JOIN_RESPONSE_BYTES)
+                .await
+                .map_err(|error| WorkspaceJoinError::Transport(error.to_string()))?;
         postcard::from_bytes(&response)
             .map_err(|error| WorkspaceJoinError::Decode(error.to_string()))
     }
@@ -233,40 +234,6 @@ impl WorkspaceJoinClient {
             JoinTransportResponse::MembershipComplete(bootstrap) => Ok(bootstrap),
             response => Err(response_error(response)),
         }
-    }
-
-    /// Verify the signed host/service binding and refresh through its exact pinned address.
-    ///
-    /// # Errors
-    ///
-    /// Returns `WorkspaceJoinError` if the request cannot be sent or its reply is rejected.
-    pub async fn refresh_membership_hint(
-        &self,
-        hint: &TransportHint,
-        room: String,
-        workspace_id: u64,
-        device_cert: DeviceCert,
-        device_key: &ed25519_dalek::SigningKey,
-        request_id: [u8; 32],
-    ) -> Result<WorkspaceJoinAdmission, WorkspaceJoinError> {
-        let host = IrohWorkspaceHostHintV1::from_transport_hint(hint)?;
-        if host.room != room || host.workspace_id != workspace_id {
-            return Err(WorkspaceJoinError::Protocol(
-                "membership scope does not match its signed workspace host hint".into(),
-            ));
-        }
-        let bootstrap = self
-            .refresh_membership(
-                host.endpoint_addr.clone(),
-                room,
-                workspace_id,
-                device_cert,
-                device_key,
-                request_id,
-            )
-            .await?;
-        let trust = host.validate_bootstrap(&bootstrap)?;
-        Ok(WorkspaceJoinAdmission { bootstrap, trust })
     }
 }
 

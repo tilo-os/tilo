@@ -47,11 +47,10 @@ pub use tilo_relay_client::coedit::{
 };
 // The daemon classifies retained frames with these (`tilo_relay::coedit::*`).
 #[cfg(not(target_arch = "wasm32"))]
-pub use tilo_relay_client::coedit::{RetentionKind, retention_metadata};
+pub use tilo_relay_client::coedit::{RetentionKind, retention_metadata, retention_view};
 
 use crate::client::RelayClient;
 use crate::transport::Envelope;
-use tilo_delivery_protocol::clock::now_ns;
 
 /// A co-edit session bound to one workspace on one host connection.
 ///
@@ -62,7 +61,7 @@ pub struct RelayCoeditSession {
     client: RelayClient,
     workspace_id: u64,
     author: [u8; 32],
-    /// When the host was last heard from, as [`now_ns`].
+    /// When the host was last heard from, as [`tilo_clock::unix_now_ns`].
     last_heard_ns: std::sync::atomic::AtomicU64,
 }
 
@@ -88,7 +87,7 @@ impl RelayCoeditSession {
             client,
             workspace_id,
             author,
-            last_heard_ns: std::sync::atomic::AtomicU64::new(now_ns()),
+            last_heard_ns: std::sync::atomic::AtomicU64::new(tilo_clock::unix_now_ns()),
         })
     }
 
@@ -161,7 +160,7 @@ impl RelayCoeditSession {
         let heard = self
             .last_heard_ns
             .load(std::sync::atomic::Ordering::Relaxed);
-        std::time::Duration::from_nanos(now_ns().saturating_sub(heard))
+        std::time::Duration::from_nanos(tilo_clock::unix_now_ns().saturating_sub(heard))
     }
 
     /// Enable the private v2 lane on this same co-edit connection. Await its
@@ -288,7 +287,7 @@ impl RelayCoeditSession {
             .send(Envelope::Delta {
                 workspace_id: self.workspace_id,
                 author_device_public_key: self.author,
-                authored_at_ns: now_ns(),
+                authored_at_ns: tilo_clock::unix_now_ns(),
                 delta,
                 // The op-level signature (for the signed variant) lives
                 // inside the CoeditPayload; the envelope-level slot is
@@ -446,8 +445,10 @@ impl RelayCoeditSession {
     pub async fn recv(&self) -> Option<Inbound> {
         loop {
             let envelope = self.client.recv().await?;
-            self.last_heard_ns
-                .store(now_ns(), std::sync::atomic::Ordering::Relaxed);
+            self.last_heard_ns.store(
+                tilo_clock::unix_now_ns(),
+                std::sync::atomic::Ordering::Relaxed,
+            );
             if matches!(&envelope,
                 Envelope::Delta { workspace_id, .. }
                 | Envelope::Presence { workspace_id, .. }
@@ -677,7 +678,7 @@ mod tests {
             &ack,
             &cert.user_public_key,
             &RevocationList::new(),
-            tilo_delivery_protocol::clock::now_ns(),
+            tilo_clock::unix_now_ns(),
             &[1; 32],
         )
         .unwrap();

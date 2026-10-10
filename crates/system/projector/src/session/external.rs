@@ -61,7 +61,7 @@ fn airplay_credentials_path_from(
     let state_root = override_root
         .map(PathBuf::from)
         .or_else(|| {
-            xdg_paths::xdg::Base::State
+            tilo_paths::xdg::Base::State
                 .resolve_from(xdg_state_home, home)
                 .map(|dir| dir.join("tilo-projector"))
         })

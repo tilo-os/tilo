@@ -461,43 +461,6 @@ fn cli_entry_emits_a_server_acceptable_signed_change() {
     assert!(!missing_previous.status.success());
 }
 
-fn leb(mut value: usize) -> Vec<u8> {
-    let mut out = Vec::new();
-    loop {
-        let byte = u8::try_from(value & 0x7f).unwrap();
-        value >>= 7;
-        if value == 0 {
-            out.push(byte);
-            return out;
-        }
-        out.push(byte | 0x80);
-    }
-}
-
-fn custom_section(name: &str, payload: &[u8]) -> Vec<u8> {
-    let mut body = leb(name.len());
-    body.extend_from_slice(name.as_bytes());
-    body.extend_from_slice(payload);
-    let mut out = vec![0];
-    out.extend(leb(body.len()));
-    out.extend(body);
-    out
-}
-
-/// A side module built against toolkit-core ABI `abi`.
-fn side_module(abi: &str) -> Vec<u8> {
-    let mut module = b"\0asm\x01\0\0\0".to_vec();
-    module.extend(custom_section("tilo.runtime_abi", abi.as_bytes()));
-    let mut features = leb(2);
-    for name in ["sign-ext", "bulk-memory"] {
-        features.push(b'+');
-        features.extend(leb(name.len()));
-        features.extend_from_slice(name.as_bytes());
-    }
-    module.extend(custom_section("target_features", &features));
-    module
-}
-
 fn run(args: &[&str]) -> std::process::Output {
     let out = Command::new(bin_path()).args(args).output().unwrap();
     assert!(
@@ -507,87 +470,6 @@ fn run(args: &[&str]) -> std::process::Output {
         String::from_utf8_lossy(&out.stderr)
     );
     out
-}
-
-#[test]
-fn cli_packs_a_web_build_and_emits_its_registry_request() {
-    let abi = "tilo-runtime/2025.06+wasm.00112233445566778899aabbccddeeff";
-    let workdir = tempfile::tempdir().unwrap();
-    let path = |name: &str| workdir.path().join(name).to_str().unwrap().to_string();
-    run(&["keygen", "--out", &path("publisher.json")]);
-    std::fs::write(
-        path("manifest.toml"),
-        sample_manifest_with(&"00".repeat(32)),
-    )
-    .unwrap();
-    std::fs::write(path("example.wasm"), side_module(abi)).unwrap();
-    std::fs::create_dir_all(workdir.path().join("fonts/latin")).unwrap();
-    std::fs::write(workdir.path().join("fonts/latin/body.ttf"), [1; 64]).unwrap();
-    std::fs::write(path("icon.svg"), b"<svg/>").unwrap();
-
-    run(&[
-        "pack-web",
-        "--manifest",
-        &path("manifest.toml"),
-        "--module",
-        &path("example.wasm"),
-        "--asset-dir",
-        &path("fonts"),
-        "--asset",
-        &path("icon.svg"),
-        "--identity",
-        &path("publisher.json"),
-        "-o",
-        &path("example-web.tapp"),
-    ]);
-    let inspected = run(&["inspect", &path("example-web.tapp")]);
-    let inspected = String::from_utf8_lossy(&inspected.stdout);
-    assert!(inspected.contains("platform = \"web\""), "{inspected}");
-    assert!(inspected.contains(abi), "{inspected}");
-    assert!(inspected.contains("assets/latin/body.ttf"), "{inspected}");
-    assert!(inspected.contains("assets/icon.svg"), "{inspected}");
-    run(&["verify", &path("example-web.tapp")]);
-
-    let emitted = run(&[
-        "entry",
-        "--url",
-        "https://apps.tilo.so/artifacts/so.tilo.example-web.tapp",
-        "--identity",
-        &path("publisher.json"),
-        "--platform",
-        "web",
-        "--arch",
-        "wasm32",
-        "--action",
-        "add",
-        &path("example-web.tapp"),
-    ]);
-    let request: registry_types::EntryChangeRequest =
-        serde_json::from_slice(&emitted.stdout).unwrap();
-    let key = hex::decode(&request.entry.publisher_pubkey_hex).unwrap();
-    registry_types::verify_change_request(&request, &[key.try_into().unwrap()]).unwrap();
-    let target = &request.entry.versions[0].target;
-    assert_eq!(target.platform, registry_types::WEB_PLATFORM);
-    assert_eq!(target.architecture, registry_types::WASM32_ARCHITECTURE);
-    assert_eq!(target.isa, "wasm32-mvp+bulk-memory+sign-ext");
-    assert_eq!(target.runtime.as_deref(), Some(abi));
-
-    let native_as_web = Command::new(bin_path())
-        .args([
-            "entry",
-            "--url",
-            "https://apps.tilo.so/artifacts/x.tapp",
-            "--identity",
-            &path("publisher.json"),
-            "--platform",
-            "web",
-            "--arch",
-            "x86_64",
-            &path("example-web.tapp"),
-        ])
-        .output()
-        .unwrap();
-    assert!(!native_as_web.status.success());
 }
 
 #[test]
@@ -764,4 +646,300 @@ mode = "off"
     .unwrap();
     let refused = entry_args(true);
     assert!(!refused.status.success(), "a tampered chunk must fail");
+}
+
+struct AttestFixture {
+    dir: tempfile::TempDir,
+    publisher: PathBuf,
+    attestor: PathBuf,
+    attestor_public: String,
+    original: PathBuf,
+}
+
+impl AttestFixture {
+    fn new() -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        let publisher = dir.path().join("publisher.json");
+        let attestor = dir.path().join("attestor.json");
+        let generate = |path: &std::path::Path| {
+            let output = Command::new(bin_path())
+                .arg("keygen")
+                .arg("--out")
+                .arg(path)
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+            String::from_utf8(output.stdout).unwrap().trim().to_owned()
+        };
+        let public = generate(&publisher);
+        let attestor_public = generate(&attestor);
+        let manifest = dir.path().join("manifest.toml");
+        std::fs::write(&manifest, sample_manifest_with(&public)).unwrap();
+        let payload = dir.path().join("payload");
+        std::fs::create_dir_all(payload.join("bin")).unwrap();
+        std::fs::write(
+            payload.join("bin/hello"),
+            b"#!/bin/sh\necho owned-fixture\n",
+        )
+        .unwrap();
+        let original = dir.path().join("original.tapp");
+        let output = Command::new(bin_path())
+            .arg("pack")
+            .arg("--manifest")
+            .arg(manifest)
+            .arg("--payload")
+            .arg(payload)
+            .arg("--identity")
+            .arg(&publisher)
+            .arg("--output")
+            .arg(&original)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        Self {
+            dir,
+            publisher,
+            attestor,
+            attestor_public,
+            original,
+        }
+    }
+
+    fn command(&self, input: &std::path::Path, output: &std::path::Path, scope: &str) -> Command {
+        let mut command = Command::new(bin_path());
+        command
+            .arg("attest")
+            .arg("--publisher-identity")
+            .arg(&self.publisher)
+            .arg("--attestor-identity")
+            .arg(&self.attestor)
+            .arg("--attestor")
+            .arg("owned-fixture")
+            .arg("--scope")
+            .arg(scope)
+            .arg(input)
+            .arg("--output")
+            .arg(output);
+        command
+    }
+}
+
+fn decoded(
+    path: &std::path::Path,
+) -> (
+    tilo_app_package::Tapp,
+    std::collections::BTreeMap<tilo_app_package::BlobHash, Vec<u8>>,
+) {
+    let mut blobs = std::collections::BTreeMap::new();
+    let package =
+        tilo_app_package::tapp::read(std::fs::File::open(path).unwrap(), &mut blobs).unwrap();
+    (package, blobs)
+}
+
+#[test]
+fn cli_attest_preserves_payload_and_original_publisher_with_scoped_recipient_trust() {
+    use tilo_app_package::trust::{AttestorScope, RevocationList, TrustedAttestor};
+    let fixture = AttestFixture::new();
+    let destination = fixture.dir.path().join("attested.tapp");
+    let before = std::fs::read(&fixture.original).unwrap();
+    let output = fixture
+        .command(&fixture.original, &destination, "prefix:so.tilo.example")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let (original, original_blobs) = decoded(&fixture.original);
+    let (attested, attested_blobs) = decoded(&destination);
+    assert_eq!(std::fs::read(&fixture.original).unwrap(), before);
+    assert_eq!(original_blobs, attested_blobs);
+    assert_eq!(
+        original.meta.collection_bytes,
+        attested.meta.collection_bytes
+    );
+    assert_eq!(
+        original.meta.root.payload_root_hash,
+        attested.meta.root.payload_root_hash
+    );
+    assert_eq!(
+        original.meta.root.publisher_identity,
+        attested.meta.root.publisher_identity
+    );
+    assert_ne!(original.meta.id, attested.meta.id);
+    assert!(attested.is_complete());
+    let trust = TrustedAttestor {
+        id: "owned-fixture".into(),
+        pubkey_hex: fixture.attestor_public,
+        scope: AttestorScope::parse("prefix:so.tilo.example").unwrap(),
+    };
+    assert!(matches!(
+        tilo_app_package::verify_with_trust(
+            &attested.meta,
+            &[],
+            std::slice::from_ref(&trust),
+            &RevocationList::empty()
+        ),
+        tilo_app_package::Verification::AttestedBy { .. }
+    ));
+    let revoked = tilo_app_package::trust::RevocationList {
+        revoked: vec![tilo_app_package::trust::RevokedKey {
+            pubkey_hex: hex::encode(attested.meta.root.publisher_identity),
+            reason: "withdrawn publisher".into(),
+        }],
+    };
+    assert!(matches!(
+        tilo_app_package::verify_with_trust(
+            &attested.meta,
+            &[],
+            std::slice::from_ref(&trust),
+            &revoked
+        ),
+        tilo_app_package::Verification::Revoked { .. }
+    ));
+    let mut unknown = trust.clone();
+    unknown.pubkey_hex = hex::encode(original.meta.root.publisher_identity);
+    assert!(matches!(
+        tilo_app_package::verify_with_trust(
+            &attested.meta,
+            &[],
+            &[unknown],
+            &RevocationList::empty()
+        ),
+        tilo_app_package::Verification::UntrustedPublisher { .. }
+    ));
+    let foreign = TrustedAttestor {
+        scope: AttestorScope::parse("prefix:foreign.").unwrap(),
+        ..trust
+    };
+    assert!(matches!(
+        tilo_app_package::verify_with_trust(
+            &attested.meta,
+            &[],
+            &[foreign],
+            &RevocationList::empty()
+        ),
+        tilo_app_package::Verification::UntrustedPublisher { .. }
+    ));
+}
+
+#[test]
+fn cli_attest_refuses_foreign_publisher_scope_partial_and_existing_output() {
+    let mut fixture = AttestFixture::new();
+    let destination = fixture.dir.path().join("attested.tapp");
+    let output = fixture
+        .command(&fixture.original, &destination, "prefix:foreign.")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(!destination.exists());
+    let publisher = fixture.publisher.clone();
+    fixture.publisher = fixture.attestor.clone();
+    assert!(
+        !fixture
+            .command(&fixture.original, &destination, "all")
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    assert!(!destination.exists());
+    fixture.publisher = publisher;
+    let thin = fixture.dir.path().join("thin.tapp");
+    assert!(
+        Command::new(bin_path())
+            .arg("thin")
+            .arg(&fixture.original)
+            .arg("--output")
+            .arg(&thin)
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    assert!(
+        !fixture
+            .command(&thin, &destination, "all")
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    assert!(!destination.exists());
+    std::fs::write(&destination, b"preserved").unwrap();
+    assert!(
+        !fixture
+            .command(&fixture.original, &destination, "all")
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    assert_eq!(std::fs::read(&destination).unwrap(), b"preserved");
+    assert!(
+        !fixture
+            .command(&fixture.original, &fixture.original, "all")
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    assert!(decoded(&fixture.original).0.is_complete());
+}
+
+#[test]
+fn cli_compress_writes_a_twin_that_decompresses_to_the_package() {
+    let workdir = tempfile::tempdir().unwrap();
+    let payload_dir = workdir.path().join("payload");
+    std::fs::create_dir_all(payload_dir.join("bin")).unwrap();
+    std::fs::write(
+        payload_dir.join("bin/hello"),
+        b"#!/bin/sh\necho hi\n".repeat(512),
+    )
+    .unwrap();
+    let manifest_path = workdir.path().join("manifest.toml");
+    std::fs::write(&manifest_path, sample_manifest_with(&"00".repeat(32))).unwrap();
+    let tapp = workdir.path().join("example.tapp");
+    run(&[
+        "pack",
+        "--manifest",
+        manifest_path.to_str().unwrap(),
+        "--payload",
+        payload_dir.to_str().unwrap(),
+        "-o",
+        tapp.to_str().unwrap(),
+    ]);
+
+    run(&["compress", tapp.to_str().unwrap()]);
+    let package = std::fs::read(&tapp).unwrap();
+    let twin = std::fs::read(workdir.path().join("example.tapp.zst")).unwrap();
+    assert!(
+        twin.len() < package.len() / 2,
+        "{} of {}",
+        twin.len(),
+        package.len()
+    );
+    let mut plain = Vec::new();
+    tilo_app_package::compressed::decompress_bounded(
+        twin.as_slice(),
+        package.len() as u64,
+        &mut plain,
+    )
+    .unwrap();
+    assert_eq!(plain, package);
+
+    // Only a package gets a twin: anything else is refused, and nothing is written.
+    let other = workdir.path().join("notes.txt");
+    std::fs::write(&other, b"not a package").unwrap();
+    let out = Command::new(bin_path())
+        .args(["compress", other.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(!workdir.path().join("notes.txt.zst").exists());
 }

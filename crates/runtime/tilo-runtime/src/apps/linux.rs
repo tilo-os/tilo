@@ -56,7 +56,7 @@ pub(super) fn launch(apps: &Apps, app: &InstalledApp, sockets: &Sockets) -> Resu
         .env_remove("TILO_RUNTIME_CONNECTION_OWNER_PID")
         .env_remove("TILO_RUNTIME_RESUME_LIVE")
         .stdin(Stdio::null());
-    if !launcher::dev_env::DEV_ENV_OVERRIDES {
+    if !package_store::dev_env::DEV_ENV_OVERRIDES {
         for name in launcher::dev_env::DEV_OVERRIDE_VARS {
             command.env_remove(name);
         }
@@ -86,7 +86,7 @@ fn wayland_socket() -> Result<PathBuf, String> {
     let socket = if display.is_absolute() {
         display
     } else {
-        xdg_paths::xdg::runtime_dir()
+        tilo_paths::xdg::runtime_dir()
             .ok_or("refusing to launch: the Wayland display has no runtime directory")?
             .join(display)
     };
