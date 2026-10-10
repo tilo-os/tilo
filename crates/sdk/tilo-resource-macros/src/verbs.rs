@@ -653,6 +653,17 @@ fn params_struct(verb: &Verb, self_ty: &Type, type_name: &str) -> Tokens {
         .params
         .is_empty()
         .then(|| quote!(::core::default::Default,));
+    let reads = verb.params.iter().map(|param| {
+        let ident = &param.ident;
+        let public = &param.public;
+        if param.role == Role::Flatten {
+            return quote!(#ident: #krate::__private::serde::Deserialize::deserialize(
+                #krate::__private::serde_json::Value::Object(args),
+            )?);
+        }
+        let optional = last_ident(&param.ty).is_some_and(|(name, _)| name == "Option");
+        quote!(#ident: #krate::__private::arg(&mut args, #public, #optional)?)
+    });
     let label = &verb.label;
     let schema_body = verb
         .params
@@ -674,10 +685,34 @@ fn params_struct(verb: &Verb, self_ty: &Type, type_name: &str) -> Tokens {
         );
     quote! {
         #[doc = #doc]
-        #[derive(Clone, Debug, #derive_default #krate::__private::serde::Serialize, #krate::__private::serde::Deserialize)]
+        #[derive(Clone, Debug, #derive_default #krate::__private::serde::Serialize)]
         #[serde(crate = #serde_path)]
         pub struct #name {
             #(#fields,)*
+        }
+
+        // Read through a JSON value, each argument by its own type's decoder:
+        // a verb's parameters add no decoder of their own.
+        impl<'de> #krate::__private::serde::Deserialize<'de> for #name {
+            fn deserialize<D: #krate::__private::serde::Deserializer<'de>>(
+                deserializer: D,
+            ) -> ::core::result::Result<Self, D::Error> {
+                let value = <#krate::__private::serde_json::Value as #krate::__private::serde::Deserialize>::deserialize(deserializer)?;
+                Self::from_args(value)
+                    .map_err(<D::Error as #krate::__private::serde::de::Error>::custom)
+            }
+        }
+
+        impl #name {
+            /// The parameters in their JSON form, an object of arguments.
+            #[inline(never)]
+            fn from_args(
+                value: #krate::__private::serde_json::Value,
+            ) -> ::core::result::Result<Self, #krate::__private::serde_json::Error> {
+                #[allow(unused_mut, unused_variables, reason = "a verb may take no arguments")]
+                let mut args = #krate::__private::args_object(value)?;
+                ::core::result::Result::Ok(Self { #(#reads,)* })
+            }
         }
 
         impl #krate::JsonSchema for #name {

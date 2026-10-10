@@ -725,8 +725,8 @@ pub(crate) fn history(doc: &AutoCommit, last: usize) -> Value {
 /// # Errors
 /// Returns a malformed request or an unknown version.
 pub(crate) fn answer(doc: &AutoCommit, payload: &[u8]) -> Result<ActionOutput, String> {
-    let view: HistoryView =
-        serde_json::from_slice(payload).map_err(|error| format!("not a history view: {error}"))?;
+    let view: HistoryView = tilo_actions::decode_json(payload)
+        .map_err(|error| format!("not a history view: {error}"))?;
     let value = match view {
         HistoryView::History { last } => history(doc, limit(last, 50)),
         HistoryView::Diff { from, to } => {

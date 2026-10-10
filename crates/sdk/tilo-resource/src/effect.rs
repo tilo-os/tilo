@@ -239,7 +239,7 @@ pub trait Effect: Sized + 'static {
     /// Returns why the payload is not an effect of this vocabulary.
     fn from_payload(payload: &[u8]) -> Result<Self, String> {
         let Payload { effect, args } =
-            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+            tilo_actions::decode_json(payload).map_err(|error| error.to_string())?;
         Self::decode(&effect, &args)
     }
 }

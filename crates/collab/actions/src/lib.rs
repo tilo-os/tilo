@@ -150,7 +150,7 @@ pub use params::{
     ParamType, place_schema, validate_json_schema,
 };
 pub use protocol::{ContractViolation, validate_surface, validate_surface_contracts};
-pub use registry::ActionRegistry;
+pub use registry::{ActionRegistry, decode_json};
 #[allow(
     deprecated,
     reason = "existing app impls still name this trait until they publish through tilo_resource"

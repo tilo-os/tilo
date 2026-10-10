@@ -259,7 +259,7 @@ fn read<R: Resource>(
     let args: serde_json::Value = if payload.is_empty() {
         serde_json::Value::Null
     } else {
-        serde_json::from_slice(payload).map_err(|error| error.to_string())?
+        tilo_actions::decode_json(payload).map_err(|error| error.to_string())?
     };
     let item = args.get("item").and_then(serde_json::Value::as_str);
     Ok(tilo_actions::ActionOutput {
@@ -768,14 +768,16 @@ impl<R: Resource> ResourceRoot<R> {
 /// a group of them, last landing last.
 fn own_actions<R: Resource>(encoded: &tilo_actions::EncodedAction) -> Vec<R::Action> {
     if encoded.type_id == R::ACTION_TYPE {
-        return serde_json::from_slice(&encoded.payload)
+        return tilo_actions::decode_json(&encoded.payload)
             .map(|action| vec![action])
             .unwrap_or_default();
     }
     if encoded.type_id == tilo_resource::group::group_type::<R>() {
-        return serde_json::from_slice::<tilo_resource::ActionGroup<R::Action>>(&encoded.payload)
-            .map(|group| group.actions)
-            .unwrap_or_default();
+        return tilo_actions::decode_json::<tilo_resource::ActionGroup<R::Action>>(
+            &encoded.payload,
+        )
+        .map(|group| group.actions)
+        .unwrap_or_default();
     }
     Vec::new()
 }
@@ -1434,7 +1436,7 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
             && request.type_id == OPEN_TYPE
         {
             let args: serde_json::Value =
-                serde_json::from_slice(request.payload).map_err(|error| error.to_string())?;
+                tilo_actions::decode_json(request.payload).map_err(|error| error.to_string())?;
             let anchor = args
                 .get(OPEN_ANCHOR)
                 .and_then(serde_json::Value::as_str)
@@ -1896,12 +1898,12 @@ impl<R: Resource> ui_core::history_mode::capability::DocumentHistory for Resourc
         if next.type_id != R::ACTION_TYPE {
             return (false, false);
         }
-        let Ok(next) = serde_json::from_slice::<R::Action>(&next.payload) else {
+        let Ok(next) = tilo_actions::decode_json::<R::Action>(&next.payload) else {
             return (false, false);
         };
         let previous = previous
             .filter(|encoded| encoded.type_id == R::ACTION_TYPE)
-            .and_then(|encoded| serde_json::from_slice::<R::Action>(&encoded.payload).ok());
+            .and_then(|encoded| tilo_actions::decode_json::<R::Action>(&encoded.payload).ok());
         (
             previous
                 .as_ref()

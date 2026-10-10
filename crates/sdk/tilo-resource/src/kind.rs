@@ -95,9 +95,9 @@ fn search<R: Resource>(state: &dyn Any) -> Option<Vec<SearchEntry>> {
 
 fn lands<R: Resource>(doc: &Doc, action: &EncodedAction) -> Option<Place> {
     let action: R::Action = if action.type_id == R::ACTION_TYPE {
-        serde_json::from_slice(&action.payload).ok()?
+        tilo_actions::decode_json(&action.payload).ok()?
     } else if action.type_id == crate::group::group_type::<R>() {
-        serde_json::from_slice::<crate::group::ActionGroup<R::Action>>(&action.payload)
+        tilo_actions::decode_json::<crate::group::ActionGroup<R::Action>>(&action.payload)
             .ok()?
             .actions
             .pop()?

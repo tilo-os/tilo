@@ -549,6 +549,43 @@ pub mod __private {
 
     pub use crate::resource::default_search;
 
+    /// The arguments of a verb's JSON form: an object (`null` for none).
+    ///
+    /// # Errors
+    /// Why `value` is no arguments object.
+    #[inline(never)]
+    pub fn args_object(
+        value: serde_json::Value,
+    ) -> Result<serde_json::Map<String, serde_json::Value>, serde_json::Error> {
+        use serde::de::Error as _;
+        match value {
+            serde_json::Value::Object(args) => Ok(args),
+            serde_json::Value::Null => Ok(serde_json::Map::new()),
+            other => Err(serde_json::Error::invalid_type(
+                serde::de::Unexpected::Other(&other.to_string()),
+                &"the arguments as an object",
+            )),
+        }
+    }
+
+    /// The argument `name` taken from `args`, decoded as a `T`; an absent
+    /// one is `None` when `optional`, else missing.
+    ///
+    /// # Errors
+    /// Why the argument is missing or not a `T`.
+    pub fn arg<T: serde::de::DeserializeOwned>(
+        args: &mut serde_json::Map<String, serde_json::Value>,
+        name: &'static str,
+        optional: bool,
+    ) -> Result<T, serde_json::Error> {
+        use serde::de::Error as _;
+        match args.remove(name) {
+            Some(value) => T::deserialize(value),
+            None if optional => T::deserialize(serde_json::Value::Null),
+            None => Err(serde_json::Error::missing_field(name)),
+        }
+    }
+
     /// The action name and arguments of an action's JSON form
     /// (`{"action": .., "args": ..}`, the arguments `null` when absent).
     ///
