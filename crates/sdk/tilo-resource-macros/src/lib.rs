@@ -1026,6 +1026,21 @@ fn expand_resource(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Resul
     } else {
         quote!()
     };
+    // The same parts as `children`, apart, so the framework can keep the
+    // item children it built before (TIL-766).
+    let children_parts = if item_actions.is_empty() {
+        quote!()
+    } else {
+        quote! {
+            fn children_parts(state: &Self) -> #krate::items::ChildrenParts {
+                #krate::items::ChildrenParts {
+                    others: #children,
+                    items: <Self as #krate::Fields>::item_collections(state),
+                    item_actions: ::std::vec![#(#item_actions),*],
+                }
+            }
+        }
+    };
     let children = if item_actions.is_empty() {
         children
     } else {
@@ -1178,6 +1193,7 @@ fn expand_resource(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Resul
             }
 
             #offer_bound
+            #children_parts
             #cache_epoch
 
             fn search(state: &Self) -> ::std::vec::Vec<#krate::SearchEntry> {

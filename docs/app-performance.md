@@ -253,6 +253,62 @@ accessibility tree's resource nodes and the controls' allowed addresses once,
 and `ResourceRoot::nested_views` builds every child once more. Making that
 flat needs publication that shares unchanged children between snapshots.
 
+### The frame that shows a key stays flat: a shared published tree (TIL-766)
+
+After TIL-761 the frame that shows a typed key still grew with the list,
+although the key edits the draft, which no item depends on. `sample` at
+10,000 tasks: 58 % rebuilding and diffing a semantic node per item, 25 %
+rebuilding, copying and permission-filtering every item resource on the
+frame's cache miss, 12 % the same in the door that resolves the draft's edit,
+14 % `nested_views` building every item once more. `tilo_actions::Resource`
+owns its children inline, so no consumer could tell an unchanged item from a
+changed one.
+
+`ui_core::published::SharedResource` holds the same tree with its children
+behind `Rc`s, beside `tilo_actions::Resource` (whose shape does not change):
+
+* **Publication.** `ResourceRoot` builds the document tree from
+  `Resource::children_parts` (`#[resource]` splits its item collections from
+  its other children) and keeps each item child while its collection field,
+  id and label are the ones it was built with; collections unchanged since
+  the last version reuse the whole list. It answers
+  `PublishesResources::shared_resources_for` when nothing in the view
+  decorates the children (no surface, no content resource joining the root),
+  and the ordinary tree is materialised from the shared one.
+* **Snapshot and filtering.** A bound component's cached snapshot is the
+  shared forest; the ordinary trees are materialised on first use for the
+  palette, agents and search. Filtering keeps its result on each input node
+  and list of children under a token that stands for the component's
+  permission witness, so a subtree an edit did not touch is not filtered
+  again. A new witness (a grant changing or expiring) takes a new token.
+* **Controls and accessibility.** The controls' allowed addresses (counted per
+  address) and a component's semantic nodes move from one forest to the next
+  by a pointer diff: shared subtrees are skipped, nodes whose own part changed
+  are rebuilt and compared, added and removed subtrees are visited. A
+  repeated id rebuilds the component, as the full walk reports it.
+* **The door.** A local document edit resolves its node in the shared tree,
+  exactly the one the filtered tree would give, without building or
+  filtering the rest; every check after resolution runs as before. Other
+  kinds, participants' trees and the unbound fallbacks take the whole tree.
+
+M5 Max, release, `TILO_SCALING_KEYSTROKES=40`; after is the median of three
+runs (machine load 15–20 during them, about 3 for before):
+
+| Tasks | Key press→frame p50 before | after | p99 before | after |
+|---:|---:|---:|---:|---:|
+| 10 | 0.40 ms | 0.41 ms | 0.50 ms | 0.58 ms |
+| 100 | 0.63 ms | 0.45 ms | 0.72 ms | 0.62 ms |
+| 250 | 1.00 ms | 0.46 ms | 1.13 ms | 0.61 ms |
+| 1,000 | 3.01 ms | 0.53 ms | 3.34 ms | 0.72 ms |
+| 10,000 | 37.5 ms | 1.44 ms | 40.8 ms | 1.75 ms |
+
+`publication_per_keystroke::a_hosted_keystroke_costs_the_same_whatever_the_list`
+holds key press→frame at 1,000 tasks within 2× of 100 (4.7× before; 1.2× now
+in release, 1.1× in a debug test build). What remains at 10,000 is linear with
+a small constant: each of the two publications per keystroke still reads every
+item's id and label from the state (`Fields::item_collections`) to compare the
+collections, 0.54 ms of publishing per keystroke in all.
+
 ### Opening a long list (TIL-758)
 
 `framework-scaling -- 5000,50000 open` reopens the checklist over a record
