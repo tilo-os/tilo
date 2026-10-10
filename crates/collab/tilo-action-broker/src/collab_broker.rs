@@ -942,14 +942,6 @@ impl BrokerHandle {
             ch.register_channel_state(artifact, state);
         }
     }
-
-    /// Audit-log entries for one artifact.
-    pub fn audit_for(&self, artifact: ArtifactId) -> Vec<AuditEntry> {
-        self.channels
-            .lock()
-            .map(|g| g.audit.for_artifact(artifact))
-            .unwrap_or_default()
-    }
 }
 impl Drop for BrokerHandle {
     fn drop(&mut self) {

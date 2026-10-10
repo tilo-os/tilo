@@ -2550,17 +2550,6 @@ impl App {
     pub fn window_app_id(&self) -> Option<&str> {
         self.window.app_id.as_deref()
     }
-
-    /// `None` clears the override and restores automatic resolution.
-    pub fn set_window_title(&mut self, title: Option<String>) {
-        self.window.title = title;
-    }
-
-    /// Precedence: explicit override → `TILO_APP_NAME` → package id → binary
-    /// name → generic default.
-    pub fn resolved_window_title(&self) -> String {
-        resolve_window_title(self.window.title.as_deref())
-    }
 }
 
 impl Drop for App {
@@ -2772,6 +2761,7 @@ mod generic_floating_activity_tests {
 }
 
 /// See [`resolve_title_from`] for the precedence.
+#[cfg(feature = "native")]
 fn resolve_window_title(explicit: Option<&str>) -> String {
     let environment = crate::host::environment();
     let app_name = environment.identity.app_name.clone();
@@ -2818,6 +2808,7 @@ fn resolve_app_id(package_id: Option<&str>, binary: Option<&str>) -> String {
 
 /// Pure, so the precedence is unit-testable without touching the process
 /// environment. First non-blank candidate wins.
+#[cfg(feature = "native")]
 fn resolve_title_from(
     explicit: Option<&str>,
     app_name: Option<&str>,
@@ -2856,6 +2847,7 @@ fn resolve_title_from(
     "Tilo App".to_string()
 }
 
+#[cfg(feature = "native")]
 fn humanize_ident(ident: &str) -> String {
     ident
         .split(|c: char| c == '-' || c == '_' || c == '.' || c.is_whitespace())

@@ -1378,38 +1378,6 @@ impl ChatApp {
         })
     }
 
-    /// Open a scenario's context menu where a right-click on its row would:
-    /// at the pointer, on the row the menu acts on, read from the frame that
-    /// was just drawn.
-    #[doc(hidden)]
-    pub fn stage_after_draw_for_shot(&mut self, scenario: &str) {
-        let (target, items) = match scenario {
-            "context" => (
-                MenuTarget::Channel("c_frontend".into()),
-                MenuAction::for_channel().to_vec(),
-            ),
-            "msgmenu" => (
-                MenuTarget::Message("m_me2".into()),
-                MenuAction::for_message().to_vec(),
-            ),
-            _ => return,
-        };
-        let row = self
-            .hits
-            .iter()
-            .find_map(|(rect, hit)| match (hit, &target) {
-                (Hit::Channel(id), MenuTarget::Channel(want)) if id == want => Some(*rect),
-                (Hit::MessageMenu { msg }, MenuTarget::Message(want)) if msg == want => Some(*rect),
-                _ => None,
-            });
-        let Some(row) = row else {
-            return;
-        };
-        // The pointer rests on the row's text, a third of the way in.
-        let pointer = Point::new(row.x0 + row.width() / 3.0, row.center().y);
-        self.menu = Some(self.context_menu(target, pointer, items));
-    }
-
     /// Show the call as the voice service reports a joined call: connected,
     /// with nobody else's audio arriving yet.
     fn stage_connected_call(&mut self) {

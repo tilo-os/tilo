@@ -359,57 +359,7 @@ pub enum LocalFailure {
     Deadline,
     Unavailable,
 }
-impl ManagedAttempt {
-    /// Deliver this attempt to the host's in-process receiver. Same custody as
-    /// the SDK transport: it is claimed once for `route` (a clone or replay
-    /// returns `None`), never retried and never given a new identity; the
-    /// reply is correlated and bounded exactly as a wire reply by `finish`.
-    pub fn deliver_local(
-        self,
-        route: &RouteSpec,
-        send: impl FnOnce(LocalRequest<'_>) -> Result<PublishedInvocationObservation, LocalFailure>,
-    ) -> Option<ManagedAttemptResult> {
-        let result = {
-            let deadline = self.deadline();
-            match self.claim(route)? {
-                Err(error) => Err(error),
-                Ok(_) if crate::time::now() >= deadline => Err(AttemptFailure::Deadline),
-                Ok(view) => {
-                    let request = match view {
-                        RequestView::Invoke {
-                            invocation,
-                            binding,
-                            revision,
-                            resource,
-                            action,
-                            argument,
-                            confirmation_json,
-                        } => LocalRequest::Invoke {
-                            invocation,
-                            binding,
-                            revision,
-                            resource,
-                            action,
-                            argument,
-                            confirmation_json,
-                        },
-                        RequestView::Observe { host, invocation } => {
-                            LocalRequest::Observe { host, invocation }
-                        }
-                        RequestView::Cancel { host, invocation } => {
-                            LocalRequest::Cancel { host, invocation }
-                        }
-                    };
-                    send(request).map_err(|failure| match failure {
-                        LocalFailure::Deadline => AttemptFailure::Deadline,
-                        LocalFailure::Unavailable => AttemptFailure::Unavailable,
-                    })
-                }
-            }
-        };
-        self.finish(result)
-    }
-}
+impl ManagedAttempt {}
 impl ManagedAttemptResult {
     #[expect(
         clippy::expect_used,
