@@ -9,15 +9,6 @@
     clippy::future_not_send,
     reason = "page futures are made `Send` by `SendWrapper` where they leave this module"
 )]
-#![cfg_attr(
-    not(all(
-        feature = "http",
-        feature = "ws",
-        feature = "webtransport",
-        feature = "sockets"
-    )),
-    allow(dead_code, reason = "the helpers serve feature-gated backends")
-)]
 
 #[cfg(feature = "http")]
 pub(crate) mod fetch;
@@ -26,17 +17,23 @@ pub(crate) mod webtransport;
 #[cfg(feature = "ws")]
 pub(crate) mod ws;
 
+#[cfg(feature = "http")]
 use std::time::Duration;
 
-use js_sys::{Function, Promise, Reflect};
+#[cfg(any(feature = "http", feature = "webtransport"))]
+use js_sys::Promise;
+use js_sys::{Function, Reflect};
 use send_wrapper::SendWrapper;
 use tokio::sync::mpsc;
 use wasm_bindgen::JsCast as _;
 use wasm_bindgen::prelude::*;
+#[cfg(any(feature = "http", feature = "webtransport"))]
 use wasm_bindgen_futures::JsFuture;
 
+#[cfg(any(feature = "http", feature = "webtransport"))]
 use crate::NetError;
 
+#[cfg(feature = "http")]
 #[wasm_bindgen]
 extern "C" {
     #[wasm_bindgen(js_name = setTimeout)]
@@ -79,6 +76,7 @@ pub(crate) fn page_origin() -> Option<url::Origin> {
 }
 
 /// A browser error's message.
+#[cfg(any(feature = "http", feature = "ws", feature = "webtransport"))]
 pub(crate) fn message(error: &JsValue) -> String {
     if let Some(text) = error.as_string() {
         return text;
@@ -97,6 +95,7 @@ pub(crate) fn message(error: &JsValue) -> String {
 }
 
 /// Whether a browser error is a `DOMException` or `Error` named `name`.
+#[cfg(feature = "http")]
 pub(crate) fn is_named(error: &JsValue, name: &str) -> bool {
     get(error, "name")
         .and_then(|value| value.as_string())
@@ -104,6 +103,7 @@ pub(crate) fn is_named(error: &JsValue, name: &str) -> bool {
 }
 
 /// Await a promise from a `Send` future.
+#[cfg(any(feature = "http", feature = "webtransport"))]
 pub(crate) fn promise(
     promise: Promise,
 ) -> impl Future<Output = Result<JsValue, JsValue>> + Send + use<> {
@@ -111,6 +111,7 @@ pub(crate) fn promise(
 }
 
 /// Call `object.method(...args)` and await the promise it returns.
+#[cfg(feature = "webtransport")]
 pub(crate) fn call_promise(
     object: &JsValue,
     method: &str,
@@ -135,6 +136,7 @@ pub(crate) fn call_promise(
 }
 
 /// Resolve after `duration` with a `setTimeout`, cleared if dropped first.
+#[cfg(feature = "http")]
 pub(crate) fn sleep(duration: Duration) -> impl Future<Output = ()> + Send + use<> {
     let milliseconds = i32::try_from(duration.as_millis()).unwrap_or(i32::MAX);
     let handle = std::rc::Rc::new(std::cell::RefCell::new(JsValue::UNDEFINED));
@@ -152,16 +154,19 @@ pub(crate) fn sleep(duration: Duration) -> impl Future<Output = ()> + Send + use
     }
 }
 
+#[cfg(feature = "http")]
 struct Timer {
     handle: SendWrapper<std::rc::Rc<std::cell::RefCell<JsValue>>>,
 }
 
+#[cfg(feature = "http")]
 impl Timer {
     fn disarm(&self) {
         *self.handle.borrow_mut() = JsValue::UNDEFINED;
     }
 }
 
+#[cfg(feature = "http")]
 impl Drop for Timer {
     fn drop(&mut self) {
         let handle = self.handle.borrow();
@@ -172,6 +177,7 @@ impl Drop for Timer {
 }
 
 /// Race `future` against an optional deadline.
+#[cfg(feature = "http")]
 pub(crate) async fn deadline<T>(
     timeout: Option<Duration>,
     future: impl Future<Output = Result<T, NetError>>,
