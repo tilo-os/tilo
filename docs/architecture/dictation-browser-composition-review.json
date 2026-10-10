@@ -459,5 +459,52 @@
       "manually_retried": false,
       "causal_resolution_claimed": false
     }
+  },
+  "callback_lifecycle_qualification": {
+    "prior_green_head": "ceeff8104bef5998c382a5fd5b9074ee1360667b",
+    "prior_required_ci": {
+      "quality": 93384,
+      "affected": 93383,
+      "status": "success"
+    },
+    "source_sha256": "a3e98629571dbc41cc1bd8bddab37f5e036b7f55d23016b677fb75fa0f7a0a95",
+    "production_source_unchanged": true,
+    "tests": [
+      "test_beforeinput_replacement_does_not_retarget_a_session",
+      "test_beforeinput_reparent_restore_retires_the_original_session"
+    ],
+    "test_seconds": 1.888,
+    "receipt": {
+      "owned_review": "${OWNED_CALLBACK_REVIEW}",
+      "host_sha256": "486fbdeba20beee3b7d787364c5344d969c2f3db9dedbdaa0097cdf88dfc49d9",
+      "fixture_sha256": "a3e98629571dbc41cc1bd8bddab37f5e036b7f55d23016b677fb75fa0f7a0a95",
+      "exit": 0,
+      "tests": 2,
+      "seconds": 2.0584728750109207,
+      "log_sha256": "335b7439d932856f2c89706c27fd5b983e4add526a5a69457be1264586503b5b",
+      "transient_unit": "dictation-custom-callback-e14564122541.service",
+      "inactive_after_run": "inactive",
+      "hardware": false,
+      "new_runtime": false,
+      "production_changed": false
+    },
+    "portable_manifest": [
+      {
+        "path": "tools/release/fixtures/dictation_browser_composition_20261010/callback-native.log",
+        "raw_sha256": "335b7439d932856f2c89706c27fd5b983e4add526a5a69457be1264586503b5b",
+        "canonical_sha256": "335b7439d932856f2c89706c27fd5b983e4add526a5a69457be1264586503b5b"
+      },
+      {
+        "path": "tools/release/fixtures/dictation_browser_composition_20261010/callback-native-receipt.json",
+        "raw_sha256": "d3a71f490724d9d613d626e2d23e9e30b26ead79223f6f6d3cdd9fe6e80e4111",
+        "canonical_sha256": "6bc187a9bc61f2fe411ac3fa8f7a4f669d616eec922f9ccc79ffe7b44b646418"
+      },
+      {
+        "path": "tools/release/fixtures/dictation_browser_composition_20261010/callback-native-driver.py",
+        "raw_sha256": "88b4be4c6b62044d57e08b2a29ee86785e7abeb5bcbbca3a0151de4b79844b6d",
+        "canonical_sha256": "11683c1081edfac6d79db0b33f9e6689557a9b057bad41bf159dade01246ff2f"
+      }
+    ],
+    "scope": "Native beforeinput replacement/reparent callbacks, stale final/cancel, fresh repeat/cancel, selected Unicode and native undo/redo; no arbitrary callback framework, installed or physical microphone qualification."
   }
 }

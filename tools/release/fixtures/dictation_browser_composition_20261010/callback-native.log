@@ -1,0 +1,7 @@
+test_beforeinput_replacement_does_not_retarget_a_session (__main__.GuardedTextInput.test_beforeinput_replacement_does_not_retarget_a_session) ... ok
+test_beforeinput_reparent_restore_retires_the_original_session (__main__.GuardedTextInput.test_beforeinput_reparent_restore_retires_the_original_session) ... ok
+
+----------------------------------------------------------------------
+Ran 2 tests in 1.888s
+
+OK

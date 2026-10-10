@@ -1,0 +1,14 @@
+{
+  "owned_review": "${OWNED_CALLBACK_REVIEW}",
+  "host_sha256": "486fbdeba20beee3b7d787364c5344d969c2f3db9dedbdaa0097cdf88dfc49d9",
+  "fixture_sha256": "a3e98629571dbc41cc1bd8bddab37f5e036b7f55d23016b677fb75fa0f7a0a95",
+  "exit": 0,
+  "tests": 2,
+  "seconds": 2.0584728750109207,
+  "log_sha256": "335b7439d932856f2c89706c27fd5b983e4add526a5a69457be1264586503b5b",
+  "transient_unit": "dictation-custom-callback-e14564122541.service",
+  "inactive_after_run": "inactive",
+  "hardware": false,
+  "new_runtime": false,
+  "production_changed": false
+}

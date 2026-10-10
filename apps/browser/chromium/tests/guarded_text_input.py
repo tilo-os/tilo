@@ -653,6 +653,41 @@ class GuardedTextInput(unittest.TestCase):
         self.assertTrue(self.request_input('commit', lease=current, text='new')['ok'])
         self.assertEqual(self.main_world('first.value'), 'alpha new gamma')
 
+    def beforeinput_callback_lifecycle(self, replace):
+        old = self.prepare()
+        self.assertTrue(self.request_input('start', lease=old)['ok'])
+        action = "const replacement=oldField.cloneNode(true);oldField.replaceWith(replacement);replacement.focus();replacement.setSelectionRange(6,10);" if replace else "const parent=oldField.parentNode;const next=oldField.nextSibling;oldField.remove();parent.insertBefore(oldField,next);oldField.focus();oldField.setSelectionRange(6,10);"
+        self.assertTrue(self.main_world("(()=>{window.oldField=document.getElementById('first');oldField.addEventListener('beforeinput',()=>{" + action + "},{once:true});return true})()"))
+        result = self.request_input('commit', lease=old, text='stale café')
+        self.assertFalse(result['ok'], result)
+        self.assertEqual(self.main_world('oldField.value'), 'alpha beta gamma')
+        self.unchanged()
+        self.assertEqual(self.main_world('editEvents'), [])
+        self.assertFalse(self.request_input('commit', lease=old, text='late')['ok'])
+        successor = self.prepare()
+        self.assertTrue(self.request_input('start', lease=successor)['ok'])
+        self.assertFalse(self.request_input('cancel', lease=old)['ok'])
+        self.assertTrue(self.request_input('check', lease=successor)['ok'])
+        self.assertTrue(self.request_input('cancel', lease=successor)['ok'])
+        self.unchanged()
+        fresh = self.prepare()
+        self.assertTrue(self.request_input('start', lease=fresh)['ok'])
+        self.assertFalse(self.request_input('commit', lease=successor, text='late')['ok'])
+        self.assertTrue(self.request_input('commit', lease=fresh, text='東京 café')['ok'])
+        self.assertEqual(self.main_world('first.value'), 'alpha 東京 café gamma')
+        self.assertTrue(self.main_world("document.execCommand('undo')"))
+        self.unchanged()
+        self.assertTrue(self.main_world("document.execCommand('redo')"))
+        self.assertEqual(self.main_world('first.value'), 'alpha 東京 café gamma')
+        if replace:
+            self.assertEqual(self.main_world('oldField.value'), 'alpha beta gamma')
+
+    def test_beforeinput_replacement_does_not_retarget_a_session(self):
+        self.beforeinput_callback_lifecycle(True)
+
+    def test_beforeinput_reparent_restore_retires_the_original_session(self):
+        self.beforeinput_callback_lifecycle(False)
+
     def test_beforeinput_denial_and_focus_redirect_do_not_fallback(self):
         for flag in ['rejectEdit', 'redirectEdit']:
             with self.subTest(flag=flag):
