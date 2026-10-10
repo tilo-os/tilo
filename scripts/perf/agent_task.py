@@ -520,9 +520,6 @@ class Tools:
             payload = {"op": "actions_enumerate", "query": query, "detail": "compact",
                        "cursor": cursor}
         if settled is False:
-            if not PROBED:
-                PROBED.append(True)
-                probe_settling(self.conn, query)
             self.unsettled.append({
                 "step": step, "query": query, "ms": round(total_ns / 1e6, 1), "rows": len(rows),
                 "providers": sorted({str(r.get("provider")) for r in rows if isinstance(r, dict)}),
@@ -556,29 +553,6 @@ class Tools:
         settled(answer, step)
         return answer, ToolCall(step, "tilo_invoke_action", (accept_ns + apply_ns) / 1e6, size,
                                 accept_ns / 1e6, apply_ns / 1e6)
-
-
-PROBED: list[bool] = []
-
-
-def probe_settling(conn: Connection, query: str) -> None:
-    """Once per run, after a listing answered unsettled: how the listing for
-    `query`, and for a query that settled before, look over the next seconds
-    without waiting, to tell an app that answers late from one that never
-    does. Printed for whoever reads the run's log."""
-    start = time.monotonic()
-    for delay in (0.0, 0.25, 0.5, 1.0, 2.0, 3.0, 5.0, 8.0):
-        time.sleep(max(0.0, start + delay - time.monotonic()))
-        for asked in (query, "New note"):
-            _, line = conn.round_trip(request({"op": "actions_enumerate", "query": asked,
-                                               "detail": "compact"}))
-            answer = answer_of(line, "probe")
-            rows = answer.get("actions", [])
-            operations = sorted({operation_of(r) for r in rows if notes_row(r)})
-            print(f"agent_task probe t={time.monotonic() - start:5.2f}s query={asked!r} "
-                  f"complete={answer.get('complete')} rows={len(rows)} "
-                  f"revision={answer.get('revision')} notes_operations={operations}",
-                  file=sys.stderr, flush=True)
 
 
 def settled(answer: Any, step: str) -> None:
