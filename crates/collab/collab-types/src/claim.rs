@@ -141,6 +141,67 @@ impl ClaimedAction {
         })
     }
 
+    /// What a continuation message (`tilo.cont/1 <gesture> <path>
+    /// <payload>`, the next keystroke of a gesture) does, read from its
+    /// action's payload: a field edit at the payload's path, or the verb the
+    /// payload names, of the record's own kind and app.
+    #[must_use]
+    pub fn of_continuation(message: &str) -> Option<Self> {
+        let rest = message.strip_prefix(tilo_actions::context::CONTINUATION_PREFIX)?;
+        let mut parts = rest.splitn(3, ' ');
+        let _gesture = parts.next()?;
+        let path = parts.next()?;
+        let payload: serde_json::Value = serde_json::from_str(parts.next()?).ok()?;
+        // An action that is not a record's operation: the message's path
+        // says where it edits, or it edits the whole record.
+        let Some(action) = payload
+            .get("op")
+            .and_then(|operation| operation.get("action"))
+            .and_then(serde_json::Value::as_str)
+        else {
+            return Some(Self::Edit {
+                kind: String::new(),
+                path: if path == "-" {
+                    Vec::new()
+                } else {
+                    path.split('/')
+                        .map(|key| PathStep::Field(key.to_owned()))
+                        .collect()
+                },
+            });
+        };
+        let operation = payload.get("op")?;
+        if action != "field-edit" {
+            return Some(Self::Verb {
+                action: ActionKey::new("", "", action),
+                item: None,
+            });
+        }
+        let path = operation
+            .get("args")?
+            .get("path")?
+            .as_array()?
+            .iter()
+            .map(|step| {
+                let (kind, value) = step.as_object()?.iter().next()?;
+                Some(match (kind.as_str(), value) {
+                    ("field", serde_json::Value::String(key)) => PathStep::Field(key.clone()),
+                    ("item", serde_json::Value::String(id)) => PathStep::Item(id.clone()),
+                    ("key", serde_json::Value::String(key)) => PathStep::Key(key.clone()),
+                    ("cell", cell) => PathStep::Cell(
+                        cell.get("row")?.as_str()?.to_owned(),
+                        cell.get("column")?.as_str()?.to_owned(),
+                    ),
+                    _ => return None,
+                })
+            })
+            .collect::<Option<Vec<_>>>()?;
+        Some(Self::Edit {
+            kind: String::new(),
+            path,
+        })
+    }
+
     /// An edit of the whole record of kind `kind`; an empty kind is the
     /// record's own.
     #[must_use]
@@ -177,6 +238,9 @@ impl ChangeClaim {
         let action = match FrameworkChange::from_change_message(message) {
             Some(FrameworkChange::Native) => ClaimedAction::whole_record_edit(String::new()),
             Some(change) => ClaimedAction::Framework(change),
+            None if message.starts_with(tilo_actions::context::CONTINUATION_PREFIX) => {
+                ClaimedAction::of_continuation(message).ok_or(ClaimError::Unnamed)?
+            }
             None => ClaimedAction::of(
                 &ActionContext::from_change_message(message).ok_or(ClaimError::Unnamed)?,
             )?,
@@ -592,5 +656,49 @@ mod tests {
         let unnamed = crate::op::DocumentMutation::Incremental(raw.save_after(&[]));
         let key = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
         let _ = crate::crypto::sign_op(&mut op_of(&unnamed), &key);
+    }
+
+    /// A continuation claims what its payload does: the field edit at its
+    /// path, or the verb it names, of the record's own app and kind.
+    #[test]
+    fn a_continuation_claims_from_its_payload() {
+        let edit = r#"tilo.cont/1 0123456789abcdef0123456789abcdef rows/r1/title {"op":{"action":"field-edit","args":{"op":"splice","path":[{"field":"rows"},{"item":"r1"},{"field":"title"}]}},"at":5}"#;
+        assert_eq!(
+            ChangeClaim::of_change([1; 32], Some(edit), Vec::new())
+                .unwrap()
+                .action,
+            ClaimedAction::Edit {
+                kind: String::new(),
+                path: vec![
+                    PathStep::Field("rows".into()),
+                    PathStep::Item("r1".into()),
+                    PathStep::Field("title".into()),
+                ],
+            }
+        );
+        let verb = r#"tilo.cont/1 0123456789abcdef0123456789abcdef - {"op":{"action":"type-text","args":{}},"at":5}"#;
+        assert_eq!(
+            ChangeClaim::of_change([1; 32], Some(verb), Vec::new())
+                .unwrap()
+                .action,
+            ClaimedAction::Verb {
+                action: ActionKey::new("", "", "type-text"),
+                item: None,
+            }
+        );
+        assert_eq!(
+            ChangeClaim::of_change([1; 32], Some("tilo.cont/1 g - not json"), Vec::new()),
+            Err(ClaimError::Unnamed)
+        );
+        // An action of no record: where the message says it edits.
+        assert_eq!(
+            ChangeClaim::of_change([1; 32], Some(r#"tilo.cont/1 g body "a""#), Vec::new())
+                .unwrap()
+                .action,
+            ClaimedAction::Edit {
+                kind: String::new(),
+                path: vec![PathStep::Field("body".into())],
+            }
+        );
     }
 }
