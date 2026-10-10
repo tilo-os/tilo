@@ -775,11 +775,20 @@ impl Store {
     /// the package id the desktop vouched for; the caller of the portal is
     /// recorded as `sandbox:<app>` and may be revoked like any other.
     ///
+    /// `legacy` is the secret an earlier portal store kept for this app, if
+    /// the caller found one. It is adopted when the vault has none yet, so
+    /// data an app sealed under it stays readable; once the vault holds a
+    /// secret, `legacy` is ignored.
+    ///
     /// # Errors
     ///
     /// [`StoreError::Revoked`] for a revoked app, [`StoreError::Invalid`]
     /// for a malformed package id.
-    pub fn sandbox_secret(&self, app: &str) -> Result<Zeroizing<[u8; SANDBOX_SECRET_LEN]>> {
+    pub fn sandbox_secret(
+        &self,
+        app: &str,
+        legacy: Option<&[u8]>,
+    ) -> Result<Zeroizing<[u8; SANDBOX_SECRET_LEN]>> {
         let id = AppId::sandbox(app).ok_or(StoreError::Invalid("application id"))?;
         if app.is_empty() || app.len() > 255 || app.contains('/') {
             return Err(StoreError::Invalid("application id"));
@@ -793,8 +802,11 @@ impl Store {
                 out.copy_from_slice(existing.expose());
                 return Ok(out);
             }
-            tilo_seal::fill_random(out.as_mut())
-                .map_err(|error| StoreError::Io(error.to_string()))?;
+            match legacy.filter(|bytes| bytes.len() == SANDBOX_SECRET_LEN) {
+                Some(bytes) => out.copy_from_slice(bytes),
+                None => tilo_seal::fill_random(out.as_mut())
+                    .map_err(|error| StoreError::Io(error.to_string()))?,
+            }
             open.vault
                 .sandbox_secrets
                 .insert(app.to_owned(), SecretBytes::new(out.to_vec()));

@@ -457,27 +457,41 @@ fn sandbox_master_secrets_are_stable_separate_and_revocable() {
     let dir = tempfile::tempdir().unwrap();
     let keys = Switch::new(7);
     let store = store_at(dir.path(), &keys);
-    let one = store.sandbox_secret("so.tilo.notes").unwrap();
+    let one = store.sandbox_secret("so.tilo.notes", None).unwrap();
     assert_eq!(
         *one,
         *store_at(dir.path(), &keys)
-            .sandbox_secret("so.tilo.notes")
+            .sandbox_secret("so.tilo.notes", None)
             .unwrap()
     );
-    assert_ne!(*one, *store.sandbox_secret("so.tilo.chat").unwrap());
-    assert!(store.sandbox_secret("").is_err());
-    assert!(store.sandbox_secret("a/b").is_err());
+    assert_ne!(*one, *store.sandbox_secret("so.tilo.chat", None).unwrap());
+    assert!(store.sandbox_secret("", None).is_err());
+    assert!(store.sandbox_secret("a/b", None).is_err());
+
+    // A secret an earlier portal store kept is adopted once, then ignored.
+    assert_eq!(
+        *store
+            .sandbox_secret("so.tilo.adopt", Some(&[9; 32]))
+            .unwrap(),
+        [9; 32]
+    );
+    assert_eq!(
+        *store
+            .sandbox_secret("so.tilo.adopt", Some(&[1; 32]))
+            .unwrap(),
+        [9; 32]
+    );
 
     let id = AppId::sandbox("so.tilo.notes").unwrap();
     assert!(store.apps().unwrap().iter().any(|row| row.id == id));
     store.set_access(&id, Access::Revoked).unwrap();
     assert!(matches!(
-        store.sandbox_secret("so.tilo.notes"),
+        store.sandbox_secret("so.tilo.notes", None),
         Err(StoreError::Revoked)
     ));
     // Forgetting drops the secret: the next one is a different secret.
     store.forget_app(&id).unwrap();
-    assert_ne!(*one, *store.sandbox_secret("so.tilo.notes").unwrap());
+    assert_ne!(*one, *store.sandbox_secret("so.tilo.notes", None).unwrap());
 }
 
 #[test]

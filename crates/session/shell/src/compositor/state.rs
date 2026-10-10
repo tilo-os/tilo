@@ -5620,7 +5620,8 @@ impl State {
 
     pub fn is_transient_surface(&self, id: SurfaceId) -> bool {
         self.system_modals.contains(&id)
-            || self.popups
+            || self
+                .popups
                 .iter()
                 .any(|popup| surface_id(popup.surface.wl_surface()) == id)
             || self
@@ -5939,11 +5940,7 @@ impl State {
         if implicit && (was_sheet || self.system_modals.contains(&id)) {
             return;
         }
-        let parent = parent.or_else(|| {
-            implicit
-                .then(|| self.system_prompt_host(id))
-                .flatten()
-        });
+        let parent = parent.or_else(|| implicit.then(|| self.system_prompt_host(id)).flatten());
         if implicit && parent.is_none() {
             self.show_as_system_modal(surface);
             return;

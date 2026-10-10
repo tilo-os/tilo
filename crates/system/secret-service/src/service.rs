@@ -955,14 +955,19 @@ impl ManagementIface {
 
     /// The master secret of the sandboxed app `package`, for the portal
     /// host to hand to that app.
+    ///
+    /// `legacy` is the secret the portal's earlier store kept for the app,
+    /// or empty; it is adopted only when the vault has none yet.
     async fn sandbox_secret(
         &self,
         #[zbus(header)] header: Header<'_>,
         package: String,
+        legacy: Vec<u8>,
     ) -> Result<Vec<u8>> {
         self.core
             .manager(&header, &self.core.managers.portal)
             .await?;
-        Ok(self.core.store.sandbox_secret(&package)?.to_vec())
+        let legacy = (!legacy.is_empty()).then_some(legacy.as_slice());
+        Ok(self.core.store.sandbox_secret(&package, legacy)?.to_vec())
     }
 }

@@ -1232,7 +1232,7 @@ pub async fn serve_with_inhibit_and_clipboard(
     let inhibit = InhibitBackend::with_lifecycle(ctx.clone(), inhibit_registry, lifecycle.clone());
     let inhibit_monitors = inhibit.monitor_handle();
     input_capture.spawn_signal_emitter();
-    let secret = SecretBackend::new(ctx.clone());
+    let secret = SecretBackend::new(ctx.clone(), connection.clone());
     let usb = UsbBackend::with_lifecycle(ctx.clone(), lifecycle.clone());
 
     connection.object_server().at(OBJECT_PATH, fc).await?;
