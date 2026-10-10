@@ -2666,16 +2666,33 @@ fn genesis(
                 .map_err(|error| RecordOpenError::Initialization(error.to_string()))?;
         }
     }
-    if !init_scoped(
-        &mut made,
-        &checkout.id,
-        &checkout.kind,
-        workspace,
-        Some(workspace),
-    ) {
+    // Stamped, not committed: the identity is part of the one genesis change.
+    let stamped = if checkout.id.is_package_primary() {
+        init_scoped(
+            &mut made,
+            &checkout.id,
+            &checkout.kind,
+            workspace,
+            Some(workspace),
+        )
+    } else {
+        RecordId::parse(checkout.id.as_str()).is_some()
+            && checkout.kind.is_valid()
+            && stamp_scoped(
+                &mut made,
+                &checkout.id,
+                &checkout.kind,
+                workspace,
+                Some(workspace),
+            )
+    };
+    if !stamped {
         return Err(RecordOpenError::IdentityMismatch);
     }
     initialize(&mut made).map_err(RecordOpenError::Initialization)?;
+    // The app's surface is the same wherever its package is installed: named
+    // in the genesis, not in a change of this device's afterwards.
+    let _ = stamp_surface(&mut made);
     // Every member must derive the same genesis, so the initializer may not
     // author it under an actor of its own.
     if made.get_actor() != &actor {
@@ -3830,6 +3847,53 @@ mod identity_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Two devices creating the same record make byte for byte the same
+    /// single genesis change, under the record's own actor at time zero,
+    /// and converge on one record.
+    #[test]
+    fn two_creators_of_one_record_make_one_identical_genesis() {
+        let kind = RecordKind::new("test.genesis-note");
+        // The app's surface is named in the record's identity.
+        crate::app_surface::register_committed("so.tilo.test-genesis", Some(b"surface"));
+        crate::app_surface::register_kind(kind.as_str(), "so.tilo.test-genesis");
+        let checkout = RecordCheckout::new(RecordId::for_tab(3), kind);
+        let create = |actor: &[u8]| {
+            let mut doc = AutoCommit::new().with_actor(automerge::ActorId::from(actor));
+            genesis(&mut doc, &checkout, "room", |doc| {
+                doc.put(automerge::ROOT, "title", "Untitled")
+                    .map(drop)
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+            // What a store commits after the seed adds nothing to it.
+            commit_genesis(&mut doc);
+            doc
+        };
+        let mut one = create(b"device-one");
+        let mut two = create(b"device-two");
+        let changes = one.get_changes(&[]);
+        assert_eq!(changes.len(), 1, "genesis is one change");
+        let genesis = &changes[0];
+        assert_eq!(
+            genesis.actor_id(),
+            &genesis_actor_of(&checkout.id, &checkout.kind, "room")
+        );
+        assert_eq!(genesis.timestamp(), 0);
+        assert_eq!(
+            one.get_changes(&[])
+                .iter()
+                .map(|change| change.hash())
+                .collect::<Vec<_>>(),
+            two.get_changes(&[])
+                .iter()
+                .map(|change| change.hash())
+                .collect::<Vec<_>>(),
+            "both devices make the identical genesis"
+        );
+        one.merge(&mut two).unwrap();
+        assert_eq!(one.get_changes(&[]).len(), 1, "they converge on one record");
+    }
 
     /// A Writer record stamped `document` before the kind was renamed opens
     /// as the rich-text kind, and opening it rewrites nothing.
