@@ -322,6 +322,51 @@ pub fn read_key<T: Model>(doc: &Doc, obj: &ObjId, key: &str) -> Result<T, ModelE
     .map_err(|error| error.at(key))
 }
 
+/// What a key of a map holds: its current value and the id of the op that
+/// wrote it, as [`ReadDoc::get`] returns them.
+pub type MapSlot = Option<(Value<'static>, ObjId)>;
+
+/// What each of `keys` holds in the map `obj`, read in one ordered walk of
+/// the map instead of one lookup per key: a lookup opens the map anew each
+/// time, and a struct of `N` fields read field by field opens it `N` times.
+/// The walk stops once every key is found. Each slot is exactly what
+/// [`ReadDoc::get`] answers for its key (the winning value of a conflict, a
+/// counter with its increments).
+pub fn read_slots<const N: usize>(doc: &Doc, obj: &ObjId, keys: [&str; N]) -> [MapSlot; N] {
+    let mut slots = [const { None }; N];
+    let mut missing = N;
+    if missing == 0 {
+        return slots;
+    }
+    for item in doc.map_range(obj, ..) {
+        let mut matched = false;
+        for (key, slot) in keys.iter().zip(slots.iter_mut()) {
+            if *key == item.key {
+                *slot = Some((item.value.clone().into_value(), item.id()));
+                missing = missing.saturating_sub(1);
+                matched = true;
+            }
+        }
+        if matched && missing == 0 {
+            break;
+        }
+    }
+    slots
+}
+
+/// `T` read from a slot [`read_slots`] found under `key`, or
+/// [`Model::missing`]: what [`read_key`] answers for that key.
+///
+/// # Errors
+/// Returns [`ModelError`] located at `key`.
+pub fn load_slot<T: Model>(doc: &Doc, slot: MapSlot, key: &str) -> Result<T, ModelError> {
+    match slot {
+        Some((value, id)) => T::load(doc, &value, &id),
+        None => T::missing(),
+    }
+    .map_err(|error| error.at(key))
+}
+
 /// Bring `target`, read earlier from `key` of the map `obj`, up to date
 /// after the changes in `delta`: untouched keeps it, a written slot reads it
 /// again, a change inside the object it holds refreshes it in place.
@@ -794,8 +839,12 @@ impl<T: Model> Model for BTreeMap<String, T> {
         if !matches!(value, Value::Object(ObjType::Map)) {
             return Err(ModelError::shape("a map"));
         }
-        doc.keys(id)
-            .map(|key| read_key(doc, id, &key).map(|value| (key, value)))
+        // One walk of the map rather than a lookup per key (TIL-758).
+        doc.map_range(id, ..)
+            .map(|item| {
+                let slot = Some((item.value.clone().into_value(), item.id()));
+                load_slot(doc, slot, &item.key).map(|value| (item.key.into_owned(), value))
+            })
             .collect()
     }
     fn missing() -> Result<Self, ModelError> {

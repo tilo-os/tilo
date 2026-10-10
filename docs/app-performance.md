@@ -219,6 +219,36 @@ the real save-status frame to publish while preserving the typed draft. The
 clock override is test-support only, thread-local, and restored on unwind;
 production save sampling and clock readings keep their existing behaviour.
 
+### Opening a long list (TIL-758)
+
+`framework-scaling -- 5000,50000 open` reopens the checklist over a record
+already holding N tasks, five times, to its first laid-out frame. Each size
+also prints a `FRAMEWORK-OPEN` line, which the scheduled lane's render job
+records as `render.framework_open.{ms,allocations,heap_per_item}.<size>`
+(`tools/perf/adapters.py framework-open`). Apple M5 Max, macOS 27, release,
+three interleaved runs of each build, p50 of five opens:
+
+| Tasks | Open before | Open after | Heap held before | Heap held after |
+|---:|---:|---:|---:|---:|
+| 5,000 | 155–156 ms | 120–122 ms | 28.5 MB (5,472 B/task) | 24.7 MB (4,698 B/task) |
+| 50,000 | 1,820–1,836 ms | 1,163–1,174 ms | 638 MB (12,739 B/task) | 224 MB (4,454 B/task) |
+
+Two storage costs were behind most of it. Appending an item gave it an order
+key halfway between the last key and the end, so keys grew by a character
+every six appends: the 50,000th task's key was 8,334 characters, 208 MB of
+order keys in all, which the record load re-encoded and hashed, the read
+copied and the sort compared. Keys toward an open end now step instead
+(`tilo_resource::order::between`): 50,000 appends need at most seven
+characters, and a key minted the old way keeps its length. And the collection
+read looked up every key of every item separately (about six Automerge
+lookups per item); it now walks each map once (`tilo_resource::read_slots`).
+
+What remains at 50,000, from `sample`: `AutoCommit::load` 40 % (Automerge
+rebuilds and hashes every change to learn the change graph; the titles alone
+are 2.75 million text ops), the collection read 21 % (one object lookup each
+for the entry, the item and its title text), layout and the bound-control
+refresh 18 %, and closing the previous window 10 %.
+
 ## Verified shared-list CPU workload
 
 The `ui-perf perf_scenario --count 1200 --json` list case now checks the real

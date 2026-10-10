@@ -25,6 +25,16 @@
 //!
 //! With `TILO_PROFILE_RESOURCES=1` each move's resource work is printed to
 //! stderr as `input_carry` stages (see `docs/app-performance.md`).
+//!
+//! A second argument `open` measures only the open, for profiling it. Each
+//! size's open also prints a `FRAMEWORK-OPEN` line, which
+//! `tools/perf/adapters.py framework-open` turns into the
+//! `render.framework_open.*` KPIs of the scheduled performance lane:
+//!
+//! ```text
+//! cargo run --release -p tilo-app --features test-support \
+//!     --example framework-scaling -- 5000,50000 open
+//! ```
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
@@ -281,10 +291,19 @@ fn per_frame(tasks: u32) -> Result<[(f64, f64); 2], Box<dyn std::error::Error>> 
     Ok([typing, scrolling])
 }
 
+/// What opening a window over `tasks` tasks cost.
+struct Open {
+    /// Each open to its first laid-out frame, in ms.
+    samples: Vec<f64>,
+    /// The allocations the last open made.
+    allocations: usize,
+    /// The heap held with only that window open.
+    held: usize,
+}
+
 /// Opening the window over a record already holding `tasks` tasks, to its
-/// first laid-out frame: p50 in ms, the allocations that took, and the heap
-/// held with only that window open.
-fn open(tasks: u32) -> Result<(f64, usize, usize), Box<dyn std::error::Error>> {
+/// first laid-out frame, five times.
+fn open(tasks: u32) -> Result<Open, Box<dyn std::error::Error>> {
     TASKS.store(tasks, Ordering::Relaxed);
     let mut app = checklist(tasks)?;
     let mut samples = Vec::new();
@@ -300,7 +319,11 @@ fn open(tasks: u32) -> Result<(f64, usize, usize), Box<dyn std::error::Error>> {
         samples.push(millis(start));
         held = HELD.load(Ordering::Relaxed);
     }
-    Ok((median(samples), allocations, held))
+    Ok(Open {
+        samples,
+        allocations,
+        held,
+    })
 }
 
 /// p50 of one pointer move over the live window, and how many publications
@@ -427,21 +450,28 @@ fn keystrokes(app: &mut tilo_app::App) -> Result<Keystrokes, String> {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let open_only = std::env::args().nth(2).is_some_and(|mode| mode == "open");
     let sizes = std::env::args()
         .nth(1)
         .unwrap_or_else(|| "10,250,1000".into())
         .split(',')
         .map(|size| size.trim().parse::<u32>())
         .collect::<Result<Vec<_>, _>>()?;
-    println!(
-        "tasks  resources  publication p50  pointer move p50  publications in {MOVES} moves  \
-         typing p50: sync / frame  scrolling p50: sync / frame  keystroke→frame p50  \
-         publications per keystroke  publishing/keystroke p50"
-    );
+    if !open_only {
+        println!(
+            "tasks  resources  publication p50  pointer move p50  publications in {MOVES} moves  \
+             typing p50: sync / frame  scrolling p50: sync / frame  keystroke→frame p50  \
+             publications per keystroke  publishing/keystroke p50"
+        );
+    }
     // The heap a window over an empty list holds; the rest is per task.
-    let (_, _, empty) = open(0)?;
+    let empty = open(0)?.held;
     let mut opens = Vec::new();
     for &tasks in &sizes {
+        if open_only {
+            opens.push((tasks, open(tasks)?));
+            continue;
+        }
         let (publish_ms, published) = publication(tasks)?;
         let [(typing_sync, typing), (scrolling_sync, scrolling)] = per_frame(tasks)?;
         TASKS.store(tasks, Ordering::Relaxed);
@@ -457,12 +487,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         opens.push((tasks, open(tasks)?));
     }
     println!("\ntasks  open to first frame p50  allocations  heap held  heap per task");
-    for (tasks, (open_ms, allocations, held)) in opens {
-        let per_task = held
+    let mut lines = Vec::new();
+    for (tasks, open) in opens {
+        let per_task = open
+            .held
             .saturating_sub(empty)
             .checked_div(usize::try_from(tasks)?)
             .unwrap_or_default();
+        let Open {
+            samples,
+            allocations,
+            held,
+        } = open;
+        let samples_ms = samples
+            .iter()
+            .map(|sample| format!("{sample:.3}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let open_ms = median(samples);
         println!("{tasks:>5}  {open_ms:>20.3} ms  {allocations:>11}  {held:>9}  {per_task:>11} B");
+        // For tools/perf/adapters.py framework-open.
+        lines.push(format!(
+            "FRAMEWORK-OPEN tasks={tasks} samples_ms={samples_ms} allocations={allocations} \
+             heap_per_task={per_task}"
+        ));
+    }
+    println!();
+    for line in lines {
+        println!("{line}");
     }
     Ok(())
 }
