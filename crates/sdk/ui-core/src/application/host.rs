@@ -12,7 +12,7 @@ use std::cell::RefCell;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 
 const PERSONAL_WORKSPACE: &str = "personal";
 /// Names the directory the launcher keeps the person's own records of an
@@ -214,7 +214,9 @@ impl NativeProcessEnvironment {
             let person = author.clone();
             let current_source = source.clone();
             let deadline_unix_ms = std::sync::Arc::new(AtomicU64::new(0));
+            let authority_status = std::sync::Arc::new(AtomicU8::new(0));
             let initial = action_authority_context(&source, &room, &app, &person);
+            trace_action_authority_status(&authority_status, initial.as_ref().map(|_| ()));
             if let Ok(initial) = initial {
                 deadline_unix_ms.store(initial.deadline_unix_ms, Ordering::Release);
             }
@@ -222,17 +224,20 @@ impl NativeProcessEnvironment {
             // its first observation fails. Retain that exact sampler so the
             // app fails closed now and can observe a later valid replacement.
             let current_deadline = std::sync::Arc::clone(&deadline_unix_ms);
+            let current_status = std::sync::Arc::clone(&authority_status);
             permissions = permissions.with_live_action_authority(
                 app.clone(),
                 std::sync::Arc::new(move || {
                     match action_authority_context(&current_source, &room, &app, &person) {
                         Ok(current) => {
+                            trace_action_authority_status(&current_status, Ok(()));
                             current_deadline.store(current.deadline_unix_ms, Ordering::Release);
                             Ok(current.permissions)
                         }
                         Err(error) => {
+                            trace_action_authority_status(&current_status, Err(&error));
                             current_deadline.store(0, Ordering::Release);
-                            Err(error)
+                            Err(error.to_string())
                         }
                     }
                 }),
@@ -427,16 +432,63 @@ struct CurrentActionAuthority {
     deadline_unix_ms: u64,
 }
 
+#[derive(Clone, Copy, Debug)]
+enum ActionAuthorityError {
+    SourceUnavailable,
+    SourceMissing,
+    ProjectionInvalid,
+    BindingMismatch,
+    TimeUnavailable,
+    NotCurrent,
+}
+
+impl ActionAuthorityError {
+    fn diagnostic(self) -> (&'static str, u8) {
+        match self {
+            Self::SourceUnavailable => ("source_unavailable", 2),
+            Self::SourceMissing => ("source_missing", 3),
+            Self::ProjectionInvalid => ("projection_invalid", 4),
+            Self::BindingMismatch => ("binding_mismatch", 5),
+            Self::TimeUnavailable => ("time_unavailable", 6),
+            Self::NotCurrent => ("not_current", 7),
+        }
+    }
+}
+
+impl std::fmt::Display for ActionAuthorityError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let message = match self {
+            Self::SourceUnavailable | Self::SourceMissing => "host action policy is unavailable",
+            Self::ProjectionInvalid => "host action policy is invalid",
+            Self::BindingMismatch => "host action policy binding mismatch",
+            Self::TimeUnavailable => "host action policy time is unavailable",
+            Self::NotCurrent => "host action policy is not current",
+        };
+        formatter.write_str(message)
+    }
+}
+
+fn trace_action_authority_status(previous: &AtomicU8, status: Result<(), &ActionAuthorityError>) {
+    let (status, value) = status.map_or_else(|error| error.diagnostic(), |()| ("current", 1));
+    if previous.swap(value, Ordering::AcqRel) != value {
+        tracing::debug!(
+            target: "tilo_agent_delivery",
+            status,
+            "native-action-authority"
+        );
+    }
+}
+
 fn action_authority_context(
     source: &tilo_host::action_authority::AuthoritySource,
     room: &str,
     app: &str,
     person: &UserId,
-) -> Result<CurrentActionAuthority, String> {
+) -> Result<CurrentActionAuthority, ActionAuthorityError> {
     let projection = read_action_authority_projection(source, room, app, person)?;
-    let now_ms = crate::time::try_unix_now_ms().ok_or("host action policy time is unavailable")?;
+    let now_ms = crate::time::try_unix_now_ms().ok_or(ActionAuthorityError::TimeUnavailable)?;
     if !projection.is_current_at(now_ms) {
-        return Err("host action policy is not current".into());
+        return Err(ActionAuthorityError::NotCurrent);
     }
     let now_secs = now_ms / 1000;
     let role = tilo_desktop_model::Workspace::role_for_membership_at(
@@ -475,14 +527,19 @@ fn read_action_authority_projection(
     room: &str,
     app: &str,
     person: &UserId,
-) -> Result<collab_types::caps::action_authority::AppActionAuthorityProjection, String> {
+) -> Result<collab_types::caps::action_authority::AppActionAuthorityProjection, ActionAuthorityError>
+{
     use collab_types::caps::action_authority::AppActionAuthorityProjection;
-    let bytes = source()?.ok_or("host action policy is unavailable")?;
+    let bytes = source()
+        .map_err(|_| ActionAuthorityError::SourceUnavailable)?
+        .ok_or(ActionAuthorityError::SourceMissing)?;
     let projection: AppActionAuthorityProjection =
-        serde_json::from_slice(&bytes).map_err(|_| "host action policy is invalid")?;
-    projection.validate().map_err(str::to_owned)?;
+        serde_json::from_slice(&bytes).map_err(|_| ActionAuthorityError::ProjectionInvalid)?;
+    projection
+        .validate()
+        .map_err(|_| ActionAuthorityError::ProjectionInvalid)?;
     if !projection.matches(room, app, &person.0) {
-        return Err("host action policy binding mismatch".into());
+        return Err(ActionAuthorityError::BindingMismatch);
     }
     Ok(projection)
 }
@@ -1266,6 +1323,83 @@ mod native_process_tests {
             crate::permissions::CapDecision::Allow
         );
         assert_eq!(permissions.directory_witness().unwrap(), allowed);
+    }
+
+    #[test]
+    fn native_host_file_authority_recovers_read_without_restoring_write() {
+        use crate::permissions::{
+            CapDecision, CapOverride, Effect, ResourceRef, Scope, Subject, Verb,
+        };
+        use collab_types::caps::action_authority::{
+            AppActionAuthorityProjection, MAX_PROJECTION_BYTES,
+        };
+
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("current.json");
+        let room = "3f2b1c00-0000-4000-8000-000000000001";
+        let app = "so.tilo.chat";
+        let author = UserId("person-a".into());
+        let now_ms = crate::time::try_unix_now_ms().unwrap();
+        let restriction = CapOverride::new(
+            Subject::person(&author.0),
+            Scope::App(app.into()),
+            Effect::Restrict,
+            Verb::Read,
+        );
+        let mut projection = AppActionAuthorityProjection {
+            schema_version: 1,
+            room: room.into(),
+            app_id: app.into(),
+            person: author.0.clone(),
+            owner: Some(author.0.clone()),
+            capabilities: vec![restriction],
+            issued_at_unix_ms: now_ms - 4_000,
+            valid_until_unix_ms: now_ms - 1_000,
+        };
+        projection.validate().unwrap();
+        tilo_files::native::atomic::write_private(&path, &serde_json::to_vec(&projection).unwrap())
+            .unwrap();
+        let resolved = NativeProcessEnvironment {
+            workspace_id: Some(room.into()),
+            participation: Some("author".into()),
+            action_authority: Some(tilo_host::action_authority::source(
+                path.clone(),
+                MAX_PROJECTION_BYTES,
+            )),
+            ..environment(temp.path())
+        }
+        .resolve(app, &author)
+        .unwrap();
+        let permissions = resolved.permissions;
+        let open = ResourceRef::Action {
+            app: app.into(),
+            resource: "chat.person:tide".into(),
+            action: "open-agent-conversation".into(),
+        };
+        let message = ResourceRef::Action {
+            app: app.into(),
+            resource: "chat.person:tide".into(),
+            action: "message".into(),
+        };
+        for (resource, verb) in [(&open, Verb::Read), (&message, Verb::Write)] {
+            assert_ne!(permissions.decide(resource, verb), CapDecision::Allow);
+        }
+        assert!(permissions.directory_witness().is_err());
+
+        projection.issued_at_unix_ms = now_ms - 10;
+        projection.valid_until_unix_ms = now_ms + 2_900;
+        tilo_files::native::atomic::write_private(&path, &serde_json::to_vec(&projection).unwrap())
+            .unwrap();
+        assert_eq!(permissions.decide(&open, Verb::Read), CapDecision::Allow);
+        assert_ne!(
+            permissions.decide(&message, Verb::Write),
+            CapDecision::Allow
+        );
+        assert!(permissions.directory_witness().is_ok());
+        assert_eq!(
+            permissions.action_authority_deadline_unix_ms(),
+            Some(projection.valid_until_unix_ms)
+        );
     }
 
     #[test]

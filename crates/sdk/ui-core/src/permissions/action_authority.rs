@@ -1,15 +1,14 @@
 //! Host action authority is separate from a record's participation.
 use super::{Actor, PermissionContext, Principal, ResourceRef, UserId};
 use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
-#[cfg(any(feature = "native", test))]
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 
 #[derive(Clone)]
 pub(super) struct ActionAuthoritySampler {
     pub(super) app_id: String,
     sample: Arc<dyn Fn() -> Result<PermissionContext, String> + Send + Sync>,
     deadline_unix_ms: Arc<AtomicU64>,
+    binding_status: Arc<AtomicU8>,
     watches_native_projection: bool,
 }
 
@@ -25,6 +24,7 @@ impl PartialEq for ActionAuthoritySampler {
         self.app_id == other.app_id
             && Arc::ptr_eq(&self.sample, &other.sample)
             && Arc::ptr_eq(&self.deadline_unix_ms, &other.deadline_unix_ms)
+            && Arc::ptr_eq(&self.binding_status, &other.binding_status)
             && self.watches_native_projection == other.watches_native_projection
     }
 }
@@ -69,8 +69,16 @@ impl ActionAuthoritySampler {
                 .iter()
                 .any(|principal| !matches!(principal, Principal::Person(_) | Principal::Room(_)))
         {
+            if self.binding_status.swap(2, Ordering::AcqRel) != 2 {
+                tracing::debug!(
+                    target: "tilo_agent_delivery",
+                    status = "sample_binding_mismatch",
+                    "native-action-authority"
+                );
+            }
             return Err("host action authority binding mismatch".into());
         }
+        self.binding_status.store(1, Ordering::Release);
         Ok(current)
     }
 
@@ -97,6 +105,7 @@ impl PermissionContext {
             app_id,
             sample,
             deadline_unix_ms: Arc::new(AtomicU64::new(0)),
+            binding_status: Arc::new(AtomicU8::new(0)),
             watches_native_projection: false,
         });
         self
