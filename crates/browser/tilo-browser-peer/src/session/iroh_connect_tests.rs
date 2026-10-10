@@ -5,7 +5,9 @@ use ed25519_dalek::SigningKey;
 use iroh::endpoint::{Endpoint, presets::Minimal};
 use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
-fn cert(root: &SigningKey, device: &SigningKey) -> DeviceCert {
+type TestResult<T> = Result<T, Box<dyn std::error::Error>>;
+
+fn cert(root: &SigningKey, device: &SigningKey) -> TestResult<DeviceCert> {
     let mut cert = DeviceCert {
         user_public_key: root.verifying_key().to_bytes(),
         device_public_key: device.verifying_key().to_bytes(),
@@ -15,22 +17,20 @@ fn cert(root: &SigningKey, device: &SigningKey) -> DeviceCert {
         expires_at_ns: None,
         signature: [0; 64],
     };
-    sign_device_cert(&mut cert, root).unwrap();
-    cert
+    sign_device_cert(&mut cert, root)?;
+    Ok(cert)
 }
 
-async fn endpoint(alpn: &[u8]) -> Endpoint {
-    Endpoint::builder(Minimal)
+async fn endpoint(alpn: &[u8]) -> TestResult<Endpoint> {
+    Ok(Endpoint::builder(Minimal)
         .relay_mode(iroh::RelayMode::Disabled)
         .alpns(vec![alpn.to_vec()])
-        .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
-        .unwrap()
+        .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))?
         .bind()
-        .await
-        .unwrap()
+        .await?)
 }
 
-async fn dial_error(server: &Endpoint) -> LinkError {
+async fn dial_error(server: &Endpoint) -> TestResult<LinkError> {
     let root = SigningKey::from_bytes(&[1; 32]);
     let device = SigningKey::from_bytes(&[2; 32]);
     let host = SigningKey::from_bytes(&[3; 32]);
@@ -39,22 +39,22 @@ async fn dial_error(server: &Endpoint) -> LinkError {
             addr: server.addr(),
             relay_url: None,
         },
-        cert: cert(&root, &device),
-        host_cert: cert(&root, &host),
+        cert: cert(&root, &device)?,
+        host_cert: cert(&root, &host)?,
         revocations: RevocationList::new(),
     };
     match tilo_test_env::within("native browser-peer dial", connect(&config, &device)).await {
-        Err(error) => error,
+        Err(error) => Ok(error),
         Ok(link) => {
             link.close().await;
-            panic!("a rejecting endpoint must not authenticate a session");
+            Err("a rejecting endpoint must not authenticate a session".into())
         }
     }
 }
 
 #[tokio::test]
 async fn unsupported_alpn_identifies_tilo_relay_v1() {
-    let server = endpoint(b"dummy-alpn/1").await;
+    let server = endpoint(b"dummy-alpn/1").await.unwrap();
     let accept = async {
         let incoming = server.accept().await.unwrap();
         assert!(
@@ -68,14 +68,14 @@ async fn unsupported_alpn_identifies_tilo_relay_v1() {
     );
     server.close().await;
     assert_eq!(
-        error,
+        error.unwrap(),
         LinkError::Unavailable("host does not speak tilo-relay/1".into()),
     );
 }
 
 #[tokio::test]
 async fn transport_refusal_remains_generic_unavailable() {
-    let server = endpoint(b"tilo-relay/1").await;
+    let server = endpoint(b"tilo-relay/1").await.unwrap();
     let refuse = async {
         server.accept().await.unwrap().refuse();
     };
@@ -84,6 +84,7 @@ async fn transport_refusal_remains_generic_unavailable() {
         dial_error(&server),
     );
     server.close().await;
+    let error = error.unwrap();
     let LinkError::Unavailable(reason) = error else {
         panic!("ordinary transport failures must remain unavailable: {error}");
     };
