@@ -209,7 +209,9 @@ impl TimeStyle {
 }
 
 /// Measurement system.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default, ui::tilo_resource::Model)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default, ui::tilo_resource::Model,
+)]
 pub enum Measurement {
     #[default]
     Metric,

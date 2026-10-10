@@ -25,13 +25,13 @@ use crate::shell::state::Capability;
 #[cfg(target_os = "linux")]
 use crate::shell::state::GRANT_ONCE;
 #[cfg(target_os = "linux")]
-use zbus::names::{InterfaceName, MemberName, OwnedUniqueName};
+use zbus::names::OwnedUniqueName;
 #[cfg(target_os = "linux")]
-use zbus::object_server::{DispatchResult2, Interface, SignalEmitter};
+use zbus::object_server::DispatchResult2;
 #[cfg(target_os = "linux")]
 use zbus::zvariant::OwnedObjectPath;
 #[cfg(target_os = "linux")]
-use zbus::{Connection, ObjectServer, fdo, message::Header, message::Message};
+use zbus::{Connection, message::Header, message::Message};
 
 use std::collections::HashMap;
 #[cfg(any(test, target_os = "linux"))]
@@ -552,65 +552,21 @@ const PRINT_INTROSPECTION: &str = r#"<interface name="org.freedesktop.impl.porta
 "#;
 
 #[cfg(target_os = "linux")]
-#[zbus::export::async_trait::async_trait]
-impl Interface for PrintBackend {
-    fn name() -> InterfaceName<'static> {
-        InterfaceName::from_static_str_unchecked("org.freedesktop.impl.portal.Print")
-    }
+interface_dispatch::method_interface!(
+    PrintBackend,
+    "org.freedesktop.impl.portal.Print",
+    PRINT_INTROSPECTION
+);
 
-    async fn get(
-        &self,
-        _property: &str,
-        _server: &ObjectServer,
-        _connection: &Connection,
-        _header: Option<&Header<'_>>,
-        _emitter: &SignalEmitter<'_>,
-    ) -> Option<fdo::Result<OwnedValue>> {
-        None
-    }
-
-    async fn get_all(
-        &self,
-        _server: &ObjectServer,
-        _connection: &Connection,
-        _header: Option<&Header<'_>>,
-        _emitter: &SignalEmitter<'_>,
-    ) -> fdo::Result<HashMap<String, OwnedValue>> {
-        Ok(HashMap::new())
-    }
-
-    fn set<'call>(
+#[cfg(target_os = "linux")]
+impl PrintBackend {
+    fn dispatch_call<'call>(
         &'call self,
-        _property: &'call str,
-        _value: &'call Value<'_>,
-        _server: &'call ObjectServer,
-        _connection: &'call Connection,
-        _header: Option<&'call Header<'_>>,
-        _emitter: &'call SignalEmitter<'_>,
-    ) -> DispatchResult2<'call> {
-        DispatchResult2::NotFound
-    }
-
-    async fn set_mut(
-        &mut self,
-        _property: &str,
-        _value: &Value<'_>,
-        _server: &ObjectServer,
-        _connection: &Connection,
-        _header: Option<&Header<'_>>,
-        _emitter: &SignalEmitter<'_>,
-    ) -> Option<fdo::Result<()>> {
-        None
-    }
-
-    fn call<'call>(
-        &'call self,
-        _server: &'call ObjectServer,
         connection: &'call Connection,
         message: &'call Message,
-        name: MemberName<'call>,
+        name: &str,
     ) -> DispatchResult2<'call> {
-        match name.as_str() {
+        match name {
             "PreparePrint" => interface_dispatch::dispatch(
                 connection,
                 message,
@@ -627,23 +583,6 @@ impl Interface for PrintBackend {
         }
     }
 
-    fn call_mut<'call>(
-        &'call mut self,
-        _server: &'call ObjectServer,
-        _connection: &'call Connection,
-        _message: &'call Message,
-        _name: MemberName<'call>,
-    ) -> DispatchResult2<'call> {
-        DispatchResult2::NotFound
-    }
-
-    fn introspect_to_writer(&self, writer: &mut dyn std::fmt::Write, level: usize) {
-        interface_dispatch::write_introspection(writer, level, PRINT_INTROSPECTION);
-    }
-}
-
-#[cfg(target_os = "linux")]
-impl PrintBackend {
     /// `PreparePrint` — the print dialog, minus the dialog.
     ///
     /// **This prompts**, even though nothing has been printed yet: the reply
