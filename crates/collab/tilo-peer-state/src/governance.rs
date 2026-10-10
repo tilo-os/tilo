@@ -7,6 +7,29 @@ use web_time::SystemTime;
 
 use crate::state::{GovernedIdentity, RedemptionReceipt, put_member_capability};
 
+/// How many later redemption receipts one governed identity row keeps beside
+/// its first (`GovernedIdentity::admission`).
+///
+/// The row is a single JSON blob rewritten on every redemption, so an
+/// unbounded list makes each later admission, roster read and room sync pay
+/// for the device's whole redemption history. The first receipt is kept for
+/// good: it is the admission evidence membership reads (`has_admission`, the
+/// governed member list). Only the oldest of the later receipts are dropped,
+/// and nothing they prove is lost: [`admit_invited_member`] copies every
+/// receipt it has seen into the per-invite `invitation_receipts_v1` ledger in
+/// the same transaction that drops one, and that ledger is what refuses a
+/// second redemption of the same invitation. See "Retention" in
+/// `docs/architecture/collaboration.md`.
+pub const MAX_RETAINED_IDENTITY_ADMISSIONS: usize = 8;
+
+/// Keep the latest [`MAX_RETAINED_IDENTITY_ADMISSIONS`] receipts, in order.
+fn retain_latest_admissions(admissions: &mut Vec<RedemptionReceipt>) {
+    let excess = admissions
+        .len()
+        .saturating_sub(MAX_RETAINED_IDENTITY_ADMISSIONS);
+    admissions.drain(..excess);
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AdmissionOutcome {
     Applied { changes: Vec<Vec<u8>> },
@@ -63,7 +86,7 @@ pub fn admit_invited_member(
         return Err("invitation room does not match governed document".into());
     }
     let governance = crate::room::governance_of(Some(document));
-    if governance.0.as_deref() != Some(&hex::encode(grant.authority.user_public_key)) {
+    if governance.owner.as_deref() != Some(&hex::encode(grant.authority.user_public_key)) {
         return Err("invitation authority is not the structural owner".into());
     }
     if let Some(delegation) = &grant.delegation {
@@ -73,7 +96,7 @@ pub fn admit_invited_member(
             &tilo_user_identity::RevocationList::new(),
             now_ns,
         )?;
-        let persisted = governance.3.values().any(|bytes| {
+        let persisted = governance.identities.values().any(|bytes| {
             serde_json::from_slice::<GovernedIdentity>(bytes).is_ok_and(|identity| {
                 identity
                     .workspace_delegations
@@ -117,7 +140,7 @@ pub fn admit_invited_member(
         }
     }
     let mut legacy_receipts = Vec::new();
-    for bytes in governance.3.values() {
+    for bytes in governance.identities.values() {
         let identity: GovernedIdentity =
             serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
         for existing in identity.admission.iter().chain(&identity.admissions) {
@@ -138,7 +161,7 @@ pub fn admit_invited_member(
     let cert = redemption.certificate();
     let id = hex::encode(cert.device_public_key);
     let prior = governance
-        .3
+        .identities
         .get(&id)
         .map(|bytes| serde_json::from_slice::<GovernedIdentity>(bytes))
         .transpose()
@@ -201,6 +224,7 @@ pub fn admit_invited_member(
         admission = Some(receipt);
     } else {
         admissions.push(receipt);
+        retain_latest_admissions(&mut admissions);
     }
     let identity = GovernedIdentity {
         device_cert: cert.clone(),
@@ -357,7 +381,7 @@ pub fn set_member_role(
         return Err("owner role cannot be changed through member governance".into());
     }
     let governance = crate::room::governance_of(Some(document));
-    if !governance.3.values().any(|bytes| {
+    if !governance.identities.values().any(|bytes| {
         serde_json::from_slice::<GovernedIdentity>(bytes).is_ok_and(|identity| {
             identity.device_cert.user_public_key == user_public_key && identity.has_admission()
         })
@@ -446,7 +470,7 @@ fn validate_authority(
     if authority_key.verifying_key().to_bytes() != authority.device_public_key {
         return Err("governance writer is not pinned authority".into());
     }
-    if crate::room::governance_of(Some(document)).0.as_deref()
+    if crate::room::governance_of(Some(document)).owner.as_deref()
         != Some(&hex::encode(authority.user_public_key))
     {
         return Err("governance authority is not the structural owner".into());
@@ -603,7 +627,7 @@ mod display_name_tests {
                 nonce: [53; 16],
                 recipient_user_public_key: None,
                 invitee_name: Some("Guest Tester".into()),
-                expires_at_ns: now_ns + 10_000_000_000,
+                expires_at_ns: now_ns.checked_add(10_000_000_000).unwrap(),
                 transport: vec![],
             },
             &authority_key,
@@ -621,7 +645,7 @@ mod display_name_tests {
             &guest_cert,
             [54; 32],
             [55; 32],
-            now_ns + 1_000_000_000,
+            now_ns.checked_add(1_000_000_000).unwrap(),
             now_ns,
         )
         .unwrap();
@@ -646,5 +670,168 @@ mod display_name_tests {
             .expect("admitted guest is a governed member");
         assert_eq!(member.display_name.as_deref(), Some("Gina Guest"));
         assert_eq!(member.role, MemberRole::Editor);
+    }
+}
+
+#[cfg(test)]
+mod retention_tests {
+    use super::*;
+    use crate::join::{
+        InviteGrant, JoinChallenge, MemberRole, VerifiedRedemption, issue_invitation,
+        sign_join_proof, verify_join_proof,
+    };
+    use crate::{NeighbourMsg, StatePeer};
+    use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
+
+    fn device(root: &SigningKey, seed: u8) -> (SigningKey, DeviceCert) {
+        let key = SigningKey::from_bytes(&[seed; 32]);
+        let mut cert = DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: key.verifying_key().to_bytes(),
+            device_label: format!("guest-{seed}"),
+            capabilities: DeviceCapabilities::member(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        sign_device_cert(&mut cert, root).unwrap();
+        (key, cert)
+    }
+
+    /// Invitation `nonce` from the room authority, redeemed by `device`.
+    fn redemption(
+        peer: &StatePeer,
+        authority: &SigningKey,
+        nonce: u8,
+        (key, cert): &(SigningKey, DeviceCert),
+        now_ns: u64,
+    ) -> VerifiedRedemption {
+        let signed = issue_invitation(
+            InviteGrant {
+                workspace_id: 7,
+                room: peer.room().into(),
+                authority: peer.authority().clone(),
+                issuer: peer.authority().clone(),
+                delegation: None,
+                role: MemberRole::Editor,
+                nonce: [nonce; 16],
+                recipient_user_public_key: Some(cert.user_public_key),
+                invitee_name: Some("Guest".into()),
+                expires_at_ns: now_ns.checked_add(10_000_000_000).unwrap(),
+                transport: vec![],
+            },
+            authority,
+        )
+        .unwrap();
+        let join = crate::join::decode_and_verify_invitation(
+            &signed,
+            Some(cert.user_public_key),
+            &RevocationList::new(),
+            now_ns,
+        )
+        .unwrap();
+        let request = [nonce ^ cert.device_public_key[0]; 32];
+        let challenge = JoinChallenge::new(
+            &join,
+            cert,
+            request,
+            [nonce; 32],
+            now_ns.checked_add(1_000_000_000).unwrap(),
+            now_ns,
+        )
+        .unwrap();
+        let proof = sign_join_proof(challenge.clone(), key).unwrap();
+        verify_join_proof(&proof, &challenge, cert, &RevocationList::new(), now_ns).unwrap()
+    }
+
+    /// The room governance document the peer sends.
+    fn governance(peer: &StatePeer) -> crate::room::RoomGovernance {
+        let NeighbourMsg::SyncResp { changes, .. } = peer.room_message() else {
+            panic!("room message is a SyncResp")
+        };
+        crate::room::governance_of(Some(&crate::room::candidate(None, &changes).unwrap()))
+    }
+
+    #[test]
+    fn identity_admissions_are_bounded_and_a_pruned_admission_cannot_readmit() {
+        let (mut peer, authority, _, _, now) = crate::admission_tests::seeded();
+        let now_ns: u64 = now
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+            .try_into()
+            .unwrap();
+        let root = SigningKey::from_bytes(&[61; 32]);
+        let guest = device(&root, 62);
+        let total = MAX_RETAINED_IDENTITY_ADMISSIONS + 3;
+        let redemptions: Vec<_> = (0..total)
+            .map(|n| {
+                let nonce = 100 + u8::try_from(n).unwrap();
+                redemption(&peer, &authority, nonce, &guest, now_ns)
+            })
+            .collect();
+        for redemption in &redemptions {
+            assert!(
+                peer.admit_invited_member(redemption, &authority, now)
+                    .unwrap()
+            );
+        }
+        let invite = |r: &VerifiedRedemption| r.join().invite_id();
+        let governed = governance(&peer);
+        let row: GovernedIdentity =
+            serde_json::from_slice(&governed.identities[&hex::encode(guest.1.device_public_key)])
+                .unwrap();
+        assert_eq!(
+            row.admission.as_ref().map(|r| r.invite_id),
+            Some(invite(&redemptions[0])),
+            "the first admission is kept as membership evidence"
+        );
+        assert_eq!(
+            row.admissions
+                .iter()
+                .map(|r| r.invite_id)
+                .collect::<Vec<_>>(),
+            redemptions[total - MAX_RETAINED_IDENTITY_ADMISSIONS..]
+                .iter()
+                .map(invite)
+                .collect::<Vec<_>>(),
+            "only the latest later receipts stay on the identity row, in order"
+        );
+        for redemption in &redemptions {
+            assert!(
+                governed
+                    .invitation_receipts
+                    .contains_key(&hex::encode(invite(redemption))),
+                "every receipt, pruned or not, stays in the per-invite ledger"
+            );
+        }
+
+        let pruned = &redemptions[1];
+        assert!(
+            !row.admissions.iter().any(|r| r.invite_id == invite(pruned)),
+            "fixture: this receipt was pruned from the identity row"
+        );
+        assert!(
+            peer.remove_member(guest.1.user_public_key, &authority, now)
+                .unwrap()
+        );
+        assert!(peer.permissions(guest.1.device_public_key, now).is_err());
+        assert!(
+            !peer.admit_invited_member(pruned, &authority, now).unwrap(),
+            "replaying a pruned redemption is already applied, not a new admission"
+        );
+        assert!(
+            peer.permissions(guest.1.device_public_key, now).is_err(),
+            "the removed member stays removed"
+        );
+        let other = device(&root, 63);
+        let replay = redemption(&peer, &authority, 101, &other, now_ns);
+        assert_eq!(replay.join().invite_id(), invite(pruned));
+        assert!(
+            peer.admit_invited_member(&replay, &authority, now)
+                .unwrap_err()
+                .contains("already redeemed"),
+            "a pruned invitation stays spent for every other device"
+        );
     }
 }

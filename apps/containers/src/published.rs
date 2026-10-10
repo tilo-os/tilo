@@ -85,15 +85,6 @@ fn container_row(container: &crate::model::Container, engine_live: bool) -> Live
     row.row(logs_row(container))
 }
 
-/// The container as the window's verb buttons bind to it: its published
-/// row with its operations.
-pub(crate) fn container_resource(
-    container: &crate::model::Container,
-    engine_live: bool,
-) -> ui::tilo_actions::Resource {
-    container_row(container, engine_live).into_resource()
-}
-
 fn logs_row(container: &crate::model::Container) -> LiveRow {
     let mut logs = LiveRow::new(
         format!("container:{}:logs", container.id),
@@ -282,93 +273,6 @@ impl ContainersApp {
 }
 
 impl ContainersApp {
-    pub(crate) fn answer_resource_operation(
-        &mut self,
-        kind: OperationKind,
-        type_id: &str,
-        payload: &[u8],
-    ) -> Result<bool, String> {
-        let args: Vec<String> = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
-        let Some(verb) = args.first().map(String::as_str) else {
-            return Err("missing operation".into());
-        };
-        let target = args.get(1).map(String::as_str).unwrap_or_default();
-        if kind == OperationKind::View && type_id == "containers.container" && verb == "select" {
-            self.select_container(Some(target.to_string()));
-            return Ok(true);
-        }
-        if kind == OperationKind::View && type_id == "containers.logs" && verb == "logs" {
-            self.select_container(Some(target.to_string()));
-            self.show_tab(DetailTab::Logs);
-            return Ok(true);
-        }
-        if kind == OperationKind::View && verb == "open" {
-            self.show_section(match type_id {
-                "containers.image" => Section::Images,
-                "containers.volume" => Section::Volumes,
-                "containers.distrobox" => Section::Distrobox,
-                _ => return Ok(false),
-            });
-            return Ok(true);
-        }
-        if kind != OperationKind::Effect {
-            return Ok(false);
-        }
-        if !self.engine.live {
-            return Err("Podman isn't available. Start its user service and try again.".into());
-        }
-        #[cfg(test)]
-        if let Some(result) = self.controlled_immediate(
-            format!("{type_id}.{verb}"),
-            target.to_string(),
-            args.clone(),
-        ) {
-            result?;
-            self.spawn_refresh();
-            self.show_toast(self.done_message(type_id, verb, target), false);
-            return Ok(true);
-        }
-        match type_id {
-            "containers.container" => match verb {
-                "start" => {
-                    podman::run_action(Action::Start, target)?;
-                }
-                "stop" => {
-                    podman::run_action(Action::Stop, target)?;
-                }
-                "restart" => {
-                    podman::run_action(Action::Restart, target)?;
-                }
-                "pause" => {
-                    podman::run_action(Action::Pause, target)?;
-                }
-                "unpause" => {
-                    podman::run_action(Action::Unpause, target)?;
-                }
-                "remove" => {
-                    podman::run_action(Action::Remove, target)?;
-                }
-                "shell" => {
-                    crate::terminal::open(crate::terminal::exec_attach_intent(target))?;
-                }
-                _ => return Ok(false),
-            },
-            "containers.image" if verb == "remove" => {
-                podman::remove_image(target, true)?;
-            }
-            "containers.volume" if verb == "remove" => {
-                podman::remove_volume(target, false)?;
-            }
-            "containers.distrobox" if verb == "enter" => {
-                crate::terminal::open(crate::terminal::distrobox_enter_intent(target))?;
-            }
-            _ => return Ok(false),
-        }
-        self.spawn_refresh();
-        self.show_toast(self.done_message(type_id, verb, target), false);
-        Ok(true)
-    }
-
     /// How a finished engine operation reads in a toast.
     fn done_message(&self, type_id: &str, verb: &str, target: &str) -> String {
         match (type_id, verb) {

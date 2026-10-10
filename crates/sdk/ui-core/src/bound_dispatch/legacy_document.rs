@@ -425,10 +425,16 @@ impl ResourceRequest<'_> {
             outer,
             scope,
             result,
-            ..
+            target,
         } = self
         {
             *result = Some(if interactive {
+                let routing = target.owner.broker_route().map(|route| {
+                    crate::widget::resource_operation::OperationTarget::new(
+                        route,
+                        target.address.clone(),
+                    )
+                });
                 let op = match scope {
                     Some(scope) => crate::widget::ResourceOperation::scoped(
                         scope,
@@ -443,6 +449,7 @@ impl ResourceRequest<'_> {
                         &encoded.payload,
                     ),
                 };
+                let op = op.with_target(routing.as_ref());
                 tile.start_operation(&op, &mut crate::widget::Edits::lend(outer), &ROOT)
                     .map_err(DoorError::Failed)
                     .and_then(|value| {

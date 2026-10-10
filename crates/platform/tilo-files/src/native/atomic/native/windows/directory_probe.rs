@@ -14,7 +14,7 @@ use crate::native::atomic::directory_probe::{
 use std::{
     collections::BTreeMap,
     path::{Component, Prefix},
-    time::{Instant, SystemTime, UNIX_EPOCH},
+    time::Instant,
 };
 use windows_sys::{
     Wdk::{
@@ -1002,10 +1002,8 @@ fn experiment(request: &Request, log: &mut Log<'_>) -> io::Result<bool> {
         )?;
         return Ok(success);
     }
-    let stamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(io::Error::other)?
-        .as_nanos();
+    let stamp = tilo_clock::try_unix_now_ns()
+        .ok_or_else(|| io::Error::other("system clock is before the Unix epoch"))?;
     let namespace = format!("directory-probe-{}-{stamp}", std::process::id());
     log.event(
         "fixture_planned",

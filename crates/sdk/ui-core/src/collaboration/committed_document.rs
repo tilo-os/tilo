@@ -878,6 +878,57 @@ fn set_read_ready(inbound: &InboundBridge, ready: &AtomicBool, value: bool) {
 
 /// Resolve mode before the route can produce any document. Initial history is
 /// queued without waiting for the UI owner (which awaits PrimaryReady itself).
+/// Retains the original authenticated root and declaration; renewal never
+/// reconnects a launcher, changes a route or acquires a different authority.
+pub(super) struct NativeReadJoin {
+    pub(super) client: runtime_collab::CollabClient,
+    pub(super) presentation: Vec<u8>,
+    pub(super) participant_handle: String,
+    pub(super) participant_kind: String,
+    pub(super) record_kind: String,
+}
+impl NativeReadJoin {
+    #[expect(
+        clippy::future_not_send,
+        reason = "the original capnp root stays on its shovel LocalSet"
+    )]
+    async fn renew(
+        &self,
+        spec: &RouteSpec,
+        reads: &Reads,
+    ) -> Result<runtime_collab::ChannelHandle, String> {
+        let key = spec.channel_id();
+        let expected_instance = reads.private_window(&key);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            let channel = self
+                .client
+                .join_channel_as_kind(
+                    &key,
+                    &self.presentation,
+                    &self.participant_handle,
+                    &self.participant_kind,
+                    &self.record_kind,
+                )
+                .await
+                .map_err(|_| "original committed read renewal was not admitted")?;
+            let binding = channel
+                .committed_document(&Request::PrivateWindowBinding)
+                .await
+                .map_err(|_| "renewed committed read custody unavailable")?;
+            if binding
+                != (Reply::PrivateWindowBinding {
+                    instance: expected_instance,
+                })
+            {
+                return Err("renewed committed read launcher instance changed".into());
+            }
+            Ok(channel)
+        })
+        .await
+        .map_err(|_| "original committed read renewal deadline elapsed")?
+    }
+}
+
 #[allow(
     clippy::future_not_send,
     reason = "capnp-rpc channel futures are !Send by design; driven only on the shovel LocalSet"
@@ -886,6 +937,7 @@ pub(super) async fn install(
     channel: &runtime_collab::ChannelHandle,
     spec: &RouteSpec,
     inbound: &InboundBridge,
+    join: NativeReadJoin,
 ) -> Result<bool, String> {
     let first = channel
         .committed_document(&Request::Open {
@@ -898,19 +950,20 @@ pub(super) async fn install(
         inbound.state.document_reads.legacy(&key)?;
         return Ok(false);
     }
-    let ready = inbound.state.document_reads.pending(&key)?;
+    let mut ready = inbound.state.document_reads.pending(&key)?;
     let (initial, revision) = match first {
-        Reply::Chunk { .. } | Reply::Created { .. } => match read_capture(channel, first).await {
-            Ok((read, revision)) => (Some(read), Some(revision)),
-            Err(_) => (None, None),
-        },
+        Reply::Chunk { .. } | Reply::Created { .. } => {
+            let (read, revision) = read_capture(channel, first).await?;
+            (Some(read), Some(revision))
+        }
         Reply::Unavailable => (None, None),
         _ => return Err("invalid initial committed read mode".into()),
     };
-    let channel = channel.clone();
+    let mut channel = channel.clone();
     let spec = spec.clone();
     let inbound = inbound.clone();
     tokio::task::spawn_local(async move {
+        let mut renewed = false;
         let mut current = initial;
         let mut revision = revision;
         loop {
@@ -982,11 +1035,44 @@ pub(super) async fn install(
                     }
                     #[cfg(any(test, feature = "test-support"))]
                     tracing::warn!("committed document capture failed");
-                    revision = None;
+                    inbound
+                        .state
+                        .fail_closed("committed document capture outcome unknown");
+                    break;
                 }
                 Ok(Ok(Reply::Unavailable)) => {
                     set_read_ready(&inbound, &ready, false);
                     revision = None;
+                }
+                Err(_) if !renewed => {
+                    // The timed-out handle may own an unacknowledged capture.
+                    // Fence its delivery epoch and rejoin once on the original
+                    // authenticated root; never replay Open on that handle.
+                    renewed = true;
+                    set_read_ready(&inbound, &ready, false);
+                    if !inbound.state.is_healthy()
+                        || !inbound.state.document_reads.current(&key, &ready)
+                    {
+                        break;
+                    }
+                    let Ok(next_ready) = inbound.state.document_reads.pending(&key) else {
+                        inbound
+                            .state
+                            .fail_closed("committed read generation unavailable");
+                        break;
+                    };
+                    ready = next_ready;
+                    if let Ok(next) = join.renew(&spec, &inbound.state.document_reads).await {
+                        channel = next;
+                        revision = None;
+                        #[cfg(any(test, feature = "test-support"))]
+                        tracing::warn!("original committed read generation renewed");
+                        continue;
+                    }
+                    inbound
+                        .state
+                        .fail_closed("committed read renewal unavailable");
+                    break;
                 }
                 _ => {
                     #[cfg(any(test, feature = "test-support"))]

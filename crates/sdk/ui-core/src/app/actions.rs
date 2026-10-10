@@ -134,12 +134,11 @@ impl App {
             .filter(|cache| cache.key == key)
             .map_or_else(Vec::new, |cache| cache.declared.clone());
         let mut semantics = crate::a11y_tree::SemanticTree::new();
-        semantics.refresh_bound(
+        semantics.refresh_action_projection(
             self.root_widget.as_ref(),
             &self.layout.node_map,
             &self.bindings.semantic_node_names(&self.layout.node_map),
             self.focused_node,
-            &[],
         );
         complete.extend(semantics.action_resources());
         complete.extend(self.history_action_resources());
@@ -293,8 +292,13 @@ impl App {
         {
             tracing::warn!(%error, "legacy control availability refused");
         }
+        // A first page's control availability took 246 ms in Settings; the
+        // startup file names the stage (TIL-691). Startup-only: this runs on
+        // every rebuild.
+        tilo_startup_metrics::startup_mark("actions-legacy-done");
         let trace = self.trace_resource_stage(Stage::BoundDiscovery);
         let history_door = self.refresh_history_controls();
+        tilo_startup_metrics::startup_mark("actions-history-done");
         let snapshots = crate::bound_dispatch::discover_cached_bound_resources(
             self.root_widget.as_ref(),
             &self.state.doc,
@@ -303,6 +307,7 @@ impl App {
         )
         .unwrap_or_default();
         trace.finish(CacheResult::NotObserved);
+        tilo_startup_metrics::startup_mark("actions-bound-discovery-done");
         let trace = self.trace_resource_stage(Stage::BoundControlProjection);
         let _ = crate::bound_dispatch::refresh_bound_controls(
             self.root_widget.as_mut(),
@@ -310,6 +315,7 @@ impl App {
             &history_door,
         );
         trace.finish(CacheResult::NotApplicable);
+        tilo_startup_metrics::startup_mark("actions-bound-projection-done");
         // Only ActionEmitter controls consume this address projection. Semantic,
         // document and legacy controls still use their normal invocation doors.
         // Recheck presence: widget-local changes can add/remove emitters.
@@ -319,6 +325,7 @@ impl App {
             return;
         }
         let cache_key = self.ensure_local_control_cache();
+        tilo_startup_metrics::startup_mark("actions-local-cache-done");
         let trace = self.trace_resource_stage(Stage::ControlCache);
         if self.actions.last_control_availability.as_ref() == Some(&cache_key) {
             trace.finish(CacheResult::Hit);
@@ -423,6 +430,17 @@ impl App {
         &self,
         resources: &[tilo_actions::Resource],
     ) -> Vec<ControlBindingCoverage> {
+        self.control_binding_coverage_for(
+            resources,
+            crate::widget::controls::control_action_bindings(self.root_widget.as_ref()),
+        )
+    }
+
+    fn control_binding_coverage_for(
+        &self,
+        resources: &[tilo_actions::Resource],
+        bindings: Vec<crate::widget::ControlBindingMetadata>,
+    ) -> Vec<ControlBindingCoverage> {
         // Shared chrome invokes doors served by this host, rather than by
         // the app's resource provider. Audit those exact declarations too.
         let mut host_resources = vec![crate::search::search_resource()];
@@ -435,7 +453,7 @@ impl App {
             ));
         }
         let mut seen = std::collections::HashSet::new();
-        crate::widget::controls::control_action_bindings(self.root_widget.as_ref())
+        bindings
             .into_iter()
             .map(|binding| {
                 let status = match &binding.kind {
@@ -545,6 +563,7 @@ impl App {
                 .collect();
             Some(resource)
         }
+        self.refresh_local_undo_discovery();
         let key = self.ensure_resource_cache();
         let mut resources = self
             .actions
@@ -617,6 +636,12 @@ impl App {
         ) {
             resources.extend(legacy);
         }
+        if crate::undo::local_undo_status(self.root_widget.as_ref()).is_some() {
+            let address = tilo_actions::ActionAddress::new("tilo.host:edit", "undo");
+            if let Some(edit) = self.edit_resource_for(&address) {
+                resources.push(edit);
+            }
+        }
         resources
     }
 
@@ -666,7 +691,10 @@ impl App {
         // Use this exact snapshot for coverage as well as publication. That
         // prevents recursive/repeated resource collection and makes the audit
         // correspond to the catalogue about to cross the wire.
-        let binding_coverage = self.control_action_coverage_for(&self.collect_resources());
+        let binding_coverage = self.control_binding_coverage_for(
+            &self.collect_resources(),
+            crate::widget::controls::action_control_bindings(self.root_widget.as_ref()),
+        );
         if binding_coverage
             .iter()
             .any(|entry| entry.status == ControlBindingStatus::StaleAddress)
@@ -771,7 +799,10 @@ impl App {
         if self.actions.last_published_actions.as_ref() == Some(&descriptors) {
             return;
         }
-        let actions = descriptors.iter().map(Self::exported_action).collect();
+        let actions = descriptors
+            .iter()
+            .map(crate::collaboration::ExportedAction::from)
+            .collect();
         // A surface the transport did not take is retried on the next frame.
         if self
             .collaboration
@@ -782,36 +813,6 @@ impl App {
             })
         {
             self.actions.last_published_actions = Some(descriptors);
-        }
-    }
-
-    fn exported_action(
-        descriptor: &tilo_actions::ActionDescriptor,
-    ) -> crate::collaboration::ExportedAction {
-        crate::collaboration::ExportedAction {
-            resource: descriptor.address.resource.clone(),
-            semantic_identity: descriptor.semantic_identity.clone(),
-            action: descriptor.address.action.clone(),
-            resource_kind: descriptor.resource_kind.clone(),
-            resource_label: descriptor.resource_label.clone(),
-            action_label: descriptor.action_label.clone(),
-            description: descriptor.description.clone(),
-            operation_kind: descriptor.kind.as_str().to_string(),
-            params_json: serde_json::to_string(&descriptor.params).unwrap_or_default(),
-            contract_json: serde_json::to_string(&descriptor.contract).unwrap_or_default(),
-            view: descriptor.view.clone(),
-            input: match &descriptor.input {
-                tilo_actions::InputSpec::None => crate::collaboration::ExportedInput::None,
-                tilo_actions::InputSpec::Text {
-                    prompt,
-                    placeholder,
-                    collects,
-                } => crate::collaboration::ExportedInput::Text {
-                    prompt: prompt.clone(),
-                    placeholder: placeholder.clone(),
-                    wants_content: *collects == tilo_actions::Collects::Content,
-                },
-            },
         }
     }
 
@@ -893,64 +894,17 @@ impl App {
         Ok(revision)
     }
 
+    /// The descriptor a directory row carries. Directory pages have never
+    /// carried a resource view: the broker proves a view's mount and range
+    /// bindings against the actions on the same page, which a bounded page
+    /// cannot promise, so views reach the shell through the published
+    /// surface instead.
     fn exported_directory_action(
         descriptor: &tilo_actions::ActionDescriptor,
     ) -> runtime_collab::ExportedAction {
         runtime_collab::ExportedAction {
-            resource: descriptor.address.resource.clone(),
-            semantic_identity: descriptor.semantic_identity.as_ref().map(|identity| {
-                runtime_collab::ExportedResourceSemanticIdentity {
-                    kind: identity.kind.clone(),
-                    key: identity.key.clone(),
-                }
-            }),
-            action: descriptor.address.action.clone(),
-            resource_kind: descriptor.resource_kind.clone(),
-            resource_label: descriptor.resource_label.clone(),
-            action_label: descriptor.action_label.clone(),
-            description: descriptor.description.clone(),
-            operation_kind: descriptor.kind.as_str().to_string(),
-            params_json: serde_json::to_string(&descriptor.params).unwrap_or_default(),
-            contract_json: serde_json::to_string(&descriptor.contract).unwrap_or_default(),
-            view: descriptor
-                .view
-                .as_ref()
-                .map(|view| runtime_collab::ExportedView {
-                    id: view.id.clone(),
-                    label: view.label.clone(),
-                    description: view.description.clone(),
-                    open_action: view.open_action.clone(),
-                    primary: view.primary,
-                    range: view
-                        .range
-                        .as_ref()
-                        .map(|range| runtime_collab::ExportedViewRange {
-                            action: range.action.clone(),
-                            start_param: range.start_param.clone(),
-                            end_param: range.end_param.clone(),
-                            unit_param: range.unit_param.clone(),
-                        }),
-                    mount: view
-                        .mount
-                        .as_ref()
-                        .map(|mount| runtime_collab::ExportedViewMount {
-                            action: mount.action.clone(),
-                            capability_param: mount.capability_param.clone(),
-                            view_param: mount.view_param.clone(),
-                        }),
-                }),
-            input: match &descriptor.input {
-                tilo_actions::InputSpec::None => runtime_collab::ExportedInput::None,
-                tilo_actions::InputSpec::Text {
-                    prompt,
-                    placeholder,
-                    collects,
-                } => runtime_collab::ExportedInput::Text {
-                    prompt: prompt.clone(),
-                    placeholder: placeholder.clone(),
-                    wants_content: *collects == tilo_actions::Collects::Content,
-                },
-            },
+            view: None,
+            ..runtime_collab::ExportedAction::from(descriptor)
         }
     }
 
@@ -991,18 +945,18 @@ impl App {
             resource: resource.id.as_str().to_owned(),
             resource_kind: resource.kind.clone(),
             resource_label: resource.label.clone(),
-            resource_presentation_json: resource
+            presentation: resource
                 .presentation
-                .as_ref()
-                .filter(|presentation| presentation.is_valid())
-                .and_then(|presentation| serde_json::to_string(presentation).ok())
-                .unwrap_or_default(),
+                .clone()
+                .filter(tilo_actions::ResourcePresentation::is_valid),
             action: None,
             descriptor: None,
             has_children: may_descend
                 && (!resource.children.is_empty() || !resource.actions.is_empty()),
-            visibility_action: Some(visibility.address.action),
-            visibility_contract_json: serde_json::to_string(&visibility.contract).ok()?,
+            visibility: Some(tilo_actions::remote::RowVisibility {
+                action: visibility.address.action,
+                contract: visibility.contract,
+            }),
         })
     }
 
@@ -1021,12 +975,14 @@ impl App {
             resource: resource.id.as_str().to_owned(),
             resource_kind: exported.resource_kind.clone(),
             resource_label: exported.resource_label.clone(),
-            resource_presentation_json: String::new(),
+            presentation: None,
             action: Some(action_id.to_owned()),
-            descriptor: Some(exported.clone()),
+            visibility: Some(tilo_actions::remote::RowVisibility {
+                action: action_id.to_owned(),
+                contract: exported.contract.clone(),
+            }),
+            descriptor: Some(exported),
             has_children: false,
-            visibility_action: Some(action_id.to_owned()),
-            visibility_contract_json: exported.contract_json,
         })
     }
 
@@ -1148,7 +1104,7 @@ impl App {
         let add = |row: runtime_collab::ActionDirectoryRow,
                    rows: &mut Vec<runtime_collab::ActionDirectoryRow>,
                    bytes: &mut usize| {
-            *bytes = bytes.saturating_add(directory_row_wire_bytes(&row));
+            *bytes = bytes.saturating_add(runtime_collab::action_directory_row_wire_bytes(&row));
             rows.push(row);
         };
 
@@ -1649,9 +1605,19 @@ impl App {
         let Ok(current) = self.try_action_directory_revision() else {
             return runtime_collab::ActionDirectoryResolution::Unavailable;
         };
-        if revision != current {
+        // No revision asks for the directory as it is now: a caller that
+        // names an action it already knows (an agent's) chose it from no
+        // page, and reading the revision first would cost it a round trip.
+        // The answer names the revision it resolved against either way, so
+        // the broker binds the admission to it and a host refuses to run
+        // the action once the directory moved on.
+        if !revision.is_empty() && revision != current {
             return runtime_collab::ActionDirectoryResolution::StaleRevision;
         }
+        let found = |row| runtime_collab::ActionDirectoryResolution::Found {
+            row: Box::new(row),
+            revision: Some(current.clone()),
+        };
         if let Some(row) = self
             .actions
             .action_directory_snapshot
@@ -1662,15 +1628,13 @@ impl App {
                     .get(&tilo_actions::ActionAddress::new(resource_id, action_id))
             })
         {
-            return runtime_collab::ActionDirectoryResolution::Found(Box::new(row.clone()));
+            return found(row.clone());
         }
         let resource = self.resolve_publication_resource(resource_id, action_id);
         resource
             .as_ref()
             .and_then(|resource| Self::directory_action_row(resource, action_id))
-            .map_or(runtime_collab::ActionDirectoryResolution::NotFound, |row| {
-                runtime_collab::ActionDirectoryResolution::Found(Box::new(row))
-            })
+            .map_or(runtime_collab::ActionDirectoryResolution::NotFound, found)
     }
 
     fn published_action_directory_page(
@@ -1708,7 +1672,11 @@ impl App {
         for request in self.collaboration.manager.take_action_directory_requests() {
             match request {
                 ActionDirectoryRequest::Query { query, reply } => {
-                    let _ = reply.send(self.published_action_directory_page(query));
+                    // A cancelled caller never receives this page. Do not consume
+                    // its one-use continuation before admitting a live response.
+                    if !reply.is_closed() {
+                        let _ = reply.send(self.published_action_directory_page(query));
+                    }
                 }
                 ActionDirectoryRequest::Resolve {
                     revision,
@@ -2124,6 +2092,7 @@ impl App {
                 context: None,
                 confirmation: Self::broker_confirmation(confirmation_evidence),
                 revision: None,
+                wait_ms: None,
             },
         );
         Ok(crate::widget::ResourceOperationStart::Accepted)
@@ -2225,8 +2194,10 @@ impl App {
         // edit intact; the executor still receives the same committed baseline.
         let before = self.state.doc.get_heads();
         let route = self.primary_document_route();
-        let started =
-            crate::invocation_scope::with_mounted_document(route, &mut self.state.doc, |doc| {
+        let started = crate::invocation_scope::with_mounted_document(
+            route.clone(),
+            &mut self.state.doc,
+            |doc| {
                 crate::bound_dispatch::execute_resource_operation(
                     self.root_widget.as_mut(),
                     doc,
@@ -2234,6 +2205,7 @@ impl App {
                     &self.actions.action_registry,
                     self.actions.action_transport.as_mut(),
                     crate::bound_dispatch::ResourceOperation {
+                        target_route: route.clone(),
                         address,
                         resource,
                         spec,
@@ -2247,7 +2219,8 @@ impl App {
                         scope,
                     },
                 )
-            })?;
+            },
+        )?;
         if before != self.state.doc.get_heads() {
             self.state.record_committed_action_authored(
                 before,
@@ -2617,6 +2590,9 @@ impl App {
                 resources.push(resource);
             }
         }
+        if crate::undo::local_undo_status(self.root_widget.as_ref()).is_some() {
+            resources.extend(self.edit_resource_for(address));
+        }
         let (typed_arguments, resource, resolved) = Self::resolve_resource_invocation(
             &resources,
             address,
@@ -2767,6 +2743,7 @@ impl App {
                 context: None,
                 confirmation: None,
                 revision: None,
+                wait_ms: None,
             };
             self.actions
                 .broker_requests
@@ -2920,28 +2897,33 @@ impl App {
             })()
         } else {
             let route = self.primary_document_route();
-            crate::invocation_scope::with_mounted_document(route, &mut self.state.doc, |doc| {
-                crate::bound_dispatch::execute_resource_operation(
-                    self.root_widget.as_mut(),
-                    doc,
-                    &self.state.root,
-                    &self.actions.action_registry,
-                    self.actions.action_transport.as_mut(),
-                    crate::bound_dispatch::ResourceOperation {
-                        address,
-                        resource,
-                        spec: resolved,
-                        encoded,
-                        actor,
-                        local_author: &self.collaboration.local_author.0,
-                        broker_admitted,
-                        invocation: operation_invocation,
-                        source_invocation: broker_admitted.then_some(operation_invocation),
-                        ambient: ambient_context,
-                        scope: None,
-                    },
-                )
-            })
+            crate::invocation_scope::with_mounted_document(
+                route.clone(),
+                &mut self.state.doc,
+                |doc| {
+                    crate::bound_dispatch::execute_resource_operation(
+                        self.root_widget.as_mut(),
+                        doc,
+                        &self.state.root,
+                        &self.actions.action_registry,
+                        self.actions.action_transport.as_mut(),
+                        crate::bound_dispatch::ResourceOperation {
+                            target_route: route.clone(),
+                            address,
+                            resource,
+                            spec: resolved,
+                            encoded,
+                            actor,
+                            local_author: &self.collaboration.local_author.0,
+                            broker_admitted,
+                            invocation: operation_invocation,
+                            source_invocation: broker_admitted.then_some(operation_invocation),
+                            ambient: ambient_context,
+                            scope: None,
+                        },
+                    )
+                },
+            )
         };
         let started = match operation_result {
             Ok(started) => started,
@@ -3597,6 +3579,7 @@ impl App {
             context,
             confirmation: None,
             revision: None,
+            wait_ms: None,
         };
         self.actions
             .broker_requests
@@ -4724,51 +4707,6 @@ impl App {
 /// Room for a directory page's own fields (revision, cursor, flags and the
 /// row list) beyond its rows, on the wire.
 const DIRECTORY_PAGE_WIRE_BYTES: usize = 512;
-
-/// An upper bound on `row`'s Cap'n Proto size, which the broker checks the
-/// page against: every text field costs its bytes, a NUL, padding to a word
-/// and an 8-byte pointer; every struct a fixed allowance for its data words,
-/// pointer and list tag.
-pub(crate) fn directory_row_wire_bytes(row: &runtime_collab::ActionDirectoryRow) -> usize {
-    const STRUCT: usize = 64;
-    fn text(value: &str) -> usize {
-        value.len().saturating_add(8) / 8 * 8 + 8
-    }
-    let descriptor = row.descriptor.as_ref().map_or(0, |descriptor| {
-        let input = match &descriptor.input {
-            runtime_collab::ExportedInput::None => 0,
-            runtime_collab::ExportedInput::Text {
-                prompt,
-                placeholder,
-                ..
-            } => STRUCT + text(prompt) + text(placeholder),
-        };
-        STRUCT
-            + text(&descriptor.resource)
-            + descriptor.semantic_identity.as_ref().map_or(0, |identity| {
-                STRUCT + text(&identity.kind) + text(&identity.key)
-            })
-            + text(&descriptor.action)
-            + text(&descriptor.resource_kind)
-            + text(&descriptor.resource_label)
-            + text(&descriptor.action_label)
-            + text(descriptor.description.as_deref().unwrap_or(""))
-            + text(&descriptor.operation_kind)
-            + text(&descriptor.params_json)
-            + text(&descriptor.contract_json)
-            + input
-    });
-    STRUCT
-        + text(&row.parent_resource)
-        + text(&row.resource)
-        + text(&row.resource_kind)
-        + text(&row.resource_label)
-        + text(&row.resource_presentation_json)
-        + text(row.action.as_deref().unwrap_or(""))
-        + text(row.visibility_action.as_deref().unwrap_or(""))
-        + text(&row.visibility_contract_json)
-        + descriptor
-}
 
 /// Every `(resource, action)` in `resource`'s tree, to `max_depth` levels
 /// below it, whose action id or label, description, parameter names and

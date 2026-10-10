@@ -512,11 +512,7 @@ pub async fn ask_to_join(
         &root,
         signer.device_public_key(),
         &label,
-        web_time::SystemTime::now()
-            .duration_since(web_time::UNIX_EPOCH)
-            .ok()
-            .and_then(|elapsed| u64::try_from(elapsed.as_nanos()).ok())
-            .unwrap_or_default(),
+        ui::time::unix_now_ns(),
     )
     .await
     .map_err(js_error)?;
@@ -1526,11 +1522,7 @@ impl WasmPeer {
         }
         let options: Options = serde_json::from_str(&options).map_err(js_error)?;
         let root = PageSigner::from_js(&root)?;
-        let now_ns = web_time::SystemTime::now()
-            .duration_since(web_time::UNIX_EPOCH)
-            .ok()
-            .and_then(|elapsed| u64::try_from(elapsed.as_nanos()).ok())
-            .unwrap_or_default();
+        let now_ns = ui::time::unix_now_ns();
         let mut grant = tilo_relay_protocol::rooms::PreAdmission {
             room: options.room,
             role: options.role,

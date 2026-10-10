@@ -201,16 +201,6 @@ impl Column {
         self.cache_present = false;
     }
 
-    /// Extra padding on the left, on top of the default
-    /// `spacing.s6` inset. Used to displace a workspace area to the
-    /// right of an absolutely-positioned sidebar without shifting the
-    /// surrounding chrome.
-    #[must_use]
-    pub fn with_extra_left_padding(mut self, px: f32) -> Self {
-        self.extra_left_padding = px;
-        self
-    }
-
     /// Extra padding on top, e.g. to reserve room for a floating
     /// affordance the column doesn't own (the responsive shell's Back
     /// chip painted over the detail pane's top-left corner).
@@ -269,12 +259,6 @@ impl Column {
     pub fn set_gap(&mut self, px: f32) {
         self.gap_override = Some(px);
         self.rhythm = None;
-    }
-
-    /// Update the inter-child rhythm before the next layout pass.
-    pub fn set_rhythm(&mut self, rhythm: Rhythm) {
-        self.rhythm = Some(rhythm);
-        self.gap_override = None;
     }
 
     /// Switch from `height: percent(1.0)` to `flex_grow: 1 + flex_basis: 0`.
@@ -356,91 +340,89 @@ impl Widget for Column {
             .or_else(|| self.rhythm.map(|step| rhythm.get(step)))
             .unwrap_or(theme.gap_standard);
 
-        let node = taffy.parent_node(
-            Style {
-                // Intrinsic-height columns use a one-column implicit Grid.
-                // Taffy's Block layout ignores `gap`, while flex layout can
-                // truncate the intrinsic main axis to a Scrollable's viewport.
-                // Grid honors row gaps and intrinsically sizes every implicit
-                // row, preserving both scroll extent and the one widget / one
-                // direct Taffy child identity expected by host traversal.
-                display: if self.intrinsic_height {
-                    taffy::Display::Grid
-                } else {
-                    taffy::Display::Flex
-                },
-                flex_direction: taffy::FlexDirection::Column,
-                align_items: Some(taffy::AlignItems::FlexStart),
-                // A parent may legitimately stretch or explicitly size this
-                // Column taller than its content. Pack implicit Grid rows at
-                // the start so surplus block space does not inflate the
-                // requested gap between them.
-                align_content: self.intrinsic_height.then_some(taffy::AlignContent::Start),
-                // The one column is the Column's own width, never wider: an
-                // `auto` track grows to its widest child's content and pushes
-                // a padded child past the Column's edge.
-                grid_template_columns: if self.intrinsic_height {
-                    vec![taffy::style_helpers::minmax(
-                        length(0.0_f32),
-                        taffy::style_helpers::fr(1.0_f32),
-                    )]
-                } else {
-                    Vec::new()
-                },
-                flex_shrink: 0.0, // Prevent vertical squashing
-                gap: taffy::Size {
-                    width: length(0.0_f32),
-                    height: length(resolved_gap),
-                },
-                padding: {
-                    // The page gutter: the `s6` token (24). Tokens are the
-                    // source of truth; on every theme built through
-                    // `Theme::from_tokens` / `with_ui_scale` / a custom
-                    // spec this is exactly twice `padding_standard`. A host
-                    // theme that overrides the legacy `padding_standard`
-                    // alias alone (`Theme::with_component_scales` preserves
-                    // such aliases) no longer moves this gutter.
-                    let (base_x, base_y) = if self.no_padding {
-                        (0.0, 0.0)
-                    } else if let Some((x, y)) = self.padding_rhythm {
-                        let at = |step: Option<Rhythm>| step.map_or(0.0, |s| rhythm.get(s));
-                        (at(x), at(y))
-                    } else {
-                        (theme.tokens.spacing.s6, theme.tokens.spacing.s6)
-                    };
-                    let vert = self.vertical_padding_override.unwrap_or(base_y);
-                    let (left, right) = self
-                        .horizontal_padding_override
-                        .unwrap_or((base_x + self.extra_left_padding, base_x));
-                    super::layout::insets(
-                        vert + self.extra_top_padding,
-                        right,
-                        vert + self.extra_bottom_padding,
-                        left,
-                    )
-                },
-                size: taffy::Size {
-                    width: if self.intrinsic_width {
-                        taffy::Dimension::auto()
-                    } else {
-                        percent(1.0_f32)
-                    },
-                    height: if self.intrinsic_height || self.fill_remaining_height {
-                        taffy::Dimension::auto()
-                    } else {
-                        percent(1.0_f32)
-                    },
-                },
-                flex_basis: if self.fill_remaining_height {
-                    taffy::Dimension::length(0.0)
-                } else {
-                    taffy::Dimension::auto()
-                },
-                flex_grow: if self.fill_remaining_height { 1.0 } else { 0.0 },
-                ..Default::default()
+        let style = Style {
+            // Intrinsic-height columns use a one-column implicit Grid.
+            // Taffy's Block layout ignores `gap`, while flex layout can
+            // truncate the intrinsic main axis to a Scrollable's viewport.
+            // Grid honors row gaps and intrinsically sizes every implicit
+            // row, preserving both scroll extent and the one widget / one
+            // direct Taffy child identity expected by host traversal.
+            display: if self.intrinsic_height {
+                taffy::Display::Grid
+            } else {
+                taffy::Display::Flex
             },
-            &self.child_nodes,
-        );
+            flex_direction: taffy::FlexDirection::Column,
+            align_items: Some(taffy::AlignItems::FlexStart),
+            // A parent may legitimately stretch or explicitly size this
+            // Column taller than its content. Pack implicit Grid rows at
+            // the start so surplus block space does not inflate the
+            // requested gap between them.
+            align_content: self.intrinsic_height.then_some(taffy::AlignContent::Start),
+            // The one column is the Column's own width, never wider: an
+            // `auto` track grows to its widest child's content and pushes
+            // a padded child past the Column's edge.
+            grid_template_columns: if self.intrinsic_height {
+                vec![taffy::style_helpers::minmax(
+                    length(0.0_f32),
+                    taffy::style_helpers::fr(1.0_f32),
+                )]
+            } else {
+                Vec::new()
+            },
+            flex_shrink: 0.0, // Prevent vertical squashing
+            gap: taffy::Size {
+                width: length(0.0_f32),
+                height: length(resolved_gap),
+            },
+            padding: {
+                // The page gutter: the `s6` token (24). Tokens are the
+                // source of truth; on every theme built through
+                // `Theme::from_tokens` / `with_ui_scale` / a custom
+                // spec this is exactly twice `padding_standard`. A host
+                // theme that overrides the legacy `padding_standard`
+                // alias alone (`Theme::with_component_scales` preserves
+                // such aliases) no longer moves this gutter.
+                let (base_x, base_y) = if self.no_padding {
+                    (0.0, 0.0)
+                } else if let Some((x, y)) = self.padding_rhythm {
+                    let at = |step: Option<Rhythm>| step.map_or(0.0, |s| rhythm.get(s));
+                    (at(x), at(y))
+                } else {
+                    (theme.tokens.spacing.s6, theme.tokens.spacing.s6)
+                };
+                let vert = self.vertical_padding_override.unwrap_or(base_y);
+                let (left, right) = self
+                    .horizontal_padding_override
+                    .unwrap_or((base_x + self.extra_left_padding, base_x));
+                super::layout::insets(
+                    vert + self.extra_top_padding,
+                    right,
+                    vert + self.extra_bottom_padding,
+                    left,
+                )
+            },
+            size: taffy::Size {
+                width: if self.intrinsic_width {
+                    taffy::Dimension::auto()
+                } else {
+                    percent(1.0_f32)
+                },
+                height: if self.intrinsic_height || self.fill_remaining_height {
+                    taffy::Dimension::auto()
+                } else {
+                    percent(1.0_f32)
+                },
+            },
+            flex_basis: if self.fill_remaining_height {
+                taffy::Dimension::length(0.0)
+            } else {
+                taffy::Dimension::auto()
+            },
+            flex_grow: if self.fill_remaining_height { 1.0 } else { 0.0 },
+            ..Default::default()
+        };
+        let node = taffy.parent_node(style, &self.child_nodes);
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
@@ -689,25 +671,14 @@ impl Widget for Column {
             }
         }
 
-        if let Some(scope) = crate::permissions::capability::permission_scope(self)
-            && !permissions.check(&scope)
-        {
-            let overlay = crate::tokens::colors::PERMISSION_DENIED_SCRIM;
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                overlay,
-                None,
-                &self.rect,
-            );
-        }
-
-        if let Some(key) = crate::presence::capability::presence_key(self)
-            && let Some(peers) = presence.here.get(&key)
-            && let Some(user) = peers.first()
-        {
-            presence.draw_peer_focus(scene, theme, user, self.rect);
-        }
+        crate::widget::draw_gate_and_peer_focus(
+            self,
+            scene,
+            transform,
+            theme,
+            presence,
+            permissions,
+        );
     }
 
     fn release_scene_cache(&mut self) {
@@ -722,13 +693,7 @@ impl Widget for Column {
 
 impl crate::presence::capability::PublishesPresence for Column {
     fn presence_key(&self) -> Option<PresenceKey> {
-        if self.presence_path.is_empty() {
-            None
-        } else {
-            Some(PresenceKey::Widget {
-                path: self.presence_path.clone(),
-            })
-        }
+        PresenceKey::widget(&self.presence_path)
     }
 }
 
@@ -739,6 +704,13 @@ impl crate::permissions::capability::PermissionGated for Column {
 }
 
 impl crate::widget::controls::ActionControls for Column {
+    fn action_control_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
+        let mut bindings = Vec::new();
+        self.for_each_child(&mut |child| {
+            bindings.extend(crate::widget::controls::action_control_bindings(child));
+        });
+        bindings
+    }
     fn has_action_control_bindings(&self) -> bool {
         let mut found = false;
         self.for_each_child(&mut |child| {

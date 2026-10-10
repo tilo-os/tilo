@@ -42,9 +42,7 @@ fn new_category_id() -> String {
 }
 
 fn now_secs() -> i64 {
-    ui::time::wall()
-        .duration_since(ui::clock::UNIX_EPOCH)
-        .map_or(NOW, |d| d.as_secs() as i64)
+    ui::time::try_unix_now().map_or(NOW, |secs| secs as i64)
 }
 
 struct EventDispatch<'a, 'doc> {
@@ -2055,7 +2053,7 @@ mod tests {
             for key in [NamedKey::ArrowDown, NamedKey::Enter] {
                 let mut handled = false;
                 app.dispatch_event(
-                    &key_named(key),
+                    &named_key(key),
                     1.0,
                     Modifiers::default(),
                     &mut ui::widget::Edits::lend(&mut doc),
@@ -2093,7 +2091,7 @@ mod tests {
             let cy = row.center().y;
             // Press on the row (arms the swipe), drag left past the commit
             // threshold, release (commits the primary action = Delete).
-            feed(&mut app, &mut doc, &cursor(row.center().x, cy));
+            feed(&mut app, &mut doc, &cursor_moved(row.center().x, cy));
             feed(
                 &mut app,
                 &mut doc,
@@ -2101,7 +2099,7 @@ mod tests {
             );
             assert!(app.swipe.is_some(), "pressing a channel row arms a swipe");
             let past_commit = row.center().x - (app.chrome.swipe_commit + 20.0);
-            feed(&mut app, &mut doc, &cursor(past_commit, cy));
+            feed(&mut app, &mut doc, &cursor_moved(past_commit, cy));
             feed(
                 &mut app,
                 &mut doc,
@@ -2163,7 +2161,7 @@ mod tests {
                 app.draft_main, "hello team",
                 "the draft is mirrored into the CRDT"
             );
-            feed(&mut app, &mut doc, &key_named(NamedKey::Enter));
+            feed(&mut app, &mut doc, &named_key(NamedKey::Enter));
             let after = ChatDoc::list_messages(&doc, "c_crit");
             assert_eq!(after.len(), before + 1);
             assert_eq!(after.last().unwrap().text, "hello team");
@@ -2177,7 +2175,7 @@ mod tests {
             app.focus = Focus::Main;
             app.set_composer_focus();
             type_str(&mut app, &mut doc, "abc");
-            feed(&mut app, &mut doc, &key_named(NamedKey::Backspace));
+            feed(&mut app, &mut doc, &named_key(NamedKey::Backspace));
             assert_eq!(
                 app.composer_main.value(),
                 "ab",
@@ -2201,7 +2199,7 @@ mod tests {
                 "clipboard round-trips here (precondition for the paste path)"
             );
 
-            feed_mods(&mut app, &mut doc, &key_char("v"), mods(true, false));
+            feed_mods(&mut app, &mut doc, &char_key("v"), mods(true, false));
 
             assert_eq!(
                 app.composer_main.value(),
@@ -2225,9 +2223,9 @@ mod tests {
             render_frame(&mut app, 1280.0, 720.0);
 
             // Select the whole value (Ctrl+A) then copy it (Ctrl+C).
-            feed_mods(&mut app, &mut doc, &key_char("a"), mods(true, false));
+            feed_mods(&mut app, &mut doc, &char_key("a"), mods(true, false));
             ui::clipboard_copy("stale"); // ensure the copy overwrites something
-            feed_mods(&mut app, &mut doc, &key_char("c"), mods(true, false));
+            feed_mods(&mut app, &mut doc, &char_key("c"), mods(true, false));
             assert_eq!(
                 ui::clipboard_paste().as_deref(),
                 Some("copy me please"),
@@ -2395,10 +2393,10 @@ mod tests {
                 .position(|(_, hit, ..)| matches!(hit, Hit::Inbox))
                 .expect("Inbox is in the visible keyboard inventory");
             for _ in 0..=inbox_index {
-                feed(&mut app, &mut doc, &key_named(NamedKey::Tab));
+                feed(&mut app, &mut doc, &named_key(NamedKey::Tab));
             }
             assert_eq!(app.keyboard_target, Some(inbox_index));
-            feed(&mut app, &mut doc, &key_named(NamedKey::Enter));
+            feed(&mut app, &mut doc, &named_key(NamedKey::Enter));
 
             assert!(app.inbox_open, "Enter follows the first visible Tab target");
         }
@@ -2425,7 +2423,7 @@ mod tests {
             );
             app.request_visible_images();
             app.images
-                .block_until_idle(ui::clock::Duration::from_secs(3));
+                .block_until_idle(ui::time::Duration::from_secs(3));
             assert!(
                 app.images.get(crate::images::DEMO_CALL_GRID).is_some(),
                 "the shared ImageStore decoded the attachment thumbnail"
@@ -2796,7 +2794,7 @@ mod tests {
             app.begin_rename(MenuTarget::Channel("c_random".into()));
             app.rename_input.select_all();
             type_str(&mut app, &mut doc, "watercooler");
-            feed(&mut app, &mut doc, &key_named(NamedKey::Enter));
+            feed(&mut app, &mut doc, &named_key(NamedKey::Enter));
             let c = app.channels.iter().find(|c| c.id == "c_random").unwrap();
             assert_eq!(c.name, "watercooler");
         }
@@ -2807,7 +2805,7 @@ mod tests {
             let original = app.channel("c_random").unwrap().name.clone();
             app.begin_rename(MenuTarget::Channel("c_random".into()));
 
-            feed_mods(&mut app, &mut doc, &key_char("a"), mods(true, false));
+            feed_mods(&mut app, &mut doc, &char_key("a"), mods(true, false));
             assert_eq!(
                 app.rename_input.selection_range_public(),
                 Some((0, original.len()))
@@ -2828,7 +2826,7 @@ mod tests {
                 "partial rename text is not collaborative state"
             );
 
-            feed(&mut app, &mut doc, &key_named(NamedKey::Enter));
+            feed(&mut app, &mut doc, &named_key(NamedKey::Enter));
             assert_eq!(app.channel("c_random").unwrap().name, "東京");
         }
 
@@ -3093,7 +3091,7 @@ mod tests {
                 &mut doc,
                 "Revised: host tile carries the follow control.",
             );
-            feed(&mut app, &mut doc, &key_named(NamedKey::Enter));
+            feed(&mut app, &mut doc, &named_key(NamedKey::Enter));
 
             assert!(app.editing.is_none(), "saving closes the editor");
             let m = app.message("m_me1").unwrap();
@@ -3117,7 +3115,7 @@ mod tests {
             let original = app.message("m_me1").unwrap().text.clone();
             app.begin_edit("m_me1".into());
 
-            feed_mods(&mut app, &mut doc, &key_char("a"), mods(true, false));
+            feed_mods(&mut app, &mut doc, &char_key("a"), mods(true, false));
             let (anchor, caret) = app.edit_input.selection();
             assert_eq!((anchor.min(caret), anchor.max(caret)), (0, original.len()));
             feed(
@@ -3146,7 +3144,7 @@ mod tests {
                 "partial edits stay local until Save"
             );
 
-            feed(&mut app, &mut doc, &key_named(NamedKey::Enter));
+            feed(&mut app, &mut doc, &named_key(NamedKey::Enter));
             assert_eq!(app.message("m_me1").unwrap().text, "東京");
         }
 
@@ -3163,7 +3161,7 @@ mod tests {
 
             let x = editor.x0 + 18.0;
             let y = editor.y0 + 14.0;
-            feed(&mut app, &mut doc, &cursor(x, y));
+            feed(&mut app, &mut doc, &cursor_moved(x, y));
             feed(
                 &mut app,
                 &mut doc,
@@ -3194,7 +3192,7 @@ mod tests {
                 app.composer_main.value().is_empty(),
                 "composer starts empty"
             );
-            feed(&mut app, &mut doc, &key_named(NamedKey::ArrowUp));
+            feed(&mut app, &mut doc, &named_key(NamedKey::ArrowUp));
             let id = app.editing.clone().expect("ArrowUp opened the editor");
             assert_eq!(id, "m_me2", "loaded the last own top-level message");
             assert_eq!(
@@ -3210,7 +3208,7 @@ mod tests {
             app.focus = Focus::Main;
             app.set_composer_focus();
             type_str(&mut app, &mut doc, "half a thought");
-            feed(&mut app, &mut doc, &key_named(NamedKey::ArrowUp));
+            feed(&mut app, &mut doc, &named_key(NamedKey::ArrowUp));
             assert!(
                 app.editing.is_none(),
                 "a non-empty composer suppresses ArrowUp-to-edit"
@@ -3223,7 +3221,7 @@ mod tests {
             let original = app.message("m_me1").unwrap().text.clone();
             app.begin_edit("m_me1".into());
             type_str(&mut app, &mut doc, "Z");
-            feed(&mut app, &mut doc, &key_named(NamedKey::Escape));
+            feed(&mut app, &mut doc, &named_key(NamedKey::Escape));
             assert!(app.editing.is_none(), "Escape closes the editor");
             let m = app.message("m_me1").unwrap();
             assert_eq!(m.text, original, "cancel leaves the message untouched");
@@ -3310,7 +3308,7 @@ mod tests {
             feed(
                 &mut app,
                 &mut doc,
-                &cursor(pointer_origin.x, pointer_origin.y),
+                &cursor_moved(pointer_origin.x, pointer_origin.y),
             );
             feed(
                 &mut app,
@@ -3320,7 +3318,7 @@ mod tests {
             assert!(Widget::wants_pointer_capture(&app));
 
             let outside = Point::new(1300.0, pointer_origin.y + 40.0);
-            feed(&mut app, &mut doc, &cursor(outside.x, outside.y));
+            feed(&mut app, &mut doc, &cursor_moved(outside.x, outside.y));
             assert!(matches!(
                 app.call.placement.attachment(),
                 Attachment::Desktop { .. }
@@ -3405,7 +3403,7 @@ mod tests {
             feed(
                 &mut app,
                 &mut doc,
-                &cursor(returned_pointer.x, returned_pointer.y),
+                &cursor_moved(returned_pointer.x, returned_pointer.y),
             );
             assert!(app.call.placement.is_return_pending());
             let final_shell_rect = app.call_video_rect();
@@ -3438,7 +3436,7 @@ mod tests {
             feed(
                 &mut app,
                 &mut doc,
-                &cursor(continued_pointer.x, continued_pointer.y),
+                &cursor_moved(continued_pointer.x, continued_pointer.y),
             );
             assert_eq!(
                 app.call_video_rect(),
@@ -3469,11 +3467,11 @@ mod tests {
             feed(
                 &mut app,
                 &mut doc,
-                &cursor(leave.center().x, leave.center().y),
+                &cursor_moved(leave.center().x, leave.center().y),
             );
             assert!(matches!(app.call_hovered, Some(Hit::CallLeave)));
 
-            feed(&mut app, &mut doc, &cursor(2.0, 2.0));
+            feed(&mut app, &mut doc, &cursor_moved(2.0, 2.0));
             assert!(app.call_hovered.is_none());
         }
     }
@@ -3813,7 +3811,7 @@ mod tests {
     }
 
     fn click_point(app: &mut ChatApp, doc: &mut AutoCommit, point: Point) {
-        feed(app, doc, &cursor(point.x, point.y));
+        feed(app, doc, &cursor_moved(point.x, point.y));
         feed(app, doc, &mouse(ElementState::Pressed, MouseButton::Left));
         feed(app, doc, &mouse(ElementState::Released, MouseButton::Left));
     }
@@ -3873,7 +3871,7 @@ mod tests {
             "the final recorded dispatch is accessible"
         );
         let point = app.thread_body.center();
-        feed(&mut app, &mut doc, &cursor(point.x, point.y));
+        feed(&mut app, &mut doc, &cursor_moved(point.x, point.y));
         feed(&mut app, &mut doc, &wheel(2.0));
         assert!(
             f64::from(app.thread_scroll.offset_y()) < region.metrics.max_scroll(),
@@ -3882,12 +3880,7 @@ mod tests {
         assert!((app.scroll - timeline_offset).abs() < 0.01);
     }
 
-    fn cursor(x: f64, y: f64) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(x, y),
-        }
-    }
+    use ui::synthetic_input::cursor_moved;
     fn mouse(state: ElementState, button: MouseButton) -> WindowEvent {
         WindowEvent::MouseInput {
             device_id: winit::event::DeviceId::dummy(),
@@ -3914,50 +3907,18 @@ mod tests {
         );
     }
 
-    /// A `KeyboardInput` press for a named key (Enter, Backspace, `ArrowUp` …).
-    fn key_named(k: NamedKey) -> WindowEvent {
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Named(k);
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = None;
-        WindowEvent::KeyboardInput {
-            device_id: winit::event::DeviceId::dummy(),
-            event: ev,
-            is_synthetic: false,
-        }
-    }
+    use ui::synthetic_input::named_key;
 
-    /// A `KeyboardInput` press for a printable character.
-    fn key_char(s: &str) -> WindowEvent {
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Character(winit::keyboard::SmolStr::new(s));
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = Some(winit::keyboard::SmolStr::new(s));
-        WindowEvent::KeyboardInput {
-            device_id: winit::event::DeviceId::dummy(),
-            event: ev,
-            is_synthetic: false,
-        }
-    }
+    use ui::synthetic_input::char_key;
 
     /// Type each character of `s` into the app through the real keyboard path
     /// (space via the named key, like winit reports it).
     fn type_str(app: &mut ChatApp, doc: &mut AutoCommit, s: &str) {
         for ch in s.chars() {
             let ev = if ch == ' ' {
-                key_named(NamedKey::Space)
+                named_key(NamedKey::Space)
             } else {
-                key_char(&ch.to_string())
+                char_key(&ch.to_string())
             };
             feed(app, doc, &ev);
         }
@@ -4171,11 +4132,11 @@ mod tests {
             .expect("the demo room has someone to mention");
         let prefix: String = who.name.chars().take(2).collect();
         type_str(&mut app, &mut doc, &format!("ping @{prefix}"));
-        feed(&mut app, &mut doc, &key_named(NamedKey::Tab));
+        feed(&mut app, &mut doc, &named_key(NamedKey::Tab));
         let label = format!("@{}", who.name);
         assert_eq!(app.composer_main.value(), format!("ping {label} "));
         type_str(&mut app, &mut doc, "now");
-        feed(&mut app, &mut doc, &key_named(NamedKey::Enter));
+        feed(&mut app, &mut doc, &named_key(NamedKey::Enter));
         let sent = ChatDoc::list_messages(&doc, &app.active_channel)
             .into_iter()
             .last()
@@ -4202,9 +4163,9 @@ mod tests {
         app.focus = Focus::Main;
         app.set_composer_focus();
         type_str(&mut app, &mut doc, "plain ");
-        feed_mods(&mut app, &mut doc, &key_char("b"), mods(true, false));
+        feed_mods(&mut app, &mut doc, &char_key("b"), mods(true, false));
         type_str(&mut app, &mut doc, "bold");
-        feed(&mut app, &mut doc, &key_named(NamedKey::Enter));
+        feed(&mut app, &mut doc, &named_key(NamedKey::Enter));
         let sent = ChatDoc::list_messages(&doc, &app.active_channel)
             .into_iter()
             .last()
@@ -4220,7 +4181,7 @@ mod tests {
         app.begin_edit(sent.id.clone());
         assert_eq!(app.edit_input.value(), "plain bold");
         type_str(&mut app, &mut doc, "!");
-        feed(&mut app, &mut doc, &key_named(NamedKey::Enter));
+        feed(&mut app, &mut doc, &named_key(NamedKey::Enter));
         let edited = app.message(&sent.id).unwrap();
         assert_eq!(edited.text, "plain bold!");
         assert!(
@@ -4697,7 +4658,7 @@ mod tests {
             feed_mods(
                 &mut app,
                 &mut doc,
-                &key_named(NamedKey::End),
+                &named_key(NamedKey::End),
                 mods(true, false),
             );
             assert_eq!(app.scroll, 0.0);

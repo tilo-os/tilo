@@ -507,21 +507,10 @@ fn launchpad_journey_deliver(
     tree: &TaffyTree<()>,
     node: NodeId,
 ) {
-    let mut handled = false;
-    let mut focus_target = None;
-    host.handle_event(
-        event,
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &winit::event::Modifiers::default(),
-            state: ui::widget::Edits::lend(doc),
-            path: &automerge::ROOT,
-            handled: &mut handled,
-            focus_target: &mut focus_target,
-            node_id: node,
-            taffy: tree,
-        },
-    );
+    ui::testing::Dispatch::new()
+        .doc(doc)
+        .layout(tree, node)
+        .send(host, event);
     host.settle(&mut ui::widget::Edits::lend(doc), &automerge::ROOT);
 }
 fn launchpad_journey_escape() -> WindowEvent {
@@ -586,11 +575,11 @@ fn app_opener_pointer_press_waits_and_drag_cancel_keeps_native_search_closed() {
         .expect("production app opener must be mounted")
         .center();
     let moved = |point: Point| WindowEvent::CursorMoved {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         position: winit::dpi::PhysicalPosition::new(point.x, point.y),
     };
     let mouse = |state| WindowEvent::MouseInput {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         state,
         button: winit::event::MouseButton::Left,
     };

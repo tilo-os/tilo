@@ -7,17 +7,6 @@
 //! Hosts supply their existing durable profile store and authenticated room
 //! transport. This crate neither captures surfaces nor connects accounts.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        clippy::panic,
-        reason = "test assertions exercise production storage and privacy paths"
-    )
-)]
-
 mod capture;
 mod composer;
 mod outbox;

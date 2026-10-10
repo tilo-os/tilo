@@ -295,7 +295,7 @@ impl RestoreStore {
 
 #[cfg(target_os = "linux")]
 fn restore_path() -> Option<PathBuf> {
-    let root = xdg_paths::state_dir()?;
+    let root = tilo_paths::state_dir()?;
     Some(root.join("tilo/portal/screencast-restore.json"))
 }
 

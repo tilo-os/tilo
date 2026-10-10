@@ -20,7 +20,7 @@ use tilo_user_identity::DeviceCert;
 
 use super::{
     CancelInvitationRequest, CollaborationError, GovernedRoom, IssueInvitationRequest,
-    RemoveMemberRequest, Rooms, SetMemberRoleRequest, now_ns, system_time,
+    RemoveMemberRequest, Rooms, SetMemberRoleRequest, system_time,
 };
 
 /// How long a declined request still answers its device's status.
@@ -141,7 +141,7 @@ impl Rooms {
         device: &DeviceCert,
         request: RoomsRequest,
     ) -> Result<RoomsReply, CollaborationError> {
-        let now = now_ns();
+        let now = tilo_clock::unix_now_ns();
         Ok(match request {
             RoomsRequest::List => self.page_list(device, now).await?,
             RoomsRequest::Create { name } => self.page_create(device, &name, now).await?,
@@ -473,7 +473,7 @@ impl Rooms {
     }
 
     async fn page_join_inner(&self, step: JoinStep) -> Result<JoinReply, CollaborationError> {
-        let now = now_ns();
+        let now = tilo_clock::unix_now_ns();
         match step {
             JoinStep::Inspect { invitation } => {
                 let room = self
@@ -726,15 +726,18 @@ impl Rooms {
             if room.admitted_device(request_id) != Some(device) {
                 continue;
             }
-            let role = match room.peer().permissions(device, system_time(now)) {
-                Ok((collab_types::role::Role::Owner | collab_types::role::Role::Editor, _, _)) => {
-                    RoomRole::Editor
+            let ceiling = room
+                .peer()
+                .permissions(device, system_time(now))
+                .ok()
+                .and_then(|(role, _, _)| collab_types::caps::role_caps(role));
+            let role = match ceiling {
+                Some(verb) if verb.implies(collab_types::caps::Verb::Write) => RoomRole::Editor,
+                Some(verb) if verb.implies(collab_types::caps::Verb::Comment) => {
+                    RoomRole::Commenter
                 }
-                Ok((collab_types::role::Role::Commenter, _, _)) => RoomRole::Commenter,
-                Ok((collab_types::role::Role::Viewer, _, _)) => RoomRole::Viewer,
-                Ok((collab_types::role::Role::Denied, _, _)) | Err(_) => {
-                    return Ok(JoinReply::Declined);
-                }
+                Some(verb) if verb.implies(collab_types::caps::Verb::Read) => RoomRole::Viewer,
+                Some(_) | None => return Ok(JoinReply::Declined),
             };
             return Ok(JoinReply::Admitted {
                 room: room.room().to_owned(),

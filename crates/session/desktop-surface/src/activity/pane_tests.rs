@@ -234,6 +234,67 @@ mod tests {
     }
 
     #[test]
+    fn a_workspace_switch_reads_only_its_own_change_and_derives_the_same_history() {
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let first = tree.active;
+        let second = tree.append_empty_workspace("Second");
+        tree.commit_room_change();
+        let mut pane = native_pane();
+        pane.refresh(&mut tree);
+        let reads = || {
+            (
+                ROOM_CHANGE_READS.with(Cell::get),
+                crate::activity::replay::REPLAY_CHECKPOINT_READS.with(Cell::get),
+            )
+        };
+        for n in 0..12 {
+            tree.set_active(if n % 2 == 0 { second } else { first });
+            tree.commit_room_change();
+            let (diffs, forks) = reads();
+            pane.refresh(&mut tree);
+            let (diffs_after, forks_after) = reads();
+            // Each switch is one change: re-reading the room's whole history
+            // made a switch's first frame O(history).
+            assert_eq!(
+                diffs_after - diffs,
+                1,
+                "switch {n} diffs only its own change"
+            );
+            // The first visit to "Second" also checkpoints the change that
+            // created it; after that a switch forks for its own entry alone.
+            if n >= 1 {
+                assert!(
+                    forks_after - forks <= 1,
+                    "switch {n} forks the document at most for its own checkpoint"
+                );
+            }
+        }
+
+        // What the incremental refreshes derived is what one refresh of the
+        // whole history derives.
+        let mut fresh = native_pane();
+        fresh.refresh(&mut tree);
+        assert_eq!(
+            format!("{:?}", pane.derived),
+            format!("{:?}", fresh.derived),
+            "the feed rows and their workspaces"
+        );
+        let frames = |pane: &RoomActivityPane| {
+            pane.replay_frames
+                .iter()
+                .map(|frame| {
+                    format!(
+                        "{:?} {} {:?}",
+                        frame.entry_id, frame.summary, frame.workspaces
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        assert!(!frames(&pane).is_empty(), "the switches are replayable");
+        assert_eq!(frames(&pane), frames(&fresh), "the replay checkpoints");
+    }
+
+    #[test]
     fn workspace_switch_summary_fits_the_chrome_activity_line() {
         let summary = PatchCounts {
             active_switched: true,
@@ -429,6 +490,111 @@ mod tests {
         pane.timeline.set_selection(Some((selected, selected)));
         pane.explorer_pane = ExplorerPane::Details;
         (tree, records, pane, record)
+    }
+
+    /// A persisted record that is not open here is read from disk once:
+    /// later refreshes reuse what was read until the record's revision moves.
+    #[test]
+    fn agent_runs_are_not_reloaded_from_disk_when_unchanged() {
+        struct CountingDisk {
+            documents: std::collections::BTreeMap<RecordId, Vec<u8>>,
+            revision: std::cell::Cell<u64>,
+            loads: std::cell::Cell<usize>,
+        }
+        impl crate::activity::index::PersistedRecordHistory for CountingDisk {
+            fn load_record(&self, id: &RecordId) -> Option<automerge::AutoCommit> {
+                self.loads.set(self.loads.get().saturating_add(1));
+                automerge::AutoCommit::load(self.documents.get(id)?).ok()
+            }
+            fn revision(&self, _id: &RecordId) -> Option<u64> {
+                Some(self.revision.get())
+            }
+        }
+
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let room = tree.desktop.active_workspace().expect("workspace").room;
+        let record = RecordId::for_file("campaign-brief.qdoc");
+        let kind = ui::RecordKind::new("document");
+        let agent = ActorId::from(b"writing-agent".as_slice());
+        let agent_hex = agent.to_hex_string();
+        let mut doc = automerge::AutoCommit::new();
+        ui::record::init(&mut doc, &record, &kind, &room.to_string());
+        doc.set_actor(agent);
+        doc.put(automerge::ROOT, "intro", "A concrete opening")
+            .unwrap();
+        let context = ui::tilo_actions::ActionContext::for_resource(
+            "Rewrite opening",
+            record.as_str(),
+            "document",
+            "Campaign brief",
+        )
+        .with_app("org.tilo.Writer", "Writer")
+        .with_group("agent-run:cold", "Rewrite the opening", "agent-run");
+        doc.commit_with(
+            CommitOptions::default()
+                .with_time(20)
+                .with_message(context.change_message().unwrap()),
+        );
+        let change = ui::latest_run_by(&mut doc, &agent_hex).expect("agent change");
+        ui::record_run_with_details(
+            &mut doc,
+            "Rewrite the opening",
+            Some(&agent_hex),
+            None,
+            Some("Rewrite the opening"),
+            None,
+            &[ui::RunStep {
+                app: "org.tilo.Writer".to_string(),
+                record: record.to_string(),
+                run: change,
+                summary: "Rewrote the opening".to_string(),
+            }],
+        )
+        .expect("task receipt");
+        tilo_resource::history::commit_stamped_at(&mut doc, 21);
+        tree.desktop
+            .room_records_held
+            .entry(room)
+            .or_default()
+            .insert(record.to_string(), kind.to_string());
+        let disk = CountingDisk {
+            documents: [(record.clone(), doc.save())].into_iter().collect(),
+            revision: std::cell::Cell::new(1),
+            loads: std::cell::Cell::new(0),
+        };
+        let records = RecordStore::in_memory();
+        let held_run = |pane: &RoomActivityPane| {
+            pane.agent_runs.iter().any(|indexed| {
+                indexed.source_record.as_ref() == Some(&record)
+                    && indexed.run.label == "Rewrite the opening"
+            })
+        };
+
+        let mut pane = native_pane();
+        pane.refresh(&mut tree);
+        pane.refresh_records_with_local(&mut tree, &records, &disk);
+        let first = disk.loads.get();
+        assert!(first > 0, "the record is read from disk");
+        assert!(held_run(&pane), "its run is read from the persisted record");
+
+        for _ in 0..3 {
+            pane.refresh(&mut tree);
+            pane.refresh_records_with_local(&mut tree, &records, &disk);
+        }
+        assert_eq!(
+            disk.loads.get(),
+            first,
+            "an unchanged record is not read from disk again"
+        );
+        assert!(held_run(&pane), "the run is still listed");
+
+        disk.revision.set(2);
+        pane.refresh_records_with_local(&mut tree, &records, &disk);
+        assert!(
+            disk.loads.get() > first,
+            "a record whose revision moved is read again"
+        );
+        assert!(held_run(&pane));
     }
 
     #[test]
@@ -1558,14 +1724,7 @@ mod tests {
         tree.adopt_ownerless_workspaces(&user);
         let ws_id = tree.desktop.active;
 
-        let week_ago = SystemTime::now() - Duration::from_secs(604_800);
-        let week_ago_secs = i64::try_from(
-            week_ago
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap()
-                .as_secs(),
-        )
-        .unwrap();
+        let week_ago_secs = i64::try_from(ui::time::try_unix_now().unwrap() - 604_800).unwrap();
         let last_week = CapOverride::grant(
             Subject::app("files"),
             Scope::FsPath("/home/user/last-week".to_string()),
@@ -2364,39 +2523,16 @@ mod tests {
     // widget — proving the whole chain, not just `apply_name`.
     // -----------------------------------------------------------------
 
-    fn cursor_moved(x: f64, y: f64) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: winit::dpi::PhysicalPosition::new(x, y),
-        }
-    }
+    use ui::synthetic_input::cursor_moved;
 
-    fn mouse_press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: winit::event::ElementState::Pressed,
-            button: winit::event::MouseButton::Left,
-        }
-    }
+    use ui::synthetic_input::mouse_press;
 
     fn key_press(logical_key: winit::keyboard::Key) -> WindowEvent {
-        // SAFETY: as in `ui`'s own widget tests — every pub field of `KeyEvent`
-        // tolerates the all-zero bit pattern, and winit 0.30 keeps
-        // `KeyEventExtra` crate-private so a struct literal is unavailable.
-        let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = logical_key;
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = winit::event::ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = None;
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        }
+        ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
+            logical_key,
+            None,
+            winit::event::ElementState::Pressed,
+        ))
     }
 
     /// Paint the sheet so the rects the click handler reads off the last frame
@@ -3393,6 +3529,180 @@ mod tests {
             "materializing and moving a seam must preserve every atomic action"
         );
     }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one room, one labelled kind of change per step, each compared with a fresh pane"
+    )]
+    fn incremental_refresh_matches_full_replay_for_feed_undo_and_attribution() {
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let home = tree.active;
+        let second = tree.append_empty_workspace("Second");
+        tree.commit_room_change();
+        let mut pane = native_pane();
+        pane.refresh(&mut tree);
+
+        // A collaborator's device on the same room, kept in sync by hand.
+        let mut peer = tree.clone();
+        peer.doc.set_actor(ActorId::from(b"bea-device".as_slice()));
+        let receipt = || {
+            tilo_actions::ActionContext::for_resource(
+                "Export",
+                "document:brief",
+                "document",
+                "Release brief",
+            )
+            .with_app("org.tilo.Writer", "Writer")
+        };
+
+        // Every kind of row the steps make, once, before reads are counted:
+        // the first row of a kind can load a catalogue, which moves the
+        // i18n revision, and the log then rightly reads its window again in
+        // the new words.
+        let heads = tree.doc.get_heads();
+        assert!(peer.append_workspace_effect_receipt(
+            home,
+            tilo_actions::InvocationId::new(),
+            "bea",
+            receipt(),
+            tilo_actions::EffectReceiptStatus::Succeeded,
+        ));
+        tree.apply_changes(&peer.export_changes_since(&heads))
+            .expect("the peer's change merges");
+        pane.refresh(&mut tree);
+        native_pane().refresh(&mut tree.clone());
+        // The catalogues those rows loaded were added after this refresh
+        // read the log; the next change reads it under them.
+        tree.set_active(second);
+        tree.commit_room_change();
+        pane.refresh(&mut tree);
+        tree.set_active(home);
+        tree.commit_room_change();
+        pane.refresh(&mut tree);
+
+        let mut next_tab = 92_000_u64;
+        for step in 0..24_u32 {
+            // The peer has everything this device has before either acts.
+            let peer_heads = peer.doc.get_heads();
+            peer.apply_changes(&tree.export_changes_since(&peer_heads))
+                .expect("the peer catches up");
+            let synced = tree.doc.get_heads();
+            let kind = match step % 6 {
+                0 => {
+                    tree.set_active(second);
+                    tree.commit_room_change();
+                    "switch away"
+                }
+                1 => {
+                    next_tab += 1;
+                    // Home has a window group to open the tab in.
+                    tree.set_active(home);
+                    assert!(tree.doc_append_tab_to_first_group_of_active_workspace(
+                        next_tab,
+                        format!("Tab {next_tab}"),
+                        b"{}".to_vec(),
+                    ));
+                    tree.commit_room_change();
+                    "open a tab"
+                }
+                2 => {
+                    // The peer acts while this device switches back: two
+                    // concurrent changes, merged in either order.
+                    assert!(peer.append_workspace_effect_receipt(
+                        home,
+                        tilo_actions::InvocationId::new(),
+                        "bea",
+                        receipt(),
+                        tilo_actions::EffectReceiptStatus::Succeeded,
+                    ));
+                    tree.set_active(home);
+                    tree.commit_room_change();
+                    let theirs = peer.export_changes_since(&synced);
+                    tree.apply_changes(&theirs)
+                        .expect("the peer's change merges");
+                    "a peer's receipt, merged"
+                }
+                3 => {
+                    next_tab += 1;
+                    assert!(peer.doc_append_tab_to_first_group_of_active_workspace(
+                        next_tab,
+                        format!("Bea's tab {next_tab}"),
+                        b"{}".to_vec(),
+                    ));
+                    peer.commit_room_change();
+                    let theirs = peer.export_changes_since(&synced);
+                    tree.apply_changes(&theirs).expect("the peer's tab merges");
+                    "a peer's tab"
+                }
+                4 => {
+                    tree.set_active(second);
+                    tree.commit_room_change();
+                    tree.set_active(home);
+                    tree.commit_room_change();
+                    "two switches between refreshes"
+                }
+                _ => "nothing new",
+            };
+            let appended = tree.doc.get_changes(&synced).len();
+            let read = pane.history_log.changes_read();
+            let catalogue = ui::I18nManager::revision();
+            pane.refresh(&mut tree);
+            assert_eq!(
+                pane.history_log.changes_read() - read,
+                appended,
+                "step {step} ({kind}): the refresh reads only the appended changes \
+                 (i18n revision {catalogue} -> {})",
+                ui::I18nManager::revision()
+            );
+
+            // What a pane that reads the whole log once derives.
+            let mut fresh = native_pane();
+            let mut fresh_tree = tree.clone();
+            fresh.refresh(&mut fresh_tree);
+            assert_eq!(
+                format!("{:?}", pane.derived),
+                format!("{:?}", fresh.derived),
+                "step {step} ({kind}): rows, summaries, authors and workspaces"
+            );
+            assert_eq!(
+                format!("{:?}", pane.timeline.entries()),
+                format!("{:?}", fresh.timeline.entries()),
+                "step {step} ({kind}): the feed"
+            );
+            let frames = |pane: &RoomActivityPane| {
+                pane.replay_frames
+                    .iter()
+                    .map(|frame| {
+                        format!(
+                            "{:?} {} {:?} {:?}",
+                            frame.entry_id, frame.summary, frame.author, frame.workspaces
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(
+                frames(&pane),
+                frames(&fresh),
+                "step {step} ({kind}): replay"
+            );
+            // Undo and restore address a row by the document's heads at it.
+            for (entry, _) in &pane.derived {
+                assert_eq!(
+                    pane.history_log.heads_for_entry(&entry.id),
+                    ui::heads_for_entry(&mut tree.doc, &entry.id),
+                    "step {step} ({kind}): the heads behind {:?}",
+                    entry.summary
+                );
+            }
+        }
+        assert!(
+            pane.derived
+                .iter()
+                .any(|(entry, _)| entry.author.name.contains("bea")),
+            "the peer's receipt is attributed to the peer"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -3591,13 +3901,8 @@ mod task_review_tests {
         ] {
             for (size, width, height) in [("normal", 1600, 900), ("compact", 560, 560)] {
                 let (mut tree, mut pane, host) = review_fixture();
-                host.snapshot.borrow_mut().sampled_at_secs = i64::try_from(
-                    SystemTime::now()
-                        .duration_since(ui::time::UNIX_EPOCH)
-                        .unwrap()
-                        .as_secs(),
-                )
-                .unwrap();
+                host.snapshot.borrow_mut().sampled_at_secs =
+                    i64::try_from(ui::time::try_unix_now().unwrap()).unwrap();
                 pane.refresh(&mut tree);
                 pane.layout_window(Rect::new(-560.0, 0.0, 0.0, 560.0));
                 paint_header_fixture(&mut pane, &Theme::light());

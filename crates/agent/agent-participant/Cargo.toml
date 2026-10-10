@@ -14,6 +14,7 @@ path = "src/lib.rs"
 # Each record is a framework participant of its app's resource kind; the
 # published tree is the door.
 ui = { package = "tilo-app", path = "../../sdk/tilo-app" }
+tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 tilo-actions = { path = "../../collab/actions" }
 # `apps/agent`'s model planner: action discovery tools over a catalogue, and
 # the chooser that asks through tilo-model-gateway.
@@ -79,12 +80,27 @@ tilo-model-gateway = { path = "../model-gateway" }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 tracing.workspace = true
 workspace-hack = { version = "0.1" }
+# App workers: an app's code runs in a confined process of this executable,
+# spoken to over framed messages; what it returns is admitted through the
+# isolate before the host signs it.
+wire-frame = { path = "../../system/wire-frame", features = ["postcard"] }
+tilo-automerge-isolate = { path = "../../doc/tilo-automerge-isolate" }
+
+[target.'cfg(unix)'.dependencies]
+# The worker's confinement: detach, resource limits and, on macOS, Seatbelt.
+tilo-sandbox = { path = "../../platform/tilo-sandbox" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# The worker's Landlock ruleset and seccomp filters, from the shared
+# primitives every confinement path uses.
+tilo-sandbox-core = { path = "../../system/sandbox-core" }
+seccompiler.workspace = true
+libc.workspace = true
 
 [dev-dependencies]
 tilo-crypto = { path = "../../system/tilo-crypto", features = ["tls-fixture"] }
 accounts = { path = "../../system/accounts", features = ["person"] }
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
-tilo-automerge-isolate = { path = "../../doc/tilo-automerge-isolate" }
 tempfile.workspace = true
 tilo-document = { path = "../../doc/tilo-document" }
 tilo-relay = { path = "../../hosting/tilo-relay", features = ["agents"] }
@@ -102,7 +118,6 @@ sha2.workspace = true
 bytes.workspace = true
 tilo-test-env = { path = "../../dev/test-env" }
 tokio = { workspace = true, features = ["full"] }
-tilo-clock = { path = "../../platform/tilo-clock" }
 channel-crypto = { path = "../../collab/channel-crypto" }
 neighbour-wire = { path = "../../collab/neighbour-wire" }
 postcard = { workspace = true, features = ["use-std"] }

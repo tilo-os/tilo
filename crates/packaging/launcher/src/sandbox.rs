@@ -7,7 +7,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::capabilities::CapabilityPlan;
-use crate::manifest::{MinimalManifest, PortalPolicy};
+use crate::manifest::MinimalManifest;
 
 /// In-sandbox mount root for the package payload.
 pub fn payload_mount_for(package_id: &str) -> PathBuf {
@@ -24,6 +24,10 @@ pub fn runtime_mount_for(version: &str) -> PathBuf {
 pub fn runtime_library_path(version: &str) -> PathBuf {
     runtime_mount_for(version).join("lib")
 }
+
+/// The selected signed SDK's catalog, private to this application's namespace.
+/// The toolkit checks its compiled manifest and each font's pinned bytes.
+pub const RUNTIME_FONT_CATALOG_PATH: &str = "/run/tilo-fonts";
 
 /// Canonical absolute ELF interpreter paths re-exposed from the runtime
 /// bundle. Ordinary shared libraries are found through the bundle's
@@ -532,12 +536,51 @@ pub fn push_optional_runtime(argv: &mut Vec<String>, root: &Path, version: &str)
     mount
 }
 
+/// `GStreamer` relocates its default plugin lookup beside `libgstreamer`. The
+/// signed SDK carries that library, while platform decoder plugins already
+/// live in the fixed read-only system library profile. Name that boundary
+/// explicitly; never inherit a session's writable plugin search paths.
+const SYSTEM_GSTREAMER_PLUGINS: &[&str] = &[
+    "/usr/lib64/gstreamer-1.0",
+    "/usr/lib/gstreamer-1.0",
+    "/usr/lib/x86_64-linux-gnu/gstreamer-1.0",
+    "/usr/lib/aarch64-linux-gnu/gstreamer-1.0",
+];
+
+fn push_gstreamer_plugins(argv: &mut Vec<String>, root: &Path, mount: &Path) {
+    if !root.join("lib/libgstreamer-1.0.so.0").is_file() {
+        return;
+    }
+    let bundled = mount.join("lib/gstreamer-1.0");
+    let mut paths = vec![bundled.display().to_string()];
+    paths.extend(
+        SYSTEM_GSTREAMER_PLUGINS
+            .iter()
+            .map(|path| (*path).to_owned()),
+    );
+    argv.extend([
+        "--setenv".into(),
+        "GST_PLUGIN_SYSTEM_PATH_1_0".into(),
+        paths.join(":"),
+    ]);
+}
+
 fn push_runtime_bundle(argv: &mut Vec<String>, runtime: Option<(&Path, &str)>) {
     let Some((runtime_root, runtime_version)) = runtime else {
         return;
     };
     let runtime_mount = runtime_mount_for(runtime_version);
     push_bind(argv, "--ro-bind", runtime_root, &runtime_mount);
+    push_gstreamer_plugins(argv, runtime_root, &runtime_mount);
+    let fonts = runtime_root.join("lib/fonts");
+    if fonts.is_dir() {
+        push_bind(
+            argv,
+            "--ro-bind",
+            &fonts,
+            Path::new(RUNTIME_FONT_CATALOG_PATH),
+        );
+    }
     argv.extend([
         "--setenv".to_string(),
         "LD_LIBRARY_PATH".to_string(),
@@ -831,7 +874,7 @@ pub fn push_user_home(argv: &mut Vec<String>, capabilities: &CapabilityPlan) -> 
 /// Apps keep their own `XDG_DATA_HOME`; this hint lets shared host controls
 /// identify user resources such as Trash without granting another path.
 pub fn push_user_data(argv: &mut Vec<String>, capabilities: &CapabilityPlan) -> Option<PathBuf> {
-    let data = xdg_paths::data_dir().filter(|path| path.is_absolute())?;
+    let data = tilo_paths::data_dir().filter(|path| path.is_absolute())?;
     if !capabilities
         .ro_paths
         .iter()
@@ -892,18 +935,6 @@ fn push_bind(argv: &mut Vec<String>, kind: &str, src: &Path, dst: &Path) {
     argv.push(dst.display().to_string());
 }
 
-/// If the manifest declared at least one portal as `ViaHost`, return the
-/// current `$DBUS_SESSION_BUS_ADDRESS` — else `None`.
-pub fn host_dbus_bus_address_if_needed(
-    portals: &std::collections::BTreeMap<String, PortalPolicy>,
-) -> Option<String> {
-    let wants_bus = portals.values().any(|p| matches!(p, PortalPolicy::ViaHost));
-    if !wants_bus {
-        return None;
-    }
-    std::env::var("DBUS_SESSION_BUS_ADDRESS").ok()
-}
-
 /// Extract the `unix:path=<path>` from a D-Bus bus address, or `None`
 /// otherwise. Abstract sockets can't be bind-mounted, so callers
 /// surface that as "portal unavailable".
@@ -927,6 +958,7 @@ pub fn parse_unix_path_bus_address(addr: &str) -> Option<String> {
 mod tests {
     use super::*;
     use crate::manifest::Entrypoint;
+    use crate::manifest::PortalPolicy;
     use std::collections::BTreeMap;
 
     #[test]
@@ -1052,6 +1084,60 @@ mod tests {
         }
     }
 
+    #[test]
+    fn selected_runtime_fonts_are_private_readonly_and_follow_the_selected_sdk() {
+        let directory = tempfile::tempdir().unwrap();
+        for version in ["held", "new"] {
+            let root = directory.path().join(version);
+            let fonts = root.join("lib/fonts");
+            std::fs::create_dir_all(&fonts).unwrap();
+            std::fs::write(fonts.join("manifest.toml"), version).unwrap();
+            let mut argv = vec!["--unshare-all".to_string()];
+            push_runtime_bundle(&mut argv, Some((&root, version)));
+            crate::profile::push_system_profile(&mut argv, false);
+            // Execute the production mount plan without starting an app or
+            // compositor. The catalog mount needs no directory on the host.
+            argv.extend([
+                "--ro-bind".into(),
+                "/usr/bin/cat".into(),
+                "/usr/bin/cat".into(),
+                "/usr/bin/cat".into(),
+                format!("{RUNTIME_FONT_CATALOG_PATH}/manifest.toml"),
+            ]);
+            let output = std::process::Command::new("bwrap")
+                .args(&argv)
+                .output()
+                .expect("execute actual private runtime mount");
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(output.stdout, version.as_bytes());
+            let mut write_argv = argv[..argv.len() - 2].to_vec();
+            write_argv.extend([
+                "--ro-bind".into(),
+                "/usr/bin/touch".into(),
+                "/usr/bin/touch".into(),
+                "/usr/bin/touch".into(),
+                format!("{RUNTIME_FONT_CATALOG_PATH}/new-file"),
+            ]);
+            let write = std::process::Command::new("bwrap")
+                .args(write_argv)
+                .output()
+                .unwrap();
+            assert!(!write.status.success(), "SDK fonts must remain read-only");
+            assert!(!fonts.join("new-file").exists());
+            assert_eq!(
+                std::fs::read(fonts.join("manifest.toml")).unwrap(),
+                version.as_bytes()
+            );
+        }
+        let mut legacy = Vec::new();
+        push_runtime_bundle(&mut legacy, Some((directory.path(), "legacy")));
+        assert!(!legacy.iter().any(|arg| arg == RUNTIME_FONT_CATALOG_PATH));
+    }
+
     /// Build argv for `mk_manifest`'s package id with `policy`, exercising
     /// the real `build_bwrap_argv` → `hardening::for_package` path.
     fn argv_with_hardening_policy(policy: &str) -> Vec<String> {
@@ -1070,6 +1156,44 @@ mod tests {
             None,
             &CapabilityPlan::empty(),
         )
+    }
+
+    #[test]
+    fn runtime_gstreamer_plugin_paths_are_fixed_and_already_readable() {
+        let runtime = tempfile::tempdir().unwrap();
+        std::fs::create_dir(runtime.path().join("lib")).unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("GST_PLUGIN_SYSTEM_PATH_1_0", "/home/private/plugins");
+        let manifest = mk_manifest("off");
+        let argv_for = || {
+            build_bwrap_argv(
+                &manifest,
+                Path::new("/host/pkg"),
+                Some((runtime.path(), "selected")),
+                &[],
+                None,
+                None,
+                &CapabilityPlan::empty(),
+            )
+        };
+        assert_eq!(
+            setenv_value(&argv_for(), "GST_PLUGIN_SYSTEM_PATH_1_0"),
+            None
+        );
+        std::fs::write(runtime.path().join("lib/libgstreamer-1.0.so.0"), b"fixture").unwrap();
+        let argv = argv_for();
+        let paths = setenv_value(&argv, "GST_PLUGIN_SYSTEM_PATH_1_0").unwrap();
+        assert!(paths.starts_with("/run/tilo-runtime/selected/lib/gstreamer-1.0:"));
+        assert!(!paths.contains("/home/private"));
+        for path in SYSTEM_GSTREAMER_PLUGINS {
+            assert!(paths.split(':').any(|candidate| candidate == *path));
+            assert!(
+                crate::profile::SYSTEM_READ_PATHS
+                    .iter()
+                    .any(|parent| Path::new(path).starts_with(parent))
+            );
+        }
+        assert!(!argv.iter().any(|arg| arg == "--share-net"));
     }
 
     #[test]

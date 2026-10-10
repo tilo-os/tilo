@@ -100,7 +100,7 @@ impl Info {
         source: &Path,
     ) -> Result<(Self, PathBuf), String> {
         context.authorize(Permission::Write)?;
-        let data = xdg_paths::data_dir().ok_or("host Trash is unavailable")?;
+        let data = tilo_paths::data_dir().ok_or("host Trash is unavailable")?;
         if source.parent() != Some(data.join("Trash/files").as_path()) {
             return Err("native Restore requires an entry in this host's home Trash".into());
         }

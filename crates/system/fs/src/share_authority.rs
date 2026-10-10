@@ -8,9 +8,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use collab_types::{
-    Ed25519PublicKey, FileActor, FileInviteError, FileInviteSubject, FileInviteV1, FilePermission,
-    bearer_secret_hash, canonical_bytes,
+use collab_types::{Ed25519PublicKey, canonical_bytes};
+use fs_protocol::{
+    FileActor, FileInviteError, FileInviteSubject, FileInviteV1, FilePermission, bearer_secret_hash,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -379,7 +379,7 @@ impl ShareAuthority {
     /// truth; bearer secrets and secret hashes are never projected.
     pub fn projection(
         &self,
-        record_id: collab_types::FileRecordId,
+        record_id: fs_protocol::FileRecordId,
         now_ms: u64,
     ) -> ShareProjectionV1 {
         let current = self
@@ -446,7 +446,7 @@ impl ShareAuthority {
 #[serde(deny_unknown_fields)]
 pub struct ShareProjectionV1 {
     pub schema_version: u16,
-    pub record_id: collab_types::FileRecordId,
+    pub record_id: fs_protocol::FileRecordId,
     pub observed_at_ms: u64,
     pub grants: Vec<ShareGrantProjectionV1>,
 }
@@ -680,7 +680,7 @@ pub enum ShareAuthorityError {
 mod tests {
     use std::sync::{Arc, Barrier};
 
-    use collab_types::{
+    use fs_protocol::{
         FileInviteSpec, FileInviteSubject, FilePermission, FileRecordId, mint_bearer_file_invite,
         mint_file_invite,
     };
@@ -700,7 +700,7 @@ mod tests {
     fn limited_invite() -> (
         tempfile::TempDir,
         Ed25519PublicKey,
-        collab_types::BearerFileInvite,
+        fs_protocol::BearerFileInvite,
     ) {
         let dir = tempfile::tempdir().unwrap();
         let mut rng = UnwrapErr(SysRng);
@@ -784,7 +784,7 @@ mod tests {
             let (issuer_sk, issuer) = collab_types::generate_keypair();
             let (_, person) = collab_types::generate_keypair();
             let (_, stranger) = collab_types::generate_keypair();
-            let token = collab_types::mint_file_invite(
+            let token = fs_protocol::mint_file_invite(
                 FileInviteSpec {
                     workspace_id: Uuid::new_v4(),
                     record_id: FileRecordId::new(),

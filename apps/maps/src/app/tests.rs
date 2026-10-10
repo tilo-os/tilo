@@ -175,7 +175,7 @@ fn pan_and_zoom_follow_pointer_wheel_and_keys() {
         let handled = feed(
             &mut a,
             &WindowEvent::MouseWheel {
-                device_id: dummy_device_id(),
+                device_id: winit::event::DeviceId::dummy(),
                 delta: MouseScrollDelta::LineDelta(0.0, 1.0),
                 phase: winit::event::TouchPhase::Moved,
             },
@@ -232,7 +232,7 @@ fn pan_and_zoom_follow_pointer_wheel_and_keys() {
         let handled = feed(
             &mut a,
             &WindowEvent::MouseWheel {
-                device_id: dummy_device_id(),
+                device_id: winit::event::DeviceId::dummy(),
                 delta: MouseScrollDelta::LineDelta(0.0, -1.0),
                 phase: winit::event::TouchPhase::Moved,
             },
@@ -945,40 +945,22 @@ fn platform_search_opens_finds_and_activates_places() {
         );
 
         // Ctrl+V through the real KeyboardInput path.
-        let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Character(winit::keyboard::SmolStr::new("v"));
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
+        // Ctrl+V carries no committed text.
+        let ev = ui::synthetic_input::key_event(
+            Key::Character(winit::keyboard::SmolStr::new("v")),
+            None,
+            ElementState::Pressed,
         );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = None; // Ctrl+V carries no committed text
         let ctrl = {
             use winit::keyboard::ModifiersState;
             winit::event::Modifiers::from(ModifiersState::CONTROL)
         };
-        let mut state = AutoCommit::new();
-        let root = automerge::ROOT;
-        let mut handled = false;
-        let mut focus: Option<NodeId> = None;
-        let mut taffy = TaffyTree::<()>::new();
-        let node = taffy.new_leaf(Style::default()).unwrap();
-        a.handle_event(
+        ui::testing::Dispatch::new().modifiers(ctrl).send(
+            &mut a,
             &WindowEvent::KeyboardInput {
-                device_id: dummy_device_id(),
+                device_id: winit::event::DeviceId::dummy(),
                 event: ev,
                 is_synthetic: false,
-            },
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &ctrl,
-                state: ui::widget::Edits::lend(&mut state),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
             },
         );
 
@@ -2377,47 +2359,18 @@ fn route_endpoints_come_from_ranked_search_or_an_honest_location_fix() {
 // the hit-testing, drag tracking and dispatch chain a real click travels
 // through are all covered.
 
-/// `DeviceId` has no public constructor; a zeroed value is the sentinel
-/// winit itself uses and the convention across this workspace's widget
-/// tests (see `crates/sdk/ui-core/src/widget/image_viewer.rs`).
-fn dummy_device_id() -> winit::event::DeviceId {
-    // SAFETY: `DeviceId` is an opaque platform handle; the dispatch path
-    // under test never dereferences it.
-    unsafe { std::mem::zeroed() }
-}
-
 /// Feed one `WindowEvent` through the real `handle_event`, returning
 /// whether the app marked it handled. Layout params are unused by the maps
 /// widget (it hit-tests its own recorded rects) so dummies suffice.
 fn feed(a: &mut MapsApp, ev: &WindowEvent) -> bool {
-    let modifiers = winit::event::Modifiers::default();
-    let mut state = AutoCommit::new();
-    let root = automerge::ROOT;
-    let mut handled = false;
-    let mut focus: Option<NodeId> = None;
-    let mut taffy = TaffyTree::<()>::new();
-    let node = taffy.new_leaf(Style::default()).unwrap();
-    a.handle_event(
-        ev,
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &modifiers,
-            state: ui::widget::Edits::lend(&mut state),
-            path: &root,
-            handled: &mut handled,
-            focus_target: &mut focus,
-            node_id: node,
-            taffy: &taffy,
-        },
-    );
-    handled
+    ui::testing::dispatch(a, ev)
 }
 
 fn move_to(a: &mut MapsApp, x: f64, y: f64) -> bool {
     feed(
         a,
         &WindowEvent::CursorMoved {
-            device_id: dummy_device_id(),
+            device_id: winit::event::DeviceId::dummy(),
             position: winit::dpi::PhysicalPosition::new(x, y),
         },
     )
@@ -2427,7 +2380,7 @@ fn press_left(a: &mut MapsApp) -> bool {
     feed(
         a,
         &WindowEvent::MouseInput {
-            device_id: dummy_device_id(),
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Pressed,
             button: MouseButton::Left,
         },
@@ -2438,7 +2391,7 @@ fn release_left(a: &mut MapsApp) -> bool {
     feed(
         a,
         &WindowEvent::MouseInput {
-            device_id: dummy_device_id(),
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Released,
             button: MouseButton::Left,
         },
@@ -2672,14 +2625,10 @@ fn live_navigation_surface_keeps_identity_modality_and_motion_rules() {
     }
 }
 
-// --- Keyboard shortcuts through the real KeyboardInput path -------------
-// These drive the actual `WindowEvent::KeyboardInput` → `handle_key`
-// dispatch. `KeyEvent` has a `pub(crate)` field in winit 0.30, so it is
-// built via the workspace-standard zeroed-struct workaround (see
-// `crates/sdk/ui-core/src/widget/slash_menu.rs`); `handle_key` only reads `logical_key`.
+// --- Keyboard shortcuts through the real KeyboardInput path ------------- These drive the actual
+// `WindowEvent::KeyboardInput` → `handle_key` dispatch. `handle_key` only reads `logical_key`.
 
 fn feed_key(a: &mut MapsApp, logical: Key) -> bool {
-    use winit::keyboard::{KeyLocation, NativeKeyCode, PhysicalKey};
     // Real winit reports the committed text alongside the logical key for a
     // printable character; the shared TextInput inserts from that `text`
     // field, so mirror it here (named keys carry no text).
@@ -2688,17 +2637,11 @@ fn feed_key(a: &mut MapsApp, logical: Key) -> bool {
         Key::Named(NamedKey::Space) => Some(winit::keyboard::SmolStr::new(" ")),
         _ => None,
     };
-    let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-    ev.logical_key = logical;
-    ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-    ev.location = KeyLocation::Standard;
-    ev.state = ElementState::Pressed;
-    ev.repeat = false;
-    ev.text = text;
+    let ev = ui::synthetic_input::key_event(logical, text, ElementState::Pressed);
     feed(
         a,
         &WindowEvent::KeyboardInput {
-            device_id: dummy_device_id(),
+            device_id: winit::event::DeviceId::dummy(),
             event: ev,
             is_synthetic: false,
         },
@@ -2726,9 +2669,7 @@ fn offline_regions_record_delete_and_clear_without_losing_shared_tiles() {
     // exercised against a disposable temp dir, never the user's real cache.
     {
         let mut a = app_at(1280.0, 720.0);
-        let uniq = ui::time::wall()
-            .duration_since(ui::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_nanos());
+        let uniq = ui::time::unix_now_ns();
         let dir =
             std::env::temp_dir().join(format!("tilo-maps-cctest-{}-{}", std::process::id(), uniq));
         std::fs::create_dir_all(&dir).unwrap();
@@ -2872,10 +2813,7 @@ fn offline_regions_record_delete_and_clear_without_losing_shared_tiles() {
 /// A fresh, isolated on-disk cache dir so a delete step never touches the
 /// user's real tile cache.
 fn region_test_cache(tag: &str) -> std::path::PathBuf {
-    let n = ui::time::wall()
-        .duration_since(ui::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
+    let n = ui::time::try_unix_now_ns().unwrap();
     std::env::temp_dir().join(format!("tilo-maps-{tag}-{}-{}", std::process::id(), n))
 }
 

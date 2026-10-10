@@ -336,10 +336,10 @@ pub fn find_token() -> Option<Token> {
         });
     }
     let mut dirs: Vec<PathBuf> = Vec::new();
-    if let Some(home) = xdg_paths::home() {
+    if let Some(home) = tilo_paths::home() {
         dirs.push(home.join(".config"));
     }
-    if let Some(config) = xdg_paths::config_dir() {
+    if let Some(config) = tilo_paths::config_dir() {
         dirs.push(config);
     }
     for dir in &dirs {
@@ -521,7 +521,7 @@ pub fn file_sha256(path: &Path) -> Result<String, CliError> {
 
 /// Where a disk is cached: `<cache>/tilo-vm/disks/<tag>/<file>`.
 pub fn cache_path(tag: &str, file: &str) -> PathBuf {
-    xdg_paths::cache_dir()
+    tilo_paths::cache_dir()
         .unwrap_or_else(std::env::temp_dir)
         .join("tilo-vm")
         .join("disks")

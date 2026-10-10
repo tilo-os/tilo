@@ -118,6 +118,11 @@ pub struct Feed {
     pub folder: Option<Id>,
     pub order: u32,
     pub kind: FeedKind,
+    /// A `gemini://` feed's server certificate (BLAKE3 of its DER, hex),
+    /// pinned on first contact. Gemini servers sign their own certificates,
+    /// so this pin is all that stops anyone on the path from serving the feed.
+    #[serde(default)]
+    pub certificate_pin: Option<String>,
 }
 
 /// One article / entry.
@@ -392,10 +397,6 @@ impl Store {
         self.articles.iter().filter(|a| a.starred).count()
     }
 
-    pub fn total_articles(&self) -> usize {
-        self.articles.len()
-    }
-
     // --- filtering -------------------------------------------------------
 
     /// Does an article match the active filter?
@@ -633,6 +634,7 @@ mod tests {
             folder,
             order: 0,
             kind: FeedKind::Rss,
+            certificate_pin: None,
         }
     }
     fn art(id: Id, feed_id: Id, read: bool, starred: bool, when: i64) -> Article {

@@ -1195,38 +1195,20 @@ fn saves_persist_and_refusals_never_claim_success() {
 // =================================================================
 
 use winit::dpi::PhysicalPosition;
-use winit::event::{DeviceId, ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
-use winit::keyboard::{Key, KeyLocation, ModifiersState, NamedKey, PhysicalKey, SmolStr};
+use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::keyboard::{Key, ModifiersState, NamedKey, SmolStr};
 
-/// Build a `KeyboardInput` winit event. winit 0.30's `KeyEvent` carries a
-/// `pub(crate)` `platform_specific` field, so it can't be struct-literalled
-/// — the whole struct is zero-initialised (the same trick `shell`'s and
-/// `terminal`'s test harnesses use) then the public fields we care about are
-/// overwritten. `text` is what a focused `TextInput` actually inserts.
+/// `text` is what a focused `TextInput` actually inserts.
 fn key_input_event(logical_key: Key, text: Option<&str>) -> WindowEvent {
-    // SAFETY: every public `KeyEvent` field tolerates the all-zero bit
-    // pattern (`Option` → `None`; `Key`/`PhysicalKey`/`KeyLocation`/
-    // `ElementState` first variant; `bool` → false) and we overwrite the
-    // ones we read below; the private field is inert for our widgets.
-    let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-    ev.logical_key = logical_key;
-    ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-    ev.location = KeyLocation::Standard;
-    ev.state = ElementState::Pressed;
-    ev.repeat = false;
-    ev.text = text.map(SmolStr::new);
+    // `Key`/`PhysicalKey`/`KeyLocation`/ `ElementState` first variant; `bool` → false) and we
+    // overwrite the ones we read below; the private field is inert for our widgets.
+    let ev =
+        ui::synthetic_input::key_event(logical_key, text.map(SmolStr::new), ElementState::Pressed);
     WindowEvent::KeyboardInput {
-        device_id: device_id(),
+        device_id: winit::event::DeviceId::dummy(),
         event: ev,
         is_synthetic: false,
     }
-}
-
-fn device_id() -> DeviceId {
-    // winit gives no public DeviceId constructor; the production code
-    // does exactly this for synthesised presses (see
-    // `forward_press_to_focused_input`).
-    unsafe { std::mem::zeroed() }
 }
 
 /// Mounts the app in the production frame host so tests can pump events
@@ -1267,7 +1249,7 @@ impl Harness {
 
     fn move_to(&mut self, p: Point) {
         self.dispatch(&WindowEvent::CursorMoved {
-            device_id: device_id(),
+            device_id: winit::event::DeviceId::dummy(),
             position: PhysicalPosition::new(p.x, p.y),
         });
     }
@@ -1275,12 +1257,12 @@ impl Harness {
     fn press_left(&mut self, p: Point) -> bool {
         self.move_to(p);
         let press = self.dispatch(&WindowEvent::MouseInput {
-            device_id: device_id(),
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Pressed,
             button: MouseButton::Left,
         });
         let release = self.dispatch(&WindowEvent::MouseInput {
-            device_id: device_id(),
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Released,
             button: MouseButton::Left,
         });
@@ -1291,7 +1273,7 @@ impl Harness {
     fn press_right(&mut self, p: Point) -> bool {
         self.move_to(p);
         let handled = self.dispatch(&WindowEvent::MouseInput {
-            device_id: device_id(),
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Pressed,
             button: MouseButton::Right,
         });
@@ -2674,7 +2656,7 @@ fn split_divider_and_compact_toolbar_fit_their_space() {
         assert!(h.app.shell.geometry().resize_handle.width() > 0.0);
         h.move_to(grab);
         assert!(h.dispatch(&WindowEvent::MouseInput {
-            device_id: device_id(),
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Pressed,
             button: MouseButton::Left,
         }));
@@ -2685,7 +2667,7 @@ fn split_divider_and_compact_toolbar_fit_their_space() {
             "dragging the shared sidebar grip widens navigation"
         );
         h.dispatch(&WindowEvent::MouseInput {
-            device_id: device_id(),
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Released,
             button: MouseButton::Left,
         });
@@ -4407,7 +4389,7 @@ fn check_mouse_wheel_scrolls_the_overflowing_contact_list() {
     let before = h.app.shared.borrow().painted.clone();
     h.move_to(h.app.shell.geometry().overview_column.center());
     h.dispatch(&WindowEvent::MouseWheel {
-        device_id: device_id(),
+        device_id: winit::event::DeviceId::dummy(),
         delta: MouseScrollDelta::LineDelta(0.0, -3.0),
         phase: winit::event::TouchPhase::Moved,
     });

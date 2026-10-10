@@ -200,12 +200,6 @@ impl VirtualTableSemantics {
     }
 
     #[must_use]
-    pub fn hashed_key(mut self, key: impl std::hash::Hash) -> Self {
-        self.key = Some(crate::a11y::hash_key(&key));
-        self
-    }
-
-    #[must_use]
     pub fn columns(mut self, columns: Vec<TableSemanticColumn>) -> Self {
         self.columns = columns;
         self

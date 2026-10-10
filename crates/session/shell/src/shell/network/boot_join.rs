@@ -2,7 +2,7 @@
 //! nobody sits at (a provider guest). The host issues the invitation; the
 //! session redeems it through the same canonical native enrollment a person
 //! uses, into the active workspace, once per room.
-use super::*;
+use super::{Path, RoomId, ShellNetwork};
 use crate::shell::peer_sync_overlay::PeerSyncResponse;
 use std::time::{Duration, Instant};
 
@@ -70,10 +70,8 @@ impl ShellNetwork {
             // Startup has not reached the event loop yet: fold in what the
             // host sent here.
             self.tick();
-            let now = SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .map_err(|error| error.to_string())?
-                .as_secs();
+            let now = tilo_clock::try_unix_now()
+                .ok_or_else(|| "the system clock is before the Unix epoch".to_owned())?;
             if tree.read().desktop.workspaces.iter().any(|workspace| {
                 workspace.room == target && workspace.may_administer_at(&person, now)
             }) {
@@ -93,13 +91,8 @@ impl ShellNetwork {
             .map_err(|error| format!("{}: {error}", path.display()))?
             .trim()
             .to_owned();
-        let now = u64::try_from(
-            SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .map_err(|error| error.to_string())?
-                .as_nanos(),
-        )
-        .map_err(|error| error.to_string())?;
+        let now = tilo_clock::try_unix_now_ns()
+            .ok_or_else(|| "the system clock is before the Unix epoch".to_owned())?;
         let room = tilo_peer_state::join::decode_and_verify_invitation_text(
             &text,
             None,

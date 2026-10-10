@@ -77,8 +77,6 @@ mod dmabuf_direct_capture_path;
 mod dmabuf_feedback_protocol;
 #[path = "document_open_e2e.rs"]
 mod document_open_e2e;
-#[path = "drm_backend_boot.rs"]
-mod drm_backend_boot;
 #[path = "e2e_shell_flows.rs"]
 mod e2e_shell_flows;
 #[path = "emoji_picker_commit.rs"]
@@ -121,6 +119,8 @@ mod identity_startup;
 mod idle_inhibit_protocol;
 #[path = "idle_settles.rs"]
 mod idle_settles;
+#[path = "idle_wakeups.rs"]
+mod idle_wakeups;
 #[path = "input_device_settings.rs"]
 mod input_device_settings;
 #[path = "input_method_wire.rs"]
@@ -181,10 +181,10 @@ mod presenter_screen;
 mod qs_actions_click_routing;
 #[path = "real_apps_visual.rs"]
 mod real_apps_visual;
-#[path = "remote_cursors_test.rs"]
-mod remote_cursors_test;
 #[path = "remote_typing_wire.rs"]
 mod remote_typing_wire;
+#[path = "removed_run_modes.rs"]
+mod removed_run_modes;
 #[path = "reopen_closed_tab.rs"]
 mod reopen_closed_tab;
 #[path = "runtime_daemon_process.rs"]
@@ -217,8 +217,6 @@ mod state_file_format;
 mod strip_navigation;
 #[path = "surface_substream_e2e.rs"]
 mod surface_substream_e2e;
-#[path = "system_monitor_test.rs"]
-mod system_monitor_test;
 #[path = "tilo_e2e_test.rs"]
 mod tilo_e2e_test;
 #[path = "toplevel_configure_states.rs"]
@@ -246,3 +244,7 @@ mod xdg_activation;
 
 #[path = "vulkan_present_damage.rs"]
 mod vulkan_present_damage;
+
+#[cfg(feature = "test-support")]
+#[path = "network_cost_boundary.rs"]
+mod network_cost_boundary;

@@ -291,11 +291,9 @@ pub(crate) fn render_past<A: ResourceApp>(
     Ok(PastVersion { preview })
 }
 
-/// Draws `A`'s view over a frozen past version into `bounds` of a scene.
-pub(crate) type DrawPast = fn(AutoCommit, Rect, &mut Scene, Affine, &Theme) -> Result<(), String>;
-
 /// Lay out `A`'s view over `doc`, a frozen past version, in `bounds` and
 /// draw it: what `render` answers for a version.
+#[cfg(not(target_family = "wasm"))]
 pub(crate) fn draw_past<A: ResourceApp>(
     doc: AutoCommit,
     bounds: Rect,
