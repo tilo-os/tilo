@@ -85,25 +85,24 @@ fn checked(command: &mut Command) -> TestResult<String> {
     Ok(String::from_utf8(output.stdout)?)
 }
 
-fn configure(source: &Path, build: &Path, git: &Path) -> TestResult<String> {
-    let output = checked(
-        Command::new("cmake")
-            .arg("-S")
-            .arg(source)
-            .arg("-B")
-            .arg(build)
-            .arg(format!(
-                "-DTILO_WHISPER_ROOT={}",
-                source.join("upstream/whisper.cpp").display()
-            ))
-            .arg("-DCMAKE_SYSTEM_NAME=Linux")
-            .arg(format!(
-                "-DCMAKE_SYSTEM_PROCESSOR={}",
-                std::env::consts::ARCH
-            ))
-            .env("GIT_DIR", git)
-            .env("GIT_WORK_TREE", source),
-    )?;
+fn cmake_configure(source: &Path, build: &Path, git: &Path) -> Command {
+    let mut command = Command::new("timeout");
+    command
+        .args(["15s", "cmake", "-S"])
+        .arg(source)
+        .arg("-B")
+        .arg(build)
+        .arg("-DCMAKE_SYSTEM_NAME=Linux")
+        .arg(format!(
+            "-DCMAKE_SYSTEM_PROCESSOR={}",
+            std::env::consts::ARCH
+        ))
+        .env("GIT_DIR", git)
+        .env("GIT_WORK_TREE", source);
+    command
+}
+
+fn native_identity(output: &str) -> TestResult<String> {
     let identity = output
         .lines()
         .find_map(|line| line.strip_prefix("-- ggml commit:  "))
@@ -113,6 +112,62 @@ fn configure(source: &Path, build: &Path, git: &Path) -> TestResult<String> {
         "native identity is not source-addressed",
     )?;
     Ok(identity.to_owned())
+}
+
+fn configure(source: &Path, build: &Path, git: &Path) -> TestResult<String> {
+    let output = checked(cmake_configure(source, build, git).arg(format!(
+        "-DTILO_WHISPER_ROOT={}",
+        source.join("upstream/whisper.cpp").display()
+    )))?;
+    native_identity(&output)
+}
+
+#[test]
+fn real_cmake_restores_vendor_root_after_cache_entry_loss() -> TestResult {
+    let temporary = tempfile::tempdir()?;
+    let source = temporary.path().join("native");
+    copy_tree(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("native"),
+        &source,
+    )?;
+    let git = temporary.path().join("parent.git");
+    checked(Command::new("git").arg("init").arg("--bare").arg(&git))?;
+    let build = temporary.path().join("build");
+    let first = configure(&source, &build, &git)?;
+    // Exercise the second configure with the same loss of the command-line
+    // cache entry that CMake's compiler-change restart produces.
+    let output = checked(cmake_configure(&source, &build, &git).arg("-UTILO_WHISPER_ROOT"))?;
+    require(
+        first == native_identity(&output)?,
+        "lost vendor-root cache entry changed the native source identity",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn real_cmake_refuses_invalid_vendor_root_before_hashing() -> TestResult {
+    let temporary = tempfile::tempdir()?;
+    let source = temporary.path().join("native");
+    copy_tree(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("native"),
+        &source,
+    )?;
+    let git = temporary.path().join("parent.git");
+    checked(Command::new("git").arg("init").arg("--bare").arg(&git))?;
+    let output = cmake_configure(&source, &temporary.path().join("build"), &git)
+        .arg("-DTILO_WHISPER_ROOT=/")
+        .output()?;
+    require(!output.status.success(), "invalid vendor root was accepted")?;
+    require(
+        output.status.code() != Some(124),
+        "invalid vendor root timed out instead of refusing before hashing",
+    )?;
+    require(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("TILO_WHISPER_ROOT must name the vendored Whisper source tree"),
+        "invalid vendor root did not report the production source-tree guard",
+    )?;
+    Ok(())
 }
 
 #[test]

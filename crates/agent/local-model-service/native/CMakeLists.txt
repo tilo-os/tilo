@@ -54,6 +54,16 @@ endforeach()
 # compile command, invalidating the compiler cache for unchanged CPU sources.
 # Report the actual vendored source identity and leave Tilo's build provenance
 # to the enclosing package/image receipts.
+# CMake drops command-line cache entries when a compiler change forces a
+# second configure. Re-establish the vendored path on that pass: an empty
+# root would otherwise glob the filesystem and hash devices indefinitely.
+if(NOT TILO_WHISPER_ROOT)
+    set(TILO_WHISPER_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/upstream/whisper.cpp")
+endif()
+if(NOT EXISTS "${TILO_WHISPER_ROOT}/include/whisper.h" OR
+   NOT EXISTS "${TILO_WHISPER_ROOT}/ggml/CMakeLists.txt")
+    message(FATAL_ERROR "TILO_WHISPER_ROOT must name the vendored Whisper source tree")
+endif()
 file(GLOB_RECURSE TILO_WHISPER_INPUTS CONFIGURE_DEPENDS
     RELATIVE "${TILO_WHISPER_ROOT}" "${TILO_WHISPER_ROOT}/*")
 list(SORT TILO_WHISPER_INPUTS)
