@@ -10,7 +10,8 @@
 //! Two scales:
 //!
 //! - one thread of the test process: [`spawned_thread`] finds the thread a
-//!   service starts, [`assert_stays_asleep`] fails if it is scheduled at all
+//!   service starts, [`named_thread`] one already running,
+//!   [`assert_stays_asleep`] fails if it is scheduled at all
 //!   while idle, and [`context_switches`] reads its count;
 //! - a whole process tree, such as a compositor the test spawned and every
 //!   app it started: [`idle_wakeups`] samples every thread of it over a
@@ -93,6 +94,25 @@ pub fn spawned_thread<T>(comm: &str, start: impl FnOnce() -> T) -> (T, String) {
         );
         std::thread::sleep(Duration::from_millis(5));
     }
+}
+
+/// The id of this process's one live thread named `comm` (the kernel's
+/// 15-byte truncation of the thread name).
+///
+/// # Panics
+/// `/proc/self/task` cannot be listed, or not exactly one thread has that
+/// name.
+pub fn named_thread(comm: &str) -> String {
+    let named: Vec<_> = own_thread_ids()
+        .into_iter()
+        .filter(|tid| {
+            std::fs::read_to_string(format!("/proc/self/task/{tid}/comm"))
+                .is_ok_and(|name| name.trim() == comm)
+        })
+        .collect();
+    let [tid] = <[String; 1]>::try_from(named)
+        .unwrap_or_else(|named| panic!("{} live threads named {comm}, not one", named.len()));
+    tid
 }
 
 /// Fail if thread `tid` is scheduled at all during an idle 400 ms.
