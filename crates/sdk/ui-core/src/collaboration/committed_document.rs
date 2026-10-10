@@ -474,7 +474,7 @@ mod tests {
                 token: [6; 16],
             },
             &ByteBudget::new(),
-            async |_| std::future::pending().await,
+            async |_| std::future::pending::<Result<Reply, String>>().await,
         )
         .await;
         assert!(result.is_err(), "an unknown acknowledgement outcome is never accepted");
