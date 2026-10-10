@@ -3,7 +3,7 @@
 These are historical source-pinned drivers and full recorded outputs from the
 hardware-isolated GTK qualification at compositor/worker source head
 `920cc7541449bdf53b557acf4939682bb1bdc47b`. They are not an installer or a
-current-head launcher. `TILO_QUALIFICATION_BUILD_ROOT` denotes the owned rcargo
+current-head launcher. `TILO_QUALIFICATION_BUILD_ROOT` denotes the owned remote Cargo drop-in
 worktree root; artifact mounts are under its `target`, distinct from `src`.
 JSON and logs use `${BUILD_ROOT}` in place of the absolute remote task path.
 The adjacent architectural ledger retains original and portable hashes.
@@ -21,7 +21,7 @@ learning behavior. `private-refusal-failed-*` preserves the earlier failing
 assertion that PRIVATE should behave as a secret purpose; GTK documents a
 different meaning. No failed assertion is relabeled as passing.
 
-Full remote evidence was exported while holding the existing owned rcargo
+Full remote evidence was exported while holding the existing owned remote Cargo drop-in
 worktree lock against artifact collection, then released. A rerun needs matching
 source/binary/module guards, verified public fixtures and fresh output names.
 Never bypass a receipt to reuse an old result. No local VM, hardware microphone,
