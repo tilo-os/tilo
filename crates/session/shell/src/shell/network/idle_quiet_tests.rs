@@ -428,7 +428,7 @@ fn a_lone_idle_desktop_keeps_its_network_runtime_asleep() {
         &dir.path().join("lone"),
         &root,
         DeviceCapabilities::primary(),
-        Reach::LoopbackHoldingRelays(super::reachability_tests::unused_relays()),
+        Reach::LoopbackHoldingRelays,
     );
     assert!(net.join_default_workspace());
     let deadline = Instant::now()

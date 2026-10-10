@@ -123,7 +123,7 @@ fn two_desktops_holding_their_relays_back_still_sync_and_then_wake_them() {
         &dir.path().join("first"),
         &root,
         DeviceCapabilities::primary(),
-        Reach::LoopbackHoldingRelays(unused_relays()),
+        Reach::LoopbackHoldingRelays,
     );
     assert!(first.join_default_workspace());
 
@@ -135,7 +135,7 @@ fn two_desktops_holding_their_relays_back_still_sync_and_then_wake_them() {
         &dir.path().join("second"),
         &root,
         DeviceCapabilities::member(),
-        Reach::LoopbackHoldingRelays(unused_relays()),
+        Reach::LoopbackHoldingRelays,
     );
     assert!(second.join_default_workspace());
 
