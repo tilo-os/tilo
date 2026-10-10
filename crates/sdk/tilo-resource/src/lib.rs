@@ -167,7 +167,7 @@ pub use storage::{Bytes, Counter, Grid, Outbox, OutboxEntry, Set, Settled};
 pub use surface::Surface;
 pub use text::{PlainText, TextEdit};
 pub use tilo_actions::Availability;
-pub use tilo_resource_macros::{Effect, JsonSchema, Model, resource};
+pub use tilo_resource_macros::{Effect, JsonSchema, Model, committed_surface, resource};
 
 /// Items the generated code refers to. Not part of the public API.
 #[doc(hidden)]

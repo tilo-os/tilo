@@ -5337,6 +5337,7 @@ async fn try_send_frame(
     if op.encryption.is_some() {
         op = op.with_claims(claims.to_vec());
     }
+    op = op.with_surface(crate::app_surface::hash_of(&route.spec.app_id));
     let unsigned_op = match postcard::to_stdvec(&op) {
         Ok(bytes) => bytes,
         Err(error) => {

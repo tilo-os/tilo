@@ -129,6 +129,7 @@ pub(crate) mod application_test_support;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod app;
+pub mod app_surface;
 pub mod auth_backdrop;
 pub mod backdrop;
 pub mod caps_lock;

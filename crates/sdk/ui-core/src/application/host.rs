@@ -127,6 +127,9 @@ impl NativeProcessHost {
 #[derive(Default)]
 struct NativeProcessEnvironment {
     package_id: Option<String>,
+    /// The hex content hash of the package's `surface.toml`, as the
+    /// launcher hands it over.
+    surface: Option<String>,
     quick_app_id: Option<String>,
     workspace_id: Option<String>,
     quick_workspace_id: Option<String>,
@@ -168,6 +171,7 @@ impl NativeProcessEnvironment {
         }
         Self {
             package_id: string("TILO_PACKAGE_ID"),
+            surface: string("TILO_SURFACE"),
             quick_app_id: string("QUICK_APP_ID"),
             workspace_id: string("TILO_WORKSPACE_ID"),
             quick_workspace_id: string("QUICK_CLUSTER_ID"),
@@ -197,6 +201,13 @@ impl NativeProcessEnvironment {
             .map_or_else(|| app_id.to_owned(), str::to_owned);
         if package_id != app_id {
             return Err(LaunchError::BindingMismatch);
+        }
+        if let Some(hash) = self
+            .surface
+            .as_deref()
+            .and_then(crate::app_surface::parse_hash)
+        {
+            crate::app_surface::register_launched(app_id, hash);
         }
         let profile_root = self.persistent_profile_root()?;
         let device_id = persistent_device_id(&profile_root)?;
