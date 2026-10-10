@@ -896,7 +896,7 @@ fn spotify_keyboard_creation_and_escape_use_accessible_shared_controls() {
             .unwrap();
         assert_eq!(app.surface_mut::<MusicApp>().source_widget_mode(), 3);
         let accessible = app.harness().focus_access_nodes();
-        let label = ui::i18n!("music-spotify-create-playlist");
+        let label = crate::i18n::t("music-spotify-create-playlist");
         assert!(
             accessible
                 .iter()
@@ -4588,7 +4588,7 @@ fn recommendations_shared_input_and_dismiss_controls_record_canonical_actions() 
     assert!(!doc::load_library(&doc).recommendations.likes);
     assert_eq!(
         last_action_label(&mut doc).as_deref(),
-        Some(ui::i18n!("music-recommendations-change-inputs").as_str())
+        Some(crate::i18n::t("music-recommendations-change-inputs").as_str())
     );
     app.dispatch(
         Action::Recommendation(crate::actions::MusicAction::SetRecommendationInput {
@@ -4614,7 +4614,7 @@ fn recommendations_shared_input_and_dismiss_controls_record_canonical_actions() 
     );
     assert_eq!(
         last_action_label(&mut doc).as_deref(),
-        Some(ui::i18n!("music-recommendations-dismiss").as_str())
+        Some(crate::i18n::t("music-recommendations-dismiss").as_str())
     );
 }
 

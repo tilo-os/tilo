@@ -51,6 +51,7 @@ pub mod backend;
 pub mod commands;
 pub mod doc;
 mod files;
+mod i18n;
 #[cfg(test)]
 pub mod live_search;
 pub mod local_file;
