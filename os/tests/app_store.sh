@@ -232,7 +232,12 @@ else
       build, so every packaged app is refused at install time with
       RuntimeDependencyMissing and the image never builds."
   fi
-  if containerfile_has_copy "$CONTAINERFILE" "$sysroot/" "$sysroot/" builder; then
+  # The runtime reaches the rootfs through runtime-image-payload, which copies
+  # the builder's tree to /image$sysroot (beside the font catalog's hard links,
+  # TIL-609); the rootfs copies that /image/usr/ to /usr/ whole.
+  if containerfile_has_copy "$CONTAINERFILE" "/image/usr/" "/usr/" runtime-image-payload \
+     && grep -q -- "--mount=type=bind,from=builder,source=$sysroot,target=/tilo-runtime,ro" "$CONTAINERFILE" \
+     && grep -q -- "cp -a /tilo-runtime /image$sysroot " "$CONTAINERFILE"; then
     ok "the image copies the runtime bundle from and to $sysroot"
   else
     bad "os/Containerfile does not copy $sysroot/ to $sysroot/ — the booted system
