@@ -129,8 +129,6 @@ cloud-source-gdrive = { path = "../../crates/system/cloud-source-gdrive", featur
 cloud-source-onedrive = { path = "../../crates/system/cloud-source-onedrive", features = ["fake-server"] }
 cloud-source-dropbox = { path = "../../crates/system/cloud-source-dropbox", features = ["fake-server"] }
 cloud-source-icloud = { path = "../../crates/system/cloud-source-icloud", features = ["fake-server"] }
-
-[target.'cfg(target_os = "linux")'.dev-dependencies]
 # The keyboard preview's confinement test runs it inside the launcher's real
 # read-only sandbox profile. The app itself never links the launcher.
 launcher = { path = "../../crates/packaging/launcher" }
