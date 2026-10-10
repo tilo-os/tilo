@@ -12771,6 +12771,14 @@ pub fn run() {
                 crate::compositor::screen_dim::paint_overlay(&mut frame_paint.scene, rect, alpha);
                 frame_paint.force_full();
             }
+            // The scene is final: whatever was appended above has voided the
+            // candidate if it covers it. The fullscreen client learns what
+            // the display would scan out, or that it no longer would.
+            state.update_scanout_feedback(crate::compositor::scanout_feedback::offer(
+                frame_paint.scanout_candidate(),
+                backend.outputs(),
+                |output| backend.scanout_plane(output),
+            ));
             let feedback_output = (backend.outputs().len() == 1)
                 .then(|| {
                     backend
