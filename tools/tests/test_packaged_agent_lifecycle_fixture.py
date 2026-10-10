@@ -824,6 +824,91 @@ class FixtureFailureDiagnosticsTests(unittest.TestCase):
 
 
 class PresentedEditorTargetTests(unittest.TestCase):
+    def test_float_drag_geometry_and_frames_export_only_closed_numeric_fields(self):
+        rect = {"x": 10, "y": 20, "w": 300, "h": 200}
+        target = {"client_rect": rect, "global_center": {"x": 40, "y": 50}, "identity": "PRIVATE-CANARY"}
+        geometry = {"placement": rect, "content": rect, "origin": {"x": 0, "y": 0}, "private": "PRIVATE-CANARY"}
+        observed = PROOF.closed_float_drag_geometry(target, geometry, {"x": 2, "y": 55})
+        self.assertEqual(observed["steps"], 16)
+        self.assertEqual(set(observed), {"client_rect", "placement", "content", "origin", "from", "to", "steps"})
+        self.assertNotIn("PRIVATE-CANARY", json.dumps(observed))
+        for bad in ("PRIVATE-CANARY", float("nan"), True):
+            with self.subTest(bad=bad), self.assertRaises(RuntimeError):
+                PROOF.closed_float_drag_geometry(target, geometry, {"x": bad, "y": 55})
+        primary = {"app_id": "so.tilo.chat", "surface_id": 5, "floating_id": None,
+                   "frame_seq": 8, "presented": True, "keyboard_focused": True,
+                   "pixels_ready": True, "capture_pending": False,
+                   "last_error": None, "private": "PRIVATE-CANARY"}
+        child = {**primary, "surface_id": 6, "floating_id": "PRIVATE-ID", "frame_seq": "PRIVATE-CANARY",
+                 "presented": "PRIVATE-CANARY", "last_error": "PRIVATE-CANARY"}
+        observed = PROOF.closed_float_drag_frames({"answer": {"frames": [primary, child]}}, primary)
+        self.assertIs(observed["child_presented"], None)
+        self.assertIs(observed["child_frame_seq"], None)
+        self.assertTrue(observed["child_error_present"])
+        self.assertNotIn("PRIVATE", json.dumps(observed))
+        self.assertTrue(all(value is None or type(value) in (bool, int) for value in observed.values()))
+
+    def test_float_drag_unobservable_frames_do_not_satisfy_original_pixels_filter(self):
+        response = {"unobservable": "PRIVATE-CANARY"}
+        self.assertFalse(PROOF.closed_float_drag_frames(response, {})["observable"])
+        with self.assertRaises(RuntimeError):
+            PROOF.presented_floating_frame(response, "so.tilo.chat")
+
+    def test_float_drag_timeout_keeps_original_error_and_single_drag_with_closed_evidence(self):
+        primary = {"app_id": "so.tilo.chat", "surface_id": 5, "floating_id": None,
+                   "frame_seq": 8, "presented": True, "keyboard_focused": True,
+                   "pixels_ready": True, "last_error": None}
+        rect = {"x": 200, "y": 100, "w": 500, "h": 500}
+        geometry = {"placement": rect, "content": rect, "origin": {"x": 200, "y": 100}}
+        target = {"client_rect": {"x": 20, "y": 20, "w": 20, "h": 20},
+                  "global_center": {"x": 230, "y": 130}}
+        before = {"draft_matches": True, "caret": 4, "selection": [4, 5], "accessibility_focused": True}
+        access = {"bus": "owned", "process": 42, "drag": "/drag"}
+        timeout = PROOF.ProofTimeout("timed out waiting for Tide's actual detached native pixels")
+
+        def wait(label, predicate, _process):
+            result = predicate()
+            if label == "Tide's actual detached native pixels":
+                self.assertIsNone(result)
+                raise timeout
+            return result
+
+        def selected(_socket, _access, _expected, selection, *_args, **_kwargs):
+            before.update(caret=selection[0], selection=selection)
+            return before.copy()
+
+        for snapshot_error in (False, True):
+            with self.subTest(snapshot_error=snapshot_error), tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+                output = pathlib.Path(directory)
+                stack.enter_context(patch.object(PROOF, "wait_for", side_effect=wait))
+                stack.enter_context(patch.object(PROOF, "agent_conversation_accessibility", return_value=access))
+                stack.enter_context(patch.object(PROOF, "presented_primary_frame", return_value=primary))
+                stack.enter_context(patch.object(PROOF, "presented_content_geometry", return_value=geometry))
+                stack.enter_context(patch.object(PROOF, "component_global_target", return_value=target))
+                stack.enter_context(patch.object(PROOF, "wait_for_private_selection", side_effect=selected))
+                stack.enter_context(patch.object(PROOF, "private_editor_observation", return_value=before))
+                for name in ("private_editor_value_matches", "editor_accessibility_focus"):
+                    stack.enter_context(patch.object(PROOF, name, return_value=True))
+                for name in ("physically_click_editor", "require_chat_keyboard_focus_after_click", "require_ok"):
+                    stack.enter_context(patch.object(PROOF, name))
+
+                def control(_socket, request):
+                    if snapshot_error and request["op"] == "snapshot" and "float-drag" in request["path"]:
+                        raise RuntimeError("PRIVATE-CANARY")
+                    return {"answer": {"frames": [primary]}}
+
+                calls = stack.enter_context(patch.object(PROOF, "call", side_effect=control))
+                with self.assertRaises(PROOF.ProofTimeout) as raised:
+                    PROOF.native_float_return("socket", "room", "record", output, "1600x900", None)
+                self.assertIs(raised.exception, timeout)
+                self.assertEqual(sum(entry.args[1]["op"] == "drag" for entry in calls.call_args_list), 1)
+                evidence = json.loads((output / "float-drag-observation.json").read_text())
+                self.assertEqual(evidence["observation_count"], 1)
+                self.assertEqual(evidence["last"]["child_count"], 0)
+                self.assertIs(evidence["private_content_recorded"], False)
+                self.assertEqual(evidence["timeout_snapshot_captured"], not snapshot_error)
+                self.assertNotIn("PRIVATE", json.dumps(evidence))
+
     def test_pre_float_baseline_waits_for_exact_caret_focus_and_refuses_reacquire_mutation(self):
         for changed, false_field in (({"draft_matches": False}, "content_matches"),
                                      ({"caret": 0}, "caret_equal"),

@@ -1296,6 +1296,50 @@ def component_global_center(access, path, geometry, label):
     return center["x"], center["y"]
 
 
+def closed_float_drag_geometry(target, geometry, destination):
+    """Project actual drag geometry only; never serialize an accessibility subject."""
+    def point(value):
+        result = {key: value.get(key) for key in ("x", "y")} if isinstance(value, dict) else {}
+        if len(result) != 2 or any(type(number) not in (int, float) or not math.isfinite(number)
+                                   for number in result.values()):
+            raise RuntimeError("Float drag diagnostic geometry is unobservable")
+        return result
+
+    return {"client_rect": _finite_rect(target.get("client_rect"), "drag component"),
+            "placement": _finite_rect(geometry.get("placement"), "drag placement"),
+            "content": _finite_rect(geometry.get("content"), "drag content"),
+            "origin": point(geometry.get("origin")),
+            "from": point(target.get("global_center")), "to": point(destination), "steps": 16}
+
+
+def closed_float_drag_frames(response, primary):
+    """Bound raw Chat readiness evidence without exporting identities or error text."""
+    result = {"observable": False}
+    try:
+        rows = [row for row in foreign_frames(response) if row.get("app_id") == "so.tilo.chat"]
+        result["observable"] = True
+        for label in ("primary", "child"):
+            candidates = [row for row in rows if (row.get("floating_id") is None) == (label == "primary")]
+            result[label + "_count"] = min(len(candidates), 64)
+            row = candidates[0] if len(candidates) == 1 else None
+            result[label + "_observable"] = row is not None
+            if label == "primary":
+                result["primary_matches_captured"] = row is not None \
+                    and row.get("surface_id") == primary.get("surface_id")
+            for field in ("keyboard_focused", "presented", "pixels_ready", "capture_pending",
+                          "suspended", "transferring"):
+                result[label + "_" + field] = row.get(field) \
+                    if row is not None and type(row.get(field)) is bool else None
+            sequence = row.get("frame_seq") if row is not None else None
+            result[label + "_frame_seq"] = sequence if type(sequence) is int and 0 <= sequence <= 2**64 - 1 else None
+            result[label + "_error_present"] = row.get("last_error") is not None if row is not None else None
+            result[label + "_ordinary_route"] = row.get("input_route") is None \
+                and row.get("input_source_surface_id") is None if row is not None else None
+    except (RuntimeError, KeyError, TypeError):
+        result["observable"] = False
+    return result
+
+
 @contextlib.contextmanager
 def hold_physical_modifiers(socket, *, ctrl=False, shift=False, alt=False, logo=False):
     """Hold real seat modifier keys and release accepted keys in reverse order."""
@@ -2649,7 +2693,8 @@ def native_float_return(socket, room, record, output, size, process):
     if primary is None:
         raise RuntimeError("Chat's primary presentation disappeared before drag")
     geometry = presented_content_geometry(primary)
-    drag_x, drag_y = component_global_center(access, access["drag"], geometry, "drag handle")
+    drag_target = component_global_target(access, access["drag"], geometry, "drag handle")
+    drag_x, drag_y = (drag_target["global_center"][key] for key in ("x", "y"))
     desktop_width, desktop_height = (int(value) for value in size.split("x", 1))
     placement = geometry["placement"]
     if placement["x"] >= 140:
@@ -2657,15 +2702,45 @@ def native_float_return(socket, room, record, output, size, process):
     else:
         drag_to_x = min(desktop_width - 8.0, placement["x"] + placement["w"] + 96.0)
     drag_to_y = min(desktop_height - 8.0, max(8.0, drag_y + 48.0))
+    drag_evidence = {"geometry": closed_float_drag_geometry(
+        drag_target, geometry, {"x": drag_to_x, "y": drag_to_y}),
+        "observation_count": 0, "initial": None, "last": None,
+        "after_drag_snapshot_captured": False, "timeout_snapshot_captured": False,
+        "private_content_recorded": False}
     require_ok(call(socket, {
         "op": "drag", "x_from": drag_x, "y_from": drag_y,
         "x_to": drag_to_x, "y_to": drag_to_y, "steps": 16,
     }))
 
-    def painted_float():
-        return presented_floating_frame(call(socket, {"op": "foreign_frames"}), "so.tilo.chat")
+    def drag_snapshot(name):
+        try:
+            require_ok(call(socket, {"op": "snapshot", "path": str(output / name)}))
+            return True
+        except Exception:
+            return False
 
-    frame = wait_for("Tide's actual detached native pixels", painted_float, process)
+    drag_evidence["after_drag_snapshot_captured"] = drag_snapshot(f"after-float-drag-{size}.png")
+
+    def painted_float():
+        response = call(socket, {"op": "foreign_frames"})
+        sample = closed_float_drag_frames(response, primary)
+        drag_evidence["observation_count"] = min(drag_evidence["observation_count"] + 1, 2**64 - 1)
+        if drag_evidence["initial"] is None:
+            drag_evidence["initial"] = sample
+        drag_evidence["last"] = sample
+        return presented_floating_frame(response, "so.tilo.chat")
+
+    try:
+        frame = wait_for("Tide's actual detached native pixels", painted_float, process)
+    except Exception as error:
+        if isinstance(error, ProofTimeout):
+            drag_evidence["timeout_snapshot_captured"] = drag_snapshot(f"failed-float-drag-{size}.png")
+        try:
+            (output / "float-drag-observation.json").write_text(
+                json.dumps(drag_evidence, indent=2, allow_nan=False) + "\n")
+        except Exception:
+            pass  # Diagnostic I/O must not replace the original gate failure.
+        raise
     access = wait_for("detached Tide editor", lambda: agent_conversation_accessibility("Tide", detached=True), process)
     detached = private_editor_observation(access, draft)
     if detached != before:
