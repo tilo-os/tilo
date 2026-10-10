@@ -34,6 +34,10 @@ const MAX_VALUE: usize = 16 * 1024;
 #[cfg(target_os = "linux")]
 const MAX_ENTRIES: usize = 4096;
 
+#[allow(
+    dead_code,
+    reason = "legacy scalar variants remain readable during store migration"
+)]
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 enum StoredValue {
     Empty,
@@ -41,6 +45,10 @@ enum StoredValue {
     /// portal restore tuples/dictionaries instead of narrowing the standard
     /// `v` field to a handful of scalar types.
     Wire(Vec<u8>),
+    Bool(bool),
+    Unsigned(u32),
+    Text(String),
+    Texts(Vec<String>),
 }
 
 impl Default for StoredValue {
@@ -80,6 +88,11 @@ impl StoredValue {
                     .map(|(value, _)| value)
                     .unwrap_or_else(|| OwnedValue::from(Str::from("")))
             }
+            Self::Bool(value) => OwnedValue::from(*value),
+            Self::Unsigned(value) => OwnedValue::from(*value),
+            Self::Text(value) => OwnedValue::from(Str::from(value.as_str())),
+            Self::Texts(values) => OwnedValue::try_from(zbus::zvariant::Value::new(values.clone()))
+                .unwrap_or_else(|_| OwnedValue::from(Str::from(""))),
         }
     }
 }
@@ -494,6 +507,54 @@ fn checked_permissions(
 mod tests {
     use super::*;
     #[test]
+    fn permission_store_reopens_legacy_scalar_values_without_losing_permissions() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("permissions.json");
+        std::fs::write(
+            &path,
+            r#"{"entries":{"documents":{
+                "bool":{"permissions":{"org.example.App":["yes"]},"data":{"Bool":true}},
+                "unsigned":{"permissions":{"org.example.App":["yes"]},"data":{"Unsigned":7}},
+                "text":{"permissions":{"org.example.App":["yes"]},"data":{"Text":"legacy"}},
+                "texts":{"permissions":{"org.example.App":["yes"]},"data":{"Texts":["one","two"]}}
+            }}}"#,
+        )
+        .unwrap();
+        let reopened = PermissionStoreData::at_path(path);
+        let state = reopened.state.lock().unwrap();
+        let entries = state.entries.get("documents").unwrap();
+        assert_eq!(entries.len(), 4);
+        for (id, expected) in [
+            ("bool", StoredValue::Bool(true)),
+            ("unsigned", StoredValue::Unsigned(7)),
+            ("text", StoredValue::Text("legacy".into())),
+            (
+                "texts",
+                StoredValue::Texts(vec!["one".into(), "two".into()]),
+            ),
+        ] {
+            let entry = entries.get(id).unwrap();
+            assert_eq!(entry.data, expected);
+            assert_eq!(
+                entry.permissions,
+                BTreeMap::from([("org.example.App".into(), vec!["yes".into()])])
+            );
+        }
+        assert!(bool::try_from(entries.get("bool").unwrap().data.to_value()).unwrap());
+        assert_eq!(
+            u32::try_from(entries.get("unsigned").unwrap().data.to_value()).unwrap(),
+            7
+        );
+        assert_eq!(
+            String::try_from(entries.get("text").unwrap().data.to_value()).unwrap(),
+            "legacy"
+        );
+        assert_eq!(
+            Vec::<String>::try_from(entries.get("texts").unwrap().data.to_value()).unwrap(),
+            vec!["one".to_string(), "two".to_string()]
+        );
+    }
+    #[test]
     fn permission_store_persists_bounded_entries_and_rejects_path_keys() {
         // Phase `store_survives_reopen`.
         {
@@ -509,7 +570,7 @@ mod tests {
                                 "org.example.App".into(),
                                 vec!["yes".into()],
                             )]),
-                            data: StoredValue::Wire(vec![1]),
+                            data: StoredValue::Text("x".into()),
                         },
                     );
                     Ok(())
