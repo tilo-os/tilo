@@ -3942,6 +3942,17 @@ impl ForeignFrameStore {
         })
     }
 
+    /// A fullscreen client was configured to `size` (logical) by the
+    /// fullscreen overlay rather than by its tab. The tab's last configure
+    /// would otherwise stay the extent, and the overlay would draw the window
+    /// at the tile's size, centred, instead of over the whole output.
+    pub fn note_fullscreen_extent(&self, id: SurfaceId, size: (i32, i32)) {
+        self.with_entry(id, |e| {
+            e.configured = Some(size);
+            e.configured_extent = Some((f64::from(size.0), f64::from(size.1)));
+        });
+    }
+
     /// Replace the sizes the person's other devices show streamed windows at.
     pub fn set_remote_extents(&self, extents: HashMap<SurfaceId, (i32, i32)>) {
         *self

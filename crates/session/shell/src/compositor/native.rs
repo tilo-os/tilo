@@ -18816,6 +18816,9 @@ fn reconcile_fullscreen_overlay(
         target.surface.send_configure();
         target.configured_size = Some(size);
     }
+    if target.pinned_output.is_none() {
+        crate::shell::foreign::store().note_fullscreen_extent(target.surface_id, size);
+    }
     let rect = output.logical_rect();
     frame.set_fullscreen_surface(Some((target.surface_id, "Fullscreen".to_string(), rect)));
     Some(output.id)
