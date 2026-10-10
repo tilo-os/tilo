@@ -195,7 +195,7 @@ title = "Commands asked of the terminal"
 type = "Outbox<RunRequest, RunAnswer>"
 
 [[resources.verbs]]
-description = "New file  A new file named `name` in the folder `folder` (the project's root when none), holding `text`."
+description = "A new file named `name` in the folder `folder` (the project's root when none), holding `text`."
 id = "new-file"
 kind = "undoable"
 label = "New file"
@@ -205,7 +205,6 @@ name = "name"
 required = false
 
 [resources.verbs.params.schema]
-description = "File name; `untitled` when none"
 type = [
     "string",
     "null",
@@ -216,7 +215,6 @@ name = "folder"
 required = false
 
 [resources.verbs.params.schema]
-description = "The folder it goes in; the project's root when none"
 type = [
     "string",
     "null",
@@ -227,14 +225,13 @@ name = "text"
 required = false
 
 [resources.verbs.params.schema]
-description = "Its text"
 type = [
     "string",
     "null",
 ]
 
 [[resources.verbs]]
-description = "New folder  A new folder named `name` in the folder `folder` (the project's root when none)."
+description = "A new folder named `name` in the folder `folder` (the project's root when none)."
 id = "new-folder"
 kind = "undoable"
 label = "New folder"
@@ -244,7 +241,6 @@ name = "name"
 required = false
 
 [resources.verbs.params.schema]
-description = "Folder name; `untitled` when none"
 type = [
     "string",
     "null",
@@ -255,14 +251,13 @@ name = "folder"
 required = false
 
 [resources.verbs.params.schema]
-description = "The folder it goes in; the project's root when none"
 type = [
     "string",
     "null",
 ]
 
 [[resources.verbs]]
-description = "Rename  Give the file or folder another name, unique in its folder."
+description = "Give the file or folder another name, unique in its folder."
 id = "rename"
 kind = "undoable"
 label = "Rename"
@@ -272,7 +267,6 @@ name = "entry"
 required = true
 
 [resources.verbs.params.schema]
-description = "Entry"
 type = "string"
 
 [[resources.verbs.params]]
@@ -280,11 +274,10 @@ name = "name"
 required = true
 
 [resources.verbs.params.schema]
-description = "The new name"
 type = "string"
 
 [[resources.verbs]]
-description = "Move  Move the file or folder into the folder `folder` (the project's root when none), before `before` among its entries or after them all."
+description = "Move the file or folder into the folder `folder` (the project's root when none), before `before` among its entries or after them all."
 id = "move-entry"
 kind = "undoable"
 label = "Move"
@@ -294,7 +287,6 @@ name = "entry"
 required = true
 
 [resources.verbs.params.schema]
-description = "Entry"
 type = "string"
 
 [[resources.verbs.params]]
@@ -302,7 +294,6 @@ name = "folder"
 required = false
 
 [resources.verbs.params.schema]
-description = "The folder it goes in; the project's root when none"
 type = [
     "string",
     "null",
@@ -313,14 +304,33 @@ name = "before"
 required = false
 
 [resources.verbs.params.schema]
-description = "The entry it goes before; after every entry when none"
 type = [
     "string",
     "null",
 ]
 
 [[resources.verbs]]
-description = "Delete  Delete the file and its text, or the folder once it is empty."
+description = "Replace the file's whole text with `text`, written as the smallest change to the text it has, so a collaborator's typing elsewhere in the file stays."
+id = "replace-text"
+kind = "undoable"
+label = "Replace text"
+
+[[resources.verbs.params]]
+name = "file"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "text"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+description = "Delete the file and its text, or the folder once it is empty."
 destructive = true
 id = "delete"
 kind = "undoable"
@@ -331,11 +341,10 @@ name = "entry"
 required = true
 
 [resources.verbs.params.schema]
-description = "Entry"
 type = "string"
 
 [[resources.verbs]]
-description = "Record entry  Record a file or folder of the project's folder on disk, the first time the editor reads it, under the id the editor gave it. An entry already recorded, or at a path a collaborator recorded under another id, is left as it is."
+description = "Record a file or folder of the project's folder on disk, the first time the editor reads it, under the id the editor gave it. An entry already recorded, or at a path a collaborator recorded under another id, is left as it is."
 id = "record-entry"
 kind = "undoable"
 label = "Record entry"
@@ -345,7 +354,6 @@ name = "id"
 required = true
 
 [resources.verbs.params.schema]
-description = "The id it is kept under"
 type = "string"
 
 [[resources.verbs.params]]
@@ -353,7 +361,7 @@ name = "kind"
 required = true
 
 [resources.verbs.params.schema]
-description = "File or folder"
+description = "What an entry of the project is."
 enum = [
     "file",
     "folder",
@@ -365,7 +373,6 @@ name = "name"
 required = true
 
 [resources.verbs.params.schema]
-description = "Its name"
 type = "string"
 
 [[resources.verbs.params]]
@@ -373,7 +380,6 @@ name = "folder"
 required = false
 
 [resources.verbs.params.schema]
-description = "The folder it is in; the project's root when none"
 type = [
     "string",
     "null",
@@ -384,11 +390,10 @@ name = "language"
 required = true
 
 [resources.verbs.params.schema]
-description = "A file's language"
 type = "string"
 
 [[resources.verbs]]
-description = "Record text  Keep `text`, read from disk, as the text of `file` the first time the editor opens it. Text already there — a collaborator's or an earlier session's unsaved edits — is left as it is."
+description = "Keep `text`, read from disk, as the text of `file` the first time the editor opens it. Text already there — a collaborator's or an earlier session's unsaved edits — is left as it is."
 id = "record-text"
 kind = "undoable"
 label = "Record text"
@@ -398,7 +403,6 @@ name = "file"
 required = true
 
 [resources.verbs.params.schema]
-description = "The file's id"
 type = "string"
 
 [[resources.verbs.params]]
@@ -406,11 +410,10 @@ name = "text"
 required = true
 
 [resources.verbs.params.schema]
-description = "Its text on disk"
 type = "string"
 
 [[resources.verbs]]
-description = "Record terminal target  Record where the embedded terminal's session runs."
+description = "Record where the embedded terminal's session runs."
 id = "record-target"
 kind = "undoable"
 label = "Record terminal target"
@@ -420,11 +423,10 @@ name = "target"
 required = true
 
 [resources.verbs.params.schema]
-description = "An encoded session target"
 type = "string"
 
 [[resources.verbs]]
-description = "Record terminal relay session  Record the relay session the embedded terminal re-attaches to, or forget it."
+description = "Record the relay session the embedded terminal re-attaches to, or forget it."
 id = "record-relay-session"
 kind = "undoable"
 label = "Record terminal relay session"
@@ -434,14 +436,13 @@ name = "session"
 required = false
 
 [resources.verbs.params.schema]
-description = "The relay session's id; none to forget it"
 type = [
     "string",
     "null",
 ]
 
 [[resources.verbs]]
-description = "Claim terminal pane  Scope presence to a new process's pane of the embedded terminal."
+description = "Scope presence to a new process's pane of the embedded terminal."
 id = "claim-pane"
 kind = "undoable"
 label = "Claim terminal pane"
@@ -451,11 +452,10 @@ name = "pane"
 required = true
 
 [resources.verbs.params.schema]
-description = "The pane's id"
 type = "string"
 
 [[resources.verbs]]
-description = "Run in terminal  Run a command line in the embedded terminal's session, and answer with the run once it ends."
+description = "Run a command line in the embedded terminal's session, and answer with the run once it ends."
 id = "run"
 kind = "outside"
 label = "Run in terminal"
@@ -465,11 +465,10 @@ name = "command"
 required = true
 
 [resources.verbs.params.schema]
-description = "The command line, as typed at the prompt"
 type = "string"
 
 [[resources.verbs]]
-description = "Rerun in terminal  Run one of the embedded terminal's runs again."
+description = "Run one of the embedded terminal's runs again."
 id = "rerun"
 kind = "outside"
 label = "Rerun in terminal"
@@ -479,11 +478,10 @@ name = "run"
 required = true
 
 [resources.verbs.params.schema]
-description = "The run"
 type = "string"
 
 [[resources.verbs]]
-description = "Rerun test in terminal  Run one test of one of the embedded terminal's runs again, the way its tool runs one test."
+description = "Run one test of one of the embedded terminal's runs again, the way its tool runs one test."
 id = "rerun-test"
 kind = "outside"
 label = "Rerun test in terminal"
@@ -493,7 +491,6 @@ name = "run"
 required = true
 
 [resources.verbs.params.schema]
-description = "The run"
 type = "string"
 
 [[resources.verbs.params]]
@@ -501,11 +498,10 @@ name = "test"
 required = true
 
 [resources.verbs.params.schema]
-description = "The test's name, as the run reported it"
 type = "string"
 
 [[resources.verbs]]
-description = "Record terminal run  Record a run the embedded terminal's session ended."
+description = "Record a run the embedded terminal's session ended."
 id = "record-run"
 kind = "undoable"
 label = "Record terminal run"
@@ -552,7 +548,6 @@ name = "output"
 required = false
 
 [resources.verbs.params.schema]
-description = "The content hash of the raw output (lower-case hex), when it printed anything."
 type = [
     "string",
     "null",
@@ -649,7 +644,6 @@ name = "request"
 required = false
 
 [resources.verbs.params.schema]
-description = "The request it carried out, if `run` asked for it."
 type = [
     "string",
     "null",
@@ -660,5 +654,4 @@ name = "run"
 required = true
 
 [resources.verbs.params.schema]
-description = "The id the run takes: the request's when one asked for it, so its answer names the run."
 type = "string"

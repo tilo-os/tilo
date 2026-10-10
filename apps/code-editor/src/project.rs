@@ -235,6 +235,28 @@ impl Project {
         Ok(())
     }
 
+    /// Replace text
+    ///
+    /// Replace the file's whole text with `text`, written as the smallest
+    /// change to the text it has, so a collaborator's typing elsewhere in
+    /// the file stays.
+    #[action(item = files)]
+    pub fn replace_text(
+        &mut self,
+        file: &Id,
+        #[param("The whole new text")] text: String,
+    ) -> Result<(), Refusal> {
+        let entry = self.files.get(file).ok_or("no such file")?;
+        if entry.kind != EntryKind::File {
+            return Err(Refusal::new("a folder has no text"));
+        }
+        if text.len() > MAX_TEXT_BYTES {
+            return Err(Refusal::new("the text is larger than a file holds"));
+        }
+        self.buffers.insert(file.to_string(), Source::new(text));
+        Ok(())
+    }
+
     /// Delete
     ///
     /// Delete the file and its text, or the folder once it is empty.

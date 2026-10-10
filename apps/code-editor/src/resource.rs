@@ -327,7 +327,7 @@ mod tests {
             root.actions.iter().any(|action| action.id == "field-edit"),
             "a file's text and language are edited at their paths"
         );
-        for id in ["rename", "move-entry", "delete"] {
+        for id in ["rename", "move-entry", "delete", "replace-text"] {
             assert!(
                 file.actions
                     .iter()

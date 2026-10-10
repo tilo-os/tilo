@@ -6,6 +6,7 @@ code-editor-new-folder = Created the folder { $name }
 code-editor-rename = Renamed { $item } to { $name }
 code-editor-move-entry = Moved { $item }
 code-editor-delete = Deleted { $item }
+code-editor-replace-text = Replaced the text of { $item }
 code-editor-record-entry = Added { $name } from disk
 code-editor-record-text = Read a file from disk
 code-editor-record-target = Started the terminal

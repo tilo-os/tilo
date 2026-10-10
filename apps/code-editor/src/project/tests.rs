@@ -454,3 +454,38 @@ fn recording_text_is_one_change_of_the_verb() {
     ours.sort();
     assert_eq!(theirs, ours, "the replay makes the same changes");
 }
+
+/// Replacing a file's text from the file writes only what differs, so a
+/// collaborator's typing elsewhere in it survives; a folder has no text.
+#[test]
+fn replacing_a_files_text_keeps_a_collaborators_typing() {
+    let mut left = Replica::<Project>::new();
+    let id = file(&mut left, "main.rs", None, "fn main() {}\n");
+    let src = folder(&mut left, "src", None);
+    let mut right = left.fork();
+    apply(
+        &mut left,
+        Project::REPLACE_TEXT.with(project::ReplaceText {
+            file: id.clone(),
+            text: "fn main() { run() }\n".into(),
+        }),
+    )
+    .unwrap();
+    act(
+        &mut right,
+        &crate::actions::text_edit_action(id.as_str(), "fn main() {}\n", "// head\nfn main() {}\n"),
+    )
+    .unwrap();
+    left.sync_with(&mut right).unwrap();
+    assert_eq!(text(&left, &id), "// head\nfn main() { run() }\n");
+    assert!(
+        apply(
+            &mut left,
+            Project::REPLACE_TEXT.with(project::ReplaceText {
+                file: src,
+                text: "x".into(),
+            }),
+        )
+        .is_err()
+    );
+}

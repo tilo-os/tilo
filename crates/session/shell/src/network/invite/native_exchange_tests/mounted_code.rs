@@ -215,8 +215,12 @@ pub(super) async fn run(
         .await
         .unwrap();
     publish(&authority, context.publisher);
+    // Showing the file is the editor's own effect, which the effect broker
+    // signs a receipt for; the framework's `open` is a view and signs none.
+    let show =
+        tilo_resource::Effect::id(&code_editor::CodeEditorEffect::ShowFile { file: FILE.into() });
     for app in &mut mounted {
-        app.invoke("open", None);
+        app.invoke(show, None);
     }
     drive(
         &context,
