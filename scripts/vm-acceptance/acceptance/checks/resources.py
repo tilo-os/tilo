@@ -168,10 +168,15 @@ def summarize(sample: dict, seconds: int) -> dict:
     shell = next((p for p in procs if p["pid"] == pid), None)
     threads = thread_rows(sample, pid, seconds) if shell else None
     # The busiest other processes' threads too: a session service or an app's runtime
-    # (Terminal's tilo-ush) is as much an idle cost as the compositor.
+    # (Terminal's tilo-ush) is as much an idle cost as the compositor. The raw rows keep
+    # each thread's index and whether it started inside the window, which tell a pool
+    # created per operation (`iroh-blob-store-37`, new) from one that idles.
     for p in procs[:5]:
         if p is not shell and p["cpu_pct"] >= 0.5:
-            p["threads"] = thread_groups(thread_rows(sample, p["pid"], seconds)["threads"])[:8]
+            rows = thread_rows(sample, p["pid"], seconds)
+            p["threads"] = thread_groups(rows["threads"])[:8]
+            p["thread_rows"] = rows["threads"][:16]
+            p["exited_cpu_pct"] = rows["exited_cpu_pct"]
     start, uptime = (a.get(pid) or {}).get("start"), sample["uptime"][0]
     guest, totals = None, sample["totals"]
     if all(totals):
@@ -191,6 +196,26 @@ def summarize(sample: dict, seconds: int) -> dict:
         "user_cpu_pct_total": round(sum(p["cpu_pct"] for p in procs), 2),
         "guest_cpu_pct": guest,
         "top": procs[:10],
+        "ush": runtime_idle(sample, procs, seconds, "tilo-ush"),
+    }
+
+
+def runtime_idle(sample: dict, procs: list[dict], seconds: float, comm: str) -> dict | None:
+    """Every process named `comm` over the window, summed: CPU, context switches of
+    all their threads, and each thread with its index and `new` flag. Terminal's shell
+    runtime is two such processes (`tilo-ush serve`, and `tilo-ush run` per open
+    session, which holds the guest's broker and egress stub). None when none ran."""
+    mine = [p for p in procs if p["comm"] == comm]
+    if not mine:
+        return None
+    rows = {p["pid"]: thread_rows(sample, p["pid"], seconds) for p in mine}
+    return {
+        "processes": len(mine),
+        "cpu_pct": round(sum(p["cpu_pct"] for p in mine), 2),
+        "wakeups_per_s": round(sum(r["wakeups_per_s"] for r in rows.values()), 1),
+        "exited_cpu_pct": round(sum(r["exited_cpu_pct"] or 0.0 for r in rows.values()), 2),
+        "thread_groups": thread_groups([t for r in rows.values() for t in r["threads"]]),
+        "threads": {str(pid): r["threads"] for pid, r in rows.items()},
     }
 
 
@@ -492,6 +517,7 @@ def _open_several(ctx):
     facts["apps_closed_after_open"], with what the session log and the user
     journal said about it, rather than measured as if it were running."""
     ctx.reset()
+    shells = core.terminal_shells(ctx)
     groups = {}
     for app in ("so.tilo.terminal", "so.tilo.file-explorer", "so.tilo.settings", "so.tilo.notes"):
         try:
@@ -500,6 +526,11 @@ def _open_several(ctx):
         except core.CheckFailed:
             pass
     time.sleep(8)
+    # Terminal's shell runs once its guest is built, which on an account's first session
+    # imports the environment's runtime first (TIL-708). Waiting for it keeps that
+    # one-time import out of the idle window that follows.
+    if "so.tilo.terminal" in groups:
+        ctx.facts["terminal_shell_s"] = core.wait_new_terminal_shell(ctx, shells, core.TERMINAL_SHELL_S)
     st = ctx.state()
     closed = [app for app, gid in groups.items() if core.group_by_id(st, gid) is None]
     if closed:
@@ -538,6 +569,38 @@ def _budget_problems(m, budgets, prefix):
         top = ", ".join(f"{p['comm']} {p['cpu_pct']}%" for p in m["top"][:4])
         problems.append(f"session CPU {m['user_cpu_pct_total']}% > {budgets[f'{prefix}_user_cpu_pct']}% ({top})")
     return problems
+
+
+def ush_problems(ush: dict | None, shell_s: float | None, budgets: dict) -> list[str]:
+    """Terminal's shell runtime against its idle budget (TIL-701): an idle Terminal,
+    its shell running and nothing typed, costs `tilo-ush` almost nothing."""
+    if shell_s is None:
+        return [f"Terminal's shell did not run within {core.TERMINAL_SHELL_S} s, so tilo-ush "
+                "was not measured idle (its first-session import may still have been running)"]
+    if ush is None:
+        return ["no tilo-ush process of the slot user ran while Terminal was open"]
+    problems = []
+    busiest = describe_threads(ush["thread_groups"])
+    if ush["cpu_pct"] > budgets["idle_apps_ush_cpu_pct"]:
+        problems.append(f"tilo-ush CPU {ush['cpu_pct']}% > {budgets['idle_apps_ush_cpu_pct']}% "
+                        f"({busiest or 'no thread named'}; exited threads {ush['exited_cpu_pct']}%)")
+    if ush["wakeups_per_s"] > budgets["idle_apps_ush_wakeups_per_s"]:
+        woke = ", ".join(f"{g['name']} {g['ctxt_switches_per_s']}/s"
+                         for g in sorted(ush["thread_groups"], key=lambda g: -g["ctxt_switches_per_s"])[:4]
+                         if g["ctxt_switches_per_s"] > 0)
+        problems.append(f"tilo-ush woke {ush['wakeups_per_s']}/s > "
+                        f"{budgets['idle_apps_ush_wakeups_per_s']}/s ({woke})")
+    return problems
+
+
+def _ush_idle(ctx, res, m: dict, budgets: dict) -> list[str]:
+    """Record and judge tilo-ush in R02's window, once Terminal's shell has run."""
+    ush, shell_s = m["ush"], m["terminal_shell_s"]
+    if shell_s is not None and ush is not None:
+        window = {"window_s": m["seconds"], "processes": ush["processes"]}
+        ctx.record("idle.cpu_pct.tilo-ush.four_apps", "percent", [ush["cpu_pct"]], **window)
+        ctx.record("idle.wakeups_per_s.tilo-ush.four_apps", "per_s", [ush["wakeups_per_s"]], **window)
+    return ush_problems(ush, shell_s, budgets)
 
 
 @check("R01", AREA, "Idle with no apps: compositor asleep, no frames, little CPU")
@@ -586,12 +649,16 @@ def idle_apps(ctx, res):
     res.metrics["opened"] = opened
     m = measure(ctx, ctx.config["idle_seconds"])
     m["guest_ram_used_mib"] = guest_ram_used_mib(ctx)
+    # Seconds from opening Terminal to its shell running: the window opened after it.
+    m["terminal_shell_s"] = ctx.facts.get("terminal_shell_s")
     res.metrics.update(m, renderer=ctx.facts.get("renderer"))
     ctx.write("R02-idle-apps.json", json.dumps(m, indent=1))
     if m["shell_cpu_pct"] is not None and len(opened) == 4:
         _record_idle(ctx, m, m["guest_ram_used_mib"], "four_apps")
     ctx.facts["apps_open_for_memory"] = opened
     problems = _budget_problems(m, ctx.config["budgets"], "idle_apps")
+    if "so.tilo.terminal" in opened:
+        problems += _ush_idle(ctx, res, m, ctx.config["budgets"])
     try:
         fp = footprint(ctx)
     except core.Unobservable as e:
