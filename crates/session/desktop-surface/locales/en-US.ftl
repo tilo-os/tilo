@@ -30,6 +30,9 @@ topbar-viewer-entry = { $name } ({ $kind ->
 topbar-collaborators-visible = Screen visible to { $viewers }. Show collaborators
 topbar-capture-privacy = Privacy settings for active capture
 topbar-control = Top bar control
+topbar-network-offline = Offline
+topbar-tray-open = Open { $app }
+topbar-tray-menu = Menu for { $app }
 topbar-editor-control = Top bar editor control
 topbar-editor-remove-clock = Remove clock from top bar
 topbar-editor-remove-system-monitor = Remove system monitor from top bar
@@ -994,3 +997,6 @@ activity-task-awaiting-acceptance = Awaiting agent acceptance · may be offline
 activity-task-run-accepted = Agent accepted this run · last report { $time }
 activity-task-run-planning = Agent is planning this run · last report { $time }
 activity-task-run-executing = Agent is processing this run · last report { $time }
+
+topbar-cpu-reading = CPU { $value }
+topbar-monitor-summary = CPU { $cpu }, RAM { $ram }, temperature { $temperature }

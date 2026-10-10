@@ -331,6 +331,7 @@ impl SpeakersArea {
             Rc::new(std::cell::RefCell::new(SpeakersModel::new(
                 self.cx.clone(),
                 service,
+                !self.cx.reaches_devices(),
             )))
         })
     }
@@ -380,6 +381,7 @@ pub struct SpeakersModel {
     cx: PaneCx,
     setup: SpeakerSetup,
     service: Arc<dyn SpeakerService>,
+    sample: bool,
     finished_tx: Sender<Finished>,
     finished_rx: Receiver<Finished>,
     in_flight: usize,
@@ -398,12 +400,13 @@ pub struct SpeakersModel {
 }
 
 impl SpeakersModel {
-    fn new(cx: PaneCx, service: Arc<dyn SpeakerService>) -> Self {
+    fn new(cx: PaneCx, service: Arc<dyn SpeakerService>, sample: bool) -> Self {
         let (finished_tx, finished_rx) = channel();
         let mut model = Self {
             cx,
             setup: SpeakerSetup::default(),
             service,
+            sample,
             finished_tx,
             finished_rx,
             in_flight: 0,
@@ -421,6 +424,9 @@ impl SpeakersModel {
             changed: false,
         };
         model.refresh();
+        if sample {
+            model.poll_finished();
+        }
         model
     }
 
@@ -434,6 +440,15 @@ impl SpeakersModel {
         let service = Arc::clone(&self.service);
         let finished = self.finished_tx.clone();
         self.in_flight = self.in_flight.saturating_add(1);
+        // Only the in-memory screenshot/test service runs here. Real broker
+        // calls keep their worker so device I/O never blocks the UI thread.
+        if self.sample {
+            let _ = finished.send(Finished {
+                purpose,
+                result: service.call(command),
+            });
+            return;
+        }
         let spawned = std::thread::Builder::new()
             .name("settings-speakers".into())
             .spawn(move || {
@@ -1749,6 +1764,23 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn sample_area_rows_do_not_wait_for_workers() {
+        let profile = tempfile::tempdir().unwrap();
+        let area = SpeakersArea::new(&PaneCx::in_file(profile.path().join("settings.json")));
+        assert_eq!(
+            area.rows().len(),
+            1,
+            "the speaker group publishes on the first read"
+        );
+        let model = area.model().borrow();
+        assert_eq!(
+            model.in_flight, 0,
+            "sample rows are ready when the area reads"
+        );
+        assert_eq!(model.setup.groups().len(), 1);
+    }
+
     /// Answers from a fixed snapshot and records every command.
     struct FakeService {
         snapshot: Mutex<SpeakerSnapshot>,
@@ -1829,6 +1861,7 @@ mod tests {
         SpeakersModel::new(
             PaneCx::in_file(profile.path().join("settings.json")),
             service,
+            false,
         )
     }
 

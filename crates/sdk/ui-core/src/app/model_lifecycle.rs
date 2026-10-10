@@ -64,6 +64,14 @@ impl super::App {
         self.pump_hosted_model_as(host_perf_baseline());
     }
 
+    /// [`Self::pump_hosted_model`], answering whether the app's record
+    /// changed: a different document under the same widgets, which their
+    /// damage does not describe.
+    #[cfg(feature = "native")]
+    pub(super) fn pump_hosted_model_record_changed(&mut self) -> bool {
+        self.pump_hosted_model_with_record(host_perf_baseline()).1
+    }
+
     /// Advance the ordinary dirty-tracked native worker without a window.
     /// This never forces synchronization or layout to mask a missing wake.
     #[cfg(any(test, feature = "test-support"))]
@@ -113,6 +121,11 @@ impl super::App {
     /// no due widget deadline and no model progress keeps the resource cache
     /// and skips the action-surface rebuild.
     pub(super) fn pump_hosted_model_as(&mut self, always_refresh: bool) -> HostedPumpReport {
+        self.pump_hosted_model_with_record(always_refresh).0
+    }
+
+    /// [`Self::pump_hosted_model_as`], and whether the record changed.
+    fn pump_hosted_model_with_record(&mut self, always_refresh: bool) -> (HostedPumpReport, bool) {
         let started = hosted_pump_timing().then(crate::time::now);
         let _entry = self.enter_wake_scope();
         let (inbound, directory) = self.pump_collab_presence_inner(true);
@@ -187,7 +200,7 @@ impl super::App {
                 report.published
             );
         }
-        report
+        (report, record)
     }
 
     fn take_hosted_wakes(&self) -> Option<(bool, bool)> {

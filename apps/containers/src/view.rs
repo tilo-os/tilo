@@ -369,14 +369,13 @@ fn list_column(list: Element) -> Element {
 
 fn containers_empty(live: bool, intents: &Intents) -> Element {
     if live {
-        Box::new(ActOnEmpty::new(
+        Box::new(
             EmptyState::new("No containers")
                 .with_icon(Icon::Box)
                 .with_message("Create a container from an image to run it here.")
-                .with_action("New container"),
-            Intent::NewContainer,
-            intents,
-        ))
+                .with_action("New container")
+                .on_view(intents.on(Intent::NewContainer)),
+        )
     } else {
         engine_missing(intents)
     }
@@ -384,14 +383,13 @@ fn containers_empty(live: bool, intents: &Intents) -> Element {
 
 /// Podman did not answer: say so, once, and offer to ask again.
 pub(crate) fn engine_missing(intents: &Intents) -> Element {
-    Box::new(ActOnEmpty::new(
+    Box::new(
         EmptyState::new("Podman isn't available")
             .with_icon(Icon::Box)
             .with_message("Install Podman or start its user service to manage containers here.")
-            .with_action("Try again"),
-        Intent::Reconnect,
-        intents,
-    ))
+            .with_action("Try again")
+            .on_effect(intents.on(Intent::Reconnect)),
+    )
 }
 
 /// The content beside the list while nothing is chosen.
@@ -902,14 +900,13 @@ pub(crate) fn images_page(engine: &Engine, controls: bool, intents: &Intents) ->
         if !engine.live && !controls {
             return engine_missing(intents);
         }
-        return Box::new(ActOnEmpty::new(
+        return Box::new(
             EmptyState::new("No images")
                 .with_icon(Icon::Layers)
                 .with_message("Pull an image to create containers from it.")
-                .with_action("Pull image"),
-            Intent::PullImage(None),
-            intents,
-        ));
+                .with_action("Pull image")
+                .on_view(intents.on(Intent::PullImage(None))),
+        );
     }
     let rows: Vec<Element> = engine
         .images
@@ -966,14 +963,13 @@ pub(crate) fn volumes_page(engine: &Engine, controls: bool, intents: &Intents) -
         if !engine.live && !controls {
             return engine_missing(intents);
         }
-        return Box::new(ActOnEmpty::new(
+        return Box::new(
             EmptyState::new("No volumes")
                 .with_icon(Icon::HardDrive)
                 .with_message("A volume keeps a container's data when the container is removed.")
-                .with_action("New volume"),
-            Intent::NewVolume,
-            intents,
-        ));
+                .with_action("New volume")
+                .on_view(intents.on(Intent::NewVolume)),
+        );
     }
     let rows: Vec<Element> = engine
         .volumes
@@ -1035,88 +1031,6 @@ pub(crate) fn distrobox_page(engine: &Engine, controls: bool, intents: &Intents)
         })
         .collect();
     page(None, rows)
-}
-
-// ---- empty states with an action ------------------------------------------
-
-/// An empty state whose one action becomes an [`Intent`].
-pub(crate) struct ActOnEmpty {
-    state: EmptyState,
-    intent: Intent,
-    intents: Intents,
-}
-
-impl ActOnEmpty {
-    fn new(state: EmptyState, intent: Intent, intents: &Intents) -> Self {
-        Self {
-            state,
-            intent,
-            intents: intents.clone(),
-        }
-    }
-
-    fn forward(&mut self) {
-        if self.state.take_action() {
-            self.intents.push(self.intent.clone());
-        }
-    }
-}
-
-impl ui::widget::Decorator for ActOnEmpty {
-    type Inner = EmptyState;
-
-    fn inner(&self) -> &EmptyState {
-        &self.state
-    }
-
-    fn inner_mut(&mut self) -> &mut EmptyState {
-        &mut self.state
-    }
-
-    /// The state answers for its node, so its action reaches the queue
-    /// however the host routes to it.
-    fn build_layout(
-        &mut self,
-        taffy: &mut ui::taffy::TaffyTree<()>,
-        theme: &ui::theme::Theme,
-        node_map: &mut std::collections::HashMap<ui::taffy::NodeId, *mut dyn Widget>,
-    ) -> ui::taffy::NodeId {
-        let node = self.state.build_layout(taffy, theme, node_map);
-        ui::widget::decorator::register_node(node_map, node, self);
-        node
-    }
-
-    fn handle_event(
-        &mut self,
-        event: &ui::winit::event::WindowEvent,
-        ctx: &mut ui::widget::EventCtx<'_>,
-    ) {
-        Widget::handle_event(&mut self.state, event, ctx);
-        self.forward();
-    }
-
-    fn perform_semantic_action(
-        &mut self,
-        target: &str,
-        action: &ui::a11y::Action,
-        state: &mut ui::widget::Edits<'_>,
-        path: &ui::widget::ModelPath,
-    ) -> bool {
-        let handled = Widget::perform_semantic_action(&mut self.state, target, action, state, path);
-        self.forward();
-        handled
-    }
-
-    fn perform_action(
-        &mut self,
-        action: &ui::a11y::Action,
-        state: &mut ui::widget::Edits<'_>,
-        path: &ui::widget::ModelPath,
-    ) -> bool {
-        let handled = Widget::perform_action(&mut self.state, action, state, path);
-        self.forward();
-        handled
-    }
 }
 
 // ---- pull progress ---------------------------------------------------------

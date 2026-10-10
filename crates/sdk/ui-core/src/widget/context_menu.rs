@@ -714,6 +714,29 @@ impl ContextMenu {
         self.open
     }
 
+    /// Every pixel the open menu painted in its last
+    /// [`Widget::draw_overlay`], in the coordinates it was drawn in: its
+    /// Panel with the floating shadow, the ring on its anchor row and its
+    /// open nested menu. Nothing while it is closed.
+    pub fn painted_bounds(&self, theme: &Theme) -> Vec<Rect> {
+        if !self.open {
+            return Vec::new();
+        }
+        // `floating_surface::paint_rounded` clips the shadow to this reach;
+        // two more pixels cover the panel's edge stroke and antialiasing.
+        let elevation = &theme.tokens.elevation.floating;
+        let reach = f64::from(elevation.blur) * 2.0 + f64::from(elevation.offset_y).abs() + 2.0;
+        let mut bounds = vec![self.rect.inflate(reach, reach)];
+        if let Some(row) = self.anchor_row {
+            // A 2 px stroke on the row's outline.
+            bounds.push(row.inflate(2.0, 2.0));
+        }
+        if let Some((_, nested)) = &self.submenu {
+            bounds.extend(nested.painted_bounds(theme));
+        }
+        bounds
+    }
+
     /// Preserved across `close()` so callers can re-open at the same spot.
     /// `None` before the menu has ever been opened.
     pub fn position(&self) -> Option<[f32; 2]> {

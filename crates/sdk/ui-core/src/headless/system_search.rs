@@ -530,7 +530,7 @@ impl FrameHarness {
                         snapshots
                             .iter()
                             .filter(|snapshot| snapshot.binding.same_component(&binding))
-                            .flat_map(|snapshot| &snapshot.resources)
+                            .flat_map(|snapshot| snapshot.resources.iter())
                             .find(|resource| {
                                 tilo_actions::door::resolve(
                                     std::slice::from_ref(resource),

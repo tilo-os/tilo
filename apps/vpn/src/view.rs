@@ -256,53 +256,13 @@ pub(crate) fn import_button(intents: &Intents) -> Button {
 
 /// Nothing saved yet: one sentence and the one way forward.
 pub(crate) fn empty_state(intents: &Intents) -> Element {
-    Box::new(ImportOnAction {
-        state: EmptyState::new("No VPN connections")
+    Box::new(
+        EmptyState::new("No VPN connections")
             .with_icon(Icon::Shield)
             .with_message("Import a WireGuard or OpenVPN configuration from your provider.")
-            .with_action("Import configuration"),
-        intents: intents.clone(),
-    })
-}
-
-/// An empty state whose one action opens the import sheet.
-struct ImportOnAction {
-    state: EmptyState,
-    intents: Intents,
-}
-
-impl ImportOnAction {
-    fn forward(&mut self) {
-        if self.state.take_action() {
-            self.intents.push(Intent::OpenImport);
-        }
-    }
-}
-
-impl ui::widget::Decorator for ImportOnAction {
-    type Inner = EmptyState;
-
-    fn inner(&self) -> &EmptyState {
-        &self.state
-    }
-
-    fn inner_mut(&mut self) -> &mut EmptyState {
-        &mut self.state
-    }
-
-    fn handle_event(
-        &mut self,
-        event: &ui::winit::event::WindowEvent,
-        ctx: &mut ui::widget::EventCtx<'_>,
-    ) {
-        Widget::handle_event(&mut self.state, event, ctx);
-        self.forward();
-    }
-
-    fn update(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) -> bool {
-        self.forward();
-        Widget::update(&mut self.state, state, path)
-    }
+            .with_action("Import configuration")
+            .on_view(intents.sender(Intent::OpenImport)),
+    )
 }
 
 /// A problem the person has to act on, above the content it concerns.

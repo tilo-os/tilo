@@ -350,3 +350,187 @@ fn appending_into_an_untracked_scene_is_a_plain_append() {
     plain.append(&app, None);
     assert!(appended.encoding_eq(&plain));
 }
+
+/// An overlay part that is always there, opening a menu with a part of its
+/// own inside: the parts nested in it differ between the frames.
+fn overlay(open: bool, chrome: Color) -> (Box<Scene>, SectionParts) {
+    section(move |scene| {
+        fill(
+            scene,
+            Affine::IDENTITY,
+            Rect::new(0.0, 0.0, 200.0, 50.0),
+            chrome,
+        );
+        let bounds = if open { vec![B] } else { Vec::new() };
+        part(scene, PartKey::new("menu", 0_u64), bounds, |scene| {
+            if open {
+                fill(scene, Affine::IDENTITY, B, Color::WHITE);
+                part(scene, PartKey::new("row", 0_u64), vec![B], |scene| {
+                    fill(scene, Affine::IDENTITY, B, Color::BLACK);
+                });
+            }
+        });
+        part(
+            scene,
+            PartKey::new("caret", 0_u64),
+            vec![A],
+            caret(Color::WHITE),
+        );
+    })
+}
+
+#[test]
+fn a_part_whose_nested_parts_change_damages_its_bounds_as_a_whole() {
+    let (closed, closed_parts) = overlay(false, Color::BLACK);
+    let (open, open_parts) = overlay(true, Color::BLACK);
+    assert_eq!(
+        damage(&closed, &closed_parts, &open, &open_parts),
+        Ok(vec![B])
+    );
+    assert_eq!(
+        damage(&open, &open_parts, &closed, &closed_parts),
+        Ok(vec![B])
+    );
+}
+
+#[test]
+fn comparing_outermost_parts_still_refuses_a_change_outside_them() {
+    let (closed, closed_parts) = overlay(false, Color::BLACK);
+    let (open, open_parts) = overlay(true, Color::WHITE);
+    assert_eq!(
+        damage(&closed, &closed_parts, &open, &open_parts),
+        Err(Unproven::Section)
+    );
+}
+
+/// An embedded app's content placed at `offset` inside a tile part, its
+/// caret painted in `color`, with a hint from `source` that generation
+/// `from` → `to` changed the caret.
+fn hinted_app(
+    color: Color,
+    offset: f64,
+    hint: Option<(u64, u64, u64)>,
+) -> (Box<Scene>, SectionParts) {
+    let tile = Rect::new(offset, 0.0, offset + 40.0, 40.0);
+    let placement = Affine::translate((offset, 0.0));
+    section(move |scene| {
+        part(scene, PartKey::new("tile", 0_u64), vec![tile], |scene| {
+            let hint = hint.map(|(source, from, to)| DamageHint {
+                source,
+                from,
+                to,
+                placement,
+                rects: vec![placement.transform_rect_bbox(A)],
+            });
+            hinted(scene, PartKey::new("app", 0_u64), hint, |scene| {
+                fill(
+                    scene,
+                    placement,
+                    Rect::new(0.0, 0.0, 40.0, 40.0),
+                    Color::BLACK,
+                );
+                fill(scene, placement, Rect::new(2.0, 2.0, 4.0, 8.0), color);
+            });
+        });
+    })
+}
+
+#[test]
+fn a_hint_that_follows_on_damages_what_it_says_changed() {
+    let (old, old_parts) = hinted_app(Color::WHITE, 100.0, Some((7, 0, 1)));
+    let (new, new_parts) = hinted_app(Color::BLACK, 100.0, Some((7, 1, 2)));
+    assert_eq!(
+        damage(&old, &old_parts, &new, &new_parts),
+        Ok(vec![Rect::new(100.0, 0.0, 110.0, 10.0)])
+    );
+}
+
+#[test]
+fn a_hint_that_does_not_follow_on_damages_the_enclosing_part() {
+    let tile = Rect::new(100.0, 0.0, 140.0, 40.0);
+    let (old, old_parts) = hinted_app(Color::WHITE, 100.0, Some((7, 0, 1)));
+    // A generation was skipped, another source painted, or there is no hint.
+    for hint in [Some((7, 2, 3)), Some((8, 1, 2)), None] {
+        let (new, new_parts) = hinted_app(Color::BLACK, 100.0, hint);
+        assert_eq!(
+            damage(&old, &old_parts, &new, &new_parts),
+            Ok(vec![tile]),
+            "{hint:?}"
+        );
+    }
+}
+
+#[test]
+fn a_hint_for_content_that_moved_damages_where_it_was_and_is() {
+    let (old, old_parts) = hinted_app(Color::WHITE, 100.0, Some((7, 0, 1)));
+    let (new, new_parts) = hinted_app(Color::WHITE, 120.0, Some((7, 1, 2)));
+    assert_eq!(
+        damage(&old, &old_parts, &new, &new_parts),
+        Ok(vec![
+            Rect::new(100.0, 0.0, 140.0, 40.0),
+            Rect::new(120.0, 0.0, 160.0, 40.0)
+        ])
+    );
+}
+
+#[test]
+fn a_hinted_part_outside_every_bounded_part_is_not_proven_without_its_hint() {
+    let hint = |from: u64, to: u64| DamageHint {
+        source: 1,
+        from,
+        to,
+        placement: Affine::IDENTITY,
+        rects: vec![A],
+    };
+    let frame = |color: Color, hint: Option<DamageHint>| {
+        section(move |scene| {
+            hinted(scene, PartKey::new("app", 0_u64), hint, caret(color));
+        })
+    };
+    let (old, old_parts) = frame(Color::WHITE, Some(hint(0, 1)));
+    let (new, new_parts) = frame(Color::BLACK, Some(hint(1, 2)));
+    assert_eq!(damage(&old, &old_parts, &new, &new_parts), Ok(vec![A]));
+    let (new, new_parts) = frame(Color::BLACK, None);
+    assert_eq!(
+        damage(&old, &old_parts, &new, &new_parts),
+        Err(Unproven::Section)
+    );
+    // A hint that says nothing changed cannot vouch for a change.
+    let mut empty = hint(1, 2);
+    empty.rects.clear();
+    let (new, new_parts) = frame(Color::BLACK, Some(empty));
+    assert_eq!(
+        damage(&old, &old_parts, &new, &new_parts),
+        Err(Unproven::Section)
+    );
+}
+
+#[test]
+fn an_appended_hint_is_carried_to_where_the_scene_is_drawn() {
+    let frame = |color: Color, from: u64, to: u64| {
+        let mut app = Scene::new();
+        let ((), parts) = record(&mut app, |scene| {
+            let hint = DamageHint {
+                source: 3,
+                from,
+                to,
+                placement: Affine::IDENTITY,
+                rects: vec![A],
+            };
+            hinted(scene, PartKey::new("app", 0_u64), Some(hint), caret(color));
+        });
+        let parts = parts.expect("the app scene's parts");
+        section(move |scene| {
+            part(scene, PartKey::new("tile", 0_u64), vec![B], |scene| {
+                let at = Affine::translate((100.0, 0.0));
+                append(scene, &app, Some(&parts), Some(at));
+            });
+        })
+    };
+    let (old, old_parts) = frame(Color::WHITE, 0, 1);
+    let (new, new_parts) = frame(Color::BLACK, 1, 2);
+    assert_eq!(
+        damage(&old, &old_parts, &new, &new_parts),
+        Ok(vec![Rect::new(100.0, 0.0, 110.0, 10.0)])
+    );
+}

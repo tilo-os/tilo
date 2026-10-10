@@ -250,6 +250,7 @@ members = [
     "crates/platform/tilo-keyboard-map",
     "crates/platform/tilo-media",
     "crates/platform/tilo-spotify",
+    "crates/platform/tilo-invidious",
     "crates/platform/tilo-net",
     "crates/platform/tilo-host-search",
     "crates/platform/tilo-notify",
@@ -673,6 +674,9 @@ opt-level = 3
 [profile.test.package.tilo-automerge-fork]
 opt-level = 3
 [profile.test.package.hexane]
+opt-level = 3
+# crates.io automerge, the reference tilo-automerge's tests compare the fork to.
+[profile.test.package.automerge]
 opt-level = 3
 
 # The wet-media simulations re-run on every edit of a painted layer; unoptimised

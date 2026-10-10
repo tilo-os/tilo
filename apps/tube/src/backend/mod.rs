@@ -6,15 +6,14 @@
 //!   The `--shots` renderer and every test run here — no network, fully
 //!   hermetic, deterministic screenshots.
 //! * **live** (`--features live`): real `YouTube` data via the pure-Rust
-//!   [`rustypipe`](https://docs.rs/rustypipe) `InnerTube` client, with `PoTokens`
-//!   minted by a swappable [`potoken`] provider (`rustypipe-botguard` by
-//!   default). This pulls in `tokio` + a network stack, so it is *off* by
-//!   default and never compiled into the hermetic shots path.
+//!   [`rustypipe`](https://docs.rs/rustypipe) `InnerTube` client. This pulls
+//!   in `tokio` + a network stack, so it is *off* by default and never
+//!   compiled into the hermetic shots path.
 //!
 //! Both worlds implement the same [`YtBackend`] trait, so the rest of the app
 //! (the fetch worker in [`crate::api`]) is written once against the trait and
 //! the build feature picks the implementation: rustypipe is real but gated,
-//! the offline sample is the default, and `PoToken` is a module you can swap.
+//! and the offline sample is the default.
 //!
 //! ## What lives where
 //!
@@ -23,7 +22,6 @@
 //! | data-source trait  | [`YtBackend`]                       |
 //! | offline impl       | [`offline::OfflineBackend`]         |
 //! | live impl (gated)  | `live::RustyPipeBackend` (`live`)   |
-//! | `PoToken` seam       | [`potoken::PoTokenProvider`]        |
 //! | request/result DTO | [`Query`], [`BackendResult`]        |
 //!
 //! Recommendations model (Home): the trait exposes the three no-auth signals
@@ -32,7 +30,6 @@
 //! [`YtBackend::related`] (per-video "up next"). See [`crate::recommend`].
 
 pub mod offline;
-pub mod potoken;
 /// Fully-rangeable stream resolution through public Invidious `local=true`
 /// proxies — the reliable, seekable playback URL for the media engine.
 pub mod proxy;

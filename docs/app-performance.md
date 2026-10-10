@@ -210,6 +210,79 @@ window to keyboard modality, which may change what it presents. The headless
 every relayout is uncached. Publication is 0.8 ms of the 5 ms a keystroke
 takes at 1,000 tasks; the rest of the frame was not profiled here.
 
+The hosted input-cost regression scopes monotonic time to one instant while
+it drives the real press/frame/release/frame path. The record-save status
+poll is an independent 100 ms idle deadline; under CI load it can otherwise
+fall inside that observation and add a publication unrelated to input. A
+separate regression advances that scoped clock to the deadline and requires
+the real save-status frame to publish while preserving the typed draft. The
+clock override is test-support only, thread-local, and restored on unwind;
+production save sampling and clock readings keep their existing behaviour.
+
+### A frame that changes nothing no longer walks the published tree (TIL-761)
+
+`sample` on the keystroke loop at 10,000 tasks
+(`TILO_SCALING_KEYSTROKES=400`) put layout and draw at 0.4 % of the samples.
+92 % went to two consumers of the bound resource snapshot that ran on every
+frame, changed or not: control availability (before each non-hover input and
+in every `surface_frame`) deep-copied the cached snapshot, re-filtered every
+action by permission and built a descriptor per action to learn which
+addresses are available; the host's accessibility refresh copied it again and
+rebuilt and diffed a semantic node per resource. Now the snapshot's tree is
+shared (`Rc`), so a cache hit copies nothing; the controls' allowed addresses
+are derived once per snapshot, permission witness and host doors, read in
+place; and the semantic tree keeps each component's resource nodes while the
+component hands over the same snapshot. A frame that changes nothing costs
+the same at 10,000 tasks as at 10.
+
+The bench now also prints p99 from press to frame and p50 from the key's
+release to the end of the frame after it. Same machine and method as above:
+
+| Tasks | Keystroke→frame p50 before | after | p99 before | after | Release→frame p50 before | after |
+|---:|---:|---:|---:|---:|---:|---:|
+| 10 | 0.42 ms | 0.39 ms | 0.54 ms | 0.54 ms | 0.23 ms | 0.18 ms |
+| 250 | 1.37 ms | 1.01 ms | 1.56 ms | 1.15 ms | 0.79 ms | 0.22 ms |
+| 1,000 | 4.60 ms | 3.10 ms | 4.93 ms | 3.35 ms | 2.63 ms | 0.25 ms |
+| 10,000 | 59.9 ms | 42.9 ms | 64.2 ms | 45.8 ms | 35.5 ms | 0.40 ms |
+
+`publication_per_keystroke::a_hosted_frame_that_changes_nothing_costs_the_same_whatever_the_list`
+holds the release frame at 1,000 tasks within 2× of 100 (it measured 4.2×
+before). The frame that shows a key still grows with the list: the edit
+changes the snapshot, so it publishes twice (TIL-751), rebuilds the
+accessibility tree's resource nodes and the controls' allowed addresses once,
+and `ResourceRoot::nested_views` builds every child once more. Making that
+flat needs publication that shares unchanged children between snapshots.
+
+### Opening a long list (TIL-758)
+
+`framework-scaling -- 5000,50000 open` reopens the checklist over a record
+already holding N tasks, five times, to its first laid-out frame. Each size
+also prints a `FRAMEWORK-OPEN` line, which the scheduled lane's render job
+records as `render.framework_open.{ms,allocations,heap_per_item}.<size>`
+(`tools/perf/adapters.py framework-open`). Apple M5 Max, macOS 27, release,
+three interleaved runs of each build, p50 of five opens:
+
+| Tasks | Open before | Open after | Heap held before | Heap held after |
+|---:|---:|---:|---:|---:|
+| 5,000 | 155–156 ms | 120–122 ms | 28.5 MB (5,472 B/task) | 24.7 MB (4,698 B/task) |
+| 50,000 | 1,820–1,836 ms | 1,163–1,174 ms | 638 MB (12,739 B/task) | 224 MB (4,454 B/task) |
+
+Two storage costs were behind most of it. Appending an item gave it an order
+key halfway between the last key and the end, so keys grew by a character
+every six appends: the 50,000th task's key was 8,334 characters, 208 MB of
+order keys in all, which the record load re-encoded and hashed, the read
+copied and the sort compared. Keys toward an open end now step instead
+(`tilo_resource::order::between`): 50,000 appends need at most seven
+characters, and a key minted the old way keeps its length. And the collection
+read looked up every key of every item separately (about six Automerge
+lookups per item); it now walks each map once (`tilo_resource::read_slots`).
+
+What remains at 50,000, from `sample`: `AutoCommit::load` 40 % (Automerge
+rebuilds and hashes every change to learn the change graph; the titles alone
+are 2.75 million text ops), the collection read 21 % (one object lookup each
+for the entry, the item and its title text), layout and the bound-control
+refresh 18 %, and closing the previous window 10 %.
+
 ## Verified shared-list CPU workload
 
 The `ui-perf perf_scenario --count 1200 --json` list case now checks the real

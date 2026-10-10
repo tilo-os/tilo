@@ -750,6 +750,14 @@ impl DisplayArea {
         self.model.get().is_some()
     }
 
+    /// What the host is asked to do for a display move. The host asks on
+    /// every turn of its event loop, the first one before Settings' first
+    /// frame, so asking never reads the displays: a move is only ever
+    /// pending in a model an effect has already read.
+    pub(crate) fn take_host_intent(&self) -> Option<ui::widget::AppHostIntent> {
+        self.model.get()?.borrow_mut().take_host_intent()
+    }
+
     /// One row per connected display and per trusted layout tool.
     pub(crate) fn rows(&self) -> Vec<LiveRow> {
         let model = self.model().borrow();
