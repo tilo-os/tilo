@@ -21,6 +21,5 @@ pub use tilo_host::native::{capture, mpris, services};
 #[cfg(windows)]
 #[doc(inline)]
 pub use tilo_host::notify::windows_toasts as host_notifications;
-#[cfg(target_os = "linux")]
 pub(crate) mod gpu_backends;
 pub mod warmup;

@@ -647,16 +647,10 @@ fn draw_debug_outlines(app: &mut App, scene: &mut Scene, transform: Affine) {
 /// take the icon from the app id), so reading and decoding one before the
 /// first frame would be wasted.
 fn takes_window_icon(event_loop: &ActiveEventLoop) -> bool {
-    #[cfg(target_os = "linux")]
-    {
-        use winit::platform::wayland::ActiveEventLoopExtWayland;
-        !event_loop.is_wayland()
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = event_loop;
-        true
-    }
+    use winit::raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
+    !event_loop
+        .display_handle()
+        .is_ok_and(|display| matches!(display.as_raw(), RawDisplayHandle::Wayland(_)))
 }
 
 fn create_window_render(

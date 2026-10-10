@@ -19,7 +19,7 @@
 //! compared when vello moves.
 //!
 //! It also decides which backends the instance is made with
-//! (`default_backends`): on Linux, Vulkan alone whenever OpenGL could not be
+//! (`default_backends`): without OpenGL whenever OpenGL could not be
 //! chosen anyway, because wgpu initialises every backend it is asked for.
 
 use std::sync::{Arc, Mutex};
@@ -205,8 +205,8 @@ impl BackendChoice {
 ///
 /// Windows uses DX12 alone: probing every backend can enter optional Vulkan
 /// translation-layer drivers before a working DX12 adapter is selected.
-/// Every Android device the app installs on has Vulkan 1.1. A native Linux
-/// process asks for Vulkan alone whenever OpenGL could not be chosen anyway
+/// Every Android device the app installs on has Vulkan 1.1. A native process
+/// elsewhere leaves OpenGL out whenever it could not be chosen anyway
 /// (`native::gpu_backends`).
 fn default_backends() -> BackendChoice {
     if cfg!(target_os = "windows") {
@@ -214,17 +214,17 @@ fn default_backends() -> BackendChoice {
     } else if cfg!(target_os = "android") {
         BackendChoice::only(wgpu::Backends::VULKAN)
     } else {
-        platform_backends()
+        native_backends()
     }
 }
 
-#[cfg(all(target_os = "linux", feature = "native"))]
-fn platform_backends() -> BackendChoice {
-    crate::native::gpu_backends::linux_default()
+#[cfg(feature = "native")]
+fn native_backends() -> BackendChoice {
+    crate::native::gpu_backends::default_choice()
 }
 
-#[cfg(not(all(target_os = "linux", feature = "native")))]
-fn platform_backends() -> BackendChoice {
+#[cfg(not(feature = "native"))]
+fn native_backends() -> BackendChoice {
     BackendChoice::only(wgpu::Backends::all())
 }
 
