@@ -817,21 +817,19 @@ fn share_copies_a_link_through_a_real_click() {
     })
     .unwrap();
     app.settle();
-    // settle() flushes effects but does not wait for the NavShell entrance.
-    // click_named reads the current rectangle, then each pointer event runs
-    // another production frame. An entrance can move that rectangle between
-    // hover and press, preventing the Share action from being submitted.
-    // Wait for actual stable presentation before targeting the real button;
-    // extending the later notice timeout cannot recover a missed click.
-    assert!(
-        app.harness()
-            .settle_for_capture(ui::time::Duration::from_secs(5)),
-        "the watch page must finish its entrance before clicking Share"
-    );
     assert!(
         app.with_surface::<TubeApp, _>(|viewer| !viewer.model_for_test().is_liked(WATCH_ID))
             .unwrap(),
         "not liked to start"
+    );
+    // with_surface runs another host tick and relayout, which can start new
+    // presentation work. Settle after that final inspection so click_named's
+    // target rectangle stays valid through the real hover/press/release path.
+    // settle() above flushes effects but does not await the NavShell entrance.
+    assert!(
+        app.harness()
+            .settle_for_capture(ui::time::Duration::from_secs(5)),
+        "the watch page must finish its entrance before clicking Share"
     );
     // Start observing immediately after the real pointer sequence, rather
     // than flushing extra frames against the three-second toast lifetime.
