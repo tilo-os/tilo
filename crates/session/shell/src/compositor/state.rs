@@ -239,6 +239,33 @@ impl DeclaredOpacity {
         }
     }
 
+    /// `dmabuf` as the commit attaches it to the surface `states` describe:
+    /// with the surface's colour description, and opaque when the region
+    /// covers the surface it gives under the pending viewport.
+    fn commit(
+        &self,
+        states: &wl_compositor::SurfaceData,
+        dmabuf: Dmabuf,
+    ) -> crate::compositor::foreign::DmabufCommit {
+        let colorimetry = states
+            .data_map
+            .get::<crate::wayland::color_management::ColorManagementSurfaceData>()
+            .and_then(
+                crate::wayland::color_management::ColorManagementSurfaceData::current_colorimetry,
+            )
+            .map(|(colorimetry, _)| colorimetry);
+        let viewport = *states
+            .cached_state
+            .get::<smithay::wayland::viewporter::ViewportCachedState>()
+            .pending();
+        let opaque = self.covers((dmabuf.width(), dmabuf.height()), &viewport);
+        crate::compositor::foreign::DmabufCommit {
+            buffer: dmabuf,
+            colorimetry,
+            opaque,
+        }
+    }
+
     /// The opaque region covers the whole surface a `buffer` of this size
     /// gives: the buffer's alpha is padding
     /// ([`crate::compositor::opaque_region`]).
@@ -4267,21 +4294,7 @@ impl State {
                 return (ForeignCommitCapture::Failed, None);
             };
             if let Ok(dmabuf) = smithay::wayland::dmabuf::get_dmabuf(&buffer).cloned() {
-                let colorimetry = states
-                    .data_map
-                    .get::<crate::wayland::color_management::ColorManagementSurfaceData>()
-                    .and_then(crate::wayland::color_management::ColorManagementSurfaceData::current_colorimetry)
-                    .map(|(colorimetry, _)| colorimetry);
-                let viewport = *states
-                    .cached_state
-                    .get::<smithay::wayland::viewporter::ViewportCachedState>()
-                    .pending();
-                let opaque = declared.covers((dmabuf.width(), dmabuf.height()), &viewport);
-                let commit = crate::compositor::foreign::DmabufCommit {
-                    buffer: dmabuf,
-                    colorimetry,
-                    opaque,
-                };
+                let commit = declared.commit(states, dmabuf);
                 if let Some(capture) = crate::compositor::foreign::store()
                     .prepare_dmabuf_capture_with_damage(surface_id, client, commit, damage)
                 {
