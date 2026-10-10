@@ -304,14 +304,30 @@ impl SessionSettings {
         &self.paths
     }
 
-    /// The source installed for ordinary host event-loop readers.
+    /// The source installed for ordinary host event-loop readers. Its worker
+    /// wakes only when read; another process's write to the copy reaches it
+    /// through the host's watch of the copy calling [`Self::refresh`].
     ///
     /// # Errors
     /// Returns an error if its refresh worker cannot start.
     pub fn host_view(
         self: &std::sync::Arc<Self>,
     ) -> std::io::Result<std::sync::Arc<dyn SettingsSource>> {
-        view::start(self)
+        view::start(self, None)
+    }
+
+    /// [`Self::host_view`] for a host that could not watch the copy: the
+    /// view takes in another process's write to it every `interval` as well
+    /// as on each read, so readers that only wait for
+    /// [`SettingsSource::changes`] still hear of it.
+    ///
+    /// # Errors
+    /// Returns an error if its refresh worker cannot start.
+    pub fn host_view_polling_copy(
+        self: &std::sync::Arc<Self>,
+        interval: std::time::Duration,
+    ) -> std::io::Result<std::sync::Arc<dyn SettingsSource>> {
+        view::start(self, Some(interval))
     }
 
     fn publish_committed(&self, state: &State) {
@@ -834,6 +850,72 @@ mod tests {
         assert_eq!(document["appearance"]["theme"], json!("Light"));
         assert!(revision > initial_revision);
         assert_eq!(open(dir.path()).load(), document);
+    }
+
+    /// A view and a channel that hears each time its change signal rings.
+    fn ringing_view(
+        view: &std::sync::Arc<dyn SettingsSource>,
+    ) -> (
+        std::sync::Arc<crate::Listener>,
+        std::sync::mpsc::Receiver<()>,
+    ) {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let sender = std::sync::Mutex::new(sender);
+        let listener: std::sync::Arc<crate::Listener> = std::sync::Arc::new(move || {
+            let _ = sender.lock().unwrap().send(());
+        });
+        view.changes().listen(&listener);
+        (listener, receiver)
+    }
+
+    #[test]
+    fn a_host_view_looks_at_the_copy_only_when_read() {
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        let dir = tempfile::tempdir().unwrap();
+        let session = Arc::new(open(dir.path()));
+        let view = session.host_view().unwrap();
+        let (_listener, rings) = ringing_view(&view);
+        crate::update_section_at(
+            &session.paths.copy,
+            "appearance",
+            object(json!({"theme": "Light"})),
+        )
+        .unwrap();
+        // No timer: the host's watch of the copy (or a read) takes the write
+        // in, so an idle view costs no wakeups. 1.5 s outlasts the 1 s
+        // stamp poll a reader used to drive.
+        assert!(
+            rings.recv_timeout(Duration::from_millis(1500)).is_err(),
+            "an unread view looked at the copy on its own"
+        );
+        let _ = view.revision();
+        rings.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(view.load()["appearance"]["theme"], json!("Light"));
+    }
+
+    #[test]
+    fn a_polling_host_view_takes_in_an_unwatched_copy_write_unread() {
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        let dir = tempfile::tempdir().unwrap();
+        let session = Arc::new(open(dir.path()));
+        let view = session
+            .host_view_polling_copy(Duration::from_millis(50))
+            .unwrap();
+        let (_listener, rings) = ringing_view(&view);
+        crate::update_section_at(
+            &session.paths.copy,
+            "appearance",
+            object(json!({"theme": "Light"})),
+        )
+        .unwrap();
+        // Nothing reads the view: its own timer finds the write.
+        rings.recv_timeout(tilo_test_env::hang_bound()).unwrap();
+        assert_eq!(session.load()["appearance"]["theme"], json!("Light"));
+        drop(view);
     }
 
     #[test]
