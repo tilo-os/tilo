@@ -13,7 +13,8 @@
 //! Any refusal composites the same frame instead, so the output never shows
 //! anything but the frame or the frame before it.
 
-use std::sync::{Arc, OnceLock};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use smithay::backend::allocator::Buffer as _;
 use smithay::backend::allocator::dmabuf::{Dmabuf, WeakDmabuf};
@@ -30,6 +31,7 @@ use drm_re::control::{
 use super::output_signal::find_property;
 use super::scanout::Card;
 use crate::compositor::backend::OutputId;
+use crate::compositor::scanout_feedback::ScanoutPlane;
 use crate::shell::gpu_frames::GpuFrame;
 
 /// Set to `0` to keep every frame composited: a hardware A/B switch and an
@@ -126,6 +128,89 @@ pub(super) fn scanout_fourcc(fourcc: DrmFourcc, opaque: bool) -> DrmFourcc {
         (DrmFourcc::Argb8888, true) => DrmFourcc::Xrgb8888,
         (DrmFourcc::Abgr8888, true) => DrmFourcc::Xbgr8888,
         (other, _) => other,
+    }
+}
+
+/// The client buffer formats a fullscreen client may hand this output to be
+/// scanned out, with every modifier the plane takes: those whose
+/// [`scanout_fourcc`] — for a buffer declared opaque — is `target`, the
+/// format of the framebuffers KMS shows now, since a legacy flip cannot
+/// change format. A driver without modifiers takes its formats linear.
+pub(super) fn client_formats(
+    plane: &PlaneFormats,
+    target: DrmFourcc,
+) -> Vec<smithay::backend::allocator::Format> {
+    use smithay::backend::allocator::Format;
+    const CLIENT: [DrmFourcc; 4] = [
+        DrmFourcc::Xrgb8888,
+        DrmFourcc::Argb8888,
+        DrmFourcc::Xbgr8888,
+        DrmFourcc::Abgr8888,
+    ];
+    let mut formats: Vec<Format> = Vec::new();
+    for code in CLIENT {
+        let shown = scanout_fourcc(code, true);
+        if shown != target {
+            continue;
+        }
+        let modifiers: Vec<u64> = match plane {
+            PlaneFormats::Modifiers(pairs) => pairs
+                .iter()
+                .filter(|&&(format, _)| format == shown as u32)
+                .map(|&(_, modifier)| modifier)
+                .collect(),
+            PlaneFormats::Implicit(known) => {
+                if known.contains(&(shown as u32)) {
+                    vec![MODIFIER_LINEAR]
+                } else {
+                    Vec::new()
+                }
+            }
+        };
+        for modifier in modifiers {
+            let format = Format {
+                code,
+                modifier: DrmModifier::from(modifier),
+            };
+            if !formats.contains(&format) {
+                formats.push(format);
+            }
+        }
+    }
+    formats
+}
+
+/// What each output's primary plane scans out of a fullscreen client
+/// ([`ClientPlane::offer`]), published by whichever thread presents for the
+/// loop thread, which tells the fullscreen client through its dma-buf
+/// feedback ([`crate::compositor::scanout_feedback`]).
+#[derive(Clone, Debug, Default)]
+pub struct ClientPlanes(Arc<Mutex<HashMap<OutputId, Arc<ScanoutPlane>>>>);
+
+impl ClientPlanes {
+    /// What `output` offers, as last published.
+    pub fn get(&self, output: OutputId) -> Option<Arc<ScanoutPlane>> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&output)
+            .cloned()
+    }
+
+    /// `output` offers `plane` now; `None` withdraws its offer.
+    pub fn publish(&self, output: OutputId, plane: Option<Arc<ScanoutPlane>>) {
+        let mut planes = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match plane {
+            Some(plane) => {
+                planes.insert(output, plane);
+            }
+            None => {
+                planes.remove(&output);
+            }
+        }
     }
 }
 
@@ -471,9 +556,65 @@ pub(super) struct ClientPlane {
     plane: Option<Result<PrimaryPlane, String>>,
     buffers: Vec<Remembered>,
     status: Option<ClientStatus>,
+    /// The offer last built, for the target format it was built for.
+    built_offer: Option<(DrmFourcc, Option<Arc<ScanoutPlane>>)>,
+    /// What the output offers a fullscreen client now ([`Self::offer`]).
+    offered: Option<Arc<ScanoutPlane>>,
+    /// What [`Self::publish_offer`] last published.
+    published: Option<Arc<ScanoutPlane>>,
 }
 
 impl ClientPlane {
+    /// Refresh what this output offers a fullscreen client covering it: the
+    /// buffers its primary plane would scan out in place of `target`
+    /// framebuffers ([`client_formats`]), on the KMS device `device`; nothing
+    /// when `target` is `None` (the output itself refuses client scanout),
+    /// the plane cannot be found or takes no client format.
+    ///
+    /// Probes the plane the first time, as the first client buffer tried on
+    /// it would.
+    pub fn offer(
+        &mut self,
+        card: &Card,
+        crtc: crtc::Handle,
+        device: u64,
+        target: Option<DrmFourcc>,
+    ) {
+        let Some(target) = target else {
+            self.offered = None;
+            return;
+        };
+        if let Some((built_for, offer)) = &self.built_offer
+            && *built_for == target
+        {
+            self.offered.clone_from(offer);
+            return;
+        }
+        let offer = match self
+            .plane
+            .get_or_insert_with(|| probe_primary_plane(card, crtc))
+        {
+            Ok(plane) => {
+                let formats = client_formats(&plane.formats, target);
+                (!formats.is_empty()).then(|| Arc::new(ScanoutPlane { device, formats }))
+            }
+            Err(_) => None,
+        };
+        self.built_offer = Some((target, offer.clone()));
+        self.offered = offer;
+    }
+
+    /// Publish the offer of `output` (this plane's output) into `planes`
+    /// when it differs from the one last published; returns whether it did.
+    pub fn publish_offer(&mut self, output: OutputId, planes: &ClientPlanes) -> bool {
+        if self.offered == self.published {
+            return false;
+        }
+        self.published.clone_from(&self.offered);
+        planes.publish(output, self.offered.clone());
+        true
+    }
+
     /// The framebuffer `dmabuf` scans out through as `fourcc`
     /// ([`scanout_fourcc`]), made and tried in a `TEST_ONLY` commit the first
     /// time the buffer comes by as that format; a refusal is remembered as
@@ -781,6 +922,88 @@ mod tests {
         assert!(formats.supports(XRGB, u64::from(DrmModifier::Invalid)));
         assert!(!formats.supports(XRGB, TILED));
         assert!(!formats.supports(ARGB, MODIFIER_LINEAR));
+    }
+
+    #[test]
+    fn client_formats_are_what_scans_out_as_the_target() {
+        use smithay::backend::allocator::Format;
+        let format = |code, modifier: u64| Format {
+            code,
+            modifier: DrmModifier::from(modifier),
+        };
+        // The plane takes XRGB linear and tiled, ARGB linear, and XBGR.
+        let plane = PlaneFormats::Modifiers(vec![
+            (XRGB, MODIFIER_LINEAR),
+            (XRGB, TILED),
+            (ARGB, MODIFIER_LINEAR),
+            (DrmFourcc::Xbgr8888 as u32, MODIFIER_LINEAR),
+        ]);
+
+        // Phase `xrgb_targets`: an XRGB buffer, and an ARGB one declared
+        // opaque (shown as XRGB), with every modifier XRGB takes. The
+        // plane's own ARGB listing does not matter: the buffer is shown as
+        // XRGB. XBGR and ABGR cannot follow an XRGB framebuffer by a legacy
+        // flip.
+        assert_eq!(
+            client_formats(&plane, DrmFourcc::Xrgb8888),
+            vec![
+                format(DrmFourcc::Xrgb8888, MODIFIER_LINEAR),
+                format(DrmFourcc::Xrgb8888, TILED),
+                format(DrmFourcc::Argb8888, MODIFIER_LINEAR),
+                format(DrmFourcc::Argb8888, TILED),
+            ]
+        );
+
+        // Phase `xbgr_targets`.
+        assert_eq!(
+            client_formats(&plane, DrmFourcc::Xbgr8888),
+            vec![
+                format(DrmFourcc::Xbgr8888, MODIFIER_LINEAR),
+                format(DrmFourcc::Abgr8888, MODIFIER_LINEAR),
+            ]
+        );
+
+        // Phase `targets_no_client_format_matches`: HDR targets.
+        assert!(client_formats(&plane, DrmFourcc::Xrgb2101010).is_empty());
+
+        // Phase `a_driver_without_modifiers`: linear.
+        assert_eq!(
+            client_formats(&PlaneFormats::Implicit(vec![XRGB]), DrmFourcc::Xrgb8888),
+            vec![
+                format(DrmFourcc::Xrgb8888, MODIFIER_LINEAR),
+                format(DrmFourcc::Argb8888, MODIFIER_LINEAR),
+            ]
+        );
+        assert!(
+            client_formats(&PlaneFormats::Implicit(vec![NV12]), DrmFourcc::Xrgb8888).is_empty()
+        );
+    }
+
+    #[test]
+    fn an_offer_is_published_once_per_change() {
+        let planes = ClientPlanes::default();
+        let mut plane = ClientPlane::default();
+        assert!(
+            !plane.publish_offer(OutputId(3), &planes),
+            "nothing offered yet"
+        );
+        let offer = Arc::new(ScanoutPlane {
+            device: 226,
+            formats: client_formats(&PlaneFormats::Implicit(vec![XRGB]), DrmFourcc::Xrgb8888),
+        });
+        plane.offered = Some(Arc::clone(&offer));
+        assert!(plane.publish_offer(OutputId(3), &planes), "a new offer");
+        assert_eq!(planes.get(OutputId(3)), Some(Arc::clone(&offer)));
+        assert!(
+            !plane.publish_offer(OutputId(3), &planes),
+            "published already"
+        );
+
+        // A refusing output withdraws it.
+        plane.offered = None;
+        assert!(plane.publish_offer(OutputId(3), &planes), "withdrawn");
+        assert_eq!(planes.get(OutputId(3)), None);
+        assert!(!plane.publish_offer(OutputId(3), &planes));
     }
 
     /// A buffer that records when its holder let go.
