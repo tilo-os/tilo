@@ -546,9 +546,10 @@ collaboration plane of two converged desktops).
 
 A gate that runs inside the pull-request test shard shares the runner with
 other tests, and preemptions grow with that load. `Wakeups::blocking_per_second`
-counts only voluntary switches, one per wakeup. The lone-desktop gate in
-`idle_quiet_tests` uses it, together with a CPU bound that catches a thread
-spinning without blocking (TIL-749).
+counts only voluntary switches, one per wakeup. Both gates in
+`idle_quiet_tests`, the lone desktop and the converged pair, use it, each
+together with a CPU bound that catches a thread spinning without blocking
+(TIL-749, TIL-752).
 
 ## Where to look in source
 
