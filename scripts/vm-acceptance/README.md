@@ -179,7 +179,13 @@ the store (DEVELOPMENT.md, "Performance results") and publishes the nightly run'
 | `idle.wakeups_per_s.shell_threads` | per_s | R01 | context switches of every thread of the compositor process |
 | `idle.frames` | count | R01 | frames painted while still |
 | `idle.ram_mib` | MiB | R01 | guest `MemTotal - MemAvailable` with no app open |
-| `idle.*.four_apps` | | R02 | the same with Terminal, Files, Settings and Notes open |
+| `idle.ram_mib.{anon,shmem,kernel}` | MiB | R01 | `/proc/meminfo` AnonPages, Shmem and unreclaimable kernel memory (SUnreclaim, KernelStack, PageTables, SecPageTables, VmallocUsed, Percpu) |
+| `idle.ram_mib.harness`, `idle.ram_mib.installed` | MiB | R01 | anon + shmem + kernel of what only the dev VM runs (seat0's greeter, the dev image's sshd, tilo-device-admin and tilo-vmd units, root's ssh sessions); `idle.ram_mib` less it |
+| `memory.idle_mib.<bucket>`, `memory.idle_mib.unattributed` | MiB | R01 | anon + shmem + kernel per bucket of cgroups (`compositor`, `apps`, `session_services`, `system`, `greeter`, `harness`); the guest's that no process's cgroup is charged |
+| `memory.idle_pss_mib.<process>` | MiB | R01 | PSS of the ten largest process names, every user's |
+| `idle.*.four_apps`, `memory.idle_*.four_apps` | | R02 | the same with Terminal, Files, Settings and Notes open |
+| `idle.ram_mib.after_close`, `idle.ram_mib.*.after_close`, `memory.idle_*.after_close` | MiB | R03 | the same once R03 has closed the four apps |
+| `memory.shell_anon_mib.per_open_close` | MiB | A15 | least-squares growth of the compositor's anonymous RSS per warm open and close |
 | `memory.shell_anon_mib`, `memory.session_mib`, `memory.app_mib.<app>`, `memory.app_anon_mib.<app>` | MiB | R03 | the compositor's anonymous RSS; the compositor's and apps' cgroups |
 | `memory.shell_anon_mib.empty` | MiB | R01 | the compositor's anonymous RSS with no app open |
 | `app.open.warm_ms.<app>` | ms | A15 | open request to first presented frame, ten warm opens |
@@ -188,6 +194,13 @@ the store (DEVELOPMENT.md, "Performance results") and publishes the nightly run'
 | `app.open.launcher_phase_ms.<app>.<mark>` | ms | A15 | each launcher phase, the interval ending at its mark |
 | `app.open.{request_to_spawn,spawn_to_map,map_to_first_present,request_to_first_present}_ms.<app>` | ms | A15 | the compositor's own split of the open |
 | `render.frame_cpu_ms` | ms | R04 | compositor CPU per painted frame during interactions |
+
+`idle.ram_mib` stays the guest-wide figure the KPI document defines. Beside it, R01, R02
+and R03 write `R0x-footprint*.json` (`resources.footprint`): every user's processes by PSS,
+every cgroup's anon, file, shmem and kernel charge grouped into the buckets above, each
+tmpfs's use, and the guest's meminfo split. A tilo-vm guest runs seat0's greeter beside the
+slot, which an installed machine ends at login, so `idle.ram_mib.installed` is the number to
+hold against the target.
 
 The records name the commit whose code ran (the swapped ref's, else the disk's) and keep
 the base disk's commit, the swapped components and the booted image digest in `meta`.
