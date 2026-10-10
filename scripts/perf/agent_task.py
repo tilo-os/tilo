@@ -598,6 +598,9 @@ def describe_desktop(conn: Connection, path: Path | None) -> str:
                          "limit": 2000, "wait_ms": WAIT_MS}),
             ("listing_note", {"op": "actions_enumerate", "query": "note", "detail": "compact",
                               "wait_ms": WAIT_MS}),
+            ("listing_app", {"op": "actions_enumerate", "query": NOTES_APP, "detail": "compact",
+                             "include_programmatic": True, "wait_ms": WAIT_MS}),
+            ("windows", {"op": "windows"}),
             ("targets", {"op": "list_targets"}),
             ("state", {"op": "state_dump"})):
         try:
@@ -624,6 +627,7 @@ def describe_desktop(conn: Connection, path: Path | None) -> str:
     return (f"whole listing: {len(listing)} rows, applications {applications}; "
             f"providers {sorted({str(r.get('provider')) for r in listing})}\n"
             f"'note' listed: {describe_rows(rows('listing_note'))}\n"
+            f"'{NOTES_APP}' listed: {describe_rows(rows('listing_app'))}\n"
             f"targets ({len(targets)}): {names}\ninput capture: {capture}\n"
             f"state keys: {sorted(state) if isinstance(state, dict) else type(state)}"
             + (f"\nfull probes: {path}" if path else ""))
@@ -647,6 +651,9 @@ def seeded_desktop(shell: Path, seeder: Path, log: Path, timeout: int) -> Iterat
         env = json.loads(seeded.stdout.strip().splitlines()[-1])
         env = {key: str(value) for key, value in env.items()}
         env["TILO_HEADLESS_PROFILE"] = str(profile)
+        # What the session says while it starts is the first thing to read
+        # when a run cannot find Notes.
+        env.setdefault("RUST_LOG", os.environ.get("RUST_LOG", "info"))
         with spawned(shell, log, timeout, env) as socket_path:
             yield socket_path
     finally:
