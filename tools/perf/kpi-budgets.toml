@@ -634,6 +634,36 @@ max = 1024.0
 min_delta = 64.0
 source = "KPI document target, without the dev VM's seat0 greeter and harness (resources.py footprint)"
 
+# The same once a user has opened and closed four apps (R03): what they leave behind
+# counts against the target too (TIL-731: 1295 MiB before the compositor gave back the
+# device memory and image atlas the windows had used).
+[kpi."idle.ram_mib.installed.after_close"]
+unit = "MiB"
+max = 1024.0
+min_delta = 64.0
+source = "KPI document target after four apps closed (TIL-731; resources.py footprint)"
+
+# The compositor's cgroup once the four apps have closed (TIL-731): at most its R01
+# idle figure (310-376 MiB on the dev VM, anon + shmem + kernel) plus 32 MiB; after the
+# close it is 331-335 MiB. It held 663-678 MiB while lavapipe kept every page closed
+# windows had touched.
+[kpi."memory.idle_mib.compositor.after_close"]
+unit = "MiB"
+max = 410.0
+min_delta = 32.0
+source = "TIL-731: the compositor returns to within 32 MiB of idle after four apps close"
+
+# Shmem allocated to the compositor's memfds after the four apps closed, mapped or not:
+# on lavapipe its device memory. R01 holds 73 MiB; after the close 105-109 MiB, the
+# renderer's pooled buffers and bump buffers sized for the desktop it last drew
+# (vm-acceptance 91838, 91987). It held 441-466 MiB before freed device memory was
+# punched out and the image atlas came down after a close (TIL-731).
+[kpi."memory.compositor_memfd_mib.after_close"]
+unit = "MiB"
+max = 120.0
+min_delta = 16.0
+source = "TIL-731: R01's compositor memfd shmem (73 MiB) plus the renderer's working set"
+
 [kpi."memory.shell_anon_mib"]
 unit = "MiB"
 max = 250.0
