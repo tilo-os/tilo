@@ -222,30 +222,37 @@ fn hosted_keystrokes(tasks: u32) -> Result<Vec<usize>, String> {
     use tilo_app::synthetic_input::key_input;
     use tilo_app::winit::event::ElementState;
     GENESIS_TASKS.set(tasks);
-    let typed = drive_live_window::<Keystrokes, _>(|app| {
-        app.init_layout();
-        host_frame(app);
-        if !app.focus_order_edge(false) {
-            return Err("the window has no control to type into".to_owned());
-        }
-        host_frame(app);
-        let mut counts = Vec::new();
-        for key in ["a", "b", "c"] {
-            let key = tilo_app::winit::keyboard::Key::Character(key.into());
-            let ((), phases) = observe(|| {
-                app.surface_input(&Region, key_input(&key, ElementState::Pressed), false);
-                host_frame(app);
-                app.surface_input(&Region, key_input(&key, ElementState::Released), false);
-                host_frame(app);
-            });
-            counts.push(
-                phases
-                    .iter()
-                    .filter(|phase| phase.phase == "framework.publication")
-                    .count(),
-            );
-        }
-        Ok((counts, draft_value(app)))
+    // A save-status resample is an independent idle frame at 100 ms. Under
+    // CI load it can fall between press and release and publish again even
+    // though the keystroke did no extra work. Keep the real hosted path, but
+    // hold monotonic time during this input-only observation. The separate
+    // overdue-save test below advances it explicitly.
+    let typed = tilo_app::time::testing::with_monotonic_time(tilo_app::time::now(), || {
+        drive_live_window::<Keystrokes, _>(|app| {
+            app.init_layout();
+            host_frame(app);
+            if !app.focus_order_edge(false) {
+                return Err("the window has no control to type into".to_owned());
+            }
+            host_frame(app);
+            let mut counts = Vec::new();
+            for key in ["a", "b", "c"] {
+                let key = tilo_app::winit::keyboard::Key::Character(key.into());
+                let ((), phases) = observe(|| {
+                    app.surface_input(&Region, key_input(&key, ElementState::Pressed), false);
+                    host_frame(app);
+                    app.surface_input(&Region, key_input(&key, ElementState::Released), false);
+                    host_frame(app);
+                });
+                counts.push(
+                    phases
+                        .iter()
+                        .filter(|phase| phase.phase == "framework.publication")
+                        .count(),
+                );
+            }
+            Ok((counts, draft_value(app)))
+        })
     });
     GENESIS_TASKS.set(0);
     let (counts, draft) = typed.map_err(failure)??;
@@ -275,4 +282,40 @@ fn a_hosted_keystroke_publishes_at_most_twice() {
             "publications for the first keystroke with {tasks} tasks: {counts:?}"
         );
     }
+}
+
+#[test]
+fn an_overdue_save_status_frame_still_publishes_and_preserves_typed_content() {
+    use tilo_app::synthetic_input::key_input;
+    use tilo_app::winit::event::ElementState;
+
+    let at = tilo_app::time::now();
+    let seen = tilo_app::time::testing::with_monotonic_time(at, || {
+        drive_live_window::<Keystrokes, _>(|app| {
+            app.init_layout();
+            host_frame(app);
+            assert!(app.focus_order_edge(false));
+            host_frame(app);
+            let key = tilo_app::winit::keyboard::Key::Character("a".into());
+            app.surface_input(&Region, key_input(&key, ElementState::Pressed), false);
+            host_frame(app);
+            app.surface_input(&Region, key_input(&key, ElementState::Released), false);
+            host_frame(app);
+            assert_eq!(draft_value(app).as_deref(), Some("a"));
+            let later = at
+                .checked_add(tilo_app::time::Duration::from_millis(100))
+                .unwrap();
+            let ((), phases) = observe(|| {
+                tilo_app::time::testing::with_monotonic_time(later, || host_frame(app));
+            });
+            assert!(
+                phases
+                    .iter()
+                    .any(|phase| phase.phase == "framework.publication"),
+                "the real overdue save-status frame must still publish"
+            );
+            assert_eq!(draft_value(app).as_deref(), Some("a"));
+        })
+    });
+    seen.expect("a live window whose durability timer becomes due");
 }

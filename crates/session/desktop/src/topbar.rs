@@ -29,9 +29,37 @@ use ui::presence::{PresenceCtx, user_color};
 use ui::text_render::TextStyle;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::ButtonRole;
 use ui::widget::Widget;
 use ui::widget::drag::{DragController, ListMetrics};
+use ui::widget::{Button, ButtonFace, ButtonRole, ControlSize, ListRowFace, RowLeading};
+
+/// Paint and input share the measured editor geometry, including wrapped Add controls.
+#[derive(Default, PartialEq)]
+struct EditorGeometry {
+    panel: Rect,
+    title: Rect,
+    hint: Rect,
+    rows: Vec<Rect>,
+    remove: Vec<Rect>,
+    add: [Rect; 3],
+    widgets: Vec<TopBarWidget>,
+    row_height: f64,
+    row_gap: f64,
+    compact_rows: bool,
+}
+
+fn editor_text_width(width: f64) -> f32 {
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "bounded canvas widths use f64 while the shared text renderer measures in f32"
+    )]
+    {
+        width.max(0.0).min(f64::from(f32::MAX)) as f32
+    }
+}
+
+mod responsive;
+use responsive::ResponsiveBar;
 
 /// Persistent chrome is deliberately a little taller than the original
 /// concept's 40 px sketch.  Forty pixels forced the navigation and status
@@ -251,6 +279,7 @@ struct CacheFingerprint {
     collaborator_overflow: usize,
     sharing: (usize, usize, usize),
     center_widget: CenterWidget,
+    widgets: [Option<TopBarWidget>; 3],
     activity_headline: Option<String>,
     activity_unread: usize,
     activity_visible: bool,
@@ -264,6 +293,7 @@ struct CacheFingerprint {
     workspace_lens_open: bool,
     focused: bool,
     focused_control: Option<String>,
+    toolbar_focus: Vec<bool>,
     clock_activity: Option<(String, u64, bool, bool)>,
     app_tray_revision: u64,
     continuity: Option<String>,
@@ -499,6 +529,7 @@ enum BarVariant {
 /// function of the tree and avoids a circular borrow against the
 /// shell's owned logical `TopBar`.
 pub struct TopBarChrome {
+    responsive: ResponsiveBar,
     explicit_local_user: Option<String>,
     rect: Rect,
     /// The compact bar a display other than the primary carries: workspace
@@ -515,6 +546,7 @@ pub struct TopBarChrome {
     /// Most of the bar is stable across frames, so caching cuts the
     /// draw budget at rest by an order of magnitude.
     cached: Scene,
+    cache_theme: Option<Theme>,
     /// Reused iff every field matches `self.*` at draw time. See
     /// [`TopBarChrome::current_fingerprint`].
     cache_fp: CacheFingerprint,
@@ -590,6 +622,10 @@ pub struct TopBarChrome {
     widget_config: TopBarWidgets,
     widget_editing: bool,
     widget_editor_rect: Rect,
+    editor_geometry: EditorGeometry,
+    editor_submit_key: Option<winit::keyboard::NamedKey>,
+    editor_pressed_control: Option<&'static str>,
+    editor_pointer_release: Option<winit::event::MouseButton>,
     widget_edit_drag: DragController<TopBarWidget>,
     widget_edit_pressed: Option<usize>,
     /// Matches the sidebar-wheel's scroll contract. `f64` so pixel-delta
@@ -867,6 +903,7 @@ impl TopBarChrome {
 
     fn from_tree_with_identity(tree: &DesktopTree, explicit_local_user: Option<String>) -> Self {
         let mut this = Self {
+            responsive: ResponsiveBar::new(),
             explicit_local_user,
             rect: Rect::ZERO,
             variant: BarVariant::Full,
@@ -875,6 +912,7 @@ impl TopBarChrome {
             workspace_index: 0,
             workspace_total: 1,
             cached: Scene::new(),
+            cache_theme: None,
             cache_fp: CacheFingerprint::default(),
             collaborator_initials: Vec::new(),
             collaborator_names: Vec::new(),
@@ -922,6 +960,10 @@ impl TopBarChrome {
             widget_config: TopBarWidgets::default(),
             widget_editing: false,
             widget_editor_rect: Rect::ZERO,
+            editor_geometry: EditorGeometry::default(),
+            editor_submit_key: None,
+            editor_pressed_control: None,
+            editor_pointer_release: None,
             widget_edit_drag: DragController::vertical(),
             widget_edit_pressed: None,
             center_scroll_accum: 0.0,
@@ -956,6 +998,7 @@ impl TopBarChrome {
             collaborator_overflow: self.collaborator_overflow,
             sharing: self.sharing_summary(),
             center_widget: self.center_widget,
+            widgets: std::array::from_fn(|index| self.widget_config.widgets.get(index).copied()),
             activity_headline: self.activity_headline.clone(),
             activity_unread: self.activity_unread,
             activity_visible,
@@ -970,6 +1013,7 @@ impl TopBarChrome {
                 .is_some_and(|chrome| chrome.snapshot().overlays.ws_settings),
             focused: self.focused,
             focused_control: self.focused_control.clone(),
+            toolbar_focus: self.responsive.paint_focus_state(),
             clock_activity: self.chrome.as_ref().and_then(|chrome| {
                 chrome
                     .snapshot()
@@ -1350,6 +1394,7 @@ impl TopBarChrome {
     const CONTROL_MEDIA: &'static str = "topbar:media";
     const CONTROL_CONTINUITY: &'static str = "topbar:continuity";
     const CONTROL_CONTINUITY_DISMISS: &'static str = "topbar:continuity-dismiss";
+    const CONTROL_EDIT_WIDGETS: &'static str = "topbar:editor:open";
     const CONTROL_REMOVE_CLOCK: &'static str = "topbar:editor:remove-clock";
     const CONTROL_REMOVE_MONITOR: &'static str = "topbar:editor:remove-system-monitor";
     const CONTROL_REMOVE_CALENDAR: &'static str = "topbar:editor:remove-calendar";
@@ -1634,6 +1679,27 @@ impl TopBarChrome {
     /// The same ordered list drives keyboard cycling, synthetic semantics,
     /// and focus-ring geometry. Keeping it in one place prevents an optional
     /// avatar from shifting every subsequent accessibility target.
+    fn editor_test_rects(&self) -> [(String, Rect); 6] {
+        [
+            ("topbar_editor_remove_clock", Self::CONTROL_REMOVE_CLOCK),
+            (
+                "topbar_editor_remove_system_monitor",
+                Self::CONTROL_REMOVE_MONITOR,
+            ),
+            (
+                "topbar_editor_remove_calendar",
+                Self::CONTROL_REMOVE_CALENDAR,
+            ),
+            ("topbar_editor_add_clock", Self::CONTROL_ADD_CLOCK),
+            (
+                "topbar_editor_add_system_monitor",
+                Self::CONTROL_ADD_MONITOR,
+            ),
+            ("topbar_editor_add_calendar", Self::CONTROL_ADD_CALENDAR),
+        ]
+        .map(|(name, target)| (name.to_owned(), self.control_rect(target)))
+    }
+
     fn control_targets(&self) -> Vec<&'static str> {
         let mut controls = vec![
             Self::CONTROL_OVERVIEW,
@@ -1651,13 +1717,10 @@ impl TopBarChrome {
         if self.is_compact() {
             return controls;
         }
+        controls.push(Self::CONTROL_EDIT_WIDGETS);
         controls.push(Self::CONTROL_QUICK_SETTINGS);
         if self.widget_editing {
-            controls.extend(TopBarWidget::ALL.into_iter().filter_map(|widget| {
-                let present = self.widget_config.widgets.contains(&widget);
-                (!present || self.widget_config.widgets.len() > 1)
-                    .then_some(Self::editor_control(widget, present))
-            }));
+            controls.extend(self.editor_controls());
         }
         if self.collaborators_visible() || self.invite_visible() {
             controls.push(Self::CONTROL_COLLABORATORS);
@@ -1673,6 +1736,19 @@ impl TopBarChrome {
     }
 
     fn control_rect(&self, target: &str) -> Rect {
+        if self.responsive.active
+            && !matches!(
+                target,
+                Self::CONTROL_REMOVE_CLOCK
+                    | Self::CONTROL_REMOVE_MONITOR
+                    | Self::CONTROL_REMOVE_CALENDAR
+                    | Self::CONTROL_ADD_CLOCK
+                    | Self::CONTROL_ADD_MONITOR
+                    | Self::CONTROL_ADD_CALENDAR
+            )
+        {
+            return self.responsive.rect_for(target);
+        }
         match target {
             Self::CONTROL_OVERVIEW => self.overview_btn_rect,
             Self::CONTROL_WORKSPACE_UP => self.up_btn_rect,
@@ -1688,6 +1764,7 @@ impl TopBarChrome {
                 };
                 self.center_dot_rect(widget)
             }
+            Self::CONTROL_EDIT_WIDGETS => self.center_rect,
             Self::CONTROL_QUICK_SETTINGS => self.tray_hit_rect,
             Self::CONTROL_COLLABORATORS => {
                 if self.avatar_stack_rect.is_zero_area() {
@@ -1739,6 +1816,7 @@ impl TopBarChrome {
             Self::CONTROL_CENTER_CLOCK => t("topbar-show-clock"),
             Self::CONTROL_CENTER_MONITOR => t("topbar-show-system-monitor"),
             Self::CONTROL_CENTER_CALENDAR => t("topbar-show-calendar"),
+            Self::CONTROL_EDIT_WIDGETS | Self::CONTROL_WIDGET_EDITOR => t("topbar-editor-title"),
             Self::CONTROL_QUICK_SETTINGS => t("topbar-open-quick-settings"),
             Self::CONTROL_COLLABORATORS if self.invite_visible() => t("topbar-invite"),
             Self::CONTROL_COLLABORATORS => {
@@ -1839,6 +1917,23 @@ impl TopBarChrome {
                 return false;
             }
             self.widget_config.widgets.push(widget);
+        }
+        self.cancel_editor_drag();
+        if !self
+            .widget_config
+            .widgets
+            .contains(&self.center_widget.into())
+            && let Some(widget) = self.widget_config.widgets.first()
+        {
+            self.center_widget = (*widget).into();
+        }
+        if self
+            .focused_control
+            .as_deref()
+            .and_then(Self::editor_widget)
+            .is_some_and(|(focused, _)| focused == widget)
+        {
+            self.focused_control = Some(Self::editor_control(widget, !remove).into());
         }
         self.save_widget_config();
         self.cache_fp = CacheFingerprint::default();
@@ -2376,36 +2471,88 @@ impl TopBarChrome {
         (content_x0, content_x1, content_cx)
     }
 
+    fn editor_controls(&self) -> Vec<&'static str> {
+        let mut controls = Vec::with_capacity(3);
+        if self.widget_config.widgets.len() > 1 {
+            controls.extend(
+                self.widget_config
+                    .widgets
+                    .iter()
+                    .copied()
+                    .map(|widget| Self::editor_control(widget, true)),
+            );
+        }
+        controls.extend(
+            TopBarWidget::ALL
+                .into_iter()
+                .filter(|widget| !self.widget_config.widgets.contains(widget))
+                .map(|widget| Self::editor_control(widget, false)),
+        );
+        controls
+    }
+
+    fn open_widget_editor(&mut self) -> bool {
+        if self.is_compact() {
+            return false;
+        }
+        self.cancel_editor_drag();
+        self.responsive.toolbar.close_menus();
+        self.responsive.dirty = true;
+        self.widget_editing = true;
+        self.focused_control = self
+            .editor_controls()
+            .first()
+            .map(|target| (*target).into());
+        self.cache_fp = CacheFingerprint::default();
+        true
+    }
+
+    fn cancel_editor_drag(&mut self) {
+        self.widget_edit_drag.cancel();
+        self.widget_edit_pressed = None;
+        self.editor_pressed_control = None;
+    }
+
+    fn close_widget_editor(&mut self) {
+        self.cancel_editor_drag();
+        self.widget_editing = false;
+        if self
+            .focused_control
+            .as_deref()
+            .and_then(Self::editor_widget)
+            .is_some()
+        {
+            self.focused_control = Some(Self::center_control(self.center_widget.into()).into());
+        }
+        self.cache_fp = CacheFingerprint::default();
+    }
+
     fn widget_editor_row(&self, index: usize) -> Rect {
-        let top = self.widget_editor_rect.y0 + 62.0 + small_count_to_f64(index) * 50.0;
-        Rect::new(
-            self.widget_editor_rect.x0 + 14.0,
-            top,
-            self.widget_editor_rect.x1 - 14.0,
-            top + 42.0,
-        )
+        self.editor_geometry
+            .rows
+            .get(index)
+            .copied()
+            .unwrap_or(Rect::ZERO)
     }
 
     fn widget_editor_remove_rect(&self, index: usize) -> Rect {
-        let row = self.widget_editor_row(index);
-        Rect::new(row.x1 - 76.0, row.y0 + 5.0, row.x1 - 5.0, row.y1 - 5.0)
+        self.editor_geometry
+            .remove
+            .get(index)
+            .copied()
+            .unwrap_or(Rect::ZERO)
     }
 
     fn widget_editor_add_rect(&self, widget: TopBarWidget) -> Rect {
-        let Some(index) = TopBarWidget::ALL
-            .into_iter()
-            .filter(|candidate| !self.widget_config.widgets.contains(candidate))
-            .position(|candidate| candidate == widget)
-        else {
-            return Rect::ZERO;
-        };
-        let x = self.widget_editor_rect.x0 + 16.0 + small_count_to_f64(index) * 82.0;
-        Rect::new(
-            x,
-            self.widget_editor_rect.y1 - 48.0,
-            x + 78.0,
-            self.widget_editor_rect.y1 - 8.0,
-        )
+        let index = TopBarWidget::ALL
+            .iter()
+            .position(|candidate| *candidate == widget)
+            .unwrap_or(0);
+        self.editor_geometry
+            .add
+            .get(index)
+            .copied()
+            .unwrap_or(Rect::ZERO)
     }
 
     fn widget_editor_action_rect(&self, widget: TopBarWidget, present: bool) -> Rect {
@@ -2426,10 +2573,294 @@ impl TopBarChrome {
         }
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "a paint routine that lays its elements out top to bottom from shared running offsets"
-    )]
+    fn editor_label(widget: TopBarWidget) -> String {
+        t(match widget {
+            TopBarWidget::Clock => "topbar-widget-clock",
+            TopBarWidget::SystemMonitor => "topbar-widget-system-monitor",
+            TopBarWidget::Calendar => "topbar-widget-calendar",
+        })
+    }
+
+    fn editor_add_label(widget: TopBarWidget) -> String {
+        t(match widget {
+            TopBarWidget::Clock => "topbar-editor-add-clock-chip",
+            TopBarWidget::SystemMonitor => "topbar-editor-add-monitor-chip",
+            TopBarWidget::Calendar => "topbar-editor-add-calendar-chip",
+        })
+    }
+
+    fn editor_metrics(&self) -> ListMetrics {
+        ListMetrics::uniform(
+            self.editor_geometry
+                .rows
+                .first()
+                .map_or(0.0, |rect| rect.y0),
+            self.editor_geometry.row_height,
+            self.editor_geometry.row_gap,
+            self.widget_config.widgets.len(),
+        )
+    }
+
+    fn editor_preferred_width(
+        &self,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        remove_width: f64,
+        button_height: f64,
+    ) -> f64 {
+        let pad = f64::from(theme.tokens.spacing.s4);
+        let widest = self
+            .widget_config
+            .widgets
+            .iter()
+            .copied()
+            .map(|widget| {
+                f64::from(
+                    text.measure_style(
+                        &Self::editor_label(widget),
+                        None,
+                        &theme.text(TextRole::Body),
+                    )
+                    .0,
+                )
+            })
+            .fold(0.0, f64::max);
+        let leading_width = ListRowFace::new("")
+            .leading(RowLeading::Icon(ui::icons::Icon::Menu))
+            .leading_rect(Rect::new(0.0, 0.0, 1000.0, button_height), text, theme)
+            .width();
+        (360.0 * f64::from(theme.ui_scale)).max(
+            widest
+                + remove_width
+                + leading_width
+                + 2.0 * pad
+                + 2.0 * ui::chrome::row_bleed(theme)
+                + 2.0 * f64::from(theme.tokens.spacing.s3),
+        )
+    }
+
+    fn editor_row_face(label: &str, remove_width: f64, compact: bool) -> ListRowFace<'_> {
+        let face = ListRowFace::new(label).trailing_width(remove_width);
+        if compact {
+            face.two_line_title()
+        } else {
+            face.leading(RowLeading::Icon(ui::icons::Icon::Menu))
+        }
+    }
+
+    fn editor_remove_metrics(
+        &self,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        content_width: f64,
+        remove_width: f64,
+    ) -> (f64, bool) {
+        let probe = Rect::new(
+            0.0,
+            0.0,
+            content_width,
+            ButtonFace::height(ControlSize::Small, theme),
+        );
+        let compact_rows = self.widget_config.widgets.iter().any(|widget| {
+            Self::editor_row_face(&Self::editor_label(*widget), remove_width, false)
+                .title_elided(probe, text, theme)
+        });
+        let remove_width = if compact_rows {
+            ButtonFace::icon_only(
+                Rect::ZERO,
+                ui::icons::Icon::Minus,
+                &t("topbar-editor-remove"),
+            )
+            .control_size(ControlSize::Small)
+            .intrinsic_width(text, theme)
+        } else {
+            remove_width
+        };
+        (remove_width, compact_rows)
+    }
+
+    fn resolve_editor_geometry(&self, text: &mut TextRenderer, theme: &Theme) -> EditorGeometry {
+        let pad = f64::from(theme.tokens.spacing.s4);
+        let gap = f64::from(theme.tokens.spacing.s2);
+        let outer = gap.min(self.rect.width() / 2.0);
+        let remove_label = t("topbar-editor-remove");
+        let remove_face = ButtonFace::new(Rect::ZERO, &remove_label)
+            .role(ButtonRole::Plain)
+            .control_size(ControlSize::Small);
+        let remove_width = remove_face.intrinsic_width(text, theme);
+        let button_height = ButtonFace::height(ControlSize::Small, theme);
+        let preferred = self.editor_preferred_width(text, theme, remove_width, button_height);
+        let width = preferred.min((self.rect.width() - 2.0 * outer).max(0.0));
+        let left = (self.center_rect.center().x - width / 2.0)
+            .clamp(self.rect.x0 + outer, self.rect.x1 - outer - width);
+        let content_width = (width - 2.0 * pad).max(0.0);
+        let (remove_width, compact_rows) =
+            self.editor_remove_metrics(text, theme, content_width, remove_width);
+        let top = self.rect.y1 + gap;
+        let title_h = f64::from(
+            text.measure_style(
+                &t("topbar-editor-title"),
+                Some(editor_text_width(content_width)),
+                &theme.text(TextRole::Subheading),
+            )
+            .1,
+        );
+        let hint_h = f64::from(
+            text.measure_style(
+                &t("topbar-editor-hint"),
+                Some(editor_text_width(content_width)),
+                &theme.text(TextRole::Caption),
+            )
+            .1,
+        );
+        let mut y = top + pad;
+        let title = Rect::new(left + pad, y, left + width - pad, y + title_h);
+        y = title.y1 + f64::from(theme.tokens.spacing.s1);
+        let hint = Rect::new(left + pad, y, left + width - pad, y + hint_h);
+        y = hint.y1 + f64::from(theme.tokens.spacing.s3);
+        let row_height = Self::editor_row_face(&remove_label, remove_width, compact_rows)
+            .height(text, theme)
+            .max(button_height + gap);
+        let mut geometry = EditorGeometry {
+            title,
+            hint,
+            row_height,
+            row_gap: gap,
+            compact_rows,
+            widgets: self.widget_config.widgets.clone(),
+            ..Default::default()
+        };
+        for widget in &self.widget_config.widgets {
+            let label = Self::editor_label(*widget);
+            let row = Rect::new(left + pad, y, left + width - pad, y + row_height);
+            let face = Self::editor_row_face(&label, remove_width, compact_rows);
+            let slot = face.trailing_rect(row, text, theme).unwrap_or(Rect::ZERO);
+            let button = Rect::new(
+                slot.x0,
+                row.center().y - button_height / 2.0,
+                slot.x1,
+                row.center().y + button_height / 2.0,
+            );
+            geometry.rows.push(row);
+            geometry.remove.push(button);
+            y = row.y1 + gap;
+        }
+        if !geometry.rows.is_empty() {
+            y -= gap;
+        }
+        let mut x = left + pad;
+        let mut add_y = y + f64::from(theme.tokens.spacing.s3);
+        let mut has_add = false;
+        for (index, widget) in TopBarWidget::ALL.into_iter().enumerate() {
+            if self.widget_config.widgets.contains(&widget) {
+                continue;
+            }
+            let label = Self::editor_add_label(widget);
+            let button_width = ButtonFace::new(Rect::ZERO, &label)
+                .control_size(ControlSize::Small)
+                .intrinsic_width(text, theme)
+                .min(content_width);
+            if x > left + pad && x + button_width > left + width - pad {
+                x = left + pad;
+                add_y += button_height + gap;
+            }
+            if let Some(rect) = geometry.add.get_mut(index) {
+                *rect = Rect::new(x, add_y, x + button_width, add_y + button_height);
+            }
+            x += button_width + gap;
+            has_add = true;
+        }
+        if has_add {
+            y = add_y + button_height;
+        }
+        geometry.panel = Rect::new(left, top, left + width, y + pad);
+        geometry
+    }
+
+    fn editor_button(
+        &self,
+        rect: Rect,
+        label: &str,
+        target: &'static str,
+        disabled: bool,
+        ctx: &mut ui::paint::PaintCtx<'_>,
+    ) {
+        let face = if self.editor_geometry.compact_rows
+            && Self::editor_widget(target).is_some_and(|(_, remove)| remove)
+        {
+            ButtonFace::icon_only(rect, ui::icons::Icon::Minus, label)
+        } else {
+            ButtonFace::new(rect, label)
+        };
+        Button::paint(
+            ctx.scene,
+            ctx.transform,
+            ctx.text,
+            ctx.theme,
+            &face
+                .role(
+                    if Self::editor_widget(target).is_some_and(|(_, remove)| remove) {
+                        ButtonRole::Plain
+                    } else {
+                        ButtonRole::Secondary
+                    },
+                )
+                .control_size(ControlSize::Small)
+                .disabled(disabled)
+                .pressed(self.editor_pressed_control == Some(target))
+                .hovered(self.last_cursor.is_some_and(|point| rect.contains(point)))
+                .focused(self.focused && self.focused_control.as_deref() == Some(target)),
+        );
+    }
+
+    fn shift_editor_rect(rect: Rect, shift: f64) -> Rect {
+        Rect::new(rect.x0, rect.y0 + shift, rect.x1, rect.y1 + shift)
+    }
+
+    fn draw_editor_rows(&mut self, ctx: &mut ui::paint::PaintCtx<'_>) {
+        let metrics = self.editor_metrics();
+        self.widget_edit_drag.sync_insertion(&metrics);
+        for (index, widget) in self.widget_config.widgets.iter().copied().enumerate() {
+            if self.widget_edit_drag.from_index() == Some(index) {
+                continue;
+            }
+            let shift = self.widget_edit_drag.item_shift(index, &metrics);
+            let row = Self::shift_editor_rect(self.widget_editor_row(index), shift);
+            ctx.scene.fill(
+                Fill::NonZero,
+                ctx.transform,
+                ctx.theme.tokens.colors.surfaces.raised,
+                None,
+                &RoundedRect::from_rect(row, f64::from(ctx.theme.tokens.radii.control)),
+            );
+            let button = Self::shift_editor_rect(self.widget_editor_remove_rect(index), shift);
+            let label = Self::editor_label(widget);
+            Self::editor_row_face(&label, button.width(), self.editor_geometry.compact_rows)
+                .separator(false)
+                .paint(ctx, row);
+            self.editor_button(
+                button,
+                &t("topbar-editor-remove"),
+                Self::editor_control(widget, true),
+                self.widget_config.widgets.len() <= 1,
+                ctx,
+            );
+        }
+        if let Some(ghost) = self.widget_edit_drag.ghost_rect(
+            self.widget_editor_rect.x0 + f64::from(ctx.theme.tokens.spacing.s4),
+            self.widget_editor_rect.x1 - f64::from(ctx.theme.tokens.spacing.s4),
+            &metrics,
+        ) {
+            ctx.scene.fill(
+                Fill::NonZero,
+                ctx.transform,
+                ctx.theme.tokens.colors.text_primary.with_alpha(0.22),
+                None,
+                &RoundedRect::from_rect(ghost, f64::from(ctx.theme.tokens.radii.control)),
+            );
+        }
+    }
+
     fn draw_widget_editor(
         &mut self,
         scene: &mut Scene,
@@ -2441,22 +2872,14 @@ impl TopBarChrome {
             self.widget_editor_rect = Rect::ZERO;
             return;
         }
-        let width = 286.0;
-        let available = TopBarWidget::ALL
-            .iter()
-            .filter(|widget| !self.widget_config.widgets.contains(widget))
-            .count();
-        let height = 86.0
-            + small_count_to_f64(self.widget_config.widgets.len()) * 50.0
-            + if available > 0 { 54.0 } else { 0.0 };
-        let panel = Rect::new(
-            self.center_rect.center().x - width / 2.0,
-            self.rect.y1 + 8.0,
-            self.center_rect.center().x + width / 2.0,
-            self.rect.y1 + 8.0 + height,
-        );
-        self.widget_editor_rect = panel;
-        let rr = RoundedRect::from_rect(panel, 16.0);
+        let geometry = self.resolve_editor_geometry(text, theme);
+        if geometry != self.editor_geometry {
+            self.cancel_editor_drag();
+        }
+        self.editor_geometry = geometry;
+        self.widget_editor_rect = self.editor_geometry.panel;
+        let panel = self.widget_editor_rect;
+        let rr = RoundedRect::from_rect(panel, f64::from(theme.tokens.radii.panel));
         scene.fill(
             Fill::NonZero,
             transform,
@@ -2471,114 +2894,52 @@ impl TopBarChrome {
             None,
             &rr,
         );
-        text.draw_style(
-            scene,
-            &t("topbar-editor-title"),
-            theme.tokens.colors.text_primary,
-            at(transform, (panel.x0 + 16.0, panel.y0 + 15.0)),
-            None,
-            &theme.text(TextRole::Subheading),
-        );
-        text.draw_style(
-            scene,
-            &t("topbar-editor-hint"),
-            theme.tokens.colors.text_dim,
-            at(transform, (panel.x0 + 16.0, panel.y0 + 38.0)),
-            None,
-            &theme.text(TextRole::Caption),
-        );
-        let metrics =
-            ListMetrics::uniform(panel.y0 + 62.0, 42.0, 8.0, self.widget_config.widgets.len());
-        self.widget_edit_drag.sync_insertion(&metrics);
-        for (index, widget) in self
-            .widget_config
-            .widgets
-            .clone()
-            .iter()
-            .copied()
-            .enumerate()
-        {
-            if self.widget_edit_drag.from_index() == Some(index) {
-                continue;
-            }
-            let mut row = self.widget_editor_row(index);
-            row = row.with_origin((
-                row.x0,
-                row.y0 + self.widget_edit_drag.item_shift(index, &metrics),
-            ));
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                theme.tokens.colors.surfaces.raised,
-                None,
-                &RoundedRect::from_rect(row, 10.0),
-            );
-            let label = t(match widget {
-                TopBarWidget::Clock => "topbar-widget-clock",
-                TopBarWidget::SystemMonitor => "topbar-widget-system-monitor",
-                TopBarWidget::Calendar => "topbar-widget-calendar",
-            });
+        for (key, rect, role) in [
+            (
+                "topbar-editor-title",
+                self.editor_geometry.title,
+                TextRole::Subheading,
+            ),
+            (
+                "topbar-editor-hint",
+                self.editor_geometry.hint,
+                TextRole::Caption,
+            ),
+        ] {
             text.draw_style(
                 scene,
-                "⠿",
-                theme.tokens.colors.text_dim,
-                at(transform, (row.x0 + 12.0, row.y0 + 11.0)),
-                None,
-                &theme.text(TextRole::Body),
-            );
-            text.draw_style(
-                scene,
-                &label,
-                theme.tokens.colors.text_primary,
-                at(transform, (row.x0 + 40.0, row.y0 + 12.0)),
-                None,
-                &theme.text(TextRole::Caption),
-            );
-            text.draw_style(
-                scene,
-                &t("topbar-editor-remove"),
-                theme.tokens.colors.semantic.danger,
-                at(transform, (row.x1 - 60.0, row.y0 + 13.0)),
-                None,
-                &theme.text(TextRole::Caption),
+                &t(key),
+                if role == TextRole::Caption {
+                    theme.tokens.colors.text_dim
+                } else {
+                    theme.tokens.colors.text_primary
+                },
+                at(transform, (rect.x0, rect.y0)),
+                Some(editor_text_width(rect.width())),
+                &theme.text(role),
             );
         }
-        if let Some(ghost) =
-            self.widget_edit_drag
-                .ghost_rect(panel.x0 + 14.0, panel.x1 - 14.0, &metrics)
-        {
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                theme.tokens.colors.text_primary.with_alpha(0.22),
-                None,
-                &RoundedRect::from_rect(
-                    Rect::new(panel.x0 + 14.0, ghost.y0, panel.x1 - 14.0, ghost.y1),
-                    10.0,
-                ),
-            );
-        }
-        if available > 0 {
-            let y = panel.y1 - 40.0;
-            let mut x = panel.x0 + 16.0;
-            for widget in TopBarWidget::ALL {
-                if self.widget_config.widgets.contains(&widget) {
-                    continue;
-                }
-                let label = t(match widget {
-                    TopBarWidget::Clock => "topbar-editor-add-clock-chip",
-                    TopBarWidget::SystemMonitor => "topbar-editor-add-monitor-chip",
-                    TopBarWidget::Calendar => "topbar-editor-add-calendar-chip",
-                });
-                text.draw_style(
-                    scene,
-                    &label,
-                    theme.tokens.colors.intent.inverted,
-                    at(transform, (x, y)),
-                    None,
-                    &theme.text(TextRole::Caption),
+        self.draw_editor_rows(&mut ui::paint::PaintCtx {
+            scene,
+            transform,
+            text,
+            theme,
+        });
+        for widget in TopBarWidget::ALL {
+            let rect = self.widget_editor_add_rect(widget);
+            if !rect.is_zero_area() {
+                self.editor_button(
+                    rect,
+                    &Self::editor_add_label(widget),
+                    Self::editor_control(widget, false),
+                    false,
+                    &mut ui::paint::PaintCtx {
+                        scene,
+                        transform,
+                        text,
+                        theme,
+                    },
                 );
-                x += 82.0;
             }
         }
     }
@@ -4040,6 +4401,7 @@ impl TopBarChrome {
             return self.activate_editor_control(target);
         }
         match target {
+            Self::CONTROL_EDIT_WIDGETS | Self::CONTROL_WIDGET_EDITOR => self.open_widget_editor(),
             Self::CONTROL_CENTER_CLOCK
             | Self::CONTROL_CENTER_MONITOR
             | Self::CONTROL_CENTER_CALENDAR => {
@@ -4320,23 +4682,36 @@ impl TopBarChrome {
             .paint(scene, transform, text_renderer, theme);
     }
 
-    fn handle_keyboard(&mut self, event: &WindowEvent, handled: &mut bool) {
-        if !self.focused {
-            return;
-        }
-        let WindowEvent::KeyboardInput {
-            event:
-                winit::event::KeyEvent {
-                    logical_key,
-                    state: winit::event::ElementState::Pressed,
-                    ..
-                },
-            ..
-        } = event
-        else {
+    fn handle_keyboard(
+        &mut self,
+        event: &WindowEvent,
+        modifiers: winit::event::Modifiers,
+        handled: &mut bool,
+    ) {
+        use winit::keyboard::{Key, NamedKey};
+        let WindowEvent::KeyboardInput { event: key, .. } = event else {
             return;
         };
-        let controls = self.control_targets();
+        if !self.focused || key.state != winit::event::ElementState::Pressed {
+            return;
+        }
+        let submit = matches!(
+            &key.logical_key,
+            Key::Named(NamedKey::Enter | NamedKey::Space)
+        );
+        if submit && (self.editor_submit_key.is_some() || self.widget_editing && key.repeat) {
+            *handled = true;
+            return;
+        }
+        let mods = modifiers.state();
+        if self.widget_editing && (mods.control_key() || mods.alt_key() || mods.super_key()) {
+            return;
+        }
+        let controls = if self.widget_editing {
+            self.editor_controls()
+        } else {
+            self.control_targets()
+        };
         if controls.is_empty() {
             return;
         }
@@ -4345,43 +4720,49 @@ impl TopBarChrome {
             .as_deref()
             .and_then(|target| controls.iter().position(|candidate| *candidate == target))
             .unwrap_or(0);
-        let control_at = |index: usize| controls.get(index).copied();
-        match logical_key {
-            winit::keyboard::Key::Named(winit::keyboard::NamedKey::ArrowLeft) => {
-                let previous = current
-                    .checked_sub(1)
-                    .unwrap_or_else(|| controls.len().saturating_sub(1));
-                if let Some(target) = control_at(previous) {
-                    self.focused_control = Some(target.to_string());
-                    *handled = true;
-                }
+        let focus = match &key.logical_key {
+            Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowUp)
+                if self.widget_editing || key.logical_key == Key::Named(NamedKey::ArrowLeft) =>
+            {
+                Some(
+                    current
+                        .checked_sub(1)
+                        .unwrap_or_else(|| controls.len().saturating_sub(1)),
+                )
             }
-            winit::keyboard::Key::Named(winit::keyboard::NamedKey::ArrowRight) => {
-                let next = current
-                    .checked_add(1)
-                    .filter(|&index| index < controls.len())
-                    .unwrap_or(0);
-                if let Some(target) = control_at(next) {
-                    self.focused_control = Some(target.to_string());
-                    *handled = true;
-                }
+            Key::Named(NamedKey::ArrowRight | NamedKey::ArrowDown)
+                if self.widget_editing || key.logical_key == Key::Named(NamedKey::ArrowRight) =>
+            {
+                Some(
+                    current
+                        .checked_add(1)
+                        .filter(|&index| index < controls.len())
+                        .unwrap_or(0),
+                )
             }
-            winit::keyboard::Key::Named(winit::keyboard::NamedKey::Home) => {
-                if let Some(target) = control_at(0) {
-                    self.focused_control = Some(target.to_string());
-                    *handled = true;
-                }
+            Key::Named(NamedKey::Home) => Some(0),
+            Key::Named(NamedKey::End) => Some(controls.len().saturating_sub(1)),
+            _ => None,
+        };
+        if let Some(target) = focus.and_then(|index| controls.get(index)) {
+            self.focused_control = Some((*target).into());
+            *handled = true;
+            return;
+        }
+        match &key.logical_key {
+            Key::Named(NamedKey::ContextMenu) => {
+                *handled = self.open_widget_editor();
             }
-            winit::keyboard::Key::Named(winit::keyboard::NamedKey::End) => {
-                if let Some(target) = controls.last().copied() {
-                    self.focused_control = Some(target.to_string());
-                    *handled = true;
-                }
+            Key::Named(NamedKey::F10) if mods.shift_key() => {
+                *handled = self.open_widget_editor();
             }
-            winit::keyboard::Key::Named(
-                winit::keyboard::NamedKey::Enter | winit::keyboard::NamedKey::Space,
-            ) => {
-                if let Some(target) = control_at(current) {
+            Key::Named(NamedKey::Enter | NamedKey::Space) => {
+                if let Some(target) = controls.get(current) {
+                    if self.widget_editing
+                        && let Key::Named(named) = &key.logical_key
+                    {
+                        self.editor_submit_key = Some(*named);
+                    }
                     *handled = self.activate_control(target);
                 }
             }
@@ -4713,13 +5094,25 @@ impl TopBarChrome {
         modifiers: winit::event::Modifiers,
         handled: &mut bool,
     ) -> bool {
+        if let WindowEvent::Focused(false) = event {
+            self.set_focus(false);
+        }
+        if let WindowEvent::KeyboardInput { event: key, .. } = event
+            && key.state == winit::event::ElementState::Released
+            && self
+                .editor_submit_key
+                .is_some_and(|named| key.logical_key == winit::keyboard::Key::Named(named))
+        {
+            self.editor_submit_key = None;
+            *handled = true;
+            return true;
+        }
         if let WindowEvent::KeyboardInput { event: key, .. } = event
             && key.state == winit::event::ElementState::Pressed
             && key.logical_key == winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape)
             && self.widget_editing
         {
-            self.widget_editing = false;
-            self.cache_fp = CacheFingerprint::default();
+            self.close_widget_editor();
             *handled = true;
             return true;
         }
@@ -4753,17 +5146,20 @@ impl TopBarChrome {
     ) -> bool {
         if let WindowEvent::CursorMoved { position, .. } = event {
             let point = Point::new(position.x / scale_factor, position.y / scale_factor);
+            let previous = self.last_cursor;
+            if self.widget_editing
+                && self.editor_controls().into_iter().any(|target| {
+                    let rect = self.control_rect(target);
+                    previous.is_some_and(|old| rect.contains(old)) != rect.contains(point)
+                })
+            {
+                self.cache_fp = CacheFingerprint::default();
+            }
             self.last_cursor = Some(point);
             if self.widget_edit_drag.is_pending() {
-                *handled = self.widget_edit_drag.pointer_moved(
-                    point,
-                    &ListMetrics::uniform(
-                        self.widget_editor_rect.y0 + 62.0,
-                        42.0,
-                        8.0,
-                        self.widget_config.widgets.len(),
-                    ),
-                );
+                *handled = self
+                    .widget_edit_drag
+                    .pointer_moved(point, &self.editor_metrics());
                 self.cache_fp = CacheFingerprint::default();
                 return true;
             }
@@ -4815,6 +5211,17 @@ impl TopBarChrome {
         ) {
             return false;
         }
+        *handled |= self.editor_pointer_release.take() == Some(winit::event::MouseButton::Left);
+        if let Some(target) = self.editor_pressed_control.take() {
+            if self
+                .last_cursor
+                .is_some_and(|point| self.control_rect(target).contains(point))
+            {
+                let _ = self.activate_editor_control(target);
+            }
+            self.cache_fp = CacheFingerprint::default();
+            *handled = true;
+        }
         if let Some((from, to)) = self.widget_edit_drag.commit()
             && from < self.widget_config.widgets.len()
             && to < self.widget_config.widgets.len()
@@ -4844,14 +5251,21 @@ impl TopBarChrome {
             let Some(widget) = self.widget_config.widgets.get(index).copied() else {
                 continue;
             };
-            if self.widget_config.widgets.len() > 1
-                && self.widget_editor_remove_rect(index).contains(point)
-            {
-                let _ = self.activate_editor_control(Self::editor_control(widget, true));
+            if self.widget_editor_remove_rect(index).contains(point) {
+                if self.widget_config.widgets.len() > 1 {
+                    let target = Self::editor_control(widget, true);
+                    self.editor_pressed_control = Some(target);
+                    self.editor_pointer_release = Some(winit::event::MouseButton::Left);
+                    self.focused_control = Some(target.into());
+                }
             } else {
                 self.widget_edit_drag
                     .begin(widget, index, point.y - row.y0, point);
                 self.widget_edit_pressed = Some(index);
+                if self.widget_config.widgets.len() > 1 {
+                    self.focused_control = Some(Self::editor_control(widget, true).into());
+                }
+                self.editor_pointer_release = Some(winit::event::MouseButton::Left);
             }
             self.cache_fp = CacheFingerprint::default();
             *handled = true;
@@ -4861,7 +5275,11 @@ impl TopBarChrome {
             if !self.widget_config.widgets.contains(&widget)
                 && self.widget_editor_add_rect(widget).contains(point)
             {
-                let _ = self.activate_editor_control(Self::editor_control(widget, false));
+                let target = Self::editor_control(widget, false);
+                self.editor_pressed_control = Some(target);
+                self.editor_pointer_release = Some(winit::event::MouseButton::Left);
+                self.focused_control = Some(target.into());
+                self.cache_fp = CacheFingerprint::default();
                 *handled = true;
                 return true;
             }
@@ -4895,15 +5313,12 @@ impl TopBarChrome {
             return;
         }
         if self.widget_editing {
-            self.widget_editing = false;
-            self.cache_fp = CacheFingerprint::default();
+            self.close_widget_editor();
             *handled = true;
             return;
         }
         if self.center_rect.contains(point) && modifiers.state().control_key() {
-            self.widget_editing = true;
-            self.cache_fp = CacheFingerprint::default();
-            *handled = true;
+            *handled = self.open_widget_editor();
             return;
         }
         if self.activate_clock_control_at(point) || self.begin_clock_drag_at(point) {
@@ -4922,7 +5337,8 @@ impl Widget for TopBarChrome {
         Some(self)
     }
 
-    fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
+        let responsive_changed = self.consume_responsive(state, path);
         // The time is read when drawing, so nothing else marks the bar
         // dirty when the minute turns over on an idle desktop.
         let time_changed = self.take_time_wake();
@@ -4939,7 +5355,7 @@ impl Widget for TopBarChrome {
                 return true;
             }
         }
-        time_changed
+        time_changed || responsive_changed
     }
 
     /// The end of the time reading on screen. Only a future instant: once
@@ -4951,12 +5367,13 @@ impl Widget for TopBarChrome {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         // A client-requested fullscreen owns the whole output. User maximize
         // still fills the workspace, but keeps the OS-owned top bar available
         // for navigation and session controls.
+        self.responsive.theme = theme.clone();
         let fullscreen = self
             .chrome
             .as_ref()
@@ -4978,14 +5395,20 @@ impl Widget for TopBarChrome {
             flex_shrink: 0.0,
             ..Default::default()
         };
-        let node = match taffy.new_leaf(style) {
+        self.responsive.configure(self.responsive_specs());
+        let toolbar_node = self.responsive.toolbar.build_layout(taffy, theme, node_map);
+        if let Ok(mut toolbar_style) = taffy.style(toolbar_node).cloned() {
+            toolbar_style.position = taffy::style::Position::Absolute;
+            if let Err(error) = taffy.set_style(toolbar_node, toolbar_style) {
+                tracing::warn!(%error, "topbar: toolbar placement failed");
+            }
+        }
+        let node = match taffy.new_with_children(style, &[toolbar_node]) {
             Ok(node) => node,
             Err(err) => {
-                // `TaffyTree::new_leaf` only ever returns `Ok` for a
-                // fresh, unattached leaf (see upstream `new_leaf`); this
-                // arm exists so a future upstream change degrades the
-                // bar's layout instead of aborting the whole session
-                // (this crate builds with `panic = "abort"`).
+                // The only child is the toolbar node allocated above. Keep
+                // the session alive if a future Taffy change rejects this
+                // fresh composition (production uses panic = "abort").
                 tracing::error!("topbar: leaf allocation failed: {err}");
                 NodeId::from(0u64)
             }
@@ -5002,10 +5425,21 @@ impl Widget for TopBarChrome {
             tracing::warn!("topbar: layout lookup failed for node {node:?}");
             return;
         };
+        let previous = self.rect;
         self.rect = ui::widget::placed(l, origin);
         if let Some(at) = self.placement {
             self.rect = Rect::new(at.x0, at.y0, at.x1, at.y0 + self.rect.height());
         }
+        if self.rect.is_zero_area() {
+            self.close_widget_editor();
+        } else if previous != self.rect {
+            self.cancel_editor_drag();
+        }
+
+        let theme = self.responsive.theme.clone();
+        ui::text_render::with_layout_renderer(theme.text_scale, |text| {
+            self.prepare_responsive(&theme, text);
+        });
     }
 
     fn draw(
@@ -5014,7 +5448,7 @@ impl Widget for TopBarChrome {
         out_transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        _presence: &PresenceCtx,
+        presence: &PresenceCtx,
     ) {
         // Zero-height (fullscreen) paints nothing; without this guard
         // the encode below still runs at intrinsic size, overflowing
@@ -5025,9 +5459,21 @@ impl Widget for TopBarChrome {
         // Pulled here, not pushed by update, so a just-dropped battery
         // percent is drawn and counted as a change in the same pass.
         self.refresh_status_and_media_state();
+        if !self.is_compact()
+            && self
+                .chrome
+                .as_ref()
+                .is_some_and(|chrome| chrome.take_topbar_editor_request())
+        {
+            self.open_widget_editor();
+        }
         self.schedule_time_wake();
         let fp = self.current_fingerprint();
-        if fp == self.cache_fp && fp.rect_px.2 > 0 {
+        if fp == self.cache_fp
+            && self.cache_theme.as_ref() == Some(theme)
+            && fp.rect_px.2 > 0
+            && !self.responsive.dirty
+        {
             out_scene.append(&self.cached, Some(out_transform));
             return;
         }
@@ -5043,22 +5489,30 @@ impl Widget for TopBarChrome {
         let transform = Affine::IDENTITY;
         let center_y = f64::midpoint(self.rect.y0, self.rect.y1);
 
-        let after_chevrons = self.draw_workspace_nav(scene, transform, theme, center_y);
-        self.draw_workspace_pill(
-            scene,
-            transform,
-            theme,
-            text_renderer,
-            center_y,
-            after_chevrons,
-        );
+        if self.use_responsive(theme) {
+            self.draw_responsive(scene, text_renderer, theme, presence);
+        } else {
+            let after_chevrons = self.draw_workspace_nav(scene, transform, theme, center_y);
+            self.draw_workspace_pill(
+                scene,
+                transform,
+                theme,
+                text_renderer,
+                center_y,
+                after_chevrons,
+            );
 
-        self.draw_center_widget(scene, transform, theme, text_renderer, center_y);
-        if !self.is_compact() {
-            self.draw_session_clusters(scene, theme, text_renderer, center_y);
+            self.draw_center_widget(scene, transform, theme, text_renderer, center_y);
+            if !self.is_compact() {
+                self.draw_session_clusters(scene, theme, text_renderer, center_y);
+            }
         }
-        self.draw_activity_badge(scene, transform, theme, text_renderer);
-        self.draw_focus_indicator(scene, transform, theme);
+        if !self.responsive.active {
+            self.draw_activity_badge(scene, transform, theme, text_renderer);
+        }
+        if !self.responsive.active || self.widget_editing {
+            self.draw_focus_indicator(scene, transform, theme);
+        }
         self.draw_widget_editor(scene, transform, text_renderer, theme);
         let clock_activity = self.chrome.as_ref().and_then(|chrome| {
             let snapshot = chrome.snapshot();
@@ -5068,13 +5522,46 @@ impl Widget for TopBarChrome {
             self.draw_clock_overlay(scene, transform, text_renderer, theme, &activity);
         }
 
+        if self.responsive.active {
+            self.responsive
+                .toolbar
+                .draw_overlay(scene, transform, text_renderer, theme, presence);
+        }
+        self.responsive.dirty = false;
         out_scene.append(&local, Some(out_transform));
         self.cached = local;
         self.cache_fp = fp;
+        self.cache_theme = Some(theme.clone());
         text_renderer.set_text_scale(renderer_scale);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        if self.responsive.active && !self.widget_editing {
+            if matches!(event, WindowEvent::Focused(false)) {
+                self.responsive.toolbar.set_focus(false);
+                self.responsive.dirty = true;
+                return;
+            }
+            if let WindowEvent::CursorMoved { position, .. } = event {
+                self.last_cursor = Some(Point::new(
+                    position.x / ctx.scale_factor,
+                    position.y / ctx.scale_factor,
+                ));
+            }
+            if self.responsive.toolbar.traps_focus()
+                || self.responsive.toolbar.wants_pointer_capture()
+            {
+                self.responsive.toolbar.handle_event(event, ctx);
+                self.responsive.dirty = true;
+                return;
+            }
+            if !self.widget_editing && self.clock_overlay_rect.is_zero_area() {
+                self.responsive.toolbar.handle_event(event, ctx);
+                self.responsive.dirty |= *ctx.handled;
+                return;
+            }
+        }
+
         if self.is_compact() {
             if let WindowEvent::CursorMoved { position, .. } = event {
                 self.last_cursor = Some(Point::new(
@@ -5094,7 +5581,7 @@ impl Widget for TopBarChrome {
         {
             return;
         }
-        self.handle_keyboard(event, ctx.handled);
+        self.handle_keyboard(event, *ctx.modifiers, ctx.handled);
         if *ctx.handled || self.handle_app_tray_press(event, ctx.handled) {
             return;
         }
@@ -5107,9 +5594,7 @@ impl Widget for TopBarChrome {
                 .last_cursor
                 .is_some_and(|point| self.center_rect.contains(point))
         {
-            self.widget_editing = true;
-            self.cache_fp = CacheFingerprint::default();
-            *ctx.handled = true;
+            *ctx.handled = self.activate_control(Self::CONTROL_EDIT_WIDGETS);
             *ctx.focus_target = Some(ctx.node_id);
             return;
         }
@@ -5123,7 +5608,41 @@ impl Widget for TopBarChrome {
     }
 
     fn wants_pointer_capture(&self) -> bool {
-        self.clock_drag_offset.is_some() || self.widget_edit_drag.is_pending()
+        self.clock_drag_offset.is_some()
+            || self.widget_edit_drag.is_pending()
+            || self.editor_pressed_control.is_some()
+            || (self.responsive.active && self.responsive.toolbar.wants_pointer_capture())
+    }
+
+    fn children(&self) -> Vec<&dyn Widget> {
+        if self.responsive.active && !self.widget_editing {
+            vec![&self.responsive.toolbar]
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        if self.responsive.active && !self.widget_editing {
+            vec![&mut self.responsive.toolbar]
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn traps_focus(&self) -> bool {
+        self.widget_editing || (self.responsive.active && self.responsive.toolbar.traps_focus())
+    }
+
+    fn modal_capture(&self) -> Option<Rect> {
+        if self.widget_editing {
+            Some(self.widget_editor_rect)
+        } else {
+            self.responsive
+                .active
+                .then(|| self.responsive.toolbar.modal_capture())
+                .flatten()
+        }
     }
 
     fn name(&self) -> &'static str {
@@ -5142,9 +5661,18 @@ impl Widget for TopBarChrome {
             .iter()
             .map(|slot| (format!("topbar_tray_item_{}", slot.id), slot.rect));
         let mut rects = vec![
-            ("topbar_overview_button".to_string(), self.overview_btn_rect),
-            ("topbar_workspace_up".to_string(), self.up_btn_rect),
-            ("topbar_workspace_down".to_string(), self.down_btn_rect),
+            (
+                "topbar_overview_button".to_string(),
+                self.control_rect(Self::CONTROL_OVERVIEW),
+            ),
+            (
+                "topbar_workspace_up".to_string(),
+                self.control_rect(Self::CONTROL_WORKSPACE_UP),
+            ),
+            (
+                "topbar_workspace_down".to_string(),
+                self.control_rect(Self::CONTROL_WORKSPACE_DOWN),
+            ),
             ("clock_overlay_pause".to_string(), self.clock_pause_rect),
             ("clock_overlay_add_minute".to_string(), self.clock_add_rect),
             ("clock_overlay_close".to_string(), self.clock_close_rect),
@@ -5153,7 +5681,7 @@ impl Widget for TopBarChrome {
             (
                 "topbar_workspace_up_enabled".to_string(),
                 if self.can_switch_up() {
-                    self.up_btn_rect
+                    self.control_rect(Self::CONTROL_WORKSPACE_UP)
                 } else {
                     Rect::ZERO
                 },
@@ -5161,71 +5689,83 @@ impl Widget for TopBarChrome {
             (
                 "topbar_workspace_down_enabled".to_string(),
                 if self.can_switch_down() {
-                    self.down_btn_rect
+                    self.control_rect(Self::CONTROL_WORKSPACE_DOWN)
                 } else {
                     Rect::ZERO
                 },
             ),
-            ("topbar_workspace_pill".to_string(), self.ws_pill_rect),
-            ("topbar_tray_pill".to_string(), self.tray_pill_rect),
-            ("topbar_tray_hit".to_string(), self.tray_hit_rect),
+            (
+                "topbar_workspace_pill".to_string(),
+                self.control_rect(Self::CONTROL_WORKSPACE_SETTINGS),
+            ),
+            (
+                "topbar_tray_pill".to_string(),
+                self.control_rect(Self::CONTROL_QUICK_SETTINGS),
+            ),
+            (
+                "topbar_tray_hit".to_string(),
+                self.control_rect(Self::CONTROL_QUICK_SETTINGS),
+            ),
             (
                 "topbar_media_indicator".to_string(),
-                self.media_indicator_rect,
+                self.control_rect(Self::CONTROL_MEDIA),
             ),
-            ("topbar_avatar_stack".to_string(), self.avatar_stack_rect),
+            (
+                "topbar_avatar_stack".to_string(),
+                self.control_rect(Self::CONTROL_COLLABORATORS),
+            ),
             (
                 "topbar_sharing_indicator".to_string(),
-                self.sharing_indicator_rect,
+                self.control_rect(Self::CONTROL_COLLABORATORS),
             ),
-            ("topbar_continuity".to_string(), self.continuity_rect),
+            (
+                "topbar_continuity".to_string(),
+                self.control_rect(Self::CONTROL_CONTINUITY),
+            ),
             (
                 "topbar_continuity_dismiss".to_string(),
-                self.continuity_dismiss_rect,
+                self.control_rect(Self::CONTROL_CONTINUITY_DISMISS),
             ),
             (
                 "topbar_center_clock".to_string(),
-                self.center_dot_rect(TopBarWidget::Clock),
+                self.control_rect(Self::CONTROL_CENTER_CLOCK),
             ),
             (
                 "topbar_center_system_monitor".to_string(),
-                self.center_dot_rect(TopBarWidget::SystemMonitor),
+                self.control_rect(Self::CONTROL_CENTER_MONITOR),
             ),
             (
                 "topbar_center_calendar".to_string(),
-                self.center_dot_rect(TopBarWidget::Calendar),
-            ),
-            (
-                "topbar_editor_remove_clock".to_string(),
-                self.control_rect(Self::CONTROL_REMOVE_CLOCK),
-            ),
-            (
-                "topbar_editor_remove_system_monitor".to_string(),
-                self.control_rect(Self::CONTROL_REMOVE_MONITOR),
-            ),
-            (
-                "topbar_editor_remove_calendar".to_string(),
-                self.control_rect(Self::CONTROL_REMOVE_CALENDAR),
-            ),
-            (
-                "topbar_editor_add_clock".to_string(),
-                self.control_rect(Self::CONTROL_ADD_CLOCK),
-            ),
-            (
-                "topbar_editor_add_system_monitor".to_string(),
-                self.control_rect(Self::CONTROL_ADD_MONITOR),
-            ),
-            (
-                "topbar_editor_add_calendar".to_string(),
-                self.control_rect(Self::CONTROL_ADD_CALENDAR),
+                self.control_rect(Self::CONTROL_CENTER_CALENDAR),
             ),
         ];
-        rects.extend(app_tray);
+        rects.extend(self.editor_test_rects());
+        if !self.responsive.active {
+            rects.extend(app_tray);
+        }
         rects
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, AccessState, Role};
+        if self.responsive.active && !self.widget_editing {
+            let mut node = ui::a11y::AccessNode::new(ui::a11y::Role::Toolbar)
+                .with_semantic_key("topbar")
+                .with_name(t("topbar-desktop-navigation"));
+            node.children.push(
+                ui::a11y::AccessNode::new(ui::a11y::Role::StaticText)
+                    .with_hashed_key("topbar-clock-reading")
+                    .with_name(self.responsive_reading())
+                    .with_description(self.responsive_description())
+                    .with_bounds(self.responsive.reading_rect),
+            );
+            if let Some(clock) = self.clock_accessibility_node() {
+                node.children
+                    .push(clock.with_hashed_key("topbar-clock-overlay"));
+            }
+            return Some(node);
+        }
+
         let mut children: Vec<AccessNode> = self
             .control_targets()
             .into_iter()
@@ -5297,6 +5837,9 @@ impl Widget for TopBarChrome {
     }
 
     fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
+        if self.responsive.active && !self.widget_editing {
+            return self.responsive.toolbar.synthetic_accessibility_rect(path);
+        }
         let index = *path.first()?;
         self.control_targets()
             .get(index)
@@ -5304,6 +5847,10 @@ impl Widget for TopBarChrome {
     }
 
     fn focus_synthetic_accessibility(&mut self, path: &[usize]) -> bool {
+        if self.responsive.active && !self.widget_editing {
+            self.responsive.dirty = true;
+            return self.responsive.toolbar.focus_synthetic_accessibility(path);
+        }
         let Some(index) = path.first().copied() else {
             return false;
         };
@@ -5318,9 +5865,24 @@ impl Widget for TopBarChrome {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        _state: &mut ui::widget::Edits<'_>,
-        _path: &ModelPath,
+        state: &mut ui::widget::Edits<'_>,
+        path: &ModelPath,
     ) -> bool {
+        if matches!(
+            target,
+            Self::CONTROL_EDIT_WIDGETS | Self::CONTROL_WIDGET_EDITOR
+        ) && matches!(action, ui::a11y::Action::Activate)
+        {
+            return self.open_widget_editor();
+        }
+        if self.responsive.active && !self.widget_editing {
+            let performed = self
+                .responsive
+                .toolbar
+                .perform_semantic_action(target, action, state, path);
+            self.responsive.dirty |= performed;
+            return performed;
+        }
         if !matches!(
             action,
             ui::a11y::Action::Activate | ui::a11y::Action::ToggleCheck
@@ -5348,6 +5910,11 @@ impl Widget for TopBarChrome {
     }
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        if self.responsive.active
+            && let Some(cursor) = self.responsive.toolbar.cursor_shape(point)
+        {
+            return Some(cursor);
+        }
         if self.clock_drag_offset.is_some() {
             return Some(winit::window::CursorIcon::Grabbing);
         }
@@ -5376,7 +5943,13 @@ impl Widget for TopBarChrome {
     }
 
     fn set_focus(&mut self, focused: bool) {
+        if !focused {
+            self.cancel_editor_drag();
+            self.editor_submit_key = None;
+            self.editor_pointer_release = None;
+        }
         self.focused = focused;
+        self.responsive.toolbar.set_focus(focused);
         if focused && self.focused_control.is_none() {
             self.focused_control = self
                 .control_targets()
@@ -5392,6 +5965,9 @@ impl Widget for TopBarChrome {
     /// Must keep returning `true` until the first successful draw
     /// fills the cache, or the first frame after layout never paints.
     fn needs_redraw(&self) -> bool {
+        if self.responsive.active && self.responsive.dirty {
+            return true;
+        }
         // `Default` for CacheFingerprint has rect_px = (0,0,0,0) → w=0.
         if self.cache_fp.rect_px.2 == 0 {
             return true;
@@ -6023,12 +6599,38 @@ mod tests {
             is_synthetic: false,
         };
         let mut handled = false;
-        bar.handle_keyboard(&event, &mut handled);
+        bar.handle_keyboard(&event, winit::event::Modifiers::default(), &mut handled);
         handled
     }
 
     fn dispatch_topbar_event(bar: &mut TopBarChrome, event: &WindowEvent) -> bool {
-        ui::testing::dispatch(bar, event)
+        dispatch_topbar_event_with_modifiers(bar, event, winit::event::Modifiers::default())
+    }
+
+    fn dispatch_topbar_event_with_modifiers(
+        bar: &mut TopBarChrome,
+        event: &WindowEvent,
+        modifiers: winit::event::Modifiers,
+    ) -> bool {
+        let mut taffy = TaffyTree::new();
+        let node = taffy.new_leaf(Style::default()).expect("test leaf");
+        let mut state = AutoCommit::new();
+        let mut handled = false;
+        let mut focus = None;
+        bar.handle_event(
+            event,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &modifiers,
+                state: ui::widget::Edits::lend(&mut state),
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
+        );
+        handled
     }
 
     #[test]
@@ -7031,6 +7633,703 @@ mod tests {
             "and does not show up in the +N chip either",
         );
     }
+    fn editor_key_event(
+        key: winit::keyboard::NamedKey,
+        state: winit::event::ElementState,
+        repeat: bool,
+    ) -> WindowEvent {
+        let mut event: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
+        event.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+            winit::keyboard::NativeKeyCode::Unidentified,
+        );
+        event.logical_key = winit::keyboard::Key::Named(key);
+        event.text = None;
+        event.location = winit::keyboard::KeyLocation::Standard;
+        event.state = state;
+        event.repeat = repeat;
+        WindowEvent::KeyboardInput {
+            device_id: winit::event::DeviceId::dummy(),
+            event,
+            is_synthetic: false,
+        }
+    }
+
+    fn editor_pointer_event(point: Point) -> WindowEvent {
+        WindowEvent::CursorMoved {
+            device_id: winit::event::DeviceId::dummy(),
+            position: winit::dpi::PhysicalPosition::new(point.x, point.y),
+        }
+    }
+
+    fn editor_mouse_event(state: winit::event::ElementState) -> WindowEvent {
+        WindowEvent::MouseInput {
+            device_id: winit::event::DeviceId::dummy(),
+            state,
+            button: winit::event::MouseButton::Left,
+        }
+    }
+
+    #[test]
+    fn editor_production_render_matrix() {
+        let out = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../target/topbar-editor-review");
+        std::fs::create_dir_all(&out).expect("capture directory");
+        for (name, width, height, theme) in [
+            ("dark", 1280_u32, 800_u32, Theme::dark()),
+            ("light", 1280, 800, Theme::light()),
+            ("high-contrast", 1280, 800, Theme::high_contrast()),
+            ("large-text", 1280, 800, Theme::dark().with_text_scale(2.0)),
+            (
+                "ui-text",
+                1280,
+                800,
+                Theme::dark().with_ui_scale(1.5).with_text_scale(1.3),
+            ),
+            ("narrow", 320, 600, Theme::light()),
+        ] {
+            for (state, widgets) in [
+                ("all", TopBarWidget::ALL.to_vec()),
+                ("add", vec![TopBarWidget::Clock]),
+            ] {
+                let mut bar = sample_chrome();
+                bar.clock = ClockSnapshot {
+                    unix_seconds: 1_700_000_000,
+                    clock: "09:41".into(),
+                    weekday: "Wednesday".into(),
+                    date: "7 October".into(),
+                };
+                bar.widget_config.widgets = widgets;
+                bar.widget_editing = true;
+                bar.set_focus(true);
+                bar.focused_control = Some(
+                    if state == "all" {
+                        TopBarChrome::CONTROL_REMOVE_MONITOR
+                    } else {
+                        TopBarChrome::CONTROL_ADD_MONITOR
+                    }
+                    .into(),
+                );
+                lay_out_and_draw_with_theme(
+                    &mut bar,
+                    f32::from(u16::try_from(width).expect("fixture width fits")),
+                    &theme,
+                );
+                let geometry = &bar.editor_geometry;
+                assert!(geometry.panel.x0 >= 0.0 && geometry.panel.x1 <= f64::from(width));
+                assert!(geometry.panel.y1 <= f64::from(height));
+                assert!(geometry.title.y1 <= geometry.hint.y0);
+                assert!(geometry.hint.y1 <= geometry.rows[0].y0);
+                for (index, row) in geometry.rows.iter().enumerate() {
+                    assert!(geometry.remove[index].x0 >= row.x0);
+                    assert!(geometry.remove[index].x1 <= row.x1);
+                    assert!(geometry.remove[index].y0 >= row.y0);
+                    assert!(geometry.remove[index].y1 <= row.y1);
+                    if index > 0 {
+                        assert!(geometry.rows[index - 1].y1 <= row.y0);
+                    }
+                    if width == 1280 {
+                        let label = TopBarChrome::editor_label(geometry.widgets[index]);
+                        assert!(
+                            !ListRowFace::new(&label)
+                                .leading(RowLeading::Icon(ui::icons::Icon::Menu))
+                                .trailing_width(geometry.remove[index].width())
+                                .title_elided(*row, &mut TextRenderer::new(), &theme),
+                            "{name}: configured widget labels fit"
+                        );
+                    }
+                }
+                let mut scene = Scene::new();
+                bar.draw(
+                    &mut scene,
+                    Affine::IDENTITY,
+                    &mut TextRenderer::new(),
+                    &theme,
+                    &PresenceCtx::default(),
+                );
+                let path = out.join(format!("{name}-{state}.png"));
+                ui::offscreen::OffscreenRenderer::new(width, height).render_png(
+                    &scene,
+                    theme.tokens.colors.surfaces.base,
+                    &path,
+                );
+                assert!(std::fs::metadata(path).expect("production PNG").len() > 1_000);
+                assert!(!bar.widget_editor_rect.is_zero_area());
+            }
+        }
+    }
+
+    #[test]
+    fn editor_escape_cancels_drag_before_a_later_release() {
+        let mut bar = sample_chrome();
+        bar.widget_editing = true;
+        lay_out_and_draw(&mut bar, 1280.0);
+        let original = bar.widget_config.widgets.clone();
+        let from = bar.widget_editor_row(0).center();
+        let to = bar.widget_editor_row(2).center();
+        dispatch_topbar_event(&mut bar, &editor_pointer_event(from));
+        assert!(dispatch_topbar_event(
+            &mut bar,
+            &editor_mouse_event(winit::event::ElementState::Pressed)
+        ));
+        dispatch_topbar_event(&mut bar, &editor_pointer_event(to));
+        assert!(bar.widget_edit_drag.is_active());
+        assert!(dispatch_topbar_event(
+            &mut bar,
+            &editor_key_event(
+                winit::keyboard::NamedKey::Escape,
+                winit::event::ElementState::Pressed,
+                false,
+            )
+        ));
+        assert!(!bar.widget_editing);
+        assert!(
+            !bar.wants_pointer_capture(),
+            "cancel releases the shared drag"
+        );
+        dispatch_topbar_event(
+            &mut bar,
+            &editor_mouse_event(winit::event::ElementState::Released),
+        );
+        assert_eq!(bar.widget_config.widgets, original);
+    }
+
+    #[test]
+    fn editor_activation_keeps_the_same_widget_selected() {
+        let mut bar = sample_chrome();
+        bar.widget_editing = true;
+        bar.set_focus(true);
+        bar.focused_control = Some(TopBarChrome::CONTROL_REMOVE_MONITOR.into());
+        lay_out_and_draw(&mut bar, 1280.0);
+        assert!(dispatch_topbar_event(
+            &mut bar,
+            &editor_key_event(
+                winit::keyboard::NamedKey::Enter,
+                winit::event::ElementState::Pressed,
+                false,
+            )
+        ));
+        assert!(
+            !bar.widget_config
+                .widgets
+                .contains(&TopBarWidget::SystemMonitor)
+        );
+        assert_eq!(
+            bar.focused_control.as_deref(),
+            Some(TopBarChrome::CONTROL_ADD_MONITOR),
+            "focus follows the stable widget's new action, never the overview",
+        );
+    }
+    #[test]
+    fn editor_submit_repeats_and_release_do_not_toggle_the_replacement_action() {
+        use winit::{event::ElementState as E, keyboard::NamedKey as K};
+        let mut bar = sample_chrome();
+        bar.widget_editing = true;
+        bar.set_focus(true);
+        bar.focused_control = Some(TopBarChrome::CONTROL_REMOVE_MONITOR.into());
+        lay_out_and_draw(&mut bar, 1280.0);
+        assert!(dispatch_topbar_event(
+            &mut bar,
+            &editor_key_event(K::Enter, E::Pressed, false)
+        ));
+        let removed = bar.widget_config.widgets.clone();
+        for _ in 0..5 {
+            assert!(dispatch_topbar_event(
+                &mut bar,
+                &editor_key_event(K::Enter, E::Pressed, true)
+            ));
+            assert_eq!(bar.widget_config.widgets, removed);
+        }
+        assert!(dispatch_topbar_event(
+            &mut bar,
+            &editor_key_event(K::Escape, E::Pressed, false)
+        ));
+        assert!(dispatch_topbar_event(
+            &mut bar,
+            &editor_key_event(K::Enter, E::Released, false)
+        ));
+        assert!(!bar.widget_editing);
+        assert_eq!(bar.widget_config.widgets, removed);
+        assert!(dispatch_topbar_event(
+            &mut bar,
+            &editor_key_event(K::ContextMenu, E::Pressed, false)
+        ));
+        bar.focused_control = Some(TopBarChrome::CONTROL_ADD_MONITOR.into());
+        assert!(dispatch_topbar_event(
+            &mut bar,
+            &editor_key_event(K::Enter, E::Pressed, false)
+        ));
+        assert!(
+            bar.widget_config
+                .widgets
+                .contains(&TopBarWidget::SystemMonitor)
+        );
+    }
+
+    #[test]
+    fn editor_pointer_buttons_activate_on_release_and_cancel_outside() {
+        use winit::event::ElementState as E;
+        let mut bar = sample_chrome();
+        bar.widget_editing = true;
+        lay_out_and_draw(&mut bar, 1280.0);
+        let original = bar.widget_config.widgets.clone();
+        let remove = bar.widget_editor_remove_rect(1).center();
+        dispatch_topbar_event(&mut bar, &editor_pointer_event(remove));
+        assert!(dispatch_topbar_event(
+            &mut bar,
+            &editor_mouse_event(E::Pressed)
+        ));
+        assert_eq!(
+            bar.widget_config.widgets, original,
+            "a press alone does not delete"
+        );
+        assert!(bar.wants_pointer_capture());
+        dispatch_topbar_event(&mut bar, &editor_pointer_event(Point::new(1.0, 400.0)));
+        assert!(dispatch_topbar_event(
+            &mut bar,
+            &editor_mouse_event(E::Released)
+        ));
+        assert_eq!(bar.widget_config.widgets, original);
+        assert!(!bar.wants_pointer_capture());
+        dispatch_topbar_event(&mut bar, &editor_pointer_event(remove));
+        assert!(dispatch_topbar_event(
+            &mut bar,
+            &editor_mouse_event(E::Pressed)
+        ));
+        assert!(dispatch_topbar_event(
+            &mut bar,
+            &editor_mouse_event(E::Released)
+        ));
+        assert!(
+            !bar.widget_config
+                .widgets
+                .contains(&TopBarWidget::SystemMonitor)
+        );
+        lay_out_and_draw(&mut bar, 1280.0);
+        let add = bar
+            .widget_editor_add_rect(TopBarWidget::SystemMonitor)
+            .center();
+        dispatch_topbar_event(&mut bar, &editor_pointer_event(add));
+        assert!(dispatch_topbar_event(
+            &mut bar,
+            &editor_mouse_event(E::Pressed)
+        ));
+        assert!(dispatch_topbar_event(
+            &mut bar,
+            &editor_mouse_event(E::Released)
+        ));
+        assert!(
+            bar.widget_config
+                .widgets
+                .contains(&TopBarWidget::SystemMonitor)
+        );
+        lay_out_and_draw(&mut bar, 1280.0);
+        assert_eq!(
+            bar.focused_control.as_deref(),
+            Some(TopBarChrome::CONTROL_REMOVE_MONITOR)
+        );
+    }
+
+    #[test]
+    fn editor_drag_commits_once_and_interrupted_drags_preserve_the_model() {
+        use winit::event::ElementState as E;
+        for interruption in ["release", "resize", "focus", "outside"] {
+            let mut bar = sample_chrome();
+            bar.widget_editing = true;
+            lay_out_and_draw(&mut bar, 1280.0);
+            let original = bar.widget_config.widgets.clone();
+            let from = bar.widget_editor_row(0).center();
+            let to = bar.widget_editor_row(2).center();
+            dispatch_topbar_event(&mut bar, &editor_pointer_event(from));
+            assert!(dispatch_topbar_event(
+                &mut bar,
+                &editor_mouse_event(E::Pressed)
+            ));
+            dispatch_topbar_event(&mut bar, &editor_pointer_event(to));
+            assert!(bar.wants_pointer_capture());
+            match interruption {
+                "resize" => lay_out_and_draw(&mut bar, 640.0),
+                "focus" => {
+                    dispatch_topbar_event(&mut bar, &WindowEvent::Focused(false));
+                }
+                "outside" => {
+                    dispatch_topbar_event(&mut bar, &editor_pointer_event(Point::new(1.0, 400.0)));
+                    assert!(dispatch_topbar_event(
+                        &mut bar,
+                        &editor_mouse_event(E::Pressed)
+                    ));
+                    assert!(!bar.widget_editing);
+                }
+                _ => {}
+            }
+            dispatch_topbar_event(&mut bar, &editor_mouse_event(E::Released));
+            let committed = bar.widget_config.widgets.clone();
+            dispatch_topbar_event(&mut bar, &editor_mouse_event(E::Released));
+            assert_eq!(
+                bar.widget_config.widgets, committed,
+                "release cannot commit twice"
+            );
+            assert!(!bar.wants_pointer_capture());
+            if interruption == "release" {
+                assert_eq!(
+                    committed,
+                    vec![
+                        TopBarWidget::SystemMonitor,
+                        TopBarWidget::Calendar,
+                        TopBarWidget::Clock
+                    ]
+                );
+            } else {
+                assert_eq!(
+                    committed, original,
+                    "{interruption} cancels the pending reorder"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn editor_semantic_open_keyboard_navigation_and_last_remove_are_coherent() {
+        use winit::{event::ElementState as E, keyboard::NamedKey as K};
+        let mut bar = sample_chrome();
+        lay_out_and_draw(&mut bar, 1280.0);
+        let node = bar.accessibility().expect("actual semantic toolbar");
+        let open = node
+            .children
+            .iter()
+            .find(|n| n.action_target.as_deref() == Some(TopBarChrome::CONTROL_EDIT_WIDGETS))
+            .expect("editor action exposed");
+        assert!(open.bounds.expect("action bounds").to_rect().width() > 0.0);
+        let mut doc = AutoCommit::new();
+        assert!(bar.perform_semantic_action(
+            TopBarChrome::CONTROL_EDIT_WIDGETS,
+            &ui::a11y::Action::Activate,
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT
+        ));
+        bar.set_focus(true);
+        lay_out_and_draw(&mut bar, 1280.0);
+        assert!(dispatch_topbar_event(
+            &mut bar,
+            &editor_key_event(K::End, E::Pressed, false)
+        ));
+        assert_eq!(
+            bar.focused_control.as_deref(),
+            Some(TopBarChrome::CONTROL_REMOVE_CALENDAR)
+        );
+        assert!(dispatch_topbar_event(
+            &mut bar,
+            &editor_key_event(K::Home, E::Pressed, false)
+        ));
+        assert_eq!(
+            bar.focused_control.as_deref(),
+            Some(TopBarChrome::CONTROL_REMOVE_CLOCK)
+        );
+        assert!(dispatch_topbar_event(
+            &mut bar,
+            &editor_key_event(K::ArrowDown, E::Pressed, false)
+        ));
+        assert_eq!(
+            bar.focused_control.as_deref(),
+            Some(TopBarChrome::CONTROL_REMOVE_MONITOR)
+        );
+        bar.widget_config.widgets = vec![TopBarWidget::Clock];
+        lay_out_and_draw(&mut bar, 1280.0);
+        let disabled = bar.widget_editor_remove_rect(0).center();
+        dispatch_topbar_event(&mut bar, &editor_pointer_event(disabled));
+        assert!(dispatch_topbar_event(
+            &mut bar,
+            &editor_mouse_event(E::Pressed)
+        ));
+        assert!(
+            !bar.wants_pointer_capture(),
+            "disabled final Remove never starts a drag"
+        );
+        dispatch_topbar_event(&mut bar, &editor_mouse_event(E::Released));
+        assert_eq!(bar.widget_config.widgets, vec![TopBarWidget::Clock]);
+    }
+
+    #[test]
+    fn editor_modified_submit_and_orphan_repeats_preserve_widgets() {
+        use winit::{
+            event::ElementState as E,
+            keyboard::{ModifiersState, NamedKey as K},
+        };
+        let mut bar = sample_chrome();
+        bar.widget_editing = true;
+        bar.set_focus(true);
+        bar.focused_control = Some(TopBarChrome::CONTROL_REMOVE_MONITOR.into());
+        lay_out_and_draw(&mut bar, 1280.0);
+        let original = bar.widget_config.widgets.clone();
+        for modifiers in [
+            ModifiersState::SUPER,
+            ModifiersState::CONTROL,
+            ModifiersState::ALT,
+        ] {
+            dispatch_topbar_event_with_modifiers(
+                &mut bar,
+                &editor_key_event(K::Space, E::Pressed, false),
+                modifiers.into(),
+            );
+            assert_eq!(bar.widget_config.widgets, original);
+        }
+        dispatch_topbar_event(&mut bar, &WindowEvent::Focused(false));
+        bar.set_focus(true);
+        assert!(dispatch_topbar_event(
+            &mut bar,
+            &editor_key_event(K::Enter, E::Pressed, true)
+        ));
+        assert_eq!(bar.widget_config.widgets, original);
+        assert!(dispatch_topbar_event(
+            &mut bar,
+            &editor_key_event(K::Enter, E::Pressed, false)
+        ));
+        assert!(
+            !bar.widget_config
+                .widgets
+                .contains(&TopBarWidget::SystemMonitor)
+        );
+    }
+
+    #[test]
+    fn editor_hidden_layout_releases_popup_capture() {
+        let mut bar = sample_chrome();
+        bar.widget_editing = true;
+        lay_out_and_draw(&mut bar, 1280.0);
+        assert!(bar.modal_capture().is_some());
+        let mut taffy = TaffyTree::new();
+        let node = taffy
+            .new_leaf(Style {
+                size: Size {
+                    width: Dimension::length(1280.0),
+                    height: Dimension::length(0.0),
+                },
+                ..Default::default()
+            })
+            .expect("hidden top-bar leaf");
+        taffy
+            .compute_layout(
+                node,
+                Size {
+                    width: taffy::AvailableSpace::Definite(1280.0),
+                    height: taffy::AvailableSpace::Definite(0.0),
+                },
+            )
+            .expect("fullscreen hidden layout");
+        bar.apply_layout(&taffy, node, Point::ORIGIN);
+        assert!(
+            bar.modal_capture().is_none(),
+            "a hidden bar cannot capture popup input"
+        );
+        assert!(!bar.traps_focus());
+        assert!(!bar.widget_editing);
+    }
+
+    #[test]
+    fn editor_external_widget_order_repaints_the_actual_scene() {
+        let theme = Theme::dark();
+        let mut bar = sample_chrome();
+        bar.widget_editing = true;
+        lay_out_and_draw_with_theme(&mut bar, 1280.0, &theme);
+        bar.widget_config.widgets.reverse();
+        let mut cached = Scene::new();
+        bar.draw(
+            &mut cached,
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &theme,
+            &PresenceCtx::default(),
+        );
+        let mut renderer = ui::offscreen::OffscreenRenderer::new(1280, 480);
+        let actual = renderer.render_resilient(&cached, theme.tokens.colors.surfaces.base);
+        bar.cache_fp = CacheFingerprint::default();
+        let mut fresh = Scene::new();
+        bar.draw(
+            &mut fresh,
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &theme,
+            &PresenceCtx::default(),
+        );
+        let expected = renderer.render_resilient(&fresh, theme.tokens.colors.surfaces.base);
+        assert_eq!(
+            ui::offscreen::OffscreenRenderer::pixels_differing_beyond_aa(&actual, &expected),
+            0,
+            "a host configuration update invalidates the actual retained pixels"
+        );
+    }
+
+    #[test]
+    fn editor_theme_swap_repaints_cached_scene_and_focus_reaches_actual_button_pixels() {
+        let mut bar = sample_chrome();
+        bar.widget_editing = true;
+        bar.set_focus(true);
+        bar.focused_control = Some(TopBarChrome::CONTROL_REMOVE_MONITOR.into());
+        lay_out_and_draw_with_theme(&mut bar, 1280.0, &Theme::dark());
+        let mut light = Scene::new();
+        bar.draw(
+            &mut light,
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &Theme::light(),
+            &PresenceCtx::default(),
+        );
+        let mut renderer = ui::offscreen::OffscreenRenderer::new(1280, 480);
+        let actual = renderer.render_resilient(&light, Theme::light().tokens.colors.surfaces.base);
+        bar.cache_fp = CacheFingerprint::default();
+        let mut fresh = Scene::new();
+        bar.draw(
+            &mut fresh,
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &Theme::light(),
+            &PresenceCtx::default(),
+        );
+        let expected =
+            renderer.render_resilient(&fresh, Theme::light().tokens.colors.surfaces.base);
+        assert_eq!(
+            ui::offscreen::OffscreenRenderer::pixels_differing_beyond_aa(&actual, &expected),
+            0,
+            "theme changes invalidate the retained scene"
+        );
+        let focus_rect = bar.widget_editor_remove_rect(1).inset(4.0);
+        bar.set_focus(false);
+        let mut unfocused = Scene::new();
+        bar.draw(
+            &mut unfocused,
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &Theme::light(),
+            &PresenceCtx::default(),
+        );
+        let no_focus =
+            renderer.render_resilient(&unfocused, Theme::light().tokens.colors.surfaces.base);
+        let changed = expected
+            .chunks_exact(4)
+            .zip(no_focus.chunks_exact(4))
+            .enumerate()
+            .filter(|(i, (a, b))| {
+                let x = f64::from(u32::try_from(i % 1280).expect("pixel column"));
+                let y = f64::from(u32::try_from(i / 1280).expect("pixel row"));
+                focus_rect.contains(Point::new(x, y))
+                    && a.iter().zip(b.iter()).any(|(a, b)| a.abs_diff(*b) > 1)
+            })
+            .count();
+        assert!(
+            changed > 30,
+            "the focused shared face must paint visible pixels: {changed}"
+        );
+    }
+    #[test]
+    fn composed_narrow_editor_preserves_both_semantic_targets_and_interruptions() {
+        use ui::a11y::Action;
+        use winit::{event::ElementState as E, keyboard::NamedKey as K};
+        for target in [
+            TopBarChrome::CONTROL_EDIT_WIDGETS,
+            TopBarChrome::CONTROL_WIDGET_EDITOR,
+        ] {
+            let mut frame = ui::headless::Framed::new(
+                ui::State::new(),
+                sample_chrome(),
+                (320, 480),
+                Theme::dark(),
+            );
+            let mut doc = AutoCommit::new();
+            assert!(
+                frame.perform_semantic_action(
+                    target,
+                    &Action::Activate,
+                    &mut ui::widget::Edits::lend(&mut doc),
+                    &automerge::ROOT,
+                ),
+                "original editor target remains admitted at narrow width: {target}"
+            );
+            ui::headless::Framed::harness_mut(&mut frame)
+                .poll_frame()
+                .unwrap();
+            assert!(frame.widget_editing);
+            assert!(frame.traps_focus());
+            let original = frame.widget_config.widgets.clone();
+            let from = frame.widget_editor_row(0).center();
+            let to = frame.widget_editor_row(2).center();
+            dispatch_topbar_event(&mut frame, &editor_pointer_event(from));
+            dispatch_topbar_event(&mut frame, &editor_mouse_event(E::Pressed));
+            dispatch_topbar_event(&mut frame, &editor_pointer_event(to));
+            assert!(frame.wants_pointer_capture());
+            dispatch_topbar_event(&mut frame, &WindowEvent::Focused(false));
+            dispatch_topbar_event(&mut frame, &editor_mouse_event(E::Released));
+            assert!(!frame.wants_pointer_capture());
+            assert_eq!(frame.widget_config.widgets, original);
+            dispatch_topbar_event(&mut frame, &editor_key_event(K::Escape, E::Pressed, false));
+            ui::headless::Framed::harness_mut(&mut frame)
+                .poll_frame()
+                .unwrap();
+            assert!(!frame.widget_editing);
+            assert!(!frame.traps_focus());
+            assert!(!frame.responsive.toolbar.is_overflow_open());
+        }
+    }
+    #[test]
+    fn composed_narrow_editor_theme_scale_capture_matrix() {
+        use ui::{a11y::Action, headless::Framed};
+        let out = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../target/combined-topbar-shots");
+        std::fs::create_dir_all(&out).expect("capture directory");
+        for (name, theme) in [
+            ("dark", Theme::dark()),
+            ("light", Theme::light()),
+            ("high-contrast", Theme::high_contrast()),
+            ("large-text", Theme::dark().with_text_scale(2.0)),
+            (
+                "ui-text-scaled",
+                Theme::dark().with_ui_scale(1.5).with_text_scale(1.3),
+            ),
+        ] {
+            let mut frame = Framed::new(ui::State::new(), sample_chrome(), (320, 600), theme);
+            let mut doc = AutoCommit::new();
+            assert!(frame.perform_semantic_action(
+                TopBarChrome::CONTROL_EDIT_WIDGETS,
+                &Action::Activate,
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+            ));
+            Framed::harness_mut(&mut frame).poll_frame().unwrap();
+            assert!(frame.responsive.active);
+            assert!(frame.widget_editing);
+            assert!(frame.modal_capture().is_some());
+            let geometry = &frame.editor_geometry;
+            assert!(geometry.panel.x0 >= 0.0 && geometry.panel.x1 <= 320.0);
+            assert!(geometry.panel.y0 >= 0.0 && geometry.panel.y1 <= 600.0);
+            assert!(geometry.title.y1 <= geometry.hint.y0);
+            assert!(geometry.hint.y1 <= geometry.rows[0].y0);
+            for ((row, remove), widget) in geometry
+                .rows
+                .iter()
+                .zip(&geometry.remove)
+                .zip(&geometry.widgets)
+            {
+                assert!(
+                    !TopBarChrome::editor_row_face(
+                        &TopBarChrome::editor_label(*widget),
+                        remove.width(),
+                        geometry.compact_rows,
+                    )
+                    .title_elided(
+                        *row,
+                        &mut TextRenderer::new(),
+                        &frame.responsive.theme
+                    ),
+                    "{name}: configured widget labels stay readable at narrow scale"
+                );
+                assert!(remove.x0 >= row.x0 && remove.x1 <= row.x1);
+                assert!(remove.y0 >= row.y0 && remove.y1 <= row.y1);
+                assert!(remove.width() > 0.0 && remove.height() > 0.0);
+            }
+            assert!(Framed::harness(&frame).native_app_audit().is_certified());
+            let path = out.join(format!("{name}-narrow-editor.png"));
+            Framed::harness(&frame).render_png(&path);
+            assert!(path.is_file(), "missing actual composed editor capture");
+        }
+    }
 }
 
 #[cfg(test)]
@@ -7156,6 +8455,312 @@ mod fixture {
                 _ => {}
             }
             true
+        }
+    }
+}
+
+#[cfg(test)]
+mod responsive_tests {
+    use super::*;
+    use ui::headless::Framed;
+
+    fn fixture_bar() -> TopBarChrome {
+        let workspace =
+            tilo_desktop_model::Workspace::new(tilo_desktop_model::WorkspaceId(1), "Design review");
+        let tree = DesktopTree {
+            active: workspace.id,
+            workspaces: vec![workspace],
+            ..DesktopTree::default()
+        };
+        let mut bar = TopBarChrome::from_tree_with_local_user(&tree, "fixture-person".into());
+        bar.clock = ClockSnapshot {
+            clock: "09:41".into(),
+            ..ClockSnapshot::default()
+        };
+        bar
+    }
+
+    #[test]
+    fn responsive_primary_bar_visible_targets_do_not_overlap_at_320() {
+        let frame = Framed::new(ui::State::new(), fixture_bar(), (320, 480), Theme::dark());
+        let bar = &*frame;
+        let visible: Vec<_> = bar
+            .control_targets()
+            .into_iter()
+            .map(|target| (target, bar.control_rect(target)))
+            .filter(|(_, rect)| !rect.is_zero_area())
+            .collect();
+        assert!(
+            !visible.is_empty(),
+            "the actual bar must expose visible controls"
+        );
+        for (index, (left, a)) in visible.iter().enumerate() {
+            assert!(a.x0 >= 0.0 && a.x1 <= 320.0, "{left} escapes: {a:?}");
+            for (right, b) in visible.iter().skip(index + 1) {
+                assert!(
+                    a.intersect(*b).is_zero_area(),
+                    "{left} {a:?} overlaps {right} {b:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn responsive_primary_bar_overflow_native_actions_cancel_and_resize() {
+        use ui::a11y::Action;
+        let mut frame = Framed::new(ui::State::new(), fixture_bar(), (320, 480), Theme::dark());
+        let audit = Framed::harness(&frame).native_app_audit();
+        assert!(audit.is_certified(), "{audit:?}");
+        assert!(frame.responsive.toolbar.has_overflow());
+        for _ in 0..3 {
+            Framed::harness_mut(&mut frame)
+                .perform_named("toolbar.overflow", &Action::Activate)
+                .expect("admitted overflow");
+            Framed::harness_mut(&mut frame).poll_frame().unwrap();
+            assert!(frame.responsive.toolbar.is_overflow_open());
+            Framed::harness_mut(&mut frame).key("Escape");
+            Framed::harness_mut(&mut frame).poll_frame().unwrap();
+            assert!(
+                !frame.responsive.toolbar.is_overflow_open(),
+                "Escape must close the menu"
+            );
+        }
+        Framed::harness_mut(&mut frame)
+            .perform_named("toolbar.overflow", &Action::Activate)
+            .unwrap();
+        Framed::harness_mut(&mut frame).poll_frame().unwrap();
+        Framed::harness_mut(&mut frame).resize((1000, 480)).unwrap();
+        assert!(!frame.responsive.active);
+        assert!(!frame.responsive.toolbar.is_overflow_open());
+        Framed::harness_mut(&mut frame).resize((320, 480)).unwrap();
+        Framed::harness_mut(&mut frame)
+            .perform_named("toolbar.overflow", &Action::Activate)
+            .unwrap();
+        Framed::harness_mut(&mut frame).poll_frame().unwrap();
+        Framed::harness_mut(&mut frame).click_at(10.0, 450.0);
+        Framed::harness_mut(&mut frame).poll_frame().unwrap();
+        assert!(
+            !frame.responsive.toolbar.is_overflow_open(),
+            "outside click cancels"
+        );
+    }
+
+    #[test]
+    fn responsive_primary_bar_delivers_pointer_and_semantic_intents_once() {
+        use ui::a11y::Action;
+        let workspace =
+            tilo_desktop_model::Workspace::new(tilo_desktop_model::WorkspaceId(1), "Design review");
+        let tree = DesktopTree {
+            active: workspace.id,
+            workspaces: vec![workspace],
+            ..DesktopTree::default()
+        };
+        let chrome = super::fixture::FixtureChrome::new(tree.clone());
+        let bar = TopBarChrome::from_tree_with_local_user(&tree, "fixture-person".into())
+            .with_chrome(chrome.clone());
+        let mut frame = Framed::new(ui::State::new(), bar, (320, 480), Theme::dark());
+        let rect = frame.control_rect(TopBarChrome::CONTROL_OVERVIEW);
+        assert!(!rect.is_zero_area());
+        Framed::harness_mut(&mut frame).click_at(rect.center().x, rect.center().y);
+        Framed::harness_mut(&mut frame).poll_frame().unwrap();
+        assert_eq!(chrome.borrow().intents.len(), 1);
+        assert!(matches!(
+            chrome.borrow().intents[0],
+            ChromeIntent::ToggleOverview
+        ));
+        Framed::harness_mut(&mut frame)
+            .perform_named("toolbar.item.0", &Action::Activate)
+            .unwrap();
+        Framed::harness_mut(&mut frame).poll_frame().unwrap();
+        assert_eq!(chrome.borrow().intents.len(), 2);
+        assert!(
+            !chrome.borrow().overlays.overview,
+            "repeated activation toggles closed"
+        );
+        let audit = Framed::harness(&frame).native_app_audit();
+        assert!(audit.is_certified(), "{audit:?}");
+    }
+
+    #[test]
+    fn responsive_primary_bar_editor_opens_from_overflow_and_escape_closes() {
+        use ui::a11y::Action;
+        let mut frame = Framed::new(ui::State::new(), fixture_bar(), (320, 480), Theme::dark());
+        Framed::harness_mut(&mut frame)
+            .perform_named("toolbar.overflow", &Action::Activate)
+            .unwrap();
+        Framed::harness_mut(&mut frame).poll_frame().unwrap();
+        let out = std::path::PathBuf::from("target/primary-bar-shots");
+        std::fs::create_dir_all(&out).unwrap();
+        Framed::harness(&frame).render_png(&out.join("dark-before-editor.png"));
+        let rect = Framed::harness(&frame)
+            .controls()
+            .into_iter()
+            .find(|control| control.name.as_deref() == Some(t("topbar-editor-title").as_str()))
+            .and_then(|control| control.bounds)
+            .expect("painted editor command");
+        assert!(!rect.is_zero_area(), "editor row must actually be painted");
+        assert!(rect.y0 >= 0.0 && rect.y1 <= 480.0, "{rect:?}");
+        Framed::harness_mut(&mut frame).click_at(rect.center().x, rect.center().y);
+        Framed::harness_mut(&mut frame).poll_frame().unwrap();
+        assert!(frame.widget_editing);
+        assert!(!frame.responsive.toolbar.is_overflow_open());
+        let out = std::path::PathBuf::from("target/primary-bar-shots");
+        std::fs::create_dir_all(&out).unwrap();
+        Framed::harness(&frame).render_png(&out.join("dark-editor.png"));
+        let audit = Framed::harness(&frame).native_app_audit();
+        assert!(audit.is_certified(), "{audit:?}");
+        Framed::harness_mut(&mut frame)
+            .perform_named(TopBarChrome::CONTROL_REMOVE_MONITOR, &Action::Activate)
+            .unwrap();
+        Framed::harness_mut(&mut frame).poll_frame().unwrap();
+        assert!(
+            !frame
+                .widget_config
+                .widgets
+                .contains(&TopBarWidget::SystemMonitor)
+        );
+        Framed::harness_mut(&mut frame).key("Escape");
+        Framed::harness_mut(&mut frame).poll_frame().unwrap();
+        assert!(!frame.widget_editing);
+        assert!(!frame.wants_pointer_capture());
+    }
+
+    #[test]
+    fn responsive_primary_bar_focus_loss_closes_without_activation() {
+        use ui::a11y::Action;
+        let mut frame = Framed::new(ui::State::new(), fixture_bar(), (320, 480), Theme::dark());
+        Framed::harness_mut(&mut frame)
+            .perform_named("toolbar.overflow", &Action::Activate)
+            .unwrap();
+        Framed::harness_mut(&mut frame).poll_frame().unwrap();
+        assert!(frame.responsive.toolbar.is_overflow_open());
+        Framed::harness_mut(&mut frame).send_host_event(&WindowEvent::Focused(false));
+        Framed::harness_mut(&mut frame).poll_frame().unwrap();
+        assert!(!frame.responsive.toolbar.is_overflow_open());
+        assert!(!frame.wants_pointer_capture());
+        assert!(!frame.widget_editing);
+    }
+
+    #[test]
+    fn responsive_primary_bar_offline_status_is_named_and_painted() {
+        let mut bar = fixture_bar();
+        bar.status.link = Some(crate::chrome::LinkStatus {
+            kind: crate::chrome::LinkKind::Offline,
+            name: None,
+            signal: 0,
+        });
+        bar.notification_badge = 3;
+        let frame = Framed::new(ui::State::new(), bar, (320, 480), Theme::dark());
+        let expected = format!(
+            "{} · {}",
+            frame.control_name(TopBarChrome::CONTROL_QUICK_SETTINGS),
+            t("topbar-network-offline")
+        );
+        assert!(
+            Framed::harness(&frame)
+                .controls()
+                .iter()
+                .any(|control| control.name.as_deref() == Some(expected.as_str()))
+        );
+        let out = std::path::PathBuf::from("target/primary-bar-shots");
+        std::fs::create_dir_all(&out).unwrap();
+        Framed::harness(&frame).render_png(&out.join("dark-offline.png"));
+    }
+
+    #[test]
+    fn responsive_primary_bar_semantic_focus_changes_actual_pixels() {
+        use ui::a11y::Action;
+        let mut frame = Framed::new(ui::State::new(), fixture_bar(), (320, 480), Theme::dark());
+        let out = std::path::PathBuf::from("target/primary-bar-shots");
+        std::fs::create_dir_all(&out).unwrap();
+        let before = out.join("dark-before-keyboard-focus.png");
+        let after = out.join("dark-keyboard-focus.png");
+        Framed::harness(&frame).render_png(&before);
+        Framed::harness_mut(&mut frame)
+            .perform_named("toolbar.item.4", &Action::Focus)
+            .unwrap();
+        Framed::harness_mut(&mut frame).poll_frame().unwrap();
+        Framed::harness(&frame).render_png(&after);
+        assert!(
+            std::fs::read(&before).unwrap() != std::fs::read(&after).unwrap(),
+            "a certified semantic focus operation must paint visible focus"
+        );
+        assert!(
+            !frame.needs_redraw(),
+            "an idle focused bar must not request continuous paint"
+        );
+    }
+
+    #[test]
+    fn responsive_primary_bar_selected_monitor_and_calendar_show_their_readings() {
+        use ui::a11y::Action;
+        let mut bar = fixture_bar();
+        bar.telemetry.cpu_percent = Some(71);
+        bar.clock.date = "7 October".into();
+        let mut frame = Framed::new(ui::State::new(), bar, (320, 480), Theme::dark());
+        Framed::harness_mut(&mut frame)
+            .perform_named("toolbar.item.5", &Action::Activate)
+            .unwrap();
+        Framed::harness_mut(&mut frame).poll_frame().unwrap();
+        let expected = t_args("topbar-cpu-reading", &[("value", "71%".into())]);
+        assert!(
+            frame
+                .accessibility()
+                .unwrap()
+                .children
+                .iter()
+                .any(|node| node.name.as_deref() == Some(expected.as_str()))
+        );
+        let out = std::path::PathBuf::from("target/primary-bar-shots");
+        std::fs::create_dir_all(&out).unwrap();
+        Framed::harness(&frame).render_png(&out.join("dark-monitor.png"));
+        Framed::harness_mut(&mut frame)
+            .perform_named("toolbar.overflow", &Action::Activate)
+            .unwrap();
+        Framed::harness_mut(&mut frame).poll_frame().unwrap();
+        Framed::harness_mut(&mut frame)
+            .perform_named("toolbar.item.6", &Action::Activate)
+            .unwrap();
+        Framed::harness_mut(&mut frame).poll_frame().unwrap();
+        assert!(
+            frame
+                .accessibility()
+                .unwrap()
+                .children
+                .iter()
+                .any(|node| node.name.as_deref() == Some("7 October"))
+        );
+        Framed::harness(&frame).render_png(&out.join("dark-calendar.png"));
+    }
+
+    #[test]
+    fn responsive_primary_bar_production_capture_matrix_is_written() {
+        let out = std::env::var_os("TILO_PRIMARY_BAR_SHOTS").map_or_else(
+            || std::path::PathBuf::from("target/primary-bar-shots"),
+            std::path::PathBuf::from,
+        );
+        std::fs::create_dir_all(&out).expect("capture directory");
+        for (name, theme) in [
+            ("dark", Theme::dark()),
+            ("light", Theme::light()),
+            ("high-contrast", Theme::high_contrast()),
+            ("large-text", Theme::dark().with_text_scale(2.0)),
+            (
+                "ui-text-scaled",
+                Theme::dark().with_ui_scale(1.5).with_text_scale(1.3),
+            ),
+        ] {
+            let mut frame = Framed::new(ui::State::new(), fixture_bar(), (320, 480), theme);
+            let path = out.join(format!("{name}-row.png"));
+            Framed::harness(&frame).render_png(&path);
+            assert!(path.is_file(), "missing actual production capture");
+            Framed::harness_mut(&mut frame)
+                .perform_named("toolbar.overflow", &ui::a11y::Action::Activate)
+                .unwrap();
+            Framed::harness_mut(&mut frame).poll_frame().unwrap();
+            let path = out.join(format!("{name}-overflow.png"));
+            Framed::harness(&frame).render_png(&path);
+            assert!(path.is_file(), "missing actual overflow capture");
         }
     }
 }
