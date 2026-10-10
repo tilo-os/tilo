@@ -24,11 +24,11 @@ use crate::priority_contacts::PriorityContactRegistry;
 use std::collections::{HashMap, HashSet, VecDeque};
 use tilo_desktop::notifications::ContinuityNotificationId;
 #[cfg(target_os = "linux")]
-use zbus::names::{InterfaceName, MemberName, OwnedUniqueName};
+use zbus::names::OwnedUniqueName;
 #[cfg(target_os = "linux")]
 use zbus::object_server::{DispatchResult2, Interface, SignalEmitter};
 #[cfg(target_os = "linux")]
-use zbus::{Connection, ObjectServer, fdo, message::Header, message::Message};
+use zbus::{Connection, fdo, message::Header, message::Message};
 
 #[cfg(any(test, target_os = "linux"))]
 use std::path::Path;
@@ -1618,65 +1618,21 @@ const NOTIFICATIONS_INTROSPECTION: &str = r#"<interface name="org.freedesktop.No
 "#;
 
 #[cfg(target_os = "linux")]
-#[zbus::export::async_trait::async_trait]
-impl Interface for NotificationService {
-    fn name() -> InterfaceName<'static> {
-        InterfaceName::from_static_str_unchecked("org.freedesktop.Notifications")
-    }
+interface_dispatch::method_interface!(
+    NotificationService,
+    "org.freedesktop.Notifications",
+    NOTIFICATIONS_INTROSPECTION
+);
 
-    async fn get(
-        &self,
-        _property: &str,
-        _server: &ObjectServer,
-        _connection: &Connection,
-        _header: Option<&Header<'_>>,
-        _emitter: &SignalEmitter<'_>,
-    ) -> Option<fdo::Result<OwnedValue>> {
-        None
-    }
-
-    async fn get_all(
-        &self,
-        _server: &ObjectServer,
-        _connection: &Connection,
-        _header: Option<&Header<'_>>,
-        _emitter: &SignalEmitter<'_>,
-    ) -> fdo::Result<HashMap<String, OwnedValue>> {
-        Ok(HashMap::new())
-    }
-
-    fn set<'call>(
+#[cfg(target_os = "linux")]
+impl NotificationService {
+    fn dispatch_call<'call>(
         &'call self,
-        _property: &'call str,
-        _value: &'call zbus::zvariant::Value<'_>,
-        _server: &'call ObjectServer,
-        _connection: &'call Connection,
-        _header: Option<&'call Header<'_>>,
-        _emitter: &'call SignalEmitter<'_>,
-    ) -> DispatchResult2<'call> {
-        DispatchResult2::NotFound
-    }
-
-    async fn set_mut(
-        &mut self,
-        _property: &str,
-        _value: &zbus::zvariant::Value<'_>,
-        _server: &ObjectServer,
-        _connection: &Connection,
-        _header: Option<&Header<'_>>,
-        _emitter: &SignalEmitter<'_>,
-    ) -> Option<fdo::Result<()>> {
-        None
-    }
-
-    fn call<'call>(
-        &'call self,
-        _server: &'call ObjectServer,
         connection: &'call Connection,
         message: &'call Message,
-        name: MemberName<'call>,
+        name: &str,
     ) -> DispatchResult2<'call> {
-        match name.as_str() {
+        match name {
             "Notify" => interface_dispatch::dispatch(
                 connection,
                 message,
@@ -1748,23 +1704,6 @@ impl Interface for NotificationService {
         }
     }
 
-    fn call_mut<'call>(
-        &'call mut self,
-        _server: &'call ObjectServer,
-        _connection: &'call Connection,
-        _message: &'call Message,
-        _name: MemberName<'call>,
-    ) -> DispatchResult2<'call> {
-        DispatchResult2::NotFound
-    }
-
-    fn introspect_to_writer(&self, writer: &mut dyn std::fmt::Write, level: usize) {
-        interface_dispatch::write_introspection(writer, level, NOTIFICATIONS_INTROSPECTION);
-    }
-}
-
-#[cfg(target_os = "linux")]
-impl NotificationService {
     /// `Notify` — the core method. Queues a toast and returns its id.
     async fn notify(&self, hdr: &Header<'_>, request: NotifyRequest) -> u32 {
         let NotifyRequest {
