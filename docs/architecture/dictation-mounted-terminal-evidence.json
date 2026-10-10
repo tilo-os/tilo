@@ -136,6 +136,96 @@
       "file": "tools/release/fixtures/terminal_dictation_20261010/mounted-r12-managed-outer.py",
       "original_sha256": "04433437f023e1c04960d97c7373e3e9fddf6b621c480ca59e1e8beec71a4a60",
       "portable_file_sha256": "04433437f023e1c04960d97c7373e3e9fddf6b621c480ca59e1e8beec71a4a60"
+    },
+    "recorded-r13-build-receipt.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r13-build-receipt.json",
+      "original_sha256": "88cd6f67e18c640f6ab400c49d988a96f0dcc4a4d198c6eac930e2beeccdc536",
+      "portable_file_sha256": "109308916034826fbeec359cc705132dc61a8befe5b91c150ebf486719bcca54"
+    },
+    "recorded-r13-recorded-manifest.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r13-recorded-manifest.json",
+      "original_sha256": "6463ad7d158992c8338f81b913a5dfd0677edca99deb7c31b059537d7775109d",
+      "portable_file_sha256": "d8b0958d068d3e181ba9035f50ab24309faf1786b25a37ccffcfaa83fe76a250"
+    },
+    "recorded-r13-managed.log.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r13-managed.log.json",
+      "original_sha256": "831107c0b737eeea707f3e575bcc0184b58144fcb48f2ab6a89e6adb159337fa",
+      "portable_file_sha256": "219605deb5702bc8f24c7ea271b0801a93393379b453cd663df69572e2fd06ec"
+    },
+    "recorded-r13-receipt.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r13-receipt.json",
+      "original_sha256": "0648f059c28d97e162cc02f719e619f8b82bf96ca6989ea9e53b7244b2bf7660",
+      "portable_file_sha256": "0648f059c28d97e162cc02f719e619f8b82bf96ca6989ea9e53b7244b2bf7660"
+    },
+    "recorded-r13-managed-inner.py": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r13-managed-inner.py",
+      "original_sha256": "accb0bb035f215be77bce958ebc5c47bf30628440befada8df567f469a85ac5b",
+      "portable_file_sha256": "accb0bb035f215be77bce958ebc5c47bf30628440befada8df567f469a85ac5b"
+    },
+    "recorded-r13-managed-outer.py": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r13-managed-outer.py",
+      "original_sha256": "5a4da281199db7c90ac6ad8b912891326bcad8aa2cb7225db761dff53a050af7",
+      "portable_file_sha256": "6b89131644e97c4b2999e30b97a78cfe33e39e734cf6cea8c7bd2a85349b48fd"
+    },
+    "recorded-r14-build-receipt.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r14-build-receipt.json",
+      "original_sha256": "88cd6f67e18c640f6ab400c49d988a96f0dcc4a4d198c6eac930e2beeccdc536",
+      "portable_file_sha256": "109308916034826fbeec359cc705132dc61a8befe5b91c150ebf486719bcca54"
+    },
+    "recorded-r14-recorded-manifest.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r14-recorded-manifest.json",
+      "original_sha256": "6463ad7d158992c8338f81b913a5dfd0677edca99deb7c31b059537d7775109d",
+      "portable_file_sha256": "d8b0958d068d3e181ba9035f50ab24309faf1786b25a37ccffcfaa83fe76a250"
+    },
+    "recorded-r14-managed.log.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r14-managed.log.json",
+      "original_sha256": "8d758a6438137cc8dbb707e4b3ab61fdd897aa89992b9bdb1cdaf93eb9ed3a24",
+      "portable_file_sha256": "094da0b436b42b135f0b64ad30c8a3cf57314b43ee4d5b4fe74896a5bb04a6d1"
+    },
+    "recorded-r14-receipt.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r14-receipt.json",
+      "original_sha256": "61a7fdc4e561e43fc6486120b83f127243b6504914a50ebb1e0576134861c794",
+      "portable_file_sha256": "61a7fdc4e561e43fc6486120b83f127243b6504914a50ebb1e0576134861c794"
+    },
+    "recorded-r14-managed-inner.py": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r14-managed-inner.py",
+      "original_sha256": "accb0bb035f215be77bce958ebc5c47bf30628440befada8df567f469a85ac5b",
+      "portable_file_sha256": "accb0bb035f215be77bce958ebc5c47bf30628440befada8df567f469a85ac5b"
+    },
+    "recorded-r14-managed-outer.py": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r14-managed-outer.py",
+      "original_sha256": "33ee17679e406160b4c6ae3d9edbacd4f93a69ff5a48fa262b484bfbee28ac70",
+      "portable_file_sha256": "d33de49735db88b36d627797ce0da45feaed4b396545c2db565522d0594a6b6a"
+    },
+    "recorded-r17-build-receipt.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r17-build-receipt.json",
+      "original_sha256": "88cd6f67e18c640f6ab400c49d988a96f0dcc4a4d198c6eac930e2beeccdc536",
+      "portable_file_sha256": "109308916034826fbeec359cc705132dc61a8befe5b91c150ebf486719bcca54"
+    },
+    "recorded-r17-recorded-manifest.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r17-recorded-manifest.json",
+      "original_sha256": "6463ad7d158992c8338f81b913a5dfd0677edca99deb7c31b059537d7775109d",
+      "portable_file_sha256": "d8b0958d068d3e181ba9035f50ab24309faf1786b25a37ccffcfaa83fe76a250"
+    },
+    "recorded-r17-managed.log.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r17-managed.log.json",
+      "original_sha256": "1ead1453e1d1cdd26bf427d1ab8e95b0ecc5e938e7adcac805af09872ae43f20",
+      "portable_file_sha256": "69b2c79be7c5e09b55986432d2690f2be3d1c4a7b7f101e7dc3b6c6c7d8c7253"
+    },
+    "recorded-r17-receipt.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r17-receipt.json",
+      "original_sha256": "aeee1cce8b15e1bbba0a4830066e0cdbd00b75a4310960a49badd2de926c12e6",
+      "portable_file_sha256": "aeee1cce8b15e1bbba0a4830066e0cdbd00b75a4310960a49badd2de926c12e6"
+    },
+    "recorded-r17-managed-inner.py": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r17-managed-inner.py",
+      "original_sha256": "4601f6a81a7e7d6c38c39306e5e9ed6162529ab9fe14ce4b57c2dd7435a82d10",
+      "portable_file_sha256": "4601f6a81a7e7d6c38c39306e5e9ed6162529ab9fe14ce4b57c2dd7435a82d10"
+    },
+    "recorded-r17-managed-outer.py": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r17-managed-outer.py",
+      "original_sha256": "33ee17679e406160b4c6ae3d9edbacd4f93a69ff5a48fa262b484bfbee28ac70",
+      "portable_file_sha256": "d33de49735db88b36d627797ce0da45feaed4b396545c2db565522d0594a6b6a"
     }
   },
   "mounted_r10": "FAIL after waiting 25 seconds for actual mounted Terminal tilo.host:edit Undo availability. Same exact selected Unicode replacement and native can_undo=true observed, but shared semantic host history never advertised undo. No Undo/Redo or full speech claim. Owned container dictation-mounted-r10-da46cfa5b389 verified absent.",
@@ -156,6 +246,30 @@
       "directory_module": "PASS23/23. Three fixtures now register publishers before loading current pages; every assertion retained.",
       "production_build": "PASS shell and Terminal.",
       "shell_tests_compile": "PASS rcargo --no-fallback --no-fetch check --locked -j2 -p shell --tests; 2m16s."
+    }
+  },
+  "recorded_r13": "SETUP FAIL: private tool/library overlay prevented managed Bash startup inside the original nested sandbox. No speech assertions ran. Container verified absent; ephemeral model witness and namespace keeper removed.",
+  "recorded_r14": "FAIL after successful native selected Unicode replacement and ONE semantic Undo/Redo/Undo. Consent shown, but hosted Terminal consumed Enter before the prompt; recorder never started. No full speech claim. Owned container, ephemeral model witness and namespace keeper removed.",
+  "recorded_r15": "Diagnostic check invalid: accessibility record-once action was incorrectly sought in the widget-target list. No product qualification claim. Original artifacts retained privately.",
+  "recorded_r16": "Diagnostic isolated prompt snapshot confirms Record once consent; same production recorder-start failure after Enter. Original artifacts retained privately.",
+  "recorded_r17": "FAIL: isolated native consent navigation observed; Enter bypasses prompt, shell field becomes inactive, and synthetic recorder never starts. Native editing baseline passes again. Full original public-test log and drivers retained; owned container dictation-recorded-r17-fb33144ea951 verified absent.",
+  "terminal_consent_routing_repair": {
+    "source_ancestor": "467d39c926161c900b5e2e515a29258509936d75",
+    "candidate_frame_sha256": "e2f51f1c594ae1fad085febb7729afb1cd0c8bc0715e0cc75f76fed93ceb9b9d",
+    "root_cause": "FrameBuilder::offer_terminal_typing consumes Named Enter/Space before the existing trusted dictation prompt, submitting/editing the original process line instead of consent.",
+    "fix": "Do not offer keys owned by the dictation prompt to the hosted Terminal before overlay dispatch. No permission, native acknowledgement or sandbox change.",
+    "validation": {
+      "consent_pty_regression_red": "FAIL0/1; Enter never reaches the prompt cancellation request. Actual production dispatch and hosted real PTY.",
+      "consent_pty_regression_green": "PASS1/1; consent Enter/Space do not reach the PTY.",
+      "ordinary_typing": "PASS1/1 control_socket_typing_reaches_the_hosted_terminal_pty",
+      "chrome_focus_typing": "PASS1/1 chrome_focus_does_not_steal_terminal_space_and_enter",
+      "repository_hooks": "PASS changed formatting, exact staged allow reasons, all contracts and secret check.",
+      "initial_compatibility_admission": "NOT RUN: remote builder refused at95.2% volume. Later independent status showed73%; identical scoped sequence resubmitted without cleanup or scheduler changes.",
+      "production_build": "PASS rcargo --no-fallback --no-fetch build --locked -j2 -p shell -p terminal --bin shell --bin terminal; 2m09s.",
+      "shell_tests_compile": "PASS rcargo --no-fallback --no-fetch check --locked -j2 -p shell --tests; 55.52s.",
+      "recorded_r18": "FAIL after native editing baseline PASS: synthetic recorder never starts. Actual rebuilt candidate shell SHA cdfa8cd2cf8b4f5566c7a7d90f12c20b2ccbc24b490b15cc9dbe1c604eee2cc5. Owned container dictation-recorded-r18-791e83ed766c verified absent. No microphone or persistent grant.",
+      "recorded_r19": "FAIL: post-consent public headless frame shows field-changed cancellation and submitted original Terminal line. No worker/recorder started; native editing baseline PASS. Owned container dictation-recorded-r19-f6cbd19af2d0 verified absent. Original hashed receipt/log retained privately.",
+      "recorded_r20": "Diagnostic only: consent already retired before Enter, original selection changed from anchor0/focus6 to anchor0/focus5 after ArrowLeft. Diagnostic target export itself failed on set JSON serialization, so no full qualification claim. Owned container dictation-recorded-r20-1d2417d8f0a2 verified absent."
     }
   }
 }

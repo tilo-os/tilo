@@ -4235,6 +4235,9 @@ impl FrameBuilder {
                         key.logical_key,
                         Key::Named(NamedKey::Enter | NamedKey::Space)
                     )
+                    // Local consent owns these keys before the underlying
+                    // process can edit or submit its original shell line.
+                    && !self.host.dictation_owns_key(&key.logical_key)
         ) || !self.active_tile_is_terminal()
         {
             return false;
@@ -6713,6 +6716,100 @@ mod tests {
         native_oobe_tab_and_shift_tab_follow_dfs_order();
         native_oobe_focus_order_excludes_disabled_controls();
         focused_terminal_gets_plain_tab_before_focus_traversal();
+    }
+
+    #[test]
+    fn dictation_consent_keys_do_not_reach_the_hosted_terminal_pty() {
+        use crate::shell::state::{AppKind, TileContent};
+        // Production chrome path: `FrameBuilder::dispatch_event`, the same
+        // route tilo-control type/key and the DRM keyboard take once the
+        // compositor has mapped the press.
+        let mut fb = FrameBuilder::new((1280, 800));
+        fb.relayout();
+        // W17 / window.new.terminal leaves the Terminal tile active. The
+        // demo tree otherwise keeps Notes first, so chrome would still
+        // steal initial focus. Switch through the live GroupRow so harvest
+        // cannot write the Notes tab back over the tree.
+        let target = {
+            let chrome = fb.chrome();
+            let tree = chrome.tree();
+            tree.desktop.active_workspace().and_then(|workspace| {
+                workspace.strips.iter().find_map(|strip| {
+                    strip.window_groups.iter().find_map(|group| {
+                        group
+                            .tabs
+                            .iter()
+                            .find(|tab| {
+                                matches!(
+                                    &tab.tile,
+                                    TileContent::AppPlaceholder {
+                                        kind: AppKind::Terminal,
+                                        ..
+                                    } | TileContent::Stub {
+                                        kind: AppKind::Terminal,
+                                        ..
+                                    }
+                                )
+                            })
+                            .map(|tab| (strip.id, group.id, tab.id))
+                    })
+                })
+            })
+        };
+        let (strip, group, tab) = target.expect("production chrome must include a Terminal tab");
+        assert!(
+            fb.host_mut().focus_window_on_strip(strip, group, tab),
+            "the compositor must be able to focus the hosted Terminal tab"
+        );
+        let probe = live_hosted_terminal_probe(&mut fb);
+        let mut focus = None;
+        fb.reconcile_native_focus(&mut focus);
+        let focused = focus.expect("a terminal tile must take initial focus");
+        assert!(
+            // SAFETY: node_map pointers are owned by the live widget tree.
+            fb.node_map
+                .get(&focused)
+                .is_some_and(|&widget| is_terminal(unsafe { &*widget })),
+            "chrome must not keep initial focus on a workspace pill: {:?}",
+            fb.widget_name(focused)
+        );
+        let mut doc = AutoCommit::new();
+        // Use the real local consent widget and production event dispatch.
+        // No recognizer or microphone exists in this keyboard-routing test.
+        fb.host_mut().dictation_surface_mut().consent();
+        assert!(fb.dispatch_event(
+            &key_press(Key::Named(NamedKey::Enter)),
+            &Modifiers::default(),
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+            &mut focus,
+        ));
+        assert!(
+            matches!(
+                fb.host_mut().dictation_surface_mut().take_request(),
+                Some(crate::shell::overlay_host::dictation_layer::Request::Cancel(None))
+            ),
+            "Enter must select the prompt's conservative cancellation default"
+        );
+        assert!(
+            probe.try_recv().is_err(),
+            "consent Enter must never submit the shell line"
+        );
+        fb.host_mut().dictation_surface_mut().consent();
+        for key in [NamedKey::ArrowLeft, NamedKey::Space] {
+            assert!(fb.dispatch_event(
+                &key_press(Key::Named(key)),
+                &Modifiers::default(),
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+                &mut focus,
+            ));
+        }
+        assert!(
+            probe.try_recv().is_err(),
+            "consent Space must never edit the shell line"
+        );
+        finish_hosted_terminal_probe(&mut fb);
     }
 
     #[test]
