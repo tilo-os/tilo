@@ -1,0 +1,12 @@
+{
+  "source_head": "c9ed193458f73af6e5d537b5d7f28bf3ab3c6d7b",
+  "exit": 1,
+  "complete": false,
+  "owned_container_verified_absent": "dictation-managed-r6-41c0ae757a4f",
+  "log_sha256": "c524f7dffcbed398ed2c57c052d8d9fbf9cf0b8be29ebc52dad8761d0f4dfd5b",
+  "privacy": {
+    "physical_microphone": false,
+    "installed": false,
+    "persistent_grants": false
+  }
+}

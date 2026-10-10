@@ -1,0 +1,26 @@
+{
+  "encoding": "UTF-8 lines; concatenate lines to reconstruct stdout",
+  "lines": [
+    "MANAGED_OWNED_SUPERVISOR_REAPED 1\n",
+    "MANAGED_EVENT_STREAM []\n",
+    "MANAGED_PTY_DIAGNOSTIC \"tilo-ush: no environment can be created: \\\"1111111111111111111111111111111111111111111111111111111111111111\\\" is not an image id: expected `tapp:<hex>` form, got \\\"1111111111111111111111111111111111111111111111111111111111111111\\\"\\r\\n\"\n",
+    "MANAGED_OUTER_EXIT 1\n",
+    "PASS managed private namespace keeper reaped\n",
+    "Traceback (most recent call last):\n",
+    "  File \"/drop.py\", line 3, in <module>\n",
+    "    os.chmod('/tmp',0o1777);os.setgroups([]);os.setgid(65534);os.setuid(65534);runpy.run_path('/journey.py',run_name='__main__')\n",
+    "                                                                               ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n",
+    "  File \"<frozen runpy>\", line 294, in run_path\n",
+    "  File \"<frozen runpy>\", line 98, in _run_module_code\n",
+    "  File \"<frozen runpy>\", line 88, in _run_code\n",
+    "  File \"/journey.py\", line 55, in <module>\n",
+    "    drain();assert owned.poll() is None,('managed launch failed',transcript.decode(errors='replace')[-4000:]);assert time.monotonic()<end,('startup prompt absent',transcript.decode(errors='replace')[-4000:]);time.sleep(.05)\n",
+    "                   ^^^^^^^^^^^^^^^^^^^^\n",
+    "AssertionError: ('managed launch failed', 'tilo-ush: no environment can be created: \"1111111111111111111111111111111111111111111111111111111111111111\" is not an image id: expected `tapp:<hex>` form, got \"1111111111111111111111111111111111111111111111111111111111111111\"\\r\\n')\n",
+    "Traceback (most recent call last):\n",
+    "  File \"${BUILD_ROOT}/target/dictation-managed-terminal-current-r5/managed-outer.py\", line 20, in <module>\n",
+    "    assert p.returncode==0\n",
+    "           ^^^^^^^^^^^^^^^\n",
+    "AssertionError\n"
+  ]
+}

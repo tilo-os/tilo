@@ -1,0 +1,23 @@
+{
+  "packages": [
+    {
+      "file": "bash-devel-5.3.9-3.fc44.x86_64.rpm",
+      "bytes": 94870,
+      "sha256": "4fab3521ad5d6c5077637ec0ab695b8b94a207a50c5396c257df7ec8860a3e48",
+      "metadata": "bash-devel|5.3.9-3.fc44|x86_64|GPL-3.0-or-later",
+      "signature": "${BUILD_ROOT}/target/dictation-managed-terminal-current-r5/bash-devel-5.3.9-3.fc44.x86_64.rpm: digests signatures OK"
+    },
+    {
+      "file": "readline-devel-8.3-4.fc44.x86_64.rpm",
+      "bytes": 224520,
+      "sha256": "8783653bdac9bedefaec2aa89fffd6923a73d83df70453336ecc08df10b29491",
+      "metadata": "readline-devel|8.3-4.fc44|x86_64|GPL-3.0-or-later AND GPL-2.0-or-later AND GFDL-1.3-no-invariants-or-later",
+      "signature": "${BUILD_ROOT}/target/dictation-managed-terminal-current-r5/readline-devel-8.3-4.fc44.x86_64.rpm: digests signatures OK"
+    }
+  ],
+  "module_sha256": "a728ab2e2da3117950e6495daa987c3aa0f098d9ea2ff537b7158c6d58ed291e",
+  "bash_sha256": "379c1bfc53d08815975c647ad7da5d19d8e8a8566ce8097c50231c8b116e5e7b",
+  "production_source_sha256": "812323f58b369f4b662943c93bb948cb5a5a1b1577a84cc259740ba68d25303d",
+  "private_build_only": true,
+  "installed": false
+}

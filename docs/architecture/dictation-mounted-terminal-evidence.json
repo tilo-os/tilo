@@ -1,0 +1,93 @@
+{
+  "component": "Actual mounted Terminal selected-range native editing",
+  "source_fix_head": "93fd86fa67f6da456327c4603a2238438750901b",
+  "overall_result": "NOT QUALIFIED",
+  "control_space_regression": "Actual widget Dispatch emits NUL for Named Space/Character Space/physical fallback under Control; red and green retained in validation logs. Plain space and keyboard regression tests PASS.",
+  "mounted_r7": "FAIL selection remained 0..0 because Control-Space emitted byte32. Replacement and Undo not run.",
+  "mounted_r8": "Original Unicode selection 0..6 observed; native acknowledged replacement cafe->salut visible with suffix preserved; editor can_undo=true. FAIL immediate semantic host Undo was unavailable. Undo/Redo and speech not qualified.",
+  "mounted_r9": "SETUP FAIL copied module source accidentally renamed to missing managed-r9. No app journey ran. Original raw setup log retained in /tmp.",
+  "privacy": {
+    "physical_microphone": false,
+    "installed": false,
+    "persistent_grants": false
+  },
+  "archives": {
+    "mounted-r7-build-receipt.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/mounted-r7-build-receipt.json",
+      "original_sha256": "88cd6f67e18c640f6ab400c49d988a96f0dcc4a4d198c6eac930e2beeccdc536",
+      "portable_file_sha256": "109308916034826fbeec359cc705132dc61a8befe5b91c150ebf486719bcca54"
+    },
+    "mounted-r7-managed-inner.py": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/mounted-r7-managed-inner.py",
+      "original_sha256": "e222c95c58d610270ee2334a495a809db6f8a51c172d51be704f194b204d4b9b",
+      "portable_file_sha256": "e222c95c58d610270ee2334a495a809db6f8a51c172d51be704f194b204d4b9b"
+    },
+    "mounted-r7-managed-outer.py": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/mounted-r7-managed-outer.py",
+      "original_sha256": "04433437f023e1c04960d97c7373e3e9fddf6b621c480ca59e1e8beec71a4a60",
+      "portable_file_sha256": "04433437f023e1c04960d97c7373e3e9fddf6b621c480ca59e1e8beec71a4a60"
+    },
+    "mounted-r7-managed.log.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/mounted-r7-managed.log.json",
+      "original_sha256": "82d5523c9e71ad03f01b6418cedd1dc4a01a18a2e4b666e137e93f8051f751ba",
+      "portable_file_sha256": "79cdc9c17877ec5f842daf6525ddade36fa1bcab7891b9437ac0c23f4e2e8b1d"
+    },
+    "mounted-r7-receipt.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/mounted-r7-receipt.json",
+      "original_sha256": "05e75b573ec0817923912fa8b48f2a3f9febee7f099fd68d40f1b6de2f406a4b",
+      "portable_file_sha256": "05e75b573ec0817923912fa8b48f2a3f9febee7f099fd68d40f1b6de2f406a4b"
+    },
+    "mounted-r8-build-receipt.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/mounted-r8-build-receipt.json",
+      "original_sha256": "88cd6f67e18c640f6ab400c49d988a96f0dcc4a4d198c6eac930e2beeccdc536",
+      "portable_file_sha256": "109308916034826fbeec359cc705132dc61a8befe5b91c150ebf486719bcca54"
+    },
+    "mounted-r8-managed-inner.py": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/mounted-r8-managed-inner.py",
+      "original_sha256": "e222c95c58d610270ee2334a495a809db6f8a51c172d51be704f194b204d4b9b",
+      "portable_file_sha256": "e222c95c58d610270ee2334a495a809db6f8a51c172d51be704f194b204d4b9b"
+    },
+    "mounted-r8-managed-outer.py": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/mounted-r8-managed-outer.py",
+      "original_sha256": "04433437f023e1c04960d97c7373e3e9fddf6b621c480ca59e1e8beec71a4a60",
+      "portable_file_sha256": "04433437f023e1c04960d97c7373e3e9fddf6b621c480ca59e1e8beec71a4a60"
+    },
+    "mounted-r8-managed.log.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/mounted-r8-managed.log.json",
+      "original_sha256": "cdd56d3df106e5e8ae1ea13546f2e828477587b093c37a3ef74f38d4c3ab274e",
+      "portable_file_sha256": "6e68c7586cca368a6e001f19fc137774f1f7de65f188646ba3edbe7ea1a43d99"
+    },
+    "mounted-r8-receipt.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/mounted-r8-receipt.json",
+      "original_sha256": "496ede14f73d698f14327100e10319f4d6fdf3d818266be852a073716b7e8b74",
+      "portable_file_sha256": "496ede14f73d698f14327100e10319f4d6fdf3d818266be852a073716b7e8b74"
+    },
+    "mounted-r10-build-receipt.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/mounted-r10-build-receipt.json",
+      "original_sha256": "88cd6f67e18c640f6ab400c49d988a96f0dcc4a4d198c6eac930e2beeccdc536",
+      "portable_file_sha256": "109308916034826fbeec359cc705132dc61a8befe5b91c150ebf486719bcca54"
+    },
+    "mounted-r10-managed-inner.py": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/mounted-r10-managed-inner.py",
+      "original_sha256": "238fd54e34387fb67fcd287a60b9e70200e447ce73b6f50cefc2aa583e865194",
+      "portable_file_sha256": "238fd54e34387fb67fcd287a60b9e70200e447ce73b6f50cefc2aa583e865194"
+    },
+    "mounted-r10-managed-outer.py": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/mounted-r10-managed-outer.py",
+      "original_sha256": "04433437f023e1c04960d97c7373e3e9fddf6b621c480ca59e1e8beec71a4a60",
+      "portable_file_sha256": "04433437f023e1c04960d97c7373e3e9fddf6b621c480ca59e1e8beec71a4a60"
+    },
+    "mounted-r10-managed.log.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/mounted-r10-managed.log.json",
+      "original_sha256": "d5abb2c001925df855ba61fc7ca54d0aafd70a5f7977c24af328317f4a691518",
+      "portable_file_sha256": "0f48ae352a6ff72e9648001ca8f19203acdc364491a514f585e5a12702f29da2"
+    },
+    "mounted-r10-receipt.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/mounted-r10-receipt.json",
+      "original_sha256": "1cc74ac48f9f208e966d06db3cfa80f5879aaa23dcc43ae6ea28f9772b2dde6d",
+      "portable_file_sha256": "1cc74ac48f9f208e966d06db3cfa80f5879aaa23dcc43ae6ea28f9772b2dde6d"
+    }
+  },
+  "mounted_r10": "FAIL after waiting 25 seconds for actual mounted Terminal tilo.host:edit Undo availability. Same exact selected Unicode replacement and native can_undo=true observed, but shared semantic host history never advertised undo. No Undo/Redo or full speech claim. Owned container dictation-mounted-r10-da46cfa5b389 verified absent.",
+  "follow_up": "Fix shared mounted native history discovery and guarded acknowledged invocation through the existing LocalUndo door. Do not replace with keyboard-only proof, native PTY fallback or loosen field assertions. Coordinate this narrow history integration with the SDK split owner."
+}

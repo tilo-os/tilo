@@ -318,6 +318,72 @@
       "original_sha256": "f4f3e49b2077d06fd8e516a9521ccf3ace0678df38c0defad98e01a422e335f8",
       "portable_file_sha256": "2ea0361504b8042b26b31cf5320b527ac005f931100c296152f80f823a08ad86",
       "portable_reconstructed_stdout_sha256": "f4f3e49b2077d06fd8e516a9521ccf3ace0678df38c0defad98e01a422e335f8"
+    },
+    "single-line-r7-manifest.json": {
+      "canonical_file": "tools/release/fixtures/gtk3_dictation_20261010/single-line-r7-manifest.json",
+      "original_sha256": "d547ed51f77ee10983807053adee8e6206b6b85cb22b475dda9dea1fba055364",
+      "portable_file_sha256": "02ec07304a8be060aebd80defbc1684c4318380c13d382504dc26b09b0716d12",
+      "portable_reconstructed_stdout_sha256": null
+    },
+    "single-line-r7-recorded-inner.py": {
+      "canonical_file": "tools/release/fixtures/gtk3_dictation_20261010/single-line-r7-recorded-inner.py",
+      "original_sha256": "d2082968d15a0ee4dc8c0e3aa64b7d318d1e023bab727dbd12d9ef09f97838bd",
+      "portable_file_sha256": "d2082968d15a0ee4dc8c0e3aa64b7d318d1e023bab727dbd12d9ef09f97838bd",
+      "portable_reconstructed_stdout_sha256": null
+    },
+    "single-line-r7-recorded-outer.py": {
+      "canonical_file": "tools/release/fixtures/gtk3_dictation_20261010/diagnostic-r2-recorded-outer.py",
+      "original_sha256": "bcd73617c18ed2c5a99bd8d2e05c74a979a00797d2234e98ccb236d7d2829426",
+      "portable_file_sha256": "bcd73617c18ed2c5a99bd8d2e05c74a979a00797d2234e98ccb236d7d2829426",
+      "portable_reconstructed_stdout_sha256": null
+    },
+    "single-line-r7-recorded-run.py": {
+      "canonical_file": "tools/release/fixtures/gtk3_dictation_20261010/diagnostic-r2-recorded-run.py",
+      "original_sha256": "d7dda2d774ef014e1172c65431521593e1b8d0914b177af4096874c7c21f01c4",
+      "portable_file_sha256": "d7dda2d774ef014e1172c65431521593e1b8d0914b177af4096874c7c21f01c4",
+      "portable_reconstructed_stdout_sha256": null
+    },
+    "single-line-r7-run-de_de-0-r1-receipt.json": {
+      "canonical_file": "tools/release/fixtures/gtk3_dictation_20261010/single-line-r7-run-de_de-0-r1-receipt.json",
+      "original_sha256": "9c0b5ec92503e5dc74fefd713529475371d753e5a8095b9aa8c42409a19d7697",
+      "portable_file_sha256": "bfb5172ee7e9e4ee08e164f90338f8a3b570dcb99cc11300a1193ffb24aaf04c",
+      "portable_reconstructed_stdout_sha256": null
+    },
+    "single-line-r7-run-de_de-0-r1.log.json": {
+      "canonical_file": "tools/release/fixtures/gtk3_dictation_20261010/single-line-r7-run-de_de-0-r1.log.json",
+      "original_sha256": "74c107e50ecded5543027b6d6375dde3f46eb85e6fffe68f30d41ab64f541a0e",
+      "portable_file_sha256": "10e58353b802f56563cb5eb31e3305bce3dbaf82d781501f6d602b0d16d5cd3d",
+      "portable_reconstructed_stdout_sha256": "bef7dc62e76bde147ed6643631f564f81075243bf2ae68f6b7da0ea70f165570"
     }
+  },
+  "single_line_qualification": {
+    "application": "standard GTK 3.24.52 GtkEntry, builtin Wayland input method; no native history override",
+    "status": "FAILED full journey at native Undo; insertion alone does not qualify full support",
+    "source_head": "b632d82ddb4b8e4402932f61715d289e8ba0c9fc",
+    "inserted_result": {
+      "text": "F\u00fcr die besten Aussichten auf Hongkong sollten sie die Insel verlassen und zum gegen\u00fcberliegenden Ufer von Kowloon fahren.",
+      "buffer": "alpha F\u00fcr die besten Aussichten auf Hongkong sollten sie die Insel verlassen und zum gegen\u00fcberliegenden Ufer von Kowloon fahren. gamma",
+      "word_errors": 0,
+      "reference_words": 18,
+      "wer": 0.0,
+      "seconds": 28.026685906021157,
+      "first_nonempty_preview_seconds": 9.46501488701324
+    },
+    "full_journey_complete": false,
+    "full_journey_exit": 1,
+    "failure": "ONE native Undo did not restore the original selected range",
+    "not_executed_after_failure": [
+      "native Redo",
+      "active-speech cancellation",
+      "repeated-session focus-away/back",
+      "protected password/PIN refusal",
+      "ordinary recovery"
+    ],
+    "cleanup": "OWNED_CONTAINER_ABSENT c7b6f0cb587fe80b788764ab37a0b179b23235eff3a6a2416e7f8ef6be0abf72",
+    "upstream_history_contract": "Stock GTK3 GtkEntryBuffer has no built-in Undo/Redo; the documented derived buffer extension may integrate application history. No generic editing adapter was installed or implemented.",
+    "primary_sources": [
+      "https://docs.gtk.org/gtk3/class.EntryBuffer.html",
+      "https://github.com/GNOME/gtk/blob/3.24.52/gtk/gtkentry.c"
+    ]
   }
 }

@@ -1,0 +1,11 @@
+{
+  "source_head": "c9ed193458f73af6e5d537b5d7f28bf3ab3c6d7b",
+  "exit": 1,
+  "complete": false,
+  "log_sha256": "9158b7d1959fd8acd2a8ad8c5d9072ca42f53e71c2033fcc8ed93ae4acc97d76",
+  "privacy": {
+    "physical_microphone": false,
+    "installed": false,
+    "persistent_grants": false
+  }
+}

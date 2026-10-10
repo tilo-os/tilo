@@ -1,0 +1,26 @@
+{
+  "source_head": "c9ed193458f73af6e5d537b5d7f28bf3ab3c6d7b",
+  "exit": 0,
+  "complete": true,
+  "owned_container_verified_absent": "dictation-managed-r8-b97ee1ecaf6b",
+  "log_sha256": "b26ffe8eeed5215ef2b36e940037875c5742b9712d3ed07bb1c2757a2c5e628a",
+  "binaries": {
+    "target/debug/tilo-ush": {
+      "bytes": 114088208,
+      "sha256": "a66989e934e92239d553769afb781cf03be5845e1a647d37bd73803fdd944c6c"
+    },
+    "target/dictation-managed-terminal-current-r8/host-root/usr/bin/bash": {
+      "bytes": 1551104,
+      "sha256": "379c1bfc53d08815975c647ad7da5d19d8e8a8566ce8097c50231c8b116e5e7b"
+    },
+    "target/dictation-managed-terminal-current-r8/host-root/usr/lib/tilo/ush/bash-editor.so": {
+      "bytes": 27448,
+      "sha256": "a728ab2e2da3117950e6495daa987c3aa0f098d9ea2ff537b7158c6d58ed291e"
+    }
+  },
+  "privacy": {
+    "physical_microphone": false,
+    "installed": false,
+    "persistent_grants": false
+  }
+}

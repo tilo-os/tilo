@@ -51,3 +51,21 @@ The protocol diagnosis follows GTK's own
 and [Wayland input context](https://github.com/GNOME/gtk/blob/3.24.52/modules/input/imwayland.c).
 An inactive text-input object before preparation is expected when no input
 method owns the seat. No focus or late-binding patch was made on that premise.
+
+## GTK 3 single-line qualification remains failed
+
+A separate fresh standard GtkEntry journey inserted the recorded German phrase
+with 0 normalized errors in 18 words. Preview appeared at 9.47 seconds and final
+insertion at 28.03 seconds. The full journey then **failed**: one native Undo did
+not restore the original selection. Redo, cancellation, repeated-session focus
+retirement, protected-field refusal and recovery were not executed in that run.
+Its exact owned container was verified absent. This is an insertion result, not
+complete single-line qualification; the failed log and receipt remain archived.
+
+GTK 3's [EntryBuffer contract](https://docs.gtk.org/gtk3/class.EntryBuffer.html)
+provides a derived-buffer extension for application Undo/Redo integration; stock
+GtkEntry has no native history operation to group. The multiline clipboard fix
+cannot supply that missing operation. No test assertion was relaxed and no
+private history or shortcut-only replacement was introduced. Complete support
+requires an editing adapter that provides guarded history through the shared
+accessibility/action contract, followed by another full native journey.

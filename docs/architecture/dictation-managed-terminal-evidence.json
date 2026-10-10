@@ -1,0 +1,170 @@
+{
+  "component": "Managed Bash native editor through production supervisor",
+  "source_head": "c9ed193458f73af6e5d537b5d7f28bf3ab3c6d7b",
+  "scope": "Actual tilo-ush managed launcher, real Bash/Readline and packaged native producer; this is not a mounted app or full speech acceptance result",
+  "result": "PASS",
+  "assertions": [
+    "protected startup read-e prompt exposes no text or lease",
+    "authenticated selected Unicode range replacement",
+    "ONE native Undo/Redo/Undo restores original buffer and selection",
+    "net-zero native caret movement invalidates original lease",
+    "revoke acknowledges retirement; old lease cannot insert; fresh qualified editing recovers",
+    "builtin read-e prompt exposes no native editor text or lease; public prompt recovers new generation",
+    "actual external child inherits no native producer descriptor"
+  ],
+  "privacy": {
+    "physical_microphone": false,
+    "installed": false,
+    "persistent_grants": false
+  },
+  "binaries": {
+    "target/debug/tilo-ush": {
+      "bytes": 114088208,
+      "sha256": "a66989e934e92239d553769afb781cf03be5845e1a647d37bd73803fdd944c6c"
+    },
+    "target/dictation-managed-terminal-current-r8/host-root/usr/bin/bash": {
+      "bytes": 1551104,
+      "sha256": "379c1bfc53d08815975c647ad7da5d19d8e8a8566ce8097c50231c8b116e5e7b"
+    },
+    "target/dictation-managed-terminal-current-r8/host-root/usr/lib/tilo/ush/bash-editor.so": {
+      "bytes": 27448,
+      "sha256": "a728ab2e2da3117950e6495daa987c3aa0f098d9ea2ff537b7158c6d58ed291e"
+    }
+  },
+  "owned_container_verified_absent": "dictation-managed-r8-b97ee1ecaf6b",
+  "previous_failures": {
+    "r5": "fixture runtime ID omitted tapp: prefix; managed launch failed before guest execution",
+    "r6": "outer private container masked /proc subtree; nested production bwrap proc mount refused",
+    "r7": "native editing/history/stale checks passed; full fixture then failed because it incorrectly expected no fresh public lease after revoke. r8 retains original capture and requires that lease to be stale, unchanged original buffer, explicit revoke acknowledgement and a distinct fresh lease"
+  },
+  "private_container_boundary": "Private PID namespace; narrowly unmask /proc inside that private namespace for nested production bwrap proc mount. No privileged mode, added system-administration capability, unconfined seccomp, host PID/proc or host device mount. Ordinary inner uid65534, zero capabilities and no_new_privs. Production guest Landlock/seccomp unchanged.",
+  "licensing": "Signed Fedora Bash/readline development inputs are extracted privately for the maintained native build; upstream notices retained there. No RPM, headers, model, audio or compiled native module distributed in this evidence. Original test drivers use repository AGPL-3.0-only.",
+  "archives": {
+    "managed-r5-build-receipt.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/managed-r5-build-receipt.json",
+      "original_sha256": "88cd6f67e18c640f6ab400c49d988a96f0dcc4a4d198c6eac930e2beeccdc536",
+      "portable_file_sha256": "109308916034826fbeec359cc705132dc61a8befe5b91c150ebf486719bcca54",
+      "portable_stdout_sha256": null
+    },
+    "managed-r5-managed-inner.py": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/managed-r5-managed-inner.py",
+      "original_sha256": "a7179435f13e24be470e4c4e352308da42244ae1d1e3cf61875d0086a06230a7",
+      "portable_file_sha256": "a7179435f13e24be470e4c4e352308da42244ae1d1e3cf61875d0086a06230a7",
+      "portable_stdout_sha256": null
+    },
+    "managed-r5-managed-outer.py": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/managed-r5-managed-outer.py",
+      "original_sha256": "3d08761dc298154e0e7802d8dd686fadae653b099e6c5a273961d7231f82cad6",
+      "portable_file_sha256": "3d08761dc298154e0e7802d8dd686fadae653b099e6c5a273961d7231f82cad6",
+      "portable_stdout_sha256": null
+    },
+    "managed-r5-managed.log.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/managed-r5-managed.log.json",
+      "original_sha256": "9158b7d1959fd8acd2a8ad8c5d9072ca42f53e71c2033fcc8ed93ae4acc97d76",
+      "portable_file_sha256": "fd6d57362a1283ee3dc1a0ae2ee2cac09721a1d38ee118f453ae6630b91cb7db",
+      "portable_stdout_sha256": "63fd245a472452c70d1f8108a1b232d0cb4cd624e110ffc4c79c859a21e81448"
+    },
+    "managed-r5-prep.log.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/managed-r5-prep.log.json",
+      "original_sha256": "32cd374a3581694948e7b9e8afceff97ae7d9c9cddd4d9e3ca99dd44a9eab475",
+      "portable_file_sha256": "5c8356c26a4b1093bc001f6f4e0bb679e105008237ded3c36b22becc8982ef9e",
+      "portable_stdout_sha256": "1ea229a102638220044987fdf3968baa5fb393453efb97d6d2f70cf2ea83184f"
+    },
+    "managed-r5-receipt.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/managed-r5-receipt.json",
+      "original_sha256": "8a322fb36f0c6a03b054784a60600f51856a97491ee5a3f342ecd49bdec4f240",
+      "portable_file_sha256": "8a322fb36f0c6a03b054784a60600f51856a97491ee5a3f342ecd49bdec4f240",
+      "portable_stdout_sha256": null
+    },
+    "managed-r6-build-receipt.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/managed-r6-build-receipt.json",
+      "original_sha256": "88cd6f67e18c640f6ab400c49d988a96f0dcc4a4d198c6eac930e2beeccdc536",
+      "portable_file_sha256": "109308916034826fbeec359cc705132dc61a8befe5b91c150ebf486719bcca54",
+      "portable_stdout_sha256": null
+    },
+    "managed-r6-managed-inner.py": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/managed-r6-managed-inner.py",
+      "original_sha256": "ca7532bfd36dadf17a311b83ef1ceac70f602d66a9dd719a1a801c0529c4d713",
+      "portable_file_sha256": "ca7532bfd36dadf17a311b83ef1ceac70f602d66a9dd719a1a801c0529c4d713",
+      "portable_stdout_sha256": null
+    },
+    "managed-r6-managed-outer.py": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/managed-r6-managed-outer.py",
+      "original_sha256": "3d08761dc298154e0e7802d8dd686fadae653b099e6c5a273961d7231f82cad6",
+      "portable_file_sha256": "3d08761dc298154e0e7802d8dd686fadae653b099e6c5a273961d7231f82cad6",
+      "portable_stdout_sha256": null
+    },
+    "managed-r6-managed.log.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/managed-r6-managed.log.json",
+      "original_sha256": "c524f7dffcbed398ed2c57c052d8d9fbf9cf0b8be29ebc52dad8761d0f4dfd5b",
+      "portable_file_sha256": "8fd02d9c67af7736382e5018999bca49fef2fc95aeda4f7f1060daf8fee3e933",
+      "portable_stdout_sha256": "056e21e32b42a1e3630e30600ccb1ffd7a04abf615911e905659b735b7462fb6"
+    },
+    "managed-r6-receipt.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/managed-r6-receipt.json",
+      "original_sha256": "b1832ea15b1f0e4de20845aa263281b51f8c997352411e477dbdd58073de64ff",
+      "portable_file_sha256": "b1832ea15b1f0e4de20845aa263281b51f8c997352411e477dbdd58073de64ff",
+      "portable_stdout_sha256": null
+    },
+    "managed-r7-build-receipt.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/managed-r7-build-receipt.json",
+      "original_sha256": "88cd6f67e18c640f6ab400c49d988a96f0dcc4a4d198c6eac930e2beeccdc536",
+      "portable_file_sha256": "109308916034826fbeec359cc705132dc61a8befe5b91c150ebf486719bcca54",
+      "portable_stdout_sha256": null
+    },
+    "managed-r7-managed-inner.py": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/managed-r7-managed-inner.py",
+      "original_sha256": "ca7532bfd36dadf17a311b83ef1ceac70f602d66a9dd719a1a801c0529c4d713",
+      "portable_file_sha256": "ca7532bfd36dadf17a311b83ef1ceac70f602d66a9dd719a1a801c0529c4d713",
+      "portable_stdout_sha256": null
+    },
+    "managed-r7-managed-outer.py": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/managed-r7-managed-outer.py",
+      "original_sha256": "3d08761dc298154e0e7802d8dd686fadae653b099e6c5a273961d7231f82cad6",
+      "portable_file_sha256": "3d08761dc298154e0e7802d8dd686fadae653b099e6c5a273961d7231f82cad6",
+      "portable_stdout_sha256": null
+    },
+    "managed-r7-managed.log.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/managed-r7-managed.log.json",
+      "original_sha256": "4ba842de8ffd50849c3674cc02549310a0d5410064c5d09ca68df8d65da7a7d3",
+      "portable_file_sha256": "c386a9a8b0313451447c21c687bf145ad126ac0f819f533301cd2d1a450031a4",
+      "portable_stdout_sha256": "a1683da05c926dee8fdfa98052e99b254e17c84fa28832483d5d24d484bdb187"
+    },
+    "managed-r7-receipt.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/managed-r7-receipt.json",
+      "original_sha256": "d309daf6359b7eb80e02c704c7d59a4198c83e4ff1a30c9954b0907bcc065b33",
+      "portable_file_sha256": "d309daf6359b7eb80e02c704c7d59a4198c83e4ff1a30c9954b0907bcc065b33",
+      "portable_stdout_sha256": null
+    },
+    "managed-r8-build-receipt.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/managed-r8-build-receipt.json",
+      "original_sha256": "88cd6f67e18c640f6ab400c49d988a96f0dcc4a4d198c6eac930e2beeccdc536",
+      "portable_file_sha256": "109308916034826fbeec359cc705132dc61a8befe5b91c150ebf486719bcca54",
+      "portable_stdout_sha256": null
+    },
+    "managed-r8-managed-inner.py": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/managed-r8-managed-inner.py",
+      "original_sha256": "a14b60fb0591b90b6909c06f397c9ddfbc6d18a2151d665ed1f678eb1a257d35",
+      "portable_file_sha256": "a14b60fb0591b90b6909c06f397c9ddfbc6d18a2151d665ed1f678eb1a257d35",
+      "portable_stdout_sha256": null
+    },
+    "managed-r8-managed-outer.py": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/managed-r8-managed-outer.py",
+      "original_sha256": "3d08761dc298154e0e7802d8dd686fadae653b099e6c5a273961d7231f82cad6",
+      "portable_file_sha256": "3d08761dc298154e0e7802d8dd686fadae653b099e6c5a273961d7231f82cad6",
+      "portable_stdout_sha256": null
+    },
+    "managed-r8-managed.log.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/managed-r8-managed.log.json",
+      "original_sha256": "b26ffe8eeed5215ef2b36e940037875c5742b9712d3ed07bb1c2757a2c5e628a",
+      "portable_file_sha256": "a0d3c5a0f735c55460bceb85d38645bea0055af4b989c937cb4d1b9990aa91d4",
+      "portable_stdout_sha256": "b26ffe8eeed5215ef2b36e940037875c5742b9712d3ed07bb1c2757a2c5e628a"
+    },
+    "managed-r8-receipt.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/managed-r8-receipt.json",
+      "original_sha256": "7e045a5057d702e2518663ff525b789c7ccf66a37fdfbfb521d1f0a98174c023",
+      "portable_file_sha256": "7e045a5057d702e2518663ff525b789c7ccf66a37fdfbfb521d1f0a98174c023",
+      "portable_stdout_sha256": null
+    }
+  }
+}
