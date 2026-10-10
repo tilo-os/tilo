@@ -821,6 +821,15 @@ fn widget_deadline_for_presenter(
     widget_deadline.filter(|_| pipe_ready)
 }
 
+/// A widget deadline wakes the loop once. A widget may keep an overdue
+/// deadline until a paint consumes it, while a due deadline alone does not
+/// paint (`present_for_app_poll`): a deadline that was already due when
+/// this tick started was answered by it, and waking for it again would run
+/// the loop flat out without painting until something unrelated paints.
+fn widget_park_deadline(tick_started: Instant, deadline: Option<Instant>) -> Option<Instant> {
+    deadline.filter(|deadline| *deadline > tick_started)
+}
+
 // A due animation remains dirty until it paints, but is no longer a wake
 // deadline. Keeping an expired deadline here would busy-spin while waiting
 // for display cadence or presenter retirement. Those wake sources already
@@ -13272,7 +13281,10 @@ pub fn run() {
             [
                 (
                     "widget",
-                    widget_deadline_for_presenter(pipe_ready, frame_builder.next_wake_deadline()),
+                    widget_deadline_for_presenter(
+                        pipe_ready,
+                        widget_park_deadline(iter_t0, frame_builder.next_wake_deadline()),
+                    ),
                 ),
                 (
                     "lock-animation",
@@ -14453,6 +14465,39 @@ mod tests {
                 Some(Duration::from_millis(42))
             );
         }
+        // Phase `an_answered_widget_deadline_does_not_spin_the_loop`.
+        {
+            let due_at = Instant::now();
+            let tick_started = due_at + Duration::from_millis(1);
+            let now = tick_started + Duration::from_millis(1);
+            let frame = now + Duration::from_millis(8);
+            assert_eq!(
+                native_loop_park(
+                    now,
+                    false,
+                    false,
+                    false,
+                    frame,
+                    [widget_deadline_for_presenter(
+                        true,
+                        widget_park_deadline(tick_started, Some(due_at)),
+                    )],
+                ),
+                Some(IDLE_BACKEND_POLL),
+                "a deadline this tick already woke for parks the loop instead of spinning it"
+            );
+            let became_due = tick_started + Duration::from_micros(500);
+            assert_eq!(
+                widget_park_deadline(tick_started, Some(became_due)),
+                Some(became_due),
+                "a deadline that fell due during this tick still wakes the next one"
+            );
+            let future = now + Duration::from_millis(42);
+            assert_eq!(
+                widget_park_deadline(tick_started, Some(future)),
+                Some(future)
+            );
+        }
         // Phase `blanked_lock_stops_animating_until_the_panel_wakes`.
         {
             let theme = ui::theme::Theme::dark();
@@ -15143,7 +15188,7 @@ mod tests {
         }
         let gated = started.elapsed();
         eprintln!(
-            "TIL-136 legacy-share pass per idle wakeup, 8 workspaces x 24 windows: walked {:?}, gated {:?}",
+            "legacy-share pass per idle wakeup, 8 workspaces x 24 windows: walked {:?}, gated {:?}",
             walked / WAKEUPS,
             gated / WAKEUPS,
         );
