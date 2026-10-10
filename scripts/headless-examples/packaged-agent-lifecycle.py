@@ -49,6 +49,7 @@ AT_SPI_ROLE_BUTTON = 43
 AT_SPI_ROLE_TOGGLE_BUTTON = 62
 AT_SPI_ROLE_LIST_ITEM = 32
 AT_SPI_ROLE_LABEL = 29
+AT_SPI_ROLE_STATIC = 116
 # atspi_common::State::Enabled is ordinal 8 in the two-word state set.
 AT_SPI_ENABLED_STATE_BIT = 1 << 8
 
@@ -7485,13 +7486,12 @@ def restricted_task_read_only_sample(custody, draft, observation):
         retained = [path for path, name in decoded.items() if name == draft]
         task_composers = [path for path, name in decoded.items()
                           if name == "Task instruction composer"]
-        if not headings or not routes or not drags or not retained:
+        if not headings or not routes or not drags:
             return None
         for label, paths, role in (
                 ("Agent heading", headings, AT_SPI_ROLE_HEADING),
                 ("conversation route", routes, AT_SPI_ROLE_BUTTON),
-                ("conversation drag", drags, AT_SPI_ROLE_BUTTON),
-                ("retained Task draft", retained, AT_SPI_ROLE_LABEL)):
+                ("conversation drag", drags, AT_SPI_ROLE_BUTTON)):
             if len(paths) != 1 or client.role(paths[0]) != role:
                 raise RuntimeError(f"Task restriction has invalid {label}")
         editable = []
@@ -7504,6 +7504,10 @@ def restricted_task_read_only_sample(custody, draft, observation):
         permission_count(observation, "editable", len(editable))
         if editable or task_composers:
             return None
+        if not retained:
+            return None
+        if len(retained) != 1 or client.role(retained[0]) != AT_SPI_ROLE_LABEL:
+            raise RuntimeError("Task restriction has invalid retained Task draft")
         queue_controls = [path for path, name in decoded.items() if name == "Queue task"]
         roles = {path: client.role(path) for path in queue_controls}
         tabs = [path for path, role in roles.items() if role == AT_SPI_ROLE_TAB]

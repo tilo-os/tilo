@@ -1766,11 +1766,26 @@ class PresentedEditorTargetTests(unittest.TestCase):
         self.assertIsNone(sample(base, roles, editable=("/draft",)))
         composer = {**base, "/composer": "(<'Task instruction composer'>,)"}
         self.assertIsNone(sample(composer, {**roles, "/composer": 30}))
+        transition = {**composer, "/draft-run": "(<'PRIVATE'>,)"}
+        self.assertIsNone(sample(
+            transition,
+            {**roles, "/composer": 30, "/draft-run": PROOF.AT_SPI_ROLE_STATIC},
+            editable=("/composer",),
+        ))
+        with self.assertRaisesRegex(RuntimeError, "invalid Agent heading"):
+            sample(
+                transition,
+                {**roles, "/heading": PROOF.AT_SPI_ROLE_BUTTON,
+                 "/composer": 30, "/draft-run": PROOF.AT_SPI_ROLE_STATIC},
+                editable=("/composer",),
+            )
         duplicate = {**base, "/draft-2": "(<'PRIVATE'>,)"}
         with self.assertRaisesRegex(RuntimeError, "invalid retained Task draft"):
             sample(duplicate, {**roles, "/draft-2": PROOF.AT_SPI_ROLE_LABEL})
         with self.assertRaisesRegex(RuntimeError, "invalid retained Task draft"):
             sample(base, {**roles, "/draft": PROOF.AT_SPI_ROLE_BUTTON})
+        with self.assertRaisesRegex(RuntimeError, "invalid retained Task draft"):
+            sample(base, {**roles, "/draft": PROOF.AT_SPI_ROLE_STATIC})
         with self.assertRaisesRegex(RuntimeError, "invalid Agent heading"):
             sample(base, {**roles, "/heading": PROOF.AT_SPI_ROLE_BUTTON})
         client = unittest.mock.Mock()
@@ -5099,6 +5114,7 @@ class PresentedEditorTargetTests(unittest.TestCase):
                     patch.object(PROOF, "activate_accessibility_control") as activated, \
                     patch.object(PROOF, "presented_primary_frame", side_effect=frame), \
                     patch.object(PROOF.atspi, "AtspiClient", return_value=client), \
+                    patch.object(PROOF.atspi, "atspi_address", return_value="address"), \
                     patch.object(PROOF, "call", return_value={}), \
                     patch.object(PROOF, "wait_for", side_effect=waited), \
                     patch.object(PROOF.time, "monotonic",
