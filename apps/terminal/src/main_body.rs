@@ -5590,77 +5590,67 @@ impl TerminalPerformer<'_> {
     /// blank lines appear at the bottom of the region). Honours the DEC
     /// scrolling margins.
     fn scroll_region_up(&mut self, n: usize) {
-        let len = self.active_len();
-        if len == 0 {
+        let Some(last) = self.active_len().checked_sub(1) else {
             return;
-        }
-        let top = self.scroll_top.min(len - 1);
-        let bot = self.scroll_bottom.min(len - 1);
-        if top > bot {
-            return;
-        }
-        let n = n.min(bot - top + 1);
-        for _ in 0..n {
-            self.delete_grid_line(top);
-            self.insert_blank_line(bot);
-        }
+        };
+        self.shift_rows(
+            self.scroll_top.min(last),
+            self.scroll_bottom.min(last),
+            n,
+            false,
+        );
     }
 
     /// Scroll the current scrolling region down by `n` lines (content moves
     /// down; blank lines appear at the top of the region).
     fn scroll_region_down(&mut self, n: usize) {
-        let len = self.active_len();
-        if len == 0 {
+        let Some(last) = self.active_len().checked_sub(1) else {
             return;
-        }
-        let top = self.scroll_top.min(len - 1);
-        let bot = self.scroll_bottom.min(len - 1);
-        if top > bot {
-            return;
-        }
-        let n = n.min(bot - top + 1);
-        for _ in 0..n {
-            self.delete_grid_line(bot);
-            self.insert_blank_line(top);
-        }
+        };
+        self.shift_rows(
+            self.scroll_top.min(last),
+            self.scroll_bottom.min(last),
+            n,
+            true,
+        );
     }
 
     /// IL — insert `n` blank lines at the cursor row, within the region.
     fn insert_lines(&mut self, n: usize) {
-        let len = self.active_len();
-        if len == 0 {
+        let Some(last) = self.active_len().checked_sub(1) else {
             return;
-        }
+        };
         let at = self.cursor_y.max(self.scroll_top);
-        let bot = self.scroll_bottom.min(len - 1);
-        if at > bot {
-            return;
+        if self.shift_rows(at, self.scroll_bottom.min(last), n, true) {
+            self.cursor_x = 0;
         }
-        let n = n.min(bot - at + 1);
-        for _ in 0..n {
-            self.delete_grid_line(bot);
-            self.insert_blank_line(at);
-        }
-        self.cursor_x = 0;
     }
 
     /// DL — delete `n` lines at the cursor row, within the region.
     fn delete_lines(&mut self, n: usize) {
-        let len = self.active_len();
-        if len == 0 {
+        let Some(last) = self.active_len().checked_sub(1) else {
             return;
-        }
+        };
         let at = self.cursor_y.max(self.scroll_top);
-        let bot = self.scroll_bottom.min(len - 1);
-        if at > bot {
-            return;
+        if self.shift_rows(at, self.scroll_bottom.min(last), n, false) {
+            self.cursor_x = 0;
         }
-        let n = n.min(bot - at + 1);
-        for _ in 0..n {
-            self.delete_grid_line(at);
-            self.insert_blank_line(bot);
+    }
+
+    /// Move rows `top..=bot` by `n` (at most the whole span): `down` pushes
+    /// content towards `bot` and opens blank lines at `top`, otherwise the
+    /// reverse. Whether the span held any rows; nothing moves when it is
+    /// empty.
+    fn shift_rows(&mut self, top: usize, bot: usize, n: usize, down: bool) -> bool {
+        if top > bot {
+            return false;
         }
-        self.cursor_x = 0;
+        let (removed, opened) = if down { (bot, top) } else { (top, bot) };
+        for _ in 0..n.min(bot - top + 1) {
+            self.delete_grid_line(removed);
+            self.insert_blank_line(opened);
+        }
+        true
     }
 
     fn erase_display(&mut self, mode: u16) {

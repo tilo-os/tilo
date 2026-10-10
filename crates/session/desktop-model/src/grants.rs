@@ -106,7 +106,9 @@ pub fn app_action_grant_context(
     .with_app(WORKSPACE_GOVERNANCE_APP_ID, "Workspace permissions")
 }
 
-fn bounded_receipt_text(value: &str, max: usize) -> String {
+/// `value` without control characters, cut to `max` characters and trimmed.
+#[must_use]
+pub fn bounded_receipt_text(value: &str, max: usize) -> String {
     value
         .chars()
         .filter(|character| !character.is_control())
@@ -116,7 +118,8 @@ fn bounded_receipt_text(value: &str, max: usize) -> String {
         .to_string()
 }
 
-fn redact_receipt_context(context: &mut ActionContext) {
+/// Bound every text of `context` that a public effect receipt shows.
+pub fn redact_receipt_context(context: &mut ActionContext) {
     context.action_label = bounded_receipt_text(&context.action_label, 200);
     if let Some(app) = &mut context.app {
         app.id = bounded_receipt_text(&app.id, 160);
