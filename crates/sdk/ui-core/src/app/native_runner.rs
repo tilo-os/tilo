@@ -513,6 +513,25 @@ mod floating_source_focus_tests {
             "the native held child preserves a negative local caret outside its allocation"
         );
         assert!(primary_ime_state_for_held_child(None, Vec2::ZERO, Vec2::ZERO).is_none());
+        assert_eq!(
+            retained_return_ime_state(None, Some(returned), true),
+            Some(returned),
+            "a missing destination caret cannot disable the exact composing source"
+        );
+        let refreshed = NativeImeWindowState::from_rect(
+            returned.purpose,
+            KurboRect::new(20.0, 30.0, 22.0, 50.0),
+        );
+        assert_eq!(
+            retained_return_ime_state(Some(refreshed), Some(returned), true),
+            Some(refreshed),
+            "a current destination caret refreshes the retained protocol"
+        );
+        assert_eq!(
+            retained_return_ime_state(None, Some(returned), false),
+            None,
+            "an ended or foreign source cannot preserve the retained protocol"
+        );
 
         let preedit = WindowEvent::Ime(winit::event::Ime::Preedit("composing".into(), None));
         let commit = WindowEvent::Ime(winit::event::Ime::Commit("committed".into()));
@@ -536,6 +555,17 @@ mod floating_source_focus_tests {
             preedit_after_event(&disabled),
             Some(PrimaryPreeditUpdate::Finished)
         );
+        for event in [&commit, &disabled] {
+            let exact_source_active = !matches!(
+                preedit_after_event(event),
+                Some(PrimaryPreeditUpdate::Finished)
+            );
+            assert_eq!(
+                retained_return_ime_state(None, Some(returned), exact_source_active),
+                None,
+                "a definitive protocol end cannot retain composing state"
+            );
+        }
         assert!(routes_to_floating_ime(&preedit));
         assert!(routes_to_floating_ime(&commit));
         assert!(!routes_to_floating_ime(&WindowEvent::Focused(true)));
@@ -981,6 +1011,22 @@ fn primary_ime_state_for_held_child(
     let mut intent = NativeImeWindowState::from_rect(primary.purpose, rect);
     intent.multiline = primary.multiline;
     Some(intent)
+}
+
+/// Refresh a held child's caret when the returned editor projects one, while
+/// keeping its real protocol alive across a transient missing projection.
+/// Only the exact retained, still-composing source may preserve prior state;
+/// every definitive lifecycle end returns the projected `None` and disables.
+fn retained_return_ime_state(
+    projected: Option<NativeImeWindowState>,
+    retained: Option<NativeImeWindowState>,
+    exact_source_active: bool,
+) -> Option<NativeImeWindowState> {
+    if exact_source_active {
+        projected.or(retained)
+    } else {
+        projected
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1784,6 +1830,7 @@ impl AppHandler {
                 surface.coordinate_offset,
                 surface.desktop_rect.origin().to_vec2(),
             );
+            let next = retained_return_ime_state(next, surface.ime_state, true);
             apply_native_ime(&surface.window, next, &mut surface.ime_state);
         }
         let continued = self.floating_ime_continuation.as_deref().and_then(|id| {
@@ -3751,8 +3798,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         for surface in &mut self.floating_windows {
             if std::mem::take(&mut surface.preedit_clear_pending) {
                 surface.preedit_active = false;
-                cleared_return |=
-                    self.floating_ime_return_continuation.as_deref() == Some(surface.id.as_str());
+                if self.floating_ime_return_continuation.as_deref() == Some(surface.id.as_str()) {
+                    apply_native_ime(&surface.window, None, &mut surface.ime_state);
+                    cleared_return = true;
+                }
             }
         }
         if cleared_return {
@@ -4305,6 +4354,7 @@ impl AppHandler {
                 if let Some(surface) = self.floating_windows.get_mut(index) {
                     surface.preedit_active = false;
                     surface.preedit_clear_pending = false;
+                    apply_native_ime(&surface.window, None, &mut surface.ime_state);
                 }
                 return;
             }
@@ -4326,19 +4376,28 @@ impl AppHandler {
                     self.floating_ime_return_continuation = None;
                 }
             }
-            let next = self
+            let exact_source_active = self
                 .floating_ime_return_continuation
                 .as_deref()
-                .filter(|id| *id == surface_id)
-                .and_then(|_| {
-                    let surface = self.floating_windows.get(index)?;
+                .is_some_and(|id| id == surface_id.as_str())
+                && self
+                    .floating_windows
+                    .get(index)
+                    .is_some_and(|surface| surface.suspended && surface.preedit_active);
+            let projected = if exact_source_active {
+                self.floating_windows.get(index).and_then(|surface| {
                     primary_ime_state_for_held_child(
                         self.app.ime_window_state(),
                         surface.coordinate_offset,
                         surface.desktop_rect.origin().to_vec2(),
                     )
-                });
+                })
+            } else {
+                None
+            };
             if let Some(surface) = self.floating_windows.get_mut(index) {
+                let next =
+                    retained_return_ime_state(projected, surface.ime_state, exact_source_active);
                 apply_native_ime(&surface.window, next, &mut surface.ime_state);
             }
             return;
