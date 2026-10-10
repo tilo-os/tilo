@@ -198,6 +198,27 @@ fn read<R: Resource>(
 }
 
 impl<R: Resource> ResourceRoot<R> {
+    fn prepare_draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        let ground = theme.tokens.colors.surfaces.content;
+        self.native_presentation.track_theme(theme);
+        // The window ground is the framework's: an app never fills it, and
+        // one that paints nothing still stands on it.
+        scene.fill(
+            ui_core::vello::peniko::Fill::NonZero,
+            transform,
+            ground,
+            None,
+            &self.content.get_rect(),
+        );
+        self.run.people.follow(presence);
+    }
+
     /// A root over `content`, the view built in `cx`, whose handles the root
     /// keeps; `alive` is the scope `cx`'s bindings are tied to.
     pub(crate) fn new(
@@ -1148,18 +1169,7 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        let ground = theme.tokens.colors.surfaces.content;
-        self.native_presentation.track_theme(theme);
-        // The window ground is the framework's: an app never fills it, and
-        // one that paints nothing still stands on it.
-        scene.fill(
-            ui_core::vello::peniko::Fill::NonZero,
-            transform,
-            ground,
-            None,
-            &self.content.get_rect(),
-        );
-        self.run.people.follow(presence);
+        self.prepare_draw(scene, transform, theme, presence);
         self.content.draw(scene, transform, text, theme, presence);
     }
 
@@ -1171,12 +1181,14 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
         text: &mut TextRenderer,
         theme: &Theme,
         presence: &PresenceCtx,
-        _permissions: &ui_core::permissions::PermissionContext,
+        permissions: &ui_core::permissions::PermissionContext,
     ) {
         if presence.should_cull(self.content.get_rect()) {
             return;
         }
-        Decorator::draw(self, scene, transform, text, theme, presence);
+        self.prepare_draw(scene, transform, theme, presence);
+        self.content
+            .draw_with_presence(scene, transform, text, theme, presence, permissions);
     }
 
     fn needs_redraw(&self) -> bool {
@@ -1949,6 +1961,112 @@ mod search_tests {
         fn view(cx: &mut ViewCx<Mailbox>) -> Element {
             cx.surface(QuerySurface(ui_core::widget::Text::new("Results")))
         }
+    }
+
+    struct PermissionProbe {
+        inner: ui_core::widget::Text,
+        identity: Rc<()>,
+        writable: bool,
+        private_draft: String,
+    }
+
+    impl ui_core::widget::Decorator for PermissionProbe {
+        type Inner = ui_core::widget::Text;
+
+        fn inner(&self) -> &Self::Inner {
+            &self.inner
+        }
+
+        fn inner_mut(&mut self) -> &mut Self::Inner {
+            &mut self.inner
+        }
+
+        fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+            Some(self)
+        }
+
+        fn draw_with_presence(
+            &mut self,
+            scene: &mut Scene,
+            transform: Affine,
+            text: &mut TextRenderer,
+            theme: &Theme,
+            presence: &PresenceCtx,
+            permissions: &ui_core::permissions::PermissionContext,
+        ) {
+            self.writable = permissions.check(&PermissionScope::workspace(
+                ui_core::permissions::Verb::Write,
+            ));
+            self.inner
+                .draw_with_presence(scene, transform, text, theme, presence, permissions);
+        }
+
+        fn accessibility(&self) -> Option<ui_core::a11y::AccessNode> {
+            Some(
+                ui_core::a11y::AccessNode::new(if self.writable {
+                    ui_core::a11y::Role::MultilineTextInput
+                } else {
+                    ui_core::a11y::Role::StaticText
+                })
+                .with_name(if self.writable {
+                    "Message composer"
+                } else {
+                    "You cannot send messages in this conversation."
+                }),
+            )
+        }
+    }
+
+    struct PermissionApp;
+
+    impl ResourceApp for PermissionApp {
+        type Resource = Mailbox;
+        const ID: &'static str = "so.tilo.test-permission-forwarding";
+        const TITLE: &'static str = "Permission forwarding";
+
+        fn view(_: &mut ViewCx<Mailbox>) -> Element {
+            Box::new(PermissionProbe {
+                inner: ui_core::widget::Text::new("Permission-sensitive editor"),
+                identity: Rc::new(()),
+                writable: false,
+                private_draft: "Retained private draft".into(),
+            })
+        }
+    }
+
+    #[test]
+    fn mounted_resource_forwards_live_permissions_without_replacing_private_view_state() {
+        let mut app = TestApp::<PermissionApp>::new().unwrap();
+        let (identity, role, draft) = app
+            .with_widget::<PermissionProbe, _>(|probe| {
+                (
+                    Rc::clone(&probe.identity),
+                    ui_core::widget::Widget::accessibility(probe)
+                        .expect("mounted editor semantics")
+                        .role,
+                    probe.private_draft.clone(),
+                )
+            })
+            .expect("mounted permission probe");
+        assert_eq!(role, ui_core::a11y::Role::MultilineTextInput);
+
+        app.set_role(ui_core::permissions::Role::Viewer);
+
+        app.with_widget::<PermissionProbe, _>(|probe| {
+            assert!(
+                Rc::ptr_eq(&identity, &probe.identity),
+                "a permission change retains the mounted editor"
+            );
+            assert_eq!(probe.private_draft, draft, "the private draft is retained");
+            assert_eq!(
+                ui_core::widget::Widget::accessibility(probe)
+                    .expect("read-only semantics")
+                    .role,
+                ui_core::a11y::Role::StaticText,
+                "the same mounted editor stops exporting an editable interface"
+            );
+        })
+        .expect("retained permission probe");
     }
 
     #[test]
