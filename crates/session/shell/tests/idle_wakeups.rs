@@ -56,9 +56,11 @@ use ui::widget::identity_flow::IdentityRecord;
 /// 0.0/s after, run 90830), which comes off that parked figure too.
 ///
 /// With all three, and TIL-702/TIL-740 quieting the network runtime, the
-/// desktop measured 7.30, 7.60 and 7.30/s (runs 92406, 92444, 92445), with the
-/// frame loop parked: 7.6/s plus a quarter, 10/s.
-const IDLE_WAKEUP_BUDGET: f64 = 10.0;
+/// desktop measured 7.30, 7.60 and 7.30/s alone on a runner (runs 92406,
+/// 92444, 92445) with the frame loop parked, and 10.29/s in the shell shard
+/// beside other tests (run 92498: the collaboration shovel and the identity
+/// client preempted by its neighbours). The shard's figure plus a half, 15/s.
+const IDLE_WAKEUP_BUDGET: f64 = 15.0;
 
 /// Most iterations per second the compositor's frame loop may make while
 /// idle, from its `paint-stats` lines. A loop that wakes on a deadline that
