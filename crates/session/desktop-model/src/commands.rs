@@ -232,40 +232,6 @@ impl DesktopCommand {
     }
 }
 
-/// The profile a [`DesktopCommand::SavePermissionProfile`] carries.
-///
-/// # Errors
-///
-/// Why the JSON is not a valid permission profile.
-pub fn decode_permission_profile(json: &str) -> Result<collab_types::PermissionProfile, String> {
-    let profile: collab_types::PermissionProfile =
-        serde_json::from_str(json).map_err(|error| format!("not a permission profile: {error}"))?;
-    profile.validate().map_err(|error| error.to_string())?;
-    Ok(profile)
-}
-
-/// The subject and expiry a [`DesktopCommand::AssignPermissionProfile`] names.
-///
-/// # Errors
-///
-/// When `kind` is not `person`, `app` or `agent`.
-pub fn permission_assignment(
-    kind: &str,
-    subject: &str,
-    expires_unix: u64,
-) -> Result<(collab_types::Subject, collab_types::Expiry), String> {
-    let subject = match kind.trim().to_ascii_lowercase().as_str() {
-        "person" => collab_types::Subject::person(subject.trim()),
-        "app" => collab_types::Subject::app(subject.trim()),
-        "agent" => collab_types::Subject::agent(subject.trim()),
-        _ => return Err("subject_kind must be person, app, or agent".into()),
-    };
-    let expiry = (expires_unix > 0)
-        .then_some(expires_unix)
-        .map_or(collab_types::Expiry::Never, collab_types::Expiry::AtUnix);
-    Ok((subject, expiry))
-}
-
 /// The shortcut a [`DesktopCommand::SaveShortcut`] carries.
 ///
 /// # Errors
@@ -995,27 +961,6 @@ fn move_group(
         .unwrap_or(groups.len());
     groups.insert(index, moved);
     Ok(())
-}
-
-/// [`apply_command`] on the workspace of `room` in `tree`: the reduction a
-/// host runs against the desktop it renders.
-///
-/// # Errors
-///
-/// Returns a description when `room` is not in `tree`, or as [`apply_command`].
-pub fn apply_in_room(
-    tree: &mut DesktopTree,
-    room: &str,
-    command: &DesktopCommand,
-    mint: &mut impl FnMut() -> Result<u64, String>,
-    create: &mut impl FnMut(&str, u64) -> Result<(String, TileContent), String>,
-) -> Result<(), String> {
-    let workspace = tree
-        .workspaces
-        .iter_mut()
-        .find(|workspace| workspace.room.to_string() == room)
-        .ok_or("command room is not in this desktop")?;
-    apply_command(workspace, command, mint, create)
 }
 
 /// An identity the owner already reserved in its own namespace, handed to a

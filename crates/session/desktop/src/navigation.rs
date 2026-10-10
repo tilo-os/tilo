@@ -129,26 +129,6 @@ impl DesktopSurface {
         }
     }
 
-    /// Pan the actual retained row without reframing the selected window on
-    /// the following layout. A later explicit selection still reveals it.
-    pub fn pan_desktop(&mut self, strip: StripId, offset: f64) -> Option<bool> {
-        if self.navigation.active_strip != Some(strip) || !offset.is_finite() {
-            return None;
-        }
-        let row = self.row_mut(strip)?;
-        if row.groups.iter().any(|group| group.maximized) {
-            return Some(false);
-        }
-        let moved = row.pan_to(offset);
-        if let Some(group) = self.navigation.groups.get(&strip).copied()
-            && let Some(key) = self.navigation_key(strip, group)
-        {
-            self.navigation.framed.insert(strip, key);
-            self.navigation.manual_pan = Some((strip, group));
-        }
-        Some(moved)
-    }
-
     /// An explicit app selection reveals even an already-selected app after
     /// manual panning. Clearing only this strip leaves retained peers intact.
     pub fn reveal_on_next_layout(&mut self, strip: StripId) {

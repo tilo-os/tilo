@@ -2126,33 +2126,6 @@ mod task4_route_tests {
     }
 }
 
-/// A host-owned document commit resolving to the broker-signed envelope.
-pub type HostDocumentCommit =
-    std::pin::Pin<Box<dyn std::future::Future<Output = Result<SignedOp, String>> + Send + 'static>>;
-
-/// Host-local capability, never selected by a wire peer. Called on the SDK
-/// shovel thread, while the application's ordinary owner thread keeps pumping.
-/// Implementations bind an exact route and revalidate current authority.
-/// Native launcher and explicit-key endpoints retain their existing signer.
-pub trait HostDocumentCommitter: Send + Sync {
-    fn commit(
-        &self,
-        route: &RouteSpec,
-        mutation: collab_types::DocumentMutation,
-    ) -> HostDocumentCommit;
-
-    /// Required custody must reach the concrete final owner intact. A legacy
-    /// committer cannot silently downgrade it to its unqualified commit method.
-    fn commit_scoped(
-        &self,
-        _route: &RouteSpec,
-        _mutation: collab_types::DocumentMutation,
-        _authorization: crate::invocation_scope::DocumentAuthorization,
-    ) -> HostDocumentCommit {
-        Box::pin(async { Err("host has no final scoped document evaluator".into()) })
-    }
-}
-
 #[cfg(test)]
 mod portable_transport_tests {
     use super::*;
