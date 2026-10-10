@@ -58,7 +58,7 @@ pub const MAX_PORTABLE_COVER_BYTES: usize = 256 * 1024;
 pub const MAX_PORTABLE_COVER_EDGE: u32 = 512;
 /// The contextual Ctrl+K snapshot is deliberately small. The full library is
 /// still discoverable through the paged search provider and every returned
-/// canonical address is resolved through [`ResourceProvider::resource`].
+/// canonical address is resolved through `PublishesResources::resource`.
 /// Keeping this bounded prevents opening the palette from cloning a large
 /// library (or every membership in every long playlist) on the UI thread.
 pub const OPEN_RESOURCE_CATEGORY_LIMIT: usize = 16;
