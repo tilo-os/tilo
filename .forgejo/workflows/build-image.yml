@@ -133,6 +133,10 @@ concurrency:
 env:
   TILO_ALLOW_PUBLIC_LENOVO_FIRMWARE: ${{ github.event.inputs.allow_public_lenovo_firmware || 'false' }}
   TILO_DEV_INPUT_COHORT: ${{ (inputs.fex_payload_candidate != '' || inputs.windows_guest_candidate != '') && github.run_id || '' }}
+  # Content-based layers for the generic OS image (TIL-747, "Rechunk the
+  # image" below). The repository variable TILO_RECHUNK=0 turns it off without
+  # a commit: the image then keeps one layer per Containerfile instruction.
+  TILO_RECHUNK: ${{ vars.TILO_RECHUNK || '1' }}
 
 jobs:
   plan:
@@ -487,18 +491,22 @@ jobs:
       - name: Ensure the signed OCI inspector is available
         run: |
           set -euo pipefail
-          if command -v skopeo >/dev/null; then
+          missing=()
+          command -v skopeo >/dev/null || missing+=(skopeo)
+          # os/scripts/oci-rechunk.py reads the dev lane's zstd layers (TIL-747).
+          command -v zstd >/dev/null || python3 -c 'import compression.zstd' 2>/dev/null || missing+=(zstd)
+          if (( ${#missing[@]} == 0 )); then
             exit 0
           fi
           sudo -n true
           if command -v apt-get >/dev/null; then
             export DEBIAN_FRONTEND=noninteractive
             sudo -n apt-get -o Acquire::Retries=3 update
-            sudo -n apt-get -o Acquire::Retries=3 install -y --no-install-recommends skopeo
+            sudo -n apt-get -o Acquire::Retries=3 install -y --no-install-recommends "${missing[@]}"
           elif command -v dnf >/dev/null; then
-            sudo -n dnf --setopt=retries=3 install -y skopeo
+            sudo -n dnf --setopt=retries=3 install -y "${missing[@]}"
           else
-            echo '::error::native OS runner must provide skopeo, apt-get, or dnf'
+            echo "::error::native OS runner must provide ${missing[*]}, apt-get, or dnf"
             exit 1
           fi
           command -v skopeo >/dev/null
@@ -1242,6 +1250,19 @@ jobs:
             [[ $validate != true ]] \
               || echo 'TILO_IMAGE_OUTPUT=type=oci,dest=/var/tmp/tilo-image.tar,rewrite-timestamp=true' >> "$GITHUB_ENV"
           fi
+          # TIL-747: a generic image that leaves this job (tilo-ci, or a
+          # release) is re-laid out by content before anything consumes it
+          # ("Rechunk the image"). The dev lane's BuildKit then pushes the raw
+          # image beside it as <series>-<arch>-layered.
+          rechunk=false
+          if [[ $TILO_RECHUNK == 1 && '${{ needs.plan.outputs.hardware-profile }}' == generic \
+                && ( $fast == true || $validate == true ) ]]; then
+            rechunk=true
+            if [[ $fast == true ]]; then
+              echo "TILO_IMAGE_TAGS=registry.tilo.so/tilo/tilo-ci:$series-${{ matrix.arch }}-layered" >> "$GITHUB_ENV"
+            fi
+          fi
+          echo "rechunk=$rechunk" >> "$GITHUB_OUTPUT"
           echo "dev-gate=$([[ $validate == true && $publish != true && $fast != true ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
           echo "dev-channel=$([[ $GITHUB_REF == refs/heads/main ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
           if [[ "$publish" == true ]]; then
@@ -1966,6 +1987,70 @@ jobs:
           cache-to: |
             type=gha,scope=tilo-os-${{ needs.plan.outputs.hardware-profile }}-rootfs-${{ matrix.arch }},mode=min,ignore-error=true
 
+      # Content-based layers (TIL-747). A Containerfile layer is a new blob
+      # whenever its instruction runs again, so an update between two commits
+      # that change one app pulled most of the image. os/dev/rechunk-image.sh
+      # re-lays the image out by RPM package and large file with chunkah
+      # (os/Containerfile.rechunk): an unchanged component is the same blob
+      # in the next build, and whited-out bytes and /sysroot's ostree objects
+      # are in no layer. os/scripts/oci-rechunk.py refuses the result unless
+      # every path is the raw image's, with its type, mode, owner, xattrs,
+      # bytes and directory times. Everything below consumes the rechunked
+      # image: the dev lane's tilo-ci series name, or the archive in place
+      # (before the builder is cleared, and its own rechunk after the
+      # independent rebuild). The install gate then seals the rechunked tree.
+      # The epoch caps the time of files no package owns; like the dev lane's
+      # SOURCE_DATE_EPOCH it moves only with the base and the RPM snapshot,
+      # so consecutive builds share every unchanged layer.
+      - name: Rechunk the image
+        id: rechunk
+        if: steps.release-mode.outputs.rechunk == 'true' && (steps.build.outcome == 'success' || steps.build-uncached.outcome == 'success')
+        timeout-minutes: 45
+        env:
+          BUILDER_NAME: ${{ steps.buildx.outputs.name }}
+          DEV_FAST: ${{ steps.release-mode.outputs.dev-fast }}
+          DEV_SERIES: ${{ steps.release-mode.outputs.dev-series }}
+          ARCH: ${{ matrix.arch }}
+          BUILD_DIGEST: ${{ steps.build.outputs.digest || steps.build-uncached.outputs.digest }}
+        run: |
+          set -euo pipefail
+          epoch=0
+          for ref in "$BASE_REF" "$RPMS_REF"; do
+            created="$(date -u -d "$(skopeo inspect "docker://$ref" | jq -er .Created)" +%s)"
+            if (( created > epoch )); then epoch=$created; fi
+          done
+          (( epoch > 0 ))
+          report="$RUNNER_TEMP/rechunk-$ARCH.json"
+          if [[ $DEV_FAST == true ]]; then
+            # BuildKit pushed the raw image as <series>-<arch>-layered.
+            digest="$(./os/dev/rechunk-image.sh --builder "$BUILDER_NAME" \
+              --source "docker://registry.tilo.so/tilo/tilo-ci@$BUILD_DIGEST" \
+              --name "registry.tilo.so/tilo/tilo-ci:$DEV_SERIES-$ARCH" \
+              --epoch "$epoch" --push --report "$report" | tail -n1)"
+          else
+            # Replaced in place, under its first tag: the steps below select it
+            # by that tag and this step's digest.
+            archive=/var/tmp/tilo-image.tar
+            first_tag="$(printf '%s\n' '${{ steps.meta.outputs.tags }}' | sed -n '1p')"
+            test -n "$first_tag"
+            digest="$(./os/dev/rechunk-image.sh --builder "$BUILDER_NAME" --source "oci-archive:$archive" \
+              --name "$first_tag" --epoch "$epoch" --archive "$archive" --report "$report" | tail -n1)"
+          fi
+          [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]]
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "epoch=$epoch" >> "$GITHUB_OUTPUT"
+          jq -r '"::notice::rechunked \(.raw_layers) layers, \(.raw_compressed) B -> \(.chunked_layers) layers, \(.chunked_compressed) B; \(.paths) paths equal, \(.clamped_times) times capped, \(.pruned_paths) /sysroot paths (\(.pruned_bytes) B) dropped, \(.split_hard_link_groups) hard-link groups split, \(.seconds) s"' "$report"
+
+      # The comparison report and chunkah's component list: which packages and
+      # files each layer holds.
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        if: always() && steps.rechunk.outcome != 'skipped'
+        continue-on-error: true
+        with:
+          name: rechunk-report-${{ matrix.arch }}
+          path: ${{ runner.temp }}/rechunk-${{ matrix.arch }}*.json
+          if-no-files-found: warn
+
       # Dev VMs must not wait on release gating. Every branch build that gets
       # this far pushes its image, unsigned, to tilo-ci: a development-only
       # repository that production policy rejects
@@ -1982,7 +2067,7 @@ jobs:
           ARCH: ${{ matrix.arch }}
           DEV_SERIES: ${{ steps.release-mode.outputs.dev-series }}
           DEV_FAST: ${{ steps.release-mode.outputs.dev-fast }}
-          BUILD_DIGEST: ${{ steps.build.outputs.digest || steps.build-uncached.outputs.digest }}
+          BUILD_DIGEST: ${{ steps.rechunk.outputs.digest || steps.build.outputs.digest || steps.build-uncached.outputs.digest }}
         run: |
           set -euo pipefail
           ref="registry.tilo.so/tilo/tilo-ci:$DEV_SERIES-$ARCH"
@@ -2127,6 +2212,25 @@ jobs:
           provenance: false
           no-cache: true
 
+      # The rebuild is re-laid out as the publication was ("Rechunk the
+      # image"), by a chunkah this builder compiles again: the comparison
+      # below then also proves the rechunk reproducible.
+      - name: Rechunk the independent rebuild
+        id: repro-rechunk
+        if: steps.release-mode.outputs.rechunk == 'true' && steps.repro.outcome == 'success'
+        timeout-minutes: 45
+        env:
+          BUILDER_NAME: ${{ steps.buildx.outputs.name }}
+          EPOCH: ${{ steps.rechunk.outputs.epoch }}
+        run: |
+          set -euo pipefail
+          [[ -n $EPOCH ]] || { echo '::error::the publication itself was not rechunked'; exit 1; }
+          archive=/var/tmp/tilo-image-repro.tar
+          digest="$(./os/dev/rechunk-image.sh --builder "$BUILDER_NAME" --source "oci-archive:$archive" \
+            --name "$TILO_OS_REPOSITORY:repro-${{ github.sha }}" --epoch "$EPOCH" --archive "$archive" | tail -n1)"
+          [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]]
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
       # Keep the rebuild after its runner is gone, so a publication lane whose
       # image differs can diff the two file by file.
       - name: Retain the independent rebuild for comparison
@@ -2135,7 +2239,7 @@ jobs:
         run: |
           set -euo pipefail
           repro_ref="$(python3 os/scripts/oci-archive-ref.py /var/tmp/tilo-image-repro.tar \
-            "$TILO_OS_REPOSITORY:repro-${{ github.sha }}" '${{ steps.repro.outputs.digest }}')"
+            "$TILO_OS_REPOSITORY:repro-${{ github.sha }}" '${{ steps.repro-rechunk.outputs.digest || steps.repro.outputs.digest }}')"
           TMPDIR=/var/tmp skopeo copy --retry-times 3 --preserve-digests \
             "oci-archive:/var/tmp/tilo-image-repro.tar:$repro_ref" \
             'docker://registry.tilo.so/tilo/tilo-repro-debug:${{ github.run_id }}-${{ matrix.arch }}-reproduce'
@@ -2178,7 +2282,7 @@ jobs:
           set -euo pipefail
           [[ $REPRO_OUTCOME == success ]] || { echo '::error::the independent rebuild failed'; exit 1; }
           repro_ref="$(python3 os/scripts/oci-archive-ref.py /var/tmp/tilo-image-repro.tar \
-            "$TILO_OS_REPOSITORY:repro-${{ github.sha }}" '${{ steps.repro.outputs.digest }}')"
+            "$TILO_OS_REPOSITORY:repro-${{ github.sha }}" '${{ steps.repro-rechunk.outputs.digest || steps.repro.outputs.digest }}')"
           manifest="$(skopeo inspect --raw "oci-archive:/var/tmp/tilo-image-repro.tar:$repro_ref" | sha256sum | awk '{print $1}')"
           [[ $manifest =~ ^[0-9a-f]{64}$ ]]
           echo "manifest=$manifest" >> "$GITHUB_OUTPUT"
@@ -2459,7 +2563,7 @@ jobs:
         if: steps.release-mode.outputs.publish == 'true'
         env:
           REPRO_MANIFEST: ${{ steps.reproduction.outputs.manifest }}
-          BUILD_DIGEST: ${{ steps.build.outputs.digest || steps.build-uncached.outputs.digest }}
+          BUILD_DIGEST: ${{ steps.rechunk.outputs.digest || steps.build.outputs.digest || steps.build-uncached.outputs.digest }}
           DEBUG_TAG: registry.tilo.so/tilo/tilo-repro-debug:${{ github.run_id }}-${{ matrix.arch }}
         run: |
           set -euo pipefail
@@ -2581,7 +2685,7 @@ jobs:
           # reference to Skopeo, including for the independent rebuild.
           first_tag="$(printf '%s\n' '${{ steps.meta.outputs.tags }}' | sed -n '1p')"
           test -n "$first_tag"
-          first_ref="$(python3 os/scripts/oci-archive-ref.py /var/tmp/tilo-image.tar "$first_tag" '${{ steps.build.outputs.digest || steps.build-uncached.outputs.digest }}')"
+          first_ref="$(python3 os/scripts/oci-archive-ref.py /var/tmp/tilo-image.tar "$first_tag" '${{ steps.rechunk.outputs.digest || steps.build.outputs.digest || steps.build-uncached.outputs.digest }}')"
           repro_image="$TILO_OS_REPOSITORY:repro-${GITHUB_SHA}"
 
           if [[ $HARDWARE_PROFILE != generic ]]; then
