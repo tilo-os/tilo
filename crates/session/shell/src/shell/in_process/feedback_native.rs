@@ -69,7 +69,13 @@ impl Connection {
                         std::time::SystemTime::now(),
                     )?
                     .standing();
-                if admission.permissions.standing() != &standing {
+                // Both halves of the admission must still hold: the reporter's
+                // standing (what they may write) and the room's sandbox (what
+                // the feedback window's code may touch, its capture and files).
+                let sandbox = view.peer().governed_sandbox()?;
+                if admission.permissions.standing() != &standing
+                    || admission.permissions.capabilities() != sandbox.as_slice()
+                {
                     return Err("native feedback policy changed".into());
                 }
                 Ok(())

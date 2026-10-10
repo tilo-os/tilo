@@ -414,6 +414,8 @@ pub(crate) struct Stored {
     pub(crate) id: Id,
     pub(crate) key: String,
     pub(crate) entry: ObjId,
+    /// What the entry's value slot holds, for reading the item.
+    pub(crate) value: crate::model::MapSlot,
 }
 
 /// Write `items`, in this order, as the map from id to `{ k, v }` a
@@ -746,20 +748,27 @@ fn stored_order(keys: &[(Option<&str>, &Id)]) -> Vec<usize> {
     order
 }
 
+/// The stored entries of the collection map `map`, in order. One walk of
+/// the map lists the entries and one walk of each entry reads its order key
+/// and value slot: a lookup per key would open each map again.
 pub(crate) fn stored_entries(doc: &Doc, map: &ObjId) -> Result<Vec<Stored>, ModelError> {
     let mut entries = Vec::new();
-    for key in doc.keys(map) {
-        let Some((Value::Object(ObjType::Map), entry)) = doc.get(map, key.as_str())? else {
+    for item in doc.map_range(map, ..) {
+        if item.value != automerge::ValueRef::Object(ObjType::Map) {
             continue;
-        };
-        let order: crate::Atom = read_key(doc, &entry, ORDER)?;
+        }
+        let entry = item.id();
+        let [order, value] = crate::model::read_slots(doc, &entry, [ORDER, VALUE]);
+        let order: crate::Atom = crate::model::load_slot(doc, order, ORDER)?;
         entries.push(Stored {
-            id: Id(key),
+            id: Id(item.key.into_owned()),
             key: order.0,
             entry,
+            value,
         });
     }
-    entries.sort_by(|a, b| a.key.cmp(&b.key).then_with(|| a.id.cmp(&b.id)));
+    // `(order key, id)` is unique, so an unstable sort orders as a stable one.
+    entries.sort_unstable_by(|a, b| a.key.cmp(&b.key).then_with(|| a.id.cmp(&b.id)));
     Ok(entries)
 }
 
@@ -961,7 +970,7 @@ impl<T: Model> Model for Collection<T> {
         let mut items = Vec::new();
         load_entries(doc, value, id, &mut |stored| {
             items.push(Entry {
-                item: read_key::<T>(doc, &stored.entry, VALUE)?,
+                item: crate::model::load_slot::<T>(doc, stored.value, VALUE)?,
                 id: stored.id,
                 key: Some(stored.key),
             });
@@ -1152,6 +1161,103 @@ mod tests {
 
     fn ids(collection: &Collection<String>) -> Vec<String> {
         collection.values().cloned().collect()
+    }
+
+    /// The collection read key by key: the oracle the one-walk read
+    /// must equal, order keys included.
+    fn read_key_by_key<T: Model>(doc: &Doc, map: &ObjId) -> Vec<(Id, Option<String>, T)> {
+        let mut entries = Vec::new();
+        for key in doc.keys(map) {
+            let Some((Value::Object(ObjType::Map), entry)) = doc.get(map, key.as_str()).unwrap()
+            else {
+                continue;
+            };
+            let order: crate::Atom = read_key(doc, &entry, ORDER).unwrap();
+            let item: T = read_key(doc, &entry, VALUE).unwrap();
+            entries.push((Id(key), Some(order.0), item));
+        }
+        entries.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+        entries
+    }
+
+    #[test]
+    fn appended_items_keep_short_order_keys() {
+        // One push per action, as a list someone adds to item by item, and a
+        // bulk push: either way the stored keys stay a few characters long
+        // (they grew by one character every ~6 items).
+        let mut doc = Doc::new();
+        let mut list: Collection<u32> = Collection::new();
+        for n in 0..300_u32 {
+            list.push(Id::from_raw(format!("one{n:05}")), n);
+            write_key(&mut doc, &ROOT, "items", &list).unwrap();
+            list = read_key(&doc, &ROOT, "items").unwrap();
+        }
+        for n in 0..10_000_u32 {
+            list.push(Id::from_raw(format!("bulk{n:05}")), n);
+        }
+        write_key(&mut doc, &ROOT, "items", &list).unwrap();
+        let Some((_, map)) = doc.get(&ROOT, "items").unwrap() else {
+            panic!("the collection is stored");
+        };
+        let stored = stored_entries(&doc, &map).unwrap();
+        assert_eq!(stored.len(), 10_300);
+        let longest = stored.iter().map(|entry| entry.key.len()).max().unwrap();
+        assert!(longest <= 5, "longest order key: {longest} characters");
+        let read: Collection<u32> = read_key(&doc, &ROOT, "items").unwrap();
+        assert!(read.values().copied().eq((0..300).chain(0..10_000)));
+    }
+
+    #[test]
+    fn one_walk_reads_what_key_by_key_reads() {
+        let mut doc = Doc::new();
+        let mut list: Collection<Vec<i64>> = Collection::new();
+        for n in 0..40 {
+            list.push(Id::from_raw(format!("i{n:02}")), vec![n]);
+        }
+        write_key(&mut doc, &ROOT, "items", &list).unwrap();
+        doc.commit();
+        // History under every key: moved order keys, rewritten values, a
+        // removed item, and a stray non-entry value beside the entries.
+        for round in 0..3_i64 {
+            list.move_to(&Id::from_raw(format!("i{:02}", 39 - round)), 0);
+            if let Some(item) = list.get_mut(&Id::from_raw("i05")) {
+                item.push(round);
+            }
+            write_key(&mut doc, &ROOT, "items", &list).unwrap();
+            doc.commit();
+        }
+        list.remove(&Id::from_raw("i07"));
+        write_key(&mut doc, &ROOT, "items", &list).unwrap();
+        let Some((_, map)) = doc.get(&ROOT, "items").unwrap() else {
+            panic!("the collection is stored");
+        };
+        doc.put(&map, "stray", 1_i64).unwrap();
+        doc.commit();
+        // Concurrent moves and inserts from two actors: conflicting order keys.
+        let mut left = doc.fork();
+        let mut right = doc.fork();
+        let read: Collection<Vec<i64>> = read_key(&doc, &ROOT, "items").unwrap();
+        let mut l = read.clone();
+        l.move_to(&Id::from_raw("i10"), 2);
+        l.insert(3, Id::from_raw("left"), vec![-1]);
+        write_key(&mut left, &ROOT, "items", &l).unwrap();
+        let mut r = read;
+        r.move_to(&Id::from_raw("i10"), 30);
+        r.insert(3, Id::from_raw("right"), vec![-2]);
+        write_key(&mut right, &ROOT, "items", &r).unwrap();
+        left.merge_incoming(&mut right).unwrap();
+
+        let Some((value, map)) = left.get(&ROOT, "items").unwrap() else {
+            panic!("the collection is stored");
+        };
+        let read = Collection::<Vec<i64>>::load(&left, &value, &map).unwrap();
+        let walked: Vec<_> = read
+            .items
+            .into_iter()
+            .map(|entry| (entry.id, entry.key, entry.item))
+            .collect();
+        assert_eq!(walked, read_key_by_key::<Vec<i64>>(&left, &map));
+        assert_eq!(walked.len(), 41);
     }
 
     #[test]

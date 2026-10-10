@@ -37,18 +37,21 @@ fn destination() -> tilo_desktop::feedback::Destination {
 }
 fn answer(connection: &Connection) -> FeedbackAnswer {
     let room = crate::shell::state::RoomId::parse(&connection.destination.room).unwrap();
-    let standing = connection
+    let (standing, sandbox) = connection
         .network
         .native_owner()
         .unwrap()
         .with_current(room, |view| {
-            view.peer().permissions(
-                connection.reporter.device_public_key,
-                std::time::SystemTime::now(),
-            )
+            let standing = view
+                .peer()
+                .permissions(
+                    connection.reporter.device_public_key,
+                    std::time::SystemTime::now(),
+                )?
+                .standing();
+            Ok((standing, view.peer().governed_sandbox()?))
         })
-        .unwrap()
-        .standing();
+        .unwrap();
     let person = standing.person.clone();
     assert_eq!(person, hex::encode(connection.reporter.user_public_key));
     FeedbackAnswer {
@@ -59,7 +62,7 @@ fn answer(connection: &Connection) -> FeedbackAnswer {
             reporter_user: person,
             reporter_device: hex::encode(connection.reporter.device_public_key),
             standing: serde_json::to_value(standing).unwrap(),
-            sandbox: serde_json::json!([]),
+            sandbox: serde_json::to_value(sandbox).unwrap(),
             unix_time: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -166,6 +169,41 @@ fn native_producer_uses_committed_selected_custody_and_reopens_without_enrollmen
     );
     assert!(Delivery::new(restored, destination(), &author).is_err());
 }
+/// An admission stands only while the room's sandbox is the one it was
+/// given under, as well as the reporter's standing.
+#[test]
+fn an_admission_under_another_sandbox_is_not_current() {
+    let (_directory, owner, room, _, key) = native_workspace_owner::test_enrolled_owner();
+    let (network, _commands) = fixture_network(&owner, &key);
+    let (reporter, _) = network.feedback_custody(room).unwrap();
+    let author = hex::encode(reporter.user_public_key);
+    let delivery = Delivery::new(network, destination(), &author).unwrap();
+    admit(&delivery);
+    let mut connection = delivery.connection.borrow_mut();
+    let mut changed = answer(&connection);
+    let mut sandbox: Vec<collab_types::caps::CapOverride> =
+        serde_json::from_value(changed.admission.sandbox.clone()).unwrap();
+    sandbox.push(
+        collab_types::caps::CapOverride::grant(
+            collab_types::caps::Subject::User(collab_types::crypto::Ed25519PublicKey(
+                reporter.user_public_key,
+            )),
+            collab_types::caps::Scope::Device("camera".into()),
+            collab_types::caps::Access::Read,
+        )
+        .with_id("feedback-test-camera"),
+    );
+    changed.admission.sandbox = serde_json::to_value(sandbox).unwrap();
+    let admission = connection.admit(&changed).unwrap();
+    connection.admission = Some((admission, Instant::now()));
+    let current = connection.current();
+    drop(connection);
+    assert!(
+        current.is_err(),
+        "an admission given under another sandbox is not current"
+    );
+}
+
 #[test]
 fn native_configuration_cannot_supply_role_or_reporter_authority() {
     let profile = tempfile::tempdir().unwrap();
