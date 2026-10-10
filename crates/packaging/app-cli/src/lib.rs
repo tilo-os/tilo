@@ -496,7 +496,7 @@ pub fn installed_versions() -> Result<std::collections::HashMap<String, String>,
 }
 
 fn installed_manifest_version(path: &std::path::Path) -> Option<String> {
-    launcher::manifest::read_manifest(path)
+    tilo_app_package::view::read_manifest(path)
         .ok()
         .map(|manifest| manifest.version)
         .filter(|version| !version.is_empty())
@@ -975,6 +975,18 @@ mod tests {
     [package]
     id = "so.tilo.browser"
     version = "1.2.3"
+    kind = "app"
+
+    [publisher]
+    identity = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+
+    [sandbox]
+    namespaces = []
+    seccomp = "tilo-default"
+    landlock = "strict"
+
+    [sandbox.net]
+    mode = "off"
 
     [entrypoint]
     bin = "bin/browser"

@@ -614,6 +614,7 @@ inputs = ["apps/*/Cargo.toml", "apps/*/tilo-app.toml"]
 readers = [
   "crates/packaging/tilo-app-package/tests/app_manifests.rs",
   "crates/packaging/tilo-app-package/src/validate.rs",
+  "crates/packaging/tilo-app-package/src/view.rs",
 ]
 
 [[cargo]]
