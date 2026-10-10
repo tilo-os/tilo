@@ -21,7 +21,7 @@ use smithay::reexports::wayland_protocols::xdg::toplevel_icon::v1::server::{
     xdg_toplevel_icon_manager_v1::{self, XdgToplevelIconManagerV1},
     xdg_toplevel_icon_v1::{self, XdgToplevelIconV1},
 };
-use smithay::reexports::wayland_server::backend::{ClientId, GlobalId, ObjectId};
+use smithay::reexports::wayland_server::backend::{ClientId, ObjectId};
 use smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::{
@@ -45,11 +45,6 @@ const MANAGER_VERSION: u32 = 1;
 /// must keep alive while their icon object lives.
 #[derive(Debug)]
 pub struct ToplevelIconManager {
-    #[allow(
-        dead_code,
-        reason = "held so the global's identity lives as long as the compositor state"
-    )]
-    global: GlobalId,
     /// `(buffer, icon)` for every buffer added to a live icon object.
     watched: Vec<(ObjectId, XdgToplevelIconV1)>,
 }
@@ -57,8 +52,8 @@ pub struct ToplevelIconManager {
 /// Advertise the `xdg_toplevel_icon_manager_v1` global, telling clients the
 /// sizes the tab pill paints at.
 pub fn manager(display: &DisplayHandle) -> ToplevelIconManager {
+    display.create_global::<State, XdgToplevelIconManagerV1, ()>(MANAGER_VERSION, ());
     ToplevelIconManager {
-        global: display.create_global::<State, XdgToplevelIconManagerV1, ()>(MANAGER_VERSION, ()),
         watched: Vec::new(),
     }
 }

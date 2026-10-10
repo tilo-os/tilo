@@ -87,7 +87,7 @@ impl SecretServiceProvider {
     }
 
     /// Whether the store answers on this session.
-    #[cfg_attr(test, allow(dead_code, reason = "tests use the broker file provider"))]
+    #[cfg(not(test))]
     fn available(&self) -> bool {
         self.store.probe_blocking().is_ok()
     }
