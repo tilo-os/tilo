@@ -13,9 +13,8 @@
 use crate::time::{Duration, Instant};
 use crate::widget::ModelPath;
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{BlendMode, Color, Fill};
@@ -27,11 +26,11 @@ use crate::presence::PresenceCtx;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
+use crate::widget::Widget;
 use crate::widget::chart_legend;
 use crate::widget::chart_navigation::{
     ChartNavAction, ChartTouchAction, ChartTouchTracker, chart_nav_action, moved_index,
 };
-use crate::widget::{TaffyTreeExt, Widget};
 
 fn alpha(color: Color, value: u8) -> Color {
     Color::from_rgba8(color.r(), color.g(), color.b(), value)
@@ -2962,24 +2961,8 @@ fn format_bytes(value: f64, places: u8) -> String {
 }
 
 impl Widget for CartesianPlot {
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let style = Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::length(self.height),
-            },
-            ..Default::default()
-        };
-        taffy.widget_leaf(style, node_map, self)
-    }
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
-    }
+    crate::widget::chart_navigation::chart_leaf!();
+
     fn draw(
         &mut self,
         scene: &mut Scene,
@@ -3285,9 +3268,6 @@ impl Widget for CartesianPlot {
     fn name(&self) -> &'static str {
         "CartesianPlot"
     }
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
     fn needs_animation_frame(&self) -> bool {
         self.is_animating()
     }
@@ -3307,9 +3287,6 @@ impl Widget for CartesianPlot {
     }
     fn wants_pointer_capture(&self) -> bool {
         self.pan_last.is_some() || self.brush_start.is_some()
-    }
-    fn is_layout_dirty(&self) -> bool {
-        self.rect == Rect::ZERO
     }
 }
 
