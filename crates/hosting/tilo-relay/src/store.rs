@@ -692,7 +692,7 @@ impl WorkspaceStore {
 
     /// Complete the barrier for a file `atomic_write` just published in the
     /// queue `directory`: it synced `directory` after the rename (Apple
-    /// repeats that with F_FULLFSYNC, as `retained::durable_write` does).
+    /// repeats that with `F_FULLFSYNC`, as `retained::durable_write` does).
     /// The queue's two ancestors change only when a queue is first created,
     /// so they are synced whenever their entries changed since this process
     /// last synced them.
