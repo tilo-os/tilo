@@ -14,7 +14,6 @@ use ui::widget::{Badge, ChipStyle, ControlRow, EditableLabel, Tone};
 
 use super::{caption, icon_button, percent};
 use crate::model::Artwork;
-use crate::resource::ArtworkResource;
 use crate::tools::Tools;
 
 /// A layer as its row shows it.
@@ -93,7 +92,7 @@ const LIST: f32 = 5.0 * ui::tokens::Metrics::BASE.panel_row_height;
 
 /// The panel: the layers, scrolling when there are many, and under them
 /// the chosen layer's own controls, always in view.
-pub fn panel(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
+pub fn panel(cx: &ViewCx<Artwork>, tools: &Tools) -> Element {
     let rows = cx.value(rows);
     let list = {
         let tools = tools.clone();
@@ -230,7 +229,7 @@ fn follow_new_layers(known: &RefCell<Vec<String>>, rows: &[LayerRow], target: &L
 
 /// A layer's picture, and its mask's beside it when it has one: each, with
 /// a mask, choosing what the brush paints.
-fn pictures(cx: &ViewCx<ArtworkResource>, tools: &Tools, row: &LayerRow) -> Row {
+fn pictures(cx: &ViewCx<Artwork>, tools: &Tools, row: &LayerRow) -> Row {
     let thumb = |layer: &str, name: &str| -> Element {
         let mut picture = crate::thumb::Thumb::new(
             tools.renderer.clone(),
@@ -280,10 +279,10 @@ fn pictures(cx: &ViewCx<ArtworkResource>, tools: &Tools, row: &LayerRow) -> Row 
     pictures
 }
 
-fn layer_row(cx: &ViewCx<ArtworkResource>, tools: &Tools, row: &LayerRow) -> Element {
+fn layer_row(cx: &ViewCx<Artwork>, tools: &Tools, row: &LayerRow) -> Element {
     let pictures = pictures(cx, tools, row);
     let named = |id: &str| ui::i18n::I18nManager::format(id, &[("name", row.name.clone().into())]);
-    let rename = ArtworkResource::RENAME_LAYER.map({
+    let rename = Artwork::RENAME_LAYER.map({
         let id = row.id.clone();
         move |name: String| (id.clone(), name)
     });
@@ -341,13 +340,13 @@ fn layer_row(cx: &ViewCx<ArtworkResource>, tools: &Tools, row: &LayerRow) -> Ele
             cx,
             eye,
             &eye_name,
-            ArtworkResource::SET_LAYER_VISIBLE.with((row.id.clone(), !row.visible)),
+            Artwork::SET_LAYER_VISIBLE.with((row.id.clone(), !row.visible)),
         )))
         .push(Box::new(icon_button(
             cx,
             lock,
             &lock_name,
-            ArtworkResource::SET_LAYER_LOCKED.with((row.id.clone(), !row.locked)),
+            Artwork::SET_LAYER_LOCKED.with((row.id.clone(), !row.locked)),
         )));
     let row_element: Element = Box::new(
         ControlRow::new(content)
@@ -366,7 +365,7 @@ fn layer_row(cx: &ViewCx<ArtworkResource>, tools: &Tools, row: &LayerRow) -> Ele
 /// What a right-click on a layer's row offers: the row's own controls and
 /// the chosen layer's, as commands with words, the layer chosen first.
 fn row_menu(
-    cx: &ViewCx<ArtworkResource>,
+    cx: &ViewCx<Artwork>,
     tools: &Tools,
     row: &LayerRow,
     renaming: LocalState<bool>,
@@ -389,7 +388,7 @@ fn row_menu(
         let lookup = ui::i18n::I18nManager::lookup_plain;
         let named =
             |id: &str| ui::i18n::I18nManager::format(id, &[("name", row.name.clone().into())]);
-        let invoke = |make: fn(&LayerRow) -> Invoke<ArtworkResource>| {
+        let invoke = |make: fn(&LayerRow) -> Invoke<Artwork>| {
             let dispatcher = dispatcher.clone();
             let row = row.clone();
             move || dispatcher.submit(make(&row))
@@ -407,9 +406,7 @@ fn row_menu(
                 } else {
                     "canvas-layer-show-name"
                 }),
-                invoke(|row| {
-                    ArtworkResource::SET_LAYER_VISIBLE.with((row.id.clone(), !row.visible))
-                }),
+                invoke(|row| Artwork::SET_LAYER_VISIBLE.with((row.id.clone(), !row.visible))),
             ),
             MenuEntry::new(
                 named(if row.locked {
@@ -417,16 +414,16 @@ fn row_menu(
                 } else {
                     "canvas-layer-lock-name"
                 }),
-                invoke(|row| ArtworkResource::SET_LAYER_LOCKED.with((row.id.clone(), !row.locked))),
+                invoke(|row| Artwork::SET_LAYER_LOCKED.with((row.id.clone(), !row.locked))),
             ),
             MenuEntry::separator(),
             MenuEntry::new(
                 lookup("canvas-layer-up"),
-                invoke(|row| ArtworkResource::MOVE_LAYER.with((row.id.clone(), "forward".into()))),
+                invoke(|row| Artwork::MOVE_LAYER.with((row.id.clone(), "forward".into()))),
             ),
             MenuEntry::new(
                 lookup("canvas-layer-down"),
-                invoke(|row| ArtworkResource::MOVE_LAYER.with((row.id.clone(), "backward".into()))),
+                invoke(|row| Artwork::MOVE_LAYER.with((row.id.clone(), "backward".into()))),
             ),
             MenuEntry::separator(),
         ];
@@ -434,7 +431,7 @@ fn row_menu(
         entries.push(MenuEntry::separator());
         entries.push(MenuEntry::destructive(
             named("canvas-layer-remove-name"),
-            invoke(|row| ArtworkResource::REMOVE_LAYER.with(row.id.clone())),
+            invoke(|row| Artwork::REMOVE_LAYER_BY_ID.with(row.id.clone())),
         ));
         entries
     }
@@ -443,13 +440,13 @@ fn row_menu(
 /// A layer row's menu entries for its mask and clipping.
 fn masking(
     row: &LayerRow,
-    dispatcher: &ui::framework::Dispatcher<ArtworkResource>,
+    dispatcher: &ui::framework::Dispatcher<Artwork>,
     has_selection: bool,
     entries: &mut Vec<ui::widget::MenuEntry>,
 ) {
     use ui::widget::MenuEntry;
     let lookup = ui::i18n::I18nManager::lookup_plain;
-    let invoke = |make: fn(&LayerRow) -> Invoke<ArtworkResource>| {
+    let invoke = |make: fn(&LayerRow) -> Invoke<Artwork>| {
         let dispatcher = dispatcher.clone();
         let row = row.clone();
         move || dispatcher.submit(make(&row))
@@ -457,12 +454,12 @@ fn masking(
     if row.mask.is_some() {
         entries.push(MenuEntry::new(
             lookup("canvas-layer-mask-remove"),
-            invoke(|row| ArtworkResource::SET_LAYER_MASK.with((row.id.clone(), "remove".into()))),
+            invoke(|row| Artwork::SET_LAYER_MASK.with((row.id.clone(), "remove".into()))),
         ));
     } else {
         entries.push(MenuEntry::new(
             lookup("canvas-layer-mask-add"),
-            invoke(|row| ArtworkResource::SET_LAYER_MASK.with((row.id.clone(), "reveal".into()))),
+            invoke(|row| Artwork::SET_LAYER_MASK.with((row.id.clone(), "reveal".into()))),
         ));
     }
     // The selection as the layer's mask: what it shows of the layer.
@@ -470,13 +467,11 @@ fn masking(
     let layer = row.id.clone();
     entries.push(
         MenuEntry::new(lookup("canvas-context-mask-selection"), move || {
-            dispatch.apply(&crate::actions::CanvasAction::UseSelection(
-                crate::selection::UseSelection {
-                    what: "mask".into(),
-                    layer: Some(layer.clone()),
-                    ..crate::selection::UseSelection::default()
-                },
-            ));
+            dispatch.submit(Artwork::USE_SELECTION.with(crate::selection::UseSelection {
+                what: "mask".into(),
+                layer: Some(layer.clone()),
+                ..crate::selection::UseSelection::default()
+            }));
         })
         .with_enabled(has_selection),
     );
@@ -484,14 +479,14 @@ fn masking(
         lookup(if row.clip {
             "canvas-context-unclip"
         } else {
-            "canvas-layer-clip"
+            "canvas-command-layer-clip"
         }),
-        invoke(|row| ArtworkResource::SET_LAYER_CLIP.with((row.id.clone(), !row.clip))),
+        invoke(|row| Artwork::SET_LAYER_CLIP.with((row.id.clone(), !row.clip))),
     ));
 }
 
 /// The chosen layer's opacity, medium and place among the layers.
-fn chosen_layer(cx: &ViewCx<ArtworkResource>, id: &str, tools: &Tools) -> Element {
+fn chosen_layer(cx: &ViewCx<Artwork>, id: &str, tools: &Tools) -> Element {
     let Some(row) = cx.read(|art| {
         art.and_then(|art| {
             rows(art)
@@ -508,9 +503,11 @@ fn chosen_layer(cx: &ViewCx<ArtworkResource>, id: &str, tools: &Tools) -> Elemen
     let slider = cx.actions().bind(
         Slider::from_state(&opacity)
             .with_id("canvas-layer-opacity")
-            .with_accessible_name(&ui::i18n::I18nManager::lookup_plain("canvas-layer-opacity"))
+            .with_accessible_name(&ui::i18n::I18nManager::lookup_plain(
+                "canvas-label-layer-opacity",
+            ))
             .commits_on_release(),
-        ArtworkResource::SET_LAYER_OPACITY.map({
+        Artwork::SET_LAYER_OPACITY.map({
             let id = row.id.clone();
             move |value: f64| (id.clone(), (value * 100.0).round() / 100.0)
         }),
@@ -529,7 +526,7 @@ fn chosen_layer(cx: &ViewCx<ArtworkResource>, id: &str, tools: &Tools) -> Elemen
             cx,
             icon,
             &ui::i18n::I18nManager::lookup_plain(name),
-            ArtworkResource::MOVE_LAYER.with((row.id.clone(), to.to_owned())),
+            Artwork::MOVE_LAYER.with((row.id.clone(), to.to_owned())),
         )
     };
     let raise = order(Icon::ArrowUp, "canvas-layer-up", "forward");
@@ -542,7 +539,7 @@ fn chosen_layer(cx: &ViewCx<ArtworkResource>, id: &str, tools: &Tools) -> Elemen
             "canvas-layer-remove-name",
             &[("name", row.name.clone().into())],
         ),
-        ArtworkResource::REMOVE_LAYER.with(row.id.clone()),
+        Artwork::REMOVE_LAYER_BY_ID.with(row.id.clone()),
     );
     let mut column = Column::new()
         .with_intrinsic_height()
@@ -565,14 +562,22 @@ fn chosen_layer(cx: &ViewCx<ArtworkResource>, id: &str, tools: &Tools) -> Elemen
     if let Some(mask) = &row.mask {
         column = column.push(mask_line(cx, &row, mask));
     }
-    let id = row.id.clone();
-    let folder = cx.value(move |art: &Artwork| {
-        art.layer(&id)
-            .map(|layer| layer.group.clone())
-            .unwrap_or_default()
-    });
-    let id = row.id.clone();
-    column = column.push(cx.switch(&folder, move |cx, folder| {
+    column = column.push(folder_field(cx, &row.id));
+    Box::new(column)
+}
+
+/// The organisational folder the layer `id` is filed in, renamed in place.
+fn folder_field(cx: &ViewCx<Artwork>, id: &str) -> Element {
+    let folder = {
+        let id = id.to_owned();
+        cx.value(move |art: &Artwork| {
+            art.layer(&id)
+                .map(|layer| layer.group.clone())
+                .unwrap_or_default()
+        })
+    };
+    let id = id.to_owned();
+    cx.switch(&folder, move |cx, folder| {
         Box::new(
             cx.actions().bind(
                 EditableLabel::new(folder)
@@ -583,23 +588,22 @@ fn chosen_layer(cx: &ViewCx<ArtworkResource>, id: &str, tools: &Tools) -> Elemen
                         "canvas-layer-folder",
                     ))
                     .filling(),
-                ArtworkResource::SET_LAYER_GROUP.map({
+                Artwork::SET_LAYER_GROUP.map({
                     let id = id.clone();
                     move |group: String| (id.clone(), group)
                 }),
             ),
         )
-    }));
-    Box::new(column)
+    })
 }
 
 /// Address objects independently of hit testing, including occluded members.
-pub fn objects_panel(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
+pub fn objects_panel(cx: &ViewCx<Artwork>, tools: &Tools) -> Element {
     let held = tools.clone();
     cx.switch(&tools.layer, move |cx, layer| objects(cx, layer, &held))
 }
 
-fn objects(cx: &ViewCx<ArtworkResource>, layer: &str, tools: &Tools) -> Element {
+fn objects(cx: &ViewCx<Artwork>, layer: &str, tools: &Tools) -> Element {
     use ui::widget::{TreeNode, TreeView};
     let layer = layer.to_owned();
     let marks = cx.value(move |art: &Artwork| {
@@ -659,7 +663,7 @@ fn objects(cx: &ViewCx<ArtworkResource>, layer: &str, tools: &Tools) -> Element 
 }
 
 /// Giving the chosen layer a mask, and clipping it to the layer below.
-fn mask_buttons(cx: &ViewCx<ArtworkResource>, row: &LayerRow) -> Element {
+fn mask_buttons(cx: &ViewCx<Artwork>, row: &LayerRow) -> Element {
     let lookup = ui::i18n::I18nManager::lookup_plain;
     let mut buttons = Row::new()
         .with_gap(ui::tokens::Spacing::BASE.s1)
@@ -670,14 +674,14 @@ fn mask_buttons(cx: &ViewCx<ArtworkResource>, row: &LayerRow) -> Element {
             cx,
             Icon::SquareDashed,
             &lookup("canvas-layer-mask-add"),
-            ArtworkResource::SET_LAYER_MASK.with((row.id.clone(), "reveal".into())),
+            Artwork::SET_LAYER_MASK.with((row.id.clone(), "reveal".into())),
         )));
     }
     let mut clip = icon_button(
         cx,
         Icon::Paperclip,
-        &lookup("canvas-layer-clip"),
-        ArtworkResource::SET_LAYER_CLIP.with((row.id.clone(), !row.clip)),
+        &lookup("canvas-command-layer-clip"),
+        Artwork::SET_LAYER_CLIP.with((row.id.clone(), !row.clip)),
     );
     if row.clip {
         clip = clip.toggled(true);
@@ -687,7 +691,7 @@ fn mask_buttons(cx: &ViewCx<ArtworkResource>, row: &LayerRow) -> Element {
 
 /// The chosen layer's mask: switch it off, invert it, remove it. It is
 /// painted by choosing its picture in the layer's row.
-fn mask_line(cx: &ViewCx<ArtworkResource>, row: &LayerRow, mask: &MaskRow) -> Element {
+fn mask_line(cx: &ViewCx<Artwork>, row: &LayerRow, mask: &MaskRow) -> Element {
     let lookup = ui::i18n::I18nManager::lookup_plain;
     let (eye, name) = if mask.visible {
         (Icon::Eye, "canvas-layer-mask-off")
@@ -698,7 +702,7 @@ fn mask_line(cx: &ViewCx<ArtworkResource>, row: &LayerRow, mask: &MaskRow) -> El
         cx,
         Icon::ArrowUpDown,
         &lookup("canvas-layer-mask-invert"),
-        ArtworkResource::SET_MASK_INVERT.with((row.id.clone(), !mask.invert)),
+        Artwork::SET_MASK_INVERT.with((row.id.clone(), !mask.invert)),
     );
     if mask.invert {
         invert = invert.toggled(true);
@@ -712,7 +716,7 @@ fn mask_line(cx: &ViewCx<ArtworkResource>, row: &LayerRow, mask: &MaskRow) -> El
         cx,
         chain,
         &lookup(&format!("canvas-layer-mask-{link}")),
-        ArtworkResource::SET_LAYER_MASK.with((row.id.clone(), link.into())),
+        Artwork::SET_LAYER_MASK.with((row.id.clone(), link.into())),
     );
     Box::new(
         Row::new()
@@ -725,7 +729,7 @@ fn mask_line(cx: &ViewCx<ArtworkResource>, row: &LayerRow, mask: &MaskRow) -> El
                 cx,
                 eye,
                 &lookup(name),
-                ArtworkResource::SET_LAYER_VISIBLE.with((mask.id.clone(), !mask.visible)),
+                Artwork::SET_LAYER_VISIBLE.with((mask.id.clone(), !mask.visible)),
             )))
             .push(Box::new(invert))
             .push(Box::new(link))
@@ -733,14 +737,14 @@ fn mask_line(cx: &ViewCx<ArtworkResource>, row: &LayerRow, mask: &MaskRow) -> El
                 cx,
                 Icon::X,
                 &lookup("canvas-layer-mask-remove"),
-                ArtworkResource::SET_LAYER_MASK.with((row.id.clone(), "remove".into())),
+                Artwork::SET_LAYER_MASK.with((row.id.clone(), "remove".into())),
             ))),
     )
 }
 
 /// Adding a layer: a menu of the media to paint it in, adding the chosen
 /// one above the chosen layer and naming it for its medium.
-pub fn add_menu(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
+pub fn add_menu(cx: &ViewCx<Artwork>, tools: &Tools) -> Element {
     let (media, names) = cx.read(|art| {
         let mut media = vec![(
             String::new(),
@@ -762,10 +766,12 @@ pub fn add_menu(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
     let mut menu = Dropdown::from_state(Vec::new(), &state)
         .as_menu(Icon::Plus)
         .with_id("canvas-add-layer")
-        .with_accessible_name(ui::i18n::I18nManager::lookup_plain("canvas-add-layer"));
+        .with_accessible_name(ui::i18n::I18nManager::lookup_plain(
+            "canvas-command-add-layer",
+        ));
     menu.set_value_options(media.clone());
     let chosen = tools.layer.clone();
-    let add = ArtworkResource::ADD_LAYER_NAMED.map(move |medium: String| {
+    let add = Artwork::ADD_LAYER.map(move |medium: String| {
         // A plain layer is "Layer 3"; "Oil, alla prima" names its layer
         // "Oil", and the next one "Oil 2".
         let label = media
@@ -785,7 +791,13 @@ pub fn add_menu(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
         let id = format!("layer-{}", random.get(..8).unwrap_or_default());
         let above = Some(chosen.with(Clone::clone)).filter(|above| !above.is_empty());
         chosen.set(id.clone());
-        (id, name, medium, above)
+        crate::actions::AddLayer {
+            id: Some(id),
+            name,
+            medium: Some(medium),
+            above,
+            ..crate::actions::AddLayer::default()
+        }
     });
     Box::new(cx.actions().bind(menu, add))
 }

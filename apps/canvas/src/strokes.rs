@@ -5,14 +5,14 @@
     reason = "float geometry, and point indices bounded by the strokes they index"
 )]
 
-use ui::tilo_actions::ActionError;
+use ui::tilo_resource::Refusal;
 use ui::tilo_resource::order;
 use ui::vello::kurbo::{Line, ParamCurveNearest as _, Point};
 
 use crate::model::{Artwork, MAX_POINTS, Mark, Shape, StrokePoint};
 
-fn refuse(message: impl Into<String>) -> ActionError {
-    ActionError::Refused(message.into())
+fn refuse(message: impl Into<String>) -> Refusal {
+    Refusal(message.into())
 }
 
 fn at(point: &[f64]) -> Point {
@@ -42,7 +42,7 @@ pub fn extend(points: &mut Vec<StrokePoint>, more: &[StrokePoint]) {
 }
 
 /// The stroke a mark id names, or why it cannot be cut or joined.
-fn stroke<'a>(art: &'a Artwork, id: &str) -> Result<&'a Mark, ActionError> {
+fn stroke<'a>(art: &'a Artwork, id: &str) -> Result<&'a Mark, Refusal> {
     let mark = art
         .mark(id)
         .ok_or_else(|| refuse(format!("there is no mark {id:?}; inspect lists the marks")))?;
@@ -82,7 +82,7 @@ pub fn split(
     art: &Artwork,
     ids: &[String],
     cut: [f64; 2],
-) -> Result<Vec<String>, ActionError> {
+) -> Result<Vec<String>, Refusal> {
     let [id] = ids else {
         return Err(refuse("split cuts one stroke: name exactly one id"));
     };
@@ -159,11 +159,11 @@ pub fn split(
 /// Refuses fewer than two strokes, marks that are not strokes, strokes on
 /// different layers or under different transforms, and a join past the
 /// point limit.
-pub fn merge(doc: &mut Artwork, art: &Artwork, ids: &[String]) -> Result<String, ActionError> {
+pub fn merge(doc: &mut Artwork, art: &Artwork, ids: &[String]) -> Result<String, Refusal> {
     let marks = ids
         .iter()
         .map(|id| stroke(art, id))
-        .collect::<Result<Vec<&Mark>, ActionError>>()?;
+        .collect::<Result<Vec<&Mark>, Refusal>>()?;
     let [first, rest @ ..] = marks.as_slice() else {
         return Err(refuse("merge joins two or more strokes: name them in ids"));
     };

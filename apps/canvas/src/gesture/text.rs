@@ -3,12 +3,13 @@
 //! typing is done.
 
 use std::borrow::Cow;
+use ui::tilo_resource::Invoke;
 
 use ui::winit::event::Ime;
 use ui::winit::keyboard::{Key, ModifiersState, NamedKey};
 use ui::{EditCore, Motion};
 
-use crate::actions::{CanvasAction, Draw, EditMarks, NewMark, RemoveMarks};
+use crate::actions::{Draw, EditMarks, NewMark, RemoveMarks};
 use crate::model::{Artwork, Shape};
 
 /// A text being typed.
@@ -210,11 +211,11 @@ impl TextSession {
 
     /// The edit typing made: a new text drawn, an old one retyped, or an
     /// emptied one removed. `None` when nothing changed.
-    pub fn commit(&self, art: &Artwork) -> Option<CanvasAction> {
+    pub fn commit(&self, art: &Artwork) -> Option<Invoke<Artwork>> {
         let empty = self.text().trim().is_empty();
         if self.new {
             return (!empty).then(|| {
-                CanvasAction::Draw(Draw {
+                Artwork::DRAW.with(Draw {
                     layer: self.layer.clone(),
                     marks: vec![NewMark {
                         id: Some(self.id.clone()),
@@ -226,13 +227,13 @@ impl TextSession {
         }
         let before = art.mark(&self.id)?;
         if empty {
-            return Some(CanvasAction::RemoveMarks(RemoveMarks {
+            return Some(Artwork::REMOVE_MARKS.with(RemoveMarks {
                 ids: vec![self.id.clone()],
                 ..RemoveMarks::default()
             }));
         }
         (before.shape != self.shape).then(|| {
-            CanvasAction::edit(EditMarks {
+            Artwork::EDIT_MARKS.with(EditMarks {
                 ids: vec![self.id.clone()],
                 shape: Some(crate::actions::Taught(self.shape.clone())),
                 ..EditMarks::default()
@@ -273,7 +274,9 @@ mod tests {
             Typed::Done
         );
         let art = Artwork::default();
-        let Some(CanvasAction::Draw(draw)) = session.commit(&art) else {
+        let Some(draw) = (session.commit(&art)).and_then(|invoke| {
+            crate::actions::read_as::<crate::actions::Draw>(&invoke, Artwork::DRAW.id)
+        }) else {
             panic!("a draw")
         };
         assert_eq!(draw.marks[0].id.as_deref(), Some("t-1"));

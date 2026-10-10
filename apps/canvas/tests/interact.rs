@@ -12,7 +12,7 @@ mod support;
 
 use canvas::model::{Mark, Shape};
 use canvas::{App, Artwork};
-use ui::prelude::{Invoke, TestApp};
+use ui::prelude::TestApp;
 use ui::winit::event::{ElementState, MouseButton, WindowEvent};
 
 #[test]
@@ -89,8 +89,7 @@ impl Desk {
         ui::gesture::set_multi_click_interval(std::time::Duration::from_secs(10));
         let mut app = TestApp::<App>::new().expect("the app opens");
         for action in canvas::sample::shapes() {
-            app.invoke(Invoke::apply(&action).unwrap())
-                .expect("the sample draws");
+            app.invoke(action).expect("the sample draws");
         }
         let canvas = app
             .harness()
@@ -856,7 +855,7 @@ fn a_mask_is_painted_from_its_picture_in_the_layers_row() {
     let mut desk = Desk::open();
     let layer = desk.art().top_layer().unwrap().id.clone();
     desk.app
-        .invoke(canvas::ArtworkResource::SET_LAYER_MASK.with((layer.clone(), "reveal".into())))
+        .invoke(canvas::Artwork::SET_LAYER_MASK.with((layer.clone(), "reveal".into())))
         .expect("a mask is added");
     let mask = desk.art().mask_of(&layer).unwrap().id.clone();
     let targets = desk.app.harness().targets();

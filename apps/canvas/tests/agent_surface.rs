@@ -17,8 +17,11 @@ use ui::prelude::TestApp;
 /// reads before it can act. Growing past it is a design decision, not drift.
 /// Vector design took it to 89 KB, most of that `apply` and `group`
 /// repeating every named action's schema; they now name those actions
-/// instead, and it fits the original budget again.
-const BUDGET: usize = 64 * 1024;
+/// instead. The artwork as a model adds its field edits (every editable path
+/// of the artwork, and of the layer an agent works on, with its operations
+/// and value schema, about 13 KB) and each verb's flat parameters with their
+/// own schemas.
+const BUDGET: usize = 88 * 1024;
 
 #[test]
 fn the_agent_surface_matches_its_golden_file_and_budget() {

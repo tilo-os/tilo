@@ -69,8 +69,7 @@ fn content(art: &canvas::Artwork) -> serde_json::Value {
 fn an_agent_saves_starts_over_and_opens_the_artwork_again() {
     let mut app = TestApp::<App>::new().unwrap();
     for action in canvas::sample::landscape() {
-        app.invoke(ui::prelude::Invoke::apply(&action).unwrap())
-            .unwrap();
+        app.invoke(action).unwrap();
     }
     app.call("set-artwork", serde_json::json!({"title": "Valley"}))
         .unwrap();
@@ -193,9 +192,7 @@ fn a_person_opens_a_recent_artwork_from_the_welcome() {
     {
         let mut painter = TestApp::<App>::new().unwrap();
         for action in canvas::sample::landscape() {
-            painter
-                .invoke(ui::prelude::Invoke::apply(&action).unwrap())
-                .unwrap();
+            painter.invoke(action).unwrap();
         }
         painter
             .call(
@@ -259,9 +256,7 @@ fn an_artwork_file_opens_from_files_as_its_own_record() {
     {
         let mut painter = TestApp::<App>::new().unwrap();
         for action in canvas::sample::landscape() {
-            painter
-                .invoke(ui::prelude::Invoke::apply(&action).unwrap())
-                .unwrap();
+            painter.invoke(action).unwrap();
         }
         painter
             .call(

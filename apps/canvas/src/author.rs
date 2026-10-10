@@ -88,13 +88,12 @@ pub struct ColourQuery {
 /// # Errors
 /// Returns why the colour cannot be found: no window shows the artwork, or
 /// the query is malformed.
-pub fn resolve(mut select: Select) -> Result<crate::actions::CanvasAction, String> {
-    use crate::actions::CanvasAction;
+pub fn resolve(select: &mut Select) -> Result<(), String> {
     if !select.looks() {
         if select.layer.is_some() {
             return Err("layer names where at, colour or subject is found; give one".into());
         }
-        return Ok(CanvasAction::Select(Box::new(select)));
+        return Ok(());
     }
     if select.subject == Some(true) || select.refine.is_some() {
         return Err("subject selection and edge refinement run as the find-area job; invoke find-area with these arguments".into());
@@ -155,7 +154,7 @@ pub fn resolve(mut select: Select) -> Result<crate::actions::CanvasAction, Strin
     select.colour = None;
     select.tolerance = None;
     select.layer = None;
-    Ok(CanvasAction::Select(Box::new(select)))
+    Ok(())
 }
 
 /// Run `look` with what the canvas shows.
@@ -353,11 +352,7 @@ fn index(value: f64) -> usize {
 }
 
 /// The slow query's resolved geometry, retaining its selection options.
-pub fn found(
-    mut select: Select,
-    found: Region,
-    matte: Option<crate::model::Matte>,
-) -> crate::actions::CanvasAction {
+pub fn found(mut select: Select, found: Region, matte: Option<crate::model::Matte>) -> Select {
     let found = match &select.d {
         Some(d) => Region::of_path(&ui::vello::kurbo::BezPath::from_svg(d).unwrap_or_default())
             .combine(&found, Op::Union),
@@ -370,5 +365,5 @@ pub fn found(
     select.layer = None;
     select.tolerance = None;
     select.matte = matte;
-    crate::actions::CanvasAction::Select(Box::new(select))
+    select
 }

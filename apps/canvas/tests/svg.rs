@@ -7,7 +7,7 @@
 )]
 
 use canvas::model::Shape;
-use canvas::{App, ArtworkResource};
+use canvas::{App, Artwork};
 use serde_json::Value;
 use ui::prelude::{TestApp, tilo_resource::ActionRef};
 
@@ -26,7 +26,7 @@ const BADGE: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="200" heig
   <text x="20" y="60" font-size="24" font-family="serif" font-weight="700" fill="#ffffff">Hello</text>
 </svg>"##;
 
-const IMPORT: ActionRef<ArtworkResource, (String, String)> =
+const IMPORT: ActionRef<Artwork, (String, String)> =
     ActionRef::new("import-svg", &["svg", "group"]);
 
 fn import(app: &mut TestApp<App>, svg: &str, group: &str) {
@@ -35,7 +35,7 @@ fn import(app: &mut TestApp<App>, svg: &str, group: &str) {
 }
 
 fn operate(app: &mut TestApp<App>, id: &'static str) -> Value {
-    let op: ActionRef<ArtworkResource, ()> = ActionRef::new(id, &[]);
+    let op: ActionRef<Artwork, ()> = ActionRef::new(id, &[]);
     app.operate(op.invoke()).unwrap().unwrap().value.unwrap()
 }
 
@@ -147,10 +147,10 @@ fn compare_scores_the_artwork_against_its_reference() {
     .unwrap();
 
     let mut app = TestApp::<App>::new().expect("the app opens");
-    let refused = app.operate(ActionRef::<ArtworkResource, ()>::new("compare", &[]).invoke());
+    let refused = app.operate(ActionRef::<Artwork, ()>::new("compare", &[]).invoke());
     assert!(refused.is_err(), "no reference yet");
 
-    let set: ActionRef<ArtworkResource, (String, [f64; 4])> =
+    let set: ActionRef<Artwork, (String, [f64; 4])> =
         ActionRef::new("set-reference", &["image", "frame"]);
     app.invoke(set.with((
         path.to_string_lossy().into_owned(),
@@ -165,7 +165,7 @@ fn compare_scores_the_artwork_against_its_reference() {
             r#"<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="900"><rect x="100" y="100" width="{width}" height="200" fill="{fill}"/></svg>"#
         )
     };
-    let clear: ActionRef<ArtworkResource, String> = ActionRef::new("remove-marks", &["layer"]);
+    let clear: ActionRef<Artwork, String> = ActionRef::new("remove-marks", &["layer"]);
     let score = |value: &Value| value["difference"].as_f64().unwrap();
     import(&mut app, &rect(100, "#1e40c8"), "wrong");
     let wrong = operate(&mut app, "compare");
@@ -190,7 +190,7 @@ fn compare_scores_the_artwork_against_its_reference() {
         serde_json::json!([64, 64])
     );
 
-    let remove: ActionRef<ArtworkResource, bool> = ActionRef::new("set-reference", &["remove"]);
+    let remove: ActionRef<Artwork, bool> = ActionRef::new("set-reference", &["remove"]);
     app.invoke(remove.with(true)).unwrap();
     assert!(app.state().reference.is_none());
     app.invoke(remove.with(true))
@@ -203,7 +203,7 @@ fn compare_scores_the_artwork_against_its_reference() {
 fn a_group_exports_alone_cropped_to_it() {
     let mut app = TestApp::<App>::new().expect("the app opens");
     import(&mut app, BADGE, "badge");
-    let op: ActionRef<ArtworkResource, Vec<String>> = ActionRef::new("export-svg", &["ids"]);
+    let op: ActionRef<Artwork, Vec<String>> = ActionRef::new("export-svg", &["ids"]);
     let exported = app
         .operate(op.with(vec!["badge".into()]))
         .unwrap()
@@ -233,9 +233,9 @@ fn brush_presets_and_erasers_export_as_they_are_drawn() {
         brush: Some(brush.into()),
         ..canvas::actions::NewStroke::default()
     };
-    app.invoke(ArtworkResource::PAINT.with((
-        None,
-        vec![
+    app.invoke(Artwork::PAINT.with(canvas::actions::Paint {
+        layer: None,
+        strokes: vec![
             stroke("graphite", 40.0, "pencil"),
             stroke("ink", 80.0, "pen"),
             canvas::actions::NewStroke {
@@ -246,7 +246,8 @@ fn brush_presets_and_erasers_export_as_they_are_drawn() {
                 ..canvas::actions::NewStroke::default()
             },
         ],
-    )))
+        group: None,
+    }))
     .expect("painted");
     let exported = operate(&mut app, "export-svg");
     let svg = exported["svg"]

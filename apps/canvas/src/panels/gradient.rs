@@ -20,8 +20,8 @@ use ui::winit::event::{ElementState, MouseButton, WindowEvent};
 use ui::{PresenceCtx, TextRenderer, Theme};
 
 use super::icon_button;
+use crate::model::Artwork;
 use crate::model::{Gradient, Mark};
-use crate::resource::ArtworkResource;
 
 /// How a fill is painted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -395,7 +395,7 @@ impl Widget for GradientBar {
 
 /// The fill's kind, and for a gradient its bar, direction and stops.
 pub fn editor(
-    cx: &ViewCx<ArtworkResource>,
+    cx: &ViewCx<Artwork>,
     ids: &[String],
     mark: &Mark,
     active: &LocalState<usize>,
@@ -406,7 +406,7 @@ pub fn editor(
         let dispatch = cx.dispatcher();
         let targets = ids.to_vec();
         move |gradient: Gradient| {
-            dispatch.submit(ArtworkResource::SET_GRADIENT.with((targets.clone(), gradient)));
+            dispatch.submit(Artwork::SET_GRADIENT.with((targets.clone(), gradient)));
         }
     });
     let mut column = Column::new()
@@ -436,7 +436,7 @@ pub fn editor(
 /// Solid, linear or radial: a gradient starts from the fill fading to
 /// white, and a solid fill takes the gradient's first colour.
 fn kind_picker(
-    cx: &ViewCx<ArtworkResource>,
+    cx: &ViewCx<Artwork>,
     ids: &[String],
     mark: &Mark,
     area: Rect,
@@ -477,7 +477,7 @@ fn kind_picker(
                     .as_ref()
                     .and_then(|g| g.stops.first().map(|stop| stop.1.clone()))
                     .unwrap_or_else(|| fill.clone());
-                dispatch.submit(ArtworkResource::SET_FILL.with((targets.clone(), colour)));
+                dispatch.submit(Artwork::SET_FILL.with((targets.clone(), colour)));
             } else {
                 let stops = gradient.as_ref().map_or_else(
                     // A fill fading to white: document colours.
@@ -493,7 +493,7 @@ fn kind_picker(
 /// A linear gradient's angle, and removing the chosen stop when there are
 /// more than two.
 fn direction_and_stops(
-    cx: &ViewCx<ArtworkResource>,
+    cx: &ViewCx<Artwork>,
     ids: &[String],
     kind: Kind,
     area: Rect,
@@ -518,7 +518,7 @@ fn direction_and_stops(
                 .with_id("canvas-gradient-angle")
                 .with_accessible_name(&lookup("canvas-gradient-angle"))
                 .commits_on_release(),
-            ArtworkResource::SET_GRADIENT.map({
+            Artwork::SET_GRADIENT.map({
                 let targets = ids.to_vec();
                 move |turn: f64| {
                     // Turned in steps of fifteen degrees.
@@ -555,7 +555,7 @@ fn direction_and_stops(
             cx,
             Icon::Trash2,
             &lookup("canvas-gradient-remove-stop"),
-            ArtworkResource::SET_GRADIENT.with((ids.to_vec(), fewer)),
+            Artwork::SET_GRADIENT.with((ids.to_vec(), fewer)),
         )));
     }
     Box::new(row)

@@ -94,11 +94,13 @@ fn a_look_job_keeps_its_snapshot_while_another_edit_is_applied() {
         json!({"width": 64, "height": 64, "ground_colour": "#ff0000", "texture": "smooth"}),
     )
     .unwrap();
-    let look = canvas::resource::ViewOp::Look(Look {
-        size: Some(64),
-        format: Some("png".into()),
-        ..Default::default()
-    });
+    let look = canvas::resource::ViewOp::Look {
+        look: Look {
+            size: Some(64),
+            format: Some("png".into()),
+            ..Default::default()
+        },
+    };
     let invocation = app.start_effect(&look).unwrap();
     app.call("set-artwork", json!({"ground_colour": "#0000ff"}))
         .unwrap();

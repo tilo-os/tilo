@@ -13,7 +13,7 @@
     "action": "add-layer",
     "resource_kind": "canvas.artwork",
     "label": "Add layer",
-    "description": "Add a layer on top (or above another). Give it a medium (see media) to paint in oil or watercolour; without one it holds crisp vector art.",
+    "description": "Add layer.  Add a layer on top (or above another). Give it a medium (see media) to paint in oil or watercolour; without one it holds crisp vector art.",
     "operation": "Document",
     "params": [
       {
@@ -25,9 +25,10 @@
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "description": "An id to address the layer by (`sky`); one is made when absent."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "name",
@@ -48,9 +49,10 @@
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "description": "A medium id (`oil`, `watercolour`, … see `media`) to paint this layer's marks with; absent or empty for plain vector art."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "opacity",
@@ -61,9 +63,10 @@
           "type": [
             "number",
             "null"
-          ]
+          ],
+          "description": "`0..=1`."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "above",
@@ -74,9 +77,10 @@
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "description": "Put the new layer directly above this layer instead of on top."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "texture",
@@ -87,9 +91,10 @@
           "type": [
             "number",
             "null"
-          ]
+          ],
+          "description": "`0..=1`: let the ground's tooth show through the layer's marks."
         },
-        "nullable": true
+        "nullable": false
       }
     ]
   },
@@ -98,7 +103,7 @@
     "action": "align",
     "resource_kind": "canvas.artwork",
     "label": "Align marks",
-    "description": "Align marks or groups to an edge or centre line, and/or distribute them with equal gaps, within their own extent, the artwork or another mark.",
+    "description": "Align marks.  Align marks or groups to an edge or centre line, and/or distribute them with equal gaps, within their own extent, the artwork or another mark.",
     "operation": "Document",
     "params": [
       {
@@ -110,7 +115,8 @@
           "type": "array",
           "items": {
             "type": "string"
-          }
+          },
+          "description": "Marks or groups."
         },
         "nullable": false
       },
@@ -123,9 +129,10 @@
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "description": "`left`, `center`, `right`, `top`, `middle` or `bottom`."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "distribute",
@@ -136,9 +143,10 @@
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "description": "`horizontal` or `vertical`: equal gaps."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "to",
@@ -149,9 +157,10 @@
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "description": "`artwork` or a mark/group id; else their extent."
         },
-        "nullable": true
+        "nullable": false
       }
     ]
   },
@@ -169,76 +178,78 @@
         "required": true,
         "description": "A Artwork action, as JSON",
         "schema": {
-          "oneOf": [
-            {
-              "type": "object",
-              "required": [
-                "action",
-                "src",
-                "pixels",
-                "title"
-              ],
-              "properties": {
-                "src": {
-                  "type": "string",
-                  "description": "The picture's content address."
-                },
-                "pixels": {
-                  "type": "array",
-                  "items": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": 4294967295
-                  },
-                  "minItems": 2,
-                  "maxItems": 2,
-                  "description": "Its size in pixels."
-                },
-                "title": {
-                  "type": "string"
-                },
-                "action": {
-                  "type": "string",
-                  "const": "open-picture"
-                }
-              },
-              "additionalProperties": false,
-              "description": "Start a new artwork from a picture: sized to it, the picture its first mark (`picture`) on its one layer. Everything the artwork held before is replaced, as one step."
-            },
-            {
-              "type": "object",
-              "required": [
-                "action"
-              ],
-              "properties": {
-                "action": {
-                  "type": "string",
-                  "enum": [
-                    "set-artwork",
-                    "new-artwork",
-                    "open-artwork",
-                    "add-layer",
-                    "edit-layer",
-                    "remove-layer",
-                    "draw",
-                    "paint",
-                    "edit-marks",
-                    "remove-marks",
-                    "arrange",
-                    "save-medium",
-                    "remove-medium",
-                    "align",
-                    "set-reference",
-                    "select",
-                    "use-selection",
-                    "combine"
-                  ]
-                }
-              },
-              "description": "A named action: `action` is its id, the other fields its parameters"
-            }
+          "type": "object",
+          "required": [
+            "op"
           ],
-          "description": "One edit of the artwork."
+          "properties": {
+            "op": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "required": [
+                    "action",
+                    "args"
+                  ],
+                  "properties": {
+                    "action": {
+                      "type": "string",
+                      "const": "field-edit"
+                    },
+                    "args": {
+                      "type": "object"
+                    }
+                  },
+                  "additionalProperties": false,
+                  "description": "A field edit, as the field-edit action takes it"
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "action",
+                    "args"
+                  ],
+                  "properties": {
+                    "action": {
+                      "type": "string",
+                      "enum": [
+                        "paint",
+                        "draw",
+                        "edit-marks",
+                        "remove-marks",
+                        "arrange",
+                        "add-layer",
+                        "edit-layer",
+                        "remove-layer",
+                        "set-artwork",
+                        "save-medium",
+                        "remove-medium",
+                        "align",
+                        "set-reference",
+                        "import-svg",
+                        "open",
+                        "new-artwork",
+                        "open-artwork",
+                        "select",
+                        "use-selection",
+                        "combine"
+                      ]
+                    },
+                    "args": {
+                      "type": "object"
+                    }
+                  },
+                  "additionalProperties": false,
+                  "description": "A named action: `action` is its id, `args` its parameters"
+                }
+              ]
+            },
+            "at": {
+              "type": "integer",
+              "description": "When the action was authored, in milliseconds since the Unix epoch"
+            }
+          },
+          "additionalProperties": false
         },
         "nullable": false
       }
@@ -249,7 +260,7 @@
     "action": "arrange",
     "resource_kind": "canvas.artwork",
     "label": "Arrange marks",
-    "description": "Bring marks to the front or back of their layer, one step forward or backward, or directly above or below another mark or group.",
+    "description": "Arrange marks.  Bring marks to the front or back of their layer, one step forward or backward, or directly above or below another mark or group.",
     "operation": "Document",
     "params": [
       {
@@ -271,7 +282,8 @@
         "required": true,
         "description": "`front`, `back`, `forward`, `backward`, or `above`/`below` the mark or group `of`.",
         "schema": {
-          "type": "string"
+          "type": "string",
+          "description": "`front`, `back`, `forward`, `backward`, or `above`/`below` the mark or group `of`."
         },
         "nullable": false
       },
@@ -284,9 +296,10 @@
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "description": "The mark or group `above` and `below` are relative to."
         },
-        "nullable": true
+        "nullable": false
       }
     ]
   },
@@ -312,7 +325,7 @@
     "action": "combine",
     "resource_kind": "canvas.artwork",
     "label": "Combine shapes",
-    "description": "Combine shapes into one path mark, in the bottom one's place and style.",
+    "description": "Combine shapes.  Combine shapes into one path mark, in the bottom one's place and style.",
     "operation": "Document",
     "params": [
       {
@@ -324,7 +337,8 @@
           "type": "array",
           "items": {
             "type": "string"
-          }
+          },
+          "description": "Marks or groups."
         },
         "nullable": false
       },
@@ -334,7 +348,8 @@
         "required": true,
         "description": "`union`, `subtract` (from the bottom one), `intersect` or `exclude`.",
         "schema": {
-          "type": "string"
+          "type": "string",
+          "description": "`union`, `subtract` (from the bottom one), `intersect` or `exclude`."
         },
         "nullable": false
       }
@@ -345,7 +360,7 @@
     "action": "compare",
     "resource_kind": "canvas.artwork",
     "label": "Compare with reference",
-    "description": "See the artwork beside (or over, or minus) the reference picture, with a difference score (mean colour distance 0..1 in the reference's frame; lower is closer) and the regions that differ most, to iterate toward it.",
+    "description": "Compare with reference. See the artwork beside (or over, or minus) the reference picture, with a difference score (mean colour distance 0..1 in the reference's frame; lower is closer) and the regions that differ most, to iterate toward it.",
     "operation": "View",
     "params": [
       {
@@ -362,9 +377,10 @@
             "type": "number"
           },
           "minItems": 4,
-          "maxItems": 4
+          "maxItems": 4,
+          "description": "`[x, y, width, height]`; the reference's frame when absent."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "mode",
@@ -375,9 +391,10 @@
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "description": "`side-by-side` (default; the artwork left, the reference right), `overlay` (the reference at half strength over the artwork) or `difference` (bright where they differ)."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "size",
@@ -390,9 +407,10 @@
             "null"
           ],
           "minimum": 0,
-          "maximum": 4294967295
+          "maximum": 4294967295,
+          "description": "Longest side of each picture, 64 to 1024 (default 640)."
         },
-        "nullable": true
+        "nullable": false
       }
     ]
   },
@@ -401,7 +419,7 @@
     "action": "diff",
     "resource_kind": "canvas.artwork",
     "label": "Compare versions",
-    "description": "Compare two versions: marks and layers added, removed or changed by id (with what changed: stacking, shape, fill, …), the changed region, and with look a before|after picture of it.",
+    "description": "Compare versions. Compare two versions: marks and layers added, removed or changed by id (with what changed: stacking, shape, fill, …), the changed region, and with look a before|after picture of it.",
     "operation": "View",
     "params": [
       {
@@ -410,7 +428,8 @@
         "required": true,
         "description": "The earlier version: a change id from history or a checkpoint name.",
         "schema": {
-          "type": "string"
+          "type": "string",
+          "description": "The earlier version: a change id from history or a checkpoint name."
         },
         "nullable": false
       },
@@ -423,9 +442,10 @@
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "description": "The later version (default now)."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "look",
@@ -436,9 +456,10 @@
           "type": [
             "boolean",
             "null"
-          ]
+          ],
+          "description": "Also a picture of the changed region: before left, after right."
         },
-        "nullable": true
+        "nullable": false
       }
     ]
   },
@@ -447,7 +468,7 @@
     "action": "draw",
     "resource_kind": "canvas.artwork",
     "label": "Draw shapes",
-    "description": "Draw shapes on a layer in one step: rect, ellipse, polygon, line, path (SVG d), text, stroke or image (src: a file path, content address or data: URI; a unit per pixel unless sized), each with fill, gradient, stroke and opacity. Answers the new ids; or give your own. On a painted layer filled shapes are laid in with the brush: paint a building or small figure as filled planes (lit and shadow side) with a small brush, not as many strokes.",
+    "description": "Draw shapes.  Draw shapes on a layer in one step: rect, ellipse, polygon, line, path (SVG d), text, stroke or image (src: a file path, content address or data: URI; a unit per pixel unless sized), each with fill, gradient, stroke and opacity. Answers the new ids; or give your own. On a painted layer filled shapes are laid in with the brush: paint a building or small figure as filled planes (lit and shadow side) with a small brush, not as many strokes.",
     "operation": "Document",
     "params": [
       {
@@ -459,9 +480,10 @@
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "description": "The layer to draw on; the top layer when absent."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "marks",
@@ -1080,7 +1102,7 @@
     "action": "edit-layer",
     "resource_kind": "canvas.artwork",
     "label": "Edit layer",
-    "description": "Rename or place a layer in an organisational folder (group; empty removes it), change its medium, opacity, visibility, lock or adjustments (grading all its marks), or move it to the front, back, forward or backward.",
+    "description": "Edit layer.  Rename or place a layer in an organisational folder (group; empty removes it), change its medium, opacity, visibility, lock or adjustments (grading all its marks), or move it to the front, back, forward or backward.",
     "operation": "Document",
     "params": [
       {
@@ -1104,7 +1126,7 @@
             "null"
           ]
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "group",
@@ -1115,9 +1137,10 @@
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "description": "Organisational folder name; empty removes the layer from its folder. Consecutive members are presented together without changing stacking."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "medium",
@@ -1128,9 +1151,10 @@
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "description": "A medium id, or empty for plain vector art."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "opacity",
@@ -1143,7 +1167,7 @@
             "null"
           ]
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "visible",
@@ -1156,7 +1180,7 @@
             "null"
           ]
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "locked",
@@ -1167,9 +1191,10 @@
           "type": [
             "boolean",
             "null"
-          ]
+          ],
+          "description": "Locked marks are not picked by the pointer."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "to",
@@ -1180,9 +1205,10 @@
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "description": "`front`, `back`, `forward` or `backward` among the layers."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "texture",
@@ -1193,9 +1219,10 @@
           "type": [
             "number",
             "null"
-          ]
+          ],
+          "description": "`0..=1`: let the ground's tooth show through the layer's marks."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "adjust",
@@ -1206,9 +1233,10 @@
           "type": [
             "object",
             "null"
-          ]
+          ],
+          "description": "Colour and tone of all on it, as `edit-marks` adjust; `{}` clears."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "mask",
@@ -1219,9 +1247,10 @@
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "description": "`reveal`, `hide` or `remove`: a mask layer `<id>-mask` to paint greys on, white shows, black hides; `unlink` keeps it put as the layer's marks move (`link` again)."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "invert",
@@ -1232,9 +1261,10 @@
           "type": [
             "boolean",
             "null"
-          ]
+          ],
+          "description": "Invert the mask."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "clip",
@@ -1245,9 +1275,10 @@
           "type": [
             "boolean",
             "null"
-          ]
+          ],
+          "description": "Clip to the layer below."
         },
-        "nullable": true
+        "nullable": false
       }
     ]
   },
@@ -1256,7 +1287,7 @@
     "action": "edit-marks",
     "resource_kind": "canvas.artwork",
     "label": "Edit marks",
-    "description": "Change marks by id: colours, opacity, name, move_by [dx,dy], scale, rotate and flip about their centre, or move them to another layer. Strokes: re-brush (brush, size, params), smooth, simplify, extend, split at a point, merge. Pictures: crop, straighten, adjust (exposure, white balance, …; look to judge).",
+    "description": "Edit marks.  Change marks by id: colours, opacity, name, `move_by` [dx,dy], scale, rotate and flip about their centre, or move them to another layer. Strokes: re-brush (brush, size, params), smooth, simplify, extend, split at a point, merge. Pictures: crop, straighten, adjust (exposure, white balance, …; look to judge).",
     "operation": "Document",
     "params": [
       {
@@ -1268,9 +1299,10 @@
           "type": [
             "boolean",
             "null"
-          ]
+          ],
+          "description": "Images: preserve hard pixel edges when enlarged."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "ids",
@@ -1281,7 +1313,8 @@
           "type": "array",
           "items": {
             "type": "string"
-          }
+          },
+          "description": "Marks, or groups (all their members)."
         },
         "nullable": false
       },
@@ -1296,7 +1329,7 @@
             "null"
           ]
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "shape",
@@ -1307,9 +1340,10 @@
           "type": [
             "object",
             "null"
-          ]
+          ],
+          "description": "Replace the geometry: a shape as `draw` takes it (e.g. a path's new `d`)."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "dash",
@@ -1323,9 +1357,10 @@
           ],
           "items": {
             "type": "number"
-          }
+          },
+          "description": "`[]` removes dashes."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "cap",
@@ -1338,7 +1373,7 @@
             "null"
           ]
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "join",
@@ -1351,7 +1386,7 @@
             "null"
           ]
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "blend",
@@ -1364,7 +1399,7 @@
             "null"
           ]
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "shadow",
@@ -1375,9 +1410,10 @@
           "type": [
             "object",
             "null"
-          ]
+          ],
+          "description": "As draw's; zero offset and blur removes it."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "inner_shadow",
@@ -1388,9 +1424,10 @@
           "type": [
             "object",
             "null"
-          ]
+          ],
+          "description": "As draw's; zero offset and blur removes it."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "grain",
@@ -1401,9 +1438,10 @@
           "type": [
             "number",
             "null"
-          ]
+          ],
+          "description": "0 removes it."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "feather",
@@ -1414,9 +1452,10 @@
           "type": [
             "number",
             "null"
-          ]
+          ],
+          "description": "0 removes it."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "group",
@@ -1427,9 +1466,10 @@
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "description": "Put into this group (`a/b` nests b in a); empty takes out of any."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "clip",
@@ -1440,9 +1480,10 @@
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "description": "Cut to this mark's or group's shape, `selection` or an area's SVG path data; empty uncuts."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "fill",
@@ -1453,9 +1494,10 @@
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "description": "A colour (replacing a gradient), or `none`."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "gradient",
@@ -1466,9 +1508,10 @@
           "type": [
             "object",
             "null"
-          ]
+          ],
+          "description": "As draw's."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "stroke",
@@ -1479,9 +1522,10 @@
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "description": "A colour, or `none`."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "stroke_width",
@@ -1494,7 +1538,7 @@
             "null"
           ]
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "opacity",
@@ -1507,7 +1551,7 @@
             "null"
           ]
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "brush",
@@ -1518,9 +1562,10 @@
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "description": "A stroke's brush preset (see paint)."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "size",
@@ -1531,9 +1576,10 @@
           "type": [
             "number",
             "null"
-          ]
+          ],
+          "description": "A stroke's width."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "brush_size",
@@ -1544,9 +1590,10 @@
           "type": [
             "number",
             "null"
-          ]
+          ],
+          "description": "Painted layers: the brush size a filled shape is laid in with."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "angle",
@@ -1559,7 +1606,7 @@
             "null"
           ]
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "wet",
@@ -1572,7 +1619,7 @@
             "null"
           ]
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "params",
@@ -1585,7 +1632,7 @@
             "null"
           ]
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "move_by",
@@ -1601,9 +1648,10 @@
             "type": "number"
           },
           "minItems": 2,
-          "maxItems": 2
+          "maxItems": 2,
+          "description": "Move by `[dx, dy]` units."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "scale",
@@ -1614,9 +1662,10 @@
           "type": [
             "number",
             "null"
-          ]
+          ],
+          "description": "Scale about each mark's or group's centre."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "rotate",
@@ -1627,9 +1676,10 @@
           "type": [
             "number",
             "null"
-          ]
+          ],
+          "description": "Degrees clockwise about each centre."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "layer",
@@ -1640,9 +1690,10 @@
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "description": "Move the marks onto this layer, on top."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "transform",
@@ -1658,9 +1709,10 @@
             "type": "number"
           },
           "minItems": 6,
-          "maxItems": 6
+          "maxItems": 6,
+          "description": "An affine `[a, b, c, d, e, f]` in artwork units applied after the rest, to all the marks as one: a stretch or turn about any point."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "flip",
@@ -1671,9 +1723,10 @@
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "description": "`horizontal` or `vertical`: mirror about each centre."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "crop",
@@ -1687,9 +1740,10 @@
           ],
           "items": {
             "type": "number"
-          }
+          },
+          "description": "Images: fractions `[x, y, w, h]` of the picture to show (it stays put); `[]` all of it."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "straighten",
@@ -1700,9 +1754,10 @@
           "type": [
             "number",
             "null"
-          ]
+          ],
+          "description": "Images: degrees, -45 to 45, to level it."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "adjust",
@@ -1823,9 +1878,10 @@
               "description": "Edges darker +, lighter -."
             }
           },
-          "additionalProperties": false
+          "additionalProperties": false,
+          "description": "Colour and tone; given steps replace, `{}` clears."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "smooth",
@@ -1836,9 +1892,10 @@
           "type": [
             "number",
             "null"
-          ]
+          ],
+          "description": "Strokes: take the wobble out of their paths, 0..=1."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "simplify",
@@ -1849,9 +1906,10 @@
           "type": [
             "number",
             "null"
-          ]
+          ],
+          "description": "Strokes: drop points within this many units of the line."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "extend",
@@ -1868,9 +1926,10 @@
             "items": {
               "type": "number"
             }
-          }
+          },
+          "description": "A stroke: continue it through these points, from the end they start nearer."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "split",
@@ -1886,9 +1945,10 @@
             "type": "number"
           },
           "minItems": 2,
-          "maxItems": 2
+          "maxItems": 2,
+          "description": "A stroke: cut it in two at the point nearest x, y; the far part gets a new id."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "merge",
@@ -1899,9 +1959,10 @@
           "type": [
             "boolean",
             "null"
-          ]
+          ],
+          "description": "Strokes: join them, in the order named, into the first."
         },
-        "nullable": true
+        "nullable": false
       }
     ]
   },
@@ -1910,7 +1971,7 @@
     "action": "export",
     "resource_kind": "canvas.artwork",
     "label": "Export picture",
-    "description": "Render the artwork at full size (or scaled) as a PNG, JPEG or WebP, written to path or kept as content.",
+    "description": "Export picture. Render the artwork at full size (or scaled) as a PNG, JPEG or WebP, written to path or kept as content.",
     "operation": "Effect",
     "params": [
       {
@@ -1922,9 +1983,10 @@
           "type": [
             "boolean",
             "null"
-          ]
+          ],
+          "description": "Omit the artwork ground for a transparent PNG or WebP."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "scale",
@@ -1935,9 +1997,10 @@
           "type": [
             "number",
             "null"
-          ]
+          ],
+          "description": "Pixels per artwork unit, 0.05 to 4 (default 1)."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "format",
@@ -1948,9 +2011,10 @@
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "description": "`png` (default, or the path's), `jpeg` or `webp` (lossless)."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "quality",
@@ -1963,9 +2027,10 @@
             "null"
           ],
           "minimum": 1,
-          "maximum": 100
+          "maximum": 100,
+          "description": "JPEG quality (default 90)."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "path",
@@ -1976,9 +2041,10 @@
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "description": "An absolute `.png`, `.jpg` or `.webp` path to write it to."
         },
-        "nullable": true
+        "nullable": false
       }
     ]
   },
@@ -1987,7 +2053,7 @@
     "action": "export-svg",
     "resource_kind": "canvas.artwork",
     "label": "Export SVG",
-    "description": "Export the artwork as SVG (plain layers as exact vectors, painted ones as pictures), written to path or kept as content (small ones answered).",
+    "description": "Export SVG. Export the artwork as SVG (plain layers as exact vectors, painted ones as pictures), written to path or kept as content (small ones answered).",
     "operation": "Effect",
     "params": [
       {
@@ -2002,9 +2068,10 @@
           ],
           "items": {
             "type": "string"
-          }
+          },
+          "description": "Only these marks or groups, cropped to them and without the ground: one icon of a set."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "outline_text",
@@ -2015,9 +2082,10 @@
           "type": [
             "boolean",
             "null"
-          ]
+          ],
+          "description": "Write text as outlines, which look the same without its fonts. Text along a path is always outlined."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "path",
@@ -2028,9 +2096,522 @@
           "type": [
             "string",
             "null"
+          ],
+          "description": "An absolute `.svg` path to write it to."
+        },
+        "nullable": false
+      }
+    ]
+  },
+  {
+    "resource": "canvas.artwork",
+    "action": "field-edit",
+    "resource_kind": "canvas.artwork",
+    "label": "Edit a Artwork field",
+    "description": "Change one field: {path: [{field: name} | {item: id} | {key: k} | {cell: {row, column}}], op: set | splice | replace | add | insert | remove | ..., ...its arguments}.",
+    "operation": "Document",
+    "params": [
+      {
+        "name": "edit",
+        "ty": "object",
+        "required": true,
+        "description": "The path of the field from the record's root, and the operation",
+        "schema": {
+          "type": "object",
+          "description": "A field edit: `path` from the record (fields by name, items by id, map entries by key) and `op` with its arguments. Editable paths:\n- `title` (Title. `title`: set, splice, replace) ops: set, splice, replace; value: {\"type\":\"string\"}\n- `width` (Width. `width`: set) ops: set; value: {\"type\":\"number\"}\n- `height` (Height. `height`: set) ops: set; value: {\"type\":\"number\"}\n- `ground` (Ground. `ground`: set) ops: set; value: {}\n- `layers` (Bottom to top. `layers`: insert-item, remove-item, move-to, set; removing an item asks for confirmation) ops: insert-item, remove-item, move-to, set; value: {}\n- `layers.*` (Bottom to top. `layers.*`: one item, by its id: set) ops: set; value: {\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\"},\"name\":{\"type\":\"string\"},\"group\":{\"type\":\"string\"},\"order\":{\"type\":\"string\"},\"medium\":{\"type\":\"string\"},\"opacity\":{\"type\":\"number\"},\"visible\":{\"type\":\"boolean\"},\"texture\":{\"type\":\"number\"},\"locked\":{\"type\":\"boolean\"},\"adjust\":{},\"mask_of\":{\"type\":\"string\"},\"base\":{\"type\":\"number\"},\"invert\":{\"type\":\"boolean\"},\"clip\":{\"type\":\"boolean\"},\"unlinked\":{\"type\":\"boolean\"}}}\n- `layers.*.id` (Id. `layers.*.id`: set, splice, replace; readonly: changed only by the record's verbs) ops: set, splice, replace; value: {\"type\":\"string\"}\n- `layers.*.name` (Name. `layers.*.name`: set, splice, replace) ops: set, splice, replace; value: {\"type\":\"string\"}\n- `layers.*.group` (Organisational folder; empty for an ungrouped layer. It does not. `layers.*.group`: set, splice, replace) ops: set, splice, replace; value: {\"type\":\"string\"}\n- `layers.*.order` (Fractional position among layers; later is on top. `layers.*.order`: set, splice, replace; readonly: changed only by the record's verbs) ops: set, splice, replace; value: {\"type\":\"string\"}\n- `layers.*.medium` (The medium preset that paints this layer's marks, or empty for plain. `layers.*.medium`: set, splice, replace) ops: set, splice, replace; value: {\"type\":\"string\"}\n- `layers.*.opacity` (Opacity. `layers.*.opacity`: set) ops: set; value: {\"type\":\"number\"}\n- `layers.*.visible` (Visible. `layers.*.visible`: set) ops: set; value: {\"type\":\"boolean\"}\n- `layers.*.texture` (`0..=1`: how much of the ground's tooth shows through the layer's. `layers.*.texture`: set) ops: set; value: {\"type\":\"number\"}\n- `layers.*.locked` (Held still: the pointer passes through its marks to those beneath. `layers.*.locked`: set) ops: set; value: {\"type\":\"boolean\"}\n- `layers.*.adjust` (Colour and tone adjustments of everything on the layer. `layers.*.adjust`: set) ops: set; value: {}\n- `layers.*.mask_of` (The layer this layer masks, or empty for an ordinary layer. A mask's. `layers.*.mask_of`: set, splice, replace; readonly: changed only by the record's verbs) ops: set, splice, replace; value: {\"type\":\"string\"}\n- `layers.*.base` (A mask's grey before any mark, `0..=1`: 1 shows all of its layer,. `layers.*.base`: set) ops: set; value: {\"type\":\"number\"}\n- `layers.*.invert` (A mask that hides where it is light and shows where it is dark. `layers.*.invert`: set) ops: set; value: {\"type\":\"boolean\"}\n- `layers.*.clip` (Clipped to the layer below: it shows only where that layer has paint. `layers.*.clip`: set) ops: set; value: {\"type\":\"boolean\"}\n- `layers.*.unlinked` (A mask that stays put when its layer's marks move. Linked, it moves. `layers.*.unlinked`: set) ops: set; value: {\"type\":\"boolean\"}\n- `marks` (Bottom to top within each layer, layers bottom to top (see. `marks`: insert-item, remove-item, move-to, set; removing an item asks for confirmation) ops: insert-item, remove-item, move-to, set; value: {}\n- `marks.*` (Bottom to top within each layer, layers bottom to top (see. `marks.*`: one item, by its id: set) ops: set; value: {\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\"},\"layer\":{\"type\":\"string\"},\"order\":{\"type\":\"string\"},\"name\":{\"type\":\"string\"},\"shape\":{},\"style\":{},\"transform\":{\"type\":[\"array\",\"null\"],\"items\":{\"type\":\"number\"},\"minItems\":6,\"maxItems\":6},\"group\":{\"type\":\"string\"},\"clip\":{\"type\":\"string\"},\"area\":{\"type\":\"string\"}}}\n- `marks.*.id` (Id. `marks.*.id`: set, splice, replace; readonly: changed only by the record's verbs) ops: set, splice, replace; value: {\"type\":\"string\"}\n- `marks.*.layer` (Layer. `marks.*.layer`: set, splice, replace) ops: set, splice, replace; value: {\"type\":\"string\"}\n- `marks.*.order` (Fractional position within its layer; later is on top. `marks.*.order`: set, splice, replace; readonly: changed only by the record's verbs) ops: set, splice, replace; value: {\"type\":\"string\"}\n- `marks.*.name` (Name. `marks.*.name`: set, splice, replace) ops: set, splice, replace; value: {\"type\":\"string\"}\n- `marks.*.shape` (Shape. `marks.*.shape`: set) ops: set; value: {}\n- `marks.*.style` (Style. `marks.*.style`: set) ops: set; value: {}\n- `marks.*.transform` (An affine transform `[a, b, c, d, e, f]` applied to the geometry. `marks.*.transform`: set) ops: set; value: {\"type\":[\"array\",\"null\"],\"items\":{\"type\":\"number\"},\"minItems\":6,\"maxItems\":6}\n- `marks.*.group` (The group the mark belongs to, or empty. `marks.*.group`: set, splice, replace) ops: set, splice, replace; value: {\"type\":\"string\"}\n- `marks.*.clip` (The mark whose shape this mark is cut to, or empty. `marks.*.clip`: set, splice, replace) ops: set, splice, replace; value: {\"type\":\"string\"}\n- `marks.*.area` (SVG path data of the area the mark is kept inside (the selection's. `marks.*.area`: set, splice, replace; readonly: changed only by the record's verbs) ops: set, splice, replace; value: {\"type\":\"string\"}\n- `media` (Media presets saved in this artwork, by id. `media`: set, remove-key) ops: set, remove-key; value: {\"type\":\"object\"}\n- `media.*` (Media presets saved in this artwork, by id. `media.<key>`: an entry, by its key, and what is inside it) ops: set, splice, replace, add, insert, remove; value: {}\n- `reference` (Reference. `reference`: set) ops: set; value: {}\n- `selection` (Selection. `selection`: set) ops: set; value: {}",
+          "properties": {
+            "path": {
+              "type": "array",
+              "items": {
+                "type": "object"
+              }
+            },
+            "op": {
+              "type": "string",
+              "enum": [
+                "set",
+                "splice",
+                "replace",
+                "add",
+                "insert",
+                "remove",
+                "insert-item",
+                "remove-item",
+                "move-to",
+                "remove-key",
+                "set-cell",
+                "insert-row",
+                "insert-column",
+                "remove-row",
+                "remove-column",
+                "settle",
+                "rich"
+              ]
+            }
+          },
+          "required": [
+            "path",
+            "op"
+          ],
+          "examples": [
+            {
+              "path": [
+                {
+                  "field": "title"
+                }
+              ],
+              "op": "set"
+            },
+            {
+              "path": [
+                {
+                  "field": "width"
+                }
+              ],
+              "op": "set"
+            },
+            {
+              "path": [
+                {
+                  "field": "height"
+                }
+              ],
+              "op": "set"
+            },
+            {
+              "path": [
+                {
+                  "field": "ground"
+                }
+              ],
+              "op": "set"
+            },
+            {
+              "path": [
+                {
+                  "field": "layers"
+                }
+              ],
+              "op": "insert-item"
+            },
+            {
+              "path": [
+                {
+                  "field": "layers"
+                },
+                {
+                  "item": "<item>"
+                }
+              ],
+              "op": "set"
+            },
+            {
+              "path": [
+                {
+                  "field": "layers"
+                },
+                {
+                  "item": "<item>"
+                },
+                {
+                  "field": "id"
+                }
+              ],
+              "op": "set"
+            },
+            {
+              "path": [
+                {
+                  "field": "layers"
+                },
+                {
+                  "item": "<item>"
+                },
+                {
+                  "field": "name"
+                }
+              ],
+              "op": "set"
+            },
+            {
+              "path": [
+                {
+                  "field": "layers"
+                },
+                {
+                  "item": "<item>"
+                },
+                {
+                  "field": "group"
+                }
+              ],
+              "op": "set"
+            },
+            {
+              "path": [
+                {
+                  "field": "layers"
+                },
+                {
+                  "item": "<item>"
+                },
+                {
+                  "field": "order"
+                }
+              ],
+              "op": "set"
+            },
+            {
+              "path": [
+                {
+                  "field": "layers"
+                },
+                {
+                  "item": "<item>"
+                },
+                {
+                  "field": "medium"
+                }
+              ],
+              "op": "set"
+            },
+            {
+              "path": [
+                {
+                  "field": "layers"
+                },
+                {
+                  "item": "<item>"
+                },
+                {
+                  "field": "opacity"
+                }
+              ],
+              "op": "set"
+            },
+            {
+              "path": [
+                {
+                  "field": "layers"
+                },
+                {
+                  "item": "<item>"
+                },
+                {
+                  "field": "visible"
+                }
+              ],
+              "op": "set"
+            },
+            {
+              "path": [
+                {
+                  "field": "layers"
+                },
+                {
+                  "item": "<item>"
+                },
+                {
+                  "field": "texture"
+                }
+              ],
+              "op": "set"
+            },
+            {
+              "path": [
+                {
+                  "field": "layers"
+                },
+                {
+                  "item": "<item>"
+                },
+                {
+                  "field": "locked"
+                }
+              ],
+              "op": "set"
+            },
+            {
+              "path": [
+                {
+                  "field": "layers"
+                },
+                {
+                  "item": "<item>"
+                },
+                {
+                  "field": "adjust"
+                }
+              ],
+              "op": "set"
+            },
+            {
+              "path": [
+                {
+                  "field": "layers"
+                },
+                {
+                  "item": "<item>"
+                },
+                {
+                  "field": "mask_of"
+                }
+              ],
+              "op": "set"
+            },
+            {
+              "path": [
+                {
+                  "field": "layers"
+                },
+                {
+                  "item": "<item>"
+                },
+                {
+                  "field": "base"
+                }
+              ],
+              "op": "set"
+            },
+            {
+              "path": [
+                {
+                  "field": "layers"
+                },
+                {
+                  "item": "<item>"
+                },
+                {
+                  "field": "invert"
+                }
+              ],
+              "op": "set"
+            },
+            {
+              "path": [
+                {
+                  "field": "layers"
+                },
+                {
+                  "item": "<item>"
+                },
+                {
+                  "field": "clip"
+                }
+              ],
+              "op": "set"
+            },
+            {
+              "path": [
+                {
+                  "field": "layers"
+                },
+                {
+                  "item": "<item>"
+                },
+                {
+                  "field": "unlinked"
+                }
+              ],
+              "op": "set"
+            },
+            {
+              "path": [
+                {
+                  "field": "marks"
+                }
+              ],
+              "op": "insert-item"
+            },
+            {
+              "path": [
+                {
+                  "field": "marks"
+                },
+                {
+                  "item": "<item>"
+                }
+              ],
+              "op": "set"
+            },
+            {
+              "path": [
+                {
+                  "field": "marks"
+                },
+                {
+                  "item": "<item>"
+                },
+                {
+                  "field": "id"
+                }
+              ],
+              "op": "set"
+            },
+            {
+              "path": [
+                {
+                  "field": "marks"
+                },
+                {
+                  "item": "<item>"
+                },
+                {
+                  "field": "layer"
+                }
+              ],
+              "op": "set"
+            },
+            {
+              "path": [
+                {
+                  "field": "marks"
+                },
+                {
+                  "item": "<item>"
+                },
+                {
+                  "field": "order"
+                }
+              ],
+              "op": "set"
+            },
+            {
+              "path": [
+                {
+                  "field": "marks"
+                },
+                {
+                  "item": "<item>"
+                },
+                {
+                  "field": "name"
+                }
+              ],
+              "op": "set"
+            },
+            {
+              "path": [
+                {
+                  "field": "marks"
+                },
+                {
+                  "item": "<item>"
+                },
+                {
+                  "field": "shape"
+                }
+              ],
+              "op": "set"
+            },
+            {
+              "path": [
+                {
+                  "field": "marks"
+                },
+                {
+                  "item": "<item>"
+                },
+                {
+                  "field": "style"
+                }
+              ],
+              "op": "set"
+            },
+            {
+              "path": [
+                {
+                  "field": "marks"
+                },
+                {
+                  "item": "<item>"
+                },
+                {
+                  "field": "transform"
+                }
+              ],
+              "op": "set"
+            },
+            {
+              "path": [
+                {
+                  "field": "marks"
+                },
+                {
+                  "item": "<item>"
+                },
+                {
+                  "field": "group"
+                }
+              ],
+              "op": "set"
+            },
+            {
+              "path": [
+                {
+                  "field": "marks"
+                },
+                {
+                  "item": "<item>"
+                },
+                {
+                  "field": "clip"
+                }
+              ],
+              "op": "set"
+            },
+            {
+              "path": [
+                {
+                  "field": "marks"
+                },
+                {
+                  "item": "<item>"
+                },
+                {
+                  "field": "area"
+                }
+              ],
+              "op": "set"
+            },
+            {
+              "path": [
+                {
+                  "field": "media"
+                }
+              ],
+              "op": "set"
+            },
+            {
+              "path": [
+                {
+                  "field": "media"
+                },
+                {
+                  "key": "<key>"
+                }
+              ],
+              "op": "set"
+            },
+            {
+              "path": [
+                {
+                  "field": "reference"
+                }
+              ],
+              "op": "set"
+            },
+            {
+              "path": [
+                {
+                  "field": "selection"
+                }
+              ],
+              "op": "set"
+            }
           ]
         },
-        "nullable": true
+        "nullable": false
       }
     ]
   },
@@ -2039,7 +2620,7 @@
     "action": "find-area",
     "resource_kind": "canvas.artwork",
     "label": "Find image area",
-    "description": "Find a photo's subject (subject: true) or refine the selected edge (refine: units) in the background, with progress and one undo step. Then use-selection mask or fill. Accepts select's add/subtract/intersect, layer and feather options. The artwork must remain unchanged while the area is found.",
+    "description": "Find image area. Find a photo's subject (subject: true) or refine the selected edge (refine: units) in the background, with progress and one undo step. Then use-selection mask or fill. Accepts select's add/subtract/intersect, layer and feather options. The artwork must remain unchanged while the area is found.",
     "operation": "Effect",
     "params": [
       {
@@ -2051,9 +2632,10 @@
           "type": [
             "boolean",
             "null"
-          ]
+          ],
+          "description": "Find the main subject on-device; with at, the object there."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "refine",
@@ -2064,9 +2646,10 @@
           "type": [
             "number",
             "null"
-          ]
+          ],
+          "description": "Edge reach in artwork units; subject defaults to 6 image pixels."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "at",
@@ -2082,9 +2665,10 @@
             "type": "number"
           },
           "minItems": 2,
-          "maxItems": 2
+          "maxItems": 2,
+          "description": "Subject point `[x, y]` in artwork units."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "layer",
@@ -2095,9 +2679,10 @@
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "description": "Find on this layer alone; otherwise use all visible layers."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "mode",
@@ -2108,9 +2693,10 @@
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "description": "`replace` (default), `add`, `subtract` or `intersect`."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "feather",
@@ -2121,9 +2707,10 @@
           "type": [
             "number",
             "null"
-          ]
+          ],
+          "description": "Feather in artwork units."
         },
-        "nullable": true
+        "nullable": false
       }
     ]
   },
@@ -2168,11 +2755,11 @@
                       "set-reference",
                       "import-svg",
                       "open",
+                      "new-artwork",
+                      "open-artwork",
                       "select",
                       "use-selection",
-                      "combine",
-                      "new-artwork",
-                      "open-artwork"
+                      "combine"
                     ]
                   },
                   "args": {
@@ -2194,6 +2781,67 @@
                 "properties": {
                   "action": {
                     "type": "string",
+                    "const": "field-edit"
+                  },
+                  "args": {
+                    "type": "object",
+                    "required": [
+                      "edit"
+                    ],
+                    "properties": {
+                      "edit": {
+                        "type": "object",
+                        "properties": {
+                          "path": {
+                            "type": "array",
+                            "items": {
+                              "type": "object"
+                            }
+                          },
+                          "op": {
+                            "type": "string",
+                            "enum": [
+                              "set",
+                              "splice",
+                              "replace",
+                              "add",
+                              "insert",
+                              "remove",
+                              "insert-item",
+                              "remove-item",
+                              "move-to",
+                              "remove-key",
+                              "set-cell",
+                              "insert-row",
+                              "insert-column",
+                              "remove-row",
+                              "remove-column",
+                              "settle",
+                              "rich"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "path",
+                          "op"
+                        ]
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "additionalProperties": false,
+                "description": "A field edit"
+              },
+              {
+                "type": "object",
+                "required": [
+                  "action",
+                  "args"
+                ],
+                "properties": {
+                  "action": {
+                    "type": "string",
                     "const": "apply"
                   },
                   "args": {
@@ -2203,71 +2851,75 @@
                     ],
                     "properties": {
                       "action": {
-                        "oneOf": [
-                          {
-                            "type": "object",
-                            "required": [
-                              "action",
-                              "src",
-                              "pixels",
-                              "title"
-                            ],
-                            "properties": {
-                              "src": {
-                                "type": "string"
-                              },
-                              "pixels": {
-                                "type": "array",
-                                "items": {
-                                  "type": "integer",
-                                  "minimum": 0,
-                                  "maximum": 4294967295
+                        "type": "object",
+                        "required": [
+                          "op"
+                        ],
+                        "properties": {
+                          "op": {
+                            "oneOf": [
+                              {
+                                "type": "object",
+                                "required": [
+                                  "action",
+                                  "args"
+                                ],
+                                "properties": {
+                                  "action": {
+                                    "type": "string",
+                                    "const": "field-edit"
+                                  },
+                                  "args": {
+                                    "type": "object"
+                                  }
                                 },
-                                "minItems": 2,
-                                "maxItems": 2
+                                "additionalProperties": false
                               },
-                              "title": {
-                                "type": "string"
-                              },
-                              "action": {
-                                "type": "string",
-                                "const": "open-picture"
+                              {
+                                "type": "object",
+                                "required": [
+                                  "action",
+                                  "args"
+                                ],
+                                "properties": {
+                                  "action": {
+                                    "type": "string",
+                                    "enum": [
+                                      "paint",
+                                      "draw",
+                                      "edit-marks",
+                                      "remove-marks",
+                                      "arrange",
+                                      "add-layer",
+                                      "edit-layer",
+                                      "remove-layer",
+                                      "set-artwork",
+                                      "save-medium",
+                                      "remove-medium",
+                                      "align",
+                                      "set-reference",
+                                      "import-svg",
+                                      "open",
+                                      "new-artwork",
+                                      "open-artwork",
+                                      "select",
+                                      "use-selection",
+                                      "combine"
+                                    ]
+                                  },
+                                  "args": {
+                                    "type": "object"
+                                  }
+                                },
+                                "additionalProperties": false
                               }
-                            },
-                            "additionalProperties": false
+                            ]
                           },
-                          {
-                            "type": "object",
-                            "required": [
-                              "action"
-                            ],
-                            "properties": {
-                              "action": {
-                                "type": "string",
-                                "enum": [
-                                  "set-artwork",
-                                  "new-artwork",
-                                  "open-artwork",
-                                  "add-layer",
-                                  "edit-layer",
-                                  "remove-layer",
-                                  "draw",
-                                  "paint",
-                                  "edit-marks",
-                                  "remove-marks",
-                                  "arrange",
-                                  "save-medium",
-                                  "remove-medium",
-                                  "align",
-                                  "set-reference",
-                                  "select",
-                                  "use-selection",
-                                  "combine"
-                                ]
-                              }
-                            }
+                          "at": {
+                            "type": "integer"
                           }
-                        ]
+                        },
+                        "additionalProperties": false
                       }
                     },
                     "additionalProperties": false
@@ -2304,7 +2956,7 @@
     "action": "import-svg",
     "resource_kind": "canvas.artwork",
     "label": "Import SVG",
-    "description": "Import an SVG (markup, file path or content address) as one draw of path and text marks in a group: fills, gradients, outlines, opacity, blends and clip paths.",
+    "description": "Import SVG.  Import an SVG (markup, file path or content address) as one draw of path and text marks in a group: fills, gradients, outlines, opacity, blends and clip paths.",
     "operation": "Document",
     "params": [
       {
@@ -2313,7 +2965,8 @@
         "required": true,
         "description": "SVG markup, an absolute path to a `.svg`, or a content address.",
         "schema": {
-          "type": "string"
+          "type": "string",
+          "description": "SVG markup, an absolute path to a `.svg`, or a content address."
         },
         "nullable": false
       },
@@ -2326,9 +2979,10 @@
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "description": "The layer to draw on; the top layer when absent."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "group",
@@ -2339,9 +2993,10 @@
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "description": "The group the marks join (one is made when absent)."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "fit",
@@ -2357,9 +3012,10 @@
             "type": "number"
           },
           "minItems": 4,
-          "maxItems": 4
+          "maxItems": 4,
+          "description": "Fit into `[x, y, width, height]`, aspect kept; own size otherwise."
         },
-        "nullable": true
+        "nullable": false
       }
     ]
   },
@@ -2368,7 +3024,7 @@
     "action": "inspect",
     "resource_kind": "canvas.artwork",
     "label": "Inspect marks",
-    "description": "List layers and newest marks (ids, bounds, colours), scoped by region/layer. palette: true also counts literal fill, stroke and gradient colours across all matching marks, independent of limit (first 32 colours, palette_colours is the total). Named pigments come from media. measure weighs ink to balance icons and type.",
+    "description": "Inspect marks. List layers and newest marks (ids, bounds, colours), scoped by region/layer. palette: true also counts literal fill, stroke and gradient colours across all matching marks, independent of limit (first 32 colours, `palette_colours` is the total). Named pigments come from media. measure weighs ink to balance icons and type.",
     "operation": "View",
     "params": [
       {
@@ -2380,9 +3036,10 @@
           "type": [
             "boolean",
             "null"
-          ]
+          ],
+          "description": "Include literal fill, stroke and gradient colours with mark counts, scoped by region/layer, independent of the newest-mark limit."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "region",
@@ -2398,9 +3055,10 @@
             "type": "number"
           },
           "minItems": 4,
-          "maxItems": 4
+          "maxItems": 4,
+          "description": "Only marks touching `[x, y, width, height]`."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "layer",
@@ -2411,9 +3069,10 @@
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "description": "Only marks on this layer."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "limit",
@@ -2426,9 +3085,10 @@
             "null"
           ],
           "minimum": 0,
-          "maximum": 4294967295
+          "maximum": 4294967295,
+          "description": "How many of the newest matching marks to list, 0 to 400 (default 100; none with measure)."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "version",
@@ -2439,9 +3099,10 @@
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "description": "A past version: a change id from history or a checkpoint name."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "full",
@@ -2452,9 +3113,10 @@
           "type": [
             "boolean",
             "null"
-          ]
+          ],
+          "description": "Also each mark's shape, style and transform, to edit exactly."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "measure",
@@ -2468,9 +3130,10 @@
           ],
           "items": {
             "type": "string"
-          }
+          },
+          "description": "Marks or groups to measure as the eye sees them: ink box, ink area, centre of mass and its offset from the box's middle (for balancing icons optically), and a text's letter boxes."
         },
-        "nullable": true
+        "nullable": false
       }
     ]
   },
@@ -2479,8 +3142,8 @@
     "action": "look",
     "resource_kind": "canvas.artwork",
     "label": "Look at the artwork",
-    "description": "See the artwork as a picture: the whole of it, or a region up close. Answers with the image and the revision it shows. grid: true overlays labelled coordinates for placing marks.",
-    "operation": "View",
+    "description": "Look at the artwork. See the artwork as a picture: the whole of it, or a region up close. Answers with the image and the revision it shows. grid: true overlays labelled coordinates for placing marks.",
+    "operation": "Effect",
     "params": [
       {
         "name": "region",
@@ -2496,9 +3159,10 @@
             "type": "number"
           },
           "minItems": 4,
-          "maxItems": 4
+          "maxItems": 4,
+          "description": "`[x, y, width, height]` in artwork units; the whole artwork when absent. A small region is a close look at detail."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "size",
@@ -2511,9 +3175,10 @@
             "null"
           ],
           "minimum": 0,
-          "maximum": 4294967295
+          "maximum": 4294967295,
+          "description": "The longest side of the picture in pixels, 64 to 1536 (default 768)."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "format",
@@ -2524,9 +3189,10 @@
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "description": "`jpeg` (default) or `png` for exact pixels."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "grid",
@@ -2537,9 +3203,10 @@
           "type": [
             "boolean",
             "null"
-          ]
+          ],
+          "description": "Draw a labelled coordinate grid over the picture, to place marks."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "layers",
@@ -2553,9 +3220,10 @@
           ],
           "items": {
             "type": "string"
-          }
+          },
+          "description": "Show only these layers."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "version",
@@ -2566,9 +3234,10 @@
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "description": "A past version: a change id from history or a checkpoint name."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "reference",
@@ -2579,9 +3248,10 @@
           "type": [
             "boolean",
             "null"
-          ]
+          ],
+          "description": "Show the reference picture over the artwork; as set when absent."
         },
-        "nullable": true
+        "nullable": false
       }
     ]
   },
@@ -2590,7 +3260,7 @@
     "action": "media",
     "resource_kind": "canvas.artwork",
     "label": "List media",
-    "description": "List the media layers can use (oil, watercolour presets and those saved here) with their engines' parameters and pigment palettes, and the fonts text can use.",
+    "description": "List media. List the media layers can use (oil, watercolour presets and those saved here) with their engines' parameters and pigment palettes, and the fonts text can use.",
     "operation": "View",
     "params": []
   },
@@ -2599,7 +3269,7 @@
     "action": "new-artwork",
     "resource_kind": "canvas.artwork",
     "label": "New artwork",
-    "description": "Start a blank artwork (one undo away). size: screen, a4, letter, square, poster, icon (landscape turns it). start: paper, white, watercolour, oil, panel, dark.",
+    "description": "New artwork.  Start a blank artwork (one undo away). size: screen, a4, letter, square, poster, icon (landscape turns it). start: paper, white, watercolour, oil, panel, dark.",
     "operation": "Document",
     "params": [
       {
@@ -2613,7 +3283,7 @@
             "null"
           ]
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "size",
@@ -2624,9 +3294,10 @@
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "description": "A size preset; `width` and `height` override it."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "landscape",
@@ -2637,9 +3308,10 @@
           "type": [
             "boolean",
             "null"
-          ]
+          ],
+          "description": "Turn the size on its side."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "width",
@@ -2650,9 +3322,10 @@
           "type": [
             "number",
             "null"
-          ]
+          ],
+          "description": "Width in units, 16 to 8192."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "height",
@@ -2663,9 +3336,10 @@
           "type": [
             "number",
             "null"
-          ]
+          ],
+          "description": "Height in units, 16 to 8192."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "start",
@@ -2676,9 +3350,10 @@
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "description": "A ground and first medium; the fields below override it."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "texture",
@@ -2691,7 +3366,7 @@
             "null"
           ]
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "ground_colour",
@@ -2702,9 +3377,10 @@
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "description": "Ground colour, `#rrggbb`."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "medium",
@@ -2715,9 +3391,10 @@
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "description": "The first layer's medium; empty for plain."
         },
-        "nullable": true
+        "nullable": false
       }
     ]
   },
@@ -2726,7 +3403,7 @@
     "action": "open",
     "resource_kind": "canvas.artwork",
     "label": "Open picture",
-    "description": "Open a PNG, JPEG or WebP as a new artwork the size of the picture (a unit per pixel), the picture its first mark, `picture`. Replaces what the artwork held (undo brings it back).",
+    "description": "Open picture.  Open a PNG, JPEG or WebP as a new artwork the size of the picture (a unit per pixel), the picture its first mark, `picture`. Replaces what the artwork held (undo brings it back).",
     "operation": "Document",
     "params": [
       {
@@ -2735,7 +3412,22 @@
         "required": true,
         "description": "A PNG, JPEG or WebP: an absolute path, a content address or a data: URI.",
         "schema": {
-          "type": "string"
+          "type": "string",
+          "description": "A PNG, JPEG or WebP: an absolute path, a content address or a data: URI."
+        },
+        "nullable": false
+      },
+      {
+        "name": "title",
+        "ty": "text",
+        "required": false,
+        "description": "The new artwork's title; the file's name when absent.",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The new artwork's title; the file's name when absent."
         },
         "nullable": false
       }
@@ -2746,7 +3438,7 @@
     "action": "open-artwork",
     "resource_kind": "canvas.artwork",
     "label": "Open artwork",
-    "description": "Replace the artwork with a saved .artwork file (path, content address or JSON), one undo away.",
+    "description": "Open artwork.  Replace the artwork with a saved .artwork file (path, content address or JSON), one undo away.",
     "operation": "Document",
     "params": [
       {
@@ -2755,7 +3447,8 @@
         "required": true,
         "description": "A `.artwork` path, a content address, or the file's JSON.",
         "schema": {
-          "type": "string"
+          "type": "string",
+          "description": "A `.artwork` path, a content address, or the file's JSON."
         },
         "nullable": false
       }
@@ -2766,7 +3459,7 @@
     "action": "paint",
     "resource_kind": "canvas.artwork",
     "label": "Paint strokes",
-    "description": "Paint brush strokes on a layer in one step. On an oil or watercolour layer the medium simulates real paint; on a plain layer the brush preset draws them: pen for clean line art (pressure swells the line), pencil or charcoal to shade (pressure sets darkness; charcoal catches the paper), marker for flat see-through tone, airbrush for soft glows, calligraphy for lettering. brush eraser (no colour) clears paint under it on its layer; remove-marks along takes whole strokes. Each stroke: points [[x,y] or [x,y,pressure]], size, colour (#rrggbb or pigment:<name>). Answers the new ids. One stroke can be many: forks grows a branch or bare tree; dabs scatters foliage, flowers or (with dab_length, angle -90) grass; hatch shades the area its points enclose. Work like a painter, looking close after each passage: big shapes first; then forms in a few values (dark mass, middle, lit side); small lights and accents last.",
+    "description": "Paint strokes.  Paint brush strokes on a layer in one step. On an oil or watercolour layer the medium simulates real paint; on a plain layer the brush preset draws them: pen for clean line art (pressure swells the line), pencil or charcoal to shade (pressure sets darkness; charcoal catches the paper), marker for flat see-through tone, airbrush for soft glows, calligraphy for lettering. brush eraser (no colour) clears paint under it on its layer; remove-marks along takes whole strokes. Each stroke: points [[x,y] or [x,y,pressure]], size, colour (#rrggbb or pigment:<name>). Answers the new ids. One stroke can be many: forks grows a branch or bare tree; dabs scatters foliage, flowers or (with `dab_length`, angle -90) grass; hatch shades the area its points enclose. Work like a painter, looking close after each passage: big shapes first; then forms in a few values (dark mass, middle, lit side); small lights and accents last.",
     "operation": "Document",
     "params": [
       {
@@ -2778,9 +3471,10 @@
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "description": "The layer to paint on; the top layer when absent."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "strokes",
@@ -2929,9 +3623,10 @@
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "description": "Put them in this group, to edit or remove them as one."
         },
-        "nullable": true
+        "nullable": false
       }
     ]
   },
@@ -2957,7 +3652,7 @@
     "action": "remove-layer",
     "resource_kind": "canvas.artwork",
     "label": "Remove layer",
-    "description": "Remove a layer and every mark on it.",
+    "description": "Remove layer.  Remove a layer and every mark on it.",
     "operation": "Document",
     "params": [
       {
@@ -2977,7 +3672,7 @@
     "action": "remove-marks",
     "resource_kind": "canvas.artwork",
     "label": "Remove marks",
-    "description": "Remove marks by id, every mark of a layer, or the strokes a path along crosses.",
+    "description": "Remove marks.  Remove marks by id, every mark of a layer, or the strokes a path along crosses.",
     "operation": "Document",
     "params": [
       {
@@ -2991,7 +3686,7 @@
             "type": "string"
           }
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "layer",
@@ -3002,9 +3697,10 @@
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "description": "Remove every mark on this layer (with along: only its strokes)."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "along",
@@ -3023,9 +3719,10 @@
             },
             "minItems": 2,
             "maxItems": 2
-          }
+          },
+          "description": "Remove the brush strokes this path `[[x, y], …]` crosses, as a stroke eraser does."
         },
-        "nullable": true
+        "nullable": false
       }
     ]
   },
@@ -3034,7 +3731,7 @@
     "action": "remove-medium",
     "resource_kind": "canvas.artwork",
     "label": "Remove medium",
-    "description": "Remove a medium saved in this artwork.",
+    "description": "Remove medium.  Remove a medium saved in this artwork.",
     "operation": "Document",
     "params": [
       {
@@ -3108,7 +3805,7 @@
     "action": "save-artwork",
     "resource_kind": "canvas.artwork",
     "label": "Save artwork",
-    "description": "Save the artwork as a .artwork file open-artwork reads: to a path, or kept as content.",
+    "description": "Save artwork. Save the artwork as a .artwork file open-artwork reads: to a path, or kept as content.",
     "operation": "Effect",
     "params": [
       {
@@ -3120,9 +3817,10 @@
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "description": "An absolute `.artwork` path to write; else kept as content."
         },
-        "nullable": true
+        "nullable": false
       }
     ]
   },
@@ -3131,7 +3829,7 @@
     "action": "save-medium",
     "resource_kind": "canvas.artwork",
     "label": "Save medium",
-    "description": "Save a medium preset in the artwork: an engine (oil or watercolour) with parameters, a ground and a pigment palette. Layers can then use its id.",
+    "description": "Save medium.  Save a medium preset in the artwork: an engine (oil or watercolour) with parameters, a ground and a pigment palette. Layers can then use its id.",
     "operation": "Document",
     "params": [
       {
@@ -3203,7 +3901,8 @@
               }
             }
           },
-          "additionalProperties": false
+          "additionalProperties": false,
+          "description": "A medium: one of the built-in engines with its parameters, a suggested ground and a palette. Saving one makes it part of the artwork, shared with everyone who opens it."
         },
         "nullable": false
       }
@@ -3214,7 +3913,7 @@
     "action": "select",
     "resource_kind": "canvas.artwork",
     "label": "Select area",
-    "description": "Select an area: shapes, marks, magic wand (at) or colour; add, subtract, intersect, grow, feather, invert. For subject or edge refinement invoke find-area (a background job). Then use-selection, or clip: \"selection\" in paint or draw. Bucket fill: select at, use-selection fill. Cut-out: subject, use-selection mask. look outlines it",
+    "description": "Select area.  Select an area: shapes, marks, magic wand (at) or colour; add, subtract, intersect, grow, feather, invert. For subject or edge refinement invoke find-area (a background job). Then use-selection, or clip: \"selection\" in paint or draw. Bucket fill: select at, use-selection fill. Cut-out: subject, use-selection mask. look outlines it",
     "operation": "Document",
     "params": [
       {
@@ -3231,9 +3930,10 @@
             "type": "number"
           },
           "minItems": 4,
-          "maxItems": 4
+          "maxItems": 4,
+          "description": "`[x, y, w, h]`."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "ellipse",
@@ -3249,9 +3949,10 @@
             "type": "number"
           },
           "minItems": 4,
-          "maxItems": 4
+          "maxItems": 4,
+          "description": "In `[x, y, w, h]`."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "points",
@@ -3270,9 +3971,10 @@
             },
             "minItems": 2,
             "maxItems": 2
-          }
+          },
+          "description": "Lasso `[[x, y], …]`."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "d",
@@ -3283,9 +3985,10 @@
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "description": "SVG path data."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "marks",
@@ -3299,9 +4002,10 @@
           ],
           "items": {
             "type": "string"
-          }
+          },
+          "description": "Marks or groups."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "at",
@@ -3317,9 +4021,10 @@
             "type": "number"
           },
           "minItems": 2,
-          "maxItems": 2
+          "maxItems": 2,
+          "description": "Magic wand `[x, y]`: like colour touching it."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "subject",
@@ -3330,9 +4035,10 @@
           "type": [
             "boolean",
             "null"
-          ]
+          ],
+          "description": "The photo's main subject, found on-device (with at: the object there)."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "refine",
@@ -3343,9 +4049,10 @@
           "type": [
             "number",
             "null"
-          ]
+          ],
+          "description": "Units: fit the edge to the picture, soft for fur (subject: 6px)."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "matte",
@@ -3375,9 +4082,10 @@
               "description": "`[x, y, w, h]`."
             }
           },
-          "additionalProperties": false
+          "additionalProperties": false,
+          "description": "Set by subject/refine."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "colour",
@@ -3388,9 +4096,10 @@
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "description": "`#rrggbb`, everywhere."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "tolerance",
@@ -3401,9 +4110,10 @@
           "type": [
             "number",
             "null"
-          ]
+          ],
+          "description": "0..1, default 0.15."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "layer",
@@ -3414,9 +4124,10 @@
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "description": "at or colour: on this layer alone, not as all show."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "mode",
@@ -3427,9 +4138,10 @@
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "description": "`replace`, `add`, `subtract`, `intersect` or `none` (deselect)."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "feather",
@@ -3440,9 +4152,10 @@
           "type": [
             "number",
             "null"
-          ]
+          ],
+          "description": "Units."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "grow",
@@ -3453,9 +4166,10 @@
           "type": [
             "number",
             "null"
-          ]
+          ],
+          "description": "Units, after invert; negative shrinks."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "invert",
@@ -3468,7 +4182,7 @@
             "null"
           ]
         },
-        "nullable": true
+        "nullable": false
       }
     ]
   },
@@ -3477,7 +4191,7 @@
     "action": "set-artwork",
     "resource_kind": "canvas.artwork",
     "label": "Set artwork",
-    "description": "Set the title, size (units) or ground: texture (smooth, paper, cold-press, rough, linen, panel) and colour; or crop the artwork to a region or to what a mark shows (fit).",
+    "description": "Set artwork.  Set the title, size (units) or ground: texture (smooth, paper, cold-press, rough, linen, panel) and colour; or crop the artwork to a region or to what a mark shows (fit).",
     "operation": "Document",
     "params": [
       {
@@ -3491,7 +4205,7 @@
             "null"
           ]
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "width",
@@ -3502,9 +4216,10 @@
           "type": [
             "number",
             "null"
-          ]
+          ],
+          "description": "Width in units, 16 to 8192."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "height",
@@ -3515,9 +4230,10 @@
           "type": [
             "number",
             "null"
-          ]
+          ],
+          "description": "Height in units, 16 to 8192."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "texture",
@@ -3528,9 +4244,10 @@
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "description": "`smooth`, `paper`, `cold-press`, `rough`, `linen` or `panel`."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "ground_colour",
@@ -3541,9 +4258,10 @@
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "description": "Ground colour, `#rrggbb`."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "crop",
@@ -3559,9 +4277,10 @@
             "type": "number"
           },
           "minItems": 4,
-          "maxItems": 4
+          "maxItems": 4,
+          "description": "Crop to `[x, y, width, height]`; marks move with it."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "fit",
@@ -3572,9 +4291,10 @@
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "description": "Crop to what this mark or group shows."
         },
-        "nullable": true
+        "nullable": false
       }
     ]
   },
@@ -3583,7 +4303,7 @@
     "action": "set-reference",
     "resource_kind": "canvas.artwork",
     "label": "Set reference",
-    "description": "Set the reference picture to recreate or trace: shown over the artwork at its opacity, seen by look (reference: false hides it) and compare; never exported.",
+    "description": "Set reference.  Set the reference picture to recreate or trace: shown over the artwork at its opacity, seen by look (reference: false hides it) and compare; never exported.",
     "operation": "Document",
     "params": [
       {
@@ -3595,9 +4315,10 @@
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "description": "A PNG or JPEG: an absolute file path, a content address, or the picture itself as `data:image/png;base64,…`."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "frame",
@@ -3613,9 +4334,10 @@
             "type": "number"
           },
           "minItems": 4,
-          "maxItems": 4
+          "maxItems": 4,
+          "description": "`[x, y, width, height]`; fitted to the artwork when absent."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "opacity",
@@ -3626,9 +4348,10 @@
           "type": [
             "number",
             "null"
-          ]
+          ],
+          "description": "`0..=1` (default 0.5)."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "visible",
@@ -3641,7 +4364,7 @@
             "null"
           ]
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "remove",
@@ -3652,9 +4375,10 @@
           "type": [
             "boolean",
             "null"
-          ]
+          ],
+          "description": "Remove the reference."
         },
-        "nullable": true
+        "nullable": false
       }
     ]
   },
@@ -3701,7 +4425,7 @@
     "action": "use-selection",
     "resource_kind": "canvas.artwork",
     "label": "Use selection",
-    "description": "Fill or stroke the selection as a mark on a layer, mask the layer to it, or clear it from the layer (by its mask, a layer of grey marks).",
+    "description": "Use selection.  Fill or stroke the selection as a mark on a layer, mask the layer to it, or clear it from the layer (by its mask, a layer of grey marks).",
     "operation": "Document",
     "params": [
       {
@@ -3710,7 +4434,8 @@
         "required": true,
         "description": "`fill`, `stroke`, `mask` or `clear`.",
         "schema": {
-          "type": "string"
+          "type": "string",
+          "description": "`fill`, `stroke`, `mask` or `clear`."
         },
         "nullable": false
       },
@@ -3725,7 +4450,7 @@
             "null"
           ]
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "colour",
@@ -3738,7 +4463,7 @@
             "null"
           ]
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "width",
@@ -3749,9 +4474,10 @@
           "type": [
             "number",
             "null"
-          ]
+          ],
+          "description": "Stroke width (2)."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "id",
@@ -3762,9 +4488,10 @@
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "description": "The new mark's."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "defringe",
@@ -3775,9 +4502,10 @@
           "type": [
             "boolean",
             "null"
-          ]
+          ],
+          "description": "mask/clear by a refined edge: clean the old background out of the pictures' edge (default true)."
         },
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "cleaned",
@@ -3796,9 +4524,204 @@
             },
             "minItems": 2,
             "maxItems": 2
-          }
+          },
+          "description": "Set by defringe."
         },
-        "nullable": true
+        "nullable": false
+      }
+    ]
+  },
+  {
+    "resource": "canvas.artwork/layers/layer-1",
+    "action": "field-edit",
+    "resource_kind": "canvas.artwork.layers",
+    "label": "Edit a field of this item",
+    "description": "Change one field: {path: [{field: name} | {item: id} | {key: k} | {cell: {row, column}}], op: set | splice | replace | add | insert | remove | ..., ...its arguments}.",
+    "operation": "Document",
+    "params": [
+      {
+        "name": "edit",
+        "ty": "object",
+        "required": true,
+        "description": "The path of the field from the item, and the operation",
+        "schema": {
+          "type": "object",
+          "description": "A field edit: `path` from the record (fields by name, items by id, map entries by key) and `op` with its arguments. Editable paths:\n- `id` (Id. `id`: set, splice, replace; readonly: changed only by the record's verbs) ops: set, splice, replace; value: {\"type\":\"string\"}\n- `name` (Name. `name`: set, splice, replace) ops: set, splice, replace; value: {\"type\":\"string\"}\n- `group` (Organisational folder; empty for an ungrouped layer. It does not. `group`: set, splice, replace) ops: set, splice, replace; value: {\"type\":\"string\"}\n- `order` (Fractional position among layers; later is on top. `order`: set, splice, replace; readonly: changed only by the record's verbs) ops: set, splice, replace; value: {\"type\":\"string\"}\n- `medium` (The medium preset that paints this layer's marks, or empty for plain. `medium`: set, splice, replace) ops: set, splice, replace; value: {\"type\":\"string\"}\n- `opacity` (Opacity. `opacity`: set) ops: set; value: {\"type\":\"number\"}\n- `visible` (Visible. `visible`: set) ops: set; value: {\"type\":\"boolean\"}\n- `texture` (`0..=1`: how much of the ground's tooth shows through the layer's. `texture`: set) ops: set; value: {\"type\":\"number\"}\n- `locked` (Held still: the pointer passes through its marks to those beneath. `locked`: set) ops: set; value: {\"type\":\"boolean\"}\n- `adjust` (Colour and tone adjustments of everything on the layer. `adjust`: set) ops: set; value: {}\n- `mask_of` (The layer this layer masks, or empty for an ordinary layer. A mask's. `mask_of`: set, splice, replace; readonly: changed only by the record's verbs) ops: set, splice, replace; value: {\"type\":\"string\"}\n- `base` (A mask's grey before any mark, `0..=1`: 1 shows all of its layer,. `base`: set) ops: set; value: {\"type\":\"number\"}\n- `invert` (A mask that hides where it is light and shows where it is dark. `invert`: set) ops: set; value: {\"type\":\"boolean\"}\n- `clip` (Clipped to the layer below: it shows only where that layer has paint. `clip`: set) ops: set; value: {\"type\":\"boolean\"}\n- `unlinked` (A mask that stays put when its layer's marks move. Linked, it moves. `unlinked`: set) ops: set; value: {\"type\":\"boolean\"}",
+          "properties": {
+            "path": {
+              "type": "array",
+              "items": {
+                "type": "object"
+              }
+            },
+            "op": {
+              "type": "string",
+              "enum": [
+                "set",
+                "splice",
+                "replace",
+                "add",
+                "insert",
+                "remove",
+                "insert-item",
+                "remove-item",
+                "move-to",
+                "remove-key",
+                "set-cell",
+                "insert-row",
+                "insert-column",
+                "remove-row",
+                "remove-column",
+                "settle",
+                "rich"
+              ]
+            }
+          },
+          "required": [
+            "path",
+            "op"
+          ],
+          "examples": [
+            {
+              "path": [
+                {
+                  "field": "id"
+                }
+              ],
+              "op": "set"
+            },
+            {
+              "path": [
+                {
+                  "field": "name"
+                }
+              ],
+              "op": "set"
+            },
+            {
+              "path": [
+                {
+                  "field": "group"
+                }
+              ],
+              "op": "set"
+            },
+            {
+              "path": [
+                {
+                  "field": "order"
+                }
+              ],
+              "op": "set"
+            },
+            {
+              "path": [
+                {
+                  "field": "medium"
+                }
+              ],
+              "op": "set"
+            },
+            {
+              "path": [
+                {
+                  "field": "opacity"
+                }
+              ],
+              "op": "set"
+            },
+            {
+              "path": [
+                {
+                  "field": "visible"
+                }
+              ],
+              "op": "set"
+            },
+            {
+              "path": [
+                {
+                  "field": "texture"
+                }
+              ],
+              "op": "set"
+            },
+            {
+              "path": [
+                {
+                  "field": "locked"
+                }
+              ],
+              "op": "set"
+            },
+            {
+              "path": [
+                {
+                  "field": "adjust"
+                }
+              ],
+              "op": "set"
+            },
+            {
+              "path": [
+                {
+                  "field": "mask_of"
+                }
+              ],
+              "op": "set"
+            },
+            {
+              "path": [
+                {
+                  "field": "base"
+                }
+              ],
+              "op": "set"
+            },
+            {
+              "path": [
+                {
+                  "field": "invert"
+                }
+              ],
+              "op": "set"
+            },
+            {
+              "path": [
+                {
+                  "field": "clip"
+                }
+              ],
+              "op": "set"
+            },
+            {
+              "path": [
+                {
+                  "field": "unlinked"
+                }
+              ],
+              "op": "set"
+            }
+          ]
+        },
+        "nullable": false
+      }
+    ]
+  },
+  {
+    "resource": "canvas.artwork/layers/layer-1",
+    "action": "rename",
+    "resource_kind": "canvas.artwork.layers",
+    "label": "Rename",
+    "description": null,
+    "operation": "Document",
+    "params": [
+      {
+        "name": "name",
+        "ty": "text",
+        "required": true,
+        "description": "Name",
+        "nullable": false
       }
     ]
   },
