@@ -30,7 +30,7 @@ fn answer<T>(pending: Pending<T>) -> T {
 }
 
 struct Door {
-    _broker: crate::shell::collab_broker::BrokerHandle,
+    broker: crate::shell::collab_broker::BrokerHandle,
     membership: crate::shell::state::WorkspaceTreeHandle,
     host: crate::shell::remote_actions::BrokerActionHost,
     owner: Caller,
@@ -79,7 +79,7 @@ impl Door {
             broker.app_action_broker().expect("the action broker"),
         );
         Self {
-            _broker: broker,
+            broker,
             membership,
             host,
             owner: Caller::local_person(OWNER),
@@ -394,7 +394,7 @@ fn a_helper_asked_first_rebinds_on_the_persons_confirmation() {
             ))
         })
         .expect("the room");
-    door._broker
+    door.broker
         .app_action_broker()
         .expect("the action broker")
         .set_app_action_consent(std::sync::Arc::new(Person));

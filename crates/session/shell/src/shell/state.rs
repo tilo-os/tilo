@@ -323,8 +323,8 @@ mod identity_fs_tests {
                     PolicySubject::Person("owner".into()),
                 )
             };
-            let room_a_policy = room_a.policy.room.clone();
-            room_a.grant(reader("alice-reads", &alice_id, &room_a_policy));
+            let first_room = room_a.policy.room.clone();
+            room_a.grant(reader("alice-reads", &alice_id, &first_room));
             // A Files share remains Files authority, not an implicit relay
             // membership on either room.
             room_a.sandbox.push(CapOverride::new(
@@ -334,10 +334,9 @@ mod identity_fs_tests {
                 Access::Read,
             ));
             let until_ms = (tilo_clock::unix_now() + 3600) * 1000;
-            let room_b_policy = room_b.policy.room.clone();
+            let second_room = room_b.policy.room.clone();
             room_b.grant(
-                reader("bob-reads", &bob_id, &room_b_policy)
-                    .with_lifetime(Lifetime::Until(until_ms)),
+                reader("bob-reads", &bob_id, &second_room).with_lifetime(Lifetime::Until(until_ms)),
             );
             let mut tree = WorkspaceTree {
                 desktop: DesktopTree {
@@ -386,8 +385,8 @@ mod identity_fs_tests {
             // A denial in the room's policy keeps the relay closed to her.
             tree.desktop.workspaces[0].grant(Grant::new(
                 "alice-denied",
-                PolicySubject::Person(alice_id.clone()),
-                TreePath::room(&room_a_policy),
+                PolicySubject::Person(alice_id),
+                TreePath::room(&first_room),
                 KindSet::READ,
                 Answer::Deny,
                 PolicySubject::Person("owner".into()),
