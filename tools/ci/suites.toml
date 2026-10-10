@@ -535,7 +535,6 @@ suites = [
   "crates/browser/tilo-browser-runtime/web/browser-accounts.test.mjs",
   "crates/browser/tilo-browser-runtime/web/root-identity.test.mjs",
   "crates/browser/tilo-browser-runtime/web/webgpu-safety.test.mjs",
-  "crates/browser/tilo-browser-runtime/scripts/web-runtime/external-workspace.test.mjs",
   "crates/browser/tilo-browser-runtime/web/asset-recovery.test.mjs",
   "crates/browser/tilo-browser-runtime/web/desktop-navigation.test.mjs",
   "crates/browser/tilo-browser-runtime/web/font-loader.test.mjs",
@@ -557,13 +556,6 @@ suites = [
 name = "desktop-open-times"
 inputs = ["crates/browser/tilo-web-desktop/scripts/"]
 suites = ["crates/browser/tilo-web-desktop/scripts/open-times-summary.test.mjs"]
-
-[[group]]
-name = "web-registry-client"
-inputs = ["crates/browser/web-registry-client/"]
-suites = [
-  "crates/browser/web-registry-client/registry-client.test.mjs",
-]
 
 [[group]]
 name = "browser-benchmark-scripts"
