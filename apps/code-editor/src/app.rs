@@ -1330,7 +1330,7 @@ impl CodeApp {
     }
 
     /// The queue the terminal takes the project's asked command lines from.
-    pub(crate) fn terminal_runs(&self) -> terminal::runs::RunQueue {
+    pub fn terminal_runs(&self) -> terminal::runs::RunQueue {
         self.terminal_runs.clone()
     }
 

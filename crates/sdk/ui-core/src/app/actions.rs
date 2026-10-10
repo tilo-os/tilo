@@ -2063,16 +2063,21 @@ impl App {
             });
         }
         let request_id = Self::allocate_broker_request_id(next_request_id)?;
-        let arguments = typed_arguments.cloned().unwrap_or_else(|| {
-            let mut arguments = serde_json::Map::new();
-            if let Some(value) = argument {
-                arguments.insert(
-                    tilo_actions::PROMPTED_PARAM.to_string(),
-                    serde_json::Value::String(value.to_string()),
-                );
-            }
-            arguments
-        });
+        // The argument travels as the caller gave it: typed arguments as
+        // such, a text argument as text, which the owning app binds to the
+        // action's input as its own door does (a single parameter, a prompt).
+        let argument = match (typed_arguments, argument) {
+            (Some(arguments), _) => tilo_actions::remote::InvokeArgument::Json(arguments.clone()),
+            (None, Some(text)) => match text.strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX) {
+                Some(json) => {
+                    tilo_actions::remote::InvokeArgument::Json(serde_json::from_str(json).map_err(
+                        |error| tilo_actions::DoorError::InvalidArguments(error.to_string()),
+                    )?)
+                }
+                None => tilo_actions::remote::InvokeArgument::Text(text.to_owned()),
+            },
+            (None, None) => tilo_actions::remote::InvokeArgument::Json(serde_json::Map::new()),
+        };
         send(
             request_id,
             tilo_actions::remote::InvokeRequest {
@@ -2082,7 +2087,7 @@ impl App {
                     provider: tilo_actions::remote::OWN_PROVIDER.into(),
                     address: address.clone(),
                 },
-                argument: tilo_actions::remote::InvokeArgument::Json(arguments),
+                argument,
                 context: None,
                 confirmation: Self::broker_confirmation(confirmation_evidence),
                 revision: None,
@@ -4278,6 +4283,19 @@ impl App {
                 Some(&self.focusable_order),
             )
         };
+    }
+
+    /// Run `f` on the root of the app component this window shows, inside
+    /// that component's own frame: for a test, or a host, reaching into the
+    /// mounted app between frames. `None` without a mounted component.
+    pub fn with_component_root<U>(&mut self, f: impl FnOnce(&mut dyn Widget) -> U) -> Option<U> {
+        let bound = self
+            .root_widget
+            .as_any_mut()?
+            .downcast_mut::<crate::widget::BoundAppWidget>()?;
+        let binding = bound.component.callback_binding();
+        let _entry = binding.enter().ok()?;
+        Some(f(bound.component.root.as_deref_mut()?))
     }
 
     pub fn action_palette(&self) -> Option<&crate::action_palette::ActionPalette> {

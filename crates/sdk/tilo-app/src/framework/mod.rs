@@ -361,7 +361,7 @@ pub use people::People;
 pub use person::PersonRecord;
 pub use preview::PastVersion;
 pub use record::{OtherRecord, Records};
-pub use root::reserved_action_ids;
+pub use root::{reserved_action_ids, with_surface};
 pub use rows::LiveRow;
 pub use scenario::{Fixture, RunMode};
 pub use settings::Setting;

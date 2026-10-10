@@ -893,6 +893,24 @@ fn withhold_document_actions(resource: &mut tilo_actions::Resource, reason: &str
     }
 }
 
+/// Visit the surface of type `S` the root of a resource app of `R` shows: for
+/// a test, or a host that mounted the app, reaching the surface between
+/// frames (`App::with_component_root` lends the root of a mounted one).
+/// `None` when `root` is not such a root or shows no `S`.
+pub fn with_surface<R: Resource, S: 'static, T>(
+    root: &mut dyn std::any::Any,
+    visit: impl FnOnce(&mut S) -> T,
+) -> Option<T> {
+    fn find<S: 'static>(widget: &mut dyn ui_core::widget::Widget) -> Option<&mut S> {
+        if widget.as_any_mut().is_some_and(|any| any.is::<S>()) {
+            return widget.as_any_mut()?.downcast_mut::<S>();
+        }
+        widget.children_mut().into_iter().find_map(find::<S>)
+    }
+    let root = root.downcast_mut::<ResourceRoot<R>>()?;
+    find::<S>(ui_core::widget::Decorator::inner_mut(root)).map(visit)
+}
+
 /// The document actions of `resource` and its children that can queue an
 /// outside consequence (a verb taking an outbox, every action of a record
 /// with a `queue`, and undo, redo and restore, which queue the compensation
