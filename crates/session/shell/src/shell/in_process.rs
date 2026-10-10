@@ -520,6 +520,26 @@ impl InProcessApps {
 }
 
 impl InProcessApps {
+    /// Consume enrollment-owned authenticated feedback startup custody.
+    /// A different profile person or replacement of existing custody is refused.
+    /// # Errors
+    /// Refuses mismatched identity, admission, storage or existing custody.
+    pub fn install_feedback_startup(
+        &mut self,
+        authenticated_reporter: &tilo_actions::remote::Caller,
+        startup: tilo_desktop::feedback::transport::Startup,
+    ) -> Result<(), LaunchError> {
+        if startup.reporter() != authenticated_reporter
+            || startup.reporter().principal()
+                != &tilo_actions::remote::CallerPrincipal::Person(self.author.0.clone())
+        {
+            return Err(LaunchError::BindingMismatch);
+        }
+        startup
+            .install(Rc::clone(&self.store), &mut self.feedback)
+            .map_err(|error| LaunchError::Operation(error.to_string()))
+    }
+
     /// Bind a trusted host's already-admitted feedback adapter to this profile.
     /// This is host configuration, never an action or a URL-supplied destination.
     ///
