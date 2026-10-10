@@ -45,6 +45,7 @@ struct EditorGeometry {
     widgets: Vec<TopBarWidget>,
     row_height: f64,
     row_gap: f64,
+    compact_rows: bool,
 }
 
 fn editor_text_width(width: f64) -> f32 {
@@ -1805,7 +1806,6 @@ impl TopBarChrome {
 
     fn control_name(&self, target: &str) -> String {
         match target {
-            Self::CONTROL_WIDGET_EDITOR => t("topbar-editor-title"),
             Self::CONTROL_OVERVIEW => t("topbar-open-overview"),
             Self::CONTROL_WORKSPACE_UP => t("topbar-previous-workspace"),
             Self::CONTROL_WORKSPACE_DOWN => t("topbar-next-workspace"),
@@ -1816,7 +1816,7 @@ impl TopBarChrome {
             Self::CONTROL_CENTER_CLOCK => t("topbar-show-clock"),
             Self::CONTROL_CENTER_MONITOR => t("topbar-show-system-monitor"),
             Self::CONTROL_CENTER_CALENDAR => t("topbar-show-calendar"),
-            Self::CONTROL_EDIT_WIDGETS => t("topbar-editor-title"),
+            Self::CONTROL_EDIT_WIDGETS | Self::CONTROL_WIDGET_EDITOR => t("topbar-editor-title"),
             Self::CONTROL_QUICK_SETTINGS => t("topbar-open-quick-settings"),
             Self::CONTROL_COLLABORATORS if self.invite_visible() => t("topbar-invite"),
             Self::CONTROL_COLLABORATORS => {
@@ -2496,6 +2496,8 @@ impl TopBarChrome {
             return false;
         }
         self.cancel_editor_drag();
+        self.responsive.toolbar.close_menus();
+        self.responsive.dirty = true;
         self.widget_editing = true;
         self.focused_control = self
             .editor_controls()
@@ -2637,6 +2639,46 @@ impl TopBarChrome {
         )
     }
 
+    fn editor_row_face(label: &str, remove_width: f64, compact: bool) -> ListRowFace<'_> {
+        let face = ListRowFace::new(label).trailing_width(remove_width);
+        if compact {
+            face.two_line_title()
+        } else {
+            face.leading(RowLeading::Icon(ui::icons::Icon::Menu))
+        }
+    }
+
+    fn editor_remove_metrics(
+        &self,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        content_width: f64,
+        remove_width: f64,
+    ) -> (f64, bool) {
+        let probe = Rect::new(
+            0.0,
+            0.0,
+            content_width,
+            ButtonFace::height(ControlSize::Small, theme),
+        );
+        let compact_rows = self.widget_config.widgets.iter().any(|widget| {
+            Self::editor_row_face(&Self::editor_label(*widget), remove_width, false)
+                .title_elided(probe, text, theme)
+        });
+        let remove_width = if compact_rows {
+            ButtonFace::icon_only(
+                Rect::ZERO,
+                ui::icons::Icon::Minus,
+                &t("topbar-editor-remove"),
+            )
+            .control_size(ControlSize::Small)
+            .intrinsic_width(text, theme)
+        } else {
+            remove_width
+        };
+        (remove_width, compact_rows)
+    }
+
     fn resolve_editor_geometry(&self, text: &mut TextRenderer, theme: &Theme) -> EditorGeometry {
         let pad = f64::from(theme.tokens.spacing.s4);
         let gap = f64::from(theme.tokens.spacing.s2);
@@ -2652,6 +2694,8 @@ impl TopBarChrome {
         let left = (self.center_rect.center().x - width / 2.0)
             .clamp(self.rect.x0 + outer, self.rect.x1 - outer - width);
         let content_width = (width - 2.0 * pad).max(0.0);
+        let (remove_width, compact_rows) =
+            self.editor_remove_metrics(text, theme, content_width, remove_width);
         let top = self.rect.y1 + gap;
         let title_h = f64::from(
             text.measure_style(
@@ -2674,8 +2718,7 @@ impl TopBarChrome {
         y = title.y1 + f64::from(theme.tokens.spacing.s1);
         let hint = Rect::new(left + pad, y, left + width - pad, y + hint_h);
         y = hint.y1 + f64::from(theme.tokens.spacing.s3);
-        let row_height = ListRowFace::new(&remove_label)
-            .leading(RowLeading::Icon(ui::icons::Icon::Menu))
+        let row_height = Self::editor_row_face(&remove_label, remove_width, compact_rows)
             .height(text, theme)
             .max(button_height + gap);
         let mut geometry = EditorGeometry {
@@ -2683,15 +2726,14 @@ impl TopBarChrome {
             hint,
             row_height,
             row_gap: gap,
+            compact_rows,
             widgets: self.widget_config.widgets.clone(),
             ..Default::default()
         };
         for widget in &self.widget_config.widgets {
             let label = Self::editor_label(*widget);
             let row = Rect::new(left + pad, y, left + width - pad, y + row_height);
-            let face = ListRowFace::new(&label)
-                .leading(RowLeading::Icon(ui::icons::Icon::Menu))
-                .trailing_width(remove_width);
+            let face = Self::editor_row_face(&label, remove_width, compact_rows);
             let slot = face.trailing_rect(row, text, theme).unwrap_or(Rect::ZERO);
             let button = Rect::new(
                 slot.x0,
@@ -2743,12 +2785,19 @@ impl TopBarChrome {
         disabled: bool,
         ctx: &mut ui::paint::PaintCtx<'_>,
     ) {
+        let face = if self.editor_geometry.compact_rows
+            && Self::editor_widget(target).is_some_and(|(_, remove)| remove)
+        {
+            ButtonFace::icon_only(rect, ui::icons::Icon::Minus, label)
+        } else {
+            ButtonFace::new(rect, label)
+        };
         Button::paint(
             ctx.scene,
             ctx.transform,
             ctx.text,
             ctx.theme,
-            &ButtonFace::new(rect, label)
+            &face
                 .role(
                     if Self::editor_widget(target).is_some_and(|(_, remove)| remove) {
                         ButtonRole::Plain
@@ -2786,9 +2835,7 @@ impl TopBarChrome {
             );
             let button = Self::shift_editor_rect(self.widget_editor_remove_rect(index), shift);
             let label = Self::editor_label(widget);
-            ListRowFace::new(&label)
-                .leading(RowLeading::Icon(ui::icons::Icon::Menu))
-                .trailing_width(button.width())
+            Self::editor_row_face(&label, button.width(), self.editor_geometry.compact_rows)
                 .separator(false)
                 .paint(ctx, row);
             self.editor_button(
@@ -4354,8 +4401,7 @@ impl TopBarChrome {
             return self.activate_editor_control(target);
         }
         match target {
-            Self::CONTROL_EDIT_WIDGETS => self.open_widget_editor(),
-            Self::CONTROL_WIDGET_EDITOR => self.open_widget_editor(),
+            Self::CONTROL_EDIT_WIDGETS | Self::CONTROL_WIDGET_EDITOR => self.open_widget_editor(),
             Self::CONTROL_CENTER_CLOCK
             | Self::CONTROL_CENTER_MONITOR
             | Self::CONTROL_CENTER_CALENDAR => {
@@ -5822,6 +5868,13 @@ impl Widget for TopBarChrome {
         state: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
+        if matches!(
+            target,
+            Self::CONTROL_EDIT_WIDGETS | Self::CONTROL_WIDGET_EDITOR
+        ) && matches!(action, ui::a11y::Action::Activate)
+        {
+            return self.open_widget_editor();
+        }
         if self.responsive.active && !self.widget_editing {
             let performed = self
                 .responsive
@@ -8165,6 +8218,117 @@ mod tests {
             changed > 30,
             "the focused shared face must paint visible pixels: {changed}"
         );
+    }
+    #[test]
+    fn composed_narrow_editor_preserves_both_semantic_targets_and_interruptions() {
+        use ui::a11y::Action;
+        use winit::{event::ElementState as E, keyboard::NamedKey as K};
+        for target in [
+            TopBarChrome::CONTROL_EDIT_WIDGETS,
+            TopBarChrome::CONTROL_WIDGET_EDITOR,
+        ] {
+            let mut frame = ui::headless::Framed::new(
+                ui::State::new(),
+                sample_chrome(),
+                (320, 480),
+                Theme::dark(),
+            );
+            let mut doc = AutoCommit::new();
+            assert!(
+                frame.perform_semantic_action(
+                    target,
+                    &Action::Activate,
+                    &mut ui::widget::Edits::lend(&mut doc),
+                    &automerge::ROOT,
+                ),
+                "original editor target remains admitted at narrow width: {target}"
+            );
+            ui::headless::Framed::harness_mut(&mut frame)
+                .poll_frame()
+                .unwrap();
+            assert!(frame.widget_editing);
+            assert!(frame.traps_focus());
+            let original = frame.widget_config.widgets.clone();
+            let from = frame.widget_editor_row(0).center();
+            let to = frame.widget_editor_row(2).center();
+            dispatch_topbar_event(&mut frame, &editor_pointer_event(from));
+            dispatch_topbar_event(&mut frame, &editor_mouse_event(E::Pressed));
+            dispatch_topbar_event(&mut frame, &editor_pointer_event(to));
+            assert!(frame.wants_pointer_capture());
+            dispatch_topbar_event(&mut frame, &WindowEvent::Focused(false));
+            dispatch_topbar_event(&mut frame, &editor_mouse_event(E::Released));
+            assert!(!frame.wants_pointer_capture());
+            assert_eq!(frame.widget_config.widgets, original);
+            dispatch_topbar_event(&mut frame, &editor_key_event(K::Escape, E::Pressed, false));
+            ui::headless::Framed::harness_mut(&mut frame)
+                .poll_frame()
+                .unwrap();
+            assert!(!frame.widget_editing);
+            assert!(!frame.traps_focus());
+            assert!(!frame.responsive.toolbar.is_overflow_open());
+        }
+    }
+    #[test]
+    fn composed_narrow_editor_theme_scale_capture_matrix() {
+        use ui::{a11y::Action, headless::Framed};
+        let out = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../target/combined-topbar-shots");
+        std::fs::create_dir_all(&out).expect("capture directory");
+        for (name, theme) in [
+            ("dark", Theme::dark()),
+            ("light", Theme::light()),
+            ("high-contrast", Theme::high_contrast()),
+            ("large-text", Theme::dark().with_text_scale(2.0)),
+            (
+                "ui-text-scaled",
+                Theme::dark().with_ui_scale(1.5).with_text_scale(1.3),
+            ),
+        ] {
+            let mut frame = Framed::new(ui::State::new(), sample_chrome(), (320, 600), theme);
+            let mut doc = AutoCommit::new();
+            assert!(frame.perform_semantic_action(
+                TopBarChrome::CONTROL_EDIT_WIDGETS,
+                &Action::Activate,
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+            ));
+            Framed::harness_mut(&mut frame).poll_frame().unwrap();
+            assert!(frame.responsive.active);
+            assert!(frame.widget_editing);
+            assert!(frame.modal_capture().is_some());
+            let geometry = &frame.editor_geometry;
+            assert!(geometry.panel.x0 >= 0.0 && geometry.panel.x1 <= 320.0);
+            assert!(geometry.panel.y0 >= 0.0 && geometry.panel.y1 <= 600.0);
+            assert!(geometry.title.y1 <= geometry.hint.y0);
+            assert!(geometry.hint.y1 <= geometry.rows[0].y0);
+            for ((row, remove), widget) in geometry
+                .rows
+                .iter()
+                .zip(&geometry.remove)
+                .zip(&geometry.widgets)
+            {
+                assert!(
+                    !TopBarChrome::editor_row_face(
+                        &TopBarChrome::editor_label(*widget),
+                        remove.width(),
+                        geometry.compact_rows,
+                    )
+                    .title_elided(
+                        *row,
+                        &mut TextRenderer::new(),
+                        &frame.responsive.theme
+                    ),
+                    "{name}: configured widget labels stay readable at narrow scale"
+                );
+                assert!(remove.x0 >= row.x0 && remove.x1 <= row.x1);
+                assert!(remove.y0 >= row.y0 && remove.y1 <= row.y1);
+                assert!(remove.width() > 0.0 && remove.height() > 0.0);
+            }
+            assert!(Framed::harness(&frame).native_app_audit().is_certified());
+            let path = out.join(format!("{name}-narrow-editor.png"));
+            Framed::harness(&frame).render_png(&path);
+            assert!(path.is_file(), "missing actual composed editor capture");
+        }
     }
 }
 

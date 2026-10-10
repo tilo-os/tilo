@@ -2452,6 +2452,15 @@ mod tests {
         use crate::headless::Framed;
         use std::cell::Cell;
         use std::rc::Rc;
+        let press = || WindowEvent::KeyboardInput {
+            device_id: winit::event::DeviceId::dummy(),
+            event: crate::synthetic_input::key_event(
+                Key::Named(NamedKey::Enter),
+                None,
+                ElementState::Pressed,
+            ),
+            is_synthetic: true,
+        };
         for width in [800, 100] {
             let calls = Rc::new(Cell::new(0));
             let count = Rc::clone(&calls);
@@ -2471,10 +2480,7 @@ mod tests {
             Framed::harness_mut(&mut frame)
                 .perform_named("toolbar.item.0", &Action::Focus)
                 .unwrap();
-            let mut held = crate::synthetic_input::key_event(
-                &Key::Named(NamedKey::Enter),
-                ElementState::Pressed,
-            );
+            let mut held = press();
             if let WindowEvent::KeyboardInput { event, .. } = &mut held {
                 event.repeat = true;
             }
@@ -2485,10 +2491,7 @@ mod tests {
                 0,
                 "{width}: a held key cannot start a new command"
             );
-            Framed::harness_mut(&mut frame).send_host_event(&crate::synthetic_input::key_event(
-                &Key::Named(NamedKey::Enter),
-                ElementState::Pressed,
-            ));
+            Framed::harness_mut(&mut frame).send_host_event(&press());
             Framed::harness_mut(&mut frame).poll_frame().unwrap();
             assert_eq!(
                 calls.get(),
