@@ -16,7 +16,8 @@ description = "The Tilo UI toolkit: retained-mode, CRDT-native widgets."
 # dependency marks `presentation-feedback`, which uses the Metal observer of
 # the patched HAL (vendor/wgpu-hal).
 # getrandom02 only selects the browser entropy backend for transitive crypto.
-ignored = ["wgpu-hal", "getrandom02"]
+# serde_bytes is named only inside `#[serde(with = "serde_bytes")]`.
+ignored = ["wgpu-hal", "getrandom02", "serde_bytes"]
 
 [features]
 default = ["native", "broker-transport"]
