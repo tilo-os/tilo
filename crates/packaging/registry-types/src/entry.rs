@@ -128,8 +128,8 @@ pub enum EntryValidationError {
     #[error("images contain invalid metadata")]
     InvalidImages,
     #[error(
-        "versions must contain complete artifact bindings for a Tilo OS x86_64/aarch64 or \
-         web wasm32 target"
+        "versions must contain complete artifact bindings for an x86_64/aarch64 target of a \
+         known platform"
     )]
     InvalidVersionTarget,
 }
@@ -162,15 +162,14 @@ pub struct RegistryVersion {
 /// spellings are defined in [`crate::target`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RegistryTarget {
-    /// Extensible platform-family wire name: `tilo-os` or `web`.
+    /// Extensible platform-family wire name, e.g. `tilo-os` or `linux`.
     pub platform: String,
     /// Architecture wire name.
     pub architecture: String,
-    /// Minimum ISA level, e.g. `x86_64-v3`, or a web feature set such as
-    /// `wasm32-mvp+bulk-memory+sign-ext`.
+    /// Minimum ISA level, e.g. `x86_64-v3`.
     pub isa: String,
-    /// Runtime ABI required by the package: optional for `tilo-os`,
-    /// `tilo-runtime/<version>+wasm.<32 hex>` for `web`.
+    /// Runtime the package links: for `tilo-os`, the exact build
+    /// (`tilo-runtime/<version>+native.<32 hex>`); optional.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime: Option<String>,
     /// System interfaces the build requires, `<name>@<version>`, sorted:
@@ -240,16 +239,6 @@ impl RegistryEntry {
     /// The 32-byte BLAKE3 digest the publisher signs.
     pub fn signing_message(&self) -> [u8; 32] {
         entry_signing_message(self)
-    }
-
-    /// Detach the publisher signature, returning an entry with an empty
-    /// `signature_hex` — for preparing an entry to sign or re-signing
-    /// after a moderator edit. Verification uses `signing_message`
-    /// directly and doesn't need this.
-    #[must_use]
-    pub fn without_signature(mut self) -> Self {
-        self.signature_hex.clear();
-        self
     }
 
     /// Validate the entry's identifiers, localized metadata, package targets,
@@ -467,7 +456,6 @@ pub fn sign_entry(entry: &mut RegistryEntry, signing_key: &SigningKey) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::target::{WASM32_ARCHITECTURE, WEB_PLATFORM};
     use ed25519_dalek::SigningKey;
     use getrandom::{SysRng, rand_core::UnwrapErr};
 
@@ -651,32 +639,5 @@ mod tests {
                 Err(EntryValidationError::InvalidVersionTarget)
             );
         }
-    }
-
-    #[test]
-    fn web_versions_sit_beside_native_versions_of_one_entry() {
-        let mut entry = sample_entry();
-        let mut web = entry.versions[0].clone();
-        web.tapp_url = "https://apps.tilo.so/editor/2026.06-web.tapp".into();
-        web.target = RegistryTarget {
-            platform: WEB_PLATFORM.into(),
-            architecture: WASM32_ARCHITECTURE.into(),
-            isa: "wasm32-mvp+bulk-memory+sign-ext".into(),
-            runtime: Some("tilo-runtime/2026.07+wasm.00112233445566778899aabbccddeeff".into()),
-            interfaces: Vec::new(),
-        };
-        entry.versions.push(web);
-        assert_eq!(entry.validate(), Ok(()));
-
-        entry.versions[1].target.runtime = Some("tilo-runtime/2026.07".into());
-        assert_eq!(
-            entry.validate(),
-            Err(EntryValidationError::InvalidVersionTarget)
-        );
-        entry.versions[1].target.runtime = None;
-        assert_eq!(
-            entry.validate(),
-            Err(EntryValidationError::InvalidVersionTarget)
-        );
     }
 }

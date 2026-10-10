@@ -1404,14 +1404,6 @@ impl FrameHarness {
         self.continue_pending_history_control_checked(token, false)
     }
 
-    /// Continue after the caller explicitly confirmed this exact current item.
-    pub fn confirm_pending_history_control(
-        &mut self,
-        token: &crate::history_mode::pending_controls::ContinuationToken,
-    ) -> Option<crate::history_mode::pending_controls::PendingControlStatus> {
-        self.continue_pending_history_control_checked(token, true)
-    }
-
     /// Cancel one exact retained control without dispatching it.
     pub fn cancel_pending_history_control(
         &mut self,
@@ -1944,54 +1936,15 @@ impl FrameHarness {
     /// [`UndoButton`](crate::widget::UndoButton) both arrive here, so a
     /// scenario cannot pass against a path the user never takes.
     pub fn perform_undo(&mut self) -> bool {
-        if self.pump_component_wakes_checked().is_err() {
-            return false;
-        }
-        if crate::history_mode::embedded::keyboard_captured(
-            self.root.as_ref(),
-            self.focused,
-            &self.taffy,
-        ) || self
-            .history
-            .as_ref()
-            .is_some_and(|history| history.captures_input())
-        {
-            return false;
-        }
-        let author = self.author.clone();
-        let done = if let Some(binding) = self
-            .focused
-            .and_then(|node| self.bindings.binding_for(node))
-            .or_else(|| self.root.callback_binding())
-        {
-            Self::history_through_component(
-                &mut *self.root,
-                &mut self.state.doc,
-                &binding,
-                crate::undo::UndoRequest::Undo,
-                &self.action_registry,
-            )
-        } else if let Some(owner) = self.focused.and_then(|node| self.bindings.legacy_for(node)) {
-            crate::bound_dispatch::legacy_history_request(
-                &owner,
-                crate::undo::UndoRequest::Undo,
-                &self.permissions,
-                &author,
-            )
-            .ok()
-            .flatten()
-            .is_some()
-        } else {
-            self.state.undo_as(Some(&author), None, None).is_some()
-        };
-        if done {
-            self.relayout();
-        }
-        done
+        self.perform_history(crate::undo::UndoRequest::Undo)
     }
 
     /// Redo the last undone action. The mirror of [`Self::perform_undo`].
     pub fn perform_redo(&mut self) -> bool {
+        self.perform_history(crate::undo::UndoRequest::Redo)
+    }
+
+    fn perform_history(&mut self, request: crate::undo::UndoRequest) -> bool {
         if self.pump_component_wakes_checked().is_err() {
             return false;
         }
@@ -2016,13 +1969,13 @@ impl FrameHarness {
                 &mut *self.root,
                 &mut self.state.doc,
                 &binding,
-                crate::undo::UndoRequest::Redo,
+                request,
                 &self.action_registry,
             )
         } else if let Some(owner) = self.focused.and_then(|node| self.bindings.legacy_for(node)) {
             crate::bound_dispatch::legacy_history_request(
                 &owner,
-                crate::undo::UndoRequest::Redo,
+                request,
                 &self.permissions,
                 &author,
             )
@@ -2030,7 +1983,11 @@ impl FrameHarness {
             .flatten()
             .is_some()
         } else {
-            self.state.redo_as(Some(&author), None, None).is_some()
+            match request {
+                crate::undo::UndoRequest::Undo => self.state.undo_as(Some(&author), None, None),
+                crate::undo::UndoRequest::Redo => self.state.redo_as(Some(&author), None, None),
+            }
+            .is_some()
         };
         if done {
             self.relayout();
@@ -2500,12 +2457,6 @@ impl FrameHarness {
         self.render_png_on(out, self.theme.tokens.colors.surfaces.content);
     }
 
-    /// [`FrameHarness::render_png`] over a transparent background, for a
-    /// capture composited onto something else afterwards.
-    pub fn render_png_transparent(&self, out: &std::path::Path) {
-        self.render_png_on(out, vello::peniko::Color::TRANSPARENT);
-    }
-
     /// Rasterise the most recently laid-out frame over the window ground, as
     /// tightly packed RGBA8 rows `viewport.0` pixels wide. Empty in a browser
     /// page, which cannot read a frame back synchronously.
@@ -2614,13 +2565,6 @@ impl FrameHarness {
     pub fn records(&self) -> Option<&crate::record::RecordSet> {
         self.drain_component_wakes();
         self.records.as_ref()
-    }
-
-    /// The record the root widget names, if any. Read before installing a
-    /// record set so an app that does not use records is left alone.
-    pub fn root_record_intent(&self) -> Option<crate::record::RecordCheckout> {
-        self.drain_component_wakes();
-        crate::record::capability::record_intent(self.root.as_ref())
     }
 
     /// Deliver a trusted shell operation through the mounted app adapter.
@@ -5769,16 +5713,6 @@ impl FrameHarness {
         }
     }
 
-    /// Diagnostics only: record which dirty widget paths made unconsumed
-    /// pointer motion produce a frame. Off by default; no document content.
-    pub fn set_pointer_redraw_diagnostics(&mut self, enabled: bool) {
-        self.pointer_redraw_diagnostics = enabled;
-        self.pointer_redraw_sources.clear();
-    }
-    pub fn take_pointer_redraw_sources(&mut self) -> Vec<String> {
-        std::mem::take(&mut self.pointer_redraw_sources)
-    }
-
     fn frame_schedule_demands_frame(&self) -> bool {
         let schedule = self.frame_schedule();
         schedule.needs_redraw
@@ -7448,6 +7382,14 @@ impl FrameHarness {
     /// Returns an error when `name` is absent or its widget has no tappable
     /// layout rectangle.
     pub fn tap_named(&mut self, name: &str) -> Result<(), String> {
+        let center = self.named_center(name)?;
+        self.tap_at(center.x, center.y);
+        Ok(())
+    }
+
+    /// The centre of the named widget's laid-out rect, once pending
+    /// component wakes have landed.
+    fn named_center(&mut self, name: &str) -> Result<Point, String> {
         self.pump_component_wakes();
         let rect = self
             .targets()
@@ -7457,9 +7399,7 @@ impl FrameHarness {
         if rect.width() <= 0.0 || rect.height() <= 0.0 {
             return Err(format!("widget {name:?} has an empty rect: {rect:?}"));
         }
-        let center = rect.center();
-        self.tap_at(center.x, center.y);
-        Ok(())
+        Ok(rect.center())
     }
 
     /// Click the centre of the named widget. `Err` names the target when it
@@ -7470,17 +7410,8 @@ impl FrameHarness {
     ///
     /// Returns an error if the widget is not found or has a zero-sized rect.
     pub fn click_named(&mut self, name: &str) -> Result<(), String> {
-        self.pump_component_wakes();
-        let rect = self
-            .targets()
-            .get(name)
-            .copied()
-            .ok_or_else(|| format!("no addressable widget named {name:?}"))?;
-        if rect.width() <= 0.0 || rect.height() <= 0.0 {
-            return Err(format!("widget {name:?} has an empty rect: {rect:?}"));
-        }
-        let c = rect.center();
-        self.click_at(c.x, c.y);
+        let center = self.named_center(name)?;
+        self.click_at(center.x, center.y);
         Ok(())
     }
 
@@ -8725,34 +8656,6 @@ fn parse_key(spec: &str) -> Key {
 // there is nothing yet to unwind. Threading a `Result` through instead
 // would mean every one of the ~15 call sites across `apps/*` duplicates
 // this same exit, for no behavioural change.
-#[allow(
-    clippy::exit,
-    reason = "arg-parsing entry point mirrors a CLI flag parser: fails fast before any window/Drop state exists, exactly like the callers already do via `std::process::exit(tilo_ui::headless::run(..))`"
-)]
-pub fn spec_from_args(args: &[String]) -> Option<Spec> {
-    let raw = value_arg(args, "--headless-drive")?;
-    match parse_spec(&raw) {
-        Ok(spec) => Some(spec),
-        Err(e) => {
-            eprintln!("--headless-drive: {e}");
-            std::process::exit(2);
-        }
-    }
-}
-
-fn value_arg(args: &[String], flag: &str) -> Option<String> {
-    let mut it = args.iter().skip(1);
-    let eq = format!("{flag}=");
-    while let Some(a) = it.next() {
-        if a == flag {
-            return it.next().cloned();
-        }
-        if let Some(rest) = a.strip_prefix(&eq) {
-            return Some(rest.to_string());
-        }
-    }
-    None
-}
 
 /// Parse the `--headless-drive` payload.
 ///

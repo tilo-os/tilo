@@ -85,6 +85,31 @@ pub(super) fn with_layout_renderer<R>(theme: &Theme, f: impl FnOnce(&mut TextRen
     })
 }
 
+/// A screen's own layout style. The screen owns the viewport, so the sheet
+/// centres on the window rather than inside a fixed box at the origin.
+pub(super) fn screen_style() -> taffy::Style {
+    taffy::Style {
+        size: taffy::Size {
+            width: taffy::Dimension::percent(1.0),
+            height: taffy::Dimension::percent(1.0),
+        },
+        ..Default::default()
+    }
+}
+
+/// A child node for one of a screen's fields: placed by the sheet, not by
+/// taffy (`Display::None`), but present in the tree so the host's focus
+/// order and the accessibility tree line up with `children()`.
+pub(super) fn field_leaf(taffy: &mut taffy::TaffyTree<()>) -> taffy::NodeId {
+    crate::widget::TaffyTreeExt::leaf_node(
+        taffy,
+        taffy::Style {
+            display: taffy::Display::None,
+            ..Default::default()
+        },
+    )
+}
+
 /// Vertical scroll of a body whose rows outrun the card
 /// (`ModalLayout::body_overflows`). The offset is clamped every layout, so
 /// a body that fits again after a state change snaps back to its top.

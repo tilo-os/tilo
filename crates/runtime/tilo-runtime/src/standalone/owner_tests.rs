@@ -269,11 +269,12 @@ fn effect_receipts_are_kept_in_the_workspace() {
     let profile = profile();
     let owner = open(&profile, creation(true, false));
     let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(5));
-    let receipt = tilo_action_broker::policy::redacted_effect_receipt(
+    let receipt = tilo_desktop_model::WorkspaceEffectReceipt::redacted(
         invocation,
         "person-1",
         tilo_actions::ActionContext::default(),
         tilo_actions::EffectReceiptStatus::Succeeded,
+        tilo_clock::unix_now_i64(),
     );
     let request = OwnerCommitRequest {
         room: profile.room.clone(),
@@ -409,6 +410,7 @@ fn steward_keys(profile: &Profile, state: &str, readers: &[SigningKey]) -> Chann
             steward: Ed25519PublicKey::from_bytes(profile.key.verifying_key().to_bytes()),
             policy: Policy {
                 allowed: Arc::new(Mutex::new(readers)),
+                ..Policy::default()
             },
         }),
         Arc::new(Mutex::new(

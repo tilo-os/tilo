@@ -351,49 +351,6 @@ pub fn project_workspace_shortcuts(
     Ok(())
 }
 
-/// Project a workspace's permission profiles as one map value per lowercase
-/// profile name. The capabilities an assignment expands to are governance and
-/// travel separately; a profile itself grants nothing.
-///
-/// # Errors
-///
-/// The document's error when the profiles map cannot be created.
-pub fn project_workspace_permission_profiles(
-    doc: &mut AutoCommit,
-    profiles: &[collab_types::PermissionProfile],
-) -> Result<(), automerge::AutomergeError> {
-    use automerge::{ObjType, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
-
-    let map = match doc.get(&ROOT, ROOM_PERMISSION_PROFILES_KEY).ok().flatten() {
-        Some((_, id)) => id,
-        None if profiles.is_empty() => return Ok(()),
-        None => doc.put_object(&ROOT, ROOM_PERMISSION_PROFILES_KEY, ObjType::Map)?,
-    };
-    let key = |profile: &collab_types::PermissionProfile| profile.name.trim().to_lowercase();
-    let stale: Vec<String> = doc
-        .keys(&map)
-        .filter(|name| !profiles.iter().any(|profile| key(profile) == *name))
-        .collect();
-    for name in stale {
-        doc.delete(&map, name.as_str())?;
-    }
-    for profile in profiles {
-        let Ok(blob) = serde_json::to_vec(profile) else {
-            continue;
-        };
-        let name = key(profile);
-        let unchanged = matches!(
-            doc.get(&map, name.as_str()).ok().flatten(),
-            Some((Value::Scalar(value), _))
-                if matches!(value.as_ref(), ScalarValue::Bytes(current) if current == &blob)
-        );
-        if !unchanged {
-            doc.put(&map, name.as_str(), ScalarValue::Bytes(blob))?;
-        }
-    }
-    Ok(())
-}
-
 /// The permission profiles a room document carries, by name. A value that
 /// does not decode is skipped.
 pub fn workspace_permission_profiles_of(doc: &AutoCommit) -> Vec<collab_types::PermissionProfile> {
@@ -1473,15 +1430,6 @@ pub fn contents_owners_of(doc: &AutoCommit) -> std::collections::BTreeMap<u16, S
             Some((salt, value.as_str()?.to_owned()))
         })
         .collect()
-}
-
-/// The next counter a durable topology owner mints from, when the room
-/// records one.
-pub fn desktop_counter_of(doc: &AutoCommit) -> Option<u64> {
-    doc.get(&automerge::ROOT, ROOM_DESKTOP_COUNTER_KEY)
-        .ok()
-        .flatten()
-        .and_then(|(value, _)| value.as_u64())
 }
 
 #[cfg(test)]

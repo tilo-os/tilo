@@ -136,47 +136,15 @@ mod pump {
     #[cfg(target_os = "linux")]
     #[test]
     fn an_idle_pump_with_no_channel_is_never_scheduled() {
-        fn threads() -> BTreeSet<String> {
-            std::fs::read_dir("/proc/self/task")
-                .unwrap()
-                .map(|entry| entry.unwrap().file_name().into_string().unwrap())
-                .collect()
-        }
-        fn switches(tid: &str) -> u64 {
-            std::fs::read_to_string(format!("/proc/self/task/{tid}/status"))
-                .unwrap()
-                .lines()
-                .filter(|line| line.contains("ctxt_switches"))
-                .filter_map(|line| line.split_whitespace().nth(1)?.parse::<u64>().ok())
-                .sum()
-        }
         let room = Arc::new(Room::default());
         let room_id = RoomId::new();
         let dir = tempfile::tempdir().unwrap();
-        let before = threads();
-        let (access, _, _pump) = parked(&room, room_id, 0, service((1, 1), dir.path()));
-        let started = Instant::now();
-        // The kernel truncates thread names to 15 bytes.
-        let tid = loop {
-            let named = threads()
-                .difference(&before)
-                .find(|tid| {
-                    std::fs::read_to_string(format!("/proc/self/task/{tid}/comm"))
-                        .is_ok_and(|name| name.trim() == "tilo-runtime-ch")
-                })
-                .cloned();
-            if let Some(tid) = named {
-                break tid;
-            }
-            assert!(started.elapsed() < Duration::from_secs(5), "no pump thread");
-            std::thread::sleep(Duration::from_millis(5));
-        };
+        let ((access, _, _pump), tid) =
+            tilo_test_env::idle::spawned_thread("tilo-runtime-ch", || {
+                parked(&room, room_id, 0, service((1, 1), dir.path()))
+            });
         assert!(!access.has_live_channels());
-        std::thread::sleep(Duration::from_millis(50));
-        let settled = switches(&tid);
-        std::thread::sleep(Duration::from_millis(400));
-        let woke = switches(&tid).saturating_sub(settled);
-        assert_eq!(woke, 0, "the idle channel pump woke {woke} times in 400 ms");
+        tilo_test_env::idle::assert_stays_asleep(&tid, "channel pump");
     }
 }
 

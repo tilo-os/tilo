@@ -201,16 +201,6 @@ impl Column {
         self.cache_present = false;
     }
 
-    /// Extra padding on the left, on top of the default
-    /// `spacing.s6` inset. Used to displace a workspace area to the
-    /// right of an absolutely-positioned sidebar without shifting the
-    /// surrounding chrome.
-    #[must_use]
-    pub fn with_extra_left_padding(mut self, px: f32) -> Self {
-        self.extra_left_padding = px;
-        self
-    }
-
     /// Extra padding on top, e.g. to reserve room for a floating
     /// affordance the column doesn't own (the responsive shell's Back
     /// chip painted over the detail pane's top-left corner).
@@ -269,12 +259,6 @@ impl Column {
     pub fn set_gap(&mut self, px: f32) {
         self.gap_override = Some(px);
         self.rhythm = None;
-    }
-
-    /// Update the inter-child rhythm before the next layout pass.
-    pub fn set_rhythm(&mut self, rhythm: Rhythm) {
-        self.rhythm = Some(rhythm);
-        self.gap_override = None;
     }
 
     /// Switch from `height: percent(1.0)` to `flex_grow: 1 + flex_basis: 0`.
@@ -444,26 +428,7 @@ impl Widget for Column {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        let allocated = super::layout::allocation_or_content_size(taffy, node, &layout);
-        let w = f64::from(allocated.width);
-        let h = f64::from(allocated.height);
-        self.paint_rect = vello::kurbo::Rect::from_origin_size(
-            (
-                origin.x + f64::from(layout.location.x),
-                origin.y + f64::from(layout.location.y),
-            ),
-            (
-                f64::from(layout.size.width.max(layout.content_size.width)),
-                f64::from(layout.size.height.max(layout.content_size.height)),
-            ),
-        );
-        self.rect = vello::kurbo::Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + w,
-            origin.y + f64::from(layout.location.y) + h,
-        );
+        (self.rect, self.paint_rect) = super::layout::flow_rects(taffy, node, origin);
         let new_origin = Point::new(self.rect.x0, self.rect.y0);
 
         for (child_widget, child_node) in self.children.iter_mut().zip(&self.child_nodes) {

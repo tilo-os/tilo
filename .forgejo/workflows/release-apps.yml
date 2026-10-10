@@ -42,6 +42,7 @@ on:
       - "tools/ci/resolve_builder.py"
       - "tools/ci/images.toml"
       - "tools/ci/rustc-thin-app-wrapper.sh"
+      - "tools/ci/runtime-dylib-lazy-link.py"
       - "tools/ci/sccache.sh"
       - "dist/apps/assemble-collection.sh"
       - ".forgejo/actions/restore-cargo-downloads/**"
@@ -632,28 +633,98 @@ jobs:
           --arch "${{ matrix.arch }}" --summary "$GITHUB_STEP_SUMMARY"
       # The shared runtime every app maps (libruntime_dylib.so): its bytes,
       # relocation tables, relocation-dirtied pages and symbol lookups against
-      # tools/perf/runtime-size-budget/ (DEVELOPMENT.md, "Runtime size").
+      # tools/perf/runtime-size-budget/ (DEVELOPMENT.md, "Runtime size"), and
+      # what it and each built app of apps_without_media load at exec: never
+      # GLib or GStreamer, which the runtime loads on first use (TIL-713).
       # package-apps.sh built it above for the whole default collection.
       - name: Shared runtime within its size budget
         run: >-
           python3 tools/perf/runtime_size_ratchet.py measure target/thin-app/libruntime_dylib.so
           --arch "${{ matrix.arch }}" --summary "$GITHUB_STEP_SUMMARY"
-      # What the loader spends on it, reported only: glibc's statistics for
-      # one built app reaching main (build-thin-apps.sh's own ABI check). The
-      # app's block is the one with the runtime's relocations; RELR entries
-      # are not in glibc's "relative relocations" count.
+          --apps-dir target/thin-app --library-dir "$(rustc --print target-libdir)"
+      # What the loader spends on it, reported only, for an app that plays no
+      # media when one was built: glibc's statistics up to main (build-thin-
+      # apps.sh's own ABI check), the objects it loads, and its private dirty
+      # memory once it is up. The app's block is the one with the runtime's
+      # relocations; RELR entries are not in glibc's "relative relocations".
       - name: Report the runtime's loader cost
         shell: bash
         run: |
           set -euo pipefail
-          app=$(find target/thin-app -maxdepth 1 -type f -executable ! -name '*.so' ! -name '*.d' | sort | head -1)
+          app=
+          for name in $(python3 tools/perf/runtime_size_ratchet.py apps-without-media); do
+            [[ -x target/thin-app/$name ]] && { app=target/thin-app/$name; break; }
+          done
+          [[ -n $app ]] || app=$(find target/thin-app -maxdepth 1 -type f -executable ! -name '*.so' ! -name '*.d' | sort | head -1)
           [[ -n $app ]] || { echo "no built app to load" >&2; exit 1; }
           # Resolved first: an assignment beside LD_DEBUG would print rustc's own statistics.
+          # An app need not accept --help; only reaching main matters, so its status is ignored.
           libdir=$(rustc --print target-libdir)
-          stats=$(LD_DEBUG=statistics LD_LIBRARY_PATH="target/thin-app:$libdir" \
-            "$app" --help 2>&1 >/dev/null </dev/null | sed -n 's/^ *[0-9]*: *//p' | grep -E 'time|relocations' || true)
+          export LD_LIBRARY_PATH="target/thin-app:$libdir"
+          stats=$(LD_DEBUG=statistics "$app" --help 2>&1 >/dev/null </dev/null \
+            | sed -n 's/^ *[0-9]*: *//p' | grep -E 'time|relocations' || true)
           [[ -n $stats ]] || { echo "the loader printed no statistics for $app" >&2; exit 1; }
-          printf '%s --help\n%s\n' "$(basename "$app")" "$stats" | tee -a "$GITHUB_STEP_SUMMARY"
+          loaded=$(LD_DEBUG=files "$app" --help 2>&1 >/dev/null </dev/null \
+            | sed -n 's/^[[:space:]]*[0-9]*:[[:space:]]*file=\([^ ]*\) .*/\1/p' | sort -u | tr '\n' ' ' || true)
+          printf '%s --help\n%s\nloaded at exec: %s\n' "$(basename "$app")" "$stats" "$loaded" \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+          # Up, without a display: a headless drive that waits for a widget
+          # that never comes keeps the process alive to read its memory.
+          runtime=$(mktemp -d)
+          chmod 700 "$runtime"
+          XDG_RUNTIME_DIR=$runtime "$app" --headless-drive \
+            '{"actions":[{"wait_for_named":{"target":"tilo-loader-report","timeout_ms":4000}}]}' \
+            >/dev/null 2>&1 </dev/null &
+          pid=$!
+          sleep 2
+          if [[ -r /proc/$pid/smaps_rollup ]]; then
+            dirty=$(awk '/^Private_Dirty:/ { print $2 " kB" }' "/proc/$pid/smaps_rollup")
+            media=$(awk '/^[0-9a-f]+-[0-9a-f]+ / { lib = ($6 ~ /lib(gst|glib|gobject|gio)/) }
+                         lib && /^Private_Dirty:/ { kb += $2 } END { print kb + 0 " kB" }' "/proc/$pid/smaps")
+            printf 'private dirty once up: %s, of it in GLib/GStreamer mappings: %s\n' "$dirty" "$media" \
+              | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "the app exited before its memory could be read" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+          wait "$pid" || true
+          rm -rf "$runtime"
+      # A real media path through the runtime's lazily loaded GStreamer
+      # (TIL-713): Video Player decodes its H.264 fixture into a capture, which
+      # refuses to save without a decoded picture; the decoder (tilo-media) is
+      # runtime code, so its GStreamer calls go through the trampolines. The
+      # loader's trace says how libgstreamer arrived: by the runtime's dlopen,
+      # or at exec when the app's own code calls GStreamer too.
+      - name: A media app decodes through the lazily loaded runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! -x target/thin-app/video-player ]]; then
+            echo "video-player is not among this run's apps; nothing to decode" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          clip=$(find target/thin-app/build -path '*/video-player-*/out/h264-aac.mp4' -print -quit)
+          [[ -s $clip ]] || { echo "video-player's build left no h264-aac.mp4 fixture" >&2; exit 1; }
+          libdir=$(rustc --print target-libdir)
+          driver=$(find /usr/share/vulkan/icd.d -name 'lvp_icd.*.json' -print -quit 2>/dev/null || true)
+          [[ -z $driver ]] || export VK_DRIVER_FILES=$driver WGPU_BACKEND=vulkan WGPU_ADAPTER_NAME=llvmpipe
+          runtime=$(mktemp -d)
+          chmod 700 "$runtime"
+          shot="$runtime/video-player.png"
+          status=0
+          XDG_RUNTIME_DIR=$runtime LD_LIBRARY_PATH="target/thin-app:$libdir" LD_DEBUG=files \
+            timeout 300 target/thin-app/video-player --shots="$shot" "$clip" \
+            >"$runtime/out.log" 2>"$runtime/loader.log" </dev/null || status=$?
+          if (( status != 0 )) || [[ ! -s $shot ]]; then
+            grep -v -e 'file=' -e 'calling' "$runtime/loader.log" | tail -40 >&2 || true
+            echo "video-player did not capture a decoded frame (exit $status)" >&2
+            exit 1
+          fi
+          arrival=$(grep -Eo 'file=libgstreamer-1\.0\.so\.0 \[0\];  (needed|dynamically loaded) by [^ ]*' \
+            "$runtime/loader.log" | head -1 || true)
+          [[ -n $arrival ]] || { echo "the loader never loaded libgstreamer, yet a frame decoded" >&2; exit 1; }
+          printf 'video-player decoded %s through the runtime (%s)\n' "$(basename "$clip")" "$arrival" \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+          rm -rf "$runtime"
       - name: Generate unpublished receipt with canonical verifiers
         # Runs for publish=false too. Uses tools compiled by package-apps.sh;
         # adds no build, credentials, registry write or channel promotion.
@@ -763,7 +834,11 @@ jobs:
     needs: [plan, authorize-publish, build]
     # Execute tools from the first selected native architecture. Those tools can
     # verify either target archive without executing its application payloads.
-    runs-on: ${{ fromJSON(needs.plan.outputs.matrix).include[0].runner }}
+    # With both native artifacts, publish-collections.sh selects the tool
+    # matching uname -m. Reuse admitted portable pools rather than pinning
+    # the release lock to the first architecture's saturated test runners.
+    # A single-architecture release still needs its matching native pool.
+    runs-on: ${{ contains(fromJSON(needs.plan.outputs.matrix).include.*.arch, 'x86_64') && contains(fromJSON(needs.plan.outputs.matrix).include.*.arch, 'aarch64') && 'runner-native-portable' || fromJSON(needs.plan.outputs.matrix).include[0].runner }}
     container:
       # This public, immutable image is pulled before any release authorization.
       # It contains no compiler or build toolchain and needs no registry secret.
@@ -799,6 +874,7 @@ jobs:
           PRIOR_ARM64_SHA256: ${{ needs.plan.outputs.prior_arm64_sha256 }}
           TILO_PACKAGE_PUBLIC_BASE_URL: ${{ vars.TILO_PACKAGE_PUBLIC_BASE_URL }}
           TILO_REGISTRY_URL: ${{ vars.TILO_REGISTRY_URL || 'https://apps.tilo.so' }}
+          TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY: ${{ vars.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}
           TAPP_PUBLISHER_IDENTITY: ${{ secrets.TAPP_PUBLISHER_IDENTITY }}
         run: tools/apps/publish-collections.sh
 

@@ -398,12 +398,6 @@ impl WeatherApp {
         Self::assemble(core)
     }
 
-    /// The id of the currently selected city, if any. Lets a test observe where
-    /// a search activation navigated.
-    pub fn selected_city(&self) -> Option<crate::model::LocationId> {
-        self.core.borrow().model.selected_location().map(|l| l.id)
-    }
-
     /// Spawn the worker (idempotent) and queue the initial forecast refresh
     /// for every saved location. No-op for the offline capture/test path.
     fn ensure_service(&mut self) {

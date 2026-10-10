@@ -94,7 +94,7 @@ fn installed_notification_apps_from(
 ) -> Vec<InstalledNotificationApp> {
     let mut apps = BTreeMap::new();
     for entry in package_store::list_installed().unwrap_or_default() {
-        let Ok(manifest) = launcher::manifest::read_manifest(&entry.manifest_path) else {
+        let Ok(manifest) = tilo_app_package::view::read_manifest(&entry.manifest_path) else {
             continue;
         };
         if manifest.entrypoint.gui_bin().is_none() {
@@ -327,6 +327,13 @@ impl NotificationsArea {
                 installed_notification_apps(&self.prefs.borrow().get().per_app)
             }
         })
+    }
+
+    /// Whether the area has read what its rows show: its pane was shown,
+    /// an effect or a row lookup reached it, or the window read it after
+    /// its first frame ([`crate::effects::LIVE_AREAS`]).
+    pub(crate) fn is_open(&self) -> bool {
+        self.apps.get().is_some()
     }
 
     /// One live row per app, offering its delivery choices flipped and its

@@ -555,7 +555,7 @@ impl MusicBackend for SpotifyBackend {
                 .collect();
             return Ok(PlaylistPage {
                 id: id.into(),
-                title: ui::i18n!("music-spotify-liked"),
+                title: crate::i18n::t("music-spotify-liked"),
                 tracks,
                 ..Default::default()
             });
@@ -566,7 +566,7 @@ impl MusicBackend for SpotifyBackend {
             id: id.into(),
             title: text(&value, "name"),
             subtitle: text(value.get("owner").unwrap_or(&Value::Null), "display_name"),
-            description: ui::i18n!("music-spotify-ownership-help"),
+            description: crate::i18n::t("music-spotify-ownership-help"),
             cover_url: cover(&value),
             tracks: entries
                 .iter()
@@ -652,7 +652,7 @@ fn library_home(albums: &Value, playlists: &Value, artists: &Value) -> HomeConte
         .map(|artist| HomeItem {
             id: artist.id,
             title: artist.name,
-            subtitle: ui::i18n!("music-spotify-following"),
+            subtitle: crate::i18n::t("music-spotify-following"),
             cover_url: artist.avatar_url,
             kind: HomeItemKind::Artist,
             video_id: String::new(),
@@ -666,11 +666,11 @@ fn library_home(albums: &Value, playlists: &Value, artists: &Value) -> HomeConte
     HomeContent {
         sections: vec![
             HomeSection {
-                title: ui::i18n!("music-spotify-library"),
+                title: crate::i18n::t("music-spotify-library"),
                 items: vec![HomeItem {
                     id: "spotify:collection:liked".into(),
-                    title: ui::i18n!("music-spotify-liked"),
-                    subtitle: ui::i18n!("music-spotify-liked-description"),
+                    title: crate::i18n::t("music-spotify-liked"),
+                    subtitle: crate::i18n::t("music-spotify-liked-description"),
                     cover_url: String::new(),
                     kind: HomeItemKind::Playlist,
                     video_id: String::new(),
@@ -682,15 +682,15 @@ fn library_home(albums: &Value, playlists: &Value, artists: &Value) -> HomeConte
                 }],
             },
             HomeSection {
-                title: ui::i18n!("music-spotify-albums"),
+                title: crate::i18n::t("music-spotify-albums"),
                 items: album_items,
             },
             HomeSection {
-                title: ui::i18n!("music-spotify-playlists"),
+                title: crate::i18n::t("music-spotify-playlists"),
                 items: playlist_items,
             },
             HomeSection {
-                title: ui::i18n!("music-spotify-artists"),
+                title: crate::i18n::t("music-spotify-artists"),
                 items: artist_items,
             },
         ],

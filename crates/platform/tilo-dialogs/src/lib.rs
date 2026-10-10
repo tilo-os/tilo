@@ -274,10 +274,7 @@ pub(crate) fn current_opener() -> Arc<dyn UriOpener> {
 }
 
 /// A chooser round-trip that did not return URIs.
-#[cfg_attr(
-    not(any(target_os = "linux", target_os = "macos", windows)),
-    allow(dead_code, reason = "only the native choosers answer URIs")
-)]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub(crate) enum PortalFailure {
     /// The user dismissed the picker. Surfaces from ashpd as a "cancelled"
     /// response error, not a bug.
@@ -285,10 +282,7 @@ pub(crate) enum PortalFailure {
     Failed(String),
 }
 
-#[cfg_attr(
-    not(any(target_os = "linux", target_os = "macos", windows)),
-    allow(dead_code, reason = "only the native choosers answer URIs")
-)]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 impl PortalFailure {
     fn into_single(self) -> PortalOutcome {
         match self {

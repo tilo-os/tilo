@@ -896,7 +896,7 @@ fn spotify_keyboard_creation_and_escape_use_accessible_shared_controls() {
             .unwrap();
         assert_eq!(app.surface_mut::<MusicApp>().source_widget_mode(), 3);
         let accessible = app.harness().focus_access_nodes();
-        let label = ui::i18n!("music-spotify-create-playlist");
+        let label = crate::i18n::t("music-spotify-create-playlist");
         assert!(
             accessible
                 .iter()
@@ -2929,16 +2929,15 @@ fn stream_operations_settle_exactly_once_for_their_request() {
                 app.take_effect_result(invocation).is_none(),
                 "resolver success alone is not audio-start success"
             );
-            // Exercise the same settlement branch `tick` uses after its real
-            // `frames_rendered()` observation. The value is deliberately
-            // greater than the invocation's captured baseline.
+            // A synthetic frame count cannot confirm this invalid stream.
+            // Real WAV startup, resume and EOF replay are proved separately
+            // through tick and the actual decoder in local_files tests.
+            assert!(!app.audio.is_playing_confirmed());
             app.settle_resource_stream_after_rendered_frames(u64::MAX);
+            assert!(app.take_effect_result(invocation).is_none());
+            assert_eq!(app.resource_stream_invocation.unwrap().0, invocation);
         }
-        #[cfg(feature = "audio")]
-        let update = app
-            .take_effect_result(invocation)
-            .expect("rendered PCM settles the audio invocation as playing");
-
+        #[cfg(not(feature = "audio"))]
         let tilo_actions::InvocationUpdate::Succeeded { output, .. } = update else {
             panic!("the bound resolver completion must succeed");
         };
@@ -2947,12 +2946,6 @@ fn stream_operations_settle_exactly_once_for_their_request() {
             output.value,
             Some(serde_json::json!({ "state": "resolved" })),
             "a no-audio build never labels URL resolution as actual playback"
-        );
-        #[cfg(feature = "audio")]
-        assert_eq!(
-            output.value,
-            Some(serde_json::json!({ "state": "playing" })),
-            "only post-render settlement may report actual playback"
         );
         let play = crate::actions::catalog_track_resource(&crate::actions::CatalogTrackResource {
             id: "tk_g1".into(),
@@ -2972,6 +2965,7 @@ fn stream_operations_settle_exactly_once_for_their_request() {
             tilo_actions::ExecutionMode::Background { cancellable: false },
             "playing a track answers when its audio starts"
         );
+        #[cfg(not(feature = "audio"))]
         play.contract
             .result
             .validate(&output)
@@ -4594,7 +4588,7 @@ fn recommendations_shared_input_and_dismiss_controls_record_canonical_actions() 
     assert!(!doc::load_library(&doc).recommendations.likes);
     assert_eq!(
         last_action_label(&mut doc).as_deref(),
-        Some(ui::i18n!("music-recommendations-change-inputs").as_str())
+        Some(crate::i18n::t("music-recommendations-change-inputs").as_str())
     );
     app.dispatch(
         Action::Recommendation(crate::actions::MusicAction::SetRecommendationInput {
@@ -4620,7 +4614,7 @@ fn recommendations_shared_input_and_dismiss_controls_record_canonical_actions() 
     );
     assert_eq!(
         last_action_label(&mut doc).as_deref(),
-        Some(ui::i18n!("music-recommendations-dismiss").as_str())
+        Some(crate::i18n::t("music-recommendations-dismiss").as_str())
     );
 }
 
@@ -4902,4 +4896,67 @@ fn playback_failure_does_not_advertise_retry_of_an_at_most_once_invocation() {
     assert_eq!(contract.retry, tilo_actions::RetryPolicy::AtMostOnce);
     assert!(!error.retryable);
     assert!(error.message.contains("Premium eligibility"));
+}
+
+#[test]
+fn settled_playback_uses_bounded_wakes_instead_of_vsync() {
+    let (mut app, _doc) = app_with_doc();
+    app.pb.playing = true;
+    app.toast = None;
+    app.mark_drawn();
+    let before = app.last_tick;
+    assert!(
+        !app.needs_animation_frame(),
+        "settled playback must leave time for the host output worker"
+    );
+    let deadline = app
+        .next_wake_deadline()
+        .expect("playback still gets polled");
+    assert!(deadline > before && deadline <= before + Duration::from_millis(100));
+    app.last_tick = ui::time::now()
+        .checked_sub(Duration::from_millis(101))
+        .expect("test clock has a preceding playback interval");
+    assert!(
+        app.needs_animation_frame(),
+        "a due playback wake paints its observation"
+    );
+    app.tick();
+    assert!(
+        !app.needs_animation_frame(),
+        "polling rearms the bounded wake"
+    );
+    app.last_tick = ui::time::now()
+        .checked_sub(Duration::from_millis(101))
+        .expect("a slow paint outlives the playback interval");
+    let completed_at = ui::time::now();
+    app.mark_drawn();
+    assert!(
+        !app.needs_animation_frame(),
+        "a completed slow paint must leave time before another paint"
+    );
+    assert!(
+        app.next_wake_deadline().expect("playback still wakes") > completed_at,
+        "the next interval starts after painting, not before it"
+    );
+    app.pb.playing = false;
+    assert!(
+        app.next_wake_deadline().is_none(),
+        "stopped playback stays asleep"
+    );
+}
+
+#[test]
+#[cfg(feature = "audio")]
+fn rendered_frames_without_decoder_confirmation_do_not_settle_play() {
+    let (mut app, _doc) = app_with_doc();
+    app.disconnect();
+    let invocation = tilo_actions::InvocationId::new();
+    app.begin_resource_stream_invocation(invocation, 1);
+    assert!(!app.audio.is_playing_confirmed());
+    app.settle_resource_stream_after_rendered_frames(1);
+    assert!(
+        app.take_effect_result(invocation).is_none(),
+        "PCM observations alone must not acknowledge confirmed playback"
+    );
+    assert_eq!(app.resource_stream_invocation.unwrap().0, invocation);
 }

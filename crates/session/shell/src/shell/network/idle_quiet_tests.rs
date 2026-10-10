@@ -39,10 +39,33 @@ const IDLE: Duration = Duration::from_secs(60);
 /// loops) may make while idle, together.
 ///
 /// Measured 9.9/s, 10.5/s and 11.6/s on CI (focused runs 89705, 89410,
-/// 89703): the two network runtimes' workers (`tilo-net-rt-*`) over both
-/// desktops, everything else under 0.1/s. That is the highest plus a
-/// quarter; lower it with each fix that removes a waker (TIL-614).
+/// 89703) while gossip swept its caches every second; 6.9/s, 7.0/s and
+/// 7.5/s on the builder (11.9/s before) once it sweeps every 10 s. What
+/// remains is the two network runtimes' workers (`tilo-net-rt-*`) over both
+/// desktops, mostly the transport's 5 s keep-alives, everything else under
+/// 0.1/s.
+///
+/// The gate runs in the pull-request shell shard, which measures more than a
+/// focused runner on the same code: 15.18 to 16.80/s across five PRs before
+/// the sweep change, the extra being voluntary switches, not preemptions
+/// (TIL-690, `docs/benchmarks/idle-wakeups-2026-10-09.md`). The sweep change
+/// removes about 4.9/s, so the shard's p95 is now near 11.9/s; the budget is
+/// that plus a quarter. Lower it with each fix that removes a waker (TIL-702).
 const IDLE_WAKEUP_BUDGET: f64 = 15.0;
+
+/// How long a lone desktop runs after it starts before it is measured, so
+/// its endpoint and its room's topic are up, and how long it is measured.
+const LONE_SETTLE: Duration = Duration::from_secs(15);
+const LONE_IDLE: Duration = Duration::from_secs(20);
+/// Most context switches per second a lone desktop's own threads may make
+/// while idle: one room of its own, no peer, and no frame loop driving it,
+/// as on a desktop nobody touches, whose compositor never ticks the network
+/// (TIL-702's target, under 2/s).
+///
+/// Measured on CI (focused, loopback): 2.79/s while gossip swept the room's
+/// topic every second (run 91402), 0.95/s and 1.05/s once it sweeps every
+/// 10 s (runs 91459, 91528). The rest is the 5 s upkeep tick and the sweep.
+const LONE_WAKEUP_BUDGET: f64 = 2.0;
 
 /// Every thread of this process except the one driving the desktops'
 /// frame loops, whose 10 Hz is the simulation's and not the session's.
@@ -59,13 +82,24 @@ fn device(
     root: &SigningKey,
     capabilities: DeviceCapabilities,
 ) -> Arc<ShellNetwork> {
+    device_reaching(tree, dir, root, capabilities, Reach::Loopback)
+}
+
+/// [`device`] reaching peers as `reach` says.
+pub(super) fn device_reaching(
+    tree: WorkspaceTreeHandle,
+    dir: &std::path::Path,
+    root: &SigningKey,
+    capabilities: DeviceCapabilities,
+    reach: Reach,
+) -> Arc<ShellNetwork> {
     let root = root.clone();
     Arc::new(
         ShellNetwork::spawn_with(
             tree,
             &dir.join("device-private/keypair.bin"),
             &dir.join("peer-sync"),
-            Reach::Loopback,
+            reach,
             move |secret, _| {
                 let key = SigningKey::from_bytes(&secret.to_bytes());
                 let mut cert = DeviceCert {
@@ -365,4 +399,62 @@ fn a_converged_idle_pair_exchanges_no_messages_and_repaints_nothing_for_a_minute
     }
     assert_eq!(repaints, (0, 0), "{report}");
     drop((first, second, first_net, second_net));
+}
+
+/// A desktop alone with a room of its own, as most are, wakes nothing while
+/// nobody uses it: no peer to keep alive, nothing to sync, and its
+/// compositor parked, so not even a frame tick reaches the network. Its
+/// relays wait the way an installed desktop's do (TIL-740): nobody could
+/// dial it, so it neither probes them nor holds a home relay open.
+#[test]
+#[serial_test::serial]
+fn a_lone_idle_desktop_keeps_its_network_runtime_asleep() {
+    let mut home = tilo_test_env::TestHome::new().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let root = SigningKey::from_bytes(&[44; 32]);
+    let person = match collab_types::caps::Principal::person_from_key(
+        collab_types::crypto::Ed25519PublicKey::from_bytes(root.verifying_key().to_bytes()),
+    ) {
+        collab_types::caps::Principal::Person(id) => id,
+        other => panic!("a root key names a person: {other:?}"),
+    };
+    home.env().set("TILO_USER_ID", &person);
+    let mut tree = WorkspaceTree::default();
+    let workspace = tree.append_empty_workspace("Home");
+    tree.adopt_ownerless_workspaces(&person);
+    tree.desktop.active = workspace;
+    let net = device_reaching(
+        tree.shared(),
+        &dir.path().join("lone"),
+        &root,
+        DeviceCapabilities::primary(),
+        Reach::LoopbackHoldingRelays,
+    );
+    assert!(net.join_default_workspace());
+    let deadline = Instant::now()
+        .checked_add(tilo_test_env::hang_bound())
+        .unwrap();
+    while net.dial_addr().is_none() {
+        assert!(Instant::now() < deadline, "the desktop never listened");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    std::thread::sleep(LONE_SETTLE);
+
+    // Nothing drives this desktop, so every thread of the process counts.
+    let before = session_threads(None);
+    let started = Instant::now();
+    std::thread::sleep(LONE_IDLE);
+    let measured = started.elapsed();
+    let wakeups = tilo_test_env::idle::Wakeups::between(before, session_threads(None), measured);
+    eprintln!("a lone idle desktop's threads, {wakeups}");
+    assert!(
+        wakeups.per_second() <= LONE_WAKEUP_BUDGET,
+        "a lone idle desktop woke {:.2} times a second, over {LONE_WAKEUP_BUDGET}/s:\n{wakeups}",
+        wakeups.per_second(),
+    );
+    assert!(
+        net.reachability.is_dormant(),
+        "a desktop nobody could dial started its relays"
+    );
+    drop(net);
 }

@@ -81,15 +81,6 @@ pub fn workspace_root() -> Option<PathBuf> {
         .map(std::path::Path::to_path_buf)
 }
 
-/// Where Tilo apps kept their data before [`AppPaths`]: an absolute
-/// `$XDG_DATA_HOME`, else `%LOCALAPPDATA%` on Windows and `$HOME/.local/share`
-/// elsewhere (macOS included). For stores whose location is already on
-/// users' disks, and for migrating them; new stores use [`AppPaths`].
-#[must_use]
-pub fn legacy_data_home() -> Option<PathBuf> {
-    env_dir("XDG_DATA_HOME").or_else(legacy::data_home)
-}
-
 #[cfg(windows)]
 mod legacy {
     pub fn data_home() -> Option<std::path::PathBuf> {
@@ -98,11 +89,7 @@ mod legacy {
 }
 
 #[cfg(not(windows))]
-mod legacy {
-    pub fn data_home() -> Option<std::path::PathBuf> {
-        Some(super::home()?.join(".local/share"))
-    }
-}
+mod legacy {}
 
 /// The user's home directory: `$HOME` when set and non-empty, the account
 /// database's entry when `$HOME` is unset (on Unix), and `None` for an empty
@@ -121,10 +108,7 @@ pub fn home() -> Option<PathBuf> {
     }
 }
 
-#[cfg_attr(
-    windows,
-    expect(dead_code, reason = "Windows asks the shell for the profile folder")
-)]
+#[cfg(not(windows))]
 fn home_from(
     var: &dyn Fn(&str) -> Option<OsString>,
     account_home: impl FnOnce() -> Option<PathBuf>,
@@ -426,34 +410,6 @@ pub fn temp_dir() -> Option<PathBuf> {
 #[must_use]
 pub fn system_font_dirs() -> Vec<PathBuf> {
     platform::font_dirs()
-}
-
-/// Per-user data for stores that follow XDG on every Unix, macOS included:
-/// [`xdg::data_home`] there, and [`data_local_dir`] on Windows.
-#[must_use]
-pub fn data_home_or_local_app_data() -> Option<PathBuf> {
-    #[cfg(windows)]
-    {
-        data_local_dir()
-    }
-    #[cfg(not(windows))]
-    {
-        xdg::data_home()
-    }
-}
-
-/// Per-user state for stores that follow XDG on every Unix, macOS included:
-/// [`xdg::state_home`] there, and [`data_local_dir`] on Windows.
-#[must_use]
-pub fn state_home_or_local_app_data() -> Option<PathBuf> {
-    #[cfg(windows)]
-    {
-        data_local_dir()
-    }
-    #[cfg(not(windows))]
-    {
-        xdg::state_home()
-    }
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]

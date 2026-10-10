@@ -437,6 +437,52 @@ mod tests {
         );
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn a_slow_acknowledgement_within_the_open_deadline_keeps_the_capture() {
+        let (read, revision) = read_capture_using(
+            Reply::Chunk {
+                capture: 1,
+                revision: [5; 32],
+                total: 1,
+                offset: 0,
+                bytes: vec![1],
+                token: [6; 16],
+            },
+            &ByteBudget::new(),
+            async |request| {
+                assert!(matches!(request, Request::Cancel { capture: 1, .. }));
+                // A loaded broker answers in hundreds of milliseconds.
+                tokio::time::sleep(Duration::from_millis(900)).await;
+                Ok(Reply::Cancelled)
+            },
+        )
+        .await
+        .expect("a complete capture survives a slow but answered acknowledgement");
+        assert_eq!(revision, [5; 32]);
+        assert!(!read.merged.load(Ordering::Acquire));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_unanswered_acknowledgement_still_fails_the_capture() {
+        let result = read_capture_using(
+            Reply::Chunk {
+                capture: 1,
+                revision: [5; 32],
+                total: 1,
+                offset: 0,
+                bytes: vec![1],
+                token: [6; 16],
+            },
+            &ByteBudget::new(),
+            async |_| std::future::pending::<Result<Reply, String>>().await,
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "an unknown acknowledgement outcome is never accepted"
+        );
+    }
+
     #[tokio::test]
     async fn construction_diagnostic_does_not_request_or_consume_owner_refresh() {
         let reads = Reads::default();
@@ -753,6 +799,10 @@ fn capture_budget() -> &'static ByteBudget {
     static BUDGET: std::sync::OnceLock<ByteBudget> = std::sync::OnceLock::new();
     BUDGET.get_or_init(ByteBudget::new)
 }
+/// How long an assembled capture waits for the broker to accept its
+/// acknowledgement; equal to the polling Open deadline.
+const ACKNOWLEDGEMENT_DEADLINE: Duration = Duration::from_secs(2);
+
 #[allow(
     clippy::future_not_send,
     reason = "capnp-rpc channel futures are !Send by design; driven only on the shovel LocalSet"
@@ -842,8 +892,12 @@ pub(super) async fn read_capture_using(
         return Err(error);
     }
     // The final token is learned only after receiving the entire last chunk.
+    // The acknowledgement is an ordinary broker round trip, so it gets the
+    // same deadline as the Open that produced the capture. A shorter one
+    // fails a complete, verified capture closed whenever the broker answers
+    // slowly, which permanently disables the route (#4001).
     let acknowledgement = tokio::time::timeout(
-        Duration::from_millis(200),
+        ACKNOWLEDGEMENT_DEADLINE,
         send(Request::Cancel {
             capture: id,
             token: assembly.token,

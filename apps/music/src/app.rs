@@ -59,6 +59,7 @@ use crate::stream::{StreamRequest, StreamUpdate, StreamWorker};
 /// non-cancellable lifecycle contract without turning a slow normal seek into
 /// a fabricated success.
 const STREAM_START_TIMEOUT: Duration = Duration::from_secs(30);
+const PLAYBACK_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 /// What a failed offline download says in passing. The reason stays with the
 /// song: its row in Downloads offers Retry, and that button names the cause.
@@ -1449,9 +1450,9 @@ impl MusicApp {
 
     fn source_status(&self) -> String {
         if self.source_invocation.is_some() {
-            ui::i18n!("music-source-connecting")
+            crate::i18n::t("music-source-connecting")
         } else if !self.spotify_jobs.is_empty() {
-            ui::i18n!("music-spotify-updating")
+            crate::i18n::t("music-spotify-updating")
         } else {
             self.source_error.clone().unwrap_or_else(|| {
                 self.spotify_remote_state
@@ -1460,7 +1461,7 @@ impl MusicApp {
                     .and_then(serde_json::Value::as_str)
                     .map_or_else(
                         || self.backend_name.clone(),
-                        |name| format!("{} {name}", ui::i18n!("music-spotify-output")),
+                        |name| format!("{} {name}", crate::i18n::t("music-spotify-output")),
                     )
             })
         }
@@ -1581,6 +1582,23 @@ impl MusicApp {
             }
             None => track_id.to_string(),
         }
+    }
+
+    /// Decoder teardown at local EOS releases the live position query. Retain
+    /// only the end position whose duration the decoder actually observed;
+    /// catalogue metadata and transport intent cannot establish completion.
+    fn observed_position_ms(&self) -> Option<u64> {
+        self.audio.position_ms().or_else(|| {
+            self.local_file
+                .as_ref()
+                .filter(|file| {
+                    !self.pb.playing
+                        && !self.audio.has_stream()
+                        && self.pb.current.as_deref() == Some(&file.track.id)
+                })
+                .and_then(|file| file.observed_duration_ms)
+                .filter(|duration| self.playhead_ms.max(0.0) as u64 == *duration)
+        })
     }
 
     fn observed_duration_ms(&self) -> Option<u64> {
@@ -1906,7 +1924,7 @@ impl MusicApp {
             if self.pb.current.as_deref() != Some(track.as_str()) {
                 self.audio.stop();
                 self.pb.playing = false;
-                self.playback_error = Some(ui::i18n!("music-spotify-queue-changed"));
+                self.playback_error = Some(crate::i18n::t("music-spotify-queue-changed"));
             }
         }
         self.prepare_spotify_queue();
@@ -2205,14 +2223,14 @@ impl MusicApp {
         let (title, primary, guidance) = match kind {
             NamePrompt::NewPlaylist => ("New playlist".into(), "Create".into(), String::new()),
             NamePrompt::NewSpotifyPlaylist => (
-                ui::i18n!("music-spotify-create-playlist"),
-                ui::i18n!("music-spotify-create"),
-                ui::i18n!("music-spotify-private-help"),
+                crate::i18n::t("music-spotify-create-playlist"),
+                crate::i18n::t("music-spotify-create"),
+                crate::i18n::t("music-spotify-private-help"),
             ),
             NamePrompt::Rename(ref id) if id.starts_with("spotify:") => (
-                ui::i18n!("music-spotify-rename-playlist"),
-                ui::i18n!("music-spotify-save-name"),
-                ui::i18n!("music-spotify-ownership-help"),
+                crate::i18n::t("music-spotify-rename-playlist"),
+                crate::i18n::t("music-spotify-save-name"),
+                crate::i18n::t("music-spotify-ownership-help"),
             ),
             NamePrompt::Rename(_) => ("Rename playlist".into(), "Save".into(), String::new()),
         };
@@ -3800,16 +3818,17 @@ impl MusicApp {
     }
 
     /// Complete a background resource invocation only after decoded PCM has
-    /// reached the real sink.  The resolver merely gives the pipeline a URL;
-    /// it is not evidence that audio playback started.
+    /// reached the real sink and the decoder confirms Playing. A sink callback
+    /// can precede `GStreamer`'s asynchronous state transition; neither URL
+    /// resolution nor those first frames alone confirm settled playback.
     #[cfg(feature = "audio")]
     fn settle_resource_stream_after_rendered_frames(&mut self, rendered_frames: u64) {
         if let Some((invocation, _, frames_before, _)) = self.resource_stream_invocation
+            && self.audio.is_playing_confirmed()
             && (rendered_frames > frames_before
                 || (rendered_frames > 0
                     && self.resource_stream_resume.is_some()
-                    && self.resource_stream_resume == self.pb.current
-                    && self.audio.is_playing_confirmed()))
+                    && self.resource_stream_resume == self.pb.current))
         {
             self.resource_stream_invocation = None;
             self.resource_stream_resume = None;
@@ -4300,13 +4319,6 @@ impl MusicApp {
         self.dirty = true;
     }
 
-    /// Stage the Songs list with one row under the pointer, showing its
-    /// actions, for a `--shots` frame.
-    pub fn snap_row_actions(&mut self) {
-        self.view = View::Songs;
-        self.staged_row_pointer = Some(2);
-    }
-
     /// Stage a track context menu open for a `--shots` frame. Deferred to the
     /// first `sync` (the catalog is empty at construction); see `apply_shot_stage`.
     pub fn snap_track_menu(&mut self) {
@@ -4325,11 +4337,6 @@ impl MusicApp {
         }
     }
 
-    /// Open `view` for a `--shots` frame.
-    pub fn snap_view(&mut self, view: View) {
-        self.view = view;
-    }
-
     /// Stage the Home skeleton loading state for a `--shots` frame.
     pub fn snap_skeleton(&mut self) {
         self.shot_stage = Some(ShotStage::Skeleton);
@@ -4341,13 +4348,6 @@ impl MusicApp {
     pub fn snap_nowplaying(&mut self) {
         self.shot_stage = Some(ShotStage::NowPlaying);
         self.view = View::Songs;
-    }
-
-    /// Stage a playing track on a narrow window with the transport's More
-    /// menu open (shuffle, repeat, like, lyrics, queue).
-    pub fn snap_player_menu(&mut self) {
-        self.snap_nowplaying();
-        self.staged_player_menu = true;
     }
 
     /// Stage the Queue view with a real "Next up" list: a bundled track plays
@@ -4722,14 +4722,14 @@ impl MusicApp {
         self.push_menu("Add to queue", Action::AddToQueue(track.clone()));
         if track.starts_with("spotify:track:") {
             self.push_menu(
-                ui::i18n!("music-spotify-save"),
+                crate::i18n::t("music-spotify-save"),
                 Action::SpotifyLibrary {
                     track: track.clone(),
                     save: true,
                 },
             );
             self.push_menu(
-                ui::i18n!("music-spotify-unsave"),
+                crate::i18n::t("music-spotify-unsave"),
                 Action::SpotifyLibrary {
                     track: track.clone(),
                     save: false,
@@ -4743,7 +4743,7 @@ impl MusicApp {
                     track: track.clone(),
                 };
                 self.push_menu(
-                    ui::i18n!("music-spotify-remove-playlist"),
+                    crate::i18n::t("music-spotify-remove-playlist"),
                     Action::SpotifyEffect(effect),
                 );
             }
@@ -4843,12 +4843,12 @@ impl MusicApp {
         self.push_checked_menu("Queue", self.view == View::Queue, Action::ToggleQueue);
         if self.spotify_catalogue {
             self.push_menu(
-                ui::i18n!("music-spotify-devices"),
+                crate::i18n::t("music-spotify-devices"),
                 Action::SpotifyEffect(crate::actions::MusicEffect::SpotifyDevices),
             );
             let devices = self.spotify_devices.clone();
             for device in devices.iter().filter(|device| !device.restricted).take(12) {
-                let label = ui::i18n::I18nManager::format(
+                let label = crate::i18n::t_args(
                     "music-spotify-select-device",
                     &[("device", (&device.name).into())],
                 );
@@ -4878,7 +4878,7 @@ impl MusicApp {
         );
         if track.starts_with("spotify:track:") {
             self.push_menu(
-                ui::i18n!("music-spotify-create-playlist"),
+                crate::i18n::t("music-spotify-create-playlist"),
                 Action::BeginNewSpotifyPlaylist,
             );
         }

@@ -272,13 +272,6 @@ pub struct GitClientApp {
     settings: Settings,
     /// Fingerprint of the last shared-repo projection written to the document.
     shared_repo_fingerprint: Option<String>,
-    /// Set once after the first sync seeds the settings into the doc.
-    /// An initial preference was forced at construction (the split-diff
-    /// screenshot scenario), so the first sync keeps it rather than adopting
-    /// the document's persisted value. Interactive toggles never set this —
-    /// they go through the action executor, which writes the document
-    /// directly.
-    settings_forced: bool,
 
     screen: Screen,
     rect: Rect,
@@ -388,44 +381,6 @@ impl GitClientApp {
         app
     }
 
-    /// `--shots --scenario`: open a screen directly so each one can be
-    /// reviewed from a single frame.
-    pub fn shot_screen(&mut self, screen: Screen) {
-        self.switch_screen(screen);
-    }
-
-    /// `--shots --scenario split`: the side-by-side diff layout, pinned so
-    /// the document sync does not fold it back to the stored preference.
-    pub fn shot_split_diff(&mut self) {
-        self.settings.diff_layout = DiffLayout::SideBySide;
-        self.settings_forced = true;
-    }
-
-    /// `--shots --scenario commit`: a typed commit message so the commit
-    /// button renders enabled.
-    pub fn shot_commit_message(&mut self, message: &str) {
-        self.commit_input.set_text(message);
-    }
-
-    /// `--shots --scenario discard`: the confirmation for discarding the
-    /// first unstaged file, shown over its diff.
-    pub fn shot_confirm_discard(&mut self) {
-        if let Some(file) = self.model.unstaged.first() {
-            let name = file.name().to_string();
-            self.selected_change = Some((ChangeArea::Unstaged, 0));
-            self.confirm = Some(Confirm::DiscardFile {
-                area: ChangeArea::Unstaged,
-                index: 0,
-                name,
-            });
-        }
-    }
-
-    /// `--shots --scenario drawer`: the list drawer open in a narrow window.
-    pub fn shot_open_drawer(&mut self) {
-        self.staged = Staged::OpenDrawer;
-    }
-
     /// Construct from an explicit model — used by the sample path and tests.
     pub fn from_model(mut model: RepoModel, diffs: DiffMap) -> Self {
         let graph_layout = graph::layout(&mut model.commits);
@@ -489,7 +444,6 @@ impl GitClientApp {
             remote_job: None,
             settings: Settings::default(),
             shared_repo_fingerprint: None,
-            settings_forced: false,
             screen: Screen::Changes,
             rect: Rect::ZERO,
             selected_change,
@@ -547,11 +501,6 @@ impl GitClientApp {
     pub fn test_stage_all(&mut self) {
         self.stage_all();
     }
-    /// Drive the production "unstage all" action.
-    #[doc(hidden)]
-    pub fn test_unstage_all(&mut self) {
-        self.unstage_all();
-    }
     /// Set the commit message and drive the production commit action.
     #[doc(hidden)]
     pub fn test_commit(&mut self, message: &str) {
@@ -578,11 +527,6 @@ impl GitClientApp {
     #[doc(hidden)]
     pub fn test_discard_file(&mut self, area: ChangeArea, idx: usize) {
         self.discard_file(area, idx);
-    }
-    /// Drive the production "discard hunk" action for the selected file.
-    #[doc(hidden)]
-    pub fn test_discard_hunk(&mut self, hunk: usize) {
-        self.discard_hunk(hunk);
     }
     /// Whether the app is showing the empty "open a repository" state.
     #[doc(hidden)]

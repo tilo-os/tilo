@@ -36,6 +36,9 @@ mod invoker;
 #[path = "collab_broker_capnp/native_effect_recovery_tests.rs"]
 mod native_effect_recovery_tests;
 mod native_media;
+mod native_task_execution;
+#[cfg(test)]
+mod policy_turn_tests;
 #[cfg(target_os = "linux")]
 mod process_binding;
 mod published_invocation;
@@ -705,7 +708,7 @@ fn confirmation_satisfied(
 
 /// The capability verb an action's declared permission requires, if any.
 /// The one mapping every admission and catalogue check uses.
-fn permission_verb(requirement: tilo_actions::PermissionRequirement) -> Option<Verb> {
+pub(crate) fn permission_verb(requirement: tilo_actions::PermissionRequirement) -> Option<Verb> {
     match requirement {
         tilo_actions::PermissionRequirement::None => None,
         tilo_actions::PermissionRequirement::Read => Some(Verb::Read),
@@ -1250,6 +1253,7 @@ struct PendingTaskRun {
     lease: String,
     action_context: tilo_actions::ActionContext,
     terminal: bool,
+    native: Option<crate::services::NativeTaskBinding>,
 }
 
 /// The application's terminal answer to a directed invocation.
@@ -1451,7 +1455,7 @@ impl ContinuingCaller {
                 foreign_restriction: false,
                 direct: None,
             },
-            DurableContext::Local { caller, .. } => {
+            DurableContext::Local { caller, .. } | DurableContext::Task { caller, .. } => {
                 let (room, admitted) = caller.admitted_in();
                 Self::Admitted {
                     room,
@@ -3383,11 +3387,12 @@ impl CapnpBrokerState {
                 }
                 previous.request.clone()
             } else {
-                let receipt = crate::policy::redacted_effect_receipt(
+                let receipt = tilo_desktop_model::WorkspaceEffectReceipt::redacted(
                     update.invocation(),
                     &pending.actor,
                     pending.context.clone(),
                     status,
+                    tilo_clock::unix_now_i64(),
                 );
                 let request = tilo_peer_state::owner_commit::OwnerCommitRequest {
                     room: pending.cluster_id.clone(),
@@ -5450,6 +5455,9 @@ impl CapnpBrokerState {
     /// Returns an error when workspace authority, task ownership, or a live
     /// task-capable subscriber is unavailable.
     pub fn dispatch_workspace_task(&self, cluster_id: &str, task_id: &str) -> Result<u64, String> {
+        if self.native_tasks(cluster_id).is_some() {
+            return self.dispatch_native_task(cluster_id, task_id);
+        }
         if self.services.legacy_workspace.is_none() {
             return Err("task mutation service unsupported".into());
         }
@@ -5523,6 +5531,7 @@ impl CapnpBrokerState {
                     lease,
                     action_context: context,
                     terminal: false,
+                    native: None,
                 },
             );
         let actor = format!("agent:{agent_id}");
@@ -5554,7 +5563,11 @@ impl CapnpBrokerState {
             .filter(|run| {
                 run.peer_id == peer_id
                     && run.agent_id == agent_id
-                    && run.lease == lease
+                    && (run.lease == lease
+                        || (run.native.is_some()
+                            && runtime_collab::native_task_revision(&run.lease)
+                                .zip(runtime_collab::native_task_revision(lease))
+                                .is_some_and(|(old, new)| old.0 == new.0)))
                     && !run.terminal
             })
             .cloned()
@@ -5574,6 +5587,9 @@ impl CapnpBrokerState {
         lease: &str,
     ) -> Result<bool, String> {
         let run = self.task_run_for(peer_id, agent_id, run_id, lease)?;
+        if run.native.is_some() {
+            return Ok(self.native_task_status(&run, lease)?.cancelled);
+        }
         let membership = self
             .membership
             .as_ref()
@@ -5589,7 +5605,7 @@ impl CapnpBrokerState {
         })?
     }
 
-    fn record_task_run_update(
+    async fn record_task_run_update(
         &self,
         peer_id: u64,
         agent_id: &str,
@@ -5598,7 +5614,13 @@ impl CapnpBrokerState {
         update: runtime_collab::TaskRunUpdate,
     ) -> Result<(), String> {
         let run = self.task_run_for(peer_id, agent_id, run_id, lease)?;
+        if run.native.is_some() {
+            return self.report_native_task(run, update).await;
+        }
         let (summary, status, terminal) = match update {
+            runtime_collab::TaskRunUpdate::DirectionsApplied { .. } => {
+                return Err("native directions are unavailable on a legacy task".into());
+            }
             runtime_collab::TaskRunUpdate::Accepted => {
                 ("Agent accepted run".to_string(), None, false)
             }
@@ -5658,6 +5680,10 @@ impl CapnpBrokerState {
         run_id: u64,
         lease: &str,
         target: runtime_collab::TaskAction<'_>,
+        provenance: Option<&(
+            durable_local_invocation::LocalCaller,
+            tilo_actions::InvocationId,
+        )>,
     ) -> Result<InvocationJob, String> {
         let runtime_collab::TaskAction {
             peer_id: target_peer,
@@ -5669,23 +5695,21 @@ impl CapnpBrokerState {
         if self.task_run_cancelled(peer_id, agent_id, run_id, lease)? {
             return Err("the task was cancelled; no further action may start".into());
         }
-        let confirmation_required = self
+        let (surface, descriptor) = self
             .surfaces
             .lock()
-            .ok()
-            .and_then(|surfaces| surfaces.get(&target_peer).cloned())
-            .and_then(|surface| {
-                (surface.route.cluster_id == run.cluster_id)
-                    .then_some(surface)
-                    .and_then(|surface| {
-                        surface.actions.into_iter().find(|candidate| {
-                            candidate.resource == resource && candidate.action == action
-                        })
-                    })
-            })
-            .ok_or_else(|| "the task action is no longer published in this workspace".to_string())?
-            .contract
-            .confirmation;
+            .map_err(|_| "task action surface unavailable")?
+            .get(&target_peer)
+            .filter(|surface| surface.route.cluster_id == run.cluster_id)
+            .and_then(|surface| surface.action_projection(resource, action))
+            .ok_or("the task action is no longer published in this workspace")?;
+        let requirement = crate::services::NativeTaskActionRequirement {
+            app: surface.app_id,
+            resource: resource.into(),
+            action: descriptor.action.clone(),
+            permission: descriptor.contract.permission,
+        };
+        let confirmation_required = descriptor.contract.confirmation;
         if !matches!(
             confirmation_required,
             tilo_actions::ConfirmationPolicy::None
@@ -5694,20 +5718,34 @@ impl CapnpBrokerState {
                 "task action requires an interactive confirmation and cannot run unattended".into(),
             );
         }
-        self.start_invocation_confirmed_for(
-            target_peer,
-            resource,
-            action,
-            InvocationInputs {
-                requested: None,
-                caller: None,
-                execution: None,
-                argument,
-                actor: &BrokerActor::agent(run.agent_id),
-                confirmation_token: None,
-                context: Some(run.action_context),
-            },
-        )
+        if let Some(binding) = &run.native {
+            let (caller, invocation) =
+                provenance.ok_or("native task action requires authenticated original caller")?;
+            let mut current = binding.clone();
+            current.revision = runtime_collab::native_task_revision(lease)
+                .ok_or("invalid native lease")?
+                .1;
+            self.native_tasks(&run.cluster_id)
+                .ok_or("native task owner unavailable")?
+                .admit(&run.cluster_id, &current, &requirement, &mut || {
+                    self.start_native_task_invocation(&run, target, caller, *invocation)
+                })
+        } else {
+            self.start_invocation_confirmed_for(
+                target_peer,
+                resource,
+                action,
+                InvocationInputs {
+                    requested: None,
+                    caller: None,
+                    execution: None,
+                    argument,
+                    actor: &BrokerActor::agent(run.agent_id),
+                    confirmation_token: None,
+                    context: Some(run.action_context),
+                },
+            )
+        }
     }
 
     fn disconnect_device_media(&self, peer_id: u64) {
@@ -5758,9 +5796,7 @@ impl CapnpBrokerState {
         if let Ok(mut subscribers) = self.action_catalogue_subscribers.lock() {
             subscribers.remove(&peer_id);
         }
-        if let Ok(mut subscribers) = self.task_subscribers.lock() {
-            subscribers.remove(&peer_id);
-        }
+        self.disconnect_native_task_stream(peer_id);
         if let Ok(mut pending) = self.pending_invocations.lock() {
             let ids = pending
                 .iter()
@@ -5827,6 +5863,15 @@ impl CapnpBrokerState {
         }
         if let Some(clipboard) = self.services.file_clipboard.as_ref() {
             clipboard.disconnect(peer_id);
+        }
+    }
+
+    fn disconnect_native_task_stream(&self, peer_id: u64) {
+        if let Ok(mut subscribers) = self.task_subscribers.lock() {
+            subscribers.remove(&peer_id);
+        }
+        if let Ok(mut runs) = self.pending_task_runs.lock() {
+            runs.retain(|_, run| run.native.is_none() || run.peer_id != peer_id);
         }
     }
 
@@ -6145,6 +6190,8 @@ impl CapnpBrokerState {
             | CollabEvent::TaskRun(_)
             | CollabEvent::TaskActionInvocationResult { .. }
             | CollabEvent::TaskRunCancellation { .. }
+            | CollabEvent::TaskRunControl { .. }
+            | CollabEvent::TaskRunReportResult { .. }
             | CollabEvent::NativeMediaCommandResult { .. }
             | CollabEvent::RealtimeCommandResult { .. }
             | CollabEvent::NearbyTransferCommandResult { .. }
@@ -6361,6 +6408,7 @@ impl CapnpBrokerState {
                 permissions: Vec::new(),
             });
         }
+        let certified = native.is_some();
         if let Ok(mut m) = self.channels.lock() {
             m.entry(channel_id.to_owned())
                 .or_insert_with(ChannelSubscribers::default)
@@ -6371,6 +6419,11 @@ impl CapnpBrokerState {
                     native,
                     private_alias: false,
                 });
+        }
+        if certified {
+            // A new admitted session brings its own certificate expiry: the
+            // policy turn re-checks, and from then on wakes at that expiry.
+            tilo_identity_host::policy_change::announce();
         }
         rx
     }
@@ -6587,6 +6640,99 @@ impl CapnpBrokerState {
             }
         }
         Ok(())
+    }
+
+    /// Re-check every membership surface and native context subscriber
+    /// (TIL-707), and register with
+    /// [`tilo_identity_host::policy_change::wake_at`] the first instant at
+    /// which a time-bound input they read (a capability's expiry, a
+    /// subscriber certificate's validity) changes the answer. Returns whether
+    /// the next re-check must come on the one-second clock instead of on an
+    /// announcement: an input nothing announces, or a check that failed.
+    fn refresh_policy_surfaces(self: &Arc<Self>) -> bool {
+        if self.services.workspace_memberships.is_none() || self.membership.is_none() {
+            // No membership surface, and no native context subscriber can
+            // be admitted: nothing here changes with policy.
+            return false;
+        }
+        // Sampled before anything is read: an expiry between this sample
+        // and a read is registered as well, so none is skipped.
+        let before = self.policy_now_ns();
+        let mut clocked = false;
+        if let Err(error) = self.refresh_workspace_membership_services() {
+            tracing::debug!(%error, "native membership surface could not be refreshed");
+            clocked = true;
+        }
+        if let Err(error) = self.refresh_workspace_context_services() {
+            tracing::debug!(%error, "native membership context could not be refreshed");
+            clocked = true;
+        }
+        let announced = self
+            .membership
+            .as_ref()
+            .is_some_and(|membership| membership.announces_policy_changes())
+            && tilo_identity_host::policy_change::timers_reliable();
+        let Ok(before) = before else {
+            return true;
+        };
+        if clocked || !announced {
+            return true;
+        }
+        let Ok((next, reads_fleet)) = self.next_policy_change(before) else {
+            return true;
+        };
+        if reads_fleet && !tilo_identity_host::policy_change::identity_files_watched() {
+            // Another process may revoke a device in the fleet file; without
+            // its watch, the fleet is re-read every second as before.
+            return true;
+        }
+        if let Some(at) = next {
+            let Ok(policy_now) = self.policy_now_ns() else {
+                return true;
+            };
+            tilo_identity_host::policy_change::wake_at(crate::policy_schedule::wall_instant(
+                at,
+                policy_now,
+                tilo_clock::unix_now_ns(),
+            ));
+        }
+        false
+    }
+
+    /// The first policy instant (Unix nanoseconds) after `after` at which a
+    /// membership surface or a native context subscriber can be answered
+    /// differently with nothing written, and whether a subscriber's
+    /// revalidation reads the device fleet.
+    fn next_policy_change(&self, after: u64) -> Result<(Option<u64>, bool), String> {
+        let capabilities = match self.membership.as_ref() {
+            Some(membership) => membership
+                .decide_in_tree(|tree| tree.next_capability_expiry_after(after / 1_000_000_000))?
+                .map(|seconds| seconds.saturating_mul(1_000_000_000)),
+            None => None,
+        };
+        let fleet_authority = self.certificate_authority.get().is_some();
+        let mut reads_fleet = false;
+        let certificates = self
+            .channels
+            .lock()
+            .map_err(|_| "native context subscriptions unavailable")?
+            .values()
+            .flat_map(|subscribers| subscribers.context.iter())
+            .filter_map(|subscriber| subscriber.native.as_ref()?.admitted.certificate.as_ref())
+            .filter_map(|certificate| {
+                reads_fleet |= fleet_authority;
+                // Not yet valid until issued; no longer valid once expired.
+                [Some(certificate.issued_at_ns), certificate.expires_at_ns]
+                    .into_iter()
+                    .flatten()
+                    .filter(|at| *at > after)
+                    .min()
+            })
+            .min();
+        Ok((
+            capabilities.into_iter().chain(certificates).min(),
+            reads_fleet,
+        ))
     }
 
     /// Ask one local subscriber of every record channel in `cluster_id` for
@@ -8005,11 +8151,12 @@ impl channel_handle::Server for CapnpChannelHandle {
                 .requires_owner_for(&surface.route.cluster_id)
         {
             context.purpose = None;
-            let receipt = crate::policy::redacted_effect_receipt(
+            let receipt = tilo_desktop_model::WorkspaceEffectReceipt::redacted(
                 update.invocation(),
                 &actor,
                 context,
                 status,
+                tilo_clock::unix_now_i64(),
             );
             let state = self.state.clone();
             let route = self.route();
@@ -8741,9 +8888,11 @@ impl channel_handle::Server for CapnpChannelHandle {
         _params: channel_handle::SubscribeTaskRunsParams,
         mut results: channel_handle::SubscribeTaskRunsResults,
     ) -> Promise<(), capnp::Error> {
-        if self.state.services.legacy_workspace.is_none() {
+        if self.state.services.legacy_workspace.is_none()
+            && self.state.native_tasks(&self.route().cluster_id).is_none()
+        {
             return Promise::err(capnp::Error::failed(
-                "task mutation service unsupported".into(),
+                "task execution service unsupported".into(),
             ));
         }
         let current = match self
@@ -8773,6 +8922,12 @@ impl channel_handle::Server for CapnpChannelHandle {
                 "task subscription registry unavailable".into(),
             ));
         }
+        // A replacement stream needs the canonical approved run again, even
+        // when the authenticated connection itself did not change.
+        if let Ok(mut runs) = self.state.pending_task_runs.lock() {
+            runs.retain(|_, run| run.peer_id != self.peer_id || run.native.is_none());
+        }
+        self.state.local_turn.notify_one();
         let client: task_run_stream::Client = capnp_rpc::new_client(TaskRunStreamServer {
             host_guard: HostWorkerReadGuard::for_channel(
                 &self.state,
@@ -8782,6 +8937,7 @@ impl channel_handle::Server for CapnpChannelHandle {
             rx: Rc::new(AsyncMutex::new(rx)),
         });
         results.get().set_stream(client);
+        self.state.refresh_native_task_delivery();
         Promise::ok(())
     }
 
@@ -8813,6 +8969,7 @@ impl channel_handle::Server for CapnpChannelHandle {
             .map_err(|error| capnp::Error::failed(format!("invalid task update: {error}")))?;
             state
                 .record_task_run_update(peer_id, &agent_id, request.get_run_id(), &lease, update)
+                .await
                 .map_err(capnp::Error::failed)
         })
     }
@@ -8836,6 +8993,7 @@ impl channel_handle::Server for CapnpChannelHandle {
         };
         let state = self.state.clone();
         let peer_id = self.peer_id;
+        let caller = durable_local_invocation::LocalCaller::capture(&self).ok();
         Promise::from_future(async move {
             let request = params.get()?;
             // Interactive confirmations have no safe unattended equivalent.
@@ -8866,18 +9024,56 @@ impl channel_handle::Server for CapnpChannelHandle {
                     "durable task steps are not served by this host".into(),
                 ));
             }
-            let job = state
-                .start_task_action(peer_id, &agent_id, request.get_run_id(), &lease, target)
-                .map_err(capnp::Error::failed)?;
-            let update = state.invocation_status(job.id).ok_or_else(|| {
-                capnp::Error::failed("accepted task action has no broker state".into())
-            })?;
-            results.get().set_id(job.id);
+            let invocation = request.get_invocation()?.to_str()?;
+            let provenance = if runtime_collab::native_task_revision(&lease).is_some() {
+                let id = uuid::Uuid::parse_str(invocation).map_err(|_| {
+                    capnp::Error::failed("native task child requires stable invocation UUID".into())
+                })?;
+                if id.is_nil() {
+                    return Err(capnp::Error::failed("nil task invocation".into()));
+                }
+                Some((
+                    caller.ok_or_else(|| {
+                        capnp::Error::failed("native task channel custody unavailable".into())
+                    })?,
+                    tilo_actions::InvocationId(id),
+                ))
+            } else {
+                None
+            };
+            let observed = if let Some((caller, invocation)) = &provenance {
+                let run = state
+                    .task_run_for(peer_id, &agent_id, request.get_run_id(), &lease)
+                    .map_err(capnp::Error::failed)?;
+                state
+                    .native_task_observation(&run, *invocation, target, caller)
+                    .map_err(capnp::Error::failed)?
+            } else {
+                None
+            };
+            let (id, update) = if let Some(observed) = observed {
+                observed
+            } else {
+                let job = state
+                    .start_task_action(
+                        peer_id,
+                        &agent_id,
+                        request.get_run_id(),
+                        &lease,
+                        target,
+                        provenance.as_ref(),
+                    )
+                    .map_err(capnp::Error::failed)?;
+                let update = state.invocation_status(job.id).ok_or_else(|| {
+                    capnp::Error::failed("accepted task action has no broker state".into())
+                })?;
+                (job.id, update)
+            };
+            results.get().set_id(id);
             results.get().set_update_json(
                 &serde_json::to_string(&update)
                     .map_err(|error| capnp::Error::failed(error.to_string()))?,
             );
-            drop(job.completion);
             Ok(())
         })
     }
@@ -8908,6 +9104,20 @@ impl channel_handle::Server for CapnpChannelHandle {
                 .task_run_cancelled(peer_id, &agent_id, request.get_run_id(), &lease)
                 .map_err(capnp::Error::failed)?;
             results.get().set_cancelled(cancelled);
+            let run = state
+                .task_run_for(peer_id, &agent_id, request.get_run_id(), &lease)
+                .map_err(capnp::Error::failed)?;
+            if run.native.is_some() {
+                let status = state
+                    .native_task_status(&run, &lease)
+                    .map_err(capnp::Error::failed)?;
+                if let Some(control) = status.control {
+                    results.get().set_control_json(
+                        &serde_json::to_string(&control)
+                            .map_err(|error| capnp::Error::failed(error.to_string()))?,
+                    );
+                }
+            }
             Ok(())
         })
     }
@@ -11507,6 +11717,23 @@ impl CapnpBrokerState {
     }
 }
 
+/// When the broker's turn must wake with nothing arriving: the earlier of
+/// its next policy re-check and its next invocation expiry, and never while
+/// neither is due.
+fn broker_turn_deadline(
+    recheck: Option<std::time::Instant>,
+    invocation: Option<std::time::Instant>,
+) -> Option<std::time::Instant> {
+    recheck.into_iter().chain(invocation).min()
+}
+
+/// Sleep until `deadline`; only polled while there is one.
+async fn sleep_until(deadline: Option<std::time::Instant>) {
+    if let Some(deadline) = deadline {
+        tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
+    }
+}
+
 /// One run of the broker thread: start the broker's own services, then
 /// accept and drive connections until asked to quit.
 #[expect(
@@ -11557,18 +11784,27 @@ async fn serve_broker_thread(
             return;
         }
     };
-    let mut next_membership_refresh = std::time::Instant::now();
+    // Membership surfaces and native context subscribers are re-checked when
+    // an input announces a change or a registered expiry comes due, not on a
+    // clock (TIL-707). The watch wakes this turn for the first announcement
+    // after it is armed; the schedule coalesces the rest.
+    let policy_turn = Arc::new(tokio::sync::Notify::new());
+    let policy_watch = {
+        let turn = Arc::clone(&policy_turn);
+        tilo_identity_host::policy_change::Watch::new(move || turn.notify_one())
+    };
+    let mut policy = crate::policy_schedule::PolicySchedule::default();
+    let mut next_native_task_refresh = std::time::Instant::now();
     loop {
-        if std::time::Instant::now() >= next_membership_refresh {
-            if let Err(error) = state.refresh_workspace_membership_services() {
-                tracing::debug!(%error, "native membership surface could not be refreshed");
-            }
-            if let Err(error) = state.refresh_workspace_context_services() {
-                tracing::debug!(%error, "native membership context could not be refreshed");
-            }
-            next_membership_refresh = std::time::Instant::now()
-                .checked_add(Duration::from_secs(1))
-                .unwrap_or_else(std::time::Instant::now);
+        let now = std::time::Instant::now();
+        let epoch = tilo_identity_host::policy_change::epoch();
+        if policy.due(now, epoch).is_some_and(|due| due <= now) {
+            let clocked = state.refresh_policy_surfaces();
+            policy.checked(now, epoch, clocked);
+        }
+        if state.has_native_task_subscribers() && now >= next_native_task_refresh {
+            state.refresh_native_task_delivery();
+            next_native_task_refresh = now.checked_add(Duration::from_secs(1)).unwrap_or(now);
         }
         #[cfg(test)]
         {
@@ -11618,19 +11854,30 @@ async fn serve_broker_thread(
         if quit.load(Ordering::Relaxed) {
             break;
         }
-        let deadline = state.next_invocation_deadline();
-        // The loop is also the broker's turn: in-process door
-        // calls and connected apps progress on it. Cap it at the
-        // old cadence, and sooner when an invocation is about to
-        // expire. `local_turn` wakes it immediately for queued work.
-        let tick = deadline
-            .map_or(Duration::from_millis(100), |deadline| {
-                deadline.saturating_duration_since(std::time::Instant::now())
-            })
-            .min(Duration::from_millis(100));
+        // Sleep until something here is due: the next policy re-check, or an
+        // invocation about to expire. Everything else the turn handles wakes
+        // it at once: queued directory work, in-process door calls and quit
+        // through `local_turn`, admitted workers through `worker_admitted`,
+        // policy announcements through `policy_turn`; connected apps run as
+        // tasks of this LocalSet.
+        let now = std::time::Instant::now();
+        let mut recheck = policy.due(now, tilo_identity_host::policy_change::epoch());
+        if recheck.is_none() && policy_watch.arm() != policy.epoch() {
+            // Announced between the check above and arming: nothing will
+            // wake the turn for it.
+            recheck = Some(now);
+        }
+        let deadline = broker_turn_deadline(recheck, state.next_invocation_deadline())
+            .into_iter()
+            .chain(
+                state
+                    .has_native_task_subscribers()
+                    .then_some(next_native_task_refresh),
+            )
+            .min();
         let stream = tokio::select! {
             biased;
-            () = tokio::time::sleep(tick) => {
+            () = sleep_until(deadline), if deadline.is_some() => {
                 // Expiration must not depend on a caller polling
                 // status: completion waiters deserve a terminal
                 // answer even after an app goes silent.
@@ -11640,6 +11887,7 @@ async fn serve_broker_thread(
             conn = listener.accept() => conn,
             () = state.local_turn.notified() => continue,
             () = state.worker_admitted.notified() => continue,
+            () = policy_turn.notified() => continue,
         };
         let (stream, _) = match stream {
             Ok(s) => s,

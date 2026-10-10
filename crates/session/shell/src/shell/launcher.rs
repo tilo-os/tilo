@@ -23,7 +23,7 @@ use std::process::Command;
 use std::process::Stdio;
 
 use std::collections::{HashMap, HashSet};
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsStr;
 #[cfg(any(test, target_os = "linux"))]
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -1822,25 +1822,6 @@ pub fn gui_apps() -> Vec<InstalledApp> {
     apps
 }
 
-/// Two packages can claim the same extension; the shared policy resolver uses
-/// personal/workspace defaults and a deterministic display-name fallback.
-pub fn app_for_extension(ext: &str) -> Option<InstalledApp> {
-    app_for_extension_with_policy(ext, "", None)
-}
-
-/// Resolve an extension through the shared personal/workspace policy engine.
-/// The returned id is looked up in the same installed-app snapshot used to
-/// build candidates, so policy can never launch an uninstalled or non-claiming
-/// package.
-pub fn app_for_extension_with_policy(
-    ext: &str,
-    user_id: &str,
-    workspace: Option<&desktop_policy::WorkspaceDefaults>,
-) -> Option<InstalledApp> {
-    let resource = desktop_policy::ResourceKind::extension(ext).ok()?;
-    app_for_resource_with_policy(&resource, user_id, workspace)
-}
-
 /// Who opens a resource: a Tilo package, or a host desktop entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResourceHandler {
@@ -2339,7 +2320,7 @@ fn original_application_creation(
         return None;
     }
     let original = std::str::from_utf8(&record.manifest_bytes).ok()?;
-    let parsed: launcher::manifest::MinimalManifest = toml::from_str(original).ok()?;
+    let parsed: launcher::manifest::ManifestView = toml::from_str(original).ok()?;
     if parsed.package_id != app.package_id {
         return None;
     }
@@ -4599,14 +4580,6 @@ pub(crate) fn set_wayland_socket_path(path: Option<PathBuf>) {
     *WAYLAND_SOCKET.lock().expect("WAYLAND_SOCKET poisoned") = path;
 }
 
-/// Rendered `OsString` form of the socket name for logging.
-pub fn wayland_socket_display() -> OsString {
-    wayland_socket().map_or_else(
-        || OsString::from("<none>"),
-        std::path::PathBuf::into_os_string,
-    )
-}
-
 /// Package processes require the Linux execution authority.
 ///
 /// # Errors
@@ -5518,9 +5491,9 @@ mod tests {
         let manifest_path = payload.join("manifest.toml");
         std::fs::write(
             &manifest_path,
-            format!(
-                "[package]\nid = \"{package_id}\"\nversion = \"1.2.3\"\n\
-                 [entrypoint]\nbin = \"bin/app\"\ntype = \"{entrypoint_type}\"\n"
+            crate::shell::test_support::canonical_manifest(
+                &format!("id = \"{package_id}\"\nversion = \"1.2.3\"\nkind = \"app\""),
+                &format!("[entrypoint]\nbin = \"bin/app\"\ntype = \"{entrypoint_type}\"\n"),
             ),
         )
         .unwrap();

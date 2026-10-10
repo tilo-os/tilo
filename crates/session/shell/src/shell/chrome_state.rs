@@ -713,8 +713,6 @@ pub struct ChromeState {
     /// "Send…" requests for the last screenshot from the action door,
     /// drained into the capture studio by the overlay host.
     screenshot_sends: Vec<ui::widget::ScreenshotSendTarget>,
-    /// Compatibility queue for callers of the original active-room API.
-    legacy_record_requests: Vec<(String, String)>,
     /// Tracked record actions retain the exact authorized destination until
     /// the overlay-owned room index consumes them on a later frame.
     tracked_record_requests: Vec<RecordRequest>,
@@ -892,7 +890,6 @@ impl ChromeState {
             presence_requests: Vec::new(),
             screenshot_sends: Vec::new(),
             wheel_summon: None,
-            legacy_record_requests: Vec::new(),
             tracked_record_requests: Vec::new(),
             record_request_results: BTreeMap::new(),
             next_record_request_id: 1,
@@ -1017,13 +1014,6 @@ impl ChromeState {
         self.peer_sync_request_results.remove(&request_id)
     }
 
-    /// Same effect as activating that record's row in search — a
-    /// reference is added to this room's index, no bytes move.
-    #[deprecated(note = "use push_tracked_record_request to retain authorization context")]
-    pub fn push_record_request(&mut self, id: impl Into<String>, kind: impl Into<String>) {
-        self.legacy_record_requests.push((id.into(), kind.into()));
-    }
-
     /// Queue an authorized record import against its exact workspace target.
     pub fn push_tracked_record_request(
         &mut self,
@@ -1044,11 +1034,6 @@ impl ChromeState {
             actor,
         });
         request_id
-    }
-
-    #[deprecated(note = "use take_tracked_record_requests for authorization-aware requests")]
-    pub fn take_record_requests(&mut self) -> Vec<(String, String)> {
-        std::mem::take(&mut self.legacy_record_requests)
     }
 
     pub(crate) fn take_tracked_record_requests(&mut self) -> Vec<RecordRequest> {
@@ -2638,11 +2623,6 @@ impl ChromeState {
 
     pub fn notification_history(&self) -> &[Notification] {
         self.notification_log.history()
-    }
-
-    /// Number of entries in the history log.
-    pub fn notification_history_count(&self) -> usize {
-        self.notification_log.history().len()
     }
 
     pub fn notification_badge_total(&self) -> u32 {

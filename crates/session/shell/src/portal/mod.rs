@@ -853,16 +853,6 @@ impl PromptQueueHandle {
     pub fn queued_len(&self) -> usize {
         self.state.lock().map_or(0, |state| state.pending.len())
     }
-
-    /// Direct accessor (test only): peek at the front entry's caller + capability without removing it.
-    #[cfg(any(test, debug_assertions))]
-    pub fn front_for_tests(&self) -> Option<(PortalCaller, Capability)> {
-        let state = self.state.lock().ok()?;
-        state
-            .pending
-            .first()
-            .map(|p| (p.caller.clone(), p.capability.clone()))
-    }
 }
 
 /// Configuration handed to [`serve`] / interface constructors.
@@ -1096,21 +1086,6 @@ pub mod flow {
             ctx.grants().insert_portal_consent_key(consent_key, scope);
         }
         outcome
-    }
-}
-
-/// Helper: rewrite a [`Capability`] template's `scope` field. Duplicated
-/// from `overlay_host::with_grant_scope` so the portal module doesn't take a hard dep on `shell::overlay_host` (pulls the whole UI stack).
-pub fn with_scope(cap: Capability, scope: GrantScope) -> Capability {
-    match cap {
-        Capability::Filesystem { path, mode, .. } => Capability::Filesystem { path, mode, scope },
-        Capability::Camera { .. } => Capability::Camera { scope },
-        Capability::Microphone { .. } => Capability::Microphone { scope },
-        Capability::Screencast { .. } => Capability::Screencast { scope },
-        Capability::RemoteDesktop { .. } => Capability::RemoteDesktop { scope },
-        Capability::Print { .. } => Capability::Print { scope },
-        Capability::Network { hosts, .. } => Capability::Network { hosts, scope },
-        Capability::HostShell { .. } => Capability::HostShell { scope },
     }
 }
 

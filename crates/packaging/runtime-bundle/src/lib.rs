@@ -292,10 +292,6 @@ pub const HOST_MINIMAL_PATHS_AARCH64: &[&str] = &[
     "/lib/aarch64-linux-gnu/libutil.so.1",
 ];
 
-/// Legacy alias for [`HOST_MINIMAL_PATHS_X86_64`]; new code should use [`host_minimal_paths_for`].
-#[deprecated(note = "use host_minimal_paths_for(arch) — HOST_MINIMAL_PATHS is x86_64-only")]
-pub const HOST_MINIMAL_PATHS: &[&str] = HOST_MINIMAL_PATHS_X86_64;
-
 /// Optional `/etc/ld.so.cache` — loader falls back to a slower search without it; include when present.
 pub const HOST_LD_SO_CACHE: &str = "/etc/ld.so.cache";
 
@@ -371,20 +367,6 @@ pub fn system_bundle_path(version: &str) -> PathBuf {
 /// The image's list of runtime publishers the launcher accepts: one hex
 /// Ed25519 key per line, `#` comments.
 pub const TRUSTED_PUBLISHERS_FILE: &str = "/etc/tilo/runtime-bundle-trusted-publishers.txt";
-
-/// Read a trusted-publisher list, ignoring blank and `#` lines; `None` when
-/// the file is absent or unreadable.
-#[must_use]
-pub fn load_trusted_publishers(path: &Path) -> Option<Vec<String>> {
-    let text = fs::read_to_string(path).ok()?;
-    Some(
-        text.lines()
-            .map(str::trim)
-            .filter(|line| !line.is_empty() && !line.starts_with('#'))
-            .map(str::to_ascii_lowercase)
-            .collect(),
-    )
-}
 
 /// Walk the search path and return the first existing bundle dir with a `bundle.toml` (per-user, then system).
 pub fn resolve_bundle_path(version: &str) -> Option<PathBuf> {

@@ -165,6 +165,68 @@ publishing, changing access policy or connecting personal resources/accounts.
 
 ## Focused verification
 
+### Authenticated startup and canonical acknowledgments
+
+`tilo_desktop::feedback::transport` supplies the production adapter and owner
+receipt primitive. Enrollment is a non-deserializable host input containing the
+already-admitted destination, certified owner and reporter `Caller`s, current
+permission context and actual publication requirement. Every send and receipt
+rechecks that admission. Browser Splice still requires Write; a Comment action
+does not supply it. Missing roles, changed routes and restricted actions refuse.
+Read-only admission can confirm a previously durable report through its exact
+receipt reader; it cannot resend the report or perform new publication.
+
+`SessionTransport` bridges existing session IO: queue the registered
+`submit-feedback` action with the retained provider and reporter, then read a
+bounded `SignedReceipt` from the pinned canonical owner. A dispatch acceptance,
+ordinary receipt projection or caller-supplied JSON cannot confirm delivery.
+The profile stores the destination, owner/reporter public identities and
+publication requirement under exclusive custody before transport can run. A
+restart restores the same approved outbox; another owner/device/route cannot
+silently adopt it. No capability or private signing key is persisted here.
+
+The owner constructs `CanonicalDestination` with its exact retained
+`CanonicalRecord`, `chat::feedback::canonical_feedback_projection` and existing
+purpose-specific `ReceiptSigner` service. It checks current canonical Saved
+status, record namespace, submission digest and attributed reporter before
+asking that service to sign. It checks current status/content and signer again
+after the callback. Signing requests are opaque and only this validated path
+creates them; private keys stay in the signing service. The versioned domain
+`tilo-feedback-canonical-receipt-v1` binds the destination, owner, reporter,
+publication class and receipt. Clients verify the pinned owner device signature
+and exact approved ID/digest/destination before confirming the outbox.
+
+Native startup consumes this custody through
+`InProcessApps::install_feedback_startup(authenticated_reporter, startup)`;
+another profile person/device and replacement are refused. The browser's Rust
+host hook `register_feedback_startup(peer, startup)` requires an existing
+certified peer, rejects replacement and is consumed by actual desktop mounting.
+Peer close retires unused custody. URL/JSON launch options have no authority
+fields. `NoCapture` explicitly supports description-only review until a qualified
+focused-surface capture/context adapter is supplied; opt-in capture then refuses.
+The canonical service refuses screenshot-bearing acknowledgments until a durable
+content witness is integrated; Saved report metadata alone cannot confirm an
+attachment.
+
+These are source hooks, not an enabled public guest endpoint. The current
+`RoomRecordsLink::view_document`/`RelayRecordsLink` interface carries verified
+source bytes and a revision, not a canonical Saved witness or signed feedback
+acknowledgment. The enrolled runtime must bind its existing action IO and serve
+`CanonicalDestination::receipt` through that owner's authenticated service;
+the browser bootstrap must register the resulting Rust startup custody. Do not
+reinterpret the current semantic-read projection as this service, inject role
+claims from public config, broaden host-person invocation policy or grant Write
+to make guest Splice pass. Live acceptance still needs the actual existing
+destination, permitted reporter role and this owner-service binding.
+
+The adapter's headless fixture dispatches the real Chat action, persists through
+filesystem-backed canonical/profile stores, loses its reply, retries the same
+reviewed payload across separate owner processes and reads one attributed
+durable report after another restart. Negative cases cover owner/reporter
+substitution, unsigned/projection acknowledgments, current undurable edits,
+destination restrictions, role loss and startup replacement. This is source
+qualification, not public guest or attachment-delivery qualification.
+
 Run with the configured cargo drop-in:
 
 ```sh
@@ -172,9 +234,10 @@ cargo test --locked -p tilo-feedback-review --lib
 cargo test --locked -p tilo-feedback --lib
 cargo test --locked -p tilo-app --lib feedback_composer::tests
 cargo test --locked -p shell --lib shell::in_process::feedback_tests::
+cargo test --locked -p tilo-desktop --lib feedback::transport::tests::
 cargo check --locked -p tilo-browser-runtime --target wasm32-unknown-unknown
 cargo test --locked -p chat --lib feedback::
-cargo clippy --locked -p tilo-feedback -p chat --all-targets -- -D warnings
+cargo clippy --locked -p tilo-feedback -p tilo-desktop -p chat --all-targets -- -D warnings
 cargo check --locked -p shell --tests
 ```
 

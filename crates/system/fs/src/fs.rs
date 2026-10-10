@@ -2954,109 +2954,6 @@ impl QuickFS {
         (bytes.len() <= crate::syncstate::MAX_RECORD_INDEX_PAGE_BYTES).then_some(bytes)
     }
 
-    fn restore_version(&self, ino: u64, version_id: fs_protocol::FileVersionId) -> Result<(), i32> {
-        self.check_access(ino, Access::Write)?;
-        if self
-            .write_buffers
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .contains_key(&ino)
-        {
-            return Err(EBUSY);
-        }
-        // A namespace-held document needs a codec-aware CRDT checkout rather
-        // than replacing its exported bytes as if it were a plain file.
-        let kind = Self::restore_kind(&self.ns(), ino).map_err(|outcome| match outcome {
-            fs_protocol::files::CheckedHistoryOutcomeV1::UnsupportedOwner { .. } => libc::ENOTSUP,
-            _ => ENOENT,
-        })?;
-        let (history, _) = self.history.as_ref().ok_or(libc::ENOTSUP)?;
-        let record_id = self.ns().record_id_for(ino).ok_or(ENOENT)?;
-        let version = history
-            .snapshot(record_id)
-            .and_then(|snapshot| {
-                snapshot
-                    .versions
-                    .into_iter()
-                    .find(|version| version.id == version_id)
-            })
-            .ok_or(EINVAL)?;
-        let data = match version.content_hash {
-            Some(content_hash) => {
-                let hydrator = self.hydrator.clone();
-                let runtime = hydrator.runtime_handle.clone();
-                tokio::task::block_in_place(|| {
-                    runtime.block_on(async move {
-                        hydrator.read(Hash::from(content_hash.0), 0, u64::MAX).await
-                    })
-                })
-                .map_err(|_| EIO)?
-            }
-            None => Vec::new(),
-        };
-        let (expected_hash, expected_len) = {
-            let namespace = self.ns();
-            let attr = namespace.getattr(ino).ok_or(ENOENT)?;
-            (namespace.hash_for(ino), attr.size)
-        };
-        // A serialized document is restored as a new CRDT revision of the
-        // current document; any other content gets the version's bytes back.
-        let data = if kind.is_serialized_document() {
-            self.restored_document(expected_hash, version.content_hash, &data)
-                .map_err(|error| match error {
-                    checked_restore::DocumentRestoreError::Unavailable => EIO,
-                    checked_restore::DocumentRestoreError::NotADocument(_) => libc::ENOTSUP,
-                })?
-        } else {
-            data
-        };
-        let restored_hash = self.write_content_blocking(&data).map_err(|_| EIO)?;
-        if !kind.is_serialized_document()
-            && restored_hash.map(|hash| *hash.as_bytes()) != version.content_hash.map(|hash| hash.0)
-        {
-            return Err(EIO);
-        }
-        let snapshot = self
-            .replacement_snapshot(ino, restored_hash, data.len() as u64)
-            .ok_or(EIO)?;
-        self.append_version(
-            snapshot,
-            fs_protocol::FileProvenance::Restore { from: version_id },
-            now_ms(),
-        )
-        .map_err(|_| EIO)?;
-        let revision = match &self.record_publisher {
-            Some(publisher) => publisher
-                .snapshot(snapshot.record_id)
-                .map_err(|_| EIO)?
-                .and_then(|snapshot| snapshot.content_revision)
-                .ok_or(EIO)
-                .map(Some)?,
-            None => None,
-        };
-        let delta = {
-            let mut namespace = self.ns();
-            if namespace.record_id_for(ino) != Some(record_id)
-                || namespace.hash_for(ino) != expected_hash
-                || namespace
-                    .getattr(ino)
-                    .is_none_or(|attr| attr.size != expected_len)
-            {
-                return Err(EBUSY);
-            }
-            if let Some(revision) = &revision {
-                if !namespace.set_content_revision(ino, revision, now_ms()) {
-                    return Err(EIO);
-                }
-            } else {
-                namespace.set_content(ino, restored_hash.as_ref(), data.len() as u64, now_ms());
-            }
-            namespace.save_incremental()
-        };
-        self.publish(delta);
-        Ok(())
-    }
-
     /// Read a bounded immutable version for an app-native history preview.
     /// This never changes heads and is addressable only through a version id
     /// already exposed by the caller's history projection.
@@ -6728,12 +6625,6 @@ impl Filesystem for QuickFS {
                 return;
             }
             match request.operation {
-                fs_protocol::HistoryControlOperationV1::Restore { version_id } => {
-                    match self.restore_version(ino.0, version_id) {
-                        Ok(()) => reply.ok(),
-                        Err(errno) => reply.error(to_errno(errno)),
-                    }
-                }
                 fs_protocol::HistoryControlOperationV1::ResolveConflict {
                     conflict_id,
                     strategy,

@@ -5,7 +5,9 @@
 //! (the work every cache miss repeats), and what a pointer move over a real
 //! [`tilo_app::App`] costs through its production input path
 //! ([`tilo_app::App::surface_input`]), with how many publications those moves
-//! ran. Bare pointer motion must not republish (TIL-628).
+//! ran. Bare pointer motion must not republish (TIL-628). It also prints the
+//! sync pass per frame while typing into the draft and while scrolling the
+//! list, which must stay flat as the list grows (TIL-621).
 //!
 //! ```text
 //! cargo run --release -p tilo-app --features test-support \
@@ -162,14 +164,21 @@ fn count(resources: &[tilo_actions::Resource]) -> usize {
         .fold(0, usize::saturating_add)
 }
 
+/// A checklist window holding `tasks` tasks. Its genesis seeds as many as
+/// the last live window was asked for; the rest are added here.
+fn checklist(tasks: u32) -> Result<TestApp<Scaling>, Box<dyn std::error::Error>> {
+    let mut app = TestApp::<Scaling>::for_person("ada")?;
+    let seeded = u32::try_from(app.state().tasks.len())?;
+    if let Some(missing) = tasks.checked_sub(seeded).filter(|&missing| missing > 0) {
+        app.call("seed", serde_json::json!({ "count": missing }))?;
+    }
+    Ok(app)
+}
+
 /// p50 of one full publication of `tasks` tasks, and how many resources it
 /// publishes.
 fn publication(tasks: u32) -> Result<(f64, usize), Box<dyn std::error::Error>> {
-    let mut app = TestApp::<Scaling>::for_person("ada")?;
-    let seeded = app.state().tasks.len();
-    if seeded < usize::try_from(tasks)? {
-        app.call("seed", serde_json::json!({ "count": tasks }))?;
-    }
+    let mut app = checklist(tasks)?;
     let doc = app.read_document(Clone::clone);
     let mut published = 0;
     let samples = (0..10)
@@ -182,6 +191,46 @@ fn publication(tasks: u32) -> Result<(f64, usize), Box<dyn std::error::Error>> {
         })
         .collect();
     Ok((median(samples), published))
+}
+
+/// The sync pass per frame, p50 in ms, while typing into the draft (each
+/// key a change to the resource) and while scrolling the list (no change).
+/// Both should stay flat however many tasks the list holds.
+fn sync_per_frame(tasks: u32) -> Result<(f64, f64), Box<dyn std::error::Error>> {
+    use tilo_app::profiling::{PerfScenario, PerfStep, run_scenario};
+    let mut app = checklist(tasks)?;
+    app.harness()
+        .perform_named("draft", &tilo_app::a11y::Action::Focus)?;
+    let sync = |app: &mut TestApp<Scaling>, name: &str, steps| {
+        let report = run_scenario(
+            app.harness(),
+            &PerfScenario {
+                name: name.to_owned(),
+                viewport: (1280, 800),
+                warmup: 2,
+                steps,
+            },
+        );
+        std::time::Duration::from_micros(report.sync.p50_us).as_secs_f64() * 1e3
+    };
+    let typing = sync(
+        &mut app,
+        "typing",
+        vec![PerfStep::Type("hello world again ".into())],
+    );
+    app.harness().send(&WindowEvent::CursorMoved {
+        device_id: DeviceId::dummy(),
+        position: PhysicalPosition::new(400.0, 500.0),
+    });
+    let scrolling = sync(
+        &mut app,
+        "scrolling",
+        vec![PerfStep::Scroll {
+            dy: -3.0,
+            count: 60,
+        }],
+    );
+    Ok((typing, scrolling))
 }
 
 /// p50 of one pointer move over the live window, and how many publications
@@ -225,13 +274,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .split(',')
         .map(|size| size.trim().parse::<u32>())
         .collect::<Result<Vec<_>, _>>()?;
-    println!("tasks  resources  publication p50  pointer move p50  publications in {MOVES} moves");
+    println!(
+        "tasks  resources  publication p50  pointer move p50  publications in {MOVES} moves  \
+         sync/frame typing p50  sync/frame scrolling p50"
+    );
     for tasks in sizes {
         let (publish_ms, published) = publication(tasks)?;
+        let (typing_ms, scrolling_ms) = sync_per_frame(tasks)?;
         TASKS.store(tasks, Ordering::Relaxed);
         let (move_ms, publications) = drive_live_window::<Scaling, _>(pointer_moves)?;
         println!(
-            "{tasks:>5}  {published:>9}  {publish_ms:>12.3} ms  {move_ms:>13.3} ms  {publications:>5}"
+            "{tasks:>5}  {published:>9}  {publish_ms:>12.3} ms  {move_ms:>13.3} ms  \
+             {publications:>27}  {typing_ms:>18.3} ms  {scrolling_ms:>21.3} ms"
         );
     }
     Ok(())

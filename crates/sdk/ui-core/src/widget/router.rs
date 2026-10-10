@@ -215,13 +215,6 @@ impl RouteHandle {
         }))
     }
 
-    pub fn back_action(&self) -> impl FnMut() + use<> {
-        let handle = self.clone();
-        move || {
-            let _ = handle.back();
-        }
-    }
-
     fn require_known(&self, route: &str) -> Result<(), RouteError> {
         if self.knows(route) {
             Ok(())

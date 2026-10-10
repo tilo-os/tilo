@@ -32,10 +32,7 @@ pub enum Feature {
 pub(crate) const WEB_CROSS_ORIGIN: &str = "The browser only reads responses from sites that allow it; the host can relay others through its fetch proxy.";
 pub(crate) const WEB_SOCKETS: &str = "A browser page cannot open raw network connections.";
 pub(crate) const WEB_PEER_TO_PEER: &str = "A browser page cannot accept connections from peers.";
-#[cfg_attr(
-    not(all(target_arch = "wasm32", target_os = "unknown")),
-    allow(dead_code, reason = "only a page lacks these")
-)]
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) const NO_WEBTRANSPORT: &str = "This browser has no WebTransport.";
 pub(crate) const NOT_YET: &str = "Tilo cannot do this yet.";
 
@@ -87,13 +84,14 @@ pub fn availability(feature: Feature) -> Availability {
 
 /// The error for `feature` on this target, when its column says it is
 /// unsupported.
-#[cfg_attr(
-    any(
-        not(all(target_arch = "wasm32", target_os = "unknown")),
-        not(all(feature = "webtransport", feature = "sockets"))
-    ),
-    allow(dead_code, reason = "only a page lacks these")
-)]
+#[cfg(any(
+    all(target_family = "wasm", any(feature = "sockets", feature = "p2p")),
+    all(
+        target_arch = "wasm32",
+        target_os = "unknown",
+        feature = "webtransport"
+    )
+))]
 pub(crate) fn unsupported(feature: Feature) -> Unsupported {
     Unsupported::of(CAPABILITIES, feature)
 }

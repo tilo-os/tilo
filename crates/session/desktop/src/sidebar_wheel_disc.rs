@@ -347,10 +347,6 @@ impl SidebarWheelDisc {
         self.summon_at = at;
     }
 
-    pub fn is_summoned(&self) -> bool {
-        self.summon_at.is_some()
-    }
-
     /// Send a summoned disc back to its dock, telling the host so it
     /// re-anchors it on the next layout.
     pub fn dismiss_summon(&mut self) {
@@ -365,13 +361,6 @@ impl SidebarWheelDisc {
     #[must_use]
     pub fn with_host(mut self, host: Rc<dyn WheelHost>) -> Self {
         self.host = Some(host);
-        self
-    }
-
-    /// Override the disc diameter for deterministic geometry tests.
-    #[must_use]
-    pub fn with_diameter(mut self, d: f64) -> Self {
-        self.diameter_px = d;
         self
     }
 

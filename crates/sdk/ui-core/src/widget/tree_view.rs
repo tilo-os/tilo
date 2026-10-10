@@ -1049,13 +1049,6 @@ impl<T> TreeView<T, TreeNode<T>> {
         result
     }
 
-    pub fn replace_model(&mut self, root: TreeNode<T>) {
-        let anchor = self.capture_view_anchor();
-        self.model = root;
-        self.invalidate_all_delegates();
-        self.reconcile_model_state(anchor.as_ref());
-    }
-
     /// Enable safe before/inside/after dragging for the owned [`TreeNode`]
     /// model. Subtrees can be reordered among siblings or reparented without
     /// app-authored detach/insert bookkeeping.
@@ -2777,29 +2770,6 @@ impl<T, M: TreeModel> TreeView<T, M> {
         }
         self.mounted_rows = mounted;
     }
-
-    fn route_to_delegates(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
-        if let Some(row) = self
-            .mounted_rows
-            .iter_mut()
-            .find(|row| row.widget.wants_pointer_capture())
-            && let Some(node) = row.node
-        {
-            row.widget
-                .handle_event(event, &mut ctx.reborrow(ctx.path, node));
-            return;
-        }
-        for row in self.mounted_rows.iter_mut().rev() {
-            let Some(node) = row.node else {
-                continue;
-            };
-            row.widget
-                .handle_event(event, &mut ctx.reborrow(ctx.path, node));
-            if *ctx.handled {
-                break;
-            }
-        }
-    }
 }
 
 #[inline]
@@ -4052,7 +4022,9 @@ impl<T: 'static, M: TreeModel + 'static> TreeView<T, M> {
             return;
         }
         if !self.reorder.is_tracking() && !self.drag_scroll.is_tracking() {
-            self.route_to_delegates(
+            crate::widget::route_to_mounted(
+                &mut self.mounted_rows,
+                |mounted| (&mut mounted.widget, mounted.node),
                 event,
                 &mut EventCtx {
                     scale_factor,

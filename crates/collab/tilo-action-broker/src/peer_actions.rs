@@ -368,29 +368,6 @@ impl PeerActionQueue {
         result
     }
 
-    /// [`Self::serve_with_readiness`] that pauses at `barrier` before registering.
-    ///
-    /// # Errors
-    ///
-    /// Returns why serving stopped; a closed transport also closes the session.
-    #[cfg(feature = "test-support")]
-    pub async fn serve_with_readiness_and_registration_barrier_for_test(
-        &self,
-        session: Arc<tilo_relay_session::RelayCoeditSession>,
-        room: Uuid,
-        host: Uuid,
-        acknowledged: tokio::sync::watch::Sender<bool>,
-        barrier: ActionRegistrationBarrier,
-    ) -> Result<(), PeerActionAttachmentError> {
-        let result = self
-            .serve_with_readiness_inner(session.clone(), room, host, acknowledged, Some(barrier))
-            .await;
-        if result == Err(PeerActionAttachmentError::TransportClosed) {
-            session.close().await;
-        }
-        result
-    }
-
     async fn serve_with_readiness_inner(
         &self,
         session: Arc<tilo_relay_session::RelayCoeditSession>,
