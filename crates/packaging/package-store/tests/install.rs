@@ -391,6 +391,72 @@ fn removal_evicts_unreferenced_blobs_and_honours_pins() {
 }
 
 #[test]
+fn orphaned_trees_go_unless_a_running_app_has_them_mounted() {
+    let identity = SigningIdentity::generate();
+    let (_pa, a) = package(&identity, "so.tilo.a", "1.0.0", &v1_files());
+    let root = scratch();
+    let store = PackageStore::at(root.path());
+    store
+        .install(full_tapp(&a).as_slice(), admit_all, None)
+        .unwrap();
+    // Trees a crash between a commit and retiring the replaced version left,
+    // one of them still mounted by the app that ran it.
+    let packages = store.layout().packages();
+    let orphan = |seed: u8| {
+        let id = tilo_app_package::PackageId::from_bytes([seed; 32]);
+        let tree = store.layout().payload(id);
+        std::fs::create_dir_all(tree.join("bin")).unwrap();
+        std::fs::write(tree.join("bin/app"), bytes(seed, 1000)).unwrap();
+        std::fs::create_dir_all(store.layout().meta_dir(id)).unwrap();
+        tree
+    };
+    let (gone, running) = (orphan(1), orphan(2));
+    std::fs::create_dir_all(packages.join("not-a-package")).unwrap();
+    let mut mounts = package_store::mounts::Mounts::default();
+    mounts.add_mountinfo(&format!(
+        "700 1 0:31 {} /usr/share/tilo-apps/so.tilo.old ro - ext4 /dev/sda1 rw\n",
+        running.display()
+    ));
+    let collected = store
+        .collect_orphans(&package_store::mounts::InUse::Known(mounts))
+        .unwrap();
+    assert!(!gone.exists() && !gone.with_extension("pkg").exists());
+    assert_eq!(collected.removed.len(), 2, "{collected:?}");
+    assert_eq!(collected.removed_bytes, 1000);
+    assert_eq!(collected.kept_in_use, vec![running.clone()]);
+    assert!(running.exists(), "a mounted tree stays");
+    assert!(
+        packages.join("not-a-package").exists(),
+        "only package trees"
+    );
+    let row = store
+        .registry()
+        .unwrap()
+        .find("so.tilo.a")
+        .cloned()
+        .unwrap();
+    assert!(
+        package_store::integrity::verify(&row, &row.payload_root)
+            .unwrap()
+            .is_intact(),
+        "an installed package is untouched"
+    );
+    // Once the app closed, the next collection takes it.
+    let collected = store
+        .collect_orphans(&package_store::mounts::InUse::Known(
+            package_store::mounts::Mounts::default(),
+        ))
+        .unwrap();
+    assert!(!running.exists(), "{collected:?}");
+    // A mount table that cannot be read keeps everything.
+    orphan(3);
+    let collected = store
+        .collect_orphans(&package_store::mounts::InUse::Unknown("test".into()))
+        .unwrap();
+    assert!(collected.removed.is_empty(), "{collected:?}");
+}
+
+#[test]
 fn explicit_cohort_install_preserves_held_packages_and_existing_pins() {
     let identity = SigningIdentity::generate();
     let (_first_tree, first) = package(&identity, "so.tilo.demo", "0.1.73018", &v1_files());
