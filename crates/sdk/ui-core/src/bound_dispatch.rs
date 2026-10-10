@@ -1664,6 +1664,30 @@ impl ControlWitness {
     }
 }
 
+pub(crate) fn bound_control_has_declared_params(
+    root: &dyn Widget,
+    doc: &AutoCommit,
+    target: &BoundActionTarget,
+    arguments: &serde_json::Map<String, serde_json::Value>,
+) -> Result<bool, tilo_actions::DoorError> {
+    let snapshots = discover_bound_resources(root, doc, Some(&target.address.address))
+        .map_err(|error| BoundActionError::Dispatch(error).into_door())?;
+    let snapshot = snapshots
+        .iter()
+        .find(|snapshot| snapshot.binding.same_component(&target.binding))
+        .ok_or_else(|| tilo_actions::DoorError::Unknown(target.address.address.clone()))?;
+    let (_, _, spec) = resolve_resource_invocation(
+        &snapshot.resources,
+        &target.address.address,
+        None,
+        Some(arguments),
+        true,
+    )?;
+    spec.validate_json(arguments)
+        .map_err(|error| tilo_actions::DoorError::InvalidArguments(error.to_string()))?;
+    Ok(!spec.params().is_empty())
+}
+
 #[derive(Clone)]
 pub(crate) enum ControlContinuationArguments {
     Immediate,
@@ -2096,12 +2120,13 @@ pub(crate) fn execute_resource_operation(
                     &envelope.action.payload,
                 ),
                 None => crate::widget::ResourceOperation::local(
-                    source_invocation.unwrap_or(invocation),
+                    invocation,
                     tilo_actions::OperationKind::Document,
                     &envelope.action.type_id,
                     &envelope.action.payload,
                 ),
-            };
+            }
+            .with_source_invocation(source_invocation);
             let before = envelope.base_change_hashes();
             let applied = crate::widget::document_effects::AppliedDocument {
                 invocation,
@@ -2149,7 +2174,8 @@ pub(crate) fn execute_resource_operation(
                 &encoded.type_id,
                 &encoded.payload,
             ),
-        };
+        }
+        .with_source_invocation(source_invocation);
         let op = op.with_target(target.as_ref());
         widget
             .start_operation(&op, &mut crate::widget::Edits::lend(doc), path)

@@ -2073,8 +2073,14 @@ impl App {
             .alias(binding, resource.id.as_str())
             .map_err(crate::bound_dispatch::BoundActionError::into_door)?;
         let address = tilo_actions::ActionAddress::new(alias, action);
+        let spec = resource
+            .actions
+            .iter()
+            .find(|spec| spec.id == action)
+            .ok_or_else(|| tilo_actions::DoorError::Unknown(address.clone()))?;
+        let argument = Self::canonical_broker_argument(spec, Some(&serde_json::Map::new()), None)?;
         self.publish_action_surface();
-        self.invoke_via_broker(&address, Some(&serde_json::Map::new()), None, None)
+        self.invoke_via_broker(&address, argument, None)
     }
 
     /// Admit a locally initiated operation at the session broker before the
@@ -2087,8 +2093,7 @@ impl App {
     fn invoke_via_broker(
         &mut self,
         address: &tilo_actions::ActionAddress,
-        typed_arguments: Option<&serde_json::Map<String, serde_json::Value>>,
-        argument: Option<&str>,
+        argument: tilo_actions::remote::InvokeArgument,
         confirmation_evidence: Option<&serde_json::Value>,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
         let broker_requests = &mut self.actions.broker_requests;
@@ -2097,7 +2102,6 @@ impl App {
             &mut self.actions.next_broker_request_id,
             manager.is_connected(),
             address,
-            typed_arguments,
             argument,
             confirmation_evidence,
             |request_id, request| {
@@ -2107,6 +2111,63 @@ impl App {
                 });
             },
         )
+    }
+
+    fn canonical_broker_argument(
+        spec: &tilo_actions::ActionSpec,
+        typed_arguments: Option<&serde_json::Map<String, serde_json::Value>>,
+        argument: Option<&str>,
+    ) -> Result<tilo_actions::remote::InvokeArgument, tilo_actions::DoorError> {
+        if typed_arguments.is_some() && argument.is_some() {
+            return Err(tilo_actions::DoorError::InvalidArguments(
+                "supply structured arguments or legacy text, not both".into(),
+            ));
+        }
+        if let Some(arguments) = typed_arguments {
+            spec.validate_json(arguments)
+                .map_err(|error| tilo_actions::DoorError::InvalidArguments(error.to_string()))?;
+            return Ok(Self::canonical_validated_json_argument(
+                !spec.params().is_empty(),
+                arguments,
+            ));
+        }
+        if let Some(argument) = argument {
+            if !matches!(&spec.input, tilo_actions::ActionInput::Prompted { .. }) {
+                return Err(tilo_actions::DoorError::InvalidArguments(
+                    "the published action does not accept text".into(),
+                ));
+            }
+            return Ok(tilo_actions::remote::InvokeArgument::Text(
+                argument.to_owned(),
+            ));
+        }
+        spec.validate_json(&serde_json::Map::new())
+            .map_err(|error| tilo_actions::DoorError::InvalidArguments(error.to_string()))?;
+        Ok(Self::canonical_validated_json_argument(
+            !spec.params().is_empty(),
+            &serde_json::Map::new(),
+        ))
+    }
+
+    /// Resolution decodes the internal JSON-prefixed compatibility argument
+    /// into `typed_arguments`. Do not submit that same value to the broker a
+    /// second time through the legacy text representation.
+    fn broker_text_after_resolution<'a>(
+        typed_arguments: Option<&serde_json::Map<String, serde_json::Value>>,
+        argument: Option<&'a str>,
+    ) -> Option<&'a str> {
+        typed_arguments.is_none().then_some(argument).flatten()
+    }
+
+    fn canonical_validated_json_argument(
+        has_declared_params: bool,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> tilo_actions::remote::InvokeArgument {
+        if has_declared_params {
+            tilo_actions::remote::InvokeArgument::Json(arguments.clone())
+        } else {
+            tilo_actions::remote::InvokeArgument::None
+        }
     }
 
     /// The confirmation an app's legacy evidence object expresses.
@@ -2130,8 +2191,7 @@ impl App {
         next_request_id: &mut Option<u64>,
         connected: bool,
         address: &tilo_actions::ActionAddress,
-        typed_arguments: Option<&serde_json::Map<String, serde_json::Value>>,
-        argument: Option<&str>,
+        argument: tilo_actions::remote::InvokeArgument,
         confirmation_evidence: Option<&serde_json::Value>,
         send: impl FnOnce(u64, tilo_actions::remote::InvokeRequest),
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
@@ -2142,16 +2202,6 @@ impl App {
             });
         }
         let request_id = Self::allocate_broker_request_id(next_request_id)?;
-        let arguments = typed_arguments.cloned().unwrap_or_else(|| {
-            let mut arguments = serde_json::Map::new();
-            if let Some(value) = argument {
-                arguments.insert(
-                    tilo_actions::PROMPTED_PARAM.to_string(),
-                    serde_json::Value::String(value.to_string()),
-                );
-            }
-            arguments
-        });
         send(
             request_id,
             tilo_actions::remote::InvokeRequest {
@@ -2161,7 +2211,7 @@ impl App {
                     provider: tilo_actions::remote::OWN_PROVIDER.into(),
                     address: address.clone(),
                 },
-                argument: tilo_actions::remote::InvokeArgument::Json(arguments),
+                argument,
                 context: None,
                 confirmation: Self::broker_confirmation(confirmation_evidence),
                 revision: None,
@@ -2231,12 +2281,12 @@ impl App {
             && spec.locus == tilo_actions::ExecutionLocus::ServerPreferred
             && !broker_admitted
         {
-            return self.invoke_via_broker(
-                address,
+            let broker_argument = Self::canonical_broker_argument(
+                spec,
                 typed_arguments,
-                argument,
-                confirmation_evidence,
-            );
+                Self::broker_text_after_resolution(typed_arguments, argument),
+            )?;
+            return self.invoke_via_broker(address, broker_argument, confirmation_evidence);
         }
         let source_invocation = broker_admitted.then_some(invocation).flatten();
         debug_assert!(
@@ -2256,12 +2306,12 @@ impl App {
             ));
         }
         if action.locus() == tilo_actions::ExecutionLocus::ServerPreferred && !broker_admitted {
-            return self.invoke_via_broker(
-                address,
+            let broker_argument = Self::canonical_broker_argument(
+                spec,
                 typed_arguments,
-                argument,
-                confirmation_evidence,
-            );
+                Self::broker_text_after_resolution(typed_arguments, argument),
+            )?;
+            return self.invoke_via_broker(address, broker_argument, confirmation_evidence);
         }
         // Only admitted local document execution owns a new change boundary.
         // Encoding failures and broker routing must leave the caller's pending
@@ -2337,8 +2387,7 @@ impl App {
         &mut self,
         target: &crate::bound_dispatch::BoundActionTarget,
         resources: &[tilo_actions::Resource],
-        arguments: Option<&serde_json::Map<String, serde_json::Value>>,
-        argument: Option<&str>,
+        argument: tilo_actions::remote::InvokeArgument,
         evidence: Option<&serde_json::Value>,
         broker_delivery: Option<&mut dyn FnMut(CollabRequest)>,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
@@ -2367,7 +2416,6 @@ impl App {
                 &mut self.actions.next_broker_request_id,
                 true,
                 &address,
-                arguments,
                 argument,
                 evidence,
                 |request_id, request| {
@@ -2379,7 +2427,7 @@ impl App {
             );
         }
         self.publish_action_surface();
-        self.invoke_via_broker(&address, arguments, argument, evidence)
+        self.invoke_via_broker(&address, argument, evidence)
     }
 
     /// The bound `target` names the action; `request.address` is not consulted.
@@ -2433,11 +2481,15 @@ impl App {
                 self.collaboration.manager.is_connected(),
             )
         {
+            let broker_argument = Self::canonical_broker_argument(
+                spec,
+                arguments.as_ref(),
+                Self::broker_text_after_resolution(arguments.as_ref(), argument),
+            )?;
             return self.route_bound_invocation_to_broker(
                 target,
                 &snapshot.resources,
-                arguments.as_ref(),
-                argument,
+                broker_argument,
                 evidence,
                 broker_delivery,
             );
@@ -2736,12 +2788,12 @@ impl App {
             && !broker_admitted
             && self.collaboration.manager.is_connected()
         {
-            return self.invoke_via_broker(
-                address,
+            let broker_argument = Self::canonical_broker_argument(
+                resolved,
                 typed_arguments.as_ref(),
-                argument,
-                confirmation_evidence,
-            );
+                Self::broker_text_after_resolution(typed_arguments.as_ref(), argument),
+            )?;
+            return self.invoke_via_broker(address, broker_argument, confirmation_evidence);
         }
         if kind == tilo_actions::OperationKind::Document {
             let request = ResourceInvocation::new(address, actor)
@@ -3079,22 +3131,32 @@ impl App {
         if let (Some(acting), Some(running)) = (&acting, on_behalf_of)
             && self.collaboration.manager.is_connected()
         {
-            let result = self
-                .actions
-                .bound_publication
-                .alias(&target.binding, &target.address.address.resource)
-                .map_err(crate::bound_dispatch::BoundActionError::into_door)
-                .and_then(|alias| {
-                    self.send_follow_up(
-                        running,
-                        &tilo_actions::ActionAddress::new(
-                            alias,
-                            target.address.address.action.clone(),
-                        ),
-                        &intent.arguments,
-                        acting.context.clone(),
-                    )
-                });
+            let broker_argument = crate::bound_dispatch::bound_control_has_declared_params(
+                self.root_widget.as_ref(),
+                &self.state.doc,
+                target,
+                &intent.arguments,
+            )
+            .map(|has_declared_params| {
+                Self::canonical_validated_json_argument(has_declared_params, &intent.arguments)
+            });
+            let result = broker_argument.and_then(|broker_argument| {
+                self.actions
+                    .bound_publication
+                    .alias(&target.binding, &target.address.address.resource)
+                    .map_err(crate::bound_dispatch::BoundActionError::into_door)
+                    .and_then(|alias| {
+                        self.send_follow_up(
+                            running,
+                            &tilo_actions::ActionAddress::new(
+                                alias,
+                                target.address.address.action.clone(),
+                            ),
+                            broker_argument,
+                            acting.context.clone(),
+                        )
+                    })
+            });
             self.note_continuation(on_behalf_of, &result);
             if let Err(error) = crate::bound_dispatch::notify_control_invocation_result(
                 self.root_widget.as_mut(),
@@ -3577,12 +3639,16 @@ impl App {
             if let (Some(acting), Some(running)) = (&acting, on_behalf_of)
                 && self.collaboration.manager.is_connected()
             {
-                let result = self.send_follow_up(
-                    running,
-                    &intent.address,
-                    &intent.arguments,
-                    acting.context.clone(),
-                );
+                let broker_argument =
+                    Self::canonical_broker_argument(resolved, Some(&intent.arguments), None);
+                let result = broker_argument.and_then(|broker_argument| {
+                    self.send_follow_up(
+                        running,
+                        &intent.address,
+                        broker_argument,
+                        acting.context.clone(),
+                    )
+                });
                 self.note_continuation(on_behalf_of, &result);
                 crate::widget::controls::on_control_invocation_result(
                     self.root_widget.as_mut(),
@@ -3639,7 +3705,7 @@ impl App {
         &mut self,
         running: tilo_actions::InvocationId,
         address: &tilo_actions::ActionAddress,
-        arguments: &serde_json::Map<String, serde_json::Value>,
+        argument: tilo_actions::remote::InvokeArgument,
         context: Option<tilo_actions::ActionContext>,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
         let request_id = self.take_broker_request_id()?;
@@ -3650,7 +3716,7 @@ impl App {
                 provider: tilo_actions::remote::OWN_PROVIDER.into(),
                 address: address.clone(),
             },
-            argument: tilo_actions::remote::InvokeArgument::Json(arguments.clone()),
+            argument,
             context,
             confirmation: None,
             revision: None,

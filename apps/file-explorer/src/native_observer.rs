@@ -60,6 +60,12 @@ pub(super) fn snapshot(widget: &FileExplorerWidget) -> serde_json::Value {
         && valid(root)
         && geometry.is_some_and(|(content, viewport)| valid(content) && valid(viewport));
     let selected = widget.selection.selected();
+    let selected_count = selected.len();
+    let copy_refused = widget
+        .dispatcher
+        .as_ref()
+        .and_then(|dispatcher| dispatcher.refused().get())
+        .is_some_and(|refused| refused.action == crate::effects::FilesEffect::COPY_SELECTION.id);
     let names: Vec<&str> = selected
         .iter()
         .filter_map(|&index| widget.entries.get(index))
@@ -70,6 +76,12 @@ pub(super) fn snapshot(widget: &FileExplorerWidget) -> serde_json::Value {
     } else {
         widget.scroll_offset.get()
     };
+    let (
+        clipboard_phase,
+        clipboard_source_present,
+        clipboard_ever_active,
+        clipboard_ever_source_present,
+    ) = widget.local_clipboard.diagnostic_phase();
     serde_json::json!({
         "app": "so.tilo.file-explorer",
         "view_id": "file_view",
@@ -83,6 +95,7 @@ pub(super) fn snapshot(widget: &FileExplorerWidget) -> serde_json::Value {
         "thumbnail_pending": widget.thumbs.as_ref().map(|service| service.pending()),
         "selected_indices": selected,
         "selected_names": names,
+        "selected_count": selected_count,
         "primary_index": widget.selected_index(),
         "offset_x": offset_x,
         "offset_y": offset_y,
@@ -94,5 +107,18 @@ pub(super) fn snapshot(widget: &FileExplorerWidget) -> serde_json::Value {
         "view_mode": format!("{:?}", widget.view_mode),
         "sort_by": format!("{:?}", widget.sort_by),
         "sort_order": format!("{:?}", widget.sort_order),
+        "clipboard_phase": clipboard_phase,
+        "clipboard_source_present": clipboard_source_present,
+        "clipboard_ever_active": clipboard_ever_active,
+        "clipboard_ever_source_present": clipboard_ever_source_present,
+        "copy_control": {
+            "dispatcher_attached": widget.dispatcher.is_some(),
+            "hosted_clipboard": widget.hosted_clipboard(),
+            "effect_available": widget.hosted_clipboard() && selected_count != 0,
+            "refusal_present": widget.dispatcher.as_ref()
+                .and_then(|dispatcher| dispatcher.refused().get()).is_some(),
+            "copy_refused": copy_refused,
+            "result_class": widget.copy_control_result,
+        },
     })
 }

@@ -1772,7 +1772,21 @@ impl FileClipboardServices for NativeFileClipboard {
         if !command.valid() {
             return Err("invalid clipboard command".into());
         }
-        match command {
+        #[cfg(test)]
+        let command_kind = match &command {
+            Command::Snapshot => "snapshot",
+            Command::Recover { .. } => "recover",
+            Command::Capture { .. } => "capture",
+            Command::Release { .. } => "release",
+            Command::Publish { .. } => "publish",
+            Command::Paste { .. } => "paste",
+            Command::RestoreTrash { .. } => "restore-trash",
+            Command::Observe { .. } => "observe",
+            Command::Cancel { .. } => "cancel",
+            Command::Redo { .. } => "redo",
+            Command::Undo { .. } => "undo",
+        };
+        let result = match command {
             Command::Snapshot => self.snapshot(context),
             Command::Recover { operation } => {
                 self.compensation(context, operation, CompensationKind::Recover)
@@ -1813,7 +1827,18 @@ impl FileClipboardServices for NativeFileClipboard {
             Command::Undo { operation } => {
                 self.compensation(context, operation, CompensationKind::Undo)
             }
-        }
+        };
+        #[cfg(test)]
+        test_support::observe_command(
+            &self.tree,
+            command_kind,
+            match &result {
+                Ok(Reply::Rejected { .. }) => "rejected",
+                Ok(_) => "accepted",
+                Err(_) => "failed",
+            },
+        );
+        result
     }
     fn disconnect(&self, peer: u64) {
         if let Ok(mut state) = self.state.lock() {

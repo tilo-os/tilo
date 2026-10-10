@@ -122,6 +122,33 @@ impl tilo_actions::Action for FollowUp {
         Ok(())
     }
 }
+
+struct BoundRequestTransport(Rc<RefCell<Vec<CollabRequest>>>);
+impl crate::collaboration::PeerTransport for BoundRequestTransport {
+    fn is_connected(&self) -> bool {
+        true
+    }
+    fn send(&mut self, request: CollabRequest) -> Result<(), String> {
+        self.0.borrow_mut().push(request);
+        Ok(())
+    }
+    fn poll(&mut self) -> Vec<CollabEvent> {
+        vec![]
+    }
+    fn join_route(&mut self, _: crate::collaboration::RouteSpec) -> Result<(), String> {
+        Ok(())
+    }
+    fn send_to_route(
+        &mut self,
+        _: crate::collaboration::RouteSpec,
+        request: CollabRequest,
+    ) -> Result<(), String> {
+        self.send(request)
+    }
+    fn publish_action_directory(&mut self, _: String) -> Result<(), String> {
+        Ok(())
+    }
+}
 #[derive(Debug, serde::Serialize)]
 struct EmptyFollowUp {
     refuse: bool,
@@ -461,26 +488,40 @@ impl crate::resources::PublishesResources for Probe {
                 tilo_actions::ExecutionMode::Background { cancellable: true };
             document.contract.result = tilo_actions::ResultSpec::Job;
         }
-        vec![
-            tilo_actions::Resource::new(
-                self.collision.as_deref().unwrap_or("bound:probe"),
-                "probe",
-                "Probe",
+        let mut resource = tilo_actions::Resource::new(
+            self.collision.as_deref().unwrap_or("bound:probe"),
+            "probe",
+            "Probe",
+        )
+        .with_action(action)
+        .with_action(document)
+        .with_action(
+            tilo_actions::ActionSpec::operation(
+                "view",
+                "View",
+                tilo_actions::OperationKind::View,
+                "bound.view",
+                &(),
             )
-            .with_action(action)
-            .with_action(document)
-            .with_action(
-                tilo_actions::ActionSpec::operation(
-                    "view",
-                    "View",
-                    tilo_actions::OperationKind::View,
-                    "bound.view",
-                    &(),
-                )
-                .unwrap()
-                .with_contract(tilo_actions::ActionContract::view()),
-            ),
-        ]
+            .unwrap()
+            .with_contract(tilo_actions::ActionContract::view()),
+        );
+        if COMPOUND_MODE.get() == 12 {
+            resource = resource.with_action(tilo_actions::ActionSpec::typed_operation(
+                "optional",
+                "Optional follow up",
+                "Steps",
+                tilo_actions::OperationKind::Effect,
+                "bound.optional",
+                vec![tilo_actions::ActionParam::optional(
+                    "steps",
+                    tilo_actions::ParamType::Integer,
+                    "Steps",
+                )],
+                |_| tilo_actions::EncodedAction::encode("bound.optional", &FollowUp).unwrap(),
+            ));
+        }
+        vec![resource]
     }
     fn action_directory_resource_page(
         &self,
@@ -1067,6 +1108,153 @@ fn background_document_job_is_broker_admitted_before_its_canonical_edit() {
         before
     );
     DOCUMENT_JOB_MODE.set(false);
+}
+
+#[test]
+fn broker_arguments_follow_the_resolved_action_contract() {
+    let nullary = tilo_actions::ActionSpec::operation(
+        "open",
+        "Open",
+        tilo_actions::OperationKind::Effect,
+        "test.broker",
+        &FollowUp,
+    )
+    .unwrap();
+    assert_eq!(
+        App::canonical_broker_argument(&nullary, Some(&serde_json::Map::new()), None).unwrap(),
+        tilo_actions::remote::InvokeArgument::None
+    );
+    let optional = tilo_actions::ActionSpec::typed(
+        "history",
+        "History",
+        "Steps",
+        tilo_actions::ExecutionLocus::ClientLocal,
+        vec![tilo_actions::ActionParam::optional(
+            "steps",
+            tilo_actions::ParamType::Integer,
+            "Steps",
+        )],
+        |_| tilo_actions::EncodedAction::encode("test.broker", &FollowUp).unwrap(),
+    );
+    assert_eq!(
+        App::canonical_broker_argument(&optional, Some(&serde_json::Map::new()), None).unwrap(),
+        tilo_actions::remote::InvokeArgument::Json(serde_json::Map::new())
+    );
+    let arguments = serde_json::json!({"steps": 2}).as_object().unwrap().clone();
+    assert_eq!(
+        App::canonical_broker_argument(&optional, Some(&arguments), None).unwrap(),
+        tilo_actions::remote::InvokeArgument::Json(arguments.clone())
+    );
+    let prompted = tilo_actions::ActionSpec::prompted(
+        "rename",
+        "Rename",
+        "Name",
+        "Name",
+        tilo_actions::ExecutionLocus::ClientLocal,
+        |_| tilo_actions::EncodedAction::encode("test.broker", &FollowUp).unwrap(),
+    );
+    assert_eq!(
+        App::canonical_broker_argument(&prompted, None, Some("private raw text")).unwrap(),
+        tilo_actions::remote::InvokeArgument::Text("private raw text".into())
+    );
+    let unexpected = serde_json::json!({"unexpected": true})
+        .as_object()
+        .unwrap()
+        .clone();
+    assert!(App::canonical_broker_argument(&nullary, Some(&unexpected), None).is_err());
+    assert!(
+        App::canonical_broker_argument(&prompted, Some(&serde_json::Map::new()), Some("both"))
+            .is_err()
+    );
+}
+
+#[test]
+fn local_bound_nullary_effect_normalizes_its_resolved_json_once() {
+    let mut fixture = ActionFixture::broker();
+    let sent = Rc::new(RefCell::new(Vec::new()));
+    fixture.app.collaboration.manager =
+        CollaborationManager::with_peer_transport(BoundRequestTransport(Rc::clone(&sent)));
+    let target = fixture.target(0, "follow-up");
+
+    assert!(fixture.app.dispatch_bound_control_invocation(
+        &target,
+        &tilo_actions::ControlInvocation {
+            address: target.address.address.clone(),
+            arguments: serde_json::Map::new(),
+        },
+        None,
+    ));
+
+    let requests = sent.borrow();
+    let mut invocations = Vec::new();
+    let mut publications = 0;
+    for request in requests.as_slice() {
+        match request {
+            CollabRequest::RemoteAction {
+                message: tilo_actions::remote::RemoteActionMessage::Invoke(request),
+            } => invocations.push(request),
+            CollabRequest::PublishActions { .. } => publications += 1,
+            other => panic!("unexpected broker request before local bound effect: {other:?}"),
+        }
+    }
+    let [request] = invocations.as_slice() else {
+        panic!("local bound effect must submit exactly one canonical broker request")
+    };
+    assert_eq!(
+        publications, 1,
+        "broker admission publishes its live surface"
+    );
+    assert_eq!(request.argument, tilo_actions::remote::InvokeArgument::None);
+    assert!(request.on_behalf_of.is_none());
+}
+
+#[test]
+fn effect_follow_ups_publish_arguments_for_their_current_bound_contract() {
+    COMPOUND_MODE.set(12);
+    let mut fixture = ActionFixture::broker();
+    let sent = Rc::new(RefCell::new(Vec::new()));
+    fixture.app.collaboration.manager =
+        CollaborationManager::with_peer_transport(BoundRequestTransport(Rc::clone(&sent)));
+    for (action, id) in [("follow-up", 500), ("optional", 501)] {
+        let running = tilo_actions::InvocationId(uuid::Uuid::from_u128(id));
+        fixture.app.actions.acting_for.insert(
+            running,
+            crate::invocation_scope::Continuation {
+                invoker: tilo_actions::ActionInvoker::actor("fixture-user"),
+                context: None,
+                admitted: tilo_actions::PermissionRequirement::None,
+                refused: None,
+                outstanding: std::collections::HashSet::new(),
+                deferred: None,
+                terminal_guard: None,
+            },
+        );
+        let target = fixture.target(0, action);
+        assert!(fixture.app.dispatch_bound_control_invocation(
+            &target,
+            &tilo_actions::ControlInvocation {
+                address: target.address.address.clone(),
+                arguments: serde_json::Map::new(),
+            },
+            Some(running),
+        ));
+    }
+    let requests = sent.borrow();
+    assert_eq!(requests.len(), 2);
+    for (request, expected) in requests.iter().zip([
+        tilo_actions::remote::InvokeArgument::None,
+        tilo_actions::remote::InvokeArgument::Json(serde_json::Map::new()),
+    ]) {
+        let CollabRequest::RemoteAction {
+            message: tilo_actions::remote::RemoteActionMessage::Invoke(request),
+        } = request
+        else {
+            panic!("effect continuation must use the broker")
+        };
+        assert_eq!(request.argument, expected);
+        assert!(request.on_behalf_of.is_some());
+    }
+    COMPOUND_MODE.set(0);
 }
 
 #[allow(
@@ -2142,10 +2330,7 @@ fn bound_broker_routes_keep_the_chosen_contract_and_refuse_bad_witnesses() {
                 .get(&BrokerReply::Receipt(request.invocation)),
             Some(&0)
         );
-        assert_eq!(
-            request.argument,
-            tilo_actions::remote::InvokeArgument::Json(serde_json::Map::new())
-        );
+        assert_eq!(request.argument, tilo_actions::remote::InvokeArgument::None);
         assert_eq!(
             request.confirmation,
             App::broker_confirmation(Some(&evidence))
@@ -2223,8 +2408,7 @@ fn bound_broker_routes_keep_the_chosen_contract_and_refuse_bad_witnesses() {
                 &mut fixture.app.actions.next_broker_request_id,
                 false,
                 &target.address.address,
-                None,
-                None,
+                tilo_actions::remote::InvokeArgument::None,
                 None,
                 |_, _| sent = true
             )

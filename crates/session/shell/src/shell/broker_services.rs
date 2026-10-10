@@ -15,7 +15,7 @@ mod committed_document;
 mod file_clipboard;
 #[cfg(test)]
 #[cfg(target_os = "linux")]
-pub(crate) use file_clipboard::test_support::TestTransferPause;
+pub(crate) use file_clipboard::test_support::{TestCommandObserver, TestTransferPause};
 #[cfg(test)]
 #[path = "broker_services/native_effect_tests.rs"]
 mod native_effect_tests;

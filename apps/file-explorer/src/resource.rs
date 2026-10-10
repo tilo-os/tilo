@@ -702,7 +702,8 @@ impl ResourceSurface<FileExplorer, FilesEffect> for FileExplorerWidget {
             matches!(effect, FilesEffect::RecoverClipboardTransfers) && self.hosted_clipboard();
         let receipt = matches!(effect, FilesEffect::Paste | FilesEffect::Restore { .. })
             && self.hosted_clipboard();
-        Ok(match self.run_effect_for(effect, cx.invocation())? {
+        let ran = self.run_effect_for(effect, cx.invocation(), cx.source_invocation())?;
+        Ok(match ran {
             Ran::Done(Some(answer)) => Effected::value(answer),
             Ran::Done(None) => Effected::done(),
             Ran::Pending => {

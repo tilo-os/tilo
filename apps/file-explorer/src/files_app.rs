@@ -678,6 +678,9 @@ pub struct FileExplorerWidget {
     /// widget no framework hosts (a shell's embedded tile, a unit test),
     /// whose bookmark edits stay in the window.
     dispatcher: Option<ui::framework::Dispatcher<crate::resource::FileExplorer>>,
+    /// Closed diagnostic class of the latest Copy control result. This
+    /// retains no address, argument, path, or human-readable refusal reason.
+    copy_control_result: Option<&'static str>,
     /// The person's view preferences; `None` outside a framework host, where
     /// they stay in the window.
     preferences: Option<ui::framework::Setting<crate::resource::FilesPreferences>>,
@@ -1750,6 +1753,7 @@ impl FileExplorerWidget {
             cmds,
             structure_dirty: false,
             dispatcher: None,
+            copy_control_result: None,
             preferences: None,
             shown_preferences: None,
             context_menu: ContextMenu::new(),
@@ -1957,7 +1961,7 @@ impl FileExplorerWidget {
         &mut self,
         effect: crate::effects::FilesEffect,
     ) -> Result<Ran, String> {
-        self.run_effect_for(effect, None)
+        self.run_effect_for(effect, None, None)
     }
 
     /// Do `effect`: show a folder, copy or paste, open or share a file. A job (sending to a nearby device, creating a share link)
@@ -1973,11 +1977,16 @@ impl FileExplorerWidget {
         &mut self,
         effect: crate::effects::FilesEffect,
         invocation: Option<tilo_actions::InvocationId>,
+        source_invocation: Option<tilo_actions::InvocationId>,
     ) -> Result<Ran, String> {
         use crate::effects::FilesEffect;
         let answer = match effect {
-            FilesEffect::ClipboardStatus => return self.snapshot_clipboard(invocation),
-            FilesEffect::RecoverClipboardTransfers => return self.recover_clipboard(invocation),
+            FilesEffect::ClipboardStatus => {
+                return self.snapshot_clipboard(invocation, source_invocation);
+            }
+            FilesEffect::RecoverClipboardTransfers => {
+                return self.recover_clipboard(invocation, source_invocation);
+            }
             FilesEffect::Refresh => {
                 self.refresh();
                 None
@@ -2001,6 +2010,7 @@ impl FileExplorerWidget {
                 if matches!(self.services, FileServices::Hosted(_)) || self.hosted_clipboard() {
                     return self.publish_clipboard(
                         invocation,
+                        source_invocation,
                         matches!(effect, FilesEffect::CutSelection),
                     );
                 }
@@ -2016,7 +2026,7 @@ impl FileExplorerWidget {
             }
             FilesEffect::Paste => {
                 if matches!(self.services, FileServices::Hosted(_)) || self.hosted_clipboard() {
-                    return self.paste_clipboard(invocation);
+                    return self.paste_clipboard(invocation, source_invocation);
                 }
                 self.paste()?;
                 None
@@ -2178,7 +2188,12 @@ impl FileExplorerWidget {
                     let target = self
                         .visible_entry_path(&entry)
                         .ok_or_else(|| t("files-clipboard-source-unavailable"))?;
-                    return self.publish_clipboard_row(invocation, false, &target);
+                    return self.publish_clipboard_row(
+                        invocation,
+                        source_invocation,
+                        false,
+                        &target,
+                    );
                 }
                 self.entry_command(&entry, |_, _| Some(FileCommand::Copy))?
             }
@@ -2187,7 +2202,12 @@ impl FileExplorerWidget {
                     let target = self
                         .visible_entry_path(&entry)
                         .ok_or_else(|| t("files-clipboard-source-unavailable"))?;
-                    return self.publish_clipboard_row(invocation, true, &target);
+                    return self.publish_clipboard_row(
+                        invocation,
+                        source_invocation,
+                        true,
+                        &target,
+                    );
                 }
                 self.entry_command(&entry, |_, _| Some(FileCommand::Cut))?
             }
@@ -2196,7 +2216,7 @@ impl FileExplorerWidget {
                     .visible_entry_path(&entry)
                     .ok_or_else(|| t("files-clipboard-source-unavailable"))?;
                 if self.is_native_trash_entry(&target) {
-                    return self.restore_clipboard_entry(invocation, &target);
+                    return self.restore_clipboard_entry(invocation, source_invocation, &target);
                 }
                 self.entry_command(&entry, |files, _| {
                     files
@@ -9564,6 +9584,12 @@ impl ui::widget::controls::ActionControls for FileExplorerWidget {
         address: &tilo_actions::ActionAddress,
         result: &ui::widget::controls::ControlResult,
     ) {
+        if address.action == crate::effects::FilesEffect::COPY_SELECTION.id {
+            self.copy_control_result = Some(match result {
+                Ok(_) => "accepted",
+                Err(error) => error.code(),
+            });
+        }
         for child in self.children_mut() {
             ui::widget::controls::on_control_invocation_result(child, address, result);
         }

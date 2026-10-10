@@ -18,6 +18,7 @@ thread_local! {
     static CAUSAL_CALLERS: RefCell<Vec<tilo_actions::InvocationId>> = const { RefCell::new(Vec::new()) };
     static RECEIPT_REPLIES: RefCell<Vec<tilo_app::framework::EffectReply>> = const { RefCell::new(Vec::new()) };
     static RECEIPT_CALLERS: RefCell<Vec<tilo_actions::InvocationId>> = const { RefCell::new(Vec::new()) };
+    static RECEIPT_SOURCES: RefCell<Vec<Option<tilo_actions::InvocationId>>> = const { RefCell::new(Vec::new()) };
 }
 
 struct CausalMailApp;
@@ -237,8 +238,10 @@ thread_local! {
 struct MailApp;
 
 fn deferred_receipt(cx: &mut EffectCx<Mailbox, ()>) -> Effected {
+    RECEIPT_SOURCES.with(|sources| sources.borrow_mut().push(cx.source_invocation()));
     RECEIPT_REPLIES.with(|replies| {
         replies.borrow_mut().push(cx.reply_then(|(), output, cx| {
+            RECEIPT_SOURCES.with(|sources| sources.borrow_mut().push(cx.source_invocation()));
             RECEIPT_CALLERS.with(|callers| {
                 callers.borrow_mut().push(cx.invocation().unwrap());
             });
@@ -623,21 +626,80 @@ fn start_receipt(app: &mut TestApp<MailApp>) -> tilo_actions::InvocationId {
 }
 
 fn start_named_receipt(app: &mut TestApp<MailApp>, action: &str) -> tilo_actions::InvocationId {
+    start_named_receipt_for(
+        app,
+        action,
+        Some(tilo_actions::ActionInvoker::actor("agent:receipt-writer")),
+    )
+}
+
+fn start_named_receipt_for(
+    app: &mut TestApp<MailApp>,
+    action: &str,
+    invoker: Option<tilo_actions::ActionInvoker>,
+) -> tilo_actions::InvocationId {
     let address = tilo_app::bound_dispatch::BoundActionAddress {
         instance_id: app.harness().component_instance_id().unwrap(),
         address: tilo_actions::ActionAddress::new("test.mailbox", action),
     };
     let (invocation, started) = app
         .harness()
-        .start_bound_job_for(
-            Some(tilo_actions::ActionInvoker::actor("agent:receipt-writer")),
-            &address,
-            &serde_json::Map::new(),
-            true,
-        )
+        .start_bound_job_for(invoker, &address, &serde_json::Map::new(), true)
         .unwrap();
     assert!(started.completed().is_none());
     invocation
+}
+
+#[test]
+fn effect_source_invocation_is_separate_and_retained_by_continuations() {
+    RECEIPT_CALLERS.with(|callers| callers.borrow_mut().clear());
+    RECEIPT_SOURCES.with(|sources| sources.borrow_mut().clear());
+    RECEIPT_REPLIES.with(|replies| replies.borrow_mut().clear());
+    let mut app = TestApp::<MailApp>::new().unwrap();
+
+    let local = start_named_receipt_for(&mut app, "receipt", None);
+    assert_eq!(
+        RECEIPT_SOURCES.with(|sources| sources.borrow().clone()),
+        [None]
+    );
+    RECEIPT_REPLIES
+        .with(|replies| replies.borrow_mut().pop().unwrap())
+        .answer(Ok(tilo_actions::ActionOutput {
+            value: Some(serde_json::json!("local")),
+            resources: Vec::new(),
+        }));
+    app.settle();
+    assert_eq!(
+        RECEIPT_SOURCES.with(|sources| sources.borrow().clone()),
+        [None, None]
+    );
+    assert_eq!(
+        RECEIPT_CALLERS.with(|callers| callers.borrow().clone()),
+        [local]
+    );
+
+    RECEIPT_CALLERS.with(|callers| callers.borrow_mut().clear());
+    RECEIPT_SOURCES.with(|sources| sources.borrow_mut().clear());
+    let admitted = start_named_receipt(&mut app, "receipt");
+    assert_eq!(
+        RECEIPT_SOURCES.with(|sources| sources.borrow().clone()),
+        [Some(admitted)]
+    );
+    RECEIPT_REPLIES
+        .with(|replies| replies.borrow_mut().pop().unwrap())
+        .answer(Ok(tilo_actions::ActionOutput {
+            value: Some(serde_json::json!("admitted")),
+            resources: Vec::new(),
+        }));
+    app.settle();
+    assert_eq!(
+        RECEIPT_SOURCES.with(|sources| sources.borrow().clone()),
+        [Some(admitted), Some(admitted)]
+    );
+    assert_eq!(
+        RECEIPT_CALLERS.with(|callers| callers.borrow().clone()),
+        [admitted]
+    );
 }
 
 #[test]

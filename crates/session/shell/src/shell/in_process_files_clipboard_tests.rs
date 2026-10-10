@@ -76,6 +76,37 @@ mod files_clipboard_tests {
     const APP: &str = "so.tilo.file-explorer";
     const TABS: [u64; 2] = [601, 602];
 
+    struct KeyboardEvidence {
+        focused_before: bool,
+        pressed_handled: bool,
+        selection_before: u64,
+        selection_after: u64,
+        clipboard_phase: serde_json::Value,
+        clipboard_source_present: serde_json::Value,
+        control_delivery: serde_json::Value,
+        copy_control: serde_json::Value,
+    }
+
+    #[derive(Default)]
+    struct KeyboardObservationTrace {
+        clipboard_phases: Vec<[serde_json::Value; 4]>,
+        last_phase: Option<[serde_json::Value; 4]>,
+        control_deliveries: Vec<serde_json::Value>,
+        last_delivery: Option<serde_json::Value>,
+        copy_controls: Vec<serde_json::Value>,
+        last_copy_control: Option<serde_json::Value>,
+    }
+
+    fn invoke_argument(
+        arguments: serde_json::Map<String, serde_json::Value>,
+    ) -> tilo_actions::remote::InvokeArgument {
+        if arguments.is_empty() {
+            tilo_actions::remote::InvokeArgument::None
+        } else {
+            tilo_actions::remote::InvokeArgument::Json(arguments)
+        }
+    }
+
     struct InputSurface;
 
     impl ui::app::AppSurface for InputSurface {
@@ -419,7 +450,7 @@ mod files_clipboard_tests {
                     provider: self.providers[index].clone(),
                     address,
                 },
-                argument: tilo_actions::remote::InvokeArgument::Json(arguments),
+                argument: invoke_argument(arguments),
                 context: None,
                 confirmation: None,
                 revision: None,
@@ -579,12 +610,12 @@ mod files_clipboard_tests {
             }
         }
 
-        fn command_key(&mut self, index: usize, character: &str) {
+        fn command_key(&mut self, index: usize, character: &str) -> KeyboardEvidence {
             self.command_key_with_modifiers(
                 index,
                 character,
                 ui::winit::keyboard::ModifiersState::CONTROL,
-            );
+            )
         }
 
         fn command_key_with_modifiers(
@@ -592,7 +623,7 @@ mod files_clipboard_tests {
             index: usize,
             character: &str,
             modifiers: ui::winit::keyboard::ModifiersState,
-        ) {
+        ) -> KeyboardEvidence {
             use ui::winit::event::{DeviceId, ElementState, KeyEvent, RawKeyEvent, WindowEvent};
             use ui::winit::keyboard::{Key, KeyLocation, NativeKeyCode, PhysicalKey};
             let embedded = self.shown[index]
@@ -603,7 +634,14 @@ mod files_clipboard_tests {
                 .unwrap();
             let app = embedded.app_mut();
             app.surface_input(&InputSurface, WindowEvent::Focused(true), false);
+            let focused_before = app.focused_control().is_some();
+            let selection_before = app
+                .controlled_native_input_snapshot_for_test()
+                .and_then(|snapshot| snapshot["selected_count"].as_u64())
+                .unwrap_or_default();
             app.set_surface_modifiers(modifiers.into());
+            let mut pressed_handled = false;
+            let mut pressed_snapshot = serde_json::Value::Null;
             for state in [ElementState::Pressed, ElementState::Released] {
                 let key = Key::Character(character.into());
                 let event = KeyEvent::synthetic(
@@ -618,7 +656,7 @@ mod files_clipboard_tests {
                     None,
                     key,
                 );
-                app.surface_input(
+                let handled = app.surface_input(
                     &InputSurface,
                     WindowEvent::KeyboardInput {
                         device_id: DeviceId::dummy(),
@@ -626,6 +664,107 @@ mod files_clipboard_tests {
                         is_synthetic: false,
                     },
                     false,
+                );
+                if state == ElementState::Pressed {
+                    pressed_handled = handled;
+                    pressed_snapshot = app
+                        .controlled_native_input_snapshot_for_test()
+                        .unwrap_or(serde_json::Value::Null);
+                }
+            }
+            KeyboardEvidence {
+                focused_before,
+                pressed_handled,
+                selection_before,
+                selection_after: pressed_snapshot["selected_count"]
+                    .as_u64()
+                    .unwrap_or_default(),
+                clipboard_phase: pressed_snapshot["clipboard_phase"].clone(),
+                clipboard_source_present: pressed_snapshot["clipboard_source_present"].clone(),
+                control_delivery: pressed_snapshot["control_delivery"].clone(),
+                copy_control: pressed_snapshot["copy_control"].clone(),
+            }
+        }
+
+        fn native_snapshot(&self, index: usize) -> serde_json::Value {
+            self.shown[index]
+                .tile
+                .as_any()
+                .and_then(|any| any.downcast_ref::<ui::app::EmbeddedApp>())
+                .and_then(|embedded| embedded.app().controlled_native_input_snapshot_for_test())
+                .unwrap_or(serde_json::Value::Null)
+        }
+
+        fn observe_clipboard_phase(&self, index: usize, trace: &mut KeyboardObservationTrace) {
+            let snapshot = self.native_snapshot(index);
+            let phase = [
+                snapshot["clipboard_phase"].clone(),
+                snapshot["clipboard_source_present"].clone(),
+                snapshot["clipboard_ever_active"].clone(),
+                snapshot["clipboard_ever_source_present"].clone(),
+            ];
+            if trace.last_phase.as_ref() != Some(&phase) && trace.clipboard_phases.len() < 16 {
+                trace.last_phase = Some(phase.clone());
+                trace.clipboard_phases.push(phase);
+            }
+            let delivery = snapshot["control_delivery"].clone();
+            if trace.last_delivery.as_ref() != Some(&delivery)
+                && trace.control_deliveries.len() < 16
+            {
+                trace.last_delivery = Some(delivery.clone());
+                trace.control_deliveries.push(delivery);
+            }
+            let copy_control = snapshot["copy_control"].clone();
+            if trace.last_copy_control.as_ref() != Some(&copy_control)
+                && trace.copy_controls.len() < 16
+            {
+                trace.last_copy_control = Some(copy_control.clone());
+                trace.copy_controls.push(copy_control);
+            }
+        }
+
+        fn wait_for_keyboard_offer(
+            &mut self,
+            commands: &crate::shell::broker_services::TestCommandObserver,
+            evidence: &KeyboardEvidence,
+        ) {
+            let deadline = std::time::Instant::now()
+                .checked_add(std::time::Duration::from_secs(5))
+                .expect("bounded test deadline");
+            let mut trace = KeyboardObservationTrace::default();
+            loop {
+                self.observe_clipboard_phase(0, &mut trace);
+                let status = self.succeeds(1, "clipboard-status");
+                self.observe_clipboard_phase(0, &mut trace);
+                if !status["offer"].is_null() {
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "keyboard Copy never published an actual native offer; focused={}; handled={}; selection_before={}; selection_after={}; phase={}; source_present={}; control_after_press={}; copy_after_press={}; clipboard_phases={:?}; control_deliveries={:?}; copy_controls={:?}; native_commands={:?}",
+                    evidence.focused_before,
+                    evidence.pressed_handled,
+                    evidence.selection_before,
+                    evidence.selection_after,
+                    evidence.clipboard_phase,
+                    evidence.clipboard_source_present,
+                    evidence.control_delivery,
+                    evidence.copy_control,
+                    trace.clipboard_phases,
+                    trace.control_deliveries,
+                    trace.copy_controls,
+                    commands.observations(),
+                );
+            }
+            let settled = self.native_snapshot(0);
+            assert_eq!(settled["clipboard_ever_active"], true);
+            assert_eq!(settled["clipboard_ever_source_present"], true);
+            let observed = commands.observations();
+            for command in ["capture", "publish"] {
+                assert!(
+                    observed
+                        .iter()
+                        .any(|event| { event.command == command && event.outcome == "accepted" })
                 );
             }
         }
@@ -2248,6 +2387,22 @@ mod files_clipboard_tests {
     }
 
     #[test]
+    fn invocation_arguments_encode_nullary_and_typed_actions_canonically() {
+        assert!(matches!(
+            invoke_argument(serde_json::Map::new()),
+            tilo_actions::remote::InvokeArgument::None
+        ));
+
+        let arguments = serde_json::Map::from_iter([("name".into(), "report".into())]);
+        let tilo_actions::remote::InvokeArgument::Json(encoded) =
+            invoke_argument(arguments.clone())
+        else {
+            panic!("typed arguments must retain their JSON object");
+        };
+        assert_eq!(encoded, arguments);
+    }
+
+    #[test]
     fn mounted_files_keyboard_copy_paste_and_undo_reach_the_native_host() {
         const TEST: &str = "shell::in_process::tests::files_clipboard_tests::mounted_files_keyboard_copy_paste_and_undo_reach_the_native_host";
         let Some(profile) = isolated_session_root(TEST) else {
@@ -2255,16 +2410,21 @@ mod files_clipboard_tests {
         };
         let mut fixture = Fixture::new(&profile);
         fixture.succeeds(0, "select-all");
-        fixture.command_key(0, "c");
-        let deadline = std::time::Instant::now()
-            .checked_add(std::time::Duration::from_secs(5))
-            .expect("bounded test deadline");
-        while fixture.succeeds(1, "clipboard-status")["offer"].is_null() {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "keyboard Copy never published an actual native offer"
-            );
-        }
+        let commands = crate::shell::broker_services::TestCommandObserver::new(
+            &fixture.session.workspace_tree(),
+        );
+        let evidence = fixture.command_key(0, "c");
+        assert!(
+            !evidence.focused_before,
+            "clean mounted Files view unexpectedly retained widget focus"
+        );
+        assert!(
+            evidence.pressed_handled,
+            "physical Ctrl+C was not consumed by Files"
+        );
+        assert_eq!(evidence.selection_before, 1);
+        assert_eq!(evidence.selection_after, 1);
+        fixture.wait_for_keyboard_offer(&commands, &evidence);
         fixture.command_key(1, "v");
         let pasted = fixture.folders[1].join("report");
         let [first, second] = &mut fixture.shown;

@@ -28,7 +28,7 @@ pub(super) enum Step {
 }
 
 pub(super) struct Transfer {
-    pub invocation: ui::tilo_actions::InvocationId,
+    pub source_invocation: Option<ui::tilo_actions::InvocationId>,
     selected: SelectedDescriptor,
     retained: Option<Arc<RetainedObject>>,
     offer: Option<Offer>,
@@ -42,12 +42,12 @@ pub(super) struct Transfer {
 
 impl Transfer {
     pub fn new(
-        invocation: ui::tilo_actions::InvocationId,
+        source_invocation: Option<ui::tilo_actions::InvocationId>,
         selected: SelectedDescriptor,
         retained: Arc<RetainedObject>,
     ) -> Self {
         Self {
-            invocation,
+            source_invocation,
             selected,
             retained: Some(retained),
             offer: None,
@@ -61,11 +61,11 @@ impl Transfer {
     }
 
     pub(super) fn restoring(
-        invocation: ui::tilo_actions::InvocationId,
+        source_invocation: Option<ui::tilo_actions::InvocationId>,
         selected: SelectedDescriptor,
         retained: Arc<RetainedObject>,
     ) -> Self {
-        let mut transfer = Self::new(invocation, selected, retained);
+        let mut transfer = Self::new(source_invocation, selected, retained);
         transfer.restore = true;
         transfer.phase = Phase::Restore;
         transfer.offer = Some(Offer {
@@ -214,7 +214,7 @@ mod tests {
         let retained = crate::files_app::shown_selection::folder(directory.path()).unwrap();
         let selected = super::super::selected(directory.path(), &retained).unwrap();
         let transfer = Transfer::new(
-            ui::tilo_actions::InvocationId::new(),
+            Some(ui::tilo_actions::InvocationId::new()),
             selected,
             retained.clone(),
         );

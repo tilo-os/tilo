@@ -19,7 +19,7 @@ mod transfer;
 pub use transfer::Receipt;
 
 struct Publication {
-    invocation: InvocationId,
+    source_invocation: Option<InvocationId>,
     cut: bool,
     retained: Vec<Arc<RetainedObject>>,
     tickets: Vec<String>,
@@ -30,7 +30,7 @@ struct Publication {
 
 struct UndoJob {
     redo: bool,
-    invocation: InvocationId,
+    source_invocation: Option<InvocationId>,
     operation: String,
     reply: ui::framework::EffectReply,
     expires: Instant,
@@ -38,7 +38,7 @@ struct UndoJob {
 
 pub(super) struct UndoRequest {
     pub redo: bool,
-    pub invocation: InvocationId,
+    pub source_invocation: Option<InvocationId>,
     pub operation: String,
     pub reply: ui::framework::EffectReply,
 }
@@ -76,6 +76,8 @@ pub(super) struct Client {
     ready: Option<Instant>,
     undo_queue: Rc<RefCell<Vec<UndoRequest>>>,
     undo: Option<UndoJob>,
+    diagnostic_ever_active: bool,
+    diagnostic_ever_source_present: bool,
 }
 
 impl Client {
@@ -90,6 +92,46 @@ impl Client {
         self.publication.is_some() || self.transfer.is_some() || self.undo.is_some()
     }
 
+    pub(super) fn diagnostic_phase(&self) -> (&'static str, bool, bool, bool) {
+        if let Some(publication) = &self.publication {
+            let phase = match publication.phase {
+                Phase::Snapshot => "snapshot",
+                Phase::Recover(_) => "recover",
+                Phase::Capture => "capture",
+                Phase::Publish => "publish",
+                Phase::Release => "release",
+            };
+            return (
+                phase,
+                publication.source_invocation.is_some(),
+                self.diagnostic_ever_active,
+                self.diagnostic_ever_source_present,
+            );
+        }
+        if let Some(transfer) = &self.transfer {
+            return (
+                "transfer",
+                transfer.source_invocation.is_some(),
+                self.diagnostic_ever_active,
+                self.diagnostic_ever_source_present,
+            );
+        }
+        if let Some(undo) = &self.undo {
+            return (
+                "compensation",
+                undo.source_invocation.is_some(),
+                self.diagnostic_ever_active,
+                self.diagnostic_ever_source_present,
+            );
+        }
+        (
+            "idle",
+            false,
+            self.diagnostic_ever_active,
+            self.diagnostic_ever_source_present,
+        )
+    }
+
     /// Forget only this caller's publication/transfer. Late request ids remain
     /// distinct, and the host owns ticket expiry and interrupted I/O recovery.
     pub(super) fn abandon(&mut self) {
@@ -101,7 +143,11 @@ impl Client {
         self.ready = None;
     }
 
-    fn send(&mut self, invocation: InvocationId, command: Command) -> Result<(), String> {
+    fn send(
+        &mut self,
+        source_invocation: Option<InvocationId>,
+        command: Command,
+    ) -> Result<(), String> {
         if !command.valid() || self.awaiting.is_some() || self.request.is_some() {
             return Err("invalid or overlapping clipboard command".into());
         }
@@ -114,14 +160,16 @@ impl Client {
         self.request = Some(CollabRequest::LocalFileClipboard {
             request_id: self.next_request,
             command,
-            on_behalf_of: Some(invocation),
+            on_behalf_of: source_invocation,
         });
+        self.diagnostic_ever_active = true;
+        self.diagnostic_ever_source_present |= source_invocation.is_some();
         Ok(())
     }
 
     pub(super) fn publish(
         &mut self,
-        invocation: InvocationId,
+        source_invocation: Option<InvocationId>,
         cut: bool,
         sources: Vec<(SelectedDescriptor, Arc<RetainedObject>)>,
     ) -> Result<(), String> {
@@ -130,14 +178,14 @@ impl Client {
         }
         let (sources, retained) = sources.into_iter().unzip();
         self.send(
-            invocation,
+            source_invocation,
             Command::Capture {
                 sources,
                 destination: None,
             },
         )?;
         self.publication = Some(Publication {
-            invocation,
+            source_invocation,
             cut,
             retained,
             tickets: Vec::new(),
@@ -148,13 +196,16 @@ impl Client {
         Ok(())
     }
 
-    pub(super) fn snapshot(&mut self, invocation: InvocationId) -> Result<(), String> {
+    pub(super) fn snapshot(
+        &mut self,
+        source_invocation: Option<InvocationId>,
+    ) -> Result<(), String> {
         if self.busy() {
             return Err("another clipboard operation is still running".into());
         }
-        self.send(invocation, Command::Snapshot)?;
+        self.send(source_invocation, Command::Snapshot)?;
         self.publication = Some(Publication {
-            invocation,
+            source_invocation,
             cut: false,
             retained: Vec::new(),
             tickets: Vec::new(),
@@ -165,19 +216,22 @@ impl Client {
         Ok(())
     }
 
-    pub(super) fn recover(&mut self, invocation: InvocationId) -> Result<(), String> {
+    pub(super) fn recover(
+        &mut self,
+        source_invocation: Option<InvocationId>,
+    ) -> Result<(), String> {
         if self.busy() {
             return Err("another clipboard operation is still running".into());
         }
         let operation = uuid::Uuid::new_v4();
         self.send(
-            invocation,
+            source_invocation,
             Command::Recover {
                 operation: operation.to_string(),
             },
         )?;
         self.publication = Some(Publication {
-            invocation,
+            source_invocation,
             cut: false,
             retained: Vec::new(),
             tickets: Vec::new(),
@@ -224,7 +278,7 @@ impl Client {
                     job.operation
                 )));
             } else if let Err(error) = self.send(
-                job.invocation,
+                job.source_invocation,
                 if job.redo {
                     Command::Redo {
                         operation: job.operation.clone(),
@@ -262,7 +316,7 @@ impl Client {
         let command = Command::Release {
             tickets: publication.tickets.clone(),
         };
-        if let Err(error) = self.send(publication.invocation, command) {
+        if let Err(error) = self.send(publication.source_invocation, command) {
             return Some(Err(error));
         }
         self.publication = Some(publication);
@@ -367,7 +421,7 @@ impl Client {
                 );
             }
         };
-        if let Err(error) = self.send(publication.invocation, command) {
+        if let Err(error) = self.send(publication.source_invocation, command) {
             return Some(Err(error));
         }
         self.publication = Some(publication);
@@ -389,7 +443,7 @@ impl Client {
             }
             Ok(Reply::Running { operation }) if operation == &job.operation => {
                 if let Err(error) = self.send(
-                    job.invocation,
+                    job.source_invocation,
                     Command::Observe {
                         operation: operation.clone(),
                     },
@@ -415,29 +469,33 @@ impl Client {
 
     pub(super) fn paste(
         &mut self,
-        invocation: InvocationId,
+        source_invocation: Option<InvocationId>,
         destination: SelectedDescriptor,
         retained: Arc<RetainedObject>,
     ) -> Result<(), String> {
         if self.busy() {
             return Err("another clipboard operation is still running".into());
         }
-        self.send(invocation, Command::Snapshot)?;
-        self.transfer = Some(transfer::Transfer::new(invocation, destination, retained));
+        self.send(source_invocation, Command::Snapshot)?;
+        self.transfer = Some(transfer::Transfer::new(
+            source_invocation,
+            destination,
+            retained,
+        ));
         Ok(())
     }
 
     pub(super) fn restore(
         &mut self,
-        invocation: InvocationId,
+        source_invocation: Option<InvocationId>,
         source: SelectedDescriptor,
         retained: Arc<RetainedObject>,
     ) -> Result<(), String> {
         if self.busy() {
             return Err("another clipboard operation is still running".into());
         }
-        let transfer = transfer::Transfer::restoring(invocation, source, retained);
-        self.send(invocation, transfer.restore_command())?;
+        let transfer = transfer::Transfer::restoring(source_invocation, source, retained);
+        self.send(source_invocation, transfer.restore_command())?;
         self.transfer = Some(transfer);
         Ok(())
     }
@@ -454,7 +512,7 @@ impl Client {
                     command,
                     Command::Observe { .. } | Command::Paste { .. } | Command::RestoreTrash { .. }
                 );
-                if let Err(error) = self.send(transfer.invocation, command) {
+                if let Err(error) = self.send(transfer.source_invocation, command) {
                     return Some(Err(error));
                 }
                 if paced {
@@ -478,7 +536,7 @@ impl Client {
             return;
         }
         match self.send(
-            queued.invocation,
+            queued.source_invocation,
             if queued.redo {
                 Command::Redo {
                     operation: queued.operation.clone(),
@@ -492,7 +550,7 @@ impl Client {
             Ok(()) => {
                 self.undo = Some(UndoJob {
                     redo: queued.redo,
-                    invocation: queued.invocation,
+                    source_invocation: queued.source_invocation,
                     operation: queued.operation,
                     reply: queued.reply,
                     expires: ui::time::now() + Duration::from_secs(120),
@@ -533,8 +591,7 @@ impl FileExplorerWidget {
         cx.drain_causal(
             move |state: &crate::resource::FilesState| state.pending_clipboard_for(&device),
             move |(id, operation, undone), cx| {
-                let invocation = cx
-                    .invocation()
+                cx.invocation()
                     .ok_or("clipboard Undo has no current invocation")?;
                 if queue.borrow().len() >= 16 {
                     return Err("clipboard compensation queue is full".into());
@@ -562,7 +619,7 @@ impl FileExplorerWidget {
                 });
                 queue.borrow_mut().push(UndoRequest {
                     redo: undone,
-                    invocation,
+                    source_invocation: cx.source_invocation(),
                     operation,
                     reply,
                 });
@@ -583,23 +640,26 @@ impl FileExplorerWidget {
     pub(super) fn publish_clipboard(
         &mut self,
         invocation: Option<InvocationId>,
+        source_invocation: Option<InvocationId>,
         cut: bool,
     ) -> Result<super::Ran, String> {
-        self.publish_clipboard_for(invocation, cut, None)
+        self.publish_clipboard_for(invocation, source_invocation, cut, None)
     }
 
     pub(super) fn publish_clipboard_row(
         &mut self,
         invocation: Option<InvocationId>,
+        source_invocation: Option<InvocationId>,
         cut: bool,
         path: &Path,
     ) -> Result<super::Ran, String> {
-        self.publish_clipboard_for(invocation, cut, Some(path))
+        self.publish_clipboard_for(invocation, source_invocation, cut, Some(path))
     }
 
     fn publish_clipboard_for(
         &mut self,
         invocation: Option<InvocationId>,
+        source_invocation: Option<InvocationId>,
         cut: bool,
         row: Option<&Path>,
     ) -> Result<super::Ran, String> {
@@ -607,7 +667,7 @@ impl FileExplorerWidget {
             return Err(t("files-clipboard-unavailable"));
         }
         self.refuse_while_answering()?;
-        let invocation = invocation.ok_or_else(|| t("files-clipboard-unavailable"))?;
+        invocation.ok_or_else(|| t("files-clipboard-unavailable"))?;
         let sources = match row {
             None => self.captured_selection()?,
             Some(path) => {
@@ -624,7 +684,8 @@ impl FileExplorerWidget {
                 vec![(selected(path, &retained)?, retained)]
             }
         };
-        self.local_clipboard.publish(invocation, cut, sources)?;
+        self.local_clipboard
+            .publish(source_invocation, cut, sources)?;
         self.structure_dirty = true;
         Ok(super::Ran::Pending)
     }
@@ -632,26 +693,28 @@ impl FileExplorerWidget {
     pub(super) fn snapshot_clipboard(
         &mut self,
         invocation: Option<InvocationId>,
+        source_invocation: Option<InvocationId>,
     ) -> Result<super::Ran, String> {
         if !self.hosted_clipboard() {
             return Err(t("files-clipboard-unavailable"));
         }
         self.refuse_while_answering()?;
-        self.local_clipboard
-            .snapshot(invocation.ok_or_else(|| t("files-clipboard-unavailable"))?)?;
+        invocation.ok_or_else(|| t("files-clipboard-unavailable"))?;
+        self.local_clipboard.snapshot(source_invocation)?;
         Ok(super::Ran::Pending)
     }
 
     pub(super) fn recover_clipboard(
         &mut self,
         invocation: Option<InvocationId>,
+        source_invocation: Option<InvocationId>,
     ) -> Result<super::Ran, String> {
         if !self.hosted_clipboard() {
             return Err(t("files-clipboard-unavailable"));
         }
         self.refuse_while_answering()?;
-        self.local_clipboard
-            .recover(invocation.ok_or_else(|| t("files-clipboard-unavailable"))?)?;
+        invocation.ok_or_else(|| t("files-clipboard-unavailable"))?;
+        self.local_clipboard.recover(source_invocation)?;
         Ok(super::Ran::Pending)
     }
 
@@ -690,6 +753,7 @@ impl FileExplorerWidget {
     pub(super) fn paste_clipboard(
         &mut self,
         invocation: Option<InvocationId>,
+        source_invocation: Option<InvocationId>,
     ) -> Result<super::Ran, String> {
         if !self.hosted_clipboard() {
             return Err(t("files-clipboard-unavailable"));
@@ -700,11 +764,9 @@ impl FileExplorerWidget {
             .clone()
             .ok_or_else(|| t("files-clipboard-source-unavailable"))?;
         let descriptor = selected(&self.current_path, &retained)?;
-        self.local_clipboard.paste(
-            invocation.ok_or_else(|| t("files-clipboard-unavailable"))?,
-            descriptor,
-            retained,
-        )?;
+        invocation.ok_or_else(|| t("files-clipboard-unavailable"))?;
+        self.local_clipboard
+            .paste(source_invocation, descriptor, retained)?;
         self.structure_dirty = true;
         Ok(super::Ran::Pending)
     }
@@ -712,6 +774,7 @@ impl FileExplorerWidget {
     pub(super) fn restore_clipboard_entry(
         &mut self,
         invocation: Option<InvocationId>,
+        source_invocation: Option<InvocationId>,
         path: &Path,
     ) -> Result<super::Ran, String> {
         if !self.hosted_clipboard() {
@@ -734,11 +797,9 @@ impl FileExplorerWidget {
                     .map_err(|_| t("files-clipboard-source-changed"))?,
             )
         };
-        self.local_clipboard.restore(
-            invocation.ok_or_else(|| t("files-clipboard-unavailable"))?,
-            selected(path, &retained)?,
-            retained,
-        )?;
+        invocation.ok_or_else(|| t("files-clipboard-unavailable"))?;
+        self.local_clipboard
+            .restore(source_invocation, selected(path, &retained)?, retained)?;
         self.structure_dirty = true;
         Ok(super::Ran::Pending)
     }
@@ -859,7 +920,10 @@ mod tests {
         files
     }
 
-    fn request(files: &mut FileExplorerWidget, invocation: InvocationId) -> (u64, Command) {
+    fn request_for(
+        files: &mut FileExplorerWidget,
+        source_invocation: Option<InvocationId>,
+    ) -> (u64, Command) {
         let CollabRequest::LocalFileClipboard {
             request_id,
             command,
@@ -871,9 +935,13 @@ mod tests {
         else {
             panic!("wrong host lane")
         };
-        assert_eq!(on_behalf_of, Some(invocation));
+        assert_eq!(on_behalf_of, source_invocation);
         assert!(command.valid());
         (request_id, command)
+    }
+
+    fn request(files: &mut FileExplorerWidget, invocation: InvocationId) -> (u64, Command) {
+        request_for(files, Some(invocation))
     }
 
     fn reply(
@@ -907,7 +975,11 @@ mod tests {
         let invocation = InvocationId(uuid::Uuid::new_v4());
         assert!(matches!(
             files
-                .run_effect_for(FilesEffect::ClipboardStatus, Some(invocation))
+                .run_effect_for(
+                    FilesEffect::ClipboardStatus,
+                    Some(invocation),
+                    Some(invocation),
+                )
                 .unwrap(),
             Ran::Pending
         ));
@@ -925,13 +997,41 @@ mod tests {
         );
         assert!(matches!(
             files
-                .run_effect_for(FilesEffect::ClipboardStatus, Some(invocation))
+                .run_effect_for(
+                    FilesEffect::ClipboardStatus,
+                    Some(invocation),
+                    Some(invocation),
+                )
                 .unwrap(),
             Ran::Pending
         ));
         let (_, command) = request(&mut files, invocation);
         assert!(matches!(command, Command::Snapshot));
         assert!(files.clipboard.is_empty());
+    }
+
+    #[test]
+    fn local_clipboard_effect_keeps_correlation_private_from_host_authority() {
+        use std::os::fd::AsRawFd as _;
+        let home = tilo_test_env::TestHome::new().unwrap();
+        let (service, _peer) = std::os::unix::net::UnixStream::pair().unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_SVC_COLLAB_FD", service.as_raw_fd().to_string());
+        env.set(
+            "TILO_RUNTIME_CONNECTION_OWNER_PID",
+            std::process::id().to_string(),
+        );
+        env.set("TILO_USER_HOME", home.home());
+        let mut files = FileExplorerWidget::new();
+        let correlation = InvocationId::new();
+        assert!(matches!(
+            files
+                .run_effect_for(FilesEffect::ClipboardStatus, Some(correlation), None)
+                .unwrap(),
+            Ran::Pending
+        ));
+        let (_, command) = request_for(&mut files, None);
+        assert!(matches!(command, Command::Snapshot));
     }
 
     #[test]
@@ -953,7 +1053,11 @@ mod tests {
         let invocation = InvocationId(uuid::Uuid::new_v4());
         assert!(matches!(
             files
-                .run_effect_for(FilesEffect::Copy { entry: row }, Some(invocation))
+                .run_effect_for(
+                    FilesEffect::Copy { entry: row },
+                    Some(invocation),
+                    Some(invocation),
+                )
                 .unwrap(),
             Ran::Pending
         ));
@@ -998,7 +1102,11 @@ mod tests {
         let invocation = InvocationId(uuid::Uuid::new_v4());
         assert!(
             files
-                .run_effect_for(FilesEffect::Copy { entry: row }, Some(invocation))
+                .run_effect_for(
+                    FilesEffect::Copy { entry: row },
+                    Some(invocation),
+                    Some(invocation),
+                )
                 .is_err()
         );
         assert_eq!(files.selected_paths(), vec![other]);
@@ -1006,8 +1114,16 @@ mod tests {
         assert_eq!(std::fs::read(target).unwrap(), b"replacement");
     }
 
-    #[test]
-    fn selected_native_copy_keeps_its_descriptor_until_capture_and_waits_for_release() {
+    struct CapturedSelectedCopy {
+        _root: tempfile::TempDir,
+        _destination: tempfile::TempDir,
+        files: FileExplorerWidget,
+        retained: Arc<RetainedObject>,
+        invocation: InvocationId,
+        ticket: String,
+    }
+
+    fn captured_selected_copy() -> CapturedSelectedCopy {
         let root = tempfile::tempdir().unwrap();
         let target = root.path().join("selected");
         std::fs::write(&target, b"original").unwrap();
@@ -1020,7 +1136,11 @@ mod tests {
         let invocation = InvocationId(uuid::Uuid::new_v4());
         assert!(matches!(
             files
-                .run_effect_for(FilesEffect::CopySelection, Some(invocation))
+                .run_effect_for(
+                    FilesEffect::CopySelection,
+                    Some(invocation),
+                    Some(invocation),
+                )
                 .unwrap(),
             Ran::Pending
         ));
@@ -1062,6 +1182,26 @@ mod tests {
             )
             .is_none()
         );
+        CapturedSelectedCopy {
+            _root: root,
+            _destination: destination,
+            files,
+            retained,
+            invocation,
+            ticket,
+        }
+    }
+
+    #[test]
+    fn selected_native_copy_keeps_its_descriptor_until_capture_and_waits_for_release() {
+        let CapturedSelectedCopy {
+            _root,
+            _destination,
+            mut files,
+            retained,
+            invocation,
+            ticket,
+        } = captured_selected_copy();
         assert_eq!(
             Arc::strong_count(&retained),
             1,
@@ -1120,7 +1260,11 @@ mod tests {
         let invocation = InvocationId(uuid::Uuid::new_v4());
         assert!(
             files
-                .run_effect_for(FilesEffect::CopySelection, Some(invocation))
+                .run_effect_for(
+                    FilesEffect::CopySelection,
+                    Some(invocation),
+                    Some(invocation),
+                )
                 .is_err()
         );
         assert!(files.local_clipboard.take_request().is_none());
@@ -1131,7 +1275,11 @@ mod tests {
         assert!(files.local_clipboard.take_request().is_none());
         assert!(matches!(
             files
-                .run_effect_for(FilesEffect::CutSelection, Some(invocation))
+                .run_effect_for(
+                    FilesEffect::CutSelection,
+                    Some(invocation),
+                    Some(invocation),
+                )
                 .unwrap(),
             Ran::Pending
         ));
@@ -1153,7 +1301,11 @@ mod tests {
         files.run_effect(FilesEffect::SelectAll).unwrap();
         let invocation = InvocationId(uuid::Uuid::new_v4());
         files
-            .run_effect_for(FilesEffect::CopySelection, Some(invocation))
+            .run_effect_for(
+                FilesEffect::CopySelection,
+                Some(invocation),
+                Some(invocation),
+            )
             .unwrap();
         let (id, _) = request(&mut files, invocation);
         assert!(files.local_clipboard.timeout(ui::time::now()).is_none());
@@ -1186,7 +1338,11 @@ mod tests {
         files.run_effect(FilesEffect::SelectAll).unwrap();
         let invocation = InvocationId::new();
         files
-            .run_effect_for(FilesEffect::CutSelection, Some(invocation))
+            .run_effect_for(
+                FilesEffect::CutSelection,
+                Some(invocation),
+                Some(invocation),
+            )
             .unwrap();
         let (capture, _) = request(&mut files, invocation);
         let ticket = uuid::Uuid::new_v4().to_string();
@@ -1240,7 +1396,11 @@ mod tests {
         let invocation = InvocationId::new();
         assert!(matches!(
             files
-                .run_effect_for(FilesEffect::ClipboardStatus, Some(invocation))
+                .run_effect_for(
+                    FilesEffect::ClipboardStatus,
+                    Some(invocation),
+                    Some(invocation),
+                )
                 .unwrap(),
             Ran::Pending
         ));
@@ -1257,7 +1417,11 @@ mod tests {
         files.run_effect(FilesEffect::SelectAll).unwrap();
         assert!(
             files
-                .run_effect_for(FilesEffect::CopySelection, Some(invocation))
+                .run_effect_for(
+                    FilesEffect::CopySelection,
+                    Some(invocation),
+                    Some(invocation),
+                )
                 .is_err()
         );
         assert!(files.local_clipboard.take_request().is_none());

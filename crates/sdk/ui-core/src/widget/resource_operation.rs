@@ -110,6 +110,7 @@ impl OperationTarget {
 #[derive(Clone, Copy)]
 pub struct ResourceOperation<'a> {
     request: OperationRequest<'a>,
+    source_invocation: Option<tilo_actions::InvocationId>,
     scope: Option<&'a ResourceInvocationScope>,
     target: Option<&'a OperationTarget>,
 }
@@ -118,6 +119,7 @@ impl std::fmt::Debug for ResourceOperation<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ResourceOperation")
             .field("request", &self.request)
+            .field("has_source_invocation", &self.source_invocation.is_some())
             .field("scoped", &self.scope.is_some())
             .finish()
     }
@@ -139,6 +141,7 @@ impl<'a> ResourceOperation<'a> {
                 type_id,
                 payload,
             },
+            source_invocation: None,
             scope: None,
             target: None,
         }
@@ -158,6 +161,7 @@ impl<'a> ResourceOperation<'a> {
                 type_id,
                 payload,
             },
+            source_invocation: Some(scope.invocation()),
             scope: Some(scope),
             target: None,
         }
@@ -168,6 +172,19 @@ impl<'a> ResourceOperation<'a> {
         self
     }
 
+    pub(crate) fn with_source_invocation(
+        mut self,
+        source_invocation: Option<tilo_actions::InvocationId>,
+    ) -> Self {
+        debug_assert!(
+            self.scope
+                .is_none_or(|scope| source_invocation == Some(scope.invocation())),
+            "custody and source invocation must describe the same admitted caller"
+        );
+        self.source_invocation = source_invocation;
+        self
+    }
+
     /// Exact inert record routing facts when the dispatcher observed an owner.
     pub fn target(&self) -> Option<&OperationTarget> {
         self.target
@@ -175,6 +192,12 @@ impl<'a> ResourceOperation<'a> {
 
     pub fn invocation(&self) -> tilo_actions::InvocationId {
         self.request.invocation
+    }
+
+    /// The admitted external invocation this operation continues. Local
+    /// input has none, even though its effect has an internal correlation id.
+    pub fn source_invocation(&self) -> Option<tilo_actions::InvocationId> {
+        self.source_invocation
     }
 
     pub fn kind(&self) -> tilo_actions::OperationKind {

@@ -269,6 +269,7 @@ struct Started<R: Resource, H> {
     cancelled: Arc<AtomicBool>,
     task: Option<ui_core::rt::JoinHandle<()>>,
     source: Option<Source>,
+    source_invocation: Option<InvocationId>,
     custody: Option<ResourceInvocationScope>,
 }
 
@@ -306,6 +307,7 @@ impl<R: Resource> Clone for EffectEnv<R> {
 pub struct EffectCx<R: Resource, H = ()> {
     env: EffectEnv<R>,
     invocation: Option<InvocationId>,
+    source_invocation: Option<InvocationId>,
     started: Option<Started<R, H>>,
     /// The resource's document while a surface's handler answers an
     /// invocation, lent to it for reading.
@@ -331,6 +333,7 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
         Self {
             env,
             invocation,
+            source_invocation: None,
             started: None,
             document: None,
             heads: Vec::new(),
@@ -338,6 +341,11 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
             worker_custody: None,
             target: None,
         }
+    }
+
+    fn with_source_invocation(mut self, source_invocation: Option<InvocationId>) -> Self {
+        self.source_invocation = source_invocation;
+        self
     }
 
     fn with_custody(mut self, custody: Option<ResourceInvocationScope>) -> Result<Self, String> {
@@ -412,11 +420,16 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
         &self.env.live
     }
 
-    /// The actual source invocation this work continues. Ordinary background
-    /// projection drains have none; causal drains retain the current Document
-    /// caller. Its source identity may differ from the local reply operation.
+    /// The effect operation whose result this work answers. Ordinary background
+    /// projection drains have none.
     pub fn invocation(&self) -> Option<InvocationId> {
         self.invocation
+    }
+
+    /// The admitted external invocation this work continues. Local input and
+    /// ordinary background work have none, even when an effect has a reply id.
+    pub fn source_invocation(&self) -> Option<InvocationId> {
+        self.source_invocation
     }
 
     /// Run an approved project check through this effect's admitted host channel.
@@ -466,6 +479,7 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
             cancelled: Arc::clone(&cancelled),
             task: None,
             source: None,
+            source_invocation: self.source_invocation,
             custody: self.custody.clone(),
         }) {
             tracing::warn!("an effect started a second job; the first one is stopped");
@@ -968,6 +982,7 @@ struct Job<R: Resource, H> {
     cancelled: Arc<AtomicBool>,
     task: Option<ui_core::rt::JoinHandle<()>>,
     source: Option<Source>,
+    source_invocation: Option<InvocationId>,
     sequence: u64,
     custody: Option<ResourceInvocationScope>,
 }
@@ -980,6 +995,7 @@ impl<R: Resource, H> From<Started<R, H>> for Job<R, H> {
             cancelled: started.cancelled,
             task: started.task,
             source: started.source,
+            source_invocation: started.source_invocation,
             sequence: 0,
             custody: started.custody,
         }
@@ -1117,7 +1133,9 @@ impl<R: Resource, H: 'static, K: Eq + Hash + Clone> Running<R, H, K> {
             };
             return Some(Polled::Finished(Some(answered)));
         };
-        let mut cx = match EffectCx::new(env.clone(), invocation).with_custody(job.custody.clone())
+        let mut cx = match EffectCx::new(env.clone(), invocation)
+            .with_source_invocation(job.source_invocation)
+            .with_custody(job.custody.clone())
         {
             Ok(cx) => cx,
             Err(error) => return Some(Polled::Finished(Some(Err(failure(error))))),
@@ -1244,6 +1262,7 @@ impl<R: Resource, H: 'static, E: Effect> EffectRunner<R, H, E> {
         }
         let job = declaration.is_some_and(|decl| decl.is_job());
         let mut cx = EffectCx::new(self.env.clone(), Some(request.invocation))
+            .with_source_invocation(op.source_invocation())
             .with_custody(custody.cloned())?;
         cx.target = op.target().cloned();
         // Keep an immutable snapshot for this effect invocation, including any

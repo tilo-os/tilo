@@ -92,6 +92,7 @@ impl<R: Resource, K: Eq + Hash + Clone + 'static, T: 'static> CausalDrainer<R>
         for (key, entry) in causes {
             operation.check()?;
             let mut cx = EffectCx::new(self.env.clone(), Some(request.invocation))
+                .with_source_invocation(operation.source_invocation())
                 .with_custody(custody.cloned())?;
             {
                 let mut completion = group.borrow_mut();
