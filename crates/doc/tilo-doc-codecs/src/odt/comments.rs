@@ -3,11 +3,12 @@
 //! also emits `<office:annotation-end office:name="…"/>` at the range end, tied to the
 //! start via the shared `office:name`. This maps onto a `comment` mark over the body range.
 
-use crate::xml_escape::{escape_attr, escape_text, push_text};
+use super::plain_paragraphs;
+use crate::xml_escape::{escape_attr, escape_text};
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
 use tilo_doc::model::DocMut;
-use tilo_doc::snapshot::{BlockView, CommentView};
+use tilo_doc::snapshot::CommentView;
 
 /// Parse one `<office:annotation>` element into a fresh comment, importing its author/date
 /// and body paragraphs. Returns `(office:name, comment_id)`; `None` name for a point comment.
@@ -15,84 +16,14 @@ pub(super) fn import_annotation(raw: &str, doc: &mut DocMut) -> (Option<String>,
     let name = annotation_name(raw);
     let (author, date) = annotation_meta(raw);
     let comment_id = doc.insert_comment(&author, &date);
-
-    let mut reader = Reader::from_str(raw);
-    let mut prev: Option<String> = None;
-    let mut cur: Option<String> = None;
-    let mut cur_len: usize = 0;
-    // Depth of `dc:*`/`meta:*` metadata children whose text must not become body content.
-    let mut in_meta = 0usize;
-
-    let open_block = |doc: &mut DocMut,
-                      prev: &mut Option<String>,
-                      cur: &mut Option<String>,
-                      cur_len: &mut usize| {
-        if let Some(id) = doc.insert_comment_block(&comment_id, prev.as_deref(), "paragraph") {
-            *prev = Some(id.clone());
-            *cur = Some(id);
-            *cur_len = 0;
-        }
-    };
-    let append = |doc: &mut DocMut, cur: &Option<String>, cur_len: &mut usize, txt: &str| {
-        if let Some(b) = cur
-            && !txt.is_empty()
-        {
-            doc.splice_comment_text(&comment_id, b, *cur_len, 0, txt);
-            *cur_len = cur_len.saturating_add(txt.chars().count());
-        }
-    };
-
-    while let Ok(ev) = reader.read_event() {
-        match ev {
-            Event::Start(e) => match e.name().as_ref() {
-                b"dc:creator" | b"dc:date" | b"meta:date-string" => {
-                    in_meta = in_meta.saturating_add(1);
-                }
-                b"text:p" | b"text:h" if in_meta == 0 => {
-                    open_block(doc, &mut prev, &mut cur, &mut cur_len);
-                }
-                _ => {}
-            },
-            Event::Empty(e) if in_meta == 0 && cur.is_some() => match e.name().as_ref() {
-                b"text:tab" => append(doc, &cur, &mut cur_len, "\t"),
-                b"text:line-break" => append(doc, &cur, &mut cur_len, "\n"),
-                b"text:s" => {
-                    let n = e
-                        .attributes()
-                        .flatten()
-                        .find(|a| a.key.as_ref() == b"text:c")
-                        .and_then(|a| crate::unescape_attr(&a))
-                        .and_then(|v| v.parse::<usize>().ok())
-                        .unwrap_or(1)
-                        .min(256);
-                    append(doc, &cur, &mut cur_len, &" ".repeat(n));
-                }
-                _ => {}
-            },
-            Event::Text(t) if in_meta == 0 && cur.is_some() => {
-                if let Ok(txt) = t.xml10_content() {
-                    // Skip pretty-printer indentation between structural elements.
-                    if !txt.is_empty() && !super::content::is_layout_whitespace(&txt) {
-                        append(doc, &cur, &mut cur_len, &txt);
-                    }
-                }
-            }
-            Event::GeneralRef(r) if in_meta == 0 && cur.is_some() => {
-                if let Some(c) = crate::resolve_general_ref(&r) {
-                    append(doc, &cur, &mut cur_len, c.encode_utf8(&mut [0; 4]));
-                }
-            }
-            Event::End(e) => match e.name().as_ref() {
-                b"dc:creator" | b"dc:date" | b"meta:date-string" => {
-                    in_meta = in_meta.saturating_sub(1);
-                }
-                b"text:p" | b"text:h" if in_meta == 0 => cur = None,
-                _ => {}
-            },
-            Event::Eof => break,
-            _ => {}
-        }
-    }
+    plain_paragraphs::import(
+        raw,
+        None,
+        doc,
+        |doc, prev| doc.insert_comment_block(&comment_id, prev, "paragraph"),
+        |doc, block, at, text| doc.splice_comment_text(&comment_id, block, at, 0, text),
+        |_, _, _| None,
+    );
     (name, comment_id)
 }
 
@@ -160,24 +91,6 @@ fn annotation_meta(raw: &str) -> (String, String) {
     (author, date)
 }
 
-/// Render a comment's or note's paragraphs as a `text:p` sequence; only plain text + tabs/breaks
-/// are modeled (richer inline styling isn't supported in annotation or note bodies).
-pub(super) fn render_plain_body(blocks: &[BlockView]) -> String {
-    let mut out = String::new();
-    for b in blocks {
-        out.push_str("<text:p>");
-        for c in b.text.chars() {
-            match c {
-                '\t' => out.push_str("<text:tab/>"),
-                '\n' => out.push_str("<text:line-break/>"),
-                _ => push_text(&mut out, c),
-            }
-        }
-        out.push_str("</text:p>");
-    }
-    out
-}
-
 /// Opening `<office:annotation>` XML for a comment, with `office:name` tying it to the matching `annotation-end`.
 pub(super) fn render_annotation_start(comment: &CommentView) -> String {
     let name = escape_attr(&comment.id);
@@ -189,7 +102,7 @@ pub(super) fn render_annotation_start(comment: &CommentView) -> String {
     format!(
         r#"<office:annotation office:name="{name}"><dc:creator>{}</dc:creator>{date}{}</office:annotation>"#,
         escape_text(&comment.author),
-        render_plain_body(&comment.blocks),
+        plain_paragraphs::render(&comment.blocks),
     )
 }
 

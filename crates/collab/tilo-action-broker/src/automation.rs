@@ -864,8 +864,6 @@ pub fn readable_folder(
     capability: &str,
     saver: &str,
 ) -> Result<std::path::PathBuf, String> {
-    use crate::policy::WorkspacePolicy as _;
-
     let granted = workspace
         .capabilities
         .iter()
@@ -874,14 +872,16 @@ pub fn readable_folder(
     let collab_types::Scope::FsPath(path) = &granted.scope else {
         return Err(format!("capability `{capability}` does not share a folder"));
     };
+    let now = tilo_clock::unix_now();
     let role = workspace
-        .role_of(&saver.to_string())
+        .role_of_at(&saver.to_string(), now)
         .ok_or("the saver is not a member of the workspace")?;
     let actor = collab_types::Actor::person(Some(role), saver).in_room(workspace.room.to_string());
-    if !workspace.allows(
+    if !workspace.allows_at(
         &actor,
         &collab_types::ResourceRef::FsPath(path.clone()),
         collab_types::Verb::Read,
+        now,
     ) {
         return Err(format!(
             "the saver may not read the folder capability `{capability}` shares"

@@ -3,7 +3,7 @@
 //! keywords/created/modified) and `app.xml`'s `Properties > Application` generator string.
 //! This maps those onto `meta.props`, preserving unmodeled `core.xml` children on export.
 
-use crate::office_meta::{import_elements, strip_modeled};
+use crate::office_meta::{import_elements, unmodeled_inner};
 use crate::xml_escape::escape_text;
 use tilo_doc::model::{DocMut, DocRef, doc_prop};
 use tilo_doc::schema::{
@@ -90,62 +90,6 @@ fn core_modeled_children(doc: &DocRef) -> String {
 /// `core.xml`'s unmodeled fields (lastModifiedBy, revision, …) survive.
 fn core_unmodeled_children(xml: &[u8]) -> String {
     unmodeled_inner(xml, "coreProperties", &CORE_MODELED)
-}
-
-/// Strip elements whose local-name is in `modeled_names`, returning the surviving inner XML.
-fn unmodeled_inner(xml: &[u8], container: &str, modeled_names: &[&[u8]]) -> String {
-    element_inner(xml, container)
-        .map(|inner| strip_modeled(&inner, modeled_names))
-        .unwrap_or_default()
-}
-
-/// Inner XML of the first element whose local-name is `local`. Shallow substring
-/// extraction, sufficient for the flat metadata parts.
-fn element_inner(xml: &[u8], local: &str) -> Option<Vec<u8>> {
-    let text = String::from_utf8_lossy(xml);
-    // Find the opening tag: the local name preceded by `<` or `<prefix:`.
-    let needle = local;
-    let mut search_from = 0;
-    let (open_tag_start, open_tag_gt) = loop {
-        let rel = text.get(search_from..)?.find(needle)?;
-        let pos = search_from.checked_add(rel)?;
-        // Validate it's an element name: preceded by `<` or `:` (after `<prefix`).
-        let before = text.get(..pos)?.rfind('<')?;
-        let between = text.get(before.checked_add(1)?..pos)?;
-        // `between` must be empty or a `prefix:` (alnum + trailing colon).
-        let is_tag = between.is_empty()
-            || (between.ends_with(':')
-                && between
-                    .get(..between.len().saturating_sub(1))?
-                    .chars()
-                    .all(char::is_alphanumeric));
-        // The char after the name must end the name (space, `>`, `/`).
-        let after_ch = text.get(pos.checked_add(needle.len())?..)?.chars().next();
-        let name_ends = matches!(after_ch, Some(' ' | '>' | '/' | '\t' | '\n' | '\r'));
-        if is_tag && name_ends {
-            let gt = text.get(before..)?.find('>')?.checked_add(before)?;
-            break (before, gt);
-        }
-        search_from = pos.checked_add(needle.len())?;
-    };
-    // Self-closing?
-    if text.as_bytes().get(open_tag_gt.wrapping_sub(1)) == Some(&b'/') {
-        let _ = open_tag_start;
-        return Some(Vec::new());
-    }
-    let inner_start = open_tag_gt.checked_add(1)?;
-    // The close tag: `</...local>`.
-    let close_needle = format!("{needle}>");
-    let mut from = inner_start;
-    loop {
-        let rel = text.get(from..)?.find(&close_needle)?;
-        let pos = from.checked_add(rel)?;
-        let lt = text.get(..pos)?.rfind('<')?;
-        if text.get(lt..lt.checked_add(2)?)? == "</" {
-            return Some(text.get(inner_start..lt)?.as_bytes().to_vec());
-        }
-        from = pos.checked_add(close_needle.len())?;
-    }
 }
 
 /// Build `docProps/core.xml` for export, merging in unmodeled children of the preserved

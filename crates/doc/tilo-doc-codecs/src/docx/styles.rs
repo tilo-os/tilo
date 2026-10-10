@@ -3,15 +3,11 @@
 //! in named styles and list ordering in numbering definitions.
 
 use crate::generic_font;
+use crate::para_styles::{ParaStyle, StyleTable};
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::reader::Reader;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use tilo_doc::document::MarkValue;
-use tilo_doc::schema::{
-    STYLE_ALIGN, STYLE_BOLD, STYLE_COLOR, STYLE_FONT, STYLE_INDENT, STYLE_ITALIC, STYLE_NAME,
-    STYLE_SIZE, STYLE_SPACE_AFTER, STYLE_SPACE_BEFORE,
-};
-use tilo_doc::snapshot::AttrVal;
 
 pub(super) fn attr_val(e: &BytesStart, key: &[u8]) -> Option<String> {
     e.attributes()
@@ -177,30 +173,6 @@ pub(super) fn highlight_name_to_hex(name: &str) -> Option<String> {
     Some(hex.to_string())
 }
 
-#[derive(Default, Clone)]
-pub(crate) struct ParaStyle {
-    pub parent: Option<String>,
-    pub align: Option<String>,
-    pub outline_level: Option<i64>,
-    pub heading_name: bool,
-    pub name_level: Option<i64>,
-    pub text: Vec<(String, MarkValue)>,
-    pub display_name: Option<String>,
-    /// A user-facing *named* paragraph style, distinguishing real named styles lifted into the styles container from resolution-only ones.
-    pub named: bool,
-    /// Typed `StyleProps`-shaped fields (distinct from the inline `text` marks the same `w:rPr`/`w:pPr` imply).
-    pub size: Option<f64>,
-    pub bold: Option<bool>,
-    pub italic: Option<bool>,
-    pub color: Option<String>,
-    pub font: Option<String>,
-    pub space_before: Option<f64>,
-    pub space_after: Option<f64>,
-    pub indent: Option<f64>,
-    /// Line spacing as a unitless multiple (1.5), from `w:spacing w:line` (auto).
-    pub line_spacing: Option<f64>,
-}
-
 /// Map an OOXML `w:numFmt w:val` onto the model's numbering format; unknown ordered formats fall back to `decimal`.
 pub(super) fn map_num_format(v: &str) -> Option<&'static str> {
     match v {
@@ -223,10 +195,8 @@ pub(crate) struct NumDef {
 
 #[derive(Default)]
 pub(crate) struct StyleRegistry {
-    /// `character`-family style id → inline marks.
-    pub text: HashMap<String, Vec<(String, MarkValue)>>,
-    /// `paragraph`-family style id → paragraph style.
-    pub para: HashMap<String, ParaStyle>,
+    /// `character`- and `paragraph`-family styles by id.
+    pub table: StyleTable,
     /// `w:numId` → is the list numbered (ordered) rather than bulleted?
     pub num_ordered: HashMap<String, bool>,
     /// `w:numId` → its level-0 numbering (format + start) for fidelity.
@@ -237,142 +207,13 @@ impl StyleRegistry {
     /// Heading level for a paragraph style id, following `basedOn` chains. Falls back to well-known heading ids/names even
     /// when unregistered, so codec-authored exports re-import without a `styles.xml`.
     pub(super) fn heading_level(&self, name: &str) -> Option<i64> {
-        let mut cur = Some(name.to_string());
-        for _ in 0..8 {
-            let n = cur.take()?;
-            let Some(p) = self.para.get(&n) else {
-                let (h, l) = heading_from_name(&n, None);
-                return if h {
-                    Some(l.unwrap_or(1).clamp(1, 6))
-                } else {
-                    None
-                };
-            };
-            if let Some(l) = p.outline_level {
-                return Some(l.clamp(1, 6));
-            }
-            if p.heading_name {
-                return Some(p.name_level.unwrap_or(1).clamp(1, 6));
-            }
-            cur.clone_from(&p.parent);
-        }
-        None
-    }
-
-    pub(super) fn para_align(&self, name: &str) -> Option<String> {
-        let mut cur = Some(name.to_string());
-        for _ in 0..8 {
-            let n = cur.take()?;
-            let p = self.para.get(&n)?;
-            if let Some(a) = &p.align {
-                return Some(a.clone());
-            }
-            cur.clone_from(&p.parent);
-        }
-        None
-    }
-
-    /// Line spacing (`w:spacing w:line`, auto) a paragraph style applies, following the `basedOn` chain (most-derived first).
-    pub(super) fn para_line_spacing(&self, name: &str) -> Option<f64> {
-        let mut cur = Some(name.to_string());
-        for _ in 0..8 {
-            let n = cur.take()?;
-            let p = self.para.get(&n)?;
-            if let Some(ls) = p.line_spacing {
-                return Some(ls);
-            }
-            cur.clone_from(&p.parent);
-        }
-        None
-    }
-
-    /// Inline marks a paragraph style applies to its whole text (parent-first, most-derived wins).
-    pub(super) fn para_text_marks(&self, name: &str) -> Vec<(String, MarkValue)> {
-        let mut chain: Vec<&ParaStyle> = Vec::new();
-        let mut cur = Some(name.to_string());
-        for _ in 0..8 {
-            let Some(n) = cur.take() else { break };
-            let Some(p) = self.para.get(&n) else { break };
-            chain.push(p);
-            cur.clone_from(&p.parent);
-        }
-        let mut out: Vec<(String, MarkValue)> = Vec::new();
-        for p in chain.iter().rev() {
-            for (k, v) in &p.text {
-                out.retain(|(k2, _)| k2 != k);
-                out.push((k.clone(), v.clone()));
-            }
-        }
-        out
-    }
-
-    pub(super) fn text_marks(&self, name: &str) -> Vec<(String, MarkValue)> {
-        self.text.get(name).cloned().unwrap_or_default()
-    }
-
-    /// Whether `id` is a user-facing *named* paragraph style. Built-in heading styles resolve to a heading level first, so
-    /// the body parser never lifts them even though they are also "named".
-    pub(super) fn is_named_para(&self, id: &str) -> bool {
-        self.para.get(id).is_some_and(|p| p.named)
-    }
-
-    /// The paragraph-style chain (self → basedOn → …), most-derived first.
-    fn para_chain(&self, name: &str) -> Vec<&ParaStyle> {
-        let mut chain = Vec::new();
-        let mut cur = Some(name.to_string());
-        for _ in 0..8 {
-            let Some(n) = cur.take() else { break };
-            let Some(p) = self.para.get(&n) else { break };
-            chain.push(p);
-            cur.clone_from(&p.parent);
-        }
-        chain
-    }
-
-    /// Resolve a named paragraph style into the scalar map the CRDT styles container stores (self overrides `basedOn`
-    /// parent per field; unset fields fall back to neutral defaults, keeping the round-trip idempotent).
-    pub(super) fn style_props(&self, id: &str) -> Option<BTreeMap<String, AttrVal>> {
-        let chain = self.para_chain(id);
-        if chain.is_empty() {
-            return None;
-        }
-        let display = chain.iter().find_map(|p| p.display_name.clone());
-        let size = chain.iter().find_map(|p| p.size).unwrap_or(16.0);
-        let bold = chain.iter().find_map(|p| p.bold).unwrap_or(false);
-        let italic = chain.iter().find_map(|p| p.italic).unwrap_or(false);
-        let color = chain
-            .iter()
-            .find_map(|p| p.color.clone())
-            .unwrap_or_else(|| "#000000".to_string());
-        let font = chain
-            .iter()
-            .find_map(|p| p.font.clone())
-            .unwrap_or_else(|| "sans".to_string());
-        let align = chain
-            .iter()
-            .find_map(|p| p.align.clone())
-            .unwrap_or_else(|| "left".to_string());
-        let space_before = chain.iter().find_map(|p| p.space_before).unwrap_or(0.0);
-        let space_after = chain.iter().find_map(|p| p.space_after).unwrap_or(0.0);
-        let indent = chain.iter().find_map(|p| p.indent).unwrap_or(0.0);
-        let name_str = display.unwrap_or_else(|| id.to_string());
-
-        let mut m = BTreeMap::new();
-        m.insert(STYLE_NAME.to_string(), AttrVal::Str(name_str));
-        m.insert(STYLE_FONT.to_string(), AttrVal::Str(font));
-        m.insert(STYLE_SIZE.to_string(), AttrVal::Float(size));
-        m.insert(STYLE_BOLD.to_string(), AttrVal::Bool(bold));
-        m.insert(STYLE_ITALIC.to_string(), AttrVal::Bool(italic));
-        m.insert(STYLE_COLOR.to_string(), AttrVal::Str(color));
-        m.insert(STYLE_ALIGN.to_string(), AttrVal::Str(align));
-        m.insert(STYLE_SPACE_BEFORE.to_string(), AttrVal::Float(space_before));
-        m.insert(STYLE_SPACE_AFTER.to_string(), AttrVal::Float(space_after));
-        m.insert(STYLE_INDENT.to_string(), AttrVal::Float(indent));
-        Some(m)
+        self.table.heading_level(name, |id| {
+            let (heading, level) = heading_from_name(id, None);
+            heading.then(|| level.unwrap_or(1))
+        })
     }
 }
 
-/// `(looks like a heading, level)` for a style id / display name.
 fn heading_from_name(id: &str, name: Option<&str>) -> (bool, Option<i64>) {
     for c in [id, name.unwrap_or("")] {
         let lc = c.to_ascii_lowercase();
@@ -493,12 +334,12 @@ impl StyleAccum {
         match self.kind.as_deref() {
             Some("character") => {
                 if !self.text.is_empty() {
-                    reg.text.insert(id, self.text);
+                    reg.table.text.insert(id, self.text);
                 }
             }
             Some("paragraph") => {
                 let (h, l) = heading_from_name(&id, self.display_name.as_deref());
-                reg.para.insert(
+                reg.table.para.insert(
                     id,
                     ParaStyle {
                         parent: self.parent,
@@ -517,7 +358,7 @@ impl StyleAccum {
                         space_before: self.space_before,
                         space_after: self.space_after,
                         indent: self.indent,
-                        line_spacing: self.line_spacing,
+                        line_height: self.line_spacing,
                     },
                 );
             }
@@ -671,10 +512,16 @@ mod tests {
                 Some(1),
                 "inherits heading via basedOn"
             );
-            assert_eq!(reg.para_align("Heading1").as_deref(), Some("center"));
-            assert!(reg.text_marks("Strong").iter().any(|(n, _)| n == "strong"));
+            assert_eq!(reg.table.para_align("Heading1").as_deref(), Some("center"));
             assert!(
-                reg.para_text_marks("Heading1")
+                reg.table
+                    .text_marks("Strong")
+                    .iter()
+                    .any(|(n, _)| n == "strong")
+            );
+            assert!(
+                reg.table
+                    .para_text_marks("Heading1")
                     .iter()
                     .any(|(n, _)| n == "strong")
             );

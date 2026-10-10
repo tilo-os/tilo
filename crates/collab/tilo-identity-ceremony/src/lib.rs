@@ -679,16 +679,10 @@ impl PairingHandshake {
         if certificate.is_empty() || certificate.len() > 64 * 1024 {
             return None;
         }
-        let provider = Arc::new(rustls::crypto::ring::default_provider());
-        let config = rustls::ClientConfig::builder_with_provider(Arc::clone(&provider))
-            .with_safe_default_protocol_versions()
-            .ok()?
-            .dangerous()
-            .with_custom_certificate_verifier(Arc::new(ExactCertificateVerifier {
-                expected: Arc::from(certificate),
-                provider,
-            }))
-            .with_no_client_auth();
+        // The QR/invite carries the exact DER certificate, not a CA: treating it as a root
+        // would also trust any child certificate it signs.
+        let pin = certificate.to_vec();
+        let config = tilo_net::pinned_client_config(move |der| der == pin.as_slice()).ok()?;
         let name = rustls::pki_types::ServerName::try_from("tilo-pairing.invalid").ok()?;
         let connection = rustls::ClientConnection::new(Arc::new(config), name).ok()?;
         let mut stream = rustls::StreamOwned::new(connection, tcp);
@@ -1104,71 +1098,6 @@ impl PairingHandshake {
                 }
             }
         }
-    }
-}
-
-/// The QR/invite carries the exact DER certificate, not a CA. Treating that
-/// certificate as a root would also trust a child certificate it signs; exact
-/// comparison keeps the pin's meaning narrow while the provider still checks
-/// the handshake signature against the pinned certificate's public key.
-#[cfg(not(target_arch = "wasm32"))]
-#[derive(Debug)]
-struct ExactCertificateVerifier {
-    expected: Arc<[u8]>,
-    provider: Arc<rustls::crypto::CryptoProvider>,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl rustls::client::danger::ServerCertVerifier for ExactCertificateVerifier {
-    fn verify_server_cert(
-        &self,
-        end_entity: &rustls::pki_types::CertificateDer<'_>,
-        intermediates: &[rustls::pki_types::CertificateDer<'_>],
-        _server_name: &rustls::pki_types::ServerName<'_>,
-        _ocsp_response: &[u8],
-        _now: rustls::pki_types::UnixTime,
-    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
-        if intermediates.is_empty() && end_entity.as_ref() == self.expected.as_ref() {
-            Ok(rustls::client::danger::ServerCertVerified::assertion())
-        } else {
-            Err(rustls::Error::General(
-                "pairing broker certificate does not match the signed pin".into(),
-            ))
-        }
-    }
-
-    fn verify_tls12_signature(
-        &self,
-        message: &[u8],
-        cert: &rustls::pki_types::CertificateDer<'_>,
-        dss: &rustls::DigitallySignedStruct,
-    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        rustls::crypto::verify_tls12_signature(
-            message,
-            cert,
-            dss,
-            &self.provider.signature_verification_algorithms,
-        )
-    }
-
-    fn verify_tls13_signature(
-        &self,
-        message: &[u8],
-        cert: &rustls::pki_types::CertificateDer<'_>,
-        dss: &rustls::DigitallySignedStruct,
-    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        rustls::crypto::verify_tls13_signature(
-            message,
-            cert,
-            dss,
-            &self.provider.signature_verification_algorithms,
-        )
-    }
-
-    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-        self.provider
-            .signature_verification_algorithms
-            .supported_schemes()
     }
 }
 

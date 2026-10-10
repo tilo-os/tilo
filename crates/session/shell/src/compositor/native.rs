@@ -7682,11 +7682,9 @@ struct PortalBackend {
     /// The on-screen file chooser's queue, shared with the chooser service
     /// that apps without a portal reach.
     pickers: crate::portal::FilePickerQueue,
-    #[allow(
-        dead_code,
-        reason = "Retaining the registration keeps its D-Bus connection, bus name, and object server alive once registered."
-    )]
-    server: crate::session_runtime::Registration<crate::portal::ServerHandle>,
+    /// Never read: retaining the registration keeps its D-Bus connection, bus
+    /// name, and object server alive once registered.
+    _server: crate::session_runtime::Registration<crate::portal::ServerHandle>,
     remote_input: std::sync::mpsc::Receiver<crate::network::streaming::RemoteAction>,
     input_capture: crate::portal::InputCaptureCompositorHandle,
     screencast: crate::portal::ScreenCastStreamProvisionerHandle,
@@ -8013,7 +8011,7 @@ fn start_portal_backend(
         media_grants: grants,
         media_prompts: prompts,
         pickers,
-        server,
+        _server: server,
         remote_input: remote_input_rx,
         input_capture,
         screencast,
@@ -9388,6 +9386,13 @@ pub fn run() {
     let mut watched_for_host = false;
     // Optional paint-rate diagnostics (`TILO_PAINT_STATS=1`).
     let paint_stats = std::env::var("TILO_PAINT_STATS").is_ok();
+    // `TILO_PAINT_STATS=ticks` also prints a `paint-tick:` line on every
+    // iteration, so a reader can tell when each one ran: a summary covers
+    // everything since the previous one, which may lie long before the
+    // period the reader measures (the idle gate counts only its window).
+    let paint_ticks = std::env::var("TILO_PAINT_STATS").is_ok_and(|value| value.trim() == "ticks");
+    // What ended the park before this iteration, for `paint-tick:`.
+    let mut last_wake: &'static str = "start";
     // Slow iterations are exceptional and always worth preserving in the
     // session flight record: a compositor that stops pumping input for 100 ms
     // is already visibly broken. `TILO_LOOP_TIMING` additionally enables the
@@ -12258,6 +12263,9 @@ pub fn run() {
         // vs idled and why, confirming the loop actually idles without guessing.
         if paint_stats {
             frames_total = frames_total.saturating_add(1);
+            if paint_ticks {
+                eprintln!("paint-tick: painted={should_paint} woke={last_wake}");
+            }
             if should_paint {
                 frames_painted = frames_painted.saturating_add(1);
                 if had_backend_events {
@@ -13259,6 +13267,7 @@ pub fn run() {
         metrics.mark_wake(wake);
         if paint_stats {
             wakes_seen.note(wake);
+            last_wake = wake;
             if wake == "widget" && widget_wake_owner.is_none() {
                 widget_wake_owner = Some(frame_builder.wake_deadline_owners().join(","));
             }
