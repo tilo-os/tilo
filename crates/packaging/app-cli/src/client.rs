@@ -199,6 +199,22 @@ pub fn fetch_all_versions(
     package_id: &str,
 ) -> Result<VerifiedEntry, RegistryError> {
     let snapshot = fetch_snapshot(reg)?;
+    all_versions_in(reg, &snapshot, package_id)
+}
+
+/// [`fetch_all_versions`] from a snapshot the caller already fetched and
+/// verified, so asking about several packages downloads, verifies and
+/// checkpoints the snapshot once instead of once per package.
+///
+/// # Errors
+///
+/// Returns an error when the package is not listed in `snapshot`, or when the
+/// version index cannot be fetched or is not the one the snapshot signs.
+pub fn all_versions_in(
+    reg: &RegistryConfig,
+    snapshot: &CatalogueSnapshot,
+    package_id: &str,
+) -> Result<VerifiedEntry, RegistryError> {
     let listed = snapshot
         .entries()
         .into_iter()

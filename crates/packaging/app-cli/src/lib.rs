@@ -259,9 +259,30 @@ pub fn runtime_offer(runtime: &str, registry_name: &str) -> Result<Option<Catalo
         .map(|listed| listed.entry.package_id.clone())
         .filter(|id| registry_types::is_runtime_package_id(id))
         .collect();
-    for package_id in runtime_packages {
-        let verified =
-            client::fetch_all_versions(registry, &package_id).map_err(|error| error.to_string())?;
+    // One verified snapshot answers for every runtime package; only the
+    // per-package version indexes differ, and those are independent requests.
+    let verified: Vec<Result<VerifiedEntry, String>> = std::thread::scope(|scope| {
+        let workers: Vec<_> = runtime_packages
+            .iter()
+            .map(|package_id| {
+                let snapshot = &snapshot;
+                scope.spawn(move || {
+                    client::all_versions_in(registry, snapshot, package_id)
+                        .map_err(|error| error.to_string())
+                })
+            })
+            .collect();
+        workers
+            .into_iter()
+            .map(|worker| {
+                worker
+                    .join()
+                    .unwrap_or_else(|_| Err("version index fetch panicked".to_string()))
+            })
+            .collect()
+    });
+    for verified in verified {
+        let verified = verified?;
         if let Some(offer) = installable_versions(&verified.entry, registry.channel)
             .filter(|version| version.target.runtime.as_deref() == Some(runtime))
             .max_by(|a, b| tilo_app_package::version::compare(&a.version, &b.version))

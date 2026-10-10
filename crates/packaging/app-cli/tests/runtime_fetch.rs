@@ -42,9 +42,14 @@ const APP_ID: &str = "so.tilo.linked-e2e";
 
 /// What the stand-in registry serves, by request path.
 #[derive(Clone, Default)]
-struct Served(Arc<Mutex<BTreeMap<String, Vec<u8>>>>);
+struct Served(Arc<Mutex<BTreeMap<String, Vec<u8>>>>, Arc<Mutex<Vec<String>>>);
 
 impl Served {
+    /// How many requests have asked for `path` so far.
+    fn hits(&self, path: &str) -> usize {
+        self.1.lock().unwrap().iter().filter(|hit| *hit == path).count()
+    }
+
     fn put(&self, path: &str, bytes: Vec<u8>) {
         self.0.lock().unwrap().insert(path.to_string(), bytes);
     }
@@ -80,6 +85,7 @@ fn serve(mut stream: TcpStream, served: &Served) {
     }
     let path = request.split_whitespace().nth(1).unwrap_or("/");
     let path = path.split('?').next().unwrap_or(path);
+    served.1.lock().unwrap().push(path.to_string());
     let body = served.0.lock().unwrap().get(path).cloned();
     let (status, body) = match body {
         Some(body) => ("200 OK", body),
@@ -503,8 +509,16 @@ fn a_registry_build_for_another_runtime_fetches_that_runtime_or_is_refused() {
         .into_iter()
         .find(|app| app.package_id == APP_ID)
         .unwrap();
+    let entries_before = served.hits("/entries");
     app_cli::install::install_app(&offer)
         .unwrap_or_else(|error| panic!("install must fetch the runtime: {}", error.user_message()));
+    // Finding the runtime's offer verifies one snapshot, however many runtime
+    // packages it lists; it is not downloaded again per package.
+    assert_eq!(
+        served.hits("/entries") - entries_before,
+        1,
+        "the registry snapshot is fetched once to find the runtime"
+    );
     let fetched = runtimes.join(&registry_version);
     let verified = runtime_bundle::verify_bundle(&fetched).expect("fetched runtime verifies");
     assert_eq!(verified.version, registry_version);
