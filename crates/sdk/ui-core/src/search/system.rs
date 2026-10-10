@@ -388,11 +388,11 @@ pub fn icon_for_kind(kind: &ResourceKind) -> crate::icons::Icon {
     use ResourceKind as K;
     match kind {
         K::Action => Icon::Settings2,
-        K::Application => Icon::LayoutGrid,
-        // Deliberately *not* the applications glyph. A host app is not
-        // one of Tilo's — it runs unconfined, outside everything the
-        // grid stands for — and the row has to look different at a
-        // glance, not only read differently.
+        // The app-less fallback; a row that knows its app leads with
+        // [`crate::icons::app_glyph`] or the app's artwork instead.
+        K::Application => Icon::AppWindow,
+        // A host app is not one of Tilo's — it runs unconfined — so when it
+        // has no artwork of its own the fallback looks different at a glance.
         K::HostApplication => Icon::ExternalLink,
         K::Note => Icon::FileText,
         // A record is one document several rooms can reach — the stacked
@@ -404,7 +404,10 @@ pub fn icon_for_kind(kind: &ResourceKind) -> crate::icons::Icon {
         K::Creator => Icon::Star,
         K::Video => Icon::Film,
         K::Playlist => Icon::List,
-        K::Tab | K::WindowGroup | K::Custom(_) => Icon::Search,
+        // A window is an app on screen. The magnifier names the search box,
+        // not a result.
+        K::Tab | K::WindowGroup => Icon::AppWindow,
+        K::Custom(_) => Icon::Box,
     }
 }
 

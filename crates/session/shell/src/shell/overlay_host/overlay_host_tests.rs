@@ -2423,7 +2423,7 @@ fn palette_search_reaches_apps_note_bodies_and_records_in_other_rooms() {
             )
         });
         assert_eq!(hit.id, "so.tilo.zzyzx");
-        assert_eq!(hit.title, "Open Zzyzx");
+        assert_eq!(hit.title, "Zzyzx");
 
         env.remove("TILO_APPS_DATA_DIR");
         crate::shell::launcher::invalidate_app_cache();

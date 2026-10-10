@@ -74,11 +74,9 @@ impl ResourceKind {
     pub fn icon(&self) -> Icon {
         match self {
             ResourceKind::Action => Icon::Settings2,
-            ResourceKind::Application => Icon::LayoutGrid,
-            // Deliberately *not* the applications glyph. A host app is not
-            // one of Tilo's — it runs unconfined, outside everything the
-            // grid stands for — and the row has to look different at a
-            // glance, not only read differently.
+            ResourceKind::Application => Icon::AppWindow,
+            // A host app is not one of Tilo's: it runs unconfined, and the
+            // row has to look different at a glance.
             ResourceKind::HostApplication => Icon::ExternalLink,
             ResourceKind::Note => Icon::FileText,
             // A record is one document several rooms can reach — the stacked
@@ -90,7 +88,7 @@ impl ResourceKind {
             ResourceKind::Creator => Icon::Star,
             ResourceKind::Video => Icon::Film,
             ResourceKind::Playlist => Icon::List,
-            ResourceKind::Custom(_) => Icon::Search,
+            ResourceKind::Custom(_) => Icon::Box,
         }
     }
 }

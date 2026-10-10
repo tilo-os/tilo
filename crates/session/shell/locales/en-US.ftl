@@ -1250,8 +1250,6 @@ search-scope-workspace = Workspace
 search-scope-everywhere = Everywhere
 
 # Where a launched app will open
-search-opens-beside = Opens in rightmost space
-search-opens-here = Opens here, as a tab
 
 # Search providers, as the search settings actions name them
 search-provider-now-playing = Now playing
@@ -1292,8 +1290,7 @@ search-record-in-another-workspace = In another workspace
 search-files-no-app = No app on this desktop opens .{ $ext } documents.
 
 # Search: host apps
-search-host-app-open = Open { $app }
-search-host-app-subtitle = { $source } · unconfined host app · { $id }
+search-host-app-subtitle = Not sandboxed · { $source }
 
 # Search: app action jobs and resources
 search-app-job = Action job { $id }
@@ -1552,20 +1549,10 @@ search-action-device-revoked = Device revoked
 search-action-device-revoked-body = The revocation was root-signed and recorded in this identity's device list.
 
 # Search: applications
-search-apps-group-start-here = Start here
-search-apps-group-everyday = Everyday
-search-apps-group-work = Work
-search-apps-group-media = Media
-search-apps-group-system-tools = System tools
-search-apps-group-more-apps = More apps
-search-apps-group-developer-tools = Developer tools
-search-apps-detail-grouped = { $group } · { $detail }
-search-apps-open = Open { $app }
-search-apps-open-subtitle = { $target } · { $detail }
-search-apps-shortcut-subtitle = { $target } · Shortcut
+search-apps-shortcut-subtitle = Shortcut
 search-apps-shortcut-failed = The shortcut could not be opened. Check its target and try again.
 search-apps-verification-pending = Registry verification pending
-search-apps-store-subtitle = App Store · { $trust } · { $detail }
+search-apps-store-subtitle = { $trust }
 search-apps-view-in-store = View { $app } in App Store
 search-apps-store-failed = Couldn't open App Store for { $app }
 search-apps-opening = Opening { $app }

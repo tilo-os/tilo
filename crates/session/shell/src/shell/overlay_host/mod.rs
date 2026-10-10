@@ -1170,31 +1170,6 @@ fn instant_capture(
     }
 }
 
-fn icon_for_kind(kind: &crate::shell::search::ResourceKind) -> ui::icons::Icon {
-    use crate::shell::search::ResourceKind as K;
-    use ui::icons::Icon;
-    match kind {
-        K::Action => Icon::Settings2,
-        K::Application => Icon::LayoutGrid,
-        // Deliberately *not* the applications glyph. A host app is not
-        // one of Tilo's — it runs unconfined, outside everything the
-        // grid stands for — and the row has to look different at a
-        // glance, not only read differently.
-        K::HostApplication => Icon::ExternalLink,
-        K::Note => Icon::FileText,
-        // A record is one document several rooms can reach — the stacked
-        // plates say "this is the same thing in more than one place",
-        // which is exactly what a reference is.
-        K::Record => Icon::Layers,
-        K::File => Icon::File,
-        K::Folder => Icon::Folder,
-        K::Creator => Icon::Star,
-        K::Video => Icon::Film,
-        K::Playlist => Icon::List,
-        K::Tab | K::WindowGroup | K::Custom(_) => Icon::Search,
-    }
-}
-
 // -- Lossy numeric casts, named and scoped one lint at a time --------
 //
 // This file's layout math is all in `f64` (to match `kurbo`), but
@@ -8192,7 +8167,15 @@ impl ShellOverlayHost {
                 let mut e = CommandEntry::new(format!("result:{idx}"), r.title.clone())
                     .group(label.clone())
                     .group_total(group.total)
-                    .icon(icon_for_kind(&r.kind));
+                    .icon(ui::search::system::icon_for_kind(&r.kind));
+                // A Tilo app leads with its own symbol, never the generic
+                // applications glyph; "app:" marks a not-yet-installed one.
+                if r.kind == crate::shell::search::ResourceKind::Application {
+                    e = e.icon(ui::icons::app_glyph(
+                        r.id.strip_prefix("app:").unwrap_or(&r.id),
+                        None,
+                    ));
+                }
                 // The unconfined-host glyph stays the fallback; the app's own
                 // artwork is what a person recognises it by. Window rows wear
                 // the same tile face as the tab strip, not the magnifier.
@@ -8210,9 +8193,11 @@ impl ShellOverlayHost {
                     let state = chrome.borrow();
                     let tree = state.tree();
                     if let Some(tile) = tilo_desktop::search::window_row_tile(&tree.desktop, &r.id)
-                        && let Some(image) = crate::app_icons::for_tile(tile)
                     {
-                        e = e.image(image);
+                        match crate::app_icons::for_tile(tile) {
+                            Some(image) => e = e.image(image),
+                            None => e = e.icon(crate::app_icons::glyph_for_tile(tile)),
+                        }
                     }
                 }
                 if let Some(sub) = &r.subtitle {

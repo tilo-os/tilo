@@ -199,7 +199,7 @@ impl crate::shell::search::SearchProvider for AppSourceFilterFixtureProvider {
                 self.id(),
                 "fixture-host-app",
                 "Open Host fixture",
-                Some("System · unconfined host app".into()),
+                Some("Not sandboxed · System".into()),
                 100,
                 |_, _, _| {},
             ));

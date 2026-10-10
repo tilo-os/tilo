@@ -431,8 +431,6 @@ desktop-view-replay-activity = Replay workspace activity
 
 ## Desktop window search
 search-provider-desktop-windows = Desktop windows
-search-badge-tab = Tab
-search-badge-window-group = Window group
 search-window-move-tab = Move tab “{ $tab }” to workspace “{ $workspace }”
 search-window-move-tab-detail = From workspace “{ $workspace }”
 search-window-copy-tab = Copy tab “{ $tab }” to workspace “{ $workspace }”
