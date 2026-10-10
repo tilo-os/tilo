@@ -880,9 +880,32 @@ jobs:
             dist/apps/package-apps.sh
 
       - name: Selected tapps within their size budget
+        id: tapp-size
         run: >-
           python3 tools/perf/tapp_size_ratchet.py measure dist/app-release
           --arch "${{ matrix.arch }}" --summary "$GITHUB_STEP_SUMMARY"
+
+      # Preserve the failure and only bounded ELF evidence; never work/ identities
+      # or signed package/publication archives. No build flags or maps are added.
+      - name: Retain failed ARM TAPP size evidence
+        id: tapp-size-evidence
+        if: failure() && steps.tapp-size.outcome == 'failure' && matrix.arch == 'aarch64'
+        continue-on-error: true
+        env:
+          DIAGNOSTIC_BUILDER_IMAGE: ${{ needs.builder.outputs.image }}
+        run: >-
+          python3 tools/ci/retain_tapp_size_failure.py
+          --arch "${{ matrix.arch }}" --event-source "$GITHUB_SHA"
+          --base-source "${{ needs.select.outputs.main }}"
+      - name: Save failed ARM TAPP size evidence
+        if: failure() && steps.tapp-size.outcome == 'failure' && steps.tapp-size-evidence.outcome == 'success' && matrix.arch == 'aarch64'
+        continue-on-error: true
+        uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        with:
+          name: tapp-size-failure-${{ matrix.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/ci/tapp-size-failure/
+          retention-days: 3
+          if-no-files-found: error
 
   checks:
     if: always()
