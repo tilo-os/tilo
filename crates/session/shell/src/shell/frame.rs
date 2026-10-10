@@ -3067,6 +3067,10 @@ impl FrameBuilder {
         self.animation_demand().any()
     }
 
+    pub(crate) fn content_redrawing_leaves(&self) -> Vec<String> {
+        self.host.content_redrawing_leaves()
+    }
+
     pub(crate) fn content_animating_leaves(&self) -> Vec<String> {
         self.host.content_animating_leaves()
     }
