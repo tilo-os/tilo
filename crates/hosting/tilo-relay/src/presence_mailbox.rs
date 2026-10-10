@@ -5,7 +5,7 @@
 //! into the connection's [`PresenceMailbox`] instead of its frame queue, and
 //! the connection's writer takes what is due as one batch per room.
 //!
-//! - **Latest state wins.** Presence its sender slotted (a pointer, a caret, a
+//! - **Latest state wins.** Presence with a slot (a pointer, a caret, a
 //!   selection, the range being typed; `neighbour_wire::PresenceSlot`)
 //!   replaces the pending presence of the same author in the same slot, so a
 //!   slow or busy connection receives where things are, not a backlog of where

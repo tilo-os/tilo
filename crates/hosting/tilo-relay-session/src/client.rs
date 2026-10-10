@@ -94,11 +94,6 @@ pub struct RelayClient {
     ///
     /// [`ALPN_SIGNED_ACTIONS_V1`]: tilo_delivery_protocol::transport_v2::ALPN_SIGNED_ACTIONS_V1
     action_key: Option<ed25519_dalek::SigningKey>,
-    /// The relay negotiated [`ALPN_PRESENCE_BATCH_V1`]: latest-state presence
-    /// may travel as [`EnvelopeV2::SlottedPresence`].
-    ///
-    /// [`ALPN_PRESENCE_BATCH_V1`]: tilo_delivery_protocol::transport_v2::ALPN_PRESENCE_BATCH_V1
-    slotted_presence: bool,
     /// Owns the authenticated pump's transport lifetime, independently of the
     /// canonical state/private channels and their certification rules.
     carrier: CarrierHandle,
@@ -173,7 +168,6 @@ fn action_in_scope(scope: &InteractiveWorkspaceScope, envelope: &EnvelopeV2) -> 
     match envelope {
         EnvelopeV2::State(state) => state_in_scope(scope, state),
         EnvelopeV2::UnsignedDelta { workspace_id, .. }
-        | EnvelopeV2::SlottedPresence { workspace_id, .. }
         | EnvelopeV2::PresenceBatch { workspace_id, .. } => *workspace_id == scope.workspace_id,
         EnvelopeV2::EnableActions { room }
         | EnvelopeV2::ActionsReady { room, .. }
@@ -1041,7 +1035,6 @@ impl RelayClient {
         if protocol.signs_actions() {
             client.action_key = action_key;
         }
-        client.slotted_presence = protocol.framing().batches_presence();
         Ok(client)
     }
 
@@ -1067,62 +1060,7 @@ impl RelayClient {
             action_outbound: channels.action_outbound,
             action_inbound: Arc::new(AsyncMutex::new(channels.action_inbound)),
             action_key: None,
-            slotted_presence: false,
             carrier,
-        }
-    }
-
-    /// Send presence that supersedes this device's earlier presence in the
-    /// same `slot`, so the relay may forward only the latest. On a relay that
-    /// did not negotiate [`ALPN_PRESENCE_BATCH_V1`] it is ordinary
-    /// `Envelope::Presence`. Presence is lossy: a momentarily full queue drops
-    /// it, as the relay does.
-    ///
-    /// # Errors
-    ///
-    /// Returns the presence back, as the envelope an older relay would get,
-    /// if the connection is gone or the payload is outside this session's
-    /// workspace scope.
-    ///
-    /// [`ALPN_PRESENCE_BATCH_V1`]: tilo_delivery_protocol::transport_v2::ALPN_PRESENCE_BATCH_V1
-    pub fn send_slotted_presence(
-        &self,
-        workspace_id: u64,
-        slot: tilo_peer_state::PresenceSlot,
-        payload: Vec<u8>,
-    ) -> Result<(), Box<Envelope>> {
-        let lane = self
-            .action_outbound
-            .as_ref()
-            .filter(|_| self.slotted_presence);
-        let out_of_scope = self
-            .workspace_scope
-            .as_ref()
-            .is_some_and(|scope| scope.workspace_id != workspace_id);
-        let (Some(lane), false) = (lane, out_of_scope) else {
-            // `send` applies the same scope rule to the plain envelope.
-            return self.send(Envelope::Presence {
-                workspace_id,
-                payload,
-            });
-        };
-        match lane.try_send(EnvelopeV2::SlottedPresence {
-            workspace_id,
-            slot: slot.id,
-            motion: slot.motion,
-            payload,
-        }) {
-            Ok(()) | Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => Ok(()),
-            Err(tokio::sync::mpsc::error::TrySendError::Closed(frame)) => {
-                let payload = match frame {
-                    EnvelopeV2::SlottedPresence { payload, .. } => payload,
-                    _ => Vec::new(),
-                };
-                Err(Box::new(Envelope::Presence {
-                    workspace_id,
-                    payload,
-                }))
-            }
         }
     }
 
@@ -1426,11 +1364,8 @@ async fn run_v2_reader<R>(
                     return;
                 }
             }
-            // Client-to-relay only; a relay that sends one has broken the
-            // protocol. (The reader already expanded every batch.)
-            Ok(Some(EnvelopeV2::SlottedPresence { .. } | EnvelopeV2::PresenceBatch { .. })) => {
-                return;
-            }
+            // The reader expands every batch into state frames.
+            Ok(Some(EnvelopeV2::PresenceBatch { .. })) => return,
             Ok(Some(action)) => {
                 if scope.is_some_and(|scope| !action_in_scope(scope, &action)) {
                     return;

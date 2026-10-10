@@ -342,31 +342,6 @@ impl RelayCoeditSession {
             .map_err(|_| CoeditError::Disconnected)
     }
 
-    /// [`Self::publish_presence`] for latest-state presence (a pointer, a
-    /// caret; `NeighbourMsg::presence_slot`): it supersedes this device's
-    /// earlier presence in `slot`, so a relay on `tilo-relay/6` may coalesce
-    /// it with the next one and forward only the latest, at most every 50 ms
-    /// for a moving pointer. Receivers see the same `Inbound::Presence`.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::publish_presence`].
-    pub fn publish_slotted_presence(
-        &self,
-        slot: tilo_peer_state::PresenceSlot,
-        payload: Vec<u8>,
-    ) -> Result<(), CoeditError> {
-        let encoded = AttributedPresence {
-            author: self.author,
-            body: payload,
-        }
-        .encode()
-        .map_err(CoeditError::Encode)?;
-        self.client
-            .send_slotted_presence(self.workspace_id, slot, encoded)
-            .map_err(|_| CoeditError::Disconnected)
-    }
-
     /// Send a piece of a record's content to one device of this workspace
     /// through the host, which hands it to that device's live connection
     /// only and drops it when it cannot.

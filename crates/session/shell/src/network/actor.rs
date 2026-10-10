@@ -3706,8 +3706,6 @@ async fn publish(
         }
     };
     let retention = retention(&msg, shell_checkpoint);
-    // Latest-state presence (a pointer, a caret) may be coalesced by the host.
-    let presence_slot = msg.presence_slot();
 
     // Host clients enqueue synchronously into their already-authenticated
     // QUIC pumps. Do that before awaiting gossip: a slow or reconnecting
@@ -3726,12 +3724,7 @@ async fn publish(
                 Some((channel, Retention::Delta)) => runtime
                     .session
                     .publish_retained_delta(channel, bytes.clone()),
-                None => match presence_slot {
-                    Some(slot) => runtime
-                        .session
-                        .publish_slotted_presence(slot, bytes.clone()),
-                    None => runtime.session.publish_presence(bytes.clone()),
-                },
+                None => runtime.session.publish_presence(bytes.clone()),
             };
             if let Err(error) = result {
                 tracing::warn!(ws, %error, "workspace host publish failed");

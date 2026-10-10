@@ -3,9 +3,10 @@
 //!
 //! A collaborator drags a pointer at 100 Hz through the real relay, then
 //! moves a caret and clears the pointer, publishing as the shell does
-//! (`NeighbourMsg::presence_slot`, `RelayCoeditSession::publish_slotted_presence`
-//! on a client that dials `tilo-relay/6`). Two members read what the relay
-//! writes them: one on `tilo-relay/5`, which predates batching, and one on
+//! (`RelayCoeditSession::publish_presence` on a client that dials
+//! `tilo-relay/6`; the relay reads each message's `presence_slot`). Two
+//! members read what the relay writes them: one on `tilo-relay/5`, which
+//! predates batching, and one on
 //! `tilo-relay/6`. Both must see the pointer paced to at most 20 Hz, its
 //! last position, the caret, and the event after everything sent before it;
 //! the `/6` member must pay a fraction of the bytes.
@@ -172,11 +173,9 @@ fn caret(pos: u64) -> NeighbourMsg {
 }
 
 fn publish(session: &RelayCoeditSession, message: &NeighbourMsg) {
-    let body = postcard::to_allocvec(message).unwrap();
-    match message.presence_slot() {
-        Some(slot) => session.publish_slotted_presence(slot, body).unwrap(),
-        None => session.publish_presence(body).unwrap(),
-    }
+    session
+        .publish_presence(postcard::to_allocvec(message).unwrap())
+        .unwrap();
 }
 
 /// What a member saw of the burst, checked against what a receiver must draw.

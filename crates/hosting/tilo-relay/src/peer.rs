@@ -641,25 +641,6 @@ where
                     _ = authority.changed() => { access_audit.changed(); continue; }
                 }
             };
-            let frame = match frame {
-                // Only a `tilo-relay/6` reader returns one.
-                EnvelopeV2::SlottedPresence {
-                    workspace_id,
-                    slot,
-                    motion,
-                    payload,
-                } => {
-                    drop(inbound_budget);
-                    let slot = tilo_peer_state::PresenceSlot { id: slot, motion };
-                    let presence = Envelope::Presence {
-                        workspace_id,
-                        payload,
-                    };
-                    handle_presence(&peer, &session, &subscribed, presence, Some(slot)).await?;
-                    continue;
-                }
-                frame => frame,
-            };
             match frame {
                 EnvelopeV2::State(env) => {
                     trace_native_publication("server_received", &env, None);
@@ -1027,8 +1008,7 @@ pub(crate) use tilo_relay_session::trace_native_publication;
 fn inbound_bytes(frame: &EnvelopeV2) -> usize {
     match frame {
         EnvelopeV2::State(Envelope::Delta { delta, .. }) => delta.len().saturating_add(256),
-        EnvelopeV2::State(Envelope::Presence { payload, .. })
-        | EnvelopeV2::SlottedPresence { payload, .. } => payload.len().saturating_add(256),
+        EnvelopeV2::State(Envelope::Presence { payload, .. }) => payload.len().saturating_add(256),
         EnvelopeV2::State(Envelope::SyncResponse { delta_since, .. }) => {
             delta_since.len().saturating_add(256)
         }
@@ -1861,9 +1841,7 @@ async fn handle_envelope(
             handle_unsubscribe(peer, session, subscribed, workspace_id).await
         }
         env @ Envelope::Delta { .. } => handle_delta(peer, session, subscribed, env).await,
-        env @ Envelope::Presence { .. } => {
-            handle_presence(peer, session, subscribed, env, None).await
-        }
+        env @ Envelope::Presence { .. } => handle_presence(peer, session, subscribed, env).await,
         Envelope::PeerRelayHello { hosted_workspaces } => {
             handle_peer_relay_hello(peer, session, hosted_workspaces).await
         }
@@ -5871,6 +5849,22 @@ fn checkpoint_prefix_recovery_allowed(
         && source.authorized(runtime)
 }
 
+/// The coalescing slot of a co-edit presence body (TIL-710): latest-state
+/// presence (a pointer, a caret) has one, events do not. Only the two
+/// `NeighbourMsg` variants that can have one are decoded, to tell which;
+/// the body is forwarded as it came.
+fn presence_slot(body: &[u8]) -> Option<tilo_peer_state::PresenceSlot> {
+    if !body
+        .first()
+        .is_some_and(|tag| tilo_peer_state::NeighbourMsg::SLOTTED_PRESENCE_TAGS.contains(tag))
+    {
+        return None;
+    }
+    postcard::from_bytes::<tilo_peer_state::NeighbourMsg>(body)
+        .ok()?
+        .presence_slot()
+}
+
 /// Handle an inbound `Presence`: fan it out to every other subscriber.
 /// Ephemeral, with device attribution stamped from the authenticated session.
 #[expect(
@@ -5882,8 +5876,8 @@ async fn handle_presence(
     session: &SessionCtx<'_>,
     subscribed: &[u64],
     mut env: Envelope,
-    slot: Option<tilo_peer_state::PresenceSlot>,
 ) -> Result<Option<Envelope>, PeerError> {
+    let mut slot = None;
     let Envelope::Presence { workspace_id, .. } = &env else {
         return Err(PeerError::Protocol(
             "handle_presence called with a non-Presence envelope".into(),
@@ -5903,6 +5897,7 @@ async fn handle_presence(
         // A sender's claim is not transport evidence, even if that other
         // device has a valid certificate in the same workspace.
         attributed.author = peer.device_public_key;
+        slot = presence_slot(&attributed.body);
         *payload = attributed
             .encode()
             .map_err(|error| PeerError::Protocol(error.to_string()))?;
@@ -11274,7 +11269,6 @@ mod private_transport_tests {
                 workspace_id: id,
                 payload: vec![9, 9],
             },
-            None,
         )
         .await
         .unwrap();
@@ -11319,7 +11313,6 @@ mod private_transport_tests {
                 workspace_id: id,
                 payload: forged.encode().unwrap(),
             },
-            None,
         )
         .await
         .unwrap();

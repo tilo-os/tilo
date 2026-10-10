@@ -8,10 +8,11 @@
 //! other message (heartbeats, `SyncReq`, identity, arrivals and departures,
 //! status) is an event and has no slot: it is delivered as sent.
 //!
-//! The relay never decodes a [`NeighbourMsg`]; the sender declares the slot
-//! beside the opaque bytes. A slot only ever supersedes its own author's
-//! presence, so a wrong one costs the sender its own updates and nobody
-//! else's.
+//! The relay reads the slot from the message it forwards, decoding only the
+//! two variants that can have one ([`NeighbourMsg::SLOTTED_PRESENCE_TAGS`]),
+//! and forwards the bytes unchanged. A slot only ever supersedes the same
+//! authenticated author's presence, so a sender can cost itself its own
+//! updates and nobody else's.
 
 use crate::NeighbourMsg;
 use collab_types::PeerPresencePayload;
@@ -47,6 +48,13 @@ impl PresenceSlot {
 }
 
 impl NeighbourMsg {
+    /// Postcard variant indices of the only messages that can have a
+    /// [`PresenceSlot`]: [`Self::PresenceMoved`] and [`Self::AppPresenceV2`].
+    /// A reader that sees any other first byte need not decode the message
+    /// (it may be a video frame) to know it has none. Wire-frozen, like
+    /// [`Self::APP_DOCUMENT_TAG`]; a unit test pins both.
+    pub const SLOTTED_PRESENCE_TAGS: [u8; 2] = [2, 13];
+
     /// The slot under which a relay may coalesce this message with a later
     /// one from the same author, or `None` when every copy must be delivered.
     pub fn presence_slot(&self) -> Option<PresenceSlot> {
@@ -135,6 +143,23 @@ mod tests {
                 .unwrap()
                 .motion
         );
+    }
+
+    #[test]
+    fn only_messages_with_a_slotted_tag_can_have_a_slot() {
+        let first = |message: &NeighbourMsg| postcard::to_allocvec(message).unwrap()[0];
+        assert_eq!(
+            [
+                first(&pointer("tile", 1.0)),
+                first(&app(b"field", PeerPresencePayload::Caret { pos: 1 })),
+            ],
+            NeighbourMsg::SLOTTED_PRESENCE_TAGS
+        );
+        let cleared = NeighbourMsg::PresenceCleared {
+            peer: 7,
+            key: "tile".into(),
+        };
+        assert!(!NeighbourMsg::SLOTTED_PRESENCE_TAGS.contains(&first(&cleared)));
     }
 
     #[test]

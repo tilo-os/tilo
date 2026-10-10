@@ -28,23 +28,19 @@ pub const ALPN_SIGNED_ACTIONS_V1: &[u8] = b"tilo-relay/4";
 /// never written to a session on an older protocol, whose decoder lacks it.
 pub const ALPN_COMPACT_STATE_V1: &[u8] = b"tilo-relay/5";
 
-/// [`ALPN_COMPACT_STATE_V1`] whose presence is coalesced and batched
-/// (TIL-710). A client on it may declare a coalescing slot for latest-state
-/// presence ([`EnvelopeV2::SlottedPresence`]), and the relay writes the
-/// presence it forwards as [`EnvelopeV2::PresenceBatch`] frames whose items
-/// are coded against what the session last received in the same slot. The
-/// session reader expands a batch back into one `State(Envelope::Presence)`
-/// per item, so nothing past the session boundary sees a batch, and neither
-/// variant is ever written to a session on an older protocol.
+/// [`ALPN_COMPACT_STATE_V1`] whose presence arrives batched (TIL-710): the
+/// relay writes the presence it forwards as [`EnvelopeV2::PresenceBatch`]
+/// frames whose items are coded against what the session last received in
+/// the same slot. The session reader expands a batch back into one
+/// `State(Envelope::Presence)` per item, so nothing past the session boundary
+/// sees one, and it is never written to a session on an older protocol.
 pub const ALPN_PRESENCE_BATCH_V1: &[u8] = b"tilo-relay/6";
 
 /// Discriminant of [`EnvelopeV2::UnsignedDelta`]: a state frame, so it takes
 /// the state lane's size bound rather than the private one.
 const UNSIGNED_DELTA_KIND: u8 = 11;
-/// Discriminant of [`EnvelopeV2::SlottedPresence`], a state frame.
-const SLOTTED_PRESENCE_KIND: u8 = 12;
 /// Discriminant of [`EnvelopeV2::PresenceBatch`], a state frame.
-const PRESENCE_BATCH_KIND: u8 = 13;
+const PRESENCE_BATCH_KIND: u8 = 12;
 
 mod presence;
 pub use presence::{
@@ -64,7 +60,7 @@ pub enum StateFraming {
     /// all-zero signature is [`EnvelopeV2::UnsignedDelta`].
     Compact,
     /// [`ALPN_PRESENCE_BATCH_V1`]: [`Self::Compact`], plus
-    /// [`EnvelopeV2::SlottedPresence`] and [`EnvelopeV2::PresenceBatch`].
+    /// [`EnvelopeV2::PresenceBatch`].
     Presence,
 }
 
@@ -79,7 +75,7 @@ impl StateFraming {
         matches!(self, Self::Compact | Self::Presence)
     }
 
-    /// Whether presence may travel slotted and batched.
+    /// Whether presence may arrive as [`EnvelopeV2::PresenceBatch`].
     pub const fn batches_presence(self) -> bool {
         matches!(self, Self::Presence)
     }
@@ -89,8 +85,7 @@ impl StateFraming {
     const fn state_kind(self, kind: u8) -> bool {
         kind == 0
             || (self.is_compact() && kind == UNSIGNED_DELTA_KIND)
-            || (self.batches_presence()
-                && (kind == SLOTTED_PRESENCE_KIND || kind == PRESENCE_BATCH_KIND))
+            || (self.batches_presence() && kind == PRESENCE_BATCH_KIND)
     }
 }
 
@@ -168,19 +163,6 @@ pub enum EnvelopeV2 {
         #[serde(with = "serde_bytes")]
         delta: Vec<u8>,
     },
-    /// `State(Envelope::Presence)` whose sender declares that it supersedes
-    /// the sender's own earlier presence in the same `slot` (a pointer, a
-    /// caret; `neighbour_wire::PresenceSlot`), so the relay may forward only
-    /// the latest. `motion` marks a moving pointer, which the relay may
-    /// forward at a lower rate than it was published. Sent only on
-    /// [`ALPN_PRESENCE_BATCH_V1`].
-    SlottedPresence {
-        workspace_id: u64,
-        slot: u64,
-        motion: bool,
-        #[serde(with = "serde_bytes")]
-        payload: Vec<u8>,
-    },
     /// Presence payloads for one room, each coded against the session's
     /// presence slots ([`PresenceItem`]). Written only to
     /// [`ALPN_PRESENCE_BATCH_V1`] sessions, whose [`SessionReader`] returns
@@ -210,10 +192,7 @@ pub fn encode(envelope: &EnvelopeV2) -> Result<Vec<u8>, postcard::Error> {
     let payload = postcard::to_allocvec(envelope)?;
     let limit = if matches!(
         envelope,
-        EnvelopeV2::State(_)
-            | EnvelopeV2::UnsignedDelta { .. }
-            | EnvelopeV2::SlottedPresence { .. }
-            | EnvelopeV2::PresenceBatch { .. }
+        EnvelopeV2::State(_) | EnvelopeV2::UnsignedDelta { .. } | EnvelopeV2::PresenceBatch { .. }
     ) {
         MAX_FRAME_BYTES + 1
     } else {
@@ -259,10 +238,7 @@ pub fn decode(payload: &[u8]) -> Result<EnvelopeV2, postcard::Error> {
 
 /// Whether a v2 discriminant names a state-lane frame.
 const fn is_state_kind(kind: u8) -> bool {
-    kind == 0
-        || kind == UNSIGNED_DELTA_KIND
-        || kind == SLOTTED_PRESENCE_KIND
-        || kind == PRESENCE_BATCH_KIND
+    kind == 0 || kind == UNSIGNED_DELTA_KIND || kind == PRESENCE_BATCH_KIND
 }
 
 /// Stateful framing survives cancellation by a concurrent writer/access audit.
@@ -418,15 +394,9 @@ impl<R: tokio::io::AsyncRead + Unpin> SessionReader<R> {
                 delta,
                 signature: [0; 64],
             }),
-            value @ (EnvelopeV2::SlottedPresence { .. } | EnvelopeV2::PresenceBatch { .. })
-                if framing.batches_presence() =>
-            {
-                value
-            }
+            value @ EnvelopeV2::PresenceBatch { .. } if framing.batches_presence() => value,
             // An older protocol has no such frame.
-            EnvelopeV2::UnsignedDelta { .. }
-            | EnvelopeV2::SlottedPresence { .. }
-            | EnvelopeV2::PresenceBatch { .. } => {
+            EnvelopeV2::UnsignedDelta { .. } | EnvelopeV2::PresenceBatch { .. } => {
                 return Err(FrameError::Decode(postcard::Error::DeserializeBadEncoding));
             }
             value => value,
@@ -674,35 +644,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn presence_frames_exist_only_on_the_presence_protocol() {
-        let batch = encode_presence_batch(1, &[]).unwrap();
-        let slotted = encode(&EnvelopeV2::SlottedPresence {
-            workspace_id: 1,
-            slot: 9,
-            motion: true,
-            payload: b"pointer".to_vec(),
-        })
-        .unwrap();
-        for wire in [batch, slotted.clone()] {
-            for framing in [StateFraming::V2, StateFraming::Compact] {
-                let mut reader = SessionReader::framed(std::io::Cursor::new(wire.clone()), framing);
-                assert!(
-                    matches!(reader.read_next().await, Err(FrameError::Decode(_))),
-                    "{framing:?} must refuse a presence frame"
-                );
-            }
+    async fn presence_batches_exist_only_on_the_presence_protocol() {
+        let item = PresenceItem {
+            slot: None,
+            keep_prefix: 0,
+            keep_suffix: 0,
+            middle: b"pointer".to_vec(),
+        };
+        let batch = encode_presence_batch(1, &[item]).unwrap();
+        for framing in [StateFraming::V2, StateFraming::Compact] {
+            let mut reader = SessionReader::framed(std::io::Cursor::new(batch.clone()), framing);
+            assert!(
+                matches!(reader.read_next().await, Err(FrameError::Decode(_))),
+                "{framing:?} must refuse a presence batch"
+            );
         }
-        // The relay's end reads a slotted presence as sent.
-        let mut reader =
-            SessionReader::framed(std::io::Cursor::new(slotted), StateFraming::Presence);
-        assert!(matches!(
+        let mut reader = SessionReader::framed(std::io::Cursor::new(batch), StateFraming::Presence);
+        assert_eq!(
             reader.read_next().await.unwrap(),
-            Some(EnvelopeV2::SlottedPresence {
-                slot: 9,
-                motion: true,
-                ..
-            })
-        ));
+            Some(EnvelopeV2::State(Envelope::Presence {
+                workspace_id: 1,
+                payload: b"pointer".to_vec(),
+            }))
+        );
         // The presence protocol is compact too.
         let unsigned = keystroke([0; 64]);
         assert_eq!(
