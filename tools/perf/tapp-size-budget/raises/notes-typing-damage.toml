@@ -1,0 +1,20 @@
+reason = "Typing in Notes now keeps a record's save-status flip from rebuilding a framework app's widget tree (the root syncs again and the App presents it with a relayout), and teaches the toolkit's text fields, block editor and floating surfaces to report what they paint outside their rects, so typing repaints a line instead of the window. That shared toolkit code put six apps that sat within 13 KiB under a 64 KiB boundary over their aarch64 budgets (CI / affected packages run 95280)."
+run = 95280
+
+[apps."so.tilo.hex-editor"]
+aarch64 = 65536
+
+[apps."so.tilo.messages"]
+aarch64 = 65536
+
+[apps."so.tilo.print-centre"]
+aarch64 = 65536
+
+[apps."so.tilo.sheets"]
+aarch64 = 65536
+
+[apps."so.tilo.speed-test"]
+aarch64 = 65536
+
+[apps."so.tilo.windows"]
+aarch64 = 65536

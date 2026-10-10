@@ -74,6 +74,22 @@ pub trait ComponentLifecycle: Widget {
     fn take_replacement(&mut self) -> Option<crate::application::ComponentReplacement> {
         None
     }
+
+    /// One-shot: the durability of this root's own component's record changed
+    /// since this was last asked, and the root already synced with the new
+    /// state. A host that asks (an [`App`](crate::App)) presents it with a
+    /// frame of its own, not a rebuilt tree; one that does not ask sees it
+    /// through `take_structure_dirty`.
+    fn take_save_status_presentation(&mut self) -> bool {
+        false
+    }
+}
+
+/// Whether the record `widget`'s own component shows changed durability,
+/// which the root has synced with and a frame must present.
+pub fn take_save_status_presentation(widget: &mut dyn Widget) -> bool {
+    capability_mut::<dyn ComponentLifecycle>(widget)
+        .is_some_and(ComponentLifecycle::take_save_status_presentation)
 }
 
 /// The component `widget`'s own component asked to show in its place.
