@@ -1089,7 +1089,7 @@ pub struct InstallerApp {
     /// from the system at runtime (see [`crate::timezones::list_timezones`]).
     timezones: Vec<String>,
     /// Headless-shot only: build the Options-step time-zone dropdown in
-    /// its open state so `--shots --step options-open` captures the popup.
+    /// its open state so `--shots --scenario options-open` captures the popup.
     tz_open_for_shot: bool,
     /// Transient validation / error line under the controls.
     status: String,
@@ -1448,7 +1448,7 @@ impl InstallerApp {
     }
 
     /// Mutate a `for_shot(Step::Options)` app so its time-zone dropdown
-    /// renders open — used by `--shots --step options-open` to capture the
+    /// renders open — used by `--shots --scenario options-open` to capture the
     /// overlay popup state.
     pub fn shot_open_timezone(&mut self) {
         self.step = Step::Options;
@@ -1494,7 +1494,7 @@ impl InstallerApp {
     }
 
     /// Seed a non-default keyboard layout (by display name) for a
-    /// `--shots --step keyboard` render, so the visual preview clearly
+    /// `--shots --scenario keyboard` render, so the visual preview clearly
     /// shows remapped keys.
     pub fn shot_keymap(&mut self, display_name: &str) {
         self.step = Step::Keyboard;
