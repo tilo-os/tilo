@@ -1096,8 +1096,7 @@ impl Widget for AuthenticatorApp {
         }
 
         // Route to the list (hover / click-to-copy / reorder / scroll).
-        self.list
-            .handle_event(event, ctx.scale_factor, &mut *ctx.handled);
+        self.list.handle_event(event, ctx);
         let events = self.list.take_events();
         for ev in events {
             self.apply_list_event(ev);
@@ -1291,7 +1290,7 @@ impl Widget for AuthenticatorApp {
     /// one-second deadline instead, so the app remains current without a vsync
     /// loop.
     fn needs_animation_frame(&self) -> bool {
-        !self.reduce_motion
+        !self.reduce_motion || self.list.needs_animation_frame()
     }
 
     fn next_wake_deadline(&self) -> Option<Instant> {
@@ -1300,7 +1299,16 @@ impl Widget for AuthenticatorApp {
         }
         let subsec_nanos = ui::time::unix_now_ns() % 1_000_000_000;
         let until_next_second = Duration::from_nanos(1_000_000_000 - subsec_nanos);
-        Some(ui::time::now() + until_next_second)
+        let tick = ui::time::now() + until_next_second;
+        Some(
+            self.list
+                .next_wake_deadline()
+                .map_or(tick, |fade| fade.min(tick)),
+        )
+    }
+
+    fn wants_pointer_capture(&self) -> bool {
+        self.list.is_dragging()
     }
 
     fn set_motion_reduced(&mut self, reduced: bool) {
