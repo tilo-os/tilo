@@ -7554,6 +7554,39 @@ mod tests {
             );
         }
 
+        /// Expand keeps the top bar but tucks the workspace switcher disc
+        /// away instead of drawing it over the window's left edge.
+        fn an_expanded_window_tucks_the_wheel_and_keeps_the_top_bar() {
+            let mut tree = crate::shell::state::WorkspaceTree::bootstrap_demo();
+            let first = &mut tree.desktop.workspaces[0].strips[0].window_groups[0];
+            first.maximized = true;
+            let group = first.id;
+            let mut fb = FrameBuilder::with_tree(tree, (1600, 900));
+            let _ = fb.paint_settled();
+            let before = fb.widget_registry();
+            assert!(
+                rect_named(&before, "SidebarWheelDisc").width() > 1.0,
+                "the disc is there while nothing is expanded"
+            );
+            fb.with_chrome(|chrome| chrome.set_maximized_group(Some(group)));
+            let _ = fb.paint_settled();
+            let during = fb.widget_registry();
+            assert!(
+                rect_named(&during, "SidebarWheelDisc").width() <= 0.5,
+                "the disc is tucked while a window is expanded"
+            );
+            assert!(
+                rect_named(&during, "TopBarChrome").height() > 10.0,
+                "Expand keeps the top bar"
+            );
+            fb.with_chrome(|chrome| chrome.set_maximized_group(None));
+            let _ = fb.paint_settled();
+            assert!(
+                rect_named(&fb.widget_registry(), "SidebarWheelDisc").width() > 1.0,
+                "restoring brings the disc back"
+            );
+        }
+
         /// Super+F on a Tilo window covers the wheel. Hosted apps are xdg
         /// clients; chrome fullscreen still wins so W07 sees
         /// `fullscreen_group`. Maximize stays beside the wheel.
@@ -7591,6 +7624,7 @@ mod tests {
         set_fullscreen_promotes_group_and_restores_on_exit();
         set_fullscreen_with_unknown_group_does_not_blank_shell();
         super_f_on_a_tilo_group_covers_the_wheel();
+        an_expanded_window_tucks_the_wheel_and_keeps_the_top_bar();
     }
 
     fn both_directions_carry_the_desktop() {
