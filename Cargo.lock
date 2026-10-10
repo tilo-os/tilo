@@ -4316,7 +4316,6 @@ dependencies = [
  "cloud-source",
  "ed25519-dalek 3.0.0",
  "flate2",
- "fluent",
  "fs-protocol",
  "fuser",
  "hex",
@@ -4340,6 +4339,7 @@ dependencies = [
  "tilo-automation",
  "tilo-automerge-fork",
  "tilo-clock",
+ "tilo-copy-lint",
  "tilo-doc-codecs",
  "tilo-fs",
  "tilo-paths",
@@ -14258,7 +14258,6 @@ dependencies = [
  "ed25519-dalek 3.0.0",
  "emoji",
  "file-explorer",
- "fluent",
  "fnv",
  "futures-util",
  "gbm",
@@ -16453,6 +16452,7 @@ dependencies = [
 name = "tilo-copy-lint"
 version = "0.1.0"
 dependencies = [
+ "fluent",
  "workspace-hack",
 ]
 
@@ -16621,7 +16621,6 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "collab-types",
- "fluent",
  "serde",
  "serde_json",
  "taffy",
