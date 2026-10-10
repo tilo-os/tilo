@@ -16023,7 +16023,6 @@ dependencies = [
  "tilo-files",
  "tilo-resource",
  "tilo-runner-native",
- "tilo-runner-web",
  "tilo-search",
  "tilo-ui",
  "tracing",
@@ -17900,14 +17899,6 @@ dependencies = [
 
 [[package]]
 name = "tilo-runner-native"
-version = "0.1.0"
-dependencies = [
- "tilo-ui",
- "workspace-hack",
-]
-
-[[package]]
-name = "tilo-runner-web"
 version = "0.1.0"
 dependencies = [
  "tilo-ui",
