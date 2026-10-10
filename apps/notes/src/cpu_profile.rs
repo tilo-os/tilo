@@ -564,3 +564,72 @@ fn mounted_text_note_wheel_avoids_editor_projection_and_still_edits() {
             .contains("verified ")
     );
 }
+
+#[test]
+fn mounted_text_note_draw_frame_phase_probe() {
+    use automerge::transaction::Transactable;
+    use std::fmt::Write as _;
+    let (mut app, target) = fixture(1);
+    let mut body = String::new();
+    let paragraph = "Measured scrolling text with ordinary words. ".repeat(6);
+    for index in 0..180 {
+        write!(&mut body, "Paragraph {index}: {paragraph}\n\n").unwrap();
+    }
+    let blocks = crate::MainPanel::seed_blocks(&body, |_| None);
+    app.invoke(
+        ui::tilo_resource::Invoke::apply(&crate::actions::write_body_action(target, &blocks))
+            .unwrap(),
+    )
+    .unwrap();
+    app.harness().relayout_at((1051, 952)).unwrap();
+    let rect = app
+        .harness()
+        .targets()
+        .get("block_editor")
+        .copied()
+        .expect("mounted canonical note");
+    app.harness()
+        .dispatch_to_root(&ui::winit::event::WindowEvent::CursorMoved {
+            device_id: ui::winit::event::DeviceId::dummy(),
+            position: ui::winit::dpi::PhysicalPosition::new(rect.x0 + 40.0, rect.y0 + 80.0),
+        });
+    let document = app.read_document(|doc| (doc.base_heads(), doc.pending_ops()));
+    assert_eq!(document.1, 0);
+    app.harness().begin_profiling();
+    for sample in 0..12 {
+        let started = ui::time::now();
+        assert!(
+            app.harness()
+                .dispatch_to_root(&ui::winit::event::WindowEvent::MouseWheel {
+                    device_id: ui::winit::event::DeviceId::dummy(),
+                    delta: ui::winit::event::MouseScrollDelta::LineDelta(0.0, -1.0),
+                    phase: ui::winit::event::TouchPhase::Moved,
+                })
+        );
+        app.harness().relayout_at((1051, 952)).unwrap();
+        let frames = app.harness().take_profile_samples();
+        assert!(
+            !frames.is_empty(),
+            "observe actual canonical Notes layout and paint"
+        );
+        assert!(frames.iter().any(|frame| frame.draw_us > 0));
+        assert!(
+            !app.harness()
+                .scene()
+                .encoding()
+                .resources
+                .glyph_runs
+                .is_empty(),
+            "actual visible text is encoded"
+        );
+        assert_eq!(
+            app.read_document(|doc| (doc.base_heads(), doc.pending_ops())),
+            document,
+            "drawing and view input preserve the canonical document"
+        );
+        eprintln!(
+            "notes-draw-frame-phase {}",
+            serde_json::json!({"sample":sample,"paragraphs":180,"viewport":[1051,952],"canonical_notes":true,"body_wraps":true,"gpu_or_scanout":false,"profile":"test-debug","elapsed_ns":started.elapsed().as_nanos(),"frames":frames})
+        );
+    }
+}
