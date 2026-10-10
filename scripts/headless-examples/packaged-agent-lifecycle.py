@@ -48,7 +48,7 @@ AT_SPI_ROLE_TAB = 37
 AT_SPI_ROLE_BUTTON = 43
 AT_SPI_ROLE_TOGGLE_BUTTON = 62
 AT_SPI_ROLE_LIST_ITEM = 32
-AT_SPI_ROLE_STATIC = 116
+AT_SPI_ROLE_LABEL = 29
 # atspi_common::State::Enabled is ordinal 8 in the two-word state set.
 AT_SPI_ENABLED_STATE_BIT = 1 << 8
 
@@ -7491,7 +7491,7 @@ def restricted_task_read_only_sample(custody, draft, observation):
                 ("Agent heading", headings, AT_SPI_ROLE_HEADING),
                 ("conversation route", routes, AT_SPI_ROLE_BUTTON),
                 ("conversation drag", drags, AT_SPI_ROLE_BUTTON),
-                ("retained Task draft", retained, AT_SPI_ROLE_STATIC)):
+                ("retained Task draft", retained, AT_SPI_ROLE_LABEL)):
             if len(paths) != 1 or client.role(paths[0]) != role:
                 raise RuntimeError(f"Task restriction has invalid {label}")
         editable = []

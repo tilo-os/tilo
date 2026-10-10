@@ -1604,7 +1604,7 @@ class PresentedEditorTargetTests(unittest.TestCase):
             "/heading": PROOF.AT_SPI_ROLE_HEADING,
             "/float": PROOF.AT_SPI_ROLE_BUTTON,
             "/drag": PROOF.AT_SPI_ROLE_BUTTON,
-            "/draft": PROOF.AT_SPI_ROLE_STATIC,
+            "/draft": PROOF.AT_SPI_ROLE_LABEL,
         }[path]
         client.interfaces.return_value = []
         tree = {"/heading": "(<'Tide, agent'>,)",
@@ -1691,7 +1691,7 @@ class PresentedEditorTargetTests(unittest.TestCase):
         roles = {"/heading": PROOF.AT_SPI_ROLE_HEADING,
                  "/float": PROOF.AT_SPI_ROLE_BUTTON,
                  "/drag": PROOF.AT_SPI_ROLE_BUTTON,
-                 "/draft": PROOF.AT_SPI_ROLE_STATIC,
+                 "/draft": PROOF.AT_SPI_ROLE_LABEL,
                  "/tab": PROOF.AT_SPI_ROLE_TAB,
                  "/button": PROOF.AT_SPI_ROLE_BUTTON,
                  "/other": PROOF.AT_SPI_ROLE_LIST_ITEM}
@@ -1716,7 +1716,7 @@ class PresentedEditorTargetTests(unittest.TestCase):
             "/heading": PROOF.AT_SPI_ROLE_HEADING,
             "/float": PROOF.AT_SPI_ROLE_BUTTON,
             "/drag": PROOF.AT_SPI_ROLE_BUTTON,
-            "/draft": PROOF.AT_SPI_ROLE_STATIC,
+            "/draft": PROOF.AT_SPI_ROLE_LABEL,
             "/other": PROOF.AT_SPI_ROLE_LIST_ITEM,
         }.__getitem__
         other_client.interfaces.return_value = []
@@ -1735,6 +1735,9 @@ class PresentedEditorTargetTests(unittest.TestCase):
         self.assertIn("if queue_control_present:\n                    return None", restricted)
 
     def test_task_restriction_requires_one_static_draft_and_no_editor(self):
+        bridge = (PROOF.REPO / "crates/sdk/ui-core/src/accesskit_bridge.rs").read_text()
+        self.assertEqual(PROOF.AT_SPI_ROLE_LABEL, 29)
+        self.assertIn("Role::Label | Role::StaticText => AkRole::Label", bridge)
         access = {"bus": "owned", "window": "/window", "process": 7,
                   "agent": "Tide", "detached": False, "composer": "/retired"}
         base = {"/heading": "(<'Tide, agent'>,)",
@@ -1757,7 +1760,7 @@ class PresentedEditorTargetTests(unittest.TestCase):
         roles = {"/heading": PROOF.AT_SPI_ROLE_HEADING,
                  "/float": PROOF.AT_SPI_ROLE_BUTTON,
                  "/drag": PROOF.AT_SPI_ROLE_BUTTON,
-                 "/draft": PROOF.AT_SPI_ROLE_STATIC}
+                 "/draft": PROOF.AT_SPI_ROLE_LABEL}
         self.assertEqual(sample(base, roles),
                          (access, {"draft_matches": True}, False))
         self.assertIsNone(sample(base, roles, editable=("/draft",)))
@@ -1765,7 +1768,7 @@ class PresentedEditorTargetTests(unittest.TestCase):
         self.assertIsNone(sample(composer, {**roles, "/composer": 30}))
         duplicate = {**base, "/draft-2": "(<'PRIVATE'>,)"}
         with self.assertRaisesRegex(RuntimeError, "invalid retained Task draft"):
-            sample(duplicate, {**roles, "/draft-2": PROOF.AT_SPI_ROLE_STATIC})
+            sample(duplicate, {**roles, "/draft-2": PROOF.AT_SPI_ROLE_LABEL})
         with self.assertRaisesRegex(RuntimeError, "invalid retained Task draft"):
             sample(base, {**roles, "/draft": PROOF.AT_SPI_ROLE_BUTTON})
         with self.assertRaisesRegex(RuntimeError, "invalid Agent heading"):
