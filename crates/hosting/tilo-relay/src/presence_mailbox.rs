@@ -91,6 +91,11 @@ struct Event {
     seq: u64,
 }
 
+/// `at + by`, or `at` itself past the end of time.
+fn later(at: Instant, by: Duration) -> Instant {
+    at.checked_add(by).unwrap_or(at)
+}
+
 /// When presence pending since `since` in slot `key` falls due.
 fn due_at(
     sent: &HashMap<PresenceSlotKey, Instant>,
@@ -98,17 +103,20 @@ fn due_at(
     since: Instant,
     motion: bool,
 ) -> Instant {
-    let batched = since + BATCH_WINDOW;
+    let batched = later(since, BATCH_WINDOW);
     if !motion {
         return batched;
     }
     sent.get(key)
-        .map_or(batched, |sent| batched.max(*sent + MOTION_GAP))
+        .map_or(batched, |sent| batched.max(later(*sent, MOTION_GAP)))
 }
 
 impl State {
     fn next_due(&self) -> Option<Instant> {
-        let event = self.events.front().map(|event| event.since + BATCH_WINDOW);
+        let event = self
+            .events
+            .front()
+            .map(|event| later(event.since, BATCH_WINDOW));
         let slotted = self
             .slotted
             .iter()
@@ -149,8 +157,8 @@ impl PresenceMailbox {
             if !state.slotted.contains_key(&key) && state.slotted.len() >= MAX_PENDING {
                 return false;
             }
-            let pending = state.slotted.entry(key).or_insert(Pending {
-                payload: payload.clone(),
+            let pending = state.slotted.entry(key).or_insert_with(|| Pending {
+                payload: Arc::clone(&payload),
                 motion: slot.motion,
                 since: now,
                 seq,
@@ -170,7 +178,7 @@ impl PresenceMailbox {
                 since: now,
                 seq,
             });
-            now + BATCH_WINDOW
+            later(now, BATCH_WINDOW)
         };
         let wake = state.armed.is_none_or(|armed| due < armed);
         drop(state);
@@ -216,7 +224,7 @@ impl PresenceMailbox {
         let everything = state
             .events
             .front()
-            .is_some_and(|event| event.since + BATCH_WINDOW <= now);
+            .is_some_and(|event| later(event.since, BATCH_WINDOW) <= now);
         let keys: Vec<PresenceSlotKey> = state
             .slotted
             .iter()
@@ -243,7 +251,7 @@ impl PresenceMailbox {
         }
         while let Some(event) = state
             .events
-            .pop_front_if(|event| everything || event.since + BATCH_WINDOW <= now)
+            .pop_front_if(|event| everything || later(event.since, BATCH_WINDOW) <= now)
         {
             due.push((
                 event.seq,
@@ -272,12 +280,12 @@ mod tests {
     const ALICE: [u8; 32] = [1; 32];
     const BOB: [u8; 32] = [2; 32];
 
-    fn pointer(id: u64) -> Option<PresenceSlot> {
-        Some(PresenceSlot { id, motion: true })
+    fn pointer(id: u64) -> PresenceSlot {
+        PresenceSlot { id, motion: true }
     }
 
-    fn caret(id: u64) -> Option<PresenceSlot> {
-        Some(PresenceSlot { id, motion: false })
+    fn caret(id: u64) -> PresenceSlot {
+        PresenceSlot { id, motion: false }
     }
 
     fn bytes(text: &str) -> Arc<[u8]> {
@@ -294,10 +302,10 @@ mod tests {
     fn the_latest_state_of_each_slot_goes_out_once_the_window_passes() {
         let mailbox = PresenceMailbox::default();
         let t0 = Instant::now();
-        assert!(mailbox.post(ROOM, ALICE, caret(1), bytes("caret 1"), t0));
-        assert!(mailbox.post(ROOM, ALICE, caret(1), bytes("caret 2"), t0));
-        assert!(mailbox.post(ROOM, ALICE, caret(2), bytes("typing"), t0));
-        assert!(mailbox.post(ROOM, BOB, caret(1), bytes("bob caret"), t0));
+        assert!(mailbox.post(ROOM, ALICE, Some(caret(1)), bytes("caret 1"), t0));
+        assert!(mailbox.post(ROOM, ALICE, Some(caret(1)), bytes("caret 2"), t0));
+        assert!(mailbox.post(ROOM, ALICE, Some(caret(2)), bytes("typing"), t0));
+        assert!(mailbox.post(ROOM, BOB, Some(caret(1)), bytes("bob caret"), t0));
         assert!(mailbox.take_due(t0).is_empty(), "the batch window is open");
         let due = mailbox.take_due(t0 + BATCH_WINDOW);
         assert_eq!(texts(&due), ["caret 2", "typing", "bob caret"]);
@@ -317,7 +325,13 @@ mod tests {
             .map(|step| t0 + Duration::from_millis(33) * step)
             .collect();
         for (step, at) in posts.iter().enumerate() {
-            mailbox.post(ROOM, ALICE, pointer(1), bytes(&format!("move {step}")), *at);
+            mailbox.post(
+                ROOM,
+                ALICE,
+                Some(pointer(1)),
+                bytes(&format!("move {step}")),
+                *at,
+            );
             let next_post = posts
                 .get(step + 1)
                 .copied()
@@ -344,10 +358,10 @@ mod tests {
         let mailbox = PresenceMailbox::default();
         let t0 = Instant::now();
         // A pointer that has just moved is held for its gap...
-        mailbox.post(ROOM, ALICE, pointer(1), bytes("move 1"), t0);
+        mailbox.post(ROOM, ALICE, Some(pointer(1)), bytes("move 1"), t0);
         assert_eq!(texts(&mailbox.take_due(t0 + BATCH_WINDOW)), ["move 1"]);
         let t1 = t0 + Duration::from_millis(10);
-        mailbox.post(ROOM, ALICE, pointer(1), bytes("move 2"), t1);
+        mailbox.post(ROOM, ALICE, Some(pointer(1)), bytes("move 2"), t1);
         // ...until an event follows it, which must not overtake it.
         mailbox.post(ROOM, ALICE, None, bytes("cleared"), t1);
         mailbox.post(ROOM, BOB, None, bytes("heartbeat"), t1);
@@ -362,10 +376,10 @@ mod tests {
         let t0 = Instant::now();
         let max = u64::try_from(MAX_PENDING).unwrap();
         for slot in 0..max {
-            assert!(mailbox.post(ROOM, ALICE, caret(slot), bytes("x"), t0));
+            assert!(mailbox.post(ROOM, ALICE, Some(caret(slot)), bytes("x"), t0));
         }
-        assert!(!mailbox.post(ROOM, ALICE, caret(max), bytes("x"), t0));
-        assert!(mailbox.post(ROOM, ALICE, caret(0), bytes("newer"), t0));
+        assert!(!mailbox.post(ROOM, ALICE, Some(caret(max)), bytes("x"), t0));
+        assert!(mailbox.post(ROOM, ALICE, Some(caret(0)), bytes("newer"), t0));
         for _ in 0..MAX_PENDING {
             assert!(mailbox.post(ROOM, ALICE, None, bytes("event"), t0));
         }
@@ -386,7 +400,7 @@ mod tests {
         });
         tokio::task::yield_now().await;
         let posted = Instant::now();
-        mailbox.post(ROOM, ALICE, caret(1), bytes("caret"), posted);
+        mailbox.post(ROOM, ALICE, Some(caret(1)), bytes("caret"), posted);
         let woke = waiter.await.unwrap();
         assert!(woke >= posted + BATCH_WINDOW);
         assert_eq!(texts(&mailbox.take_due(woke)), ["caret"]);
