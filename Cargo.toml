@@ -47,6 +47,7 @@ members = [
     "crates/dev/registry-review",
     "apps/canvas",
     "crates/collab/tilo-action-broker",
+    "crates/collab/tilo-identity-ceremony",
     "crates/session/desktop",
     "crates/collab/tilo-peer-state",
     "crates/browser/tilo-browser-runtime",
