@@ -219,6 +219,40 @@ the real save-status frame to publish while preserving the typed draft. The
 clock override is test-support only, thread-local, and restored on unwind;
 production save sampling and clock readings keep their existing behaviour.
 
+### A frame that changes nothing no longer walks the published tree (TIL-761)
+
+`sample` on the keystroke loop at 10,000 tasks
+(`TILO_SCALING_KEYSTROKES=400`) put layout and draw at 0.4 % of the samples.
+92 % went to two consumers of the bound resource snapshot that ran on every
+frame, changed or not: control availability (before each non-hover input and
+in every `surface_frame`) deep-copied the cached snapshot, re-filtered every
+action by permission and built a descriptor per action to learn which
+addresses are available; the host's accessibility refresh copied it again and
+rebuilt and diffed a semantic node per resource. Now the snapshot's tree is
+shared (`Rc`), so a cache hit copies nothing; the controls' allowed addresses
+are derived once per snapshot, permission witness and host doors, read in
+place; and the semantic tree keeps each component's resource nodes while the
+component hands over the same snapshot. A frame that changes nothing costs
+the same at 10,000 tasks as at 10.
+
+The bench now also prints p99 from press to frame and p50 from the key's
+release to the end of the frame after it. Same machine and method as above:
+
+| Tasks | Keystroke→frame p50 before | after | p99 before | after | Release→frame p50 before | after |
+|---:|---:|---:|---:|---:|---:|---:|
+| 10 | 0.42 ms | 0.39 ms | 0.54 ms | 0.54 ms | 0.23 ms | 0.18 ms |
+| 250 | 1.37 ms | 1.01 ms | 1.56 ms | 1.15 ms | 0.79 ms | 0.22 ms |
+| 1,000 | 4.60 ms | 3.10 ms | 4.93 ms | 3.35 ms | 2.63 ms | 0.25 ms |
+| 10,000 | 59.9 ms | 42.9 ms | 64.2 ms | 45.8 ms | 35.5 ms | 0.40 ms |
+
+`publication_per_keystroke::a_hosted_frame_that_changes_nothing_costs_the_same_whatever_the_list`
+holds the release frame at 1,000 tasks within 2× of 100 (it measured 4.2×
+before). The frame that shows a key still grows with the list: the edit
+changes the snapshot, so it publishes twice (TIL-751), rebuilds the
+accessibility tree's resource nodes and the controls' allowed addresses once,
+and `ResourceRoot::nested_views` builds every child once more. Making that
+flat needs publication that shares unchanged children between snapshots.
+
 ### Opening a long list (TIL-758)
 
 `framework-scaling -- 5000,50000 open` reopens the checklist over a record
