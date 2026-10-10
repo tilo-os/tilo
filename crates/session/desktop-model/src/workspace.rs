@@ -346,6 +346,22 @@ impl Workspace {
         decide_capability(actor, resource, verb, &self.capabilities, Some(now))
     }
 
+    /// The first instant after `now` (Unix seconds) at which one of this
+    /// workspace's capabilities stops being live: until then every `_at`
+    /// question answers the same as at `now` unless the workspace is written.
+    /// `None` while no capability expires later. Every permission of the room
+    /// is a capability (members, agents, service members, shares, grants),
+    /// so this is the room's whole time dependence.
+    pub fn next_capability_expiry_after(&self, now: u64) -> Option<u64> {
+        self.capabilities
+            .iter()
+            .filter_map(|capability| match capability.expiry {
+                Expiry::AtUnix(deadline) if deadline > now => Some(deadline),
+                _ => None,
+            })
+            .min()
+    }
+
     /// [`Self::decide_at`] reduced to a bool, for call sites that only
     /// gate an action rather than explaining a denial.
     pub fn allows_at(&self, actor: &Actor, resource: &ResourceRef, verb: Verb, now: u64) -> bool {
