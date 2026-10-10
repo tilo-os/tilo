@@ -14,6 +14,7 @@ thiserror.workspace = true
 image = { workspace = true, features = ["png"] }
 durable-store = { path = "../../system/durable-store" }
 tilo-feedback-review = { path = "../feedback-review" }
+tilo-content = { path = "../../system/content", default-features = false }
 
 [lints]
 workspace = true

@@ -16575,6 +16575,7 @@ dependencies = [
  "tilo-app-state",
  "tilo-automerge-fork",
  "tilo-clock",
+ "tilo-content",
  "tilo-copy-lint",
  "tilo-desktop-model",
  "tilo-desktop-surface",
@@ -16804,6 +16805,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+ "tilo-content",
  "tilo-feedback-review",
  "workspace-hack",
 ]

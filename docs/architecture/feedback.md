@@ -61,6 +61,9 @@ status changes, duplicate targets and typed task references without creating a
 task or granting access to one. The SDK supplies the actual source record stamp;
 a returning participant can read this history after reconnecting. As with the
 receipt projection, the returned JSON alone is not a durability witness.
+Each report also exports `reply`, using the existing attributed Chat message
+action with that report's exact message as its thread parent. It requires the
+ordinary message Write permission and grants no new publication authority.
 
 ## Host integration
 
@@ -101,8 +104,18 @@ worker; only the purpose-specific receipt digest reaches the existing owner
 signer. `read-feedback-destination` confirms an existing text channel and
 `read-feedback-receipt` can require the exact attributed reporter root. A
 signed acknowledgment binds the owner, reporter, destination, publication verb,
-submission identity and approved digest. Screenshot receipts remain refused
-until an actual owner content store supplies a durable content witness.
+submission identity and approved digest. `ReviewedAttachments` stores only a
+masked PNG through the existing content store and validates its full bounded
+decode, hash and dimensions. The content backend must supply a current durability
+barrier; memory, regenerable and unqualified backends cannot attest custody.
+`CanonicalDestination::with_attachments` binds the canonical owner's existing
+store, checked before and after receipt signing. The reporter's local copy or
+saved report metadata is insufficient. Losing the bytes during signing prevents
+acknowledgment. This does not install capture, create content transport or grant
+access: the production relay/browser/native description-only bindings continue
+to refuse screenshot receipts until their actual owner content custody is wired
+and qualified. Chat reports declare an exact opening view for the existing
+browser/native resource-view path; reading a status does not navigate.
 
 The browser's existing `CertifiedPeer.configureFeedback({room, provider, channel})`
 selects a destination before desktop mounting. `WasmPeer` requests admission from

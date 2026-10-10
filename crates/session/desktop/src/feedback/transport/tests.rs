@@ -457,6 +457,251 @@ fn canonical_owner_refuses_attachment_without_durable_content_witness() {
     ));
 }
 
+fn masked_attachment() -> MaskedScreenshot {
+    tilo_app::feedback::CapturePermit::requested("fixture:book".into(), 7)
+        .unwrap()
+        .mask(tilo_app::feedback::SurfaceCapture {
+            surface: "fixture:book".into(),
+            revision: 7,
+            width: 2,
+            height: 1,
+            rgba: vec![200, 100, 50, 255, 10, 20, 30, 255],
+            capture_protected: false,
+            sensitive_regions: Some(vec![tilo_app::feedback::PixelRect {
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 1,
+            }]),
+        })
+        .unwrap()
+}
+
+#[test]
+fn masked_attachment_receipt_requires_owner_bytes_and_survives_owner_restart() {
+    use tilo_app::feedback::ReviewedAttachments;
+    use tilo_content::ContentStore;
+    let root = tempfile::tempdir().unwrap();
+    let reporter = ContentStore::in_dir(root.path().join("reporter-images"));
+    let owner_path = root.path().join("owner-images");
+    let owner = ContentStore::in_dir(owner_path.clone());
+    let image = masked_attachment();
+    ReviewedAttachments::new(reporter).persist(&image).unwrap();
+    let mut report = submission();
+    report.feedback.screenshot = Some(image.reference().clone());
+    let (records, mut frame) = canonical(&root.path().join("records"));
+    submit(&mut frame, &report);
+    submit(&mut frame, &report);
+    open_exact_report(&mut frame, &records, &report);
+    records.try_flush().unwrap();
+    let mut service =
+        endpoint(records.clone()).with_attachments(ReviewedAttachments::new(owner.clone()));
+    assert!(
+        matches!(
+            service.receipt(&report, &enrollment()),
+            Err(Error::NotDurable)
+        ),
+        "a reporter's local durable copy is not destination custody"
+    );
+    // Existing content transport finishes storing the exact approved masked PNG.
+    assert_eq!(owner.put(image.png()).unwrap(), image.reference().hash);
+    let receipt = service.receipt(&report, &enrollment()).unwrap();
+    assert_eq!(
+        receipt.verify(&report, &enrollment()).unwrap().digest,
+        report.digest().unwrap()
+    );
+    drop(service);
+    drop(frame);
+    drop(records);
+    drop(owner);
+    let (records, _frame) = canonical(&root.path().join("records"));
+    let mut reopened = endpoint(records.clone())
+        .with_attachments(ReviewedAttachments::new(ContentStore::in_dir(owner_path)));
+    assert_eq!(
+        reopened
+            .receipt(&report, &enrollment())
+            .unwrap()
+            .verify(&report, &enrollment())
+            .unwrap(),
+        receipt.verify(&report, &enrollment()).unwrap()
+    );
+    records
+        .read(&RecordId::package_primary(), |doc| {
+            assert_eq!(
+                chat::feedback::reports(doc).unwrap().len(),
+                1,
+                "same-ID retry retains one report"
+            );
+            assert_eq!(
+                chat::doc::ChatDoc::list_messages(doc, "feedback").len(),
+                1,
+                "same-ID retry retains one canonical message"
+            );
+        })
+        .expect("reopened canonical record remains observable");
+}
+
+fn open_exact_report(frame: &mut FrameHarness, records: &RecordStore, report: &Submission) {
+    let heads = records
+        .read(&RecordId::package_primary(), |doc| doc.clone().get_heads())
+        .unwrap();
+    frame.relayout();
+    let opened = frame
+        .invoke_bound_action(
+            &ui::bound_dispatch::BoundActionAddress {
+                instance_id: 7,
+                address: tilo_actions::ActionAddress::new(
+                    format!("chat.feedback:{}", report.id),
+                    "reveal-message",
+                ),
+            },
+            &serde_json::Map::new(),
+        )
+        .unwrap();
+    assert!(
+        opened.completed().is_some(),
+        "the public native report opening completes"
+    );
+    frame.relayout();
+    assert_eq!(
+        records
+            .read(&RecordId::package_primary(), |doc| doc.clone().get_heads())
+            .unwrap(),
+        heads,
+        "opening a report changes local presentation, not the shared document"
+    );
+}
+
+#[test]
+fn approved_attachment_outbox_keeps_same_id_and_pixels_across_reporter_restart() {
+    use tilo_app::feedback::{Draft, ReviewedAttachments};
+    let root = tempfile::tempdir().unwrap();
+    let images = tilo_content::ContentStore::in_dir(root.path().join("images"));
+    let attachments = ReviewedAttachments::new(images.clone());
+    let mut preview = Draft {
+        text: "Lost position; token=secret12345".into(),
+        context: vec![],
+    }
+    .preview()
+    .unwrap();
+    preview.attach_screenshot(masked_attachment());
+    assert!(matches!(
+        preview.submission(ID.into(), enrollment().destination),
+        Err(Error::NotApproved)
+    ));
+    preview.approve();
+    let approved = preview
+        .submission(ID.into(), enrollment().destination)
+        .unwrap();
+    assert!(!approved.feedback.text.contains("secret12345"));
+    attachments.persist(preview.screenshot().unwrap()).unwrap();
+    let store: Rc<dyn DurableStore> = Rc::new(app_state::FsStore::new(root.path().join("profile")));
+    let key = StorageKey::package("org.tilo.feedback-reviewed-image-fixture");
+    let mut outbox = Outbox::open(store.clone(), key.clone()).unwrap();
+    outbox.queue(approved.clone()).unwrap();
+    store.flush(None).unwrap();
+    assert_eq!(outbox.pending(ID).unwrap(), Some(&approved));
+    assert_eq!(outbox.state(ID).unwrap(), DeliveryState::AwaitingReceipt);
+    drop(outbox);
+    drop(store);
+    drop(attachments);
+    drop(images);
+    let store: Rc<dyn DurableStore> = Rc::new(app_state::FsStore::new(root.path().join("profile")));
+    let mut reopened = Outbox::open(store.clone(), key).unwrap();
+    reopened.queue(approved.clone()).unwrap();
+    store.flush(None).unwrap();
+    assert_eq!(reopened.ids().collect::<Vec<_>>(), vec![ID]);
+    assert_eq!(reopened.pending(ID).unwrap(), Some(&approved));
+    assert_eq!(
+        reopened.state(ID).unwrap(),
+        DeliveryState::AwaitingReceipt,
+        "local image persistence and retry cannot claim destination delivery"
+    );
+    ReviewedAttachments::new(tilo_content::ContentStore::in_dir(
+        root.path().join("images"),
+    ))
+    .verify(approved.feedback.screenshot.as_ref().unwrap())
+    .unwrap();
+}
+
+#[test]
+fn attachment_custody_rejects_memory_regenerable_wrong_dimensions_and_corruption() {
+    use tilo_app::feedback::ReviewedAttachments;
+    use tilo_content::{ContentStore, DirBackend};
+    let root = tempfile::tempdir().unwrap();
+    let image = masked_attachment();
+    let memory = ContentStore::memory();
+    assert_eq!(memory.put(image.png()).unwrap(), image.reference().hash);
+    assert!(matches!(
+        ReviewedAttachments::new(memory).verify(image.reference()),
+        Err(Error::NotDurable)
+    ));
+    let cache = ContentStore::new(DirBackend::new(root.path().join("cache")).regenerable());
+    cache.put(image.png()).unwrap();
+    assert!(matches!(
+        ReviewedAttachments::new(cache).verify(image.reference()),
+        Err(Error::NotDurable)
+    ));
+    let path = root.path().join("durable");
+    let content = ContentStore::in_dir(path.clone());
+    let custody = ReviewedAttachments::new(content);
+    custody.persist(&image).unwrap();
+    let mut wrong = image.reference().clone();
+    wrong.width = 1;
+    assert!(matches!(
+        custody.verify(&wrong),
+        Err(Error::ReceiptMismatch)
+    ));
+    let hash = &image.reference().hash;
+    std::fs::write(
+        path.join(hash.get(..2).unwrap()).join(hash),
+        b"corrupted PNG",
+    )
+    .unwrap();
+    assert!(custody.verify(image.reference()).is_err());
+}
+
+#[test]
+fn attachment_lost_during_signing_cannot_produce_an_acknowledgment() {
+    struct RemovingImageSigner {
+        inner: FixtureSigner,
+        path: std::path::PathBuf,
+    }
+    impl ReceiptSigner for RemovingImageSigner {
+        fn owner(&self) -> &Caller {
+            self.inner.owner()
+        }
+        fn sign(&mut self, request: &ReceiptSigningRequest) -> Result<Vec<u8>, Error> {
+            std::fs::remove_file(&self.path).unwrap();
+            self.inner.sign(request)
+        }
+    }
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("images");
+    let content = tilo_content::ContentStore::in_dir(path.clone());
+    let image = masked_attachment();
+    let attachments = tilo_app::feedback::ReviewedAttachments::new(content);
+    attachments.persist(&image).unwrap();
+    let mut report = submission();
+    report.feedback.screenshot = Some(image.reference().clone());
+    let (records, mut frame) = canonical(&root.path().join("records"));
+    submit(&mut frame, &report);
+    records.try_flush().unwrap();
+    let mut service = endpoint(records).with_attachments(attachments);
+    let hash = &image.reference().hash;
+    service.signer = Box::new(RemovingImageSigner {
+        inner: FixtureSigner {
+            owner: enrollment().owner,
+            key: SigningKey::from_bytes(&[41; 32]),
+        },
+        path: path.join(hash.get(..2).unwrap()).join(hash),
+    });
+    assert!(matches!(
+        service.receipt(&report, &enrollment()),
+        Err(Error::NotDurable)
+    ));
+}
+
 #[test]
 fn unsigned_wrong_owner_and_wrong_destination_acknowledgments_are_refused() {
     let root = tempfile::tempdir().unwrap();

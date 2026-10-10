@@ -10,6 +10,61 @@
 use super::*;
 use std::io::Read;
 
+#[cfg(all(unix, feature = "dir"))]
+#[test]
+fn directory_durability_verifies_current_bytes_and_existing_ancestry_after_restart() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("nested").join("images");
+    let content = ContentStore::in_dir(path.clone());
+    let hash = content.put(b"durable binary input").unwrap();
+    assert_eq!(
+        content.durability(&hash).unwrap(),
+        ContentDurability::Durable
+    );
+    drop(content);
+    let reopened = ContentStore::in_dir(path.clone());
+    assert_eq!(
+        reopened.durability(&hash).unwrap(),
+        ContentDurability::Durable
+    );
+    assert_eq!(
+        reopened.durability(&"a".repeat(64)).unwrap(),
+        ContentDurability::Absent
+    );
+    assert!(reopened.has(&hash));
+    let item = path.join(&hash[..2]).join(&hash);
+    std::fs::write(&item, b"changed after the presence check").unwrap();
+    assert_eq!(
+        reopened.durability(&hash).unwrap_err(),
+        ContentError::HashMismatch
+    );
+    std::fs::remove_file(item).unwrap();
+    assert_eq!(
+        reopened.durability(&hash).unwrap(),
+        ContentDurability::Absent
+    );
+}
+
+#[cfg(feature = "dir")]
+#[test]
+fn memory_and_regenerable_content_do_not_attest_durability() {
+    let memory = ContentStore::memory();
+    let hash = memory.put(TINY_PNG).unwrap();
+    assert!(memory.has(&hash));
+    assert_eq!(
+        memory.durability(&hash).unwrap(),
+        ContentDurability::Unsupported
+    );
+    let root = tempfile::tempdir().unwrap();
+    let cache = ContentStore::new(DirBackend::new(root.path()).regenerable());
+    assert_eq!(cache.put(TINY_PNG).unwrap(), hash);
+    assert!(cache.has(&hash));
+    assert_eq!(
+        cache.durability(&hash).unwrap(),
+        ContentDurability::Unsupported
+    );
+}
+
 /// A 1x1 PNG.
 const TINY_PNG: &[u8] = &[
     0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,

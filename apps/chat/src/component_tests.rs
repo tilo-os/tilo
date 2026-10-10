@@ -16,6 +16,158 @@ fn projection(doc: &AutoCommit, identity: LocalIdentity) -> ChatApp {
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
 use ui::Widget;
 
+fn reviewed_report_conversation() -> (AutoCommit, LocalIdentity, ui::feedback::Submission, String) {
+    use crate::actions::{ChatAction, apply_as, send_message_action};
+    use crate::feedback::{FeedbackAction, TriageUpdate};
+    let room = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    let identity = LocalIdentity {
+        id: "reporter:one".into(),
+        name: "Reporter".into(),
+        initials: "R".into(),
+        color_idx: 0,
+    };
+    let mut doc = AutoCommit::new();
+    ChatDoc::seed_workspace(
+        &mut doc,
+        room,
+        "Fixture",
+        &identity.id,
+        &identity.name,
+        "R",
+        0,
+    )
+    .unwrap();
+    ChatDoc::insert_category(&mut doc, "reports", room, "Reports");
+    ChatDoc::insert_channel(
+        &mut doc,
+        "feedback",
+        room,
+        "reports",
+        "Feedback",
+        crate::model::ChannelKind::Text,
+    );
+    let first = ui::feedback::Draft {
+        text: "Book lost my position; token=secret12345".into(),
+        context: vec![],
+    };
+    let mut review = first.preview().unwrap();
+    review.approve();
+    let submission = review
+        .submission(
+            "0123456789abcdef0123456789abcdef".into(),
+            ui::feedback::Destination {
+                room: room.into(),
+                provider: "record:so.tilo.chat:".into(),
+                channel: "feedback".into(),
+            },
+        )
+        .unwrap();
+    let submit = ChatAction::Feedback(FeedbackAction::Submit {
+        submission: submission.clone(),
+        ts: 1,
+    });
+    apply_as(&mut doc, &identity.id, &submit).unwrap();
+    apply_as(&mut doc, &identity.id, &submit).unwrap();
+    let mut other = submission.clone();
+    other.id = "fedcba9876543210fedcba9876543210".into();
+    other.feedback.text = "Second reporter's reviewed issue".into();
+    apply_as(
+        &mut doc,
+        "reporter:two",
+        &ChatAction::Feedback(FeedbackAction::Submit {
+            submission: other.clone(),
+            ts: 2,
+        }),
+    )
+    .unwrap();
+    apply_as(
+        &mut doc,
+        "team:maintainer",
+        &ChatAction::Feedback(FeedbackAction::Triage {
+            id: submission.id.clone(),
+            channel: "feedback".into(),
+            update: TriageUpdate::Duplicate {
+                report: other.id.clone(),
+            },
+            ts: 3,
+        }),
+    )
+    .unwrap();
+    let message = format!("m_feedback_{}", submission.id);
+    apply_as(
+        &mut doc,
+        "team:maintainer",
+        &send_message_action(
+            "feedback",
+            "team-reply",
+            4,
+            "We retained your report and are investigating.",
+            Some(message),
+            None,
+            vec![],
+        ),
+    )
+    .unwrap();
+    (doc, identity, submission, other.id)
+}
+
+#[test]
+fn returning_reporter_opens_exact_report_and_reads_attributed_reply_after_restore() {
+    use crate::effects::ChatEffect;
+    use crate::feedback::TriageUpdate;
+    let (mut doc, identity, submission, duplicate) = reviewed_report_conversation();
+    let message = format!("m_feedback_{}", submission.id);
+    let mut restored = AutoCommit::load(&doc.save()).unwrap();
+    let heads = restored.get_heads();
+    let mut returning = projection(&restored, identity);
+    returning
+        .answer_effect(ChatEffect::RevealMessage {
+            message: message.clone(),
+        })
+        .unwrap();
+    assert_eq!(returning.active_channel, "feedback");
+    assert_eq!(
+        returning.revealed_message.as_deref(),
+        Some(message.as_str())
+    );
+    let ui::framework::Effected::Done(output) = returning
+        .answer_effect(ChatEffect::ReadMessage {
+            message: "team-reply".into(),
+        })
+        .unwrap()
+    else {
+        panic!("reading a retained reply completes synchronously")
+    };
+    let reply = output.value.unwrap();
+    assert_eq!(reply["author"], "team:maintainer");
+    assert_eq!(
+        reply["text"],
+        "We retained your report and are investigating."
+    );
+    let reports = crate::feedback::reports(&restored).unwrap();
+    assert_eq!(
+        reports.len(),
+        2,
+        "same-ID retry and isolated reporters preserve two reports"
+    );
+    let report = reports
+        .iter()
+        .find(|report| report.submission.id == submission.id)
+        .unwrap();
+    assert_eq!(report.author, "reporter:one");
+    assert_eq!(report.triage[0].author, "team:maintainer");
+    assert_eq!(
+        report.triage[0].update,
+        TriageUpdate::Duplicate { report: duplicate }
+    );
+    assert!(!report.submission.feedback.text.contains("secret12345"));
+    assert_eq!(
+        restored.get_heads(),
+        heads,
+        "opening and reading never rewrite shared reports"
+    );
+}
+
 #[test]
 fn browser_media_reply_enables_voice_without_native_attachment_access() {
     use ui::native_media::{Command, Snapshot, State};

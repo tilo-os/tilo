@@ -471,9 +471,38 @@ pub fn publish(report: &Report) -> tilo_actions::Resource {
         }
         .bound(),
     )
+    .with_view(
+        tilo_actions::ResourceViewSpec::new("report", "Feedback report", "reveal-message")
+            .with_primary(true),
+    )
     .with_action(receipt_read::spec(&report.submission.id))
     .with_action(status_read::spec(&report.submission.id))
+    .with_action(reply_spec(report))
     .with_action(triage_spec(report))
+}
+
+fn reply_spec(report: &Report) -> tilo_actions::ActionSpec {
+    let channel = report.submission.destination.channel.clone();
+    let parent = format!("m_feedback_{}", report.submission.id);
+    tilo_actions::ActionSpec::prompted(
+        "reply",
+        "Reply to report",
+        "Reply",
+        "Write a reply",
+        tilo_actions::ExecutionLocus::ClientLocal,
+        move |text| {
+            crate::actions::encode(&crate::actions::send_message_action(
+                &channel,
+                &format!("m_{}", uuid::Uuid::new_v4().simple()),
+                tilo_clock::unix_now_i64(),
+                text,
+                Some(parent.clone()),
+                None,
+                Vec::new(),
+            ))
+        },
+    )
+    .requiring(tilo_actions::PermissionRequirement::Write)
 }
 
 fn triage_spec(report: &Report) -> tilo_actions::ActionSpec {
@@ -605,6 +634,15 @@ mod tests {
                 .unwrap();
         assert!(published.actions.iter().any(|spec| spec.id == "triage"
             && spec.contract.permission == tilo_actions::PermissionRequirement::Write));
+        let view = tilo_actions::ResourceViewDescriptor::declared_for(&published, "reveal-message")
+            .expect("a report has a declared browser/native opening view");
+        assert_eq!(view.id, "report");
+        assert!(published.views[0].validate(&published).is_empty());
+        assert!(
+            tilo_actions::ResourceViewDescriptor::declared_for(&published, "read-feedback-status")
+                .is_none(),
+            "reading status never navigates or creates capture consent"
+        );
     }
 
     #[test]
@@ -666,6 +704,58 @@ mod tests {
                 .actions
                 .iter()
                 .any(|spec| spec.id == "triage")
+        );
+    }
+
+    #[test]
+    fn report_reply_uses_existing_attributed_message_write_door_and_exact_thread() {
+        use ui::tilo_resource::Resource as _;
+        let (mut doc, submission) = seeded();
+        apply_as(&mut doc, "reporter:one", &action(&submission)).unwrap();
+        let report = report(&doc, &submission.id).unwrap().unwrap();
+        let resource = publish(&report);
+        let reply = resource
+            .actions
+            .iter()
+            .find(|spec| spec.id == "reply")
+            .unwrap();
+        assert_eq!(
+            reply.contract.permission,
+            tilo_actions::PermissionRequirement::Write
+        );
+        let arguments = serde_json::json!({"value":"We retained your report."});
+        let encoded = reply.build_json(arguments.as_object().unwrap()).unwrap();
+        let action: ChatAction = serde_json::from_slice(&encoded.payload).unwrap();
+        assert_eq!(
+            crate::resource::Chat::permission(&action),
+            tilo_actions::PermissionRequirement::Write
+        );
+        apply_as(&mut doc, "team:maintainer", &action).unwrap();
+        apply_as(&mut doc, "team:maintainer", &action).unwrap();
+        let messages = ChatDoc::list_messages(&doc, &submission.destination.channel);
+        let replies: Vec<_> = messages
+            .iter()
+            .filter(|message| message.text == "We retained your report.")
+            .collect();
+        assert_eq!(
+            replies.len(),
+            1,
+            "retrying the same encoded reply is idempotent"
+        );
+        assert_eq!(replies[0].author, "team:maintainer");
+        assert_eq!(
+            replies[0].parent,
+            Some(format!("m_feedback_{}", submission.id))
+        );
+        assert!(
+            reply
+                .build_json(
+                    serde_json::json!({"value":"Reply", "parent":"another-report"})
+                        .as_object()
+                        .unwrap()
+                )
+                .is_err(),
+            "a caller cannot select another thread"
         );
     }
 

@@ -178,6 +178,35 @@ async fn signed_reviewed_feedback_retries_once_and_reads_a_retained_receipt() {
         ReceiptStatus::Rejected { .. }
     ));
     assert_one_report(&mut browser, &route, &submission, &person).await;
+    let report_view = browser
+        .catalogue(CatalogueQuery {
+            provider: Some(record_provider(&route)),
+            view_resource: Some(tilo_actions::remote::ViewResourceQuery {
+                id: format!("chat.feedback:{}", submission.id),
+                kind: "chat.feedback".into(),
+            }),
+            max_results: 32,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        report_view.rows.len(),
+        1,
+        "the existing report has one browser opening view"
+    );
+    let opening = report_view.rows[0].action.as_ref().unwrap();
+    assert_eq!(opening.address.action, "reveal-message");
+    assert_eq!(opening.kind, tilo_actions::OperationKind::View);
+    assert_eq!(opening.view.as_ref().unwrap().id, "report");
+    let locator = report_view.locator.unwrap();
+    assert_eq!(locator.origin, hosted.web.origin);
+    assert_eq!(locator.room, room.room);
+    assert_eq!(locator.provider, record_provider(&route));
+    assert_eq!(
+        locator.host_device,
+        hex::encode(host.cert.device_public_key)
+    );
     assert_local_only_report_is_not_a_receipt(&mut browser, &route, &submission).await;
     let mut maintainer = participant(&mut browser, &route, &person);
     maintainer
@@ -234,6 +263,113 @@ async fn retained_receipt(
         assert!(
             Instant::now() < deadline,
             "canonical receipt unavailable: {receipt:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn report_reply_reaches_returning_reporter_after_cold_owner_restart() {
+    let (identity, _) = tilo_user_identity::UserIdentity::generate("Reply reporter", 1);
+    let host = enrol(
+        &identity,
+        "temporary-node",
+        tilo_user_identity::cloud_enrollment::host_capabilities(),
+    );
+    let device = enrol(&identity, "temporary-browser", DeviceCapabilities::member());
+    let state = tempfile::tempdir().unwrap();
+    let hosted = start(&identity, &host, state.path()).await;
+    let room = hosted
+        .relay
+        .rooms()
+        .unwrap()
+        .create("Reply fixture")
+        .await
+        .unwrap();
+    let mut browser = Browser::open_room(&hosted, &device, &host, &room.room).await;
+    let person = hex::encode(identity.verifying_key().to_bytes());
+    hosted
+        .relay
+        .rooms()
+        .unwrap()
+        .prepare_application(&room.room, &host.cert, &common::catalogue(), "so.tilo.chat")
+        .await
+        .unwrap();
+    let route = create_feedback_record(&mut browser).await;
+    browser.peer.barrier().unwrap().recv().unwrap().unwrap();
+    let submission = approved(&route);
+    submit_local_participant(&mut browser, &route, &submission, &person);
+    assert_signed_canonical(&mut browser, &submission, &host.cert, &device.cert).await;
+    assert_one_report(&mut browser, &route, &submission, &person).await;
+    let mut team = participant(&mut browser, &route, &person);
+    team.invoke(
+        &ActionAddress::new(format!("chat.feedback:{}", submission.id), "reply"),
+        serde_json::json!({"value":"The team retained this report and is investigating."})
+            .as_object()
+            .unwrap(),
+        false,
+    )
+    .unwrap();
+    publish_participant(&mut browser, &route, &team.take_mutation().unwrap());
+    assert_report_and_reply(&mut browser, &route, &submission, &person).await;
+    browser.peer.close();
+    drop(browser);
+    drop(team);
+    drop(hosted.web);
+    hosted.agents.shutdown();
+    hosted.relay.shutdown().await;
+    let restored = start(&identity, &host, state.path()).await;
+    let mut returning = Browser::open_room(&restored, &device, &host, &room.room).await;
+    assert_signed_canonical(&mut returning, &submission, &host.cert, &device.cert).await;
+    assert_report_and_reply(&mut returning, &route, &submission, &person).await;
+    returning.peer.close();
+    drop(returning);
+    drop(restored.web);
+    restored.agents.shutdown();
+    restored.relay.shutdown().await;
+}
+
+async fn assert_report_and_reply(
+    browser: &mut Browser,
+    route: &DocumentRoute,
+    submission: &Submission,
+    person: &str,
+) {
+    let deadline = Instant::now().checked_add(Duration::from_secs(30)).unwrap();
+    loop {
+        let source = browser.mount(route);
+        let messages = source
+            .read(|doc| chat::doc::ChatDoc::list_messages(doc, "feedback"))
+            .unwrap();
+        if messages.len() >= 2 {
+            assert_eq!(
+                messages.len(),
+                2,
+                "exactly one report and one delivered reply"
+            );
+            let parent = format!("m_feedback_{}", submission.id);
+            let original = messages
+                .iter()
+                .find(|message| message.id == parent)
+                .unwrap();
+            assert_eq!(original.author, person);
+            let reply = messages
+                .iter()
+                .find(|message| message.parent.as_deref() == Some(parent.as_str()))
+                .expect("the reply belongs to the exact report thread");
+            assert_eq!(reply.author, person);
+            assert_eq!(
+                reply.text,
+                "The team retained this report and is investigating."
+            );
+            let reports = source.read(chat::feedback::reports).unwrap().unwrap();
+            assert_eq!(reports.len(), 1);
+            assert_eq!(reports[0].submission, *submission);
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "actual retained report reply not received"
         );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
