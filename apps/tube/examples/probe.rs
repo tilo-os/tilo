@@ -41,7 +41,6 @@
 use std::collections::HashMap;
 
 use taffy::prelude::*;
-use ui::launch::{ShotFrame, ShotLayout};
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -1556,18 +1555,14 @@ fn run_bench_scroll(
 /// `queue`, `search:<query>`.
 /// Run one offscreen frame against `widget` and write RGBA to `out` as PNG.
 /// Mirrors `ui::App`'s cycle: sync → `build_layout` → `compute_layout` → `apply_layout` → draw.
-#[cfg_attr(
-    not(all(feature = "live", feature = "media")),
-    allow(
-        dead_code,
-        reason = "offscreen rendering is used only when both live data and media decoding are enabled"
-    )
-)]
+#[cfg(all(feature = "live", feature = "media"))]
 fn render_shot_to_png(
     mut widget: Box<dyn Widget>,
     viewport: (u32, u32),
     out: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    use ui::launch::{ShotFrame, ShotLayout};
+
     // `TILO_SHOTS_THEME=light|high-contrast` renders the shot under that theme so
     // theme-driven chrome can be proven across palettes; defaults to dark.
     let theme = match std::env::var("TILO_SHOTS_THEME").ok().as_deref() {
@@ -1599,13 +1594,7 @@ fn render_shot_to_png(
 /// `refactor(tube): use the shared media engine exclusively` removed the
 /// definition and left the call site above, which left `tube`'s binary not
 /// compiling.
-#[cfg_attr(
-    not(all(feature = "live", feature = "media")),
-    allow(
-        dead_code,
-        reason = "frame checksums are used only by the live media shot path"
-    )
-)]
+#[cfg(all(feature = "live", feature = "media"))]
 fn checksum(rgba: &[u8]) -> u64 {
     let mut h: u64 = 1_469_598_103_934_665_603; // FNV-1a offset basis
     for &b in rgba.iter().step_by(97) {

@@ -167,10 +167,7 @@ impl Source {
 }
 
 /// The MIME type a page element needs for a media file extension.
-#[cfg_attr(
-    not(web_page),
-    allow(dead_code, reason = "only a page element needs a MIME type")
-)]
+#[cfg(web_page)]
 fn mime_for_extension(extension: &str) -> &'static str {
     match extension {
         "mp4" | "m4v" => "video/mp4",
