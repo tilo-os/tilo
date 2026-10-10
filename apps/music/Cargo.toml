@@ -81,7 +81,7 @@ tokio = { workspace = true, optional = true, features = ["rt", "macros", "time"]
 # interpreter, downloader, or JS runtime binary. Gated behind `live`.
 rustypipe = { workspace = true, optional = true, features = ["rustls-no-provider"] }
 # Fully-rangeable stream URLs through Invidious media proxies.
-tilo-invidious = { path = "../../crates/media/tilo-invidious", optional = true }
+tilo-invidious = { path = "../../crates/platform/tilo-invidious", optional = true }
 
 [dev-dependencies]
 test-http = { path = "../../crates/dev/test-http" }

@@ -17,8 +17,8 @@ name = "tilo_invidious"
 path = "src/lib.rs"
 
 [dependencies]
-tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
-tilo-net = { version = "0.1.0", path = "../../platform/tilo-net", features = ["http"] }
+tilo-clock = { version = "0.1.0", path = "../tilo-clock" }
+tilo-net = { version = "0.1.0", path = "../tilo-net", features = ["http"] }
 tracing.workspace = true
 
 [dev-dependencies]

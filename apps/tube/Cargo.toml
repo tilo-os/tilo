@@ -44,7 +44,7 @@ anyhow.workspace = true
 # worker and excluded from the shots path.
 tilo-net = { path = "../../crates/platform/tilo-net", features = ["http", "json"] }
 # Fully-rangeable playback URLs through Invidious media proxies.
-tilo-invidious = { path = "../../crates/media/tilo-invidious" }
+tilo-invidious = { path = "../../crates/platform/tilo-invidious" }
 # Grayjay device-sync peers file.
 tilo-files = { path = "../../crates/platform/tilo-files" }
 bounded-command = { path = "../../crates/system/bounded-command", optional = true }
