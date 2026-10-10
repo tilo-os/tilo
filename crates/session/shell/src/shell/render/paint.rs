@@ -1974,6 +1974,55 @@ impl DispatchStageObserver {
     }
 }
 
+/// The presenting renderer's wgpu context and the index of its device.
+///
+/// Every backend but OpenGL first: a hardware adapter there needs no OpenGL, whose EGL
+/// driver otherwise stays loaded and initialised for the whole session — on a machine
+/// without a GPU, Mesa's llvmpipe beside lavapipe with a second rasteriser thread pool
+/// (`ui::gpu`'s own choice keeps OpenGL for a process that sees a render node and has no
+/// pinned Vulkan driver, which the compositor is). Only when those backends offer no
+/// hardware adapter and OpenGL does is the context's own instance used, for a GPU only
+/// OpenGL drives, exactly as before. `WGPU_BACKEND` still decides alone.
+fn open_render_context() -> Option<(RenderContext, usize)> {
+    let mut context = RenderContext::new();
+    if wgpu::Backends::from_env().is_some() {
+        let id = context.device(None).block_on()?;
+        return Some((context, id));
+    }
+    let hardware =
+        |adapter: &wgpu::Adapter| adapter.get_info().device_type != wgpu::DeviceType::Cpu;
+    let own = std::mem::replace(
+        &mut context.instance,
+        wgpu::Instance::new(wgpu::InstanceDescriptor {
+            display: None,
+            backends: wgpu::Backends::all().difference(wgpu::Backends::GL),
+            flags: wgpu::InstanceFlags::from_build_config().with_env(),
+            memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
+            backend_options: wgpu::BackendOptions::from_env_or_default(),
+        }),
+    );
+    let found = context.device(None).block_on();
+    let found_hardware = found
+        .and_then(|id| context.devices.get(id))
+        .is_some_and(|handle| hardware(&handle.adapter));
+    if let Some(id) = found
+        && (found_hardware
+            || !own
+                .enumerate_adapters(wgpu::Backends::all())
+                .block_on()
+                .iter()
+                .any(hardware))
+    {
+        return Some((context, id));
+    }
+    // No adapter without OpenGL, or a GPU only the context's own backends drive: open it
+    // there instead, as before.
+    context.devices.clear();
+    context.instance = own;
+    let id = context.device(None).block_on()?;
+    Some((context, id))
+}
+
 /// CPU-fallback bridge between a vello `Scene` and an RGBA byte buffer. Owns its wgpu device +
 /// offscreen texture + readback buffer so callers can reuse it across frames. Single-output by design — multi-output is one bridge per output.
 #[cfg_attr(
@@ -2010,6 +2059,8 @@ pub struct VelloDrmBridge {
 
     retained_staging_valid: bool,
     staging_content: Option<(u64, Option<u64>)>,
+    /// No frame has been painted through this bridge yet ([`Self::take_first_frame`]).
+    first_frame_pending: bool,
 
     /// Process-unique identity and monotonic content epoch for opt-in destination histories.
     xrgb_history_generation: Option<u64>,
@@ -2054,8 +2105,7 @@ impl VelloDrmBridge {
         }
 
         let xrgb_history_generation = Self::next_xrgb_history_generation();
-        let mut context = RenderContext::new();
-        let dev_id = context.device(None).block_on().ok_or_else(|| {
+        let (context, dev_id) = open_render_context().ok_or_else(|| {
             BridgeError::NoAdapter(
                 "no wgpu adapter (install vulkan/llvmpipe drivers in the runtime)".to_owned(),
             )
@@ -2110,6 +2160,7 @@ impl VelloDrmBridge {
 
             retained_staging_valid: false,
             staging_content: None,
+            first_frame_pending: true,
 
             xrgb_history_generation,
             xrgb_history_epoch: Some(1),
@@ -2129,6 +2180,13 @@ impl VelloDrmBridge {
     /// `None` draws them opaque.
     pub fn set_backdrop(&mut self, backdrop: Option<Arc<ui::backdrop::BackdropFrame>>) {
         self.target.backdrop = backdrop;
+    }
+
+    /// `true` exactly once: on the first call after this bridge was built, which its owner
+    /// makes once the bridge's first frame was painted. The pipelines' compile scratch is
+    /// free by then.
+    pub fn take_first_frame(&mut self) -> bool {
+        std::mem::take(&mut self.first_frame_pending)
     }
 
     /// Whether [`Self::paint`] has stored a complete tight RGBA frame.
