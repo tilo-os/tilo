@@ -18076,8 +18076,10 @@ dependencies = [
 name = "tilo-seal"
 version = "0.1.0"
 dependencies = [
+ "aes 0.9.3",
  "aes-gcm 0.10.3",
  "argon2",
+ "cbc",
  "chacha20poly1305 0.11.0",
  "getrandom 0.4.3",
  "hex",
@@ -18085,6 +18087,7 @@ dependencies = [
  "hpke-rs",
  "hpke-rs-crypto",
  "hpke-rs-rust-crypto",
+ "num-bigint 0.4.6",
  "sha2 0.11.0",
  "subtle",
  "thiserror 2.0.21",
@@ -18103,6 +18106,30 @@ dependencies = [
  "tracing",
  "unicode-normalization",
  "workspace-hack",
+]
+
+[[package]]
+name = "tilo-secret-service"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "futures-util",
+ "hex",
+ "libc",
+ "postcard",
+ "private-fs",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tilo-seal",
+ "tilo-user-identity",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "workspace-hack",
+ "zbus",
+ "zeroize",
 ]
 
 [[package]]

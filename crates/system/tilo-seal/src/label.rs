@@ -50,11 +50,13 @@ pub enum Label {
     /// A sibling half released to one boot-time unlock request, sealed to
     /// that request's ephemeral key.
     UnlockRelease,
+    /// The person's Secret Service store (`org.freedesktop.secrets`).
+    SecretService,
 }
 
 impl Label {
     /// Every registered label, for uniqueness checks and documentation.
-    pub const ALL: [Self; 18] = [
+    pub const ALL: [Self; 19] = [
         Self::RelayEnrollOffer,
         Self::RelayEnrollRequest,
         Self::RelayEnrollResponse,
@@ -73,6 +75,7 @@ impl Label {
         Self::FileSecretStore,
         Self::UnlockSiblingHalf,
         Self::UnlockRelease,
+        Self::SecretService,
     ];
 
     /// The stable byte string bound into the cryptography. Changing one of
@@ -97,6 +100,7 @@ impl Label {
             Self::FileSecretStore => "tilo-seal/v1/file-secret-store",
             Self::UnlockSiblingHalf => "tilo-seal/v1/unlock-sibling-half",
             Self::UnlockRelease => "tilo-seal/v1/unlock-release",
+            Self::SecretService => "tilo-seal/v1/secret-service",
         }
     }
 
