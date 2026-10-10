@@ -655,8 +655,9 @@ def terminal_probe(ctx, name: str) -> list[str]:
 
 # How long a new Terminal window may stand before its shell runs. The first
 # session of an account also imports the environment's runtime into the user's
-# package store (TIL-708).
-TERMINAL_SHELL_S = 60
+# package store: 7.5 s on the CI VM, 40 s while it synced once per file
+# (TIL-708, runs 90460 and 90397).
+TERMINAL_SHELL_S = 20
 
 # Terminal's shells are not the app's processes: each runs in a guest the
 # `tilo-ush` user service starts, so they are found in its cgroup.
