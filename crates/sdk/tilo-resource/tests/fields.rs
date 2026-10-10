@@ -406,7 +406,9 @@ fn described(schema: &serde_json::Value, path: &str) -> (String, serde_json::Val
         })
         .expect("an example edit of the path's shape")
         .clone();
-    for (step, segment) in example["path"]
+    for (step, segment) in example
+        .get_mut("path")
+        .expect("the example names a path")
         .as_array_mut()
         .unwrap()
         .iter_mut()

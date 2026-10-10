@@ -64,7 +64,7 @@ use crate::date;
 use crate::event_popovers::{EventPopovers, PopoverEdit, PopoverKind as FormPopover};
 use crate::ics;
 use crate::input_context::InputContext;
-use crate::model::{Calendar, Event, Id, ListSel, Palette, Priority, Recurrence, View};
+use crate::model::{Calendar, Event, Id, ListSel, Palette, Priority, View};
 use crate::sidebar::{Mode as SidebarMode, Sidebar};
 use crate::timeline_interaction::{
     TIMELINE_SNAP_MIN, TimelineEffect, TimelineInteraction, TimelineRenderEvent,
