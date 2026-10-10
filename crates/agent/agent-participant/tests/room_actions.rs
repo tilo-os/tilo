@@ -904,6 +904,9 @@ async fn a_record_whose_keys_are_withheld_holds_back_no_other() {
             .is_some_and(|changes| changes.iter().any(|(author, _)| *author == host_key)),
         "the host wrote nothing to a record it could not open"
     );
+    // The steward stops before the hold is released, so it never admits
+    // the host into a relay that is shutting down.
+    drop(steward);
     drop(held);
 
     let prompt = Duration::from_secs(5);
