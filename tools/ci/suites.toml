@@ -112,6 +112,7 @@ suites = [
   "os/tests/test_no_ui_toolkits.py",
   "os/tests/test_flatpak_defaults.py",
   "os/tests/test_hardlink_identical.py",
+  "os/tests/test_seed_env_runtime.py",
   "os/tests/test_boot_unit_ordering.py",
   "os/tests/podman_build_flags.sh",
   "os/tests/portal_config_validity.sh",
