@@ -193,19 +193,8 @@ impl EventPopovers {
             PopoverKind::None => {}
             PopoverKind::StartDate | PopoverKind::EndDate => {
                 let before = self.date_picker.selected();
-                self.date_picker.handle_event(
-                    input.event,
-                    &mut ui::widget::EventCtx {
-                        scale_factor: input.scale_factor,
-                        modifiers: &input.modifiers,
-                        state: input.state.reborrow(),
-                        path: input.path,
-                        handled: input.handled,
-                        focus_target: input.focus_target,
-                        node_id: input.node_id,
-                        taffy: input.taffy,
-                    },
-                );
+                self.date_picker
+                    .handle_event(input.event, &mut input.event_ctx());
                 let after = self.date_picker.selected();
                 if after != before {
                     *edit = Some(PopoverEdit::Date(kind, after));
@@ -222,19 +211,7 @@ impl EventPopovers {
                     &mut self.end_time_picker
                 };
                 let before = (picker.hours(), picker.minutes());
-                picker.handle_event(
-                    input.event,
-                    &mut ui::widget::EventCtx {
-                        scale_factor: input.scale_factor,
-                        modifiers: &input.modifiers,
-                        state: input.state.reborrow(),
-                        path: input.path,
-                        handled: input.handled,
-                        focus_target: input.focus_target,
-                        node_id: input.node_id,
-                        taffy: input.taffy,
-                    },
-                );
+                picker.handle_event(input.event, &mut input.event_ctx());
                 let after = (picker.hours(), picker.minutes());
                 if after != before {
                     *edit = Some(PopoverEdit::Time(kind, after.0, after.1));
