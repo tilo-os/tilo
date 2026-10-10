@@ -2617,6 +2617,9 @@ mod tests {
                     .push((request, completer));
                 return pending;
             }
+            if request.target.address.action == "read-current-tasks" {
+                return Pending::ready(Ok(self.current_tasks_receipt(&request)));
+            }
             let task = request
                 .target
                 .address
@@ -2624,43 +2627,6 @@ mod tests {
                 .strip_prefix("desktop:task:")
                 .unwrap_or_default();
             let value = match request.target.address.action.as_str() {
-                "read-current-tasks" if self.current_empty.load(Ordering::Acquire) => {
-                    serde_json::json!({
-                        "generation": 9,
-                        "complete": true,
-                        "total": 0,
-                        "tasks": [],
-                        "pending_complete": true,
-                        "pending_total": 0,
-                        "pending": []
-                    })
-                }
-                "read-current-tasks" => serde_json::json!({
-                    "generation": 8,
-                    "complete": true,
-                    "total": 1,
-                    "tasks": [{
-                        "task_id": "task-current",
-                        "title": "Review the release",
-                        "assigned_agent": "scribe",
-                        "status": "in_progress",
-                        "run_epoch": 7,
-                        "active_agent": "scribe",
-                        "after_revision": 4,
-                        "applied_revision": 4,
-                        "route": "model",
-                        "cancellation_requested": false
-                    }],
-                    "pending_complete": true,
-                    "pending_total": 1,
-                    "pending": [{
-                        "task_id": "task-queued",
-                        "title": "Check accessibility",
-                        "assigned_agent": "scribe",
-                        "status": "queued",
-                        "route": "model"
-                    }]
-                }),
                 "read-task" => serde_json::json!({
                     "generation": 8,
                     "task_id": task,
