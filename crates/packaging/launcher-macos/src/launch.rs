@@ -234,7 +234,8 @@ fn start_app_sandboxed(
     executable: &Path,
 ) -> Result<libc::pid_t, LaunchError> {
     let argv = app_argv(executable, &request.args);
-    let env = environment(&request.env, &[]);
+    let fixed: Vec<(String, String)> = surface_env(&request.payload_dir).into_iter().collect();
+    let env = environment(&request.env, &fixed);
     let pid = spawn(executable, &argv, &env, &request.inherit_fds, true).map_err(|source| {
         LaunchError::Spawn {
             program: executable.to_path_buf(),
@@ -293,6 +294,7 @@ fn start_seatbelted(
     argv.extend(app_argv(executable, &request.args));
 
     let mut fixed: Vec<(String, String)> = app_environment(&policy.container);
+    fixed.extend(surface_env(&request.payload_dir));
     if let SeatbeltNetwork::Gate(port) = policy.network {
         fixed.extend(
             proxy_env(port)
@@ -400,6 +402,16 @@ fn app_argv(executable: &Path, args: &[OsString]) -> Vec<OsString> {
 }
 
 /// `PATH`, the launcher's locale, the request's variables, then `fixed`.
+/// The hash of the surface the package ships (`surface.toml` at its payload
+/// root), which the app names in every change it signs.
+fn surface_env(payload_dir: &Path) -> Option<(String, String)> {
+    let bytes = std::fs::read(payload_dir.join("surface.toml")).ok()?;
+    Some((
+        "TILO_SURFACE".to_owned(),
+        blake3::hash(&bytes).to_hex().to_string(),
+    ))
+}
+
 fn environment(
     extra: &[(OsString, OsString)],
     fixed: &[(String, String)],
