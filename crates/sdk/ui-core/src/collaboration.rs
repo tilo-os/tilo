@@ -488,6 +488,7 @@ pub enum CollabRequest {
         update: runtime_collab::TaskRunUpdate,
     },
     ReportTaskRun {
+        request_id: Option<u64>,
         run_id: u64,
         lease: String,
         update: runtime_collab::TaskRunUpdate,
@@ -519,7 +520,7 @@ pub enum CollabRequest {
         lease: String,
     },
     /// Read saved directions and cancellation for one exact leased run.
-    TaskRunControl {
+    EnrolledTaskRunControl {
         request_id: u64,
         run_id: u64,
         lease: String,
@@ -884,7 +885,15 @@ pub enum CollabEvent {
     },
     TaskRunControl {
         request_id: u64,
-        result: Result<runtime_collab::TaskRunControl, String>,
+        control: runtime_collab::TaskRunControl,
+    },
+    TaskRunReportResult {
+        request_id: u64,
+        result: Result<(), String>,
+    },
+    EnrolledTaskRunControl {
+        request_id: u64,
+        result: Result<runtime_collab::EnrolledTaskRunControl, String>,
     },
     WorkspaceControl {
         session_id: u64,

@@ -1595,7 +1595,11 @@ fn ensure_bridge(paint: &mut Option<paint::VelloDrmBridge>, target_size: (u32, u
     if paint.is_some() {
         return true;
     }
-    match paint::VelloDrmBridge::new(target_size.0, target_size.1) {
+    // The driver starts its threads as the device opens: they take the driver's name, not
+    // `tilo-present`, so their CPU is not read as the present thread's (TIL-739).
+    match crate::shell::present::with_driver_thread_name(|| {
+        paint::VelloDrmBridge::new(target_size.0, target_size.1)
+    }) {
         Ok(mut bridge) => {
             // Four `Instant` samples per completed frame buy the minimum useful physical
             // performance record. Verbose per-frame output remains opt-in in DrmPresenter;

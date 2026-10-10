@@ -1042,13 +1042,14 @@ activity-task-direction-label = Öffentliche Aufgabenanweisungen
 activity-task-direction-placeholder = Beschreibe, was der Agent ändern soll
 activity-task-direction-observation = Diese Anweisungen gelten für den geprüften Lauf. Wenn die Aufgabe neu startet, prüfe sie erneut.
 activity-task-review-saving = Warten auf das Speichern durch den Arbeitsbereich…
-activity-task-review-saved = Änderung vom Arbeitsbereich bestätigt.
+activity-task-review-saved = Im Arbeitsbereich gespeichert. Die Anwendung durch den Agenten wird separat angezeigt.
 activity-task-review-refused = Nicht gespeichert. Dein Entwurf bleibt erhalten. { $detail }
 
 activity-task-next = Nächste Aufgabe
 activity-task-previous = Vorherige Aufgabe
 activity-task-review-source = Vom Arbeitsbereich bestätigt · aktualisiert { $time }
 activity-task-review-status = { $status } · Agent: { $agent }
+activity-task-review-frontier = Lauf { $epoch } · Anweisungen { $revision } · vom Agenten angewendet { $applied }
 activity-task-review-direction-waiting = Warten auf Agent
 activity-task-review-direction-applied = Vom Agenten angewendet
 activity-task-review-direction = { $author }: { $text }
@@ -1057,3 +1058,10 @@ activity-task-review-stopping = Stopp angefordert; Bestätigung des Agenten steh
 activity-task-current-instruction = Aktuelle Anweisung
 activity-task-review-changed = Diese Aufgabe hat sich geändert. Prüfe ihren aktuellen Stand, bevor du sie änderst.
 activity-task-original-instruction = Ursprüngliche Anfrage
+
+activity-task-approve-run = Ausführung freigeben
+activity-task-run-approved = Genehmigt von { $person } · { $time }
+activity-task-awaiting-acceptance = Warte auf Annahme · Agent möglicherweise offline
+activity-task-run-accepted = Agent hat diesen Lauf angenommen · letzter Bericht { $time }
+activity-task-run-planning = Agent plant diesen Lauf · letzter Bericht { $time }
+activity-task-run-executing = Agent bearbeitet diesen Lauf · letzter Bericht { $time }

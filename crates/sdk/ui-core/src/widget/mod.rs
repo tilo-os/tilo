@@ -948,7 +948,7 @@ thread_local! {
 /// that opens a nested menu. The host keeps the published resource tree
 /// across bare pointer motion, so such a widget must call this or the tree
 /// agents and assistive technology read would go stale. Clicks, keys and
-/// any handled event already republish.
+/// handled events outside the explicit view-only scroll contract republish.
 pub fn note_resource_presentation_changed() {
     RESOURCE_PRESENTATION_EPOCH.with(|epoch| epoch.set(epoch.get().wrapping_add(1)));
 }
@@ -1068,6 +1068,15 @@ pub trait Widget {
         _path: &ModelPath,
     ) -> Option<serde_json::Value> {
         None
+    }
+
+    /// Opt in only when this wheel event changes scroll geometry and nothing
+    /// else: no document edit, focus/selection, action availability, resource
+    /// declaration, pending command or work that requires `sync`. The runner
+    /// still lays out, paints and refreshes accessibility geometry. Unknown
+    /// handlers stay on the full synchronization/publication path.
+    fn view_only_scroll(&self, _event: &WindowEvent) -> bool {
+        false
     }
 
     /// Explicit app-owned region; never search secondary children implicitly.

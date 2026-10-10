@@ -26,15 +26,15 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use launcher::appdir;
-use launcher::manifest::{Entrypoint, Fs, MinimalManifest, Net, Sandbox};
+use launcher::manifest::{Entrypoint, Fs, ManifestView, Net, Sandbox};
 use launcher::run::{RunError, RunOptions, run_with_captured};
 
 use crate::support::{isolated_options, roomtest_payload};
 
 const PACKAGE: &str = "so.tilo.roomtest";
 
-fn manifest() -> MinimalManifest {
-    MinimalManifest {
+fn manifest() -> ManifestView {
+    ManifestView {
         package_id: PACKAGE.to_string(),
         name: None,
         localized_names: BTreeMap::default(),

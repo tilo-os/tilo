@@ -178,6 +178,14 @@ pub enum WorkspaceTaskCommand {
         expected_budget: Option<collab_types::task_budget::TaskExecutionBudget>,
         budget: Option<collab_types::task_budget::TaskExecutionBudget>,
     },
+    /// Person approval of one exact queued task frontier; grants no app/resource authority.
+    /// Keep this at the published command index before branch-only commands.
+    ApproveRun {
+        task_id: String,
+        agent_id: String,
+        expected_run_epoch: u64,
+        after_revision: u64,
+    },
     /// Queue a task whose complete instruction is independent of its short
     /// Task Center title. Appended to preserve encoded command indices.
     QueueTask {
@@ -270,6 +278,10 @@ impl WorkspaceTaskCommand {
             Self::Queue { assigned_agent, .. }
             | Self::QueueTask { assigned_agent, .. }
             | Self::StartRun {
+                agent_id: assigned_agent,
+                ..
+            }
+            | Self::ApproveRun {
                 agent_id: assigned_agent,
                 ..
             } => Some(assigned_agent),
@@ -379,14 +391,8 @@ fn dispatch(
         WorkspaceTaskCommand::Queue { .. } | WorkspaceTaskCommand::QueueTask { .. } => {
             dispatch_queue(tasks, controls, context, command)
         }
-        WorkspaceTaskCommand::StartRun { task_id, agent_id } => start_run(
-            tasks,
-            controls,
-            context.actor,
-            task_id,
-            agent_id,
-            context.now,
-        ),
+        command @ (WorkspaceTaskCommand::ApproveRun { .. }
+        | WorkspaceTaskCommand::StartRun { .. }) => dispatch_run(tasks, controls, context, command),
         WorkspaceTaskCommand::Direction { task_id, text } => direct(
             tasks,
             controls,
@@ -625,6 +631,38 @@ fn dispatch_queue(
         *route,
         resource.as_deref().cloned(),
     )
+}
+
+fn dispatch_run(
+    tasks: &mut [WorkspaceTask],
+    controls: &mut std::collections::BTreeMap<String, WorkspaceTaskControl>,
+    context: &CommandContext<'_>,
+    command: &WorkspaceTaskCommand,
+) -> Result<(String, WorkspaceTaskMutationResult), String> {
+    match command {
+        WorkspaceTaskCommand::ApproveRun {
+            task_id,
+            agent_id,
+            expected_run_epoch,
+            after_revision,
+        } => approve_run(
+            tasks,
+            controls,
+            context,
+            task_id,
+            agent_id,
+            (*expected_run_epoch, *after_revision),
+        ),
+        WorkspaceTaskCommand::StartRun { task_id, agent_id } => start_run(
+            tasks,
+            controls,
+            context.actor,
+            task_id,
+            agent_id,
+            context.now,
+        ),
+        _ => Err("not a run admission command".into()),
+    }
 }
 
 fn dispatch_budget(
@@ -1029,6 +1067,60 @@ fn start_run(
     if !matches!(actor, AdmittedTaskActor::Host { .. }) {
         return Err("only the workspace host may start a task run".into());
     }
+    begin_run(tasks, controls, task_id, agent_id, now, None)
+}
+
+fn approve_run(
+    tasks: &mut [WorkspaceTask],
+    controls: &mut std::collections::BTreeMap<String, WorkspaceTaskControl>,
+    context: &CommandContext<'_>,
+    task_id: &str,
+    agent_id: &str,
+    frontier: (u64, u64),
+) -> Result<(String, WorkspaceTaskMutationResult), String> {
+    let AdmittedTaskActor::Person { id: person, device } = context.actor else {
+        return Err("only an admitted person may approve a task run".into());
+    };
+    let task = task_mut(tasks, task_id)?;
+    let control = controls
+        .get(task_id)
+        .ok_or("task has no execution control")?;
+    if task.status != WorkspaceTaskStatus::Queued
+        || task
+            .resource
+            .as_ref()
+            .is_some_and(|resource| resource.agent_request.is_some())
+        || control.instruction_required
+        || control.instruction.is_some()
+        || control.active_run.is_some()
+        || control.run_epoch != frontier.0
+        || control.directions.last().map_or(0, |value| value.revision) != frontier.1
+    {
+        return Err("queued task frontier changed; review before approving".into());
+    }
+    begin_run(
+        tasks,
+        controls,
+        task_id,
+        agent_id,
+        context.now,
+        Some(tilo_desktop_model::WorkspaceTaskApproval {
+            person: person.clone(),
+            device: *device,
+            approved_at: context.now,
+            instruction_revision: frontier.1,
+        }),
+    )
+}
+
+fn begin_run(
+    tasks: &mut [WorkspaceTask],
+    controls: &mut std::collections::BTreeMap<String, WorkspaceTaskControl>,
+    task_id: &str,
+    agent_id: &str,
+    now: i64,
+    approval: Option<tilo_desktop_model::WorkspaceTaskApproval>,
+) -> Result<(String, WorkspaceTaskMutationResult), String> {
     let task = task_mut(tasks, task_id)?;
     if task.status.is_finished()
         || task.route == WorkspaceTaskRoute::Manual
@@ -1054,14 +1146,20 @@ fn start_run(
         agent_id: agent_id.to_owned(),
         started_at: now,
         applied_direction_revision: 0,
+        approval: approval.clone(),
     });
     control.execution = None;
     task.status = WorkspaceTaskStatus::InProgress;
     task.updated_at = now;
     task.audit.push(WorkspaceTaskAuditEvent {
         at: now,
-        actor: format!("agent:{agent_id}"),
-        summary: format!("Started run {epoch}"),
+        actor: approval
+            .as_ref()
+            .map_or_else(|| format!("agent:{agent_id}"), |value| value.person.clone()),
+        summary: approval.map_or_else(
+            || format!("Started run {epoch}"),
+            |_| format!("Approved run {epoch}"),
+        ),
     });
     Ok((
         task_id.to_owned(),
@@ -1380,10 +1478,15 @@ fn finish(
         .ok_or("task has no active run")?;
     let latest = control.directions.last().map_or(0, |value| value.revision);
     let unapplied_direction = run.applied_direction_revision != latest;
+    let cancellation_pending = control
+        .cancellation
+        .as_ref()
+        .is_some_and(|request| request.run_epoch == run_epoch);
     if task.status != WorkspaceTaskStatus::InProgress
         || task.assigned_agent.as_deref() != Some(agent_id)
         || run.agent_id != *agent_id
         || run.epoch != run_epoch
+        || (cancellation_pending && outcome != WorkspaceTaskFinish::Cancelled)
         || (outcome != WorkspaceTaskFinish::Cancelled && unapplied_direction)
     {
         return Err("task finish is stale or has unapplied directions".into());
@@ -1428,6 +1531,10 @@ fn abandon(
         .ok_or("active task has no execution control")?;
     if task.status != WorkspaceTaskStatus::InProgress
         || control.active_run.as_ref().map(|run| run.epoch) != Some(run_epoch)
+        || control
+            .cancellation
+            .as_ref()
+            .is_some_and(|request| request.run_epoch == run_epoch)
     {
         return Err("task abandonment names a stale run".into());
     }
@@ -1740,12 +1847,71 @@ mod tests {
             expected_budget: None,
             budget: None,
         };
-        for (command, index) in [(attachment, 11), (budget, 12)] {
+        let approval = WorkspaceTaskCommand::ApproveRun {
+            task_id: "task:one".into(),
+            agent_id: "scribe".into(),
+            expected_run_epoch: 0,
+            after_revision: 0,
+        };
+        for (command, index) in [(attachment, 11), (budget, 12), (approval, 13)] {
             let encoded = postcard::to_allocvec(&command).unwrap();
             assert_eq!(encoded[0], index);
             let decoded = postcard::from_bytes::<WorkspaceTaskCommand>(&encoded).unwrap();
             assert_eq!(postcard::to_allocvec(&decoded).unwrap(), encoded);
         }
+        let frontier = WorkspaceTaskPendingFrontier {
+            status: WorkspaceTaskStatus::Queued,
+            run_epoch: 0,
+            revision: 0,
+        };
+        for (command, index) in [
+            (
+                WorkspaceTaskCommand::QueueTask {
+                    title: "One".into(),
+                    instruction: "Do one thing".into(),
+                    assigned_agent: "scribe".into(),
+                    route: WorkspaceTaskRoute::Model,
+                    resource: None,
+                },
+                14,
+            ),
+            (
+                WorkspaceTaskCommand::CancelRun {
+                    task_id: "task:one".into(),
+                    run_epoch: 1,
+                    after_revision: 0,
+                },
+                15,
+            ),
+            (
+                WorkspaceTaskCommand::AmendPending {
+                    task_id: "task:one".into(),
+                    frontier,
+                    title: "One".into(),
+                    instruction: "Do one changed thing".into(),
+                },
+                16,
+            ),
+            (
+                WorkspaceTaskCommand::CancelPending {
+                    task_id: "task:one".into(),
+                    frontier,
+                },
+                17,
+            ),
+        ] {
+            let encoded = postcard::to_allocvec(&command).unwrap();
+            assert_eq!(encoded[0], index);
+            let decoded = postcard::from_bytes::<WorkspaceTaskCommand>(&encoded).unwrap();
+            assert_eq!(
+                serde_json::to_value(decoded).unwrap(),
+                serde_json::to_value(command).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn native_coordination_wire_positions_remain_before_new_instruction_commands_and_results() {
         for (result, index) in [
             (
                 WorkspaceTaskMutationResult::ResourceAttached {
@@ -2779,9 +2945,9 @@ mod tests {
             route: WorkspaceTaskRoute::Model,
             resource: None,
         };
-        // Main's coordination/budget commands occupy indices 10 through 12;
-        // this newer command follows them without changing published indices.
-        assert_eq!(postcard::to_allocvec(&command).unwrap()[0], 13);
+        // Main's owner-approved native run command occupies index 13. This
+        // branch-only instruction command follows it without changing either wire form.
+        assert_eq!(postcard::to_allocvec(&command).unwrap()[0], 14);
         let mut doc = AutoCommit::new();
         let queued = run(&mut doc, 21, 21, &person(), &command).unwrap();
         let WorkspaceTaskMutationResult::Queued { task_id } = queued.result else {
@@ -2939,7 +3105,7 @@ mod tests {
             run_epoch: 1,
             after_revision: 0,
         };
-        assert_eq!(postcard::to_allocvec(&request).unwrap()[0], 14);
+        assert_eq!(postcard::to_allocvec(&request).unwrap()[0], 15);
         let result = run(&mut doc, 43, 43, &person(), &request).unwrap();
         assert_eq!(
             result.result,
@@ -2957,6 +3123,7 @@ mod tests {
                 .map(|request| request.run_epoch),
             Some(1)
         );
+        assert_cancelled_run_rejects_other_terminal_reports(&mut doc, &task_id);
         let before = doc.save();
         assert!(
             run(
@@ -2990,6 +3157,40 @@ mod tests {
             snapshot(&doc).unwrap().tasks[0].status,
             WorkspaceTaskStatus::Cancelled
         );
+    }
+
+    fn assert_cancelled_run_rejects_other_terminal_reports(doc: &mut AutoCommit, task_id: &str) {
+        let before_terminal = doc.save();
+        assert!(
+            run(
+                doc,
+                44,
+                44,
+                &agent(),
+                &WorkspaceTaskCommand::Finish {
+                    task_id: task_id.to_owned(),
+                    run_epoch: 1,
+                    outcome: WorkspaceTaskFinish::Done,
+                    summary: "Finished after the stop request".into(),
+                },
+            )
+            .is_err()
+        );
+        assert!(
+            run(
+                doc,
+                44,
+                44,
+                &host(),
+                &WorkspaceTaskCommand::Abandon {
+                    task_id: task_id.to_owned(),
+                    run_epoch: 1,
+                    reason: "Failed after the stop request".into(),
+                },
+            )
+            .is_err()
+        );
+        assert_eq!(doc.save(), before_terminal);
     }
 
     #[test]

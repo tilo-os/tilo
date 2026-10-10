@@ -76,7 +76,9 @@ pub fn parse_settings_uri(uri: &str) -> Result<SettingsEffect, String> {
         }
         .into());
     }
-    let pane = rest.split('/').next().unwrap_or_default();
+    // Pane links only select a view; query and fragment metadata do not
+    // change that selection. Model links retain their stricter id validation.
+    let pane = rest.split(['/', '?', '#']).next().unwrap_or_default();
     // Camera and other apps link to the privacy controls by their common
     // name; the pane is Permissions.
     let pane = match pane {
@@ -181,6 +183,37 @@ impl ResourceSurface<Settings, SettingsEffect> for SettingsApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pane_links_preserve_query_and_fragment_compatibility() {
+        for uri in [
+            "settings://power?x=1",
+            "settings:power?x=1",
+            "settings://power#battery",
+            "settings://power?x=1#battery",
+        ] {
+            assert_eq!(
+                parse_settings_uri(uri),
+                Ok(NavigationEffect::OpenPane {
+                    pane: "power".into(),
+                }
+                .into()),
+                "{uri}"
+            );
+        }
+        for uri in [
+            "settings://nope?pane=power",
+            "settings://Power#battery",
+            "settings://?pane=power",
+            "settings://user@power?x=1",
+            "settings://power:443#battery",
+            "settings:///power?x=1",
+            "settings://models/u2net-subject?x=1",
+            "settings://models/u2net-subject#card",
+        ] {
+            assert!(parse_settings_uri(uri).is_err(), "{uri}");
+        }
+    }
 
     /// Model links name a validated model id, pane links a known pane, and
     /// anything else is refused rather than guessed.

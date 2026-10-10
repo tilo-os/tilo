@@ -29,7 +29,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use launcher::manifest::{Entrypoint, Fs, MinimalManifest, Net, Sandbox};
+use launcher::manifest::{Entrypoint, Fs, ManifestView, Net, Sandbox};
 use launcher::run::{RunOptions, run_with_captured};
 use tilo_test_env::ScopedEnv;
 
@@ -53,8 +53,8 @@ const SESSION_PRIVATE: &[(&str, &str)] = &[
     ("TILO_IDENTITY_BROKER_FD", "42"),
 ];
 
-fn manifest() -> MinimalManifest {
-    MinimalManifest {
+fn manifest() -> ManifestView {
+    ManifestView {
         package_id: PACKAGE.to_string(),
         name: None,
         localized_names: BTreeMap::default(),

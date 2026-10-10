@@ -5030,9 +5030,14 @@ def require_action(socket, action_id, query=""):
     return matches[0]
 
 
-def offered_agent_action(socket, room, record, agent, operation):
+def offered_agent_action(socket, room, record, agent, operation, *, observation=None):
     """Use the authenticated published hierarchy, never construct opaque ids."""
-    matches = [action for action in actions(socket)
+    snapshot = permission_actions_snapshot(socket)
+    if observation is not None:
+        observation["complete_settled_snapshot"] = snapshot is not None
+    if snapshot is None:
+        return None
+    matches = [action for action in snapshot
                if action.get("application") == "so.tilo.chat"
                and action.get("room") == room
                and action.get("record") == record
@@ -5043,9 +5048,14 @@ def offered_agent_action(socket, room, record, agent, operation):
     return matches[0] if matches else None
 
 
-def offered_membership_action(socket, room, resource, operation):
+def offered_membership_action(socket, room, resource, operation, *, observation=None):
     """Select one owner-published membership action without constructing its id."""
-    matches = [row for row in actions(socket)
+    snapshot = permission_actions_snapshot(socket)
+    if observation is not None:
+        observation["complete_settled_snapshot"] = snapshot is not None
+    if snapshot is None:
+        return None
+    matches = [row for row in snapshot
                if row.get("application") == "so.tilo.desktop"
                and row.get("room") == room
                and row.get("record") == "membership"
@@ -5054,6 +5064,17 @@ def offered_membership_action(socket, room, resource, operation):
     if len(matches) > 1:
         raise RuntimeError("ambiguous native workspace membership action")
     return matches[0] if matches else None
+
+
+def native_agent_catalogue_observation(socket, room):
+    """Failure evidence never substitutes a partial listing for absence."""
+    try:
+        snapshot = permission_actions_snapshot(socket)
+    except RuntimeError:
+        return {"complete_settled_snapshot": False, "observation_failed": True, "actions": []}
+    return {"complete_settled_snapshot": snapshot is not None, "observation_failed": False,
+            "actions": [] if snapshot is None else [public_action_observation(row)
+                                                     for row in snapshot if row.get("room") == room]}
 
 
 def public_action_observation(row):
@@ -5087,7 +5108,10 @@ def terminal_value(receipt):
 
 def offered_desktop_action(socket, room, record, resource, operation):
     """Select one owner-published desktop action without decoding aliases."""
-    matches = [row for row in actions(socket)
+    snapshot = permission_actions_snapshot(socket)
+    if snapshot is None:
+        return None
+    matches = [row for row in snapshot
                if row.get("application") == "so.tilo.desktop"
                and row.get("room") == room
                and row.get("record") == record
@@ -5100,7 +5124,10 @@ def offered_desktop_action(socket, room, record, resource, operation):
 
 def offered_governance_action(socket, room, operation):
     """Select the owner-published governance door without constructing its id."""
-    matches = [row for row in actions(socket)
+    snapshot = permission_actions_snapshot(socket)
+    if snapshot is None:
+        return None
+    matches = [row for row in snapshot
                if row.get("application") == "tilo.workspace"
                and row.get("room") == room
                and row.get("resource") == f"workspace.permissions:{room}"
@@ -5253,7 +5280,7 @@ def observe_hidden_permission_offer(socket, original, opposite, read_operation,
             or chat_process_identity(current_access) != initial_identity:
         raise RuntimeError("permission evidence changed its mounted Chat process or view")
     try:
-        catalogue = actions(socket)
+        catalogue = permission_actions_snapshot(socket)
     except (RuntimeError, KeyError, TypeError):
         raise RuntimeError("permission evidence catalogue is unavailable") from None
     if not isinstance(catalogue, list) or any(not isinstance(row, dict) for row in catalogue):
@@ -6153,7 +6180,10 @@ def agent_reply_observation(
         socket, room, record, parent, agent, process, *,
         expected_reply="Fixture response.", diagnostic_path=None):
     """Read the canonical reply in memory and return content-free evidence."""
-    reads = [row for row in actions(socket)
+    snapshot = permission_actions_snapshot(socket)
+    if snapshot is None:
+        return None
+    reads = [row for row in snapshot
              if row.get("application") == "so.tilo.chat"
              and row.get("room") == room
              and row.get("record") == record
@@ -6222,7 +6252,10 @@ def wait_for_direct_message_terminal(socket, receipt, process, output):
 def canonical_physical_message(socket, room, record, expected, process, *, diagnostic_path=None):
     """Derive the original from an actual saved row; keep fixture text in memory."""
     saved = {}
-    for read in actions(socket):
+    snapshot = permission_actions_snapshot(socket)
+    if snapshot is None:
+        return None
+    for read in snapshot:
         if read.get("application") != "so.tilo.chat" or read.get("room") != room \
                 or read.get("record") != record or read.get("operation") != "read-messages":
             continue
@@ -6671,7 +6704,9 @@ def wait_for_restored_agent_offers(socket, room, record, provider, process, expe
                 for field in ("draft_matches", "caret", "selection"))
             if not sample["editor_state_matches"]:
                 raise RuntimeError("restored offers changed private editor content, caret or selection")
-            rows = actions(socket)
+            rows = permission_actions_snapshot(socket)
+            if rows is None:
+                return None
             messages = [row for row in rows if row.get("application") == "so.tilo.chat"
                 and row.get("room") == room and row.get("record") == record
                 and row.get("semantic_identity") == {"kind": "chat.agent", "key": "chat.person:tide"}
@@ -6895,9 +6930,16 @@ def native_agent_membership_revocation(
     )
 
     def membership_withdrawn():
-        if offered_membership_action(socket, room, "desktop:agent:tide", "remove") is not None:
+        observation = {}
+        if offered_membership_action(socket, room, "desktop:agent:tide", "remove",
+                                     observation=observation) is not None:
             return None
-        if offered_agent_action(socket, room, record, "tide", "open-agent-conversation") is not None:
+        if not observation["complete_settled_snapshot"]:
+            return None
+        if offered_agent_action(socket, room, record, "tide", "open-agent-conversation",
+                                observation=observation) is not None:
+            return None
+        if not observation["complete_settled_snapshot"]:
             return None
         return True
 
@@ -8219,8 +8261,14 @@ def admit_native_agents(socket, room, record, process, output):
     """
     receipts = []
     for agent in ["tide", "reed"]:
-        if offered_agent_action(socket, room, record, agent, "open-agent-conversation"):
-            raise RuntimeError("scratch Chat improperly started with an admitted fixture agent")
+        def unadmitted():
+            observation = {}
+            if offered_agent_action(socket, room, record, agent, "open-agent-conversation",
+                                    observation=observation) is not None:
+                raise RuntimeError("scratch Chat improperly started with an admitted fixture agent")
+            return True if observation["complete_settled_snapshot"] else None
+
+        wait_for("complete scratch Chat agent absence", unadmitted, process)
         add = wait_for("normal native Add agent action", lambda: offered_membership_action(
             socket, room,
             "desktop:workspace", "add-agent"), process)
@@ -8589,10 +8637,7 @@ def bootstrap(binaries, output, native=False, size="1600x900", lifecycle=False,
             try:
                 membership = admit_native_agents(socket, enrollment["room"], category[0]["record"], shell, output)
             except RuntimeError:
-                fields = ["provider", "id", "application", "room", "record", "resource",
-                          "operation", "semantic_identity"]
-                observed = [{key: row.get(key) for key in fields} for row in actions(socket)
-                            if row.get("room") == enrollment["room"]]
+                observed = native_agent_catalogue_observation(socket, enrollment["room"])
                 (output / "failed-native-agent-catalog.json").write_text(
                     json.dumps(observed, indent=2) + "\n")
                 require_ok(call(socket, {"op": "snapshot", "path": str(output / f"failed-native-agents-{size}.png")}))

@@ -2477,6 +2477,7 @@ impl AppHandler {
             &event,
             handled || focus_target.is_some(),
             &resources_before,
+            false,
         );
         if let Some(id) = focus_target {
             app.set_focused_node(Some(id));

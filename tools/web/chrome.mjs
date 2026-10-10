@@ -189,7 +189,9 @@ export async function launch({args = []} = {}) {
         await exited;
       }
       ws.close();
-      rmSync(profile, {recursive: true, force: true});
+      // Exited Chrome helpers can leave a final directory update racing with
+      // removal. Bound Node's retries; a persistent cleanup error still fails.
+      rmSync(profile, {recursive: true, force: true, maxRetries: 5, retryDelay: 100});
     },
   };
 }

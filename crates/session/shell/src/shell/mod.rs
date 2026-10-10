@@ -975,11 +975,12 @@ pub fn mount_in_process(
             |context| {
                 // Only a real session's terminals open sessions; a test's or
                 // a capture's show a terminal with none.
-                context.lend(if inputs.opens_sessions() {
-                    terminal::HostedProcessServices::default()
+                if inputs.opens_sessions() {
+                    // Discovery and connect belong to the open worker, too.
+                    context.lend(terminal::HostedSessionSource);
                 } else {
-                    terminal::HostedProcessServices::unavailable()
-                });
+                    context.lend(terminal::HostedProcessServices::unavailable());
+                }
             },
         ),
         ShellKind::FileExplorer => {

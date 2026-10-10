@@ -211,7 +211,7 @@ pub fn pump(relay: &mut MemoryRelay) {
             | CollabRequest::InvokeTaskAction { .. }
             | CollabRequest::ManagedInvocationAttempt { .. }
             | CollabRequest::TaskRunCancellation { .. }
-            | CollabRequest::TaskRunControl { .. } => {
+            | CollabRequest::EnrolledTaskRunControl { .. } => {
                 // Session-local control commands never fan out through app documents.
             }
         }

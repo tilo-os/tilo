@@ -2809,10 +2809,12 @@ mod tests {
         let manifest_path = payload.join("manifest.toml");
         std::fs::write(
             &manifest_path,
-            format!(
-                "[package]\nid = \"{package_id}\"\nname = \"{display_name}\"\n\
-                 version = \"1.2.3\"\ncategory = \"Utility\"\n\
-                 [entrypoint]\nbin = \"bin/app\"\ntype = \"gui\"\n"
+            crate::shell::test_support::canonical_manifest(
+                &format!(
+                    "id = \"{package_id}\"\nname = \"{display_name}\"\n\
+                     version = \"1.2.3\"\nkind = \"app\"\ncategory = \"Utility\""
+                ),
+                "[entrypoint]\nbin = \"bin/app\"\ntype = \"gui\"\n",
             ),
         )
         .expect("manifest");

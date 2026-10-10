@@ -47,11 +47,11 @@ pub use shared_surfaces::SharedSurfaces;
 pub use task::{
     MAX_WORKSPACE_TASK_DIRECTION_BYTES, MAX_WORKSPACE_TASK_INSTRUCTION_BYTES,
     MAX_WORKSPACE_TASK_SUMMARY_BYTES, WorkspaceAgentRequest, WorkspaceEffectReceipt, WorkspaceTask,
-    WorkspaceTaskActiveRun, WorkspaceTaskAuditEvent, WorkspaceTaskCancellationRequest,
-    WorkspaceTaskControl, WorkspaceTaskDirection, WorkspaceTaskDirectionApplied,
-    WorkspaceTaskExecution, WorkspaceTaskExecutionPhase, WorkspaceTaskMutationReceipt,
-    WorkspaceTaskMutationResult, WorkspaceTaskPendingFrontier, WorkspaceTaskResource,
-    WorkspaceTaskRoute, WorkspaceTaskStatus,
+    WorkspaceTaskActiveRun, WorkspaceTaskApproval, WorkspaceTaskAuditEvent,
+    WorkspaceTaskCancellationRequest, WorkspaceTaskControl, WorkspaceTaskDirection,
+    WorkspaceTaskDirectionApplied, WorkspaceTaskExecution, WorkspaceTaskExecutionPhase,
+    WorkspaceTaskMutationReceipt, WorkspaceTaskMutationResult, WorkspaceTaskPendingFrontier,
+    WorkspaceTaskResource, WorkspaceTaskRoute, WorkspaceTaskStatus,
 };
 pub use topology::{DropTarget, GroupShape, RemovedTab, TabMove};
 pub use tree::{DesktopTree, STATE_SCHEMA_VERSION};

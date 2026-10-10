@@ -405,5 +405,23 @@ class GpuTests(unittest.TestCase):
         self.assertEqual(gate(f"{OK}\n{gpu.LOG_SEPARATOR}\n")[0], 1)
 
 
+class TerminalShellPerformanceTests(unittest.TestCase):
+    def test_old_baseline_fails_even_within_readiness_timeout(self):
+        from acceptance import core
+        self.assertLess(39.6, core.TERMINAL_SHELL_S)
+        with self.assertRaises(core.CheckFailed):
+            core.assert_terminal_shell_performance(39.6)
+
+    def test_measured_batched_import_passes(self):
+        from acceptance import core
+        core.assert_terminal_shell_performance(21.0)
+
+    def test_missing_readiness_and_performance_boundary_fail(self):
+        from acceptance import core
+        for seconds in (None, core.TERMINAL_SHELL_PERFORMANCE_S):
+            with self.subTest(seconds=seconds), self.assertRaises(core.CheckFailed):
+                core.assert_terminal_shell_performance(seconds)
+
+
 if __name__ == "__main__":
     unittest.main()

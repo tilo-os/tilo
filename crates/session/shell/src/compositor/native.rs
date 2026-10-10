@@ -463,6 +463,29 @@ impl NativeRedrawReasons {
             || (!session_locked && self.keepalive)
             || (session_locked && (self.lock_clock || self.lock_animation || self.lock_osd))
     }
+
+    /// The edges that hold, as bits of [`super::metrics::REDRAW_REASONS`].
+    fn bits(self, session_locked: bool) -> u32 {
+        [
+            self.force,
+            self.backend_event,
+            self.visible_input,
+            self.session,
+            self.revision,
+            !session_locked && self.hidden_desktop_animation,
+            !session_locked && self.apps,
+            !session_locked && self.peers,
+            !session_locked && self.presentation,
+            !session_locked && self.capture,
+            session_locked && self.lock_clock,
+            session_locked && self.lock_animation,
+            session_locked && self.lock_osd,
+            !session_locked && self.keepalive,
+        ]
+        .into_iter()
+        .enumerate()
+        .fold(0, |bits, (bit, held)| bits | (u32::from(held) << bit))
+    }
 }
 
 /// An animation's resting frame is owed after its demand clears. The last
@@ -6349,29 +6372,54 @@ fn end_spatial_control(
     let Some(session) = active.take() else {
         return;
     };
-    for keycode in session.pressed_keys {
-        let _ = crate::shell::device_fabric_runtime::send_spatial_input_bound(
-            network,
-            &session.target,
-            session.lease_nonce,
-            crate::shell::device_fabric::FabricInputEvent::Key {
+    let events = session
+        .pressed_keys
+        .into_iter()
+        .map(
+            |keycode| crate::shell::device_fabric::FabricInputEvent::Key {
                 keycode,
                 pressed: false,
                 modifiers: 0,
             },
-        );
-    }
-    for button in session.pressed_buttons {
-        let _ = crate::shell::device_fabric_runtime::send_spatial_input_bound(
-            network,
-            &session.target,
-            session.lease_nonce,
+        )
+        .chain(session.pressed_buttons.into_iter().map(|button| {
             crate::shell::device_fabric::FabricInputEvent::PointerButton {
                 button,
                 pressed: false,
-            },
-        );
-    }
+            }
+        }))
+        .collect();
+    let _ = crate::shell::device_fabric_runtime::queue_spatial_input_cleanup_bound(
+        network,
+        &session.target,
+        session.lease_nonce,
+        events,
+    );
+}
+
+#[cfg(test)]
+pub(crate) fn teardown_spatial_control_for_test(
+    network: &crate::shell::network::ShellNetwork,
+    target: crate::shell::personal_continuity::DeviceId,
+    nonce: [u8; 16],
+    held: (
+        std::collections::BTreeSet<u32>,
+        std::collections::BTreeSet<u32>,
+    ),
+) -> bool {
+    let mut active = Some(SpatialControlSession {
+        target,
+        lease_nonce: nonce,
+        output: None,
+        return_edge: crate::shell::device_fabric::DisplayEdge::Right,
+        x: 0.0,
+        y: 0.0,
+        pressed_keys: held.0,
+        pressed_buttons: held.1,
+        nearby_drop: None,
+    });
+    end_spatial_control(network, &mut active);
+    active.is_none()
 }
 
 #[allow(
@@ -8959,9 +9007,12 @@ pub fn run() {
             .is_some_and(|value| value == "1");
     let identity_missing =
         crate::shell::identity_provisioning::needs_first_run_flow(&identity_store);
-    // The device admin's control socket is the real seat's: a nested or
-    // headless compositor is a development session with its own sockets.
-    let mut admin_control_due = (backend_kind == BackendKind::Drm)
+    // The normal admin socket remains the real seat's. An owner can request
+    // a separate semantic endpoint for headless work without enabling the
+    // development input socket or changing first-use and lock handling.
+    let headless_owner_control = backend_kind == BackendKind::Headless
+        && std::env::args().any(|argument| argument == "--headless-owner-control");
+    let mut admin_control_due = (backend_kind == BackendKind::Drm || headless_owner_control)
         .then(|| identity_store.path().parent().map(Path::to_path_buf))
         .flatten();
     let onboarding_identity_dir = if should_activate_first_use(
@@ -9944,6 +9995,9 @@ pub fn run() {
     let (mut cause_session, mut cause_keepalive) = (0u32, 0u32);
     let mut animation_sources_seen = crate::shell::frame::AnimationDemand::default();
     let mut animating_content_leaves: Vec<String> = Vec::new();
+    // Widgets that asked for a still frame (no animation running): what
+    // repaints an idle desktop.
+    let mut redraw_content_leaves: Vec<String> = Vec::new();
     let mut wakes_seen = WakeTally::default();
     let mut widget_wake_owner: Option<String> = None;
     // Test-control commands are intentionally serviced after this tick's
@@ -12444,7 +12498,12 @@ pub fn run() {
         }
         // First login has to finish before the device has an owner to serve.
         if !onboarding_active && let Some(identity_dir) = admin_control_due.take() {
-            match crate::compositor::admin_control::bind(&identity_dir) {
+            let bound = if headless_owner_control {
+                crate::compositor::admin_control::bind_headless_owner(&identity_dir)
+            } else {
+                crate::compositor::admin_control::bind(&identity_dir)
+            };
+            match bound {
                 Ok((listener, path)) => {
                     tracing::info!(path = %path.display(), "admin control: listening");
                     let wake = control_listener_wake(&listener, &event_loop.handle());
@@ -12633,7 +12692,7 @@ pub fn run() {
         }
         // Is there anything new to show? This redraw gating lets a static desktop
         // idle at near-zero CPU, orthogonal to *when* a frame may show (the clock's job below).
-        let content_changed = NativeRedrawReasons {
+        let redraw_reasons = NativeRedrawReasons {
             force: force_first_paint,
             backend_event: had_backend_events,
             visible_input: visible_input_changed,
@@ -12667,8 +12726,8 @@ pub fn run() {
             )
             .is_some_and(|deadline| iter_t0 >= deadline),
             lock_osd: lock_screen::lock_osd_frame_due(frame_builder.chrome().osd, iter_t0),
-        }
-        .content_changed(session.is_locked());
+        };
+        let content_changed = redraw_reasons.content_changed(session.is_locked());
         // May a frame be shown yet? Off-cadence wakeups (protocol traffic,
         // test-control, input) would submit inside a discarded interval; first frame is exempt.
         let cadence_due = force_first_paint || frame_clock.due(iter_t0);
@@ -12691,6 +12750,12 @@ pub fn run() {
             metrics.mark_backpressured();
         }
         let should_paint = content_changed && cadence_due && pipe_ready;
+        if should_paint && metrics.is_enabled() {
+            metrics.mark_redraw(
+                redraw_reasons.bits(session.is_locked()),
+                frame_builder.host().last_update_sources(),
+            );
+        }
         animation_settle.after_tick(still_moving, should_paint);
         // If content became dirty off-cadence, keep cadence in the next park;
         // otherwise the event edge has already been consumed and a long idle
@@ -12740,6 +12805,13 @@ pub fn run() {
                 {
                     cause_keepalive = cause_keepalive.saturating_add(1);
                 }
+                if !session.is_locked()
+                    && !animating
+                    && frame_builder.host().last_update_sources() & 1 != 0
+                    && redraw_content_leaves.is_empty()
+                {
+                    redraw_content_leaves = frame_builder.content_redrawing_leaves();
+                }
             }
             if stats_since.elapsed() >= Duration::from_secs(2) {
                 let animation_host_labels =
@@ -12777,10 +12849,12 @@ pub fn run() {
                 cause_session = 0;
                 cause_keepalive = 0;
                 eprintln!(
-                    "paint-stats: wakes {} | widget-deadline owner {:?}",
+                    "paint-stats: wakes {} | widget-deadline owner {:?} | still redraw {:?}",
                     wakes_seen.take_summary(),
                     widget_wake_owner.take().unwrap_or_default(),
+                    redraw_content_leaves.join(","),
                 );
+                redraw_content_leaves.clear();
                 animation_sources_seen = crate::shell::frame::AnimationDemand::default();
                 animating_content_leaves.clear();
                 stats_since = Instant::now();
@@ -14888,6 +14962,12 @@ mod tests {
             },
         ] {
             assert!(!hidden.content_changed(true));
+            assert_eq!(
+                hidden.bits(true),
+                0,
+                "hidden work must not be attributed to a lock frame"
+            );
+            assert_ne!(hidden.bits(false), 0);
             assert!(
                 hidden.content_changed(false),
                 "unlocked redraw behaviour must remain unchanged"
@@ -14913,6 +14993,7 @@ mod tests {
             },
         ] {
             assert!(visible_lock_edge.content_changed(true));
+            assert_ne!(visible_lock_edge.bits(true), 0);
         }
         // Phase `due_lock_animation_waits_for_cadence_or_presenter_instead_of_spinning`.
         {

@@ -1018,13 +1018,14 @@ activity-task-direction-label = Public task instructions
 activity-task-direction-placeholder = Describe the change you want the agent to make
 activity-task-direction-observation = These instructions apply to the reviewed run. If the task restarts, review them again.
 activity-task-review-saving = Waiting for the workspace owner to save…
-activity-task-review-saved = Change accepted by workspace owner.
+activity-task-review-saved = Saved by the workspace owner. Agent application is shown separately.
 activity-task-review-refused = Not saved. Your draft is retained. { $detail }
 
 activity-task-next = Next task
 activity-task-previous = Previous task
 activity-task-review-source = Confirmed by workspace owner · updated { $time }
 activity-task-review-status = { $status } · Agent: { $agent }
+activity-task-review-frontier = Run { $epoch } · instructions { $revision } · agent applied { $applied }
 activity-task-review-direction-waiting = Waiting for agent
 activity-task-review-direction-applied = Applied by agent
 activity-task-review-direction = { $author }: { $text }
@@ -1033,3 +1034,10 @@ activity-task-review-stopping = Stop requested; waiting for the agent to acknowl
 activity-task-current-instruction = Current instruction
 activity-task-review-changed = This task changed. Review its current state before changing it.
 activity-task-original-instruction = Original request
+
+activity-task-approve-run = Approve run
+activity-task-run-approved = Approved by { $person } · { $time }
+activity-task-awaiting-acceptance = Awaiting agent acceptance · may be offline
+activity-task-run-accepted = Agent accepted this run · last report { $time }
+activity-task-run-planning = Agent is planning this run · last report { $time }
+activity-task-run-executing = Agent is processing this run · last report { $time }

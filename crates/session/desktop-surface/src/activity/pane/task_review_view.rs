@@ -8,6 +8,15 @@ use super::{
 };
 use crate::activity::{TaskReviewCommand, TaskReviewRequest, TaskReviewSnapshot};
 
+#[derive(Clone)]
+pub(super) struct ApprovalFrontier {
+    room: String,
+    task_id: String,
+    agent_id: String,
+    run_epoch: u64,
+    revision: u64,
+}
+
 pub(super) struct DirectionDraft {
     pub room: String,
     pub task_id: String,
@@ -170,6 +179,13 @@ impl RoomActivityPane {
     /// Poll the room owner's review and say where the task list comes from.
     pub(super) fn refresh_task_review(&mut self) -> TaskListOrigin {
         if self
+            .review_approval
+            .as_ref()
+            .is_some_and(|approval| approval.room != self.task_room)
+        {
+            self.review_approval = None;
+        }
+        if self
             .direction
             .as_ref()
             .is_some_and(|draft| draft.room != self.task_room)
@@ -286,6 +302,7 @@ impl RoomActivityPane {
             .last()
             .map_or(0, |direction| direction.revision);
         match action {
+            TaskAction::ApproveRun => self.submit_reviewed_approval(&id),
             TaskAction::Steer => {
                 self.direction = Some(DirectionDraft {
                     room: self.task_room.clone(),
@@ -314,6 +331,21 @@ impl RoomActivityPane {
             _ => return false,
         }
         true
+    }
+    fn submit_reviewed_approval(&mut self, id: &str) {
+        let Some(approval) = self
+            .review_approval
+            .clone()
+            .filter(|approval| approval.room == self.task_room && approval.task_id == id)
+        else {
+            return;
+        };
+        self.submit_review(TaskReviewCommand::Approve {
+            task_id: approval.task_id,
+            agent_id: approval.agent_id,
+            run_epoch: approval.run_epoch,
+            after_revision: approval.revision,
+        });
     }
     fn review_action_is_stale(&self, action: TaskAction) -> bool {
         let reopening_private_edit = action == TaskAction::EditPending
@@ -602,6 +634,7 @@ impl RoomActivityPane {
         bounds: Rect,
         presence: &PresenceCtx,
     ) {
+        self.review_approval = None;
         let mut content = vello::Scene::new();
         // Reserve the shared scrollbar lane before measuring, so overflow on
         // the first frame cannot clip controls laid out at the wider width.
@@ -745,6 +778,7 @@ impl RoomActivityPane {
                 width,
                 bounds.x0 + gap,
                 &mut y,
+                self.now(),
             );
         }
         let instruction = snapshot
@@ -755,27 +789,13 @@ impl RoomActivityPane {
         if let Some(instruction) = instruction {
             draw_instruction_preview(paint, instruction, bounds, &mut y);
             self.task_instruction_target = Some(task.id.clone());
-            let height = self.task_instruction_open_button.layout(
-                Rect::new(
-                    bounds.x0 + gap,
-                    y,
-                    (bounds.x0
-                        + gap
-                        + 22.0 * f64::from(paint.theme.text(TextRole::Label).line_height_px()))
-                    .min(bounds.x1 - gap),
-                    y,
-                ),
-                paint.theme,
-                paint.text,
-            );
-            self.task_instruction_open_button.draw(
-                paint.scene,
-                paint.transform,
-                paint.text,
-                paint.theme,
+            draw_instruction_control(
+                paint,
+                bounds,
+                &mut y,
+                &mut self.task_instruction_open_button,
                 presence,
             );
-            y += height + gap;
         }
         self.task_rects
             .push((task.id.clone(), Rect::new(bounds.x0, top, bounds.x1, y)));
@@ -786,7 +806,16 @@ impl RoomActivityPane {
         if self.review_task_offset.saturating_add(1) < self.tasks.len() {
             actions.insert(0, TaskAction::NextTasks);
         }
-        self.draw_review_action_grid(paint, bounds, y, &actions, presence)
+        let approval = approval_frontier(snapshot, task);
+        let bottom = self.draw_review_action_grid(paint, bounds, y, &actions, presence);
+        if self
+            .task_action_rects
+            .iter()
+            .any(|(action, _)| *action == TaskAction::ApproveRun)
+        {
+            self.review_approval = approval;
+        }
+        bottom
     }
     fn draw_review_heading(&self, paint: &mut PaintCtx<'_>, bounds: Rect) -> f64 {
         let gap = f64::from(paint.theme.tokens.spacing.s3);
@@ -807,6 +836,40 @@ impl RoomActivityPane {
         }
         y
     }
+}
+fn approval_frontier(
+    snapshot: &TaskReviewSnapshot,
+    task: &tilo_desktop_model::WorkspaceTask,
+) -> Option<ApprovalFrontier> {
+    let control = snapshot.controls.get(&task.id)?;
+    if !native_run_approval_available(task, control) {
+        return None;
+    }
+    Some(ApprovalFrontier {
+        room: snapshot.room.clone(),
+        task_id: task.id.clone(),
+        agent_id: task.assigned_agent.clone()?,
+        run_epoch: control.run_epoch,
+        revision: control
+            .directions
+            .last()
+            .map_or(0, |direction| direction.revision),
+    })
+}
+pub(super) fn native_run_approval_available(
+    task: &tilo_desktop_model::WorkspaceTask,
+    control: &tilo_desktop_model::WorkspaceTaskControl,
+) -> bool {
+    task.status == tilo_desktop_model::WorkspaceTaskStatus::Queued
+        && control.active_run.is_none()
+        && !control.instruction_required
+        && control.instruction.is_none()
+        && task.assigned_agent.is_some()
+        && task.route != tilo_desktop_model::WorkspaceTaskRoute::Manual
+        && task
+            .resource
+            .as_ref()
+            .is_none_or(|resource| resource.agent_request.is_none())
 }
 fn review_task_summary(task: &tilo_desktop_model::WorkspaceTask) -> String {
     t_args(
@@ -844,6 +907,34 @@ fn draw_instruction_preview(
         draw_review_line(paint, &line, &style, width, bounds.x0 + gap, y);
     }
 }
+fn draw_instruction_control(
+    paint: &mut PaintCtx<'_>,
+    bounds: Rect,
+    y: &mut f64,
+    button: &mut ui::widget::Embedded<ui::widget::Button>,
+    presence: &PresenceCtx,
+) {
+    let gap = f64::from(paint.theme.tokens.spacing.s3);
+    let width = 22.0 * f64::from(paint.theme.text(TextRole::Label).line_height_px());
+    let height = button.layout(
+        Rect::new(
+            bounds.x0 + gap,
+            *y,
+            (bounds.x0 + gap + width).min(bounds.x1 - gap),
+            *y,
+        ),
+        paint.theme,
+        paint.text,
+    );
+    button.draw(
+        paint.scene,
+        paint.transform,
+        paint.text,
+        paint.theme,
+        presence,
+    );
+    *y += height + gap;
+}
 fn draw_review_line(
     paint: &mut PaintCtx<'_>,
     text: &str,
@@ -872,6 +963,7 @@ fn draw_control_evidence(
     width: f32,
     x: f64,
     y: &mut f64,
+    now: SystemTime,
 ) {
     let style = paint.theme.text(TextRole::Body);
     if let Some(status) = direction_application_status(control, assigned_agent) {
@@ -891,6 +983,35 @@ fn draw_control_evidence(
             x,
             y,
         );
+    }
+    let revision = control
+        .directions
+        .last()
+        .map_or(0, |direction| direction.revision);
+    let applied = control.active_run.as_ref().map_or_else(
+        || {
+            control
+                .directions
+                .iter()
+                .filter(|direction| direction.applied.is_some())
+                .map(|direction| direction.revision)
+                .max()
+                .unwrap_or(0)
+        },
+        |run| run.applied_direction_revision,
+    );
+    let status = t_args(
+        "activity-task-review-frontier",
+        &[
+            ("epoch", control.run_epoch.into()),
+            ("revision", revision.into()),
+            ("applied", applied.into()),
+        ],
+    );
+    draw_review_line(paint, &status, &style, width, x, y);
+    for line in task_run_evidence(control, now) {
+        let line = paint.text.elide_to_width_style(&line, width, &style);
+        draw_review_line(paint, &line, &style, width, x, y);
     }
     if let Some(direction) = control.directions.last() {
         let text = t_args(
@@ -937,4 +1058,50 @@ fn review_source(snapshot: &TaskReviewSnapshot, now: SystemTime) -> String {
             .into(),
         )],
     )
+}
+
+pub(super) fn task_run_evidence(
+    control: &tilo_desktop_model::WorkspaceTaskControl,
+    now: SystemTime,
+) -> Vec<String> {
+    let Some(approval) = control
+        .active_run
+        .as_ref()
+        .and_then(|run| run.approval.as_ref())
+    else {
+        return Vec::new();
+    };
+    let time = |seconds: i64| {
+        format_relative_time(
+            SystemTime::UNIX_EPOCH
+                .checked_add(Duration::from_secs(seconds.try_into().unwrap_or(0)))
+                .unwrap_or(SystemTime::UNIX_EPOCH),
+            now,
+        )
+    };
+    let approved = t_args(
+        "activity-task-run-approved",
+        &[
+            ("person", approval.person.as_str().into()),
+            ("time", time(approval.approved_at).into()),
+        ],
+    );
+    let phase = control.execution.as_ref().map_or_else(
+        || t("activity-task-awaiting-acceptance"),
+        |execution| {
+            let key = match execution.phase {
+                tilo_desktop_model::WorkspaceTaskExecutionPhase::Accepted => {
+                    "activity-task-run-accepted"
+                }
+                tilo_desktop_model::WorkspaceTaskExecutionPhase::Planning => {
+                    "activity-task-run-planning"
+                }
+                tilo_desktop_model::WorkspaceTaskExecutionPhase::Executing => {
+                    "activity-task-run-executing"
+                }
+            };
+            t_args(key, &[("time", time(execution.updated_at).into())])
+        },
+    );
+    vec![approved, phase]
 }

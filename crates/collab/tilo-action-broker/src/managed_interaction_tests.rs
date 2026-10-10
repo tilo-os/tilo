@@ -92,6 +92,7 @@ fn managed_action_fixture() -> ManagedActionFixture {
                     agent_id: "tide".into(),
                     started_at: 1,
                     applied_direction_revision: 0,
+                    approval: None,
                 }),
                 ..Default::default()
             },
@@ -152,6 +153,7 @@ fn managed_action_fixture() -> ManagedActionFixture {
             ),
             task_epoch: Some(3),
             terminal: false,
+            native: None,
         },
     );
     ManagedActionFixture {

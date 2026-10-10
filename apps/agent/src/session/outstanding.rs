@@ -15,7 +15,7 @@
 use ui::time::{Duration, Instant};
 
 use anyhow::Result;
-use ui::collaboration::CollabRequest;
+use ui::collaboration::{CollabEvent, CollabRequest};
 
 use super::{Session, TaskControlChange};
 use crate::wire::{Detached, Link};
@@ -49,7 +49,7 @@ struct ControlWatch {
     clear_at: Option<u64>,
     cancelled: bool,
     /// Owner-authenticated directions not yet handed to the task loop.
-    directions: Vec<runtime_collab::TaskRunDirection>,
+    directions: Vec<runtime_collab::EnrolledTaskRunDirection>,
     /// The broker's refusal to answer, reported at the next check.
     failed: Option<String>,
     /// Steps settled so far in this task.
@@ -150,11 +150,20 @@ impl Session {
 
     fn send_control_poll(&mut self, run: &runtime_collab::TaskRunEnvelope) -> Result<()> {
         let request_id = self.next_request_id();
-        self.link.send_detached(&CollabRequest::TaskRunControl {
-            request_id,
-            run_id: run.run_id,
-            lease: run.lease.clone(),
-        })?;
+        let request = if self.native_task.is_some() {
+            CollabRequest::TaskRunCancellation {
+                request_id,
+                run_id: run.run_id,
+                lease: self.task_lease(run),
+            }
+        } else {
+            CollabRequest::EnrolledTaskRunControl {
+                request_id,
+                run_id: run.run_id,
+                lease: run.lease.clone(),
+            }
+        };
+        self.link.send_detached(&request)?;
         let control = &mut self.outstanding.control;
         control.polls.push((request_id, control.settled));
         control.polled_at = Some(ui::time::now());
@@ -171,7 +180,7 @@ impl Session {
         let polls = std::mem::take(&mut self.outstanding.control.polls);
         for (request_id, at) in polls {
             match self.link.take_detached(request_id) {
-                Some(reply) => self.outstanding.control.settle(reply, at),
+                Some(reply) => self.settle_cancellation_poll(request_id, reply, at)?,
                 None => self.outstanding.control.polls.push((request_id, at)),
             }
         }
@@ -206,7 +215,7 @@ impl Session {
                 ));
             };
             self.outstanding.control.polls.remove(0);
-            self.outstanding.control.settle(reply, at);
+            self.settle_cancellation_poll(request_id, reply, at)?;
         }
         self.cancellation_known()
     }
@@ -246,6 +255,33 @@ impl Session {
         }
         let deadline = self.task_wait_deadline(CANCELLATION_WAIT);
         self.await_cancellation_polls(deadline)
+    }
+
+    fn settle_cancellation_poll(
+        &mut self,
+        request_id: u64,
+        reply: Detached,
+        at: u64,
+    ) -> Result<()> {
+        let controls = self.link.take_queued(|event| {
+            matches!(event, CollabEvent::TaskRunControl { request_id: id, .. } if *id == request_id)
+        });
+        let observed = !controls.is_empty();
+        for event in controls {
+            if let CollabEvent::TaskRunControl { control, .. } = event {
+                self.observe_native_control(control)?;
+            }
+        }
+        if matches!(reply, Detached::Cancellation(Ok(false)))
+            && self.native_task.is_some()
+            && !observed
+        {
+            return Err(anyhow::anyhow!(
+                "native task control unavailable; refusing further actions"
+            ));
+        }
+        self.outstanding.control.settle(reply, at);
+        Ok(())
     }
 }
 

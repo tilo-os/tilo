@@ -284,7 +284,9 @@ impl PermissionContext {
     }
 
     /// Refresh an execution check, preserving the actual host's retained clock.
-    pub(crate) fn at_current_time(&self) -> Result<Self, String> {
+    /// # Errors
+    /// Refuses an unavailable clock or a failed retained host policy sampler.
+    pub fn at_current_time(&self) -> Result<Self, String> {
         let now = match &self.policy_time {
             Some(sampler) => (sampler.0)()?,
             None => crate::time::try_unix_now().ok_or("execution time unavailable")?,

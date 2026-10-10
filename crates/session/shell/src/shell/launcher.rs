@@ -2405,7 +2405,7 @@ fn original_application_creation(
         return None;
     }
     let original = std::str::from_utf8(&record.manifest_bytes).ok()?;
-    let parsed: launcher::manifest::MinimalManifest = toml::from_str(original).ok()?;
+    let parsed: launcher::manifest::ManifestView = toml::from_str(original).ok()?;
     if parsed.package_id != app.package_id {
         return None;
     }
@@ -5667,9 +5667,9 @@ mod tests {
         let manifest_path = payload.join("manifest.toml");
         std::fs::write(
             &manifest_path,
-            format!(
-                "[package]\nid = \"{package_id}\"\nversion = \"1.2.3\"\n\
-                 [entrypoint]\nbin = \"bin/app\"\ntype = \"{entrypoint_type}\"\n"
+            crate::shell::test_support::canonical_manifest(
+                &format!("id = \"{package_id}\"\nversion = \"1.2.3\"\nkind = \"app\""),
+                &format!("[entrypoint]\nbin = \"bin/app\"\ntype = \"{entrypoint_type}\"\n"),
             ),
         )
         .unwrap();

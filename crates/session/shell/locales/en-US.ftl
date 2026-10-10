@@ -2564,7 +2564,15 @@ shell-launch-writer-still-closing = The previous app is still closing. Try openi
 
 shell-window-restore-interrupted = This saved window did not finish reopening.
 shell-window-retry = Reopen window
+task-review-approve = Approve task run
+
+# Shared activity label used by native task-review rendering.
+activity-task-approve-run = Approve run
 
 device-fabric-error-input-operation-unavailable = Input control is busy. Try again.
 device-fabric-error-input-decline-unavailable = Your declined input devices could not be read.
 device-fabric-error-input-decline-save-failed = Input control was revoked, but the decline could not be saved. Automatic input remains disabled.
+
+device-fabric-error-input-sequence-exhausted = Input sequencing is exhausted. Request a new control lease.
+
+device-fabric-error-input-cleanup-pending = Previous input is still being released. Try again.

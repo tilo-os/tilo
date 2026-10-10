@@ -24,6 +24,7 @@ use crate::wire::Link;
 mod agent_loop;
 mod chat;
 mod managed_messages;
+mod native_task;
 mod outstanding;
 use chat::ChatRun;
 
@@ -138,7 +139,10 @@ fn dispatched_action_key(
     format!("{id}\0{}", serde_json::Value::Object(arguments.clone()))
 }
 
-fn directed_instruction(original: &str, directions: &[runtime_collab::TaskRunDirection]) -> String {
+fn directed_instruction(
+    original: &str,
+    directions: &[runtime_collab::EnrolledTaskRunDirection],
+) -> String {
     let mut instruction = String::with_capacity(
         original.len()
             + directions
@@ -164,7 +168,7 @@ enum TaskActionStop {
 enum TaskControlChange {
     Current,
     Cancelled,
-    Directed(Vec<runtime_collab::TaskRunDirection>),
+    Directed(Vec<runtime_collab::EnrolledTaskRunDirection>),
 }
 
 /// The host's durable step bound (`MAX_AGENT_TASK_STEPS`).
@@ -436,6 +440,7 @@ pub struct Session {
     enrolled_sequence: u64,
     /// Monotonic deadline from an explicit broker-minted owner task policy.
     task_deadline: Option<Instant>,
+    native_task: Option<native_task::NativeTaskState>,
     /// When the agent last asked the room for the document. It asks again
     /// until it has one: an app that was still opening its file when the
     /// agent arrived never saw the first ask, and the agent would then wait
@@ -596,6 +601,7 @@ impl Session {
             enrolled_active: None,
             enrolled_sequence: 0,
             task_deadline: None,
+            native_task: None,
             last_route: None,
             asked_at: ui::time::now(),
             broker_catalogue: tilo_actions::remote::CataloguePage::default(),
@@ -724,8 +730,20 @@ impl Session {
                     self.run_enrolled_task(&run)?;
                 }
                 Some(CollabEvent::EnrolledTaskDisconnected { detail }) => anyhow::bail!(detail),
-                Some(CollabEvent::TaskRun(run)) if self.enrolled_custody.is_none() => {
-                    self.run_task(&run)?;
+                Some(CollabEvent::TaskRun(run))
+                    if self.enrolled_active.is_none()
+                        && (self.enrolled_custody.is_none()
+                            || runtime_collab::native_task_revision(&run.lease).is_some()) =>
+                {
+                    if let Err(error) = self.run_task(&run) {
+                        if runtime_collab::native_task_revision(&run.lease).is_none() {
+                            return Err(error);
+                        }
+                        tracing::warn!(run_id = run.run_id, %error, "native task stopped before completion");
+                        if let Err(report_error) = self.fail_task(&run, &error.to_string()) {
+                            tracing::warn!(%report_error, "native task review report was refused");
+                        }
+                    }
                 }
                 Some(CollabEvent::Invocation {
                     id,
@@ -880,6 +898,7 @@ impl Session {
         });
         let result = self.run_task_with_deadline(run);
         self.task_deadline = None;
+        self.native_task = None;
         result
     }
 
@@ -888,6 +907,16 @@ impl Session {
         reason = "one task run keeps planning, per-step reporting, chunked writing and the terminal update in a single auditable sequence"
     )]
     fn run_task_with_deadline(&mut self, run: &runtime_collab::TaskRunEnvelope) -> Result<()> {
+        self.native_task =
+            runtime_collab::native_task_revision(&run.lease).map(|(base, revision)| {
+                native_task::NativeTaskState {
+                    run_id: run.run_id,
+                    task_id: run.task_id.clone(),
+                    base: base.into(),
+                    revision,
+                    ..Default::default()
+                }
+            });
         let validation = if self.enrolled_active.is_some() {
             validate_enrolled_context(run)
         } else {
@@ -937,6 +966,15 @@ impl Session {
             return loop {
                 match self.run_task_loop(&directed_run)? {
                     agent_loop::LoopEnd::Finished(finish, completed) => {
+                        if self.native_task.is_some() && !finish.done {
+                            break self.fail_task(
+                                &directed_run,
+                                finish
+                                    .reply
+                                    .as_deref()
+                                    .unwrap_or("Needs your decision before continuing"),
+                            );
+                        }
                         // `done: false` is an answer, not a fault: the agent says
                         // in its reply what it could not do, and stays available
                         // for the next message. Reporting it as a failed task
@@ -993,6 +1031,16 @@ impl Session {
                     }
                 }
             };
+        }
+        if self
+            .native_task
+            .as_ref()
+            .is_some_and(|state| state.pending.is_some())
+        {
+            return self.fail_task(
+                run,
+                "Directions require model planning or person review; none were acknowledged",
+            );
         }
         // The rules-only planner has no model call to overlap: settle the
         // poll already out before planning, as before.
@@ -1359,11 +1407,20 @@ impl Session {
             }
             return self.send_enrolled_update(acceptance, update);
         }
+        let request_id = self.native_task.as_ref().map(|_| self.next_broker_request);
+        if request_id.is_some() {
+            self.next_request_id();
+        }
         self.link.send(&CollabRequest::ReportTaskRun {
+            request_id,
             run_id: run.run_id,
-            lease: run.lease.clone(),
+            lease: self.task_lease(run),
             update,
-        })
+        })?;
+        match request_id {
+            Some(id) => self.wait_for_native_report(id),
+            None => Ok(()),
+        }
     }
 
     fn send_enrolled_update(
@@ -1549,7 +1606,7 @@ impl Session {
             request_id,
             invocation,
             run_id: run.run_id,
-            lease: run.lease.clone(),
+            lease: self.task_lease(run),
             step: Some(step),
             peer_id: action.peer_id,
             resource: action.resource.clone(),
@@ -1627,12 +1684,12 @@ impl Session {
             )));
         }
         let request_id = self.next_request_id();
-        let invocation = tilo_actions::InvocationId::new();
+        let invocation = self.task_child_id(run)?;
         self.link.send(&CollabRequest::InvokeTaskAction {
             request_id,
             invocation,
             run_id: run.run_id,
-            lease: run.lease.clone(),
+            lease: self.task_lease(run),
             step: None,
             peer_id: action.peer_id,
             resource: action.resource.clone(),
@@ -1643,7 +1700,11 @@ impl Session {
             Ok((_, update)) => update,
             Err(error) => return Ok(Err(TaskActionStop::Failed(error))),
         };
-        self.follow_task_invocation(run, action, invocation, update)
+        if self.native_task.is_some() {
+            self.follow_native_invocation(run, action, arguments, invocation, update)
+        } else {
+            self.follow_task_invocation(run, action, invocation, update)
+        }
     }
 
     /// Follow a started legacy invocation to its terminal update through
@@ -3629,6 +3690,7 @@ mod tests {
             watching: HashMap::new(),
             dispatched_this_turn: HashSet::new(),
             chooser: Chooser::new(false, Duration::ZERO),
+            native_task: None,
             enrolled_custody: None,
             managed_messages: None,
             enrolled_active: None,
@@ -3835,6 +3897,7 @@ mod tests {
                 catalogue_cache: None,
                 turn: None,
                 outstanding: outstanding::Outstanding::default(),
+                native_task: None,
             }
         }
 
@@ -3919,10 +3982,10 @@ mod tests {
                             )),
                         },
                     }),
-                    CollabRequest::TaskRunControl { request_id, .. } => {
-                        Some(CollabEvent::TaskRunControl {
+                    CollabRequest::EnrolledTaskRunControl { request_id, .. } => {
+                        Some(CollabEvent::EnrolledTaskRunControl {
                             request_id: *request_id,
-                            result: Ok(runtime_collab::TaskRunControl {
+                            result: Ok(runtime_collab::EnrolledTaskRunControl {
                                 version: 1,
                                 run_epoch: 1,
                                 applied_revision: 0,
@@ -4045,6 +4108,7 @@ mod tests {
                     enrolled_active: managed.then_some(acceptance),
                     enrolled_sequence: 0,
                     task_deadline: None,
+                    native_task: None,
                     asked_at: ui::time::now(),
                     last_route: None,
                     broker_catalogue: tilo_actions::remote::CataloguePage::default(),
@@ -4207,10 +4271,10 @@ mod tests {
                             )),
                         },
                     }),
-                    CollabRequest::TaskRunControl { request_id, .. } => {
-                        Some(CollabEvent::TaskRunControl {
+                    CollabRequest::EnrolledTaskRunControl { request_id, .. } => {
+                        Some(CollabEvent::EnrolledTaskRunControl {
                             request_id: *request_id,
-                            result: Ok(runtime_collab::TaskRunControl {
+                            result: Ok(runtime_collab::EnrolledTaskRunControl {
                                 version: 1,
                                 run_epoch: 1,
                                 applied_revision: 0,
@@ -4313,6 +4377,7 @@ mod tests {
                 enrolled_active: Some(acceptance),
                 enrolled_sequence: 0,
                 task_deadline: None,
+                native_task: None,
                 asked_at: ui::time::now(),
                 last_route: None,
                 broker_catalogue: tilo_actions::remote::CataloguePage::default(),

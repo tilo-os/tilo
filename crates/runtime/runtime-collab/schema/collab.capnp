@@ -272,10 +272,10 @@ interface ChannelHandle {
       -> (id :UInt64, updateJson :Text, continuation :Data);
   # Cooperative cancellation for a leased task. The broker reflects a Task
   # Center cancellation; it never lets an agent cancel a task by itself.
-  taskRunCancelled @31 (runId :UInt64, lease :Text) -> (cancelled :Bool);
-  # Read the current owner-confirmed control frontier for one exact leased
-  # run. This is the direction/cancellation carrier; JSON is closed and
-  # versioned independently from Cap'n Proto evolution.
+  taskRunCancelled @31 (runId :UInt64, lease :Text) -> (cancelled :Bool, controlJson :Text);
+  # Read the complete owner-confirmed enrolled-control frontier for one exact
+  # leased run. Distinct from the paged native control on taskRunCancelled;
+  # its JSON is closed and independently versioned.
   taskRunControl @66 (runId :UInt64, lease :Text) -> (controlJson :Text);
 
   # Record a terminal effect started by this application's own local UI.

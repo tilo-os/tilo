@@ -1749,11 +1749,11 @@ impl Widget for MusicApp {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        // Keep frames flowing while playing / a toast fades, and — crucially —
-        // while the streaming worker has an in-flight search or stream
-        // resolution, so its result is drained (and applied to the audio
-        // engine) promptly without waiting for the next input event.
-        self.pb.playing
+        // Settled playback needs observation updates, not a full repaint at
+        // every display refresh. Leave the executor time to serve its bounded
+        // PCM output lane, especially when the renderer uses the CPU.
+        // Startup, worker replies and visible animations still wake promptly.
+        (self.pb.playing && ui::time::now() >= self.last_tick + super::PLAYBACK_POLL_INTERVAL)
             || self.audio.needs_poll()
             || self.resource_stream_invocation.is_some()
             || !self.effect_replies.is_empty()
@@ -1776,6 +1776,19 @@ impl Widget for MusicApp {
                 .frame_theme
                 .as_ref()
                 .is_some_and(|theme| self.body_scroll.needs_animation_frame(theme))
+    }
+
+    fn next_wake_deadline(&self) -> Option<Instant> {
+        self.pb
+            .playing
+            .then_some(self.last_tick + super::PLAYBACK_POLL_INTERVAL)
+            .into_iter()
+            .chain(
+                self.children()
+                    .into_iter()
+                    .filter_map(Widget::next_wake_deadline),
+            )
+            .min()
     }
 
     fn primary_vertical_scroll(&self) -> Option<ui::widget::PrimaryScrollRegion> {
@@ -1805,6 +1818,10 @@ impl Widget for MusicApp {
 
     fn mark_drawn(&mut self) {
         self.dirty = false;
+        // Recording a frame can outlast the playback interval. Start the
+        // next interval after that work so a slow paint cannot immediately
+        // request another paint and crowd out the output worker.
+        self.last_tick = ui::time::now();
     }
 }
 

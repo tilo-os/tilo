@@ -229,6 +229,112 @@ class NativeChatPublicationTests(unittest.TestCase):
         self.assertIn('native_chat_semantic_publication(socket, enrollment["room"])', source)
 
 
+class CoherentAgentCatalogueTests(unittest.TestCase):
+    @staticmethod
+    def member():
+        return {"provider": "desktop", "id": "remove", "application": "so.tilo.desktop",
+                "room": "room", "record": "membership", "resource": "desktop:agent:tide",
+                "operation": "remove", "semantic_identity": None}
+
+    def test_actual_membership_and_chat_rows_beyond_first_page_are_discovered(self):
+        member = self.member()
+        message, _queue = PermissionSnapshotTests.offers()
+        filler = [{**member, "id": f"other-{index}", "resource": f"other-{index}"}
+                  for index in range(200)]
+        for target, observe in ((member, lambda: PROOF.offered_membership_action(
+                "socket", "room", "desktop:agent:tide", "remove")),
+                (message, lambda: PROOF.offered_agent_action(
+                    "socket", "room", "record", "tide", "message"))):
+            with self.subTest(target=target["id"]), patch.object(PROOF, "call", side_effect=[
+                    PermissionSnapshotTests.page(filler, total=201, cursor="next"),
+                    PermissionSnapshotTests.page([target], total=201)]) as read:
+                self.assertEqual(observe(), target)
+                self.assertEqual(read.call_count, 2)
+                self.assertEqual(read.call_args_list[1].args[1]["cursor"], "next")
+
+    def test_unsettled_discovery_cannot_prove_absence_and_duplicates_fail(self):
+        member = self.member()
+        message, _queue = PermissionSnapshotTests.offers()
+        for target, observe in ((member, lambda observation: PROOF.offered_membership_action(
+                "socket", "room", "desktop:agent:tide", "remove", observation=observation)),
+                (message, lambda observation: PROOF.offered_agent_action(
+                    "socket", "room", "record", "tide", "message", observation=observation))):
+            for flags in ({"complete": False}, {"settled": False}):
+                with self.subTest(target=target["id"], flags=flags), patch.object(
+                        PROOF, "call", return_value=PermissionSnapshotTests.page([target], **flags)):
+                    observation = {}
+                    self.assertIsNone(observe(observation))
+                    self.assertIs(observation["complete_settled_snapshot"], False)
+            with patch.object(PROOF, "call", return_value=PermissionSnapshotTests.page([target, target])):
+                with self.assertRaisesRegex(RuntimeError, "ambiguous"):
+                    observe({})
+            with patch.object(PROOF, "call", return_value=PermissionSnapshotTests.page([])):
+                observation = {}
+                self.assertIsNone(observe(observation))
+                self.assertIs(observation["complete_settled_snapshot"], True)
+
+    def test_failure_evidence_marks_unavailable_and_projects_full_snapshot_safely(self):
+        member = {**self.member(), "params": "PRIVATE-CANARY"}
+        with patch.object(PROOF, "call", return_value=PermissionSnapshotTests.page([member])):
+            receipt = PROOF.native_agent_catalogue_observation("socket", "room")
+            self.assertTrue(receipt["complete_settled_snapshot"])
+            self.assertEqual(receipt["actions"][0]["id"], "remove")
+            self.assertNotIn("PRIVATE-CANARY", json.dumps(receipt))
+        for response, failed in ((PermissionSnapshotTests.page([], complete=False), False),
+                                 ({"err": {"code": "not_permitted", "message": "PRIVATE-CANARY"}}, True)):
+            with patch.object(PROOF, "call", return_value=response):
+                self.assertEqual(PROOF.native_agent_catalogue_observation("socket", "room"),
+                                 {"complete_settled_snapshot": False,
+                                  "observation_failed": failed, "actions": []})
+
+    def test_desktop_and_governance_positive_selectors_read_later_pages(self):
+        task = {**self.member(), "id": "read-task", "record": "tasks",
+                "resource": "desktop:task:owned", "operation": "read"}
+        governance = {**task, "id": "profile-save", "application": "tilo.workspace",
+                      "resource": "workspace.permissions:room", "operation": "profile.save"}
+        filler = [{**task, "id": f"other-{index}", "resource": f"other-{index}"}
+                  for index in range(200)]
+        for target, observe in ((task, lambda: PROOF.offered_desktop_action(
+                "socket", "room", "tasks", "desktop:task:owned", "read")),
+                (governance, lambda: PROOF.offered_governance_action(
+                    "socket", "room", "profile.save"))):
+            with self.subTest(target=target["id"]), patch.object(PROOF, "call", side_effect=[
+                    PermissionSnapshotTests.page(filler, total=201, cursor="next"),
+                    PermissionSnapshotTests.page([target], total=201)]):
+                self.assertEqual(observe(), target)
+            with patch.object(PROOF, "call", return_value=PermissionSnapshotTests.page([], settled=False)):
+                self.assertIsNone(observe())
+
+    def test_canonical_saved_request_and_reply_read_actual_later_page(self):
+        read = {**self.member(), "provider": "chat", "id": "read-messages",
+                "application": "so.tilo.chat", "record": "record",
+                "resource": "conversation", "operation": "read-messages"}
+        request = {"id": "m_00000000000000000000000000000021", "author": "person:fixture",
+                   "parent": "", "agentIntent": "message", "text": "PRIVATE-DRAFT", "complete": True}
+        reply = {"id": "m_reply", "author": "agent:tide", "parent": request["id"],
+                 "agentIntent": None, "text": "Fixture response."}
+        filler = [{**self.member(), "id": f"other-{index}"} for index in range(200)]
+        for message, observe in ((request, lambda: PROOF.canonical_physical_message(
+                "socket", "room", "record", "PRIVATE-DRAFT", None)),
+                (reply, lambda: PROOF.agent_reply_observation(
+                    "socket", "room", "record", request["id"], "tide", None))):
+            with self.subTest(author=message["author"]), patch.object(PROOF, "call", side_effect=[
+                    PermissionSnapshotTests.page(filler, total=201, cursor="next"),
+                    PermissionSnapshotTests.page([read], total=201)]), \
+                    patch.object(PROOF, "invoke", return_value={}) as invoke, \
+                    patch.object(PROOF, "wait_terminal", return_value={}), \
+                    patch.object(PROOF, "terminal_value", return_value={
+                        "content": {"channel": "owned-channel", "messages": [message]}}):
+                evidence = observe()
+                self.assertIsNotNone(evidence)
+                self.assertNotIn("PRIVATE-DRAFT", json.dumps(evidence))
+                invoke.assert_called_once_with("socket", read, {"pageSize": 32})
+            with patch.object(PROOF, "call", return_value=PermissionSnapshotTests.page([], complete=False)), \
+                    patch.object(PROOF, "invoke") as invoke:
+                self.assertIsNone(observe())
+                invoke.assert_not_called()
+
+
 class PermissionSnapshotTests(unittest.TestCase):
     @staticmethod
     def page(rows, *, revision="authority", total=None, cursor=None, **extra):
@@ -627,7 +733,7 @@ class FixtureFailureDiagnosticsTests(unittest.TestCase):
                 "operation": "read-messages", "provider": "private-provider", "id": "read"}
         for message, kind in cases.items():
             with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory, \
-                    patch.object(PROOF, "actions", return_value=[read]), \
+                    patch.object(PROOF, "permission_actions_snapshot", return_value=[read]), \
                     patch.object(PROOF, "call", return_value={"err": {
                         "code": "action_failed", "message": message}}) as invoke:
                 path = pathlib.Path(directory) / "refusal.json"
@@ -910,7 +1016,7 @@ class PresentedEditorTargetTests(unittest.TestCase):
                 "operation": "read-messages", "provider": "PRIVATE-PROVIDER", "id": "PRIVATE-ID"}
         for code, expected in (("not_permitted", "not_permitted"), ("PRIVATE-ERROR", "other")):
             with self.subTest(code=code), tempfile.TemporaryDirectory() as directory, \
-                    patch.object(PROOF, "actions", return_value=[read]), \
+                    patch.object(PROOF, "permission_actions_snapshot", return_value=[read]), \
                     patch.object(PROOF, "call", return_value={"err": {
                         "code": code, "message": "PRIVATE-PROMPT"}}) as calls:
                 path = pathlib.Path(directory) / "refusal.json"
@@ -979,7 +1085,7 @@ class PresentedEditorTargetTests(unittest.TestCase):
                 patch.object(PROOF, "owned_agent_identity", return_value="agent"), \
                 patch.object(PROOF, "agent_conversation_accessibility", return_value=owner), \
                 patch.object(PROOF, "private_editor_observation", return_value=before) as read, \
-                patch.object(PROOF, "actions", side_effect=[[message], [queue], [message, queue]]) as catalogue, \
+                patch.object(PROOF, "permission_actions_snapshot", side_effect=[[message], [queue], [message, queue]]) as catalogue, \
                 patch.object(PROOF.time, "sleep"), patch.object(PROOF, "invoke") as invokes:
             output = pathlib.Path(directory)
             self.assertEqual(PROOF.wait_for_restored_agent_offers(
@@ -1001,7 +1107,7 @@ class PresentedEditorTargetTests(unittest.TestCase):
                     patch.object(PROOF, "owned_agent_identity", return_value=identity), \
                     patch.object(PROOF, "agent_conversation_accessibility", return_value=access), \
                     patch.object(PROOF, "private_editor_observation", return_value=observation), \
-                    patch.object(PROOF, "actions") as catalogue:
+                    patch.object(PROOF, "permission_actions_snapshot") as catalogue:
                 with self.assertRaises(RuntimeError):
                     PROOF.wait_for_restored_agent_offers(
                         "socket", "room", "record", provider, process, expected, pathlib.Path(directory))
@@ -1010,7 +1116,7 @@ class PresentedEditorTargetTests(unittest.TestCase):
                 patch.object(PROOF, "owned_agent_identity", return_value="agent"), \
                 patch.object(PROOF, "agent_conversation_accessibility", return_value=owner), \
                 patch.object(PROOF, "private_editor_observation", return_value=before), \
-                patch.object(PROOF, "actions", return_value=[message]), \
+                patch.object(PROOF, "permission_actions_snapshot", return_value=[message]), \
                 patch.object(PROOF.time, "sleep"), \
                 patch.object(PROOF.time, "monotonic", side_effect=[0, 0, 10, 20, 30]):
             with self.assertRaises(PROOF.ProofTimeout):
@@ -1428,7 +1534,7 @@ class PresentedEditorTargetTests(unittest.TestCase):
                     "resource": "desktop:tasks", "operation": "queue"}
         read = {**original, "id": "offered-open", "operation": "open-agent-conversation"}
         access = {"bus": "bus", "process": 7, "window": "/window"}
-        with patch.object(PROOF, "actions", return_value=[{}, opposite, read]), \
+        with patch.object(PROOF, "permission_actions_snapshot", return_value=[{}, opposite, read]), \
                 patch.object(PROOF, "chat_process_identity", return_value=(7, "start")), \
                 patch.object(PROOF.time, "monotonic", return_value=100):
             observed = PROOF.observe_hidden_permission_offer(
@@ -1437,26 +1543,26 @@ class PresentedEditorTargetTests(unittest.TestCase):
             )
         self.assertEqual(observed.original, PROOF.permission_offer_identity(original))
         self.assertEqual(observed.observed_at, 100)
-        for catalogue in ([original, opposite, read], [read], [opposite],
+        for catalogue in (None, [original, opposite, read], [read], [opposite],
                           [opposite, {**read, "room": "foreign"}],
                           [opposite, {**read, "resource": "other"}],
                           [opposite, {**read, "provider": "foreign"}],
                           [opposite, read, read]):
             with self.subTest(catalogue=catalogue), \
-                    patch.object(PROOF, "actions", return_value=catalogue), \
+                    patch.object(PROOF, "permission_actions_snapshot", return_value=catalogue), \
                     patch.object(PROOF, "chat_process_identity", return_value=(7, "start")), \
                     self.assertRaises(RuntimeError):
                 PROOF.observe_hidden_permission_offer(
                     "socket", original, opposite, "open-agent-conversation",
                     access, access, (7, "start"),
                 )
-        with patch.object(PROOF, "actions") as catalogue, self.assertRaises(RuntimeError):
+        with patch.object(PROOF, "permission_actions_snapshot") as catalogue, self.assertRaises(RuntimeError):
             PROOF.observe_hidden_permission_offer(
                 "socket", original, opposite, "open-agent-conversation",
                 access, {**access, "window": "/other"}, (7, "start"),
             )
         catalogue.assert_not_called()
-        with patch.object(PROOF, "actions") as catalogue, \
+        with patch.object(PROOF, "permission_actions_snapshot") as catalogue, \
                 patch.object(PROOF, "chat_process_identity", return_value=(7, "replaced")), \
                 self.assertRaises(RuntimeError):
             PROOF.observe_hidden_permission_offer(
@@ -1465,7 +1571,7 @@ class PresentedEditorTargetTests(unittest.TestCase):
             )
         catalogue.assert_not_called()
         private = "private-catalogue-error"
-        with patch.object(PROOF, "actions", side_effect=RuntimeError(private)), \
+        with patch.object(PROOF, "permission_actions_snapshot", side_effect=RuntimeError(private)), \
                 patch.object(PROOF, "chat_process_identity", return_value=(7, "start")), \
                 self.assertRaises(RuntimeError) as raised:
             PROOF.observe_hidden_permission_offer(
@@ -2854,7 +2960,7 @@ class PresentedEditorTargetTests(unittest.TestCase):
                  "agentIntent": None, "text": "Fixture response."}
 
         def observe(message):
-            with patch.object(PROOF, "actions", return_value=[action]), \
+            with patch.object(PROOF, "permission_actions_snapshot", return_value=[action]), \
                     patch.object(PROOF, "invoke", return_value={}), \
                     patch.object(PROOF, "wait_terminal", return_value={}), \
                     patch.object(PROOF, "terminal_value", return_value={
@@ -3326,7 +3432,7 @@ class PresentedEditorTargetTests(unittest.TestCase):
             {"application": "so.tilo.desktop", "room": "room-b", "record": "membership",
              "resource": "desktop:agent:tide", "operation": "remove", "id": "foreign"},
         ]
-        with patch.object(PROOF, "actions", return_value=rows):
+        with patch.object(PROOF, "permission_actions_snapshot", return_value=rows):
             self.assertEqual(PROOF.offered_membership_action(
                 "socket", "room-a", "desktop:agent:tide", "remove"
             )["id"], "remove")
@@ -3469,7 +3575,7 @@ class PresentedEditorTargetTests(unittest.TestCase):
         messages = [request]
         action = {"application": "so.tilo.chat", "room": "room", "record": "",
                   "operation": "read-messages"}
-        with patch.object(PROOF, "actions", return_value=[action]), \
+        with patch.object(PROOF, "permission_actions_snapshot", return_value=[action]), \
                 patch.object(PROOF, "invoke", return_value={}), \
                 patch.object(PROOF, "wait_terminal", return_value={}), \
                 patch.object(PROOF, "terminal_value", return_value={
@@ -4014,7 +4120,7 @@ class PresentedEditorTargetTests(unittest.TestCase):
             return {"update": {"invocation": action["operation"]}}
 
         with tempfile.TemporaryDirectory() as directory, \
-                patch.object(PROOF, "actions", return_value=rows), \
+                patch.object(PROOF, "permission_actions_snapshot", return_value=rows), \
                 patch.object(PROOF, "wait_for", side_effect=lambda label, probe, process: probe()), \
                 patch.object(PROOF, "invoke", side_effect=invoked), \
                 patch.object(PROOF, "wait_terminal", side_effect=lambda socket, receipt, process: receipt):
@@ -4052,7 +4158,7 @@ class PresentedEditorTargetTests(unittest.TestCase):
             "resource": "workspace.permissions:room-b", "operation": "profile.save",
             "id": "foreign",
         }]
-        with patch.object(PROOF, "actions", return_value=rows):
+        with patch.object(PROOF, "permission_actions_snapshot", return_value=rows):
             self.assertEqual(PROOF.offered_governance_action(
                 "socket", "room-a", "profile.save"
             )["id"], "save")

@@ -945,7 +945,7 @@ fn serve_guest_session(
     // process*, not a thread: attaching a pty means `dup2` onto fds 0/1/2 and
     // `setsid`, both process-wide — on a thread that would steal the
     // supervisor's own stdio and controlling terminal (and under a test harness, the harness's).
-    let mut child = spawn_attached(&launch, &slave)?;
+    let child = spawn_attached(&launch, &slave)?;
     // The child already holds its own clones for stdio, so the original can
     // close as soon as the spawn is done.
     drop(slave);
@@ -971,17 +971,12 @@ fn serve_guest_session(
     } else {
         reply(writer, &response, Some(master.as_raw_fd()))
     };
-    if let Err(error) = handed {
-        // Terminal gave up on the open before the answer came: nothing holds
-        // this session's terminal, so its guest must not run on unseen.
-        let _ = child.kill();
-        let _ = child.wait();
+    let child = accept_session_handoff(handed, child).inspect_err(|_| {
         AuditLog::at(store.audit_dir()).append(
             &crate::audit::AuditRecord::new(&id, &record, "close-session", true)
                 .because("terminal gone before the session was handed over"),
         );
-        return Err(error);
-    }
+    })?;
     drop(editor);
     // Hold the master open until the app has it: closing before the descriptor
     // is received would hand over a dead terminal.
@@ -1208,7 +1203,7 @@ fn serve_host(
     ));
     let child = spawn_on_pty(crate::host::host_command(&account, term, command), &slave)?;
     drop(slave);
-    reply(
+    let handed = reply(
         writer,
         &ServeResponse::Session {
             session: id.clone(),
@@ -1217,7 +1212,13 @@ fn serve_host(
             editor_protocol: None,
         },
         Some(master.as_raw_fd()),
-    )?;
+    );
+    let child = accept_session_handoff(handed, child).inspect_err(|_| {
+        AuditLog::at(store.audit_dir()).append(
+            &crate::audit::AuditRecord::new(&id, "host", "close-session", true)
+                .because("terminal gone before the session was handed over"),
+        );
+    })?;
     drop(master);
     let termination = finish_session(stream, child);
     AuditLog::at(store.audit_dir()).append(
@@ -1314,7 +1315,7 @@ fn serve_relay(
         "open-relay-session",
         true,
     ));
-    reply(
+    let handed = reply(
         writer,
         &ServeResponse::Session {
             session: id.clone(),
@@ -1323,7 +1324,13 @@ fn serve_relay(
             editor_protocol: None,
         },
         Some(master.as_raw_fd()),
-    )?;
+    );
+    let child = accept_session_handoff(handed, child).inspect_err(|_| {
+        AuditLog::at(store.audit_dir()).append(
+            &crate::audit::AuditRecord::new(&id, &key, "close-relay-session", true)
+                .because("terminal gone before the session was handed over"),
+        );
+    })?;
     drop(master);
     adopt_relay_tools(status, store.records_root().to_path_buf());
     let termination = finish_session(stream, child);
@@ -1442,6 +1449,23 @@ fn adopt_relay_tools(mut status: crate::relay::StatusReader, records_root: PathB
             }
         }
     });
+}
+
+/// A spawned local guest, host shell or relay bridge belongs to the
+/// supervisor until its descriptor reply is delivered. An abandoned open
+/// must not leave a running child or a zombie behind.
+fn accept_session_handoff(
+    handed: anyhow::Result<()>,
+    mut child: std::process::Child,
+) -> anyhow::Result<std::process::Child> {
+    match handed {
+        Ok(()) => Ok(child),
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            Err(error)
+        }
+    }
 }
 
 /// Wait for whichever side of a served session ends first and tear the
@@ -1714,6 +1738,76 @@ mod tests {
             child.kill().expect("stop guest");
             let _ = child.wait();
         }
+    }
+
+    #[test]
+    fn cancelling_a_terminal_connection_kills_and_reaps_its_guest_with_clones_open() {
+        let (supervisor, terminal) = UnixStream::pair().expect("socket pair");
+        let _reader_clone = terminal.try_clone().expect("reader lifetime clone");
+        let child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn guest");
+        let pid = libc::pid_t::try_from(child.id()).expect("guest pid");
+        terminal
+            .shutdown(std::net::Shutdown::Both)
+            .expect("cancel pending or accepted session");
+        let termination = finish_session(&supervisor, child);
+        assert!(
+            termination.starts_with("terminal closed; exit"),
+            "{termination}"
+        );
+        // SAFETY: waitpid writes only to this local status; WNOHANG cannot block.
+        let mut status = 0;
+        assert_eq!(
+            unsafe { libc::waitpid(pid, &raw mut status, libc::WNOHANG) },
+            -1,
+            "production teardown must reap the child, not leave a zombie"
+        );
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ECHILD)
+        );
+    }
+
+    #[test]
+    fn failed_descriptor_handoff_kills_and_reaps_the_unclaimed_child() {
+        let (mut supervisor, terminal) = UnixStream::pair().expect("socket pair");
+        terminal
+            .shutdown(std::net::Shutdown::Both)
+            .expect("cancel before reply");
+        let (master, _slave) = open_pty(80, 24).expect("PTY");
+        let child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn guest or bridge");
+        let pid = libc::pid_t::try_from(child.id()).expect("child pid");
+        let handed = reply(
+            &mut supervisor,
+            &ServeResponse::Session {
+                session: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+                environment: "default".into(),
+                relay_session: None,
+                editor_protocol: None,
+            },
+            Some(master.as_raw_fd()),
+        );
+        assert!(
+            handed.is_err(),
+            "the cancelled terminal cannot accept a descriptor"
+        );
+        assert!(accept_session_handoff(handed, child).is_err());
+        // SAFETY: waitpid writes only to this local status; WNOHANG cannot block.
+        let mut status = 0;
+        assert_eq!(
+            unsafe { libc::waitpid(pid, &raw mut status, libc::WNOHANG) },
+            -1,
+            "the production failed-handoff path must reap the child"
+        );
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ECHILD)
+        );
     }
 
     fn open(target: Target) -> ServeRequest {

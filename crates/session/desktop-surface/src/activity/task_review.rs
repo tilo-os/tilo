@@ -18,6 +18,12 @@ pub struct TaskReviewSnapshot {
 /// Every edit carries the run and instruction frontier the person reviewed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TaskReviewCommand {
+    Approve {
+        task_id: String,
+        agent_id: String,
+        run_epoch: u64,
+        after_revision: u64,
+    },
     Inspect {
         task_id: String,
     },

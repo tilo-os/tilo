@@ -667,20 +667,8 @@ jobs:
           esac
           printf '%s  %s\n' "$COLLECTION_SHA256" "$work/apps.tar.gz" \
             | sha256sum --check --strict
-          found=0
-          while IFS= read -r member; do
-            if [[ $member == tapp/ || $member == runtime/ || $member == index.json || $member == SHA256SUMS ]]; then
-              continue
-            elif [[ $member =~ ^tapp/[A-Za-z0-9][A-Za-z0-9._+-]*\.tapp$ ]]; then
-              found=1
-            elif [[ $member =~ ^runtime(/[A-Za-z0-9][A-Za-z0-9._+-]*)+/?$ ]]; then
-              continue
-            else
-              printf 'unexpected app collection member: %s\n' "$member" >&2
-              exit 1
-            fi
-          done < <(tar -tzf "$work/apps.tar.gz")
-          [[ $found == 1 ]]
+          tar -tzf "$work/apps.tar.gz" \
+            | tools/apps/check-collection-members.sh --require-tapp "app collection"
           source="$(tar -xzOf "$work/apps.tar.gz" index.json | jq -r '.source // empty')"
           if [[ $source != "$COLLECTION_SOURCE" ]]; then
             if [[ $DEV_BUILD == true ]]; then

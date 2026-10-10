@@ -24,6 +24,7 @@ mod native_effect_tests;
 mod native_message_tests;
 mod nearby_transfer;
 mod resource_views;
+mod task_execution;
 pub use nearby_transfer::NativeNearbyTransfer;
 use std::sync::Arc;
 use tilo_action_broker::services::{
@@ -1727,16 +1728,7 @@ pub(crate) fn native_services_with_agent_runtime(
         .as_ref()
         .map(|tree| Arc::new(NativeOwnerCommitService::new(tree.clone(), network.clone())));
     #[cfg(target_os = "linux")]
-    let agent_runtime = owner.as_ref().and_then(|owner| {
-        let runtime = Arc::new(agent_runtime::NativeAgentRuntime::new(owner.clone()));
-        match owner.attach_agent_runtime(&runtime) {
-            Ok(()) => Some(runtime),
-            Err(error) => {
-                tracing::error!(%error, "native Agent runtime attachment refused");
-                None
-            }
-        }
-    });
+    let agent_runtime = native_agent_runtime(owner.as_ref());
     #[cfg(not(target_os = "linux"))]
     let agent_runtime = None;
     let committed_documents = owner
@@ -1752,6 +1744,9 @@ pub(crate) fn native_services_with_agent_runtime(
     let workspace_messages = owner
         .as_ref()
         .map(|service| service.clone() as Arc<dyn tilo_action_broker::services::WorkspaceMessages>);
+    let task_execution = owner.as_ref().map(|service| {
+        service.clone() as Arc<dyn tilo_action_broker::services::WorkspaceTaskExecution>
+    });
     drop(owner);
     let governance = membership.as_ref().map(|tree| {
         Arc::new(NativeWorkspaceGovernance(tree.clone(), network.clone()))
@@ -1790,6 +1785,7 @@ pub(crate) fn native_services_with_agent_runtime(
         workspace_tasks,
         workspace_messages,
         workspace_memberships,
+        task_execution,
         resource_views,
         desktop_commands: None,
         native_certificates: Some(Arc::new(NativeCertificates::default())),
@@ -1822,6 +1818,22 @@ pub(crate) fn native_services_with_agent_runtime(
         ..Default::default()
     };
     (services, agent_runtime)
+}
+
+#[cfg(target_os = "linux")]
+fn native_agent_runtime(
+    owner: Option<&Arc<NativeOwnerCommitService>>,
+) -> Option<Arc<agent_runtime::NativeAgentRuntime>> {
+    owner.and_then(|owner| {
+        let runtime = Arc::new(agent_runtime::NativeAgentRuntime::new(owner.clone()));
+        match owner.attach_agent_runtime(&runtime) {
+            Ok(()) => Some(runtime),
+            Err(error) => {
+                tracing::error!(%error, "native Agent runtime attachment refused");
+                None
+            }
+        }
+    })
 }
 
 fn native_resource_views(

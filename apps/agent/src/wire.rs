@@ -57,7 +57,7 @@ pub enum Detached {
     /// A task cancellation poll; `Ok(true)` is cancelled.
     Cancellation(Result<bool, String>),
     /// The complete task control frontier, including pending directions.
-    Control(Result<runtime_collab::TaskRunControl, String>),
+    Control(Result<runtime_collab::EnrolledTaskRunControl, String>),
 }
 
 enum Slot {
@@ -383,7 +383,7 @@ impl Link {
             {
                 (request_id, Detached::Cancellation(result))
             }
-            CollabEvent::TaskRunControl { request_id, result }
+            CollabEvent::EnrolledTaskRunControl { request_id, result }
                 if self.detached.contains_key(&request_id) =>
             {
                 (request_id, Detached::Control(result))
@@ -424,7 +424,7 @@ impl Link {
         let (request_id, keep) = match request {
             CollabRequest::ReportEnrolledTask { request_id, .. } => (*request_id, false),
             CollabRequest::TaskRunCancellation { request_id, .. }
-            | CollabRequest::TaskRunControl { request_id, .. } => (*request_id, true),
+            | CollabRequest::EnrolledTaskRunControl { request_id, .. } => (*request_id, true),
             _ => anyhow::bail!("only enrolled reports and cancellation polls are detached"),
         };
         self.detached.insert(request_id, Slot::Awaiting { keep });
@@ -856,15 +856,15 @@ mod tests {
                         result: Ok(true),
                     },
                 ),
-                CollabRequest::TaskRunControl { request_id, .. } => (
+                CollabRequest::EnrolledTaskRunControl { request_id, .. } => (
                     request_id,
-                    CollabEvent::TaskRunControl {
+                    CollabEvent::EnrolledTaskRunControl {
                         request_id,
-                        result: Ok(runtime_collab::TaskRunControl {
+                        result: Ok(runtime_collab::EnrolledTaskRunControl {
                             version: 1,
                             run_epoch: 9,
                             applied_revision: 3,
-                            directions: vec![runtime_collab::TaskRunDirection {
+                            directions: vec![runtime_collab::EnrolledTaskRunDirection {
                                 revision: 4,
                                 text: "Use the saved direction".into(),
                             }],
@@ -984,7 +984,7 @@ mod tests {
     #[test]
     fn detached_control_retains_the_exact_owner_frontier() {
         let mut link = test_link(AnsweringHost { events: Vec::new() });
-        link.send_detached(&CollabRequest::TaskRunControl {
+        link.send_detached(&CollabRequest::EnrolledTaskRunControl {
             request_id: 8,
             run_id: 7,
             lease: "lease".into(),

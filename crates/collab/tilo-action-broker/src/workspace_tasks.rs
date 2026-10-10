@@ -70,6 +70,7 @@ fn reported_execution_phase(
         | runtime_collab::TaskRunUpdate::Succeeded { .. }
         | runtime_collab::TaskRunUpdate::Failed { .. }
         | runtime_collab::TaskRunUpdate::Cancelled { .. }
+        | runtime_collab::TaskRunUpdate::DirectionsApplied { .. }
         | runtime_collab::TaskRunUpdate::DirectionApplied { .. } => None,
     }
 }
@@ -488,6 +489,20 @@ impl CapnpBrokerState {
         task_id: &str,
         service: &dyn crate::services::WorkspaceTasks,
     ) -> Result<Option<u64>, String> {
+        let offered = checked_snapshot(service, room)?;
+        let Some(task) = offered.tasks.iter().find(|task| task.id == task_id) else {
+            return Err("queued task disappeared before delivery".into());
+        };
+        if task.status != tilo_desktop_model::WorkspaceTaskStatus::Queued {
+            return Ok(None);
+        }
+        if !offered
+            .controls
+            .get(task_id)
+            .is_some_and(retained_managed_task)
+        {
+            return Ok(None);
+        }
         if let Some((peer, facts)) = self.live_enrolled_subscriber(room, task_id, service)? {
             return self
                 .dispatch_enrolled_workspace_task(peer, facts, room, task_id, service)
@@ -565,6 +580,7 @@ impl CapnpBrokerState {
                     action_context: context,
                     task_epoch: Some(active.epoch),
                     terminal: false,
+                    native: None,
                 },
             );
         Ok(Some(run_id))
@@ -577,12 +593,17 @@ impl CapnpBrokerState {
         service: &dyn crate::services::WorkspaceTasks,
     ) -> Result<Option<(u64, launcher::managed::ChannelProcessFacts)>, String> {
         let snapshot = checked_snapshot(service, room)?;
-        let agent = snapshot
-            .tasks
-            .iter()
-            .find(|task| task.id == task_id)
-            .and_then(|task| task.assigned_agent.as_deref());
-        let Some(agent) = agent else {
+        let task = snapshot.tasks.iter().find(|task| task.id == task_id);
+        let Some(task) = task else {
+            return Ok(None);
+        };
+        let Some(control) = snapshot.controls.get(task_id) else {
+            return Ok(None);
+        };
+        if !retained_managed_task(control) {
+            return Ok(None);
+        }
+        let Some(agent) = task.assigned_agent.as_deref() else {
             return Ok(None);
         };
         let retained = self
@@ -982,6 +1003,7 @@ impl CapnpBrokerState {
                 .map_err(|error| error.to_string())?,
             task_epoch: Some(active.epoch),
             terminal: false,
+            native: None,
         };
         Ok((envelope.task.run_id, pending))
     }
@@ -1299,7 +1321,7 @@ impl CapnpBrokerState {
     pub(super) fn owner_task_run_control(
         &self,
         run: &super::PendingTaskRun,
-    ) -> Result<runtime_collab::TaskRunControl, String> {
+    ) -> Result<runtime_collab::EnrolledTaskRunControl, String> {
         let epoch = run
             .task_epoch
             .ok_or("canonical task run has no owner epoch")?;
@@ -1327,7 +1349,7 @@ impl CapnpBrokerState {
             .directions
             .iter()
             .filter(|direction| direction.revision > active.applied_direction_revision)
-            .map(|direction| runtime_collab::TaskRunDirection {
+            .map(|direction| runtime_collab::EnrolledTaskRunDirection {
                 revision: direction.revision,
                 text: direction.text.clone(),
             })
@@ -1343,7 +1365,7 @@ impl CapnpBrokerState {
         {
             return Err("pending task directions exceed the control carrier bound".into());
         }
-        Ok(runtime_collab::TaskRunControl {
+        Ok(runtime_collab::EnrolledTaskRunControl {
             version: 1,
             run_epoch: epoch,
             applied_revision: active.applied_direction_revision,
@@ -1497,10 +1519,18 @@ fn require_retained_task_instruction(
     if let Some(budget) = control.execution_budget {
         budget.validate()?;
     }
-    if control.instruction_required && control.instruction.is_none() {
-        return Err("queued task lost its required instruction".into());
+    if !retained_managed_task(control) {
+        return Err("queued task requires an exact retained managed instruction".into());
     }
     Ok(())
+}
+
+fn retained_managed_task(control: &tilo_desktop_model::WorkspaceTaskControl) -> bool {
+    control.instruction_required
+        && control
+            .instruction
+            .as_deref()
+            .is_some_and(|instruction| !instruction.is_empty())
 }
 
 fn agent_has_active_run(snapshot: &crate::services::WorkspaceTaskSnapshot, agent: &str) -> bool {
@@ -1526,6 +1556,10 @@ fn next_queued_task<'a>(
             task.status == tilo_desktop_model::WorkspaceTaskStatus::Queued
                 && task.assigned_agent.as_deref() == Some(agent)
                 && task.route != tilo_desktop_model::WorkspaceTaskRoute::Manual
+                && snapshot
+                    .controls
+                    .get(&task.id)
+                    .is_some_and(retained_managed_task)
         })
         .min_by_key(|task| task.queue_order_key(snapshot.controls.get(&task.id)))
         .map(|task| task.id.as_str())
@@ -1556,6 +1590,9 @@ fn owner_update_command(
                 revision: *revision,
             }))
         }
+        runtime_collab::TaskRunUpdate::DirectionsApplied { .. } => {
+            Err("native direction acknowledgement is invalid for an enrolled task".into())
+        }
         runtime_collab::TaskRunUpdate::Succeeded { message } => finish(
             tilo_peer_state::workspace_task::WorkspaceTaskFinish::Done,
             message,
@@ -1573,7 +1610,7 @@ fn owner_update_command(
 
 fn direction_extent(
     initial: usize,
-    directions: &[runtime_collab::TaskRunDirection],
+    directions: &[runtime_collab::EnrolledTaskRunDirection],
     measure: impl Fn(&str) -> usize,
 ) -> Result<usize, String> {
     directions.iter().try_fold(initial, |total, direction| {
@@ -3143,7 +3180,19 @@ mod tests {
             room: "room-a".into(),
             generation: 8,
             tasks: vec![later_lexically_first, waiting, first_lexically_last],
-            controls: std::collections::BTreeMap::new(),
+            controls: ["task:z-first", "task:a-later"]
+                .into_iter()
+                .map(|id| {
+                    (
+                        id.into(),
+                        tilo_desktop_model::WorkspaceTaskControl {
+                            instruction: Some(format!("Execute {id}")),
+                            instruction_required: true,
+                            ..Default::default()
+                        },
+                    )
+                })
+                .collect(),
         });
 
         let result = read_current_tasks(
@@ -3191,13 +3240,15 @@ mod tests {
                     id.into(),
                     tilo_desktop_model::WorkspaceTaskControl {
                         queue_ordinal: Some(ordinal),
+                        instruction: Some(format!("Execute {id}")),
+                        instruction_required: true,
                         ..Default::default()
                     },
                 )
             })
             .collect(),
         });
-        assert_eq!(next_queued_task(&service.0, "scribe"), Some("task:legacy"));
+        assert_eq!(next_queued_task(&service.0, "scribe"), Some("task:z-first"));
         service.0.tasks.retain(|task| task.id != "task:legacy");
         assert_eq!(next_queued_task(&service.0, "scribe"), Some("task:z-first"));
         let result = read_current_tasks(
@@ -3229,6 +3280,91 @@ mod tests {
         assert_eq!(
             next_queued_task(&service.0, "scribe"),
             Some("task:a-second")
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn approval_required_task_does_not_block_managed_subscriber_delivery() {
+        let NativeRunFixture {
+            _directory,
+            service,
+            state,
+            mut receiver,
+            caller,
+        } = native_run_fixture();
+        let room = tilo_joined_room::testing::ROOM;
+        commit_person_command(
+            service.as_ref(),
+            room,
+            WorkspaceTaskCommand::Queue {
+                title: "Review the approved native task".into(),
+                assigned_agent: "scribe".into(),
+                route: tilo_desktop_model::WorkspaceTaskRoute::Model,
+                resource: None,
+            },
+            401,
+            caller.clone(),
+        )
+        .await;
+        commit_person_command(
+            service.as_ref(),
+            room,
+            WorkspaceTaskCommand::QueueTask {
+                title: "Managed follow-up".into(),
+                instruction: "Execute only this retained managed instruction".into(),
+                assigned_agent: "scribe".into(),
+                route: tilo_desktop_model::WorkspaceTaskRoute::Model,
+                resource: None,
+            },
+            402,
+            caller,
+        )
+        .await;
+        let before = service.snapshot(room).unwrap();
+        let ordinary = before
+            .tasks
+            .iter()
+            .find(|task| {
+                !before.controls[&task.id].instruction_required
+                    && before.controls[&task.id].instruction.is_none()
+            })
+            .unwrap()
+            .id
+            .clone();
+        let managed = before
+            .tasks
+            .iter()
+            .find(|task| before.controls[&task.id].instruction_required)
+            .unwrap()
+            .id
+            .clone();
+
+        assert!(
+            state
+                .dispatch_queued_workspace_task(room, "scribe")
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(receiver.recv().await.unwrap().task_id, managed);
+        let after = service.snapshot(room).unwrap();
+        assert_eq!(
+            after
+                .tasks
+                .iter()
+                .find(|task| task.id == ordinary)
+                .unwrap()
+                .status,
+            tilo_desktop_model::WorkspaceTaskStatus::Queued
+        );
+        assert_eq!(
+            after
+                .tasks
+                .iter()
+                .find(|task| task.id == managed)
+                .unwrap()
+                .status,
+            tilo_desktop_model::WorkspaceTaskStatus::InProgress
         );
     }
 
@@ -3854,6 +3990,7 @@ mod tests {
                 agent_id: agent.into(),
                 started_at: 1,
                 applied_direction_revision: applied,
+                approval: None,
             }),
             ..Default::default()
         }
@@ -3937,6 +4074,25 @@ fn queue_command(envelope: &InvocationEnvelope) -> Result<WorkspaceTaskCommand, 
 pub(super) fn command(
     envelope: &InvocationEnvelope,
 ) -> Result<Option<WorkspaceTaskCommand>, String> {
+    if let Some(id) = envelope.resource.strip_prefix(TASK_PREFIX)
+        && envelope.action == "approve-run"
+    {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Input {
+            agent_id: String,
+            expected_run_epoch: u64,
+            after_revision: u64,
+        }
+        let input: Input =
+            serde_json::from_str(argument(envelope)?).map_err(|error| error.to_string())?;
+        return Ok(Some(WorkspaceTaskCommand::ApproveRun {
+            task_id: format!("task:{id}"),
+            agent_id: input.agent_id,
+            expected_run_epoch: input.expected_run_epoch,
+            after_revision: input.after_revision,
+        }));
+    }
     if let Some(id) = envelope.resource.strip_prefix(TASK_PREFIX)
         && envelope.action == "set-execution-budget"
     {
@@ -4089,6 +4245,21 @@ pub(super) fn actions(
             Vec::new(),
             true,
         ));
+        if task.status == tilo_desktop_model::WorkspaceTaskStatus::Queued
+            && !manual(task)
+            && task.assigned_agent.is_some()
+            && task
+                .resource
+                .as_ref()
+                .is_none_or(|resource| resource.agent_request.is_none())
+            && snapshot.controls.get(&task.id).is_some_and(|value| {
+                value.active_run.is_none()
+                    && !value.instruction_required
+                    && value.instruction.is_none()
+            })
+        {
+            result.push(approve_action(&target, &task.title));
+        }
         if !manual(task)
             && !task.status.is_finished()
             && snapshot
@@ -4141,6 +4312,30 @@ pub(super) fn actions(
     result
 }
 
+fn approve_action(target: &str, title: &str) -> PublishedAction {
+    use tilo_actions::{ActionParam, ParamType};
+    action(
+        target,
+        "approve-run",
+        title,
+        "Approve this task run",
+        vec![
+            ActionParam::required("agent_id", ParamType::Text, "Exact assigned agent"),
+            ActionParam::required(
+                "expected_run_epoch",
+                ParamType::Integer,
+                "Observed run epoch",
+            ),
+            ActionParam::required(
+                "after_revision",
+                ParamType::Integer,
+                "Observed instruction frontier",
+            ),
+        ],
+        false,
+    )
+}
+
 fn action(
     target: &str,
     operation: &str,
@@ -4152,7 +4347,7 @@ fn action(
     PublishedAction {
         semantic_identity: None,
         resource: target.into(), action: operation.into(), resource_kind: if target == WORKSPACE { "workspace-membership" } else { "workspace-task" }.into(), resource_label: label.into(), action_label: operation_label.into(),
-        description: Some(if inspect { "Inspect current task coordination and execution policy; no execution result is asserted." } else { "Manual coordination only. Attachments are shared resource references; no agent run, execution, integration or verification is asserted." }.into()),
+        description: Some(if inspect { "Inspect current task coordination and execution policy; no execution result is asserted." } else if operation == "approve-run" { "Approve the observed queued task for its assigned agent. Existing workspace and action permissions still apply; approval does not assert execution or completion." } else { "Manual coordination only. Attachments are shared resource references; no agent run, execution, integration or verification is asserted." }.into()),
         operation_kind: if inspect { tilo_actions::OperationKind::View } else { tilo_actions::OperationKind::Document }, params,
         contract: tilo_actions::ActionContract {
             permission: if inspect { tilo_actions::PermissionRequirement::Read } else { tilo_actions::PermissionRequirement::Write },
@@ -4190,6 +4385,7 @@ pub(super) fn inspect(
         "managed_route":!manual(task), "run_epoch":control.run_epoch,
         "execution_budget":control.execution_budget,
         "active_run":control.active_run.is_some(),
+        "instruction_revision":control.directions.last().map_or(0, |direction| direction.revision),
         "default_turn_ms":30_000,"default_total_ms":300_000});
     if manual(task) {
         output
@@ -4214,7 +4410,8 @@ pub(super) fn result(
         .ok_or("owner did not retain the exact task command receipt")?;
     let (task_id, budget_change) = match &result.result {
         WorkspaceTaskMutationResult::Queued { task_id }
-        | WorkspaceTaskMutationResult::ResourceAttached { task_id } => (task_id, false),
+        | WorkspaceTaskMutationResult::ResourceAttached { task_id }
+        | WorkspaceTaskMutationResult::RunStarted { task_id, .. } => (task_id, false),
         WorkspaceTaskMutationResult::ExecutionBudgetSet { task_id } => (task_id, true),
         _ => return Err("task command returned an unexpected managed execution result".into()),
     };
@@ -4224,18 +4421,28 @@ pub(super) fn result(
         .find(|task| &task.id == task_id)
         .ok_or("owner task receipt has no canonical task")?;
     let queued_agent = envelope.resource == WORKSPACE && envelope.action == "queue-agent-task";
-    if (!budget_change && !queued_agent && !manual(task))
+    let approved = envelope.action == "approve-run";
+    if (!approved && !budget_change && !queued_agent && !manual(task))
         || (queued_agent
             && (manual(task)
                 || !matches!(result.result, WorkspaceTaskMutationResult::Queued { .. })))
     {
         return Err("task command receipt disagrees with its declared coordination route".into());
     }
+    if approved
+        && (envelope.resource != format!("desktop:{task_id}")
+            || !matches!(
+                result.result,
+                WorkspaceTaskMutationResult::RunStarted { .. }
+            ))
+    {
+        return Err("approval receipt has another task or command".into());
+    }
     Ok(
         serde_json::json!({"generation":generation,"result":result.result,
         "resource":format!("desktop:{task_id}"),"task":task,
         "coordination_only":manual(task),"managed_execution":false,
-        "managed_route":!manual(task),"execution_started":false}),
+        "managed_route":!manual(task),"run_approved":approved,"execution_started":false}),
     )
 }
 
@@ -4617,7 +4824,8 @@ mod coordination_tests {
         task.route = WorkspaceTaskRoute::Model;
         snapshot.tasks = vec![task];
         let managed = actions(&snapshot, "Workspace");
-        assert_eq!(managed.len(), 4);
+        assert_eq!(managed.len(), 5);
+        assert!(managed.iter().any(|row| row.action == "approve-run"));
         assert!(
             managed
                 .iter()
@@ -4632,5 +4840,11 @@ mod coordination_tests {
         assert_eq!(observed["execution_budget"], serde_json::Value::Null);
         assert!(observed.get("active_run_token").is_none());
         assert!(observed.get("instruction").is_none());
+        let control = snapshot.controls.get_mut(&snapshot.tasks[0].id).unwrap();
+        control.instruction = Some("Complete the governed managed task".into());
+        control.instruction_required = true;
+        let enrolled = actions(&snapshot, "Workspace");
+        assert_eq!(enrolled.len(), 4);
+        assert!(!enrolled.iter().any(|row| row.action == "approve-run"));
     }
 }

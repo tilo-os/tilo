@@ -107,6 +107,13 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     && rm -rf /var/log/dnf5.log* /var/cache/libdnf5 /var/lib/dnf/system-repo.lock /run/dnf \
     && bootc container lint
 
+# The kernel the UKI embeds, split out of the same root (os/Containerfile's
+# `kernel` stage). The board image keeps its own split-out pair as well: it is a
+# development target, whose kernel tilo-installer-dev-target-uki.py checks
+# against the UKI.
+FROM board-root AS kernel
+RUN mkdir -p /kernel && test -z "$(ls -A /kernel)" && bootc container split-kernel-and-rootfs --rootfs / --output /kernel
+
 # Nothing may be added to the rootfs after the split: the UKI seals its digest.
 FROM board-root AS split
 RUN mkdir -p /kernel && test -z "$(ls -A /kernel)" \
@@ -137,7 +144,7 @@ ENV TILO_SEAL_GENERATION=${TILO_SEAL_GENERATION}
 RUN --mount=type=tmpfs,target=/tmp \
     --mount=type=tmpfs,target=/run \
     --mount=type=bind,from=split,target=/target,rw \
-    --mount=type=bind,from=split,source=/kernel,target=/kernel,rw \
+    --mount=type=bind,from=kernel,source=/kernel,target=/kernel,rw \
     bash /usr/local/bin/uki.sh
 
 # The composefs digest `bootc install` computes for TILO_CFS_SOURCE, an image
