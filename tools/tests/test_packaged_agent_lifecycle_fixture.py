@@ -147,6 +147,44 @@ class CurrentChatControlTests(unittest.TestCase):
             self.observe(reply="malformed-private-identity")
 
 
+class NativeChatPublicationTests(unittest.TestCase):
+    @staticmethod
+    def creator():
+        return {"provider": "chat", "id": "creator", "application": "so.tilo.chat",
+                "room": "room", "record": "record", "resource": "workspace",
+                "operation": "new-category", "semantic_identity": None}
+
+    def test_incomplete_or_unsettled_publication_waits_for_actual_creator(self):
+        creator = self.creator()
+        for flags in ({"complete": False}, {"settled": False}):
+            with self.subTest(flags=flags), patch.object(PROOF, "call", side_effect=[
+                    PermissionSnapshotTests.page([creator], **flags),
+                    PermissionSnapshotTests.page([creator])]) as observe:
+                self.assertIsNone(PROOF.native_chat_semantic_publication("socket", "room"))
+                self.assertEqual(PROOF.native_chat_semantic_publication("socket", "room"),
+                                 [creator])
+                self.assertEqual(observe.call_count, 2)
+
+    def test_complete_creator_snapshot_rejects_duplicates_foreign_room_and_malformed(self):
+        creator = self.creator()
+        for rows in ([creator, creator], [{**creator, "room": "foreign"}],
+                     [{key: value for key, value in creator.items() if key != "provider"}]):
+            with self.subTest(rows=rows), patch.object(
+                    PROOF, "call", return_value=PermissionSnapshotTests.page(rows)):
+                with self.assertRaises(RuntimeError):
+                    PROOF.native_chat_semantic_publication("socket", "room")
+        with patch.object(PROOF, "call", return_value=PermissionSnapshotTests.page([])):
+            self.assertIsNone(PROOF.native_chat_semantic_publication("socket", "room"))
+
+    def test_bootstrap_reuses_same_ready_publication_for_creator(self):
+        source = inspect.getsource(PROOF.bootstrap)
+        start = source.index('category = [row for row in published')
+        end = source.index('before_category_frame =', start)
+        self.assertNotIn("actions(socket)", source[start:end])
+        self.assertIn("if len(category) != 1:", source[start:end])
+        self.assertIn('native_chat_semantic_publication(socket, enrollment["room"])', source)
+
+
 class PermissionSnapshotTests(unittest.TestCase):
     @staticmethod
     def page(rows, *, revision="authority", total=None, cursor=None, **extra):
@@ -1284,7 +1322,7 @@ class PresentedEditorTargetTests(unittest.TestCase):
                             json.dumps({"empty_app_records": True}))
                         return True
                     if label == "Chat's ordinary semantic publication":
-                        return [category]
+                        return [action]
                     if label == "actual durable Category and exact outgoing publication":
                         return {"category_durable": True,
                                 "outgoing_publication_retained": True,

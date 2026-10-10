@@ -4374,6 +4374,24 @@ def validate_permission_listing_row(row):
         raise RuntimeError("permission listing action identity is unobservable")
 
 
+def native_chat_semantic_publication(socket, room):
+    """Retain the exact creator from one complete, settled publication."""
+    snapshot = permission_actions_snapshot(socket)
+    if snapshot is None:
+        return None
+    rows = [row for row in snapshot if row.get("application") == "so.tilo.chat"]
+    if any(row.get("room") != room for row in rows):
+        raise RuntimeError("Chat published a foreign native room resource")
+    creators = [row for row in rows if row.get("operation") == "new-category"]
+    if len(creators) > 1:
+        raise RuntimeError("original native creator did not publish one actionable workspace")
+    if not creators:
+        return None
+    fields = ("provider", "id", "application", "room", "record", "resource",
+              "operation", "semantic_identity")
+    return [{key: row.get(key) for key in fields} for row in rows]
+
+
 def permission_offer_pair(socket, room, record, *, observation=None):
     """Observe Message and Queue from the same settled authority revision."""
     rows = (permission_actions_snapshot(socket) if observation is None else
@@ -8474,6 +8492,8 @@ def bootstrap(binaries, output, native=False, size="1600x900", lifecycle=False,
             shell, output / "chat-accessibility-transport.json"
         )
         def published_chat():
+            if native:
+                return native_chat_semantic_publication(socket, enrollment["room"])
             rows = [row for row in actions(socket)
                     if row.get("application") == "so.tilo.chat"]
             if not rows:
@@ -8497,7 +8517,7 @@ def bootstrap(binaries, output, native=False, size="1600x900", lifecycle=False,
             raise
         (output / "semantic-ready.json").write_text(json.dumps(published, indent=2) + "\n")
         if native:
-            category = [row for row in actions(socket)
+            category = [row for row in published
                         if row.get("application") == "so.tilo.chat"
                         and row.get("room") == enrollment["room"]
                         and row.get("operation") == "new-category"]
