@@ -661,7 +661,7 @@ impl RetainedGpuTarget {
         #[cfg(target_os = "linux")]
         crate::shader_seed::observe_device(gpu.adapter.get_info());
         let seed = pipeline_seed_to_publish(gpu);
-        let renderer = Renderer::new(
+        let mut renderer = Renderer::new(
             &gpu.device,
             RendererOptions {
                 use_cpu: false,
@@ -672,6 +672,13 @@ impl RetainedGpuTarget {
             },
         )
         .map_err(|e| BridgeError::Renderer(format!("{e:?}")))?;
+        // Atomic tile allocation otherwise sums Area coverage in GPU scheduling order.
+        // The same unchanged desktop can then round to different pixels in dense and
+        // retained renders. Keep their segment order stable on the adaptive shell path;
+        // Vello still preserves its pinned-budget and overflow-validation guards.
+        renderer
+            .enable_canonical_segment_order(&gpu.device)
+            .map_err(|e| BridgeError::Renderer(format!("{e:?}")))?;
         if let Some(seed) = seed {
             publish_pipeline_seed(gpu, &seed);
         }
@@ -6388,6 +6395,87 @@ mod tests {
             assert_eq!(
                 bridge.staging_content,
                 Some((bridge.target.geometry_generation, Some(3)))
+            );
+        }
+    }
+
+    #[test]
+    fn default_area_frames_keep_stable_pixels_after_counter_settlement() {
+        use crate::shell::output_scene::OutputGeometry;
+
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.remove("VELLO_CANONICAL_SEGMENT_ORDER");
+        env.remove("VELLO_BUMP_BUDGET");
+        env.set("TILO_CLOCK", "09:41");
+        let mut target = required_target(3_840, 2_160);
+        assert!(target.renderer.canonical_segment_order_available());
+        let mut frame = PopulatedShellFixture::new(
+            (3_840, 2_160),
+            ui::theme::Theme::high_contrast().with_reduce_motion(true),
+        );
+        frame.set_output_geometry(vec![
+            OutputGeometry::unscaled(0.0, 0.0, 1920.0, 2160.0).with_id(0),
+            OutputGeometry::unscaled(1920.0, 0.0, 1920.0, 2160.0).with_id(1),
+        ]);
+        frame.relayout();
+        let scene = frame.paint();
+        target
+            .render_until(
+                &scene,
+                version(1, None, None),
+                Instant::now() + Duration::from_secs(10),
+            )
+            .unwrap();
+        let expected = target_pixels(&target);
+        // Repaint the high-contrast label edges implicated by the overview failure.
+        // A whole half-desktop is deliberately ineligible under the profitability gate.
+        let damage = [vello::FineDamageRect {
+            x: 640,
+            y: 128,
+            width: 128,
+            height: 64,
+        }];
+        for revision in 2_u64..=9 {
+            let sparse = revision.is_multiple_of(2);
+            let started = Instant::now();
+            target
+                .render_until(
+                    &scene,
+                    version(
+                        revision,
+                        revision.checked_sub(1),
+                        sparse.then_some(&damage[..]),
+                    ),
+                    Instant::now() + Duration::from_secs(10),
+                )
+                .unwrap();
+            eprintln!(
+                "default Area revision {revision}: sparse={sparse}, completed_render_us={}",
+                started.elapsed().as_micros()
+            );
+            assert_eq!(
+                target.renderer.poll_bump_budget(&target.device).unwrap(),
+                vello::BumpBudgetPoll::Complete { overflowed: false },
+                "the next adaptive frame must not inherit a pending measurement"
+            );
+            assert_eq!(target.last_render_attempts, 1);
+            if sparse {
+                assert_eq!(target.last_canonical_segment_order_sparse_attempts, 1);
+                assert_eq!(target.last_full_render_attempts, 0);
+            } else {
+                assert_eq!(target.last_canonical_segment_order_full_attempts, 1);
+                assert_eq!(target.last_sparse_render_attempts, 0);
+            }
+            let actual = target_pixels(&target);
+            let first = actual
+                .iter()
+                .zip(&expected)
+                .position(|(actual, expected)| actual != expected);
+            assert!(
+                actual == expected,
+                "revision {revision}: {} versus {} bytes; first differing byte {first:?}",
+                actual.len(),
+                expected.len()
             );
         }
     }
