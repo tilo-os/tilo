@@ -1560,6 +1560,157 @@ impl CaptureStudio {
                 && self.selected_candidate().is_some())
     }
 
+    /// Glyphs of the four sources, in [`Self::source_rects`] order: a dashed
+    /// frame for an area, a window for an app, a monitor for the screen and
+    /// merged squares for several areas as one.
+    const SOURCE_ICONS: [Icon; 4] = [
+        Icon::SquareDashed,
+        Icon::AppWindow,
+        Icon::Monitor,
+        Icon::SquaresUnite,
+    ];
+
+    /// What the control under the pointer does, for its tooltip: the control's
+    /// rect and a plain sentence, with the chord where it has one. `None` when
+    /// the pointer is over nothing that acts.
+    fn control_tip(&self) -> Option<(Rect, String)> {
+        let at = self.cursor;
+        let caps = crate::keycaps::active();
+        let chord = |mods: &[&str], key: &str| caps.chord(mods.iter().copied(), key);
+        let hit = |rect: Rect| rect.area() > 0.0 && rect.contains(at);
+        let recording = self.mode == CaptureMode::Recording;
+
+        let modes = [
+            format!("Screenshot ({})", chord(&["Super", "Shift"], "S")),
+            "Record the screen".to_string(),
+            format!("Picture in Picture ({})", chord(&["Super", "Shift"], "P")),
+        ];
+        if let Some((rect, label)) = self
+            .mode_rects()
+            .into_iter()
+            .zip(modes)
+            .find(|(r, _)| hit(*r))
+        {
+            return Some((rect, label));
+        }
+        let sources = [
+            "Select an area",
+            "Choose an app",
+            "Capture the whole screen",
+            "Combine several areas",
+        ];
+        if let Some((rect, label)) = self
+            .source_rects()
+            .into_iter()
+            .zip(sources)
+            .find(|(r, _)| hit(*r))
+        {
+            return Some((rect, label.to_string()));
+        }
+        if self.source == SourceMode::Window {
+            for (target, rect) in self.candidates.iter().zip(self.candidate_picker_rects()) {
+                if hit(rect) {
+                    let suffix = if target.visible_rect.area() <= 0.0 {
+                        " (off-screen)"
+                    } else {
+                        ""
+                    };
+                    return Some((rect, format!("{}{suffix}", target.title)));
+                }
+            }
+        }
+        if let Some(rect) = self.region_remove_rects.iter().copied().find(|r| hit(*r)) {
+            return Some((rect, "Remove this selection".to_string()));
+        }
+        if matches!(self.source, SourceMode::Window | SourceMode::Multi) {
+            let labels = if self.source == SourceMode::Multi {
+                [
+                    "Arrange the areas automatically",
+                    "Arrange the areas in a grid",
+                    "Stack the areas",
+                ]
+            } else {
+                [
+                    "Only what is visible",
+                    "The whole app, including what is scrolled out of view",
+                    "Every app in this strip",
+                ]
+            };
+            if let Some((rect, label)) = self
+                .option_rects()
+                .into_iter()
+                .zip(labels)
+                .find(|(r, _)| hit(*r))
+            {
+                return Some((rect, label.to_string()));
+            }
+        }
+        if self.mode != CaptureMode::Pip && hit(self.pointer_rect()) {
+            let text = if self.include_pointer {
+                "Pointer is shown. Click to hide it"
+            } else {
+                "Show the pointer in the capture"
+            };
+            return Some((self.pointer_rect(), text.to_string()));
+        }
+        if self.system_audio_available && hit(self.system_audio_rect()) {
+            let text = if self.audio.includes_system() {
+                "Desktop sound is recorded. Click to leave it out"
+            } else {
+                "Record desktop sound"
+            };
+            return Some((self.system_audio_rect(), text.to_string()));
+        }
+        if self.microphone_available && hit(self.microphone_rect()) {
+            let text = if self.audio.includes_microphone() {
+                "Microphone is recorded. Click to mute it"
+            } else {
+                "Record the microphone"
+            };
+            return Some((self.microphone_rect(), text.to_string()));
+        }
+        if self.mode != CaptureMode::Pip && hit(self.delay_rect()) {
+            let text = match self.delay_seconds {
+                0 => "Start right away. Click to add a delay",
+                3 => "Start after 3 seconds. Click to change",
+                _ => "Start after 10 seconds. Click to remove the delay",
+            };
+            return Some((self.delay_rect(), text.to_string()));
+        }
+        let actions = self.action_rects();
+        if recording && hit(actions[1]) {
+            let text = format!(
+                "Save the last 30 seconds ({})",
+                chord(&["Super", "Shift"], "R")
+            );
+            return Some((actions[1], text));
+        }
+        if self.mode == CaptureMode::Screenshot && hit(actions[0]) {
+            let text = if self.has_capture_source() {
+                "Copy to the clipboard"
+            } else {
+                "Choose what to capture first"
+            };
+            return Some((actions[0], text.to_string()));
+        }
+        let primary = match self.mode {
+            CaptureMode::Screenshot => Some((2, "Take the screenshot".to_string())),
+            CaptureMode::Recording if self.take.active => Some((2, "Stop recording".to_string())),
+            CaptureMode::Recording => Some((2, "Start recording".to_string())),
+            CaptureMode::Pip => Some((1, "Keep this live in a small floating window".to_string())),
+        };
+        let (i, label) = primary?;
+        if !hit(actions[i]) {
+            return None;
+        }
+        if self.has_capture_source() || (recording && self.take.active) {
+            Some((actions[i], label))
+        } else {
+            // A disabled button that says nothing reads as broken.
+            Some((actions[i], "Choose what to capture first".to_string()))
+        }
+    }
+
     fn default_picker_context(&self) -> String {
         // Use committed regions here. The in-canvas dimension badge follows
         // every pointer move; making this pill resize for every digit during a
@@ -4890,12 +5041,7 @@ impl Widget for CaptureStudio {
                 SourceMode::Display,
                 SourceMode::Multi,
             ])
-            .zip([
-                Icon::Scissors,
-                Icon::GalleryVerticalEnd,
-                Icon::Monitor,
-                Icon::Layers,
-            ])
+            .zip(Self::SOURCE_ICONS)
         {
             Self::symbol_button(
                 s,
@@ -4908,63 +5054,9 @@ impl Widget for CaptureStudio {
                 active_control_fill,
             )
         }
-        let mut context = self.default_picker_context();
-        if let Some((_, label)) = self
-            .mode_rects()
-            .into_iter()
-            .zip([
-                "Screenshot · Super+Shift+S",
-                "Screen recording",
-                "Picture in Picture · Super+Shift+P",
-            ])
-            .find(|(rect, _)| rect.contains(self.cursor))
-        {
-            context = label.to_string();
-        } else if let Some((_, label)) = self
-            .source_rects()
-            .into_iter()
-            .zip([
-                "Select an area",
-                "Choose an app",
-                "Whole screen",
-                "Combine areas",
-            ])
-            .find(|(rect, _)| rect.contains(self.cursor))
-        {
-            context = label.to_string();
-        } else if self.mode != CaptureMode::Pip && self.pointer_rect().contains(self.cursor) {
-            context = if self.include_pointer {
-                "Pointer included"
-            } else {
-                "Include the pointer"
-            }
-            .to_string();
-        } else if self.system_audio_available && self.system_audio_rect().contains(self.cursor) {
-            context = if self.audio.includes_system() {
-                "Desktop sound included"
-            } else {
-                "Include desktop sound"
-            }
-            .to_string();
-        } else if self.microphone_available && self.microphone_rect().contains(self.cursor) {
-            context = if self.audio.includes_microphone() {
-                "Microphone included"
-            } else {
-                "Include the microphone"
-            }
-            .to_string();
-        } else if self.mode != CaptureMode::Pip && self.delay_rect().contains(self.cursor) {
-            context = match self.delay_seconds {
-                0 => "Start immediately",
-                3 => "Start after 3 seconds",
-                _ => "Start after 10 seconds",
-            }
-            .to_string();
-        } else if self.mode == CaptureMode::Recording
-            && self.action_rects()[1].contains(self.cursor)
-        {
-            context = "Keep the most recent 30 seconds · Super+Shift+R".to_string();
-        }
+        // The pill is the picker's status ("Drag to select"); what a control
+        // does is the control's own tooltip, drawn beside it below.
+        let context = self.default_picker_context();
         if self.source == SourceMode::Window && !self.candidates.is_empty() {
             for (target, rect) in self.candidates.iter().zip(self.candidate_picker_rects()) {
                 let selected = self.selected_target.as_ref() == Some(&target.id);
@@ -4991,7 +5083,7 @@ impl Widget for CaptureStudio {
                         rect.x0 + 26.0,
                         rect.y0 + 24.0,
                     ),
-                    Icon::GalleryVerticalEnd,
+                    Icon::AppWindow,
                     if selected || hovered {
                         c.text_primary
                     } else {
@@ -5073,9 +5165,13 @@ impl Widget for CaptureStudio {
                 ["Selection", "App", "Strip"]
             };
             let option_icons = if self.source == SourceMode::Multi {
-                [Icon::Sparkles, Icon::LayoutGrid, Icon::Layers]
+                [Icon::WandSparkles, Icon::LayoutGrid, Icon::Layers]
             } else {
-                [Icon::Scissors, Icon::GalleryVerticalEnd, Icon::Layers]
+                [
+                    Icon::SquareDashed,
+                    Icon::AppWindow,
+                    Icon::AlignHorizontalDistributeCenter,
+                ]
             };
             for (i, ((r, label), icon)) in self
                 .option_rects()
@@ -5192,6 +5288,14 @@ impl Widget for CaptureStudio {
             .hovered(hovered)
             .disabled(!active);
             Button::paint(s, bottom_t, tr, theme, &face);
+        }
+        if let Some((anchor, label)) = self.control_tip() {
+            let side_t = if anchor.y0 < self.rect.center().y {
+                top_t
+            } else {
+                bottom_t
+            };
+            super::tooltip::draw_hover_tooltip(s, side_t, tr, theme, anchor, &label, self.rect);
         }
         s.pop_layer()
     }
@@ -5849,6 +5953,64 @@ mod tests {
         symbolic_app_picker_commits_the_same_full_target_for_all_workflows();
         full_app_can_select_a_completely_offscreen_candidate();
         arrows_navigate_app_targets_scope_and_multi_layout_with_wraparound();
+    }
+
+    #[test]
+    fn every_control_has_a_tooltip_and_none_is_a_decorative_glyph() {
+        let mut s = CaptureStudio::default();
+        s.rect = Rect::new(0., 0., 1400., 800.);
+        s.system_audio_available = true;
+        s.microphone_available = true;
+        s.open();
+        for mode in [
+            CaptureMode::Screenshot,
+            CaptureMode::Recording,
+            CaptureMode::Pip,
+        ] {
+            s.set_mode(mode);
+            for source in [SourceMode::Region, SourceMode::Window, SourceMode::Multi] {
+                s.set_source_mode(source);
+                let mut rects: Vec<Rect> = s.mode_rects().to_vec();
+                rects.extend(s.source_rects());
+                if matches!(source, SourceMode::Window | SourceMode::Multi) {
+                    rects.extend(s.option_rects());
+                }
+                if mode != CaptureMode::Pip {
+                    rects.extend([s.pointer_rect(), s.delay_rect()]);
+                }
+                if mode == CaptureMode::Recording {
+                    rects.extend([s.system_audio_rect(), s.microphone_rect()]);
+                }
+                rects.extend(s.action_rects().into_iter().filter(|r| r.area() > 0.0));
+                for rect in rects {
+                    s.cursor = rect.center();
+                    let (anchor, label) = s.control_tip().unwrap_or_else(|| {
+                        panic!("no tooltip for {rect:?} in {mode:?}/{source:?}")
+                    });
+                    assert_eq!(anchor, rect);
+                    assert!(label.chars().count() > 3, "{label:?}");
+                    assert!(
+                        !label.contains(['\u{2191}', '\u{21b5}', '\u{2318}']),
+                        "no glyph characters in a tooltip: {label:?}"
+                    );
+                }
+            }
+        }
+        s.cursor = Point::new(700.0, 400.0);
+        assert!(s.control_tip().is_none(), "the canvas has no tooltip");
+    }
+
+    #[test]
+    fn source_and_extent_icons_say_what_they_pick() {
+        assert_eq!(
+            CaptureStudio::SOURCE_ICONS,
+            [
+                Icon::SquareDashed,
+                Icon::AppWindow,
+                Icon::Monitor,
+                Icon::SquaresUnite
+            ]
+        );
     }
 
     #[test]
