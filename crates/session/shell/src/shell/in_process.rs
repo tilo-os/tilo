@@ -21,6 +21,7 @@ use ui::launch::LaunchError;
 use ui::permissions::{Actor, PermissionContext, Role, UserId};
 use ui::record::{RecordCheckout, RecordId, RecordOpenError, RecordOwners};
 
+mod feedback_native;
 #[cfg(test)]
 mod feedback_tests;
 pub mod messaging;
@@ -29,6 +30,8 @@ pub mod messaging;
 /// views live in, as one person on one device.
 pub struct InProcessApps {
     feedback: Option<tilo_desktop::feedback::PrivateFeedback>,
+    native_feedback: Option<Box<dyn feedback_native::Producer>>,
+    feedback_destination: Option<tilo_desktop::feedback::Destination>,
     store: Rc<dyn durable_store::DurableStore>,
     owners: RecordOwners,
     views: HashMap<String, Rc<InstanceViewStore>>,
@@ -78,6 +81,8 @@ impl InProcessApps {
     pub fn new(store: Rc<dyn durable_store::DurableStore>, device_id: &str, author: &str) -> Self {
         Self {
             feedback: None,
+            native_feedback: None,
+            feedback_destination: None,
             owners: RecordOwners::with_store(Rc::clone(&store)),
             store,
             views: HashMap::new(),
@@ -408,6 +413,7 @@ impl InProcessApps {
             )
         }));
         apps.native_broker_socket = Some(socket);
+        apps.feedback_destination = feedback_native::configured_destination(profile)?;
         apps.native_messaging_root = Some(profile.join("private-messages"));
         let registry = tilo_messaging::messaging_registry(&apps.author.0)
             .map_err(|_| LaunchError::BindingMismatch)?;
@@ -562,16 +568,47 @@ impl InProcessApps {
 
     /// Storage/transport wakes service the approved outbox, including while
     /// its private window is closed. Failures remain in the private status UI.
-    pub(crate) fn pump_feedback(&self) {
+    pub(crate) fn pump_feedback(&mut self) {
+        if let Some(mut delivery) = self.native_feedback.take() {
+            let result = delivery.pump(self);
+            if let Err(error) = result {
+                tracing::debug!(%error, "native feedback remains unavailable");
+            }
+            self.native_feedback = Some(delivery);
+        }
         if let Some(feedback) = &self.feedback {
             let _ = feedback.pump();
         }
     }
 
     pub(crate) fn feedback_deadline(&self) -> Option<ui::time::Instant> {
-        self.feedback
+        let private = self
+            .feedback
             .as_ref()
-            .and_then(tilo_desktop::feedback::PrivateFeedback::next_wake_deadline)
+            .and_then(tilo_desktop::feedback::PrivateFeedback::next_wake_deadline);
+        let native = self
+            .native_feedback
+            .as_ref()
+            .and_then(|_| ui::time::now().checked_add(ui::time::Duration::from_secs(2)));
+        private.into_iter().chain(native).min()
+    }
+
+    /// Bind configured feedback to this session's already enrolled network.
+    /// Missing configuration leaves the private composer unconfigured.
+    pub(crate) fn bind_feedback_network(
+        &mut self,
+        network: std::sync::Arc<crate::shell::network::ShellNetwork>,
+    ) {
+        if self.native_feedback.is_some() || self.feedback.is_some() {
+            return;
+        }
+        let Some(destination) = self.feedback_destination.clone() else {
+            return;
+        };
+        match feedback_native::Delivery::new(network, destination, &self.author.0) {
+            Ok(delivery) => self.native_feedback = Some(Box::new(delivery)),
+            Err(error) => tracing::debug!(%error, "native feedback startup refused"),
+        }
     }
 }
 

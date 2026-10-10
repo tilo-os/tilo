@@ -161,12 +161,12 @@ pub(super) fn finished(path: &Path) {
 fn command_observer_only_records_its_workspace_tree() {
     let observed = crate::shell::state::WorkspaceTreeHandle::default();
     let unrelated = crate::shell::state::WorkspaceTreeHandle::default();
-    let observer = TestCommandObserver::new(&observed);
+    let recorder = TestCommandObserver::new(&observed);
     observe_command(&unrelated, "Capture", "accepted");
-    assert!(observer.observations().is_empty());
+    assert!(recorder.observations().is_empty());
     observe_command(&observed, "Publish", "accepted");
     assert_eq!(
-        observer.observations(),
+        recorder.observations(),
         vec![CommandObservation {
             command: "Publish",
             outcome: "accepted",

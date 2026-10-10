@@ -351,7 +351,7 @@ impl ClientInput {
 
 // Pure helpers — no seat, no widgets. Unit-testable in isolation.
 
-fn monotonic_time_ns() -> Option<u128> {
+pub(crate) fn monotonic_time_ns() -> Option<u128> {
     let mut now = libc::timespec {
         tv_sec: 0,
         tv_nsec: 0,

@@ -89,7 +89,7 @@ impl super::App {
 
     /// A worker has no redraw loop. Advance one bounded model pass using the
     /// same phases as the window runner, without adding caller attribution.
-    pub(crate) fn pump_hosted_model(&mut self) {
+    pub fn pump_hosted_model(&mut self) {
         self.pump_hosted_model_as(host_perf_baseline());
     }
 

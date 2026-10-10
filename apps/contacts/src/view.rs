@@ -15,7 +15,7 @@ use std::rc::Rc;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use ui::a11y::{AccessNode, AccessState, Action, Role};
 use ui::icons::Icon;
@@ -25,8 +25,8 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::time::{Duration, Instant};
 use ui::widget::{
-    AvatarFace, EmptyState, EmptyStateContent, Interaction, ListRowFace, RowLeading, ScrollMetrics,
-    Scrollbar, TaffyTreeExt, Widget,
+    AvatarFace, EmptyState, EmptyStateContent, Interaction, ListRowFace, RowLeading, ScrollRegion,
+    TaffyTreeExt, Widget,
 };
 
 use crate::form::{RowKind, Slot, TypeTarget};
@@ -155,17 +155,17 @@ fn select_target(id: ContactId) -> String {
 pub(crate) struct ContactList {
     shared: Shared,
     rect: Rect,
-    scroll: f64,
+    scroller: ScrollRegion,
+    /// The theme of the last paint, which the scroll region's lanes, steps
+    /// and fade read between paints.
+    theme: Theme,
     /// The measured row height, from the last paint.
     row_h: f64,
-    /// The scroll bar's gutter, from the last paint.
-    gutter: f64,
     seen: u64,
     cursor: Point,
     hovered: Option<ContactId>,
     pressed: Option<ContactId>,
     last_click: Option<(Instant, ContactId)>,
-    bar: Scrollbar,
     dirty: bool,
 }
 
@@ -174,54 +174,21 @@ impl ContactList {
         Self {
             shared,
             rect: Rect::ZERO,
-            scroll: 0.0,
+            scroller: ScrollRegion::vertical(),
+            theme: Theme::dark(),
             row_h: 0.0,
-            gutter: 0.0,
             seen: u64::MAX,
             cursor: Point::new(f64::NEG_INFINITY, f64::NEG_INFINITY),
             hovered: None,
             pressed: None,
             last_click: None,
-            bar: Scrollbar::vertical(),
             dirty: true,
         }
     }
 
-    fn metrics(&self) -> ScrollMetrics {
-        let rows = self.shared.borrow().rows.len();
-        ScrollMetrics::new(rows as f64 * self.row_h, self.rect.height(), self.scroll)
-    }
-
-    fn overflows(&self) -> bool {
-        let m = self.metrics();
-        m.content > m.viewport + 0.5
-    }
-
-    fn track(&self) -> Rect {
-        Rect::new(
-            self.rect.x1 - self.gutter,
-            self.rect.y0,
-            self.rect.x1,
-            self.rect.y1,
-        )
-    }
-
-    fn max_scroll(&self) -> f64 {
-        let m = self.metrics();
-        (m.content - m.viewport).max(0.0)
-    }
-
-    fn set_scroll(&mut self, scroll: f64) -> bool {
-        let next = scroll.clamp(0.0, self.max_scroll());
-        let changed = (next - self.scroll).abs() > f64::EPSILON;
-        self.scroll = next;
-        self.dirty |= changed;
-        changed
-    }
-
     /// The row under `point`, from the last paint.
     fn row_at(&self, point: Point) -> Option<ContactId> {
-        if !self.rect.contains(point) || (self.overflows() && self.track().contains(point)) {
+        if !self.scroller.content_rect().contains(point) {
             return None;
         }
         self.shared
@@ -238,12 +205,10 @@ impl ContactList {
             return;
         }
         let top = index as f64 * self.row_h;
-        let bottom = top + self.row_h;
-        if top < self.scroll {
-            self.set_scroll(top);
-        } else if bottom > self.scroll + self.rect.height() {
-            self.set_scroll(bottom - self.rect.height());
-        }
+        let before = self.scroller.offset();
+        self.scroller
+            .scroll_into_view(Rect::new(0.0, top, 0.0, top + self.row_h));
+        self.dirty |= self.scroller.offset() != before;
     }
 
     fn paint(&mut self, ctx: &mut PaintCtx<'_>) {
@@ -252,7 +217,11 @@ impl ContactList {
             .secondary("Ag")
             .leading(RowLeading::Avatar(AvatarFace::new("Ag", "Ag")));
         self.row_h = probe.height(ctx.text, theme);
-        self.gutter = f64::from(theme.tokens.metrics.scrollbar_gutter);
+        self.theme = theme.clone();
+        let rows = self.shared.borrow().rows.len();
+        self.scroller.set_viewport(self.rect, theme);
+        self.scroller
+            .set_content_size(0.0, rows as f64 * self.row_h);
         let reveal = self.shared.borrow_mut().reveal.take();
         if let Some(id) = reveal {
             let index = self
@@ -265,23 +234,22 @@ impl ContactList {
                 self.reveal_index(index);
             }
         }
-        self.set_scroll(self.scroll);
 
-        let overflows = self.overflows();
+        let scroll = self.scroller.offset().y;
         let bridge = self.shared.borrow();
         // The rows' text starts on the column's content edge, where the
         // column's title starts; a row's lift bleeds past it. The scroll bar
         // keeps its gutter.
         let edge = ui::chrome::column_gutter(theme) - ui::chrome::row_bleed(theme);
         let row_x0 = self.rect.x0 + edge;
-        let width_end = if overflows {
-            self.rect.x1 - self.gutter
+        let width_end = if self.scroller.overflows_vertically() {
+            self.scroller.content_rect().x1
         } else {
             self.rect.x1 - edge
         };
         let mut painted = Vec::new();
         if self.row_h > 0.0 && !bridge.rows.is_empty() {
-            let first = (self.scroll / self.row_h).floor().max(0.0) as usize;
+            let first = (scroll / self.row_h).floor().max(0.0) as usize;
             let count = (self.rect.height() / self.row_h).ceil() as usize + 1;
             let end = first.saturating_add(count).min(bridge.rows.len());
             ctx.scene.push_layer(
@@ -295,7 +263,7 @@ impl ContactList {
                 let Some(row) = bridge.rows.get(index) else {
                     break;
                 };
-                let y = self.rect.y0 + index as f64 * self.row_h - self.scroll;
+                let y = self.rect.y0 + index as f64 * self.row_h - scroll;
                 let rect = Rect::new(row_x0, y, width_end, y + self.row_h);
                 let selected = bridge.selected == Some(row.id);
                 let identity = row.id.to_string();
@@ -327,36 +295,13 @@ impl ContactList {
             EmptyState::paint(ctx, self.rect, &content, self.cursor);
         }
         drop(bridge);
-        if overflows {
-            self.bar.draw(
-                ctx.scene,
-                ctx.transform,
-                self.track(),
-                self.metrics(),
-                theme,
-                false,
-            );
-        }
+        self.scroller.paint_bars(ctx.scene, ctx.transform, theme);
         self.shared.borrow_mut().painted = painted;
     }
 
     fn press(&mut self, button: MouseButton) -> bool {
         if !self.rect.contains(self.cursor) {
             return false;
-        }
-        if button == MouseButton::Left && self.overflows() {
-            let track = self.track();
-            match self.bar.press(track, self.metrics(), self.cursor) {
-                ui::widget::scrollbar::PressOutcome::Thumb => {
-                    self.dirty = true;
-                    return true;
-                }
-                ui::widget::scrollbar::PressOutcome::Page(target) => {
-                    self.set_scroll(target);
-                    return true;
-                }
-                ui::widget::scrollbar::PressOutcome::Miss => {}
-            }
         }
         let Some(id) = self.row_at(self.cursor) else {
             return true;
@@ -419,21 +364,15 @@ impl Widget for ContactList {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        // The scroll region takes the wheel, touchpad gestures and its bar.
+        self.dirty |= self.scroller.handle_event(event, ctx, &self.theme);
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor =
                     Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
-                if self.bar.is_dragging() {
-                    let track = self.track();
-                    if let Some(offset) = self.bar.drag_to(track, self.metrics(), self.cursor) {
-                        self.set_scroll(offset);
-                    }
-                    *ctx.handled = true;
+                if self.scroller.is_dragging() {
                     return;
                 }
-                let track = self.track();
-                let metrics = self.metrics();
-                self.dirty |= self.bar.update_hover(track, metrics, self.cursor);
                 let hovered = self.row_at(self.cursor);
                 if hovered != self.hovered {
                     self.hovered = hovered;
@@ -449,7 +388,7 @@ impl Widget for ContactList {
                 state: ElementState::Pressed,
                 button,
                 ..
-            } => {
+            } if !*ctx.handled => {
                 if self.press(*button) {
                     *ctx.handled = true;
                 }
@@ -458,20 +397,7 @@ impl Widget for ContactList {
                 state: ElementState::Released,
                 button: MouseButton::Left,
                 ..
-            } => {
-                let released = self.bar.release();
-                if self.pressed.take().is_some() || released {
-                    self.dirty = true;
-                }
-            }
-            WindowEvent::MouseWheel { delta, .. } if self.rect.contains(self.cursor) => {
-                let dy = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => f64::from(-*y) * self.row_h.max(1.0),
-                    MouseScrollDelta::PixelDelta(p) => -p.y / ctx.scale_factor,
-                };
-                self.set_scroll(self.scroll + dy);
-                *ctx.handled = true;
-            }
+            } if self.pressed.take().is_some() => self.dirty = true,
             _ => {}
         }
     }
@@ -496,6 +422,18 @@ impl Widget for ContactList {
         self.dirty = false;
     }
 
+    fn needs_animation_frame(&self) -> bool {
+        self.scroller.needs_animation_frame(&self.theme)
+    }
+
+    fn next_wake_deadline(&self) -> Option<Instant> {
+        self.scroller.next_wake_deadline(&self.theme)
+    }
+
+    fn wants_pointer_capture(&self) -> bool {
+        self.scroller.is_dragging()
+    }
+
     fn tooltip(&self) -> Option<&str> {
         self.hovered
             .map(|_| "Double-click to edit; right-click for more actions")
@@ -505,7 +443,7 @@ impl Widget for ContactList {
         let bridge = self.shared.borrow();
         let total = bridge.rows.len();
         let start = if self.row_h > 0.0 {
-            (self.scroll / self.row_h).floor().max(0.0) as usize
+            (self.scroller.offset().y / self.row_h).floor().max(0.0) as usize
         } else {
             0
         };

@@ -63,6 +63,14 @@ impl AgentParticipant {
             return;
         };
         let reply = match frame.message {
+            RemoteActionMessage::FeedbackRequest { correlation, .. } => {
+                RemoteActionMessage::FeedbackResponse {
+                    correlation,
+                    result: Err(ActionHostError::Unavailable {
+                        reason: "agents do not own canonical feedback delivery".into(),
+                    }),
+                }
+            }
             RemoteActionMessage::CatalogueRequest { correlation, query } => {
                 RemoteActionMessage::CatalogueResponse {
                     correlation,
@@ -90,7 +98,8 @@ impl AgentParticipant {
                     }),
                 }
             }
-            RemoteActionMessage::CatalogueResponse { .. }
+            RemoteActionMessage::FeedbackResponse { .. }
+            | RemoteActionMessage::CatalogueResponse { .. }
             | RemoteActionMessage::RecordResponse { .. }
             | RemoteActionMessage::Receipt(_)
             | RemoteActionMessage::Update { .. }

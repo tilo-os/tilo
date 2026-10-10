@@ -44,6 +44,14 @@ class FlatpakDefaults(unittest.TestCase):
         self.assertIn("os/usr/lib/systemd/system/tilo-flatpak-defaults.service", image)
         self.assertIn("systemctl enable tilo-flatpak-defaults.service", image)
         self.assertEqual(command, ["/usr/bin/flatpak", "remotes", "--system", "--columns=name"])
+        # It holds the greeter, so it applies only when the predefined remotes or the
+        # repository changed, judged against the descriptors kept after a successful run.
+        condition = unit["Service"]["ExecCondition"]
+        kept = unit["Service"]["ExecStartPost"]
+        descriptors = "cat /usr/share/flatpak/remotes.d/* /etc/flatpak/remotes.d/* 2>/dev/null"
+        self.assertIn(f"{descriptors} | cmp -s - /var/lib/flatpak/.tilo-applied-remotes && exit 1", condition)
+        self.assertIn("[ -e /var/lib/flatpak/repo/config ] &&", condition)
+        self.assertIn(f"{descriptors} > /var/lib/flatpak/.tilo-applied-remotes", kept)
         self.assertIn("greetd.service", unit["Unit"]["Before"].split())
         self.assertIn("flatpak-add-fedora-repos.service", unit["Unit"]["After"].split())
         self.assertEqual(unit["Service"].get("User", "root"), "root")

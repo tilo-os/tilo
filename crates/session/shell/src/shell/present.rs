@@ -234,7 +234,7 @@ fn log_frame_lifecycle(serial: u64, revision: u64, timing: FrameLifecycle) {
         || total >= SLOW_FRAME_LIFECYCLE
     {
         eprintln!(
-            "FRAME-LIFECYCLE serial={serial} event=render-retired queue_wait_us={} render_us={} total_us={} inflight_at_enqueue={inflight_at_enqueue} input_age_at_enqueue_us={} revision={} phase_timing={} encode_submit_us={} gpu_completion_wait_us={} bump_settle_us={} backdrop_us={} kms_retirement_us={} vblank_paced={} flip_to_vblank_us={}",
+            "FRAME-LIFECYCLE serial={serial} event=render-retired queue_wait_us={} render_us={} total_us={} inflight_at_enqueue={inflight_at_enqueue} input_age_at_enqueue_us={} revision={} phase_timing={} encode_submit_us={} gpu_completion_wait_us={} bump_settle_us={} backdrop_us={} kms_retirement_us={} vblank_paced={} flip_to_vblank_us={} monotonic_us={}",
             queue_wait.as_micros(),
             render.as_micros(),
             total.as_micros(),
@@ -255,6 +255,10 @@ fn log_frame_lifecycle(serial: u64, revision: u64, timing: FrameLifecycle) {
                     .as_micros()
                     .to_string()
             ),
+            // CLOCK_MONOTONIC at retirement, so a boot or sign-in measurement can place the
+            // session's first presented frame on the system's own clock (TIL-767).
+            crate::compositor::client_input::monotonic_time_ns()
+                .map_or_else(|| "none".to_owned(), |ns| (ns / 1_000).to_string()),
         );
     }
 }

@@ -128,6 +128,7 @@ async fn signed_reviewed_feedback_retries_once_and_reads_a_retained_receipt() {
     browser = Browser::open_room(&hosted, &device, &host, &room.room).await;
     publish_participant(&mut browser, &route, &mutation);
     submit_local_participant(&mut browser, &route, &submission, &person);
+    assert_signed_canonical(&mut browser, &submission, &host.cert, &device.cert).await;
     let read_address = ActionAddress::new(
         format!("chat.feedback:{}", submission.id),
         "read-feedback-receipt",
@@ -200,6 +201,7 @@ async fn signed_reviewed_feedback_retries_once_and_reads_a_retained_receipt() {
     let restored = start(&identity, &host, state.path()).await;
     let mut returning = Browser::open_room(&restored, &device, &host, &room.room).await;
     let after = resolved_status(&mut returning, &submission).await;
+    assert_signed_canonical(&mut returning, &submission, &host.cert, &device.cert).await;
     assert_eq!(
         before["content"], after["content"],
         "cold canonical triage must survive host restart"
@@ -391,4 +393,98 @@ async fn resolved_status(browser: &mut Browser, submission: &Submission) -> serd
         );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+}
+
+async fn owner_feedback(
+    browser: &mut Browser,
+    submission: &Submission,
+    include_report: bool,
+) -> Result<tilo_actions::remote::feedback::FeedbackAnswer, ActionHostError> {
+    use tilo_actions::remote::feedback::{FeedbackDestination, FeedbackPublication, FeedbackQuery};
+    browser.correlation = browser.correlation.checked_add(1).unwrap();
+    let correlation = browser.correlation;
+    browser.send(RemoteActionMessage::FeedbackRequest {
+        correlation,
+        query: FeedbackQuery {
+            destination: FeedbackDestination {
+                room: submission.destination.room.clone(),
+                provider: submission.destination.provider.clone(),
+                channel: submission.destination.channel.clone(),
+            },
+            publication: FeedbackPublication::Write,
+            submission: include_report.then(|| serde_json::to_value(submission).unwrap()),
+        },
+    });
+    browser
+        .answer("signed canonical feedback", |message| match message {
+            RemoteActionMessage::FeedbackResponse {
+                correlation: received,
+                result,
+            } if *received == correlation => Some(result.clone()),
+            _ => None,
+        })
+        .await
+}
+async fn assert_signed_canonical(
+    browser: &mut Browser,
+    submission: &Submission,
+    owner: &tilo_user_identity::DeviceCert,
+    reporter: &tilo_user_identity::DeviceCert,
+) {
+    use tilo_actions::remote::Caller;
+    use tilo_desktop::feedback::transport::{Enrollment, SignedReceipt};
+    let admission = owner_feedback(browser, submission, false).await.unwrap();
+    assert!(
+        admission.receipt.is_none(),
+        "admission must not fabricate report persistence"
+    );
+    assert_eq!(
+        admission.admission.owner_device,
+        hex::encode(owner.device_public_key)
+    );
+    assert_eq!(
+        admission.admission.reporter_device,
+        hex::encode(reporter.device_public_key)
+    );
+    let enrollment = Enrollment {
+        destination: submission.destination.clone(),
+        owner: Caller::authenticated(owner.user_public_key, owner.device_public_key)
+            .in_room(&submission.destination.room),
+        reporter: Caller::authenticated(reporter.user_public_key, reporter.device_public_key)
+            .in_room(&submission.destination.room),
+        permissions: ui::permissions::PermissionContext::from_capabilities(
+            ui::permissions::Actor::person(
+                Some(serde_json::from_value(admission.admission.role).unwrap()),
+                hex::encode(reporter.user_public_key),
+            )
+            .in_room(&submission.destination.room),
+            serde_json::from_value(admission.admission.caps).unwrap(),
+        )
+        .at_unix_time(admission.admission.unix_time),
+        publication: ui::permissions::Verb::Write,
+    };
+    let answer = owner_feedback(browser, submission, true).await.unwrap();
+    let receipt =
+        SignedReceipt::decode(&serde_json::to_vec(&answer.receipt.unwrap()).unwrap()).unwrap();
+    assert_eq!(
+        receipt.verify(submission, &enrollment).unwrap().digest,
+        submission.digest().unwrap()
+    );
+    let mut changed = submission.clone();
+    changed.feedback.text.push_str(" changed approved content");
+    assert!(receipt.verify(&changed, &enrollment).is_err());
+    assert!(owner_feedback(browser, &changed, true).await.is_err());
+    let mut absent = submission.clone();
+    absent.id = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee".into();
+    assert!(
+        owner_feedback(browser, &absent, true).await.is_err(),
+        "a locally approved but unretained report has no canonical acknowledgment"
+    );
+    let mut wrong_destination = submission.clone();
+    wrong_destination.destination.channel = "missing-existing-destination".into();
+    assert!(
+        owner_feedback(browser, &wrong_destination, false)
+            .await
+            .is_err()
+    );
 }

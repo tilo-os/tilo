@@ -9543,6 +9543,7 @@ pub fn run() {
             apps.bind_messaging_record_wake(Arc::clone(&session_wake));
             if let Some(network) = peer_sync.as_ref() {
                 apps.bind_private_messages_network(network);
+                apps.bind_feedback_network(Arc::clone(network));
             }
         }
     });
@@ -12562,7 +12563,9 @@ pub fn run() {
                         net.set_wake(Arc::clone(&session_wake));
                         frame_builder.with_chrome(|chrome| {
                             if let Some(apps) = chrome.hosted_inputs.in_process() {
-                                apps.borrow_mut().bind_private_messages_network(net);
+                                let mut apps = apps.borrow_mut();
+                                apps.bind_private_messages_network(net);
+                                apps.bind_feedback_network(Arc::clone(net));
                             }
                         });
                     }

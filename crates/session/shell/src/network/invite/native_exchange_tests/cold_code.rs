@@ -436,7 +436,7 @@ impl CodeOpenTrace {
         if self.last != observation {
             self.last = observation;
             if self.changes_logged < 16 {
-                self.changes_logged += 1;
+                self.changes_logged = self.changes_logged.saturating_add(1);
                 eprintln!("native-code-open changed {self:?}");
             }
         }
