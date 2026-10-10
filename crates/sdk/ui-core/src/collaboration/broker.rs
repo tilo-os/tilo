@@ -3129,7 +3129,7 @@ impl CollaborationManager {
     /// [`super::CollaborationState::Connecting`] until the broker
     /// acknowledges the route. For a host showing an app inside its own
     /// process.
-    pub(crate) fn for_route_host_in_background(
+    pub fn for_route_host_in_background(
         connector: HostSessionConnector,
         route: RouteSpec,
         record_kind: Option<String>,
