@@ -89,10 +89,7 @@ impl Source<'_> {
         }
     }
 
-    #[cfg_attr(
-        not(feature = "video"),
-        allow(dead_code, reason = "only the video decoder reads from a path")
-    )]
+    #[cfg(feature = "video")]
     fn as_path(&self) -> Option<&Path> {
         match self {
             Source::Path(p) => Some(p),
