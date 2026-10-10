@@ -8,6 +8,7 @@ mod display_auto_leases;
 pub(crate) mod person_layout;
 mod receive_recovery;
 mod remote_capture;
+mod spatial_cleanup;
 mod spatial_protocol;
 mod window_views;
 
@@ -864,6 +865,7 @@ struct OutboundSpatialInput {
 #[derive(Default)]
 struct SpatialInputState {
     protocol: spatial_protocol::SpatialProtocol,
+    cleanup: spatial_cleanup::SpatialCleanup,
     /// Permissions this device issued and must enforce on inbound input.
     issued: BTreeMap<[u8; 16], InputLease>,
     automatic_issued: BTreeMap<crate::shell::personal_continuity::DeviceId, [u8; 16]>,
@@ -996,6 +998,11 @@ impl SpatialInputState {
     }
 
     fn queue_outbound(&mut self, input: OutboundSpatialInput) -> Result<(), String> {
+        if self.cleanup.blocks(&input.target, input.lease_nonce) {
+            return Err(crate::shell::i18n::t(
+                "device-fabric-error-input-cleanup-pending",
+            ));
+        }
         if matches!(input.event, FabricInputEvent::PointerMotion { .. })
             && let Some(last) = self.outbound.back_mut()
             && last.target == input.target
@@ -7126,6 +7133,28 @@ pub fn send_spatial_input_bound(
     nonce: [u8; 16],
     event: FabricInputEvent,
 ) -> Result<(), String> {
+    with_spatial_input_authority(network, target, |spatial, controller| {
+        spatial.queue_lease_bound_input(
+            controller,
+            OutboundSpatialInput {
+                sequence: None,
+                target: target.clone(),
+                lease_nonce: nonce,
+                event,
+            },
+            unix_now_ms(),
+        )
+    })
+}
+
+fn with_spatial_input_authority(
+    network: &ShellNetwork,
+    target: &crate::shell::personal_continuity::DeviceId,
+    operation: impl FnOnce(
+        &mut SpatialInputState,
+        &crate::shell::personal_continuity::DeviceId,
+    ) -> Result<(), String>,
+) -> Result<(), String> {
     require_continuity(ContinuityCapability::DisplayInput)?;
     if !network.personal_device_is_enrolled(target) {
         return Err(crate::shell::i18n::t(
@@ -7144,35 +7173,46 @@ pub fn send_spatial_input_bound(
         .ok_or_else(|| "spatial input grant has no current certified route".to_string())?;
     network
         .with_current_personal_route(&route, || {
-            spatial_input_state()
+            let mut spatial = spatial_input_state()
                 .lock()
-                .map_err(|_| "spatial input state is unavailable".to_string())?
-                .queue_lease_bound_input(
-                    &controller,
-                    OutboundSpatialInput {
-                        sequence: None,
-                        target: target.clone(),
-                        lease_nonce: nonce,
-                        event,
-                    },
-                    unix_now_ms(),
-                )
+                .map_err(|_| "spatial input state is unavailable".to_string())?;
+            operation(&mut spatial, &controller)
         })
         .ok_or_else(|| "spatial input grant route is no longer current".to_string())?
 }
 
-fn flush_spatial_input(network: &ShellNetwork) {
+/// Transfer held input releases to a bounded cleanup lane under the same
+/// exact authority as ordinary input. A full ordinary queue cannot lose them.
+///
+/// # Errors
+/// Rejects withdrawn policy, identity, route, lease or capabilities, and any
+/// event other than a valid key/button release. No authority is minted here.
+pub fn queue_spatial_input_cleanup_bound(
+    network: &ShellNetwork,
+    target: &crate::shell::personal_continuity::DeviceId,
+    nonce: [u8; 16],
+    events: Vec<FabricInputEvent>,
+) -> Result<(), String> {
+    with_spatial_input_authority(network, target, |spatial, controller| {
+        spatial.queue_cleanup_bound(controller, target, (nonce, events), unix_now_ms())
+    })
+}
+
+pub(super) fn flush_spatial_input(network: &ShellNetwork) {
     spatial_protocol::probe(network);
     for _ in 0..MAX_SPATIAL_INPUT_FLUSH_PER_FRAME {
         let prepared = spatial_input_state().lock().ok().and_then(|mut spatial| {
-            let mut input = spatial.outbound.pop_front()?;
+            let (mut input, cleanup) = spatial.next_spatial_input()?;
             let action = spatial
                 .prepare_spatial_input(&mut input, unix_now_ms())
                 .ok()?;
+            if cleanup {
+                spatial.cleanup.prepared(&input);
+            }
             let route = spatial.received_routes.get(&input.target).cloned();
-            Some((input, route, action))
+            Some((input, cleanup, route, action))
         });
-        let Some((input, route, action)) = prepared else {
+        let Some((input, cleanup, route, action)) = prepared else {
             return;
         };
         let Some(route) = route.filter(|route| network.personal_route_is_current(route)) else {
@@ -7182,10 +7222,13 @@ fn flush_spatial_input(network: &ShellNetwork) {
             .send_personal_fabric_action_on_route(&route, action)
             .is_err()
         {
-            if let Ok(mut spatial) = spatial_input_state().lock() {
+            if !cleanup && let Ok(mut spatial) = spatial_input_state().lock() {
                 spatial.outbound.push_front(input);
             }
             return;
+        }
+        if cleanup && let Ok(mut spatial) = spatial_input_state().lock() {
+            spatial.cleanup.delivered(&input);
         }
     }
 }
@@ -8129,6 +8172,7 @@ fn tear_down_spatial_input(network: &ShellNetwork) {
         spatial.issued_routes.clear();
         spatial.automatic_issued.clear();
         spatial.outbound.clear();
+        spatial.cleanup.clear();
         spatial.inbound.clear();
         spatial.retain_spatial_protocol();
     }
