@@ -22,6 +22,114 @@ class FocusedTests(unittest.TestCase):
     def reads(self, listing='module::case: test\n'):
         return ['a' * 40 + '\n', json.dumps(self.metadata), listing]
 
+    def test_repeat_count_is_bounded_and_only_applies_to_exact_tests(self):
+        self.assertEqual(focused.request(self.values)['REPEAT_COUNT'], 1)
+        for count in ('1', '2', '20'):
+            self.assertEqual(focused.request(dict(self.values, REPEAT_COUNT=count))['REPEAT_COUNT'], int(count))
+        for count in ('0', '21', '-1', '01', '1.0', ' 2', '2 ', '2; echo bad', 0, None, True):
+            with self.subTest(count=count), self.assertRaises(ValueError):
+                focused.request(dict(self.values, REPEAT_COUNT=count))
+        with self.assertRaisesRegex(ValueError, 'only exact tests'):
+            focused.request(dict(self.values, OPERATION='check-tests', TEST_TARGET='', TEST_NAME='', REPEAT_COUNT='20'))
+        for selection in ('[]', '["module::case","module::case"]', '["module::*"]',
+                          json.dumps(['case_' + str(n) for n in range(33)])):
+            with self.subTest(selection=selection), self.assertRaises(ValueError):
+                focused.request(dict(self.values, TEST_NAME='', TEST_NAMES=selection, REPEAT_COUNT='20'))
+
+    def test_repeat_runs_exact_processes_and_preserves_each_iteration(self):
+        values = focused.request(dict(self.values, REPEAT_COUNT='20'))
+        outcomes = []
+        passed = subprocess.CompletedProcess([], 0, 'test result: ok. 1 passed; 0 failed; 0 ignored;')
+        with patch.object(focused.subprocess, 'check_output', side_effect=self.reads()) as read, \
+                patch.object(focused.subprocess, 'run', return_value=passed) as run:
+            self.assertEqual(focused.execute(Path('/focused-test-fixture'), values, outcomes), 0)
+        self.assertEqual(read.call_count, 3, 'metadata and target listing are reused')
+        self.assertEqual(run.call_count, 20)
+        self.assertEqual([outcome['iteration'] for outcome in outcomes], list(range(1, 21)))
+        self.assertTrue(all(outcome['executed'] and outcome['passed'] for outcome in outcomes))
+        for call in run.call_args_list:
+            self.assertEqual(call.args[0], ['cargo', 'test', '--locked', '-p', 'shell', '--test', 'it',
+                                          '--', 'module::case', '--exact', '--nocapture'])
+            self.assertEqual(call.kwargs['cwd'], Path('/focused-test-fixture'))
+
+    def test_repeat_retains_failure_finishes_current_group_and_stops_further_iterations(self):
+        values = focused.request(dict(self.values, TEST_NAME='', TEST_NAMES='["first","second"]', REPEAT_COUNT='20'))
+        passed = subprocess.CompletedProcess([], 0, 'test result: ok. 1 passed; 0 failed; 0 ignored;')
+        failed = subprocess.CompletedProcess([], 101, 'test result: FAILED. 0 passed; 1 failed; 0 ignored;')
+        outcomes = []
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'receipt.json'
+            receipt = dict(values, cases=outcomes, workflow_sha='b' * 40, builder_image='image@sha256:fixed',
+                           complete=False, exit_code=None)
+            with patch.object(focused.subprocess, 'check_output', side_effect=self.reads('first: test\nsecond: test\n')), \
+                    patch.object(focused.subprocess, 'run', side_effect=[passed, passed, failed, passed]) as run:
+                code = focused.execute(Path('/focused-test-fixture'), values, outcomes,
+                                       lambda: focused.save_receipt(path, receipt))
+            self.assertEqual(code, 101)
+            self.assertEqual(run.call_count, 4)
+            self.assertEqual([outcome['iteration'] for outcome in outcomes], [1, 1, 2, 2])
+            self.assertEqual([outcome['passed'] for outcome in outcomes], [True, True, False, True])
+            stored = json.loads(path.read_text())
+            self.assertEqual(stored['cases'], outcomes)
+            self.assertEqual(stored['completed_iterations'], 2)
+            self.assertFalse(stored['complete'])
+            self.assertIsNone(stored['exit_code'])
+            self.assertEqual(stored['SOURCE_SHA'], 'a' * 40)
+            self.assertEqual(stored['workflow_sha'], 'b' * 40)
+            self.assertEqual(stored['builder_image'], 'image@sha256:fixed')
+            self.assertFalse(path.with_suffix('.partial').exists())
+
+    def test_repeat_never_turns_ignored_or_unobserved_tests_into_success(self):
+        values = focused.request(dict(self.values, REPEAT_COUNT='20'))
+        for output in ('', 'test result: ok. 0 passed; 0 failed; 1 ignored;'):
+            with self.subTest(output=output), \
+                    patch.object(focused.subprocess, 'check_output', side_effect=self.reads()), \
+                    patch.object(focused.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, output)) as run:
+                self.assertEqual(focused.execute(Path('/focused-test-fixture'), values), 1)
+                self.assertEqual(run.call_count, 1)
+
+    def test_main_preserves_incomplete_failure_and_source_provenance(self):
+        with tempfile.TemporaryDirectory() as directory:
+            receipt_path = Path(directory) / 'receipt.json'
+            values = dict(self.values, REPEAT_COUNT='20', GITHUB_SHA='b' * 40,
+                          BUILDER_IMAGE='image@sha256:fixed')
+            def failed(root, values, outcomes, on_outcome):
+                outcomes.append({'name': 'module::case', 'iteration': 1, 'exit_code': 101,
+                                 'executed': True, 'passed': False})
+                on_outcome()
+                return 101
+            with patch.dict(focused.os.environ, values, clear=True), \
+                    patch.object(focused.sys, 'argv', ['focused_test.py', 'run', '--root', directory,
+                                                     '--receipt', str(receipt_path)]), \
+                    patch.object(focused, 'execute', side_effect=failed):
+                self.assertEqual(focused.main(), 101)
+            stored = json.loads(receipt_path.read_text())
+            self.assertEqual(stored['exit_code'], 101)
+            self.assertFalse(stored['complete'])
+            self.assertEqual(stored['completed_iterations'], 1)
+            self.assertEqual(stored['REPEAT_COUNT'], 20)
+            self.assertEqual(stored['SOURCE_SHA'], 'a' * 40)
+            self.assertEqual(stored['workflow_sha'], 'b' * 40)
+            self.assertEqual(stored['builder_image'], 'image@sha256:fixed')
+            with patch.dict(focused.os.environ, values, clear=True), \
+                    patch.object(focused.sys, 'argv', ['focused_test.py', 'run']), \
+                    patch.object(focused, 'execute', return_value=0):
+                self.assertEqual(focused.main(), 1, 'missing iterations cannot report success')
+
+    def test_receipt_and_workflow_keep_existing_resource_and_artifact_bounds(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'receipt.json'
+            with self.assertRaisesRegex(ValueError, 'one MiB'):
+                focused.save_receipt(path, {'oversized': 'x' * 1_048_576})
+            self.assertFalse(path.exists())
+        workflow = (PATH.parents[2] / '.forgejo/workflows/dev-focused-test.yml').read_text()
+        self.assertIn("REPEAT_COUNT: ${{ github.event.inputs.repeat_count }}", workflow)
+        self.assertIn("CARGO_BUILD_JOBS: '4'", workflow)
+        self.assertIn('timeout-minutes: 90', workflow)
+        self.assertIn('--receipt control/target/focused-test/receipt.json', workflow)
+        self.assertIn('path: control/target/focused-test/receipt.json', workflow)
+        self.assertIn('if-no-files-found: error', workflow)
+
     def test_package_sets_keep_exact_source_membership_and_failure_guards(self):
         values = dict(self.values, PACKAGE='', OPERATION='check-tests', TEST_TARGET='', TEST_NAME='')
         for packages in ([], ['shell'] * 2, ['p' + str(n) for n in range(65)],

@@ -4,6 +4,8 @@ name: Dev / focused test
 # comes from the dispatch ref; source_sha selects only the code being tested.
 # Forgejo ignores workflow permissions keys. Checkout credentials are removed;
 # no publication or signing secret is passed to the source build.
+# Repeated exact tests are supplemental diagnostics. The same job admission,
+# resource limits and source test budgets apply; landing still needs full checks.
 on:
   workflow_dispatch:
     inputs:
@@ -43,6 +45,11 @@ on:
         description: 'JSON array of 1-32 exact Rust test paths in the same target'
         required: false
         type: string
+      repeat_count:
+        description: 'Supplemental exact-test iterations, 1-20; stops after a failed iteration'
+        required: false
+        default: '1'
+        type: string
 
 env:
   SOURCE_SHA: ${{ github.event.inputs.source_sha }}
@@ -53,6 +60,7 @@ env:
   TEST_NAME: ${{ github.event.inputs.test_name }}
   TEST_NAMES: ${{ github.event.inputs.test_names }}
   TARGET_KIND: ${{ github.event.inputs.target_kind }}
+  REPEAT_COUNT: ${{ github.event.inputs.repeat_count }}
   CARGO_BUILD_JOBS: '4'
   CARGO_INCREMENTAL: '0'
   CARGO_PROFILE_DEV_DEBUG: '0'
@@ -133,12 +141,19 @@ jobs:
         env:
           XDG_RUNTIME_DIR: /tmp/tilo-focused-runtime
           BUILDER_IMAGE: ${{ needs.builder.outputs.image }}
-        run: bash control/tools/with-headless-audio.sh python3 -I control/tools/ci/focused_test.py run --root source
+        run: bash control/tools/with-headless-audio.sh python3 -I control/tools/ci/focused_test.py run --root source --receipt control/target/focused-test/receipt.json
       - name: Inspect normal native job environment without mounts or device access
         if: github.event.inputs.operation == 'inspect-native'
         env:
           BUILDER_IMAGE: ${{ needs.builder.outputs.image }}
         run: python3 -I control/tools/ci/focused_test.py run --root source
+      - name: Preserve focused request and every completed case
+        if: always() && github.event.inputs.operation != 'inspect-native'
+        uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        with:
+          name: focused-test-${{ github.run_attempt }}
+          path: control/target/focused-test/receipt.json
+          if-no-files-found: error
       - name: Save source lockfile downloads
         if: always() && steps.downloads.outputs.cache-hit != 'true' && steps.downloads.outputs.cache-key != ''
         continue-on-error: true

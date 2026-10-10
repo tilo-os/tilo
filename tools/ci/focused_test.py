@@ -13,6 +13,14 @@ def request(env):
     values = {key: env.get(key, '') for key in
               ('SOURCE_SHA', 'PACKAGE', 'PACKAGES', 'TEST_TARGET', 'TEST_NAME', 'TEST_NAMES', 'OPERATION')}
     values['TARGET_KIND'] = env.get('TARGET_KIND', '') or 'integration'
+    count = env.get('REPEAT_COUNT', '')
+    if count == '':
+        count = '1'
+    if not isinstance(count, str) or not re.fullmatch(r'(?:[1-9]|1[0-9]|20)', count):
+        raise ValueError('repeat count must be an integer between 1 and 20')
+    values['REPEAT_COUNT'] = int(count)
+    if values['REPEAT_COUNT'] != 1 and values['OPERATION'] not in ('test', 'test-lib'):
+        raise ValueError('only exact tests can be repeated')
     if not re.fullmatch(r'[0-9a-f]{40}', values['SOURCE_SHA']):
         raise ValueError('source must be a full lowercase commit SHA')
     if values['PACKAGES']:
@@ -81,7 +89,7 @@ def ancestor_cargo_configs(root):
     return found
 
 
-def execute(root, values, outcomes=None):
+def execute(root, values, outcomes=None, on_outcome=None):
     # Cargo merges configuration from ancestors. The workflow helper checkout
     # must be a sibling, never a parent supplying another revision's settings.
     if ancestor_cargo_configs(root):
@@ -125,32 +133,52 @@ def execute(root, values, outcomes=None):
             raise ValueError('exact test is absent or ambiguous in the compiled target: ' + case)
     outcomes = [] if outcomes is None else outcomes
     code = 0
-    for case in cases:
-        command = prefix + ['--', case, '--exact', '--nocapture']
-        print(json.dumps({'source_sha': actual, 'command': command}), flush=True)
-        # Every case uses this job's same target tree; Cargo reuses the target
-        # compiled by --list. Keep Cargo's runtime library path setup intact.
-        result = subprocess.run(command, cwd=root, text=True, stdout=subprocess.PIPE)
-        print(result.stdout, end='', flush=True)
-        executed = bool(re.search(r'test result: (?:ok|FAILED)\. (?:1 passed; 0 failed|0 passed; 1 failed); 0 ignored;', result.stdout))
-        passed = result.returncode == 0 and bool(re.search(
-            r'test result: ok\. 1 passed; 0 failed; 0 ignored;', result.stdout))
-        outcome = {'name': case, 'exit_code': result.returncode,
-                   'executed': executed, 'passed': passed}
-        outcomes.append(outcome)
-        print('TILO_FOCUSED_CASE ' + json.dumps(outcome, sort_keys=True), flush=True)
-        if not passed:
-            code = code or result.returncode or 1
+    for iteration in range(1, values.get('REPEAT_COUNT', 1) + 1):
+        for case in cases:
+            command = prefix + ['--', case, '--exact', '--nocapture']
+            print(json.dumps({'source_sha': actual, 'command': command, 'iteration': iteration}), flush=True)
+            # Compile once; each invocation keeps Cargo's source-owned runner
+            # and its private runtime environment. Test budgets are unchanged.
+            result = subprocess.run(command, cwd=root, text=True, stdout=subprocess.PIPE)
+            print(result.stdout, end='', flush=True)
+            executed = bool(re.search(r'test result: (?:ok|FAILED)\. (?:1 passed; 0 failed|0 passed; 1 failed); 0 ignored;', result.stdout))
+            passed = result.returncode == 0 and bool(re.search(
+                r'test result: ok\. 1 passed; 0 failed; 0 ignored;', result.stdout))
+            outcome = {'name': case, 'exit_code': result.returncode,
+                       'executed': executed, 'passed': passed, 'iteration': iteration}
+            outcomes.append(outcome)
+            if on_outcome is not None:
+                on_outcome()
+            print('TILO_FOCUSED_CASE ' + json.dumps(outcome, sort_keys=True), flush=True)
+            if not passed:
+                code = code or result.returncode or 1
+        if code:
+            break
     return code
+
+
+def save_receipt(path, receipt):
+    if path is None:
+        return
+    cases = receipt.get('TEST_CASES', [])
+    receipt['completed_iterations'] = len(receipt.get('cases', [])) // len(cases) if cases else 0
+    data = json.dumps(receipt, indent=2) + '\n'
+    if len(data.encode()) > 1_048_576:
+        raise ValueError('focused receipt exceeds its one MiB bound')
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix('.partial')
+    temporary.write_text(data)
+    temporary.replace(path)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('mode', choices=('validate', 'run'))
     parser.add_argument('--root', type=Path, default=Path('source'))
+    parser.add_argument('--receipt', type=Path, help='workflow-owned bounded progress artifact')
     args = parser.parse_args()
     receipt = {'schema': 'tilo.focused-test/v1', 'workflow_sha': os.environ.get('GITHUB_SHA'),
-               'builder_image': os.environ.get('BUILDER_IMAGE')}
+               'builder_image': os.environ.get('BUILDER_IMAGE'), 'qualification': 'supplemental-exact-tests'}
     code = 1
     try:
         values = request(os.environ)
@@ -160,13 +188,23 @@ def main():
                 out.write('source=' + values['SOURCE_SHA'] + '\n')
             return 0
         receipt['cases'] = []
-        code = execute(args.root.resolve(), values, receipt['cases'])
+        receipt['exit_code'] = None
+        receipt['complete'] = False
+        save_receipt(args.receipt, receipt)
+        code = execute(args.root.resolve(), values, receipt['cases'],
+                       lambda: save_receipt(args.receipt, receipt))
     except (ValueError, KeyError, subprocess.CalledProcessError) as error:
         print(str(error), file=sys.stderr)
         receipt['error'] = str(error)
         if isinstance(error, subprocess.CalledProcessError):
             code = error.returncode
+    cases = receipt.get('TEST_CASES', [])
+    if code == 0 and cases and len(receipt.get('cases', [])) != len(cases) * receipt['REPEAT_COUNT']:
+        code = 1
+        receipt['error'] = 'requested exact-test iterations did not complete'
     receipt['exit_code'] = code
+    receipt['complete'] = code == 0
+    save_receipt(args.receipt, receipt)
     print('TILO_FOCUSED_TEST ' + json.dumps(receipt, sort_keys=True))
     if os.environ.get('GITHUB_STEP_SUMMARY'):
         with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a') as out:
