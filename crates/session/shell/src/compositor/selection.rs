@@ -152,6 +152,10 @@ struct Slot {
     publish_pending: bool,
     /// Set when chrome asked for the selection to be dropped entirely.
     clear_pending: bool,
+    /// Payload id and time of the last client selection Tilo took over (see
+    /// [`adopt_complete_client_selection`]); stops a clipboard manager that
+    /// re-asserts whatever it sees from ping-ponging with the compositor.
+    adopted: Option<([u8; 32], u64)>,
 }
 
 /// The compositor's clipboard mirror, shared between Wayland dispatch and
@@ -778,6 +782,57 @@ pub fn record_client_bytes(
     }
 }
 
+/// Keep a client's clipboard alive after the client is gone.
+///
+/// A Wayland selection is only as long-lived as the `wl_data_source` behind
+/// it: when the copying client exits (`wl-copy`, a closed window) the seat
+/// drops the selection and every later paste finds "nothing copied" — even
+/// though Tilo already holds every byte in the mirror. GNOME/KDE avoid that
+/// with a clipboard manager. Tilo does it here: once a client-owned
+/// clipboard has been mirrored completely (every advertised format
+/// transferred), the compositor takes the selection over from the mirror, so
+/// it outlives its source. Only the clipboard is taken over; primary
+/// selection stays ephemeral, as on every other desktop.
+///
+/// Returns whether ownership changed. The same payload is not taken over
+/// again within [`ADOPT_COOLDOWN_MS`], so a clipboard manager that re-copies
+/// the selection it sees cannot start a ping-pong with the compositor.
+pub fn adopt_complete_client_selection(store: &SharedSelection, now_ms: u64) -> bool {
+    let Ok(mut store) = store.lock() else {
+        return false;
+    };
+    let slot = &mut store.clipboard;
+    if slot.compositor_owned
+        || slot.generation == 0
+        || slot.mime_types.is_empty()
+        || slot.values.is_empty()
+        || !slot
+            .mime_types
+            .iter()
+            .all(|mime| value_for(slot, mime).is_some_and(|bytes| !bytes.is_empty()))
+    {
+        // An empty payload is a transfer the source aborted (it closed the
+        // pipe without writing), not content: taking over would replace a
+        // working source with nothing.
+        return false;
+    }
+    let id = history_id(&slot.values);
+    if slot
+        .adopted
+        .is_some_and(|(last, at)| last == id && now_ms.saturating_sub(at) < ADOPT_COOLDOWN_MS)
+    {
+        return false;
+    }
+    slot.adopted = Some((id, now_ms));
+    slot.compositor_owned = true;
+    slot.publish_pending = true;
+    slot.clear_pending = false;
+    true
+}
+
+/// See [`adopt_complete_client_selection`].
+const ADOPT_COOLDOWN_MS: u64 = 2_000;
+
 /// Whether the compositor currently owns `target` (i.e. answers `receive` from the mirror).
 pub fn compositor_owns(store: &SharedSelection, target: Target) -> bool {
     store.lock().is_ok_and(|s| s.slot(target).compositor_owned)
@@ -1222,6 +1277,7 @@ impl State {
     /// Per-tick selection work: publish chrome's pending copy, pull any
     /// client-owned change into the mirror. Allocation-free when nothing changed.
     pub fn pump_selection(&mut self) {
+        adopt_complete_client_selection(&self.selection.store, unix_now_ms());
         self.publish_chrome_selection();
         self.drain_pending_pulls();
     }
@@ -1269,7 +1325,19 @@ impl State {
         if self.selection.pending_pulls.is_empty() {
             return;
         }
-        let pending = std::mem::take(&mut self.selection.pending_pulls);
+        let mut pending = std::mem::take(&mut self.selection.pending_pulls);
+        // `request_*_client_selection` always reads the seat's *current*
+        // source, so pulling for an owner already replaced within this tick
+        // would fetch the newer owner's bytes under the older owner's offer.
+        // Only the newest change per target is real.
+        let mut seen = Vec::new();
+        pending.reverse();
+        pending.retain(|pull| {
+            let fresh = !seen.contains(&pull.target);
+            seen.push(pull.target);
+            fresh
+        });
+        pending.reverse();
         for pull in pending {
             let Some(mimes) = pull.mime_types else {
                 // The owner released the selection without replacing it.
@@ -2441,5 +2509,128 @@ mod tests {
                 Some("from the other screen")
             );
         }
+    }
+
+    /// Mirror a complete client copy of `text` the way the pull does.
+    fn client_copy(s: &SharedSelection, target: Target, mimes: &[&str], text: &str) -> u64 {
+        let generation = begin_client_selection(
+            s,
+            target,
+            Some(mimes.iter().map(|m| (*m).to_owned()).collect()),
+        );
+        for mime in mimes {
+            record_client_bytes(s, target, generation, mime, text.as_bytes().to_vec());
+        }
+        generation
+    }
+
+    fn offered(s: &SharedSelection) -> Vec<String> {
+        mirror_mime_types(s, Target::Clipboard)
+    }
+
+    #[test]
+    fn a_client_copy_outlives_its_source_once_fully_mirrored() {
+        let s = store();
+        // Half-mirrored: the source is still the only holder of one format,
+        // so Tilo must not take over and lose it.
+        let generation = begin_client_selection(
+            &s,
+            Target::Clipboard,
+            Some(vec!["image/png".into(), TEXT_MIME.into()]),
+        );
+        record_client_bytes(&s, Target::Clipboard, generation, TEXT_MIME, b"hi".to_vec());
+        assert!(!adopt_complete_client_selection(&s, 1_000));
+        assert!(!compositor_owns(&s, Target::Clipboard));
+        record_client_bytes(&s, Target::Clipboard, generation, "image/png", vec![1, 2]);
+        assert!(adopt_complete_client_selection(&s, 1_000));
+        assert!(compositor_owns(&s, Target::Clipboard));
+        assert!(s.lock().unwrap().clipboard.publish_pending);
+        assert_eq!(mirror_text(&s, Target::Clipboard).as_deref(), Some("hi"));
+        // Adopting is idempotent while the compositor holds it.
+        assert!(!adopt_complete_client_selection(&s, 1_001));
+        // Primary is never adopted.
+        client_copy(&s, Target::Primary, &[TEXT_MIME], "sel");
+        assert!(!adopt_complete_client_selection(&s, 9_000));
+        assert!(!compositor_owns(&s, Target::Primary));
+    }
+
+    #[test]
+    fn an_aborted_transfer_is_never_adopted() {
+        let s = store();
+        client_copy(&s, Target::Clipboard, &[TEXT_MIME], "");
+        assert!(!adopt_complete_client_selection(&s, 1_000));
+        assert!(!compositor_owns(&s, Target::Clipboard));
+    }
+
+    #[test]
+    fn ownership_changes_never_resurrect_stale_content_or_mimes() {
+        let s = store();
+        // Wayland client A, then an X11-bridge owner B (the bridge is just
+        // another client with its own offer), then chrome, then A again.
+        let a = client_copy(&s, Target::Clipboard, &[TEXT_MIME], "from A");
+        assert!(adopt_complete_client_selection(&s, 10_000));
+
+        let b = begin_client_selection(
+            &s,
+            Target::Clipboard,
+            Some(vec!["UTF8_STRING".into(), "image/png".into()]),
+        );
+        // The new owner starts empty: nothing of A leaks, and the mime list
+        // is B's own (UTF8_STRING pulls in the text aliases, nothing of A).
+        assert!(!compositor_owns(&s, Target::Clipboard));
+        assert_eq!(mirror_text(&s, Target::Clipboard), None);
+        assert!(offered(&s).contains(&"image/png".to_owned()));
+        assert!(!adopt_complete_client_selection(&s, 10_001));
+        // A late transfer for A's generation is rejected.
+        record_client_bytes(&s, Target::Clipboard, a, TEXT_MIME, b"from A".to_vec());
+        assert_eq!(mirror_text(&s, Target::Clipboard), None);
+        record_client_bytes(&s, Target::Clipboard, b, "UTF8_STRING", b"from B".to_vec());
+        record_client_bytes(&s, Target::Clipboard, b, "image/png", vec![9]);
+        assert!(adopt_complete_client_selection(&s, 10_002));
+        assert_eq!(
+            mirror_text(&s, Target::Clipboard).as_deref(),
+            Some("from B")
+        );
+        let mut mimes = offered(&s);
+        mimes.sort();
+        assert_eq!(mimes.iter().filter(|m| *m == "text/plain").count(), 1);
+
+        // Chrome copies; B's image must not stay advertised.
+        set_mirror_text(&s, Target::Clipboard, "from chrome");
+        assert_eq!(offered(&s), normalized_mimes([TEXT_MIME.to_owned()]));
+        assert_eq!(
+            mirror_text(&s, Target::Clipboard).as_deref(),
+            Some("from chrome")
+        );
+
+        // A late byte from B cannot overwrite chrome's copy.
+        record_client_bytes(&s, Target::Clipboard, b, "UTF8_STRING", b"from B".to_vec());
+        assert_eq!(
+            mirror_text(&s, Target::Clipboard).as_deref(),
+            Some("from chrome")
+        );
+
+        // Clearing leaves nothing adoptable to resurrect.
+        clear_mirror(&s, Target::Clipboard);
+        assert!(!adopt_complete_client_selection(&s, 20_000));
+        assert!(offered(&s).is_empty());
+        assert_eq!(mirror_text(&s, Target::Clipboard), None);
+    }
+
+    #[test]
+    fn a_manager_re_copying_the_selection_does_not_ping_pong() {
+        let s = store();
+        client_copy(&s, Target::Clipboard, &[TEXT_MIME], "same");
+        assert!(adopt_complete_client_selection(&s, 5_000));
+        // The manager re-asserts identical content as a new client owner.
+        client_copy(&s, Target::Clipboard, &[TEXT_MIME], "same");
+        assert!(!adopt_complete_client_selection(&s, 5_100));
+        // Later, or different content, is a real copy again.
+        assert!(adopt_complete_client_selection(
+            &s,
+            5_000 + ADOPT_COOLDOWN_MS
+        ));
+        client_copy(&s, Target::Clipboard, &[TEXT_MIME], "different");
+        assert!(adopt_complete_client_selection(&s, 5_200));
     }
 }
