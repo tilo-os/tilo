@@ -3,7 +3,7 @@
 //! in the SDK facade; apps never name a runner.
 
 #[cfg(all(feature = "native", not(target_family = "wasm")))]
-pub use ui_core::launch::{run, run_or_exit};
+pub use tilo_runner_native::{run, run_or_exit};
 
 #[cfg(target_family = "wasm")]
 pub use web::{run, run_or_exit};
