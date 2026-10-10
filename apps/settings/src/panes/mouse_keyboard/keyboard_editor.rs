@@ -792,47 +792,25 @@ impl MouseKeyboardPane {
                     effect(InputEffect::SET_KEYBOARD_MODEL),
                 )),
             ),
-            setting_row(
-                &t("input-compose-key"),
-                Box::new(
-                    self.cx
-                        .bind(
-                            Dropdown::from_state(
-                                compose_options(),
-                                &ui::LocalState::new(compose_shown(compose_english(
-                                    input.compose_key.as_deref(),
-                                ))),
-                            ),
-                            effect(InputEffect::SET_COMPOSE_KEY).map(|shown: String| {
-                                compose_from_label(&shown)
-                                    .and_then(StoredKeyChoice::as_stored)
-                                    .unwrap_or(COMPOSE_DISABLED)
-                                    .to_owned()
-                            }),
-                        )
-                        .with_id("input.compose_key"),
-                ),
+            self.cx.row(t("input-compose-key")).choice_effect(
+                compose_options(),
+                &ui::LocalState::new(compose_shown(compose_english(input.compose_key.as_deref()))),
+                effect(InputEffect::SET_COMPOSE_KEY).map(|shown: String| {
+                    compose_from_label(&shown)
+                        .and_then(StoredKeyChoice::as_stored)
+                        .unwrap_or(COMPOSE_DISABLED)
+                        .to_owned()
+                }),
             ),
-            setting_row(
-                &t("input-caps-lock-key"),
-                Box::new(
-                    self.cx
-                        .bind(
-                            Dropdown::from_state(
-                                caps_lock_options(),
-                                &ui::LocalState::new(caps_lock_shown(caps_lock_label(
-                                    input.caps_lock.as_deref(),
-                                ))),
-                            ),
-                            effect(InputEffect::SET_CAPS_LOCK).map(|shown: String| {
-                                caps_lock_from_label(&shown)
-                                    .and_then(StoredKeyChoice::as_stored)
-                                    .unwrap_or(CAPS_LOCK_UNCHANGED)
-                                    .to_owned()
-                            }),
-                        )
-                        .with_id("input.caps_lock"),
-                ),
+            self.cx.row(t("input-caps-lock-key")).choice_effect(
+                caps_lock_options(),
+                &ui::LocalState::new(caps_lock_shown(caps_lock_label(input.caps_lock.as_deref()))),
+                effect(InputEffect::SET_CAPS_LOCK).map(|shown: String| {
+                    caps_lock_from_label(&shown)
+                        .and_then(StoredKeyChoice::as_stored)
+                        .unwrap_or(CAPS_LOCK_UNCHANGED)
+                        .to_owned()
+                }),
             ),
         ]
     }

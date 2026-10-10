@@ -475,7 +475,6 @@ impl ResourceSurface<Contacts, ContactsEffect> for ContactsApp {
     }
 
     fn present(&mut self, state: &Rc<Contacts>) {
-        self.presented = Some(Rc::clone(state));
         self.present_book(state);
         self.project_identities(state);
     }

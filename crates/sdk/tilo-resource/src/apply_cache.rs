@@ -137,11 +137,16 @@ pub(crate) fn take<R: Fields + 'static>(doc: &Doc) -> Option<Warm<R>> {
     Some(Warm { record, dirty })
 }
 
-/// Keep `record`, read at the version `doc`'s open transaction started from,
-/// for the next action of its type. The transaction holds what the action
-/// just wrote: every slot it wrote is as `store` writes it.
-pub(crate) fn keep<R: 'static>(record: R, doc: &Doc) {
+/// Keep `record`, read at `started`, the version the action began from, for
+/// the next action of its type. The transaction holds what the action just
+/// wrote: every slot it wrote is as `store` writes it. An action that merged
+/// a change of its own on the way (a deterministic slot made beside it)
+/// moved its base past what `record` holds, so nothing is kept.
+pub(crate) fn keep<R: 'static>(record: R, doc: &Doc, started: &[ChangeHash]) {
     if doc.committed_heads() != doc.committed_document().get_heads() {
+        return;
+    }
+    if doc.base_heads() != started {
         return;
     }
     let mut base = doc.base_heads();

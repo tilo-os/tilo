@@ -3,7 +3,7 @@
 //! [`Contact`] is stored as it is: every text field merges per character,
 //! every phone, email, address and group row is stored under its own id so
 //! two people editing different rows of one contact both keep their edit.
-//! The in-memory [`ContactStore`] is the window's working copy of the book.
+//! The window reads the book as it is presented: [`crate::resource::Contacts`].
 
 use serde::{Deserialize, Serialize};
 use ui::tilo_resource::{self, Id, Identified, JsonSchema, Model, Ordered, Refusal};
@@ -572,45 +572,10 @@ impl SortKey {
     }
 }
 
-/// The complete address book held in memory. Order in `contacts` is not
-/// significant — every read path sorts on demand.
-#[derive(Clone, Debug, Default)]
-pub struct ContactStore {
-    pub contacts: Vec<Contact>,
-}
-
-impl ContactStore {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn get(&self, id: ContactId) -> Option<&Contact> {
-        self.contacts.iter().find(|c| c.id == id)
-    }
-
-    pub fn get_mut(&mut self, id: ContactId) -> Option<&mut Contact> {
-        self.contacts.iter_mut().find(|c| c.id == id)
-    }
-
-    /// Insert a new contact or replace the existing one with the same id.
-    /// Returns the id for convenience.
-    pub fn upsert(&mut self, contact: Contact) -> ContactId {
-        let id = contact.id;
-        if let Some(existing) = self.contacts.iter_mut().find(|c| c.id == id) {
-            *existing = contact;
-        } else {
-            self.contacts.push(contact);
-        }
-        id
-    }
-
-    /// Remove a contact. Returns true if it existed.
-    pub fn delete(&mut self, id: ContactId) -> bool {
-        let before = self.contacts.len();
-        self.contacts.retain(|c| c.id != id);
-        self.contacts.len() != before
-    }
-
+/// What the window reads of the address book: its contacts in the orders
+/// and groupings the list shows. Order in `contacts` is not significant —
+/// every read path sorts on demand.
+impl crate::resource::Contacts {
     /// Every distinct group across all contacts, sorted alphabetically
     /// ([`ordered_groups`]).
     pub fn all_groups(&self) -> Vec<String> {
@@ -649,7 +614,7 @@ impl ContactStore {
     }
 }
 
-/// Case-insensitive comparison used by [`ContactStore::filtered_sorted`].
+/// Case-insensitive comparison the list sorts by.
 pub(crate) fn sort_cmp(a: &Contact, b: &Contact, sort: SortKey) -> std::cmp::Ordering {
     use std::cmp::Ordering;
     let key = |c: &Contact| -> (String, String) {
@@ -1057,20 +1022,24 @@ mod tests {
         }
     }
 
-    /// The book filters and sorts by name and group, dedups groups case- and Unicode-insensitively and upserts in place.
+    fn book(contacts: Vec<Contact>) -> crate::resource::Contacts {
+        crate::resource::Contacts {
+            contacts: contacts.into(),
+            ..crate::resource::Contacts::default()
+        }
+    }
+
+    /// The book filters and sorts by name and group, and dedups groups case- and Unicode-insensitively.
     #[test]
-    fn book_filters_sorts_groups_and_upserts() {
+    fn book_filters_sorts_and_groups() {
         // --- phase: filtered_sorted_by_name_and_group ---
         {
-            let mut store = ContactStore::new();
-            for c in sample_contacts() {
-                store.upsert(c);
-            }
+            let store = book(sample_contacts());
             // Name sort puts "Berners-Lee" before "Hopper" before "Lovelace".
             let ids = store.filtered_sorted("", None, SortKey::Name);
             let names: Vec<String> = ids
                 .iter()
-                .map(|id| store.get(*id).unwrap().last.clone())
+                .map(|id| store.contact(*id).unwrap().last.clone())
                 .collect();
             let pos = |n: &str| names.iter().position(|x| x == n).unwrap();
             assert!(pos("Berners-Lee") < pos("Hopper"));
@@ -1080,7 +1049,7 @@ mod tests {
             let friends = store.filtered_sorted("", Some("Friends"), SortKey::Name);
             assert!(friends.iter().all(|id| {
                 store
-                    .get(*id)
+                    .contact(*id)
                     .unwrap()
                     .groups
                     .iter()
@@ -1091,7 +1060,6 @@ mod tests {
 
         // --- phase: all_groups_dedupes_case_insensitively ---
         {
-            let mut store = ContactStore::new();
             let mut a = Contact::new();
             a.groups = vec![
                 GroupEntry::new("Work"),
@@ -1099,37 +1067,23 @@ mod tests {
                 GroupEntry::new("Family"),
             ]
             .into();
-            store.upsert(a);
+            let store = book(vec![a]);
             let groups = store.all_groups();
             assert_eq!(groups.len(), 2, "Work/work collapse: {groups:?}");
         }
 
         // --- phase: groups_and_search_handle_canonically_equivalent_unicode ---
         {
-            let mut store = ContactStore::new();
             let mut first = Contact::new();
             first.groups.push(GroupEntry::new("Cafe\u{301}"));
             let mut second = Contact::new();
             second.groups.push(GroupEntry::new("CAFÉ"));
-            store.upsert(first.clone());
-            store.upsert(second.clone());
+            let store = book(vec![first.clone(), second]);
 
             assert_eq!(store.all_groups(), vec!["CAFÉ".to_string()]);
             let visible = store.filtered_sorted("", Some("café"), SortKey::Name);
             assert_eq!(visible.len(), 2);
             assert!(first.matches("CAFÉ"));
-        }
-
-        // --- phase: upsert_replaces_in_place ---
-        {
-            let mut store = ContactStore::new();
-            let mut a = Contact::new();
-            a.first = "A".into();
-            let id = store.upsert(a.clone());
-            a.first = "B".into();
-            store.upsert(a);
-            assert_eq!(store.len(), 1);
-            assert_eq!(store.get(id).unwrap().first, "B");
         }
     }
 }

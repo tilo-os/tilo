@@ -227,7 +227,7 @@ impl ContactsApp {
 
     fn name_of(&self, id: ContactId) -> String {
         self.store
-            .get(id)
+            .contact(id)
             .map_or_else(|| "this contact".to_owned(), Contact::display_name)
     }
 
@@ -355,7 +355,7 @@ impl ContactsApp {
             .store
             .filtered_sorted("", None, self.sort)
             .into_iter()
-            .filter_map(|id| self.store.get(id).cloned())
+            .filter_map(|id| self.store.contact(id).cloned())
             .collect();
         let check_state = export.selected.clone();
         let selected = export.selected.clone();
@@ -494,12 +494,12 @@ impl ContactsApp {
     ) -> Result<(), String> {
         let survivor = self
             .store
-            .get(survivor_id)
+            .contact(survivor_id)
             .cloned()
             .ok_or_else(|| "surviving contact no longer exists".to_string())?;
         let source = self
             .store
-            .get(source_id)
+            .contact(source_id)
             .cloned()
             .ok_or_else(|| "source contact no longer exists".to_string())?;
         let candidate = crate::actions::duplicate_candidate(&survivor, &source)

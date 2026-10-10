@@ -408,8 +408,7 @@ fn described(schema: &serde_json::Value, path: &str) -> (String, serde_json::Val
         .clone();
     for (step, segment) in example
         .get_mut("path")
-        .expect("the example names a path")
-        .as_array_mut()
+        .and_then(serde_json::Value::as_array_mut)
         .unwrap()
         .iter_mut()
         .zip(&segments)

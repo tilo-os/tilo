@@ -106,8 +106,9 @@ pub(crate) struct Bridge {
     pub reveal: Option<ContactId>,
     /// The rows the list painted last, in window coordinates.
     pub painted: Vec<(ContactId, Rect)>,
-    /// Every contact of the book, which a search hit or an agent may open.
-    pub known: std::collections::HashSet<ContactId>,
+    /// The book as it was presented last: what a search hit or an agent
+    /// may open.
+    pub book: Rc<crate::resource::Contacts>,
     requests: Vec<Request>,
 }
 

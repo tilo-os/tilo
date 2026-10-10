@@ -5,7 +5,7 @@
 
 use ui::LocalState;
 use ui::tilo_resource::{Binds, Model, Path, Settable};
-use ui::widget::{Dropdown, Slider, Toggle};
+use ui::widget::{Button, Dropdown, Slider, Toggle};
 
 use crate::effects::SettingsEffect;
 use crate::host::{PaneCx, Section};
@@ -98,6 +98,13 @@ impl Row<'_> {
         self.control(Box::new(toggle))
     }
 
+    /// A toggle showing `on`, invoking the section's verb `verb` with each
+    /// flip.
+    pub fn toggle_verb<T: Section>(self, on: &LocalState<bool>, verb: impl Binds<T, bool>) -> El {
+        let toggle = self.cx.bind_verb(self.toggle_widget(on), verb);
+        self.control(Box::new(toggle))
+    }
+
     /// A toggle showing `on`, invoking `effect` with each flip.
     pub fn toggle_effect(
         self,
@@ -149,6 +156,12 @@ impl Row<'_> {
     ) -> El {
         let chooser = self.cx.bind(self.chooser(options, current), effect);
         self.control(Box::new(chooser))
+    }
+
+    /// A button `id` reading `text`, invoking `effect` when pressed.
+    pub fn button(self, id: &str, text: &str, effect: impl Into<SettingsEffect>) -> El {
+        let button = self.cx.bind_invocation(Button::new(id, text), effect);
+        self.control(Box::new(button))
     }
 
     /// A slider showing `value`, setting the section's field `field`.
