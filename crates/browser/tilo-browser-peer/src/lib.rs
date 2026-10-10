@@ -42,6 +42,7 @@ pub mod transport;
 pub mod voice;
 
 pub use carrier::{HttpClient, HttpFuture, HttpsLink, LinkError};
+pub use channel_crypto::ChannelContentKeys;
 pub use custody::{
     CertifyError, IssuedRole, MemoryPeerStore, OutboxEntry, PeerRecord, PeerStore, certify,
     certify_with_root, issue_device_cert,

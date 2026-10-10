@@ -77,6 +77,8 @@ mod dmabuf_commit_barrier;
 mod dmabuf_direct_capture_path;
 #[path = "dmabuf_feedback_protocol.rs"]
 mod dmabuf_feedback_protocol;
+#[path = "dmabuf_scanout_feedback.rs"]
+mod dmabuf_scanout_feedback;
 #[path = "document_open_e2e.rs"]
 mod document_open_e2e;
 #[path = "e2e_shell_flows.rs"]

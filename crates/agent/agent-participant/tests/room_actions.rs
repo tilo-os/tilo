@@ -35,6 +35,9 @@ mod encrypted_resource;
 #[cfg(test)]
 #[path = "room_actions/feedback_journey.rs"]
 mod feedback_journey;
+#[cfg(test)]
+#[path = "room_actions/governed_sealed.rs"]
+mod governed_sealed;
 #[path = "room_actions/resource_support.rs"]
 mod resource_support;
 

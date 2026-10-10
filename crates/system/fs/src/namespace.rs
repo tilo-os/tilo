@@ -981,6 +981,14 @@ impl Namespace {
         }
     }
 
+    /// Whether this namespace has completed a sync exchange with any other
+    /// device (restored progress included): someone has dialled it, or been
+    /// dialled, before (TIL-774, [`crate::reachability`]).
+    #[must_use]
+    pub fn has_synced_with_peers(&self) -> bool {
+        !self.peer_sync_states.is_empty()
+    }
+
     /// Whether the last exchange completed with the device `peer` left both
     /// sides holding exactly this document's current heads: nothing here is
     /// new to that peer since. Says nothing about what the peer has that

@@ -34,7 +34,12 @@
 //! The service joins each room as the host's own device ([`RoomMember`], from
 //! the [`RoomRecordsLink`] the host supplies): a member of the room's
 //! channels like any other, admitted by the room's steward. It reads only
-//! records it holds keys for and writes nothing in the clear.
+//! records it holds keys for and writes nothing in the clear. When the host
+//! device is itself the steward of the room's channels (a room the host
+//! governs), it cannot be admitted to them a second time; the host hands the
+//! service the keys its steward holds instead
+//! ([`RoomRecordsLink::steward_keys`]), for each record a request reads or
+//! acts on, fresh for every act.
 
 mod feedback;
 mod reads;
@@ -162,6 +167,23 @@ pub trait RoomRecordsLink: Send + Sync {
         _source: &DocumentRoute,
     ) -> Result<ViewDocument, String> {
         Err("existing view documents unavailable".into())
+    }
+    /// The content keys of `route`'s channel, when the host device itself
+    /// stewards the channels of `route`'s room: it is then already the
+    /// channel's member, and the service, which joins as that device, can
+    /// only be handed the keys the steward holds. `create` opens the channel
+    /// of a record the service is about to write for the first time.
+    ///
+    /// `None` when the host does not steward the room: the service waits for
+    /// the room's steward to admit it over the channel, like any member.
+    /// `Some(Err)` when the host refused the hand-off or holds no such
+    /// channel. Called only on behalf of a caller the service serves.
+    fn steward_keys(
+        &self,
+        _route: &DocumentRoute,
+        _create: bool,
+    ) -> Option<Result<tilo_browser_peer::ChannelContentKeys, String>> {
+        None
     }
     /// The listener-owned public locator; absence cannot mint a browser link.
     fn view_locator(
@@ -717,7 +739,12 @@ impl Room {
     /// refused: nothing acts on a record seen only in part. A listing gives
     /// up quietly, lists what opened, and does not wait for the same keys
     /// again.
-    fn wait_for(&mut self, workspace_id: u64, needs: Needs<'_>) -> Result<(), ActionHostError> {
+    fn wait_for(
+        &mut self,
+        workspace_id: u64,
+        needs: Needs<'_>,
+        link: Option<&dyn RoomRecordsLink>,
+    ) -> Result<(), ActionHostError> {
         let joined = Instant::now()
             .checked_add(JOIN_WAIT)
             .unwrap_or_else(Instant::now);
@@ -730,9 +757,39 @@ impl Room {
         let keyed = Instant::now()
             .checked_add(KEYS_WAIT)
             .unwrap_or_else(Instant::now);
-        self.settle(workspace_id, keyed, |room| {
-            room.sealed(workspace_id, needs).is_empty()
-        });
+        // Keys the host's own steward holds are handed over as soon as a
+        // route needs them: the record acted on at once (fresh every time),
+        // and every route that arrives sealed while this waits.
+        let mut handed = HashSet::new();
+        if let Some(link) = link
+            && let Needs::Act { app_id, record } = needs
+            && let Some(room) = self.room_id(workspace_id)
+        {
+            let route = DocumentRoute {
+                app_id: app_id.to_owned(),
+                cluster_id: room,
+                record: record.to_owned(),
+            };
+            self.take_steward_keys(vec![route], needs, link, &mut handed)?;
+        }
+        loop {
+            self.settle(workspace_id, keyed, |room| {
+                let sealed = room.sealed(workspace_id, needs);
+                sealed.is_empty()
+                    || (link.is_some() && sealed.iter().any(|route| !handed.contains(route)))
+            });
+            let unhanded: Vec<DocumentRoute> = self
+                .sealed(workspace_id, needs)
+                .into_iter()
+                .filter(|route| !handed.contains(route))
+                .collect();
+            match link {
+                Some(link) if !unhanded.is_empty() => {
+                    self.take_steward_keys(unhanded, needs, link, &mut handed)?;
+                }
+                _ => break,
+            }
+        }
         let sealed = self.sealed(workspace_id, needs);
         match needs {
             Needs::Act { app_id, record } if !sealed.is_empty() => {
@@ -757,6 +814,60 @@ impl Room {
             }
             Needs::Joined | Needs::Act { .. } => Ok(()),
         }
+    }
+
+    /// Hold the keys the host's own steward hands over for `routes`
+    /// ([`RoomRecordsLink::steward_keys`]), noting each in `handed`. The
+    /// session then opens what it held for them and wakes the wait. A record
+    /// to act on whose keys the host refuses is refused at once; a listing
+    /// goes on without it.
+    fn take_steward_keys(
+        &self,
+        routes: Vec<DocumentRoute>,
+        needs: Needs<'_>,
+        link: &dyn RoomRecordsLink,
+        handed: &mut HashSet<DocumentRoute>,
+    ) -> Result<(), ActionHostError> {
+        for route in routes {
+            handed.insert(route.clone());
+            match link.steward_keys(&route, false) {
+                None => {}
+                Some(Ok(keys)) => {
+                    self.peer
+                        .install_channel_keys(route, keys)
+                        .map_err(|reason| ActionHostError::Unavailable { reason })?;
+                }
+                Some(Err(reason)) => {
+                    if let Needs::Act { app_id, record } = needs {
+                        return Err(ActionHostError::Unavailable {
+                            reason: format!(
+                                "the host holds no keys to {app_id} record {record}: {reason}"
+                            ),
+                        });
+                    }
+                    tracing::info!(app = %route.app_id, record = %route.record, %reason,
+                        "room actions: listing without a record the host holds no keys to");
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The id of the room `workspace_id` names, from what the member has
+    /// seen of it.
+    fn room_id(&self, workspace_id: u64) -> Option<String> {
+        let of_room = |route: &DocumentRoute| {
+            tilo_relay_protocol::room_workspace_id(&route.cluster_id).ok() == Some(workspace_id)
+        };
+        if let Some((route, _)) = self.log.iter().find(|(route, _)| of_room(route)) {
+            return Some(route.cluster_id.clone());
+        }
+        self.peer
+            .status()
+            .routes
+            .into_keys()
+            .find(|route| of_room(route))
+            .map(|route| route.cluster_id)
     }
 
     /// Take the session's events until `settled`, or until `deadline`.
@@ -946,7 +1057,11 @@ impl Worker {
                 .ok_or_else(|| ActionHostError::Unavailable {
                     reason: "the room was not joined".into(),
                 })?;
-        room.wait_for(workspace_id, needs)?;
+        room.wait_for(
+            workspace_id,
+            needs,
+            self.shared.link.get().map(|link| &**link),
+        )?;
         let mut state = RoomState::default();
         for (position, (route, change)) in room.log.iter().enumerate() {
             state.room.get_or_insert_with(|| route.cluster_id.clone());
@@ -1559,6 +1674,27 @@ impl Worker {
             cluster_id: room.to_owned(),
             record: hosted.wire_record().to_owned(),
         };
+        // A new record's channel is opened by the steward; when that is the
+        // host itself, it opens it for the member and hands it the keys, so
+        // the first change goes out sealed instead of waiting for keys.
+        if let Some(keys) = self
+            .shared
+            .link
+            .get()
+            .and_then(|link| link.steward_keys(&route, true))
+        {
+            let keys = keys.map_err(|reason| {
+                Outcome::Rejected(ActionHostError::Unavailable {
+                    reason: format!("the host holds no keys to a new {app} record: {reason}"),
+                })
+            })?;
+            self.rooms
+                .get(&workspace_id)
+                .ok_or_else(|| refused("the room was not joined".into()))?
+                .peer
+                .install_channel_keys(route.clone(), keys)
+                .map_err(refused)?;
+        }
         if let Some(mutation) = hosted
             .take_mutation()
             .map_err(|error| refused(error.to_string()))?

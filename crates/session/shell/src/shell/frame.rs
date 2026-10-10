@@ -2303,7 +2303,8 @@ impl FrameBuilder {
             }
             _ => drawn,
         };
-        crate::shell::scanout_candidate::ScanoutCandidate::new(placed, scene)
+        let (surface, _) = self.fullscreen_overlay.as_ref()?;
+        crate::shell::scanout_candidate::ScanoutCandidate::new(*surface, placed, scene)
     }
 
     /// A floating surface shows a blur of what is below it, which can change
@@ -5995,6 +5996,7 @@ mod tests {
         let candidate = frame
             .scanout_candidate()
             .expect("the fullscreen client alone on top is a candidate");
+        assert_eq!(candidate.surface, FULLSCREEN);
         assert_eq!(candidate.origin, (0, 0));
         assert_eq!(candidate.size, SIZE);
         assert!(candidate.covers((0, 0), SIZE));

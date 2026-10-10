@@ -191,6 +191,34 @@ fn dedicated_contract(id: &str) -> Option<tilo_actions::ActionContract> {
     collaboration_contract(id)
 }
 
+/// Actions that only open, inspect or dismiss shell views.
+const VIEW_ACTION_IDS: &[&str] = &[
+    "desktop-tour.open",
+    "topbar.editor.open",
+    "settings.open",
+    "settings.members.open",
+    "settings.agents.open",
+    "settings.participant.open",
+    "settings.privacy.open",
+    "settings.apps.open",
+    "quick-settings.open",
+    "quick-settings.clipboard",
+    "quick-settings.devices",
+    "projection.open",
+    "capture.open",
+    "collaborators.open",
+    "room.activity.open",
+    "room.activity.explore",
+    "room.activity.replay",
+    "room.activity.acknowledge",
+    "room.activity.tasks",
+    "tab.menu",
+    "tab.drag.cancel",
+    "history.compare",
+    "history.undo",
+    "history.restore",
+];
+
 pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
     use tilo_actions::{
         ActionContract, ConfirmationPolicy, PermissionRequirement, RetryPolicy, RiskLevel,
@@ -204,32 +232,7 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
         "shortcut-help.toggle" | "overview.toggle" => {
             contract = reversible_view_contract();
         }
-        "desktop-tour.open"
-        | "topbar.editor.open"
-        | "settings.open"
-        | "settings.members.open"
-        | "settings.agents.open"
-        | "settings.participant.open"
-        | "settings.privacy.open"
-        | "settings.apps.open"
-        | "quick-settings.open"
-        | "quick-settings.clipboard"
-        | "quick-settings.devices"
-        | "projection.open"
-        | "capture.open"
-        | "collaborators.open"
-        | "room.activity.open"
-        | "room.activity.explore"
-        | "room.activity.replay"
-        | "room.activity.acknowledge"
-        | "room.activity.tasks"
-        | "tab.menu"
-        | "tab.drag.cancel"
-        | "history.compare"
-        | "history.undo"
-        | "history.restore" => {
-            contract = ActionContract::view();
-        }
+        id if VIEW_ACTION_IDS.contains(&id) => contract = ActionContract::view(),
         "identity.connect" | "identity.select" | "identity.device.revoke" => {
             contract.permission = PermissionRequirement::Admin;
             contract.risk = RiskLevel::Privileged;
@@ -299,34 +302,10 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
 
 pub(crate) fn shell_action_kind(id: &str) -> tilo_actions::OperationKind {
     match id {
-        "shortcut-help.toggle"
-        | "desktop-tour.open"
-        | "topbar.editor.open"
-        | "overview.toggle"
-        | "settings.open"
-        | "settings.members.open"
-        | "settings.agents.open"
-        | "settings.participant.open"
-        | "settings.privacy.open"
-        | "settings.apps.open"
-        | "quick-settings.open"
-        | "quick-settings.clipboard"
-        | "quick-settings.devices"
-        | "projection.open"
-        | "capture.open"
-        | "collaborators.open"
-        | "room.activity.open"
-        | "room.activity.explore"
-        | "room.activity.replay"
-        | "room.activity.acknowledge"
-        | "room.activity.tasks"
-        | "tab.menu"
-        | "tab.drag.cancel"
-        | "history.compare"
-        | "history.undo"
-        | "history.restore"
-        | "peer.invite"
-        | "peer.connect" => tilo_actions::OperationKind::View,
+        "shortcut-help.toggle" | "overview.toggle" | "peer.invite" | "peer.connect" => {
+            tilo_actions::OperationKind::View
+        }
+        id if VIEW_ACTION_IDS.contains(&id) => tilo_actions::OperationKind::View,
         "record.bring" | "peer.invite.named" | "agent.invite" => {
             tilo_actions::OperationKind::Document
         }

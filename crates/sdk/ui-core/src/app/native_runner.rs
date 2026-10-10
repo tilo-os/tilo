@@ -1153,6 +1153,17 @@ fn draw_debug_outlines(app: &mut App, scene: &mut Scene, transform: Affine) {
     );
 }
 
+/// Whether this windowing system shows a window icon the app sets. winit's
+/// Wayland backend drops it (`set_window_icon` is empty there; compositors
+/// take the icon from the app id), so reading and decoding one before the
+/// first frame would be wasted.
+fn takes_window_icon(event_loop: &ActiveEventLoop) -> bool {
+    use winit::raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
+    !event_loop
+        .display_handle()
+        .is_ok_and(|display| matches!(display.as_raw(), RawDisplayHandle::Wayland(_)))
+}
+
 fn create_window_render(
     window: &Arc<Window>,
     transparent: bool,
@@ -3569,7 +3580,11 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         // AccessKit's adapter asserts it's created while the window is
         // hidden, so build invisible, create the adapter, show.
         let title = resolve_window_title(self.app.window.title.as_deref());
-        let icon = crate::window_icon::resolve();
+        let icon = if takes_window_icon(event_loop) {
+            crate::window_icon::resolve()
+        } else {
+            None
+        };
         let window_attributes = Window::default_attributes()
             .with_title(title)
             .with_window_icon(icon.clone())
