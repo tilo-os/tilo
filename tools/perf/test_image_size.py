@@ -21,6 +21,8 @@ import image_size  # noqa: E402
 
 FONT = b"F" * 300_000
 WINE = b"W" * 500_000
+SDK = b"S" * 200_000
+LIB = b"L" * 40_000
 REVISION = "0123456789abcdef0123456789abcdef01234567"
 
 
@@ -133,6 +135,11 @@ def fixture(root: pathlib.Path) -> str:
         ("file", "usr/bin/tool", b"T" * 1000),
         ("dir", "usr/lib64/wine-wow64", None),
         ("file", "usr/lib64/wine-wow64/wine.dll", WINE),
+        # The base's own ostree repository, hard-linked to its /usr.
+        ("file", "sysroot/ostree/repo/objects/aa/sdk.file", SDK),
+        ("link", "usr/lib/python3/botocore/data.json", "sysroot/ostree/repo/objects/aa/sdk.file"),
+        ("file", "sysroot/ostree/repo/objects/bb/lib.file", LIB),
+        ("link", "usr/lib64/libkeep.so", "sysroot/ostree/repo/objects/bb/lib.file"),
         ("file", "etc/old.conf", b"x" * 100),
         ("dir", "var/cache/junk", None),
         ("file", "var/cache/junk/a", b"a" * 50),
@@ -146,6 +153,7 @@ def fixture(root: pathlib.Path) -> str:
     cleanup = layer([
         ("file", "usr/share/rpm/rpmdb.sqlite", rpmdb()),
         ("file", "etc/.wh.old.conf", b""),
+        ("file", "usr/lib/python3/.wh.botocore", b""),
         ("dir", "var/cache/junk", None),
         ("file", "var/cache/junk/.wh..wh..opq", b""),
         ("file", "var/cache/junk/b", b"b" * 70),
@@ -177,16 +185,20 @@ class Report(unittest.TestCase):
         # Merged root: tool (replaced, 1200), wine.dll, both font copies, the
         # rpmdb, junk/b; etc/old.conf and junk/a are whited out, the hard link
         # and the symlink carry no content.
-        self.assertEqual(totals["content"], 1200 + len(WINE) + 2 * len(FONT) + db + 70)
-        self.assertEqual(totals["unique_content"], 1200 + len(WINE) + len(FONT) + db + 70)
-        layers = [5 + 1000 + len(WINE) + 100 + 50, 2 * len(FONT), db + 70 + 1200]
+        # The removed package's bytes stay in the undeployed /sysroot; the
+        # library /usr still names is deployed, once.
+        self.assertEqual(totals["content"], 1200 + len(WINE) + 2 * len(FONT) + db + 70 + len(LIB))
+        self.assertEqual(totals["unique_content"], 1200 + len(WINE) + len(FONT) + db + 70 + len(LIB))
+        self.assertEqual(totals["undeployed"], len(SDK))
+        layers = [5 + 1000 + len(WINE) + len(SDK) + len(LIB) + 100 + 50, 2 * len(FONT), db + 70 + 1200]
         self.assertEqual([item["payload"] for item in data["layers"]], layers)
         self.assertEqual(totals["payload"], sum(layers))
         # One font copy too many; the replaced tool and rpmdb differ in content
         # from what they replaced, so they are not redundant.
         self.assertEqual(totals["redundant_payload"], len(FONT))
-        self.assertEqual(totals["hard_links"], 1)
-        self.assertEqual(totals["files"], 6)
+        self.assertEqual(totals["hard_links"], 2)
+        self.assertEqual(totals["files"], 7)
+        self.assertIn(["/usr/lib64/libkeep.so", len(LIB)], data["files"])
         self.assertEqual(totals["compressed"], sum(item["compressed"] for item in data["layers"]))
         self.assertEqual(data["redundant"][0]["paths"], [
             "/usr/lib/tilo-runtime/v1/lib/fonts/Noto.ttf", "/usr/share/tilo/font-catalogs/abc/Noto.ttf"])
@@ -242,6 +254,35 @@ class Report(unittest.TestCase):
         status = image_size.main(["--oci-layout", str(self.directory / "bare"), "--quiet",
                                   "--why", "python3-botocore"])
         self.assertEqual(status, 1)
+
+
+class Resuming(unittest.TestCase):
+    def test_a_dropped_download_resumes_at_its_offset(self) -> None:
+        data = bytes(range(256)) * 64
+        starts = []
+
+        class Flaky(io.BytesIO):
+            def read(self, size=-1):
+                if len(starts) == 1 and self.tell() >= 1000:
+                    raise TimeoutError("The read operation timed out")
+                return super().read(min(size, 500))
+
+        def opener(start: int) -> io.BytesIO:
+            starts.append(start)
+            return Flaky(data[start:])
+
+        stream = io.BufferedReader(image_size.Resuming(opener), 4096)
+        self.assertEqual(stream.read(), data)
+        self.assertEqual(starts, [0, 1000])
+
+    def test_a_download_that_keeps_failing_fails(self) -> None:
+        class Dead(io.BytesIO):
+            def read(self, size=-1):
+                raise TimeoutError("The read operation timed out")
+
+        stream = io.BufferedReader(image_size.Resuming(lambda start: Dead()), 4096)
+        with self.assertRaisesRegex(ValueError, "download failed 5 times at byte 0"):
+            stream.read()
 
 
 class Capabilities(unittest.TestCase):
