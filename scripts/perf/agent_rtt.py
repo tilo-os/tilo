@@ -353,7 +353,13 @@ def spawned(shell: Path, log: Path, timeout: int,
                                    start_new_session=True)
     try:
         assert process.stdout is not None
+        # The compositor shares this stdout: whatever it prints before the
+        # socket is ready (its log, with RUST_LOG) goes to the log.
         line = process.stdout.readline().decode(errors="replace").strip()
+        while line and not line.startswith("READY "):
+            with log.open("ab") as sink:
+                sink.write(line.encode() + b"\n")
+            line = process.stdout.readline().decode(errors="replace").strip()
         if line != f"READY {socket_path}":
             raise BenchError(f"the compositor did not start ({line or 'no READY line'}); see {log}")
         # The compositor inherits this pipe as its stdout: keep draining it
