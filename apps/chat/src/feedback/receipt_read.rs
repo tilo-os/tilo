@@ -6,7 +6,8 @@ use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
 use tilo_actions::{
-    ActionContract, ActionSpec, EncodedAction, OperationKind, Resource, ResultSpec,
+    ActionContract, ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType, Resource,
+    ResultSpec,
 };
 use ui::semantic_document_read::{
     MAX_REQUEST_BYTES, ReadPage, RegisteredSemanticReader, SemanticReadError,
@@ -20,6 +21,12 @@ pub(crate) const READER: RegisteredSemanticReader =
 #[serde(deny_unknown_fields)]
 pub(super) struct Request {
     pub(super) id: String,
+    #[serde(
+        default,
+        rename = "expectedAuthor",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub(super) expected_author: Option<String>,
 }
 
 pub(super) fn validate(resource: &Resource, payload: &[u8]) -> Result<(), SemanticReadError> {
@@ -35,6 +42,11 @@ pub(super) fn validate(resource: &Resource, payload: &[u8]) -> Result<(), Semant
     {
         return Err(SemanticReadError::InvalidRequest);
     }
+    if request.expected_author.as_ref().is_some_and(|author| {
+        author.len() != 64 || !author.bytes().all(|byte| byte.is_ascii_hexdigit())
+    }) {
+        return Err(SemanticReadError::InvalidRequest);
+    }
     Ok(())
 }
 
@@ -46,14 +58,26 @@ pub(super) fn spec(id: &str) -> ActionSpec {
         "Read this report from its canonical destination",
         OperationKind::Effect,
         OPERATION,
-        Vec::new(),
-        move |_| {
-            EncodedAction::encode_operation(OPERATION, &Request { id: id.clone() }).unwrap_or_else(
-                |_| EncodedAction {
-                    type_id: OPERATION.into(),
-                    payload: Vec::new(),
+        vec![ActionParam::optional(
+            "expectedAuthor",
+            ParamType::Text,
+            "Require the attributed reporter root",
+        )],
+        move |args| {
+            let expected_author = args
+                .get("expectedAuthor")
+                .and_then(|value| value.to_json().as_str().map(str::to_owned));
+            EncodedAction::encode_operation(
+                OPERATION,
+                &Request {
+                    id: id.clone(),
+                    expected_author,
                 },
             )
+            .unwrap_or_else(|_| EncodedAction {
+                type_id: OPERATION.into(),
+                payload: Vec::new(),
+            })
         },
     )
     .with_contract(ActionContract {
@@ -91,6 +115,13 @@ pub(super) fn snapshot(
         .map_err(|_| SemanticReadError::Malformed)?
         .ok_or(SemanticReadError::InvalidRequest)?;
     let destination = &report.submission.destination;
+    if request
+        .expected_author
+        .as_ref()
+        .is_some_and(|author| *author != report.author)
+    {
+        return Err(SemanticReadError::InvalidOwner);
+    }
     if ui::record::room_scope(&document).is_some_and(|room| room != destination.room) {
         return Err(SemanticReadError::InvalidOwner);
     }

@@ -922,6 +922,24 @@ async function connect({
     },
     /** The room's app actions (`actions.mjs`), or `undefined` without a room. */
     get actions() { return actions; },
+    /** Bind feedback before mounting the desktop. The destination only selects
+     * an existing text channel: Rust obtains identity and current capabilities
+     * from the authenticated owner. This creates no membership or grant. */
+    async configureFeedback(destination) {
+      if (!room || destination?.room !== room || disposed) throw new Error('Feedback needs this existing room');
+      await certifiedPeer.whenRecord('so.tilo.chat', '', {signal});
+      if (typeof peer?.configureFeedback !== 'function') throw new Error('Feedback delivery is unavailable in this runtime');
+      peer.configureFeedback(JSON.stringify(destination));
+      await untilSnapshot(() => {
+        if (disposed) throw new Error('Feedback connection closed');
+        const status = peer.feedbackStatus();
+        if (status === 'ready') return true;
+        if (status !== 'awaiting authenticated admission') throw new Error(status);
+        return false;
+      }, 30_000, 'Feedback owner admission timed out');
+    },
+    feedbackStatus: () => peer?.feedbackStatus?.() ?? 'unconfigured',
+
     /** Public address of this admitted session; it conveys no authority. */
     get resourceScope() {
       if (disposed || snapshot.phase !== 'ready' || !actions || !room) return undefined;

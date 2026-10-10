@@ -137,6 +137,34 @@ pub struct SignedReceipt {
 }
 
 impl SignedReceipt {
+    /// Verify a canonical acknowledgment for the exact current admission and
+    /// approved report. A decoded owner response alone is never a receipt.
+    /// # Errors
+    /// Refuses stale policy, wrong identity, destination, content or signature.
+    pub fn verify(
+        &self,
+        submission: &Submission,
+        enrollment: &Enrollment,
+    ) -> Result<Receipt, Error> {
+        let pin = enrollment.authorize_receipt(submission)?;
+        self.verify_pin(submission, &pin)
+    }
+
+    fn verify_pin(&self, submission: &Submission, pin: &Pin) -> Result<Receipt, Error> {
+        let signature =
+            Signature::from_slice(&self.signature).map_err(|_| Error::ReceiptMismatch)?;
+        VerifyingKey::from_bytes(&pin.owner.device)
+            .map_err(|_| Error::ReceiptMismatch)?
+            .verify_strict(digest(pin, &self.receipt)?.as_bytes(), &signature)
+            .map_err(|_| Error::ReceiptMismatch)?;
+        if self.receipt.id != submission.id
+            || self.receipt.destination != pin.destination
+            || self.receipt.digest != submission.digest()?
+        {
+            return Err(Error::ReceiptMismatch);
+        }
+        Ok(self.receipt.clone())
+    }
     /// Decode bounded wire data; authenticity is still checked by Host.
     /// # Errors
     /// Refuses oversized or malformed acknowledgments and non-signatures.
@@ -193,6 +221,16 @@ pub struct CanonicalRecord {
 
 pub type ReportProjection =
     fn(&ui::automerge::AutoCommit, &Submission) -> Result<(Receipt, String), Error>;
+
+/// The owner's current durable source. Implementations must read the actual
+/// retained storage and validate attributed content under current authority;
+/// a disposable reader cache or dispatch result is not a durable source.
+pub trait CanonicalReceiptSource {
+    fn namespace(&self) -> (String, String);
+    /// # Errors
+    /// Refuses missing, unauthorized, conflicting or undurable reports.
+    fn current_report(&self, submission: &Submission) -> Result<(Receipt, String), Error>;
+}
 
 fn digest(pin: &Pin, receipt: &Receipt) -> Result<blake3::Hash, Error> {
     let mut hash = blake3::Hasher::new();
@@ -308,7 +346,7 @@ impl Capture for NoCapture {
 pub struct CanonicalDestination {
     owner: Caller,
     destination: Destination,
-    source: CanonicalRecord,
+    source: Box<dyn CanonicalReceiptSource>,
     signer: Box<dyn ReceiptSigner>,
 }
 
@@ -322,12 +360,24 @@ impl CanonicalDestination {
         source: CanonicalRecord,
         signer: Box<dyn ReceiptSigner>,
     ) -> Result<Self, Error> {
+        Self::from_source(owner, destination, Box::new(source), signer)
+    }
+
+    /// Bind the owner's existing retained source, including non-UI host storage.
+    /// # Errors
+    /// Refuses missing owner identity, signer mismatch and foreign namespaces.
+    pub fn from_source(
+        owner: Caller,
+        destination: Destination,
+        source: Box<dyn CanonicalReceiptSource>,
+        signer: Box<dyn ReceiptSigner>,
+    ) -> Result<Self, Error> {
         destination.validate()?;
         if owner.room() != Some(destination.room.as_str())
             || owner.user_public_key().is_none()
             || owner.device_public_key().is_none()
             || owner != *signer.owner()
-            || source.records.package_and_home() != (CHAT_PACKAGE.into(), destination.room.clone())
+            || source.namespace() != (CHAT_PACKAGE.into(), destination.room.clone())
         {
             return Err(Error::ReceiptMismatch);
         }
@@ -364,7 +414,11 @@ impl CanonicalDestination {
             return Err(Error::ReceiptMismatch);
         }
         let (receipt, author) = self.current_report(submission)?;
-        if author != hex::encode(pin.reporter.user) || receipt.digest != submission.digest()? {
+        if author != hex::encode(pin.reporter.user)
+            || receipt.id != submission.id
+            || receipt.destination != submission.destination
+            || receipt.digest != submission.digest()?
+        {
             return Err(Error::ReceiptMismatch);
         }
         let request = ReceiptSigningRequest {
@@ -390,27 +444,37 @@ impl CanonicalDestination {
     }
 
     fn current_report(&self, submission: &Submission) -> Result<(Receipt, String), Error> {
+        if self.source.namespace() != (CHAT_PACKAGE.into(), self.destination.room.clone()) {
+            return Err(Error::ReceiptMismatch);
+        }
+        self.source.current_report(submission)
+    }
+}
+
+impl CanonicalReceiptSource for CanonicalRecord {
+    fn namespace(&self) -> (String, String) {
+        self.records.package_and_home()
+    }
+    fn current_report(&self, submission: &Submission) -> Result<(Receipt, String), Error> {
         if self
-            .source
             .records
-            .save_status(&self.source.record)
+            .save_status(&self.record)
             .map_err(|_| Error::NotDurable)?
             != ui::record::RecordSaveStatus::Saved
         {
             return Err(Error::NotDurable);
         }
-        self.source
-            .records
-            .read(&self.source.record, |doc| {
+        self.records
+            .read(&self.record, |doc| {
                 let scope = ui::record::room_scope(doc);
                 if scope
                     .as_deref()
-                    .is_some_and(|room| room != self.destination.room)
-                    || (!self.source.record.is_package_primary() && scope.is_none())
+                    .is_some_and(|room| room != submission.destination.room)
+                    || (!self.record.is_package_primary() && scope.is_none())
                 {
                     return Err(Error::ReceiptMismatch);
                 }
-                (self.source.project)(doc, submission)
+                (self.project)(doc, submission)
             })
             .ok_or(Error::NotDurable)?
     }
@@ -564,19 +628,7 @@ impl FeedbackHost for Host {
             return Ok(None);
         };
         self.current(Some(submission), true)?;
-        let signature =
-            Signature::from_slice(&signed.signature).map_err(|_| Error::ReceiptMismatch)?;
-        VerifyingKey::from_bytes(&self.pin.owner.device)
-            .map_err(|_| Error::ReceiptMismatch)?
-            .verify_strict(digest(&self.pin, &signed.receipt)?.as_bytes(), &signature)
-            .map_err(|_| Error::ReceiptMismatch)?;
-        if signed.receipt.id != submission.id
-            || signed.receipt.destination != self.pin.destination
-            || signed.receipt.digest != submission.digest()?
-        {
-            return Err(Error::ReceiptMismatch);
-        }
-        Ok(Some(signed.receipt))
+        signed.verify_pin(submission, &self.pin).map(Some)
     }
 }
 

@@ -36,6 +36,7 @@
 //! channels like any other, admitted by the room's steward. It reads only
 //! records it holds keys for and writes nothing in the clear.
 
+mod feedback;
 mod reads;
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
@@ -148,7 +149,8 @@ pub trait RoomRecordsLink: Send + Sync {
     /// # Errors
     ///
     /// Refuses missing/currently unauthorized sources, unavailable existing keys,
-    /// invalid signatures, incomplete replay or exceeded read budgets.
+    /// invalid signatures, incomplete replay, failed retained-file durability
+    /// barriers or exceeded read budgets. A disposable peer cache is not a source.
     fn view_document(
         &self,
         _workspace: u64,
@@ -210,6 +212,12 @@ impl Ledger {
 }
 
 enum Job {
+    Feedback {
+        workspace_id: u64,
+        query: Box<tilo_actions::remote::feedback::FeedbackQuery>,
+        caller: Caller,
+        done: Completer<Result<tilo_actions::remote::feedback::FeedbackAnswer, ActionHostError>>,
+    },
     Catalogue {
         workspace_id: u64,
         query: Box<CatalogueQuery>,
@@ -334,6 +342,9 @@ impl RoomActions {
             reason: "the host's room actions are not running".into(),
         };
         Some(match message {
+            RemoteActionMessage::FeedbackRequest { correlation, query } => {
+                self.feedback_request(workspace_id, caller, correlation, query)
+            }
             RemoteActionMessage::CatalogueRequest { correlation, query } => {
                 let respond = move |result| RemoteActionMessage::CatalogueResponse {
                     correlation,
@@ -417,12 +428,38 @@ impl RoomActions {
                     result: self.cancel(caller, &invocation),
                 })
             }
-            RemoteActionMessage::CatalogueResponse { .. }
+            RemoteActionMessage::FeedbackResponse { .. }
+            | RemoteActionMessage::CatalogueResponse { .. }
             | RemoteActionMessage::Receipt(_)
             | RemoteActionMessage::Update { .. }
             | RemoteActionMessage::CancelResponse { .. }
             | RemoteActionMessage::RecordRequest { .. }
             | RemoteActionMessage::RecordResponse { .. } => return None,
+        })
+    }
+
+    fn feedback_request(
+        &self,
+        workspace_id: u64,
+        caller: &Caller,
+        correlation: u64,
+        query: tilo_actions::remote::feedback::FeedbackQuery,
+    ) -> Pending<RemoteActionMessage> {
+        let (done, answer) = pending();
+        let job = Job::Feedback {
+            workspace_id,
+            query: Box::new(query),
+            caller: caller.clone(),
+            done,
+        };
+        if let Err(Job::Feedback { done, .. }) = self.submit(job) {
+            done.complete(Err(ActionHostError::Unavailable {
+                reason: "the host's room actions are not running".into(),
+            }));
+        }
+        answer.map(move |result| RemoteActionMessage::FeedbackResponse {
+            correlation,
+            result,
         })
     }
 
@@ -473,13 +510,15 @@ impl HostActions {
     ) -> Option<Pending<RemoteActionMessage>> {
         use tilo_relay_protocol::agents::AGENTS_PROVIDER;
         let supervisor = match &message {
+            RemoteActionMessage::FeedbackRequest { .. } => false,
             RemoteActionMessage::CatalogueRequest { query, .. } => {
                 query.provider.as_deref() == Some(AGENTS_PROVIDER)
             }
             RemoteActionMessage::Invoke(request) => request.target.provider == AGENTS_PROVIDER,
             RemoteActionMessage::Observe { invocation, .. }
             | RemoteActionMessage::Cancel { invocation } => !self.rooms.owns(caller, invocation),
-            RemoteActionMessage::CatalogueResponse { .. }
+            RemoteActionMessage::FeedbackResponse { .. }
+            | RemoteActionMessage::CatalogueResponse { .. }
             | RemoteActionMessage::Receipt(_)
             | RemoteActionMessage::Update { .. }
             | RemoteActionMessage::CancelResponse { .. }
@@ -721,6 +760,30 @@ impl Worker {
     fn run(mut self, jobs: &mpsc::Receiver<Job>) {
         while let Ok(job) = jobs.recv() {
             match job {
+                Job::Feedback {
+                    workspace_id,
+                    query,
+                    caller,
+                    done,
+                } => {
+                    let result = self
+                        .shared
+                        .link
+                        .get()
+                        .ok_or_else(|| ActionHostError::Unavailable {
+                            reason: "feedback host unavailable".into(),
+                        })
+                        .and_then(|link| {
+                            feedback::answer(
+                                link,
+                                self.catalogue.clone(),
+                                workspace_id,
+                                caller,
+                                *query,
+                            )
+                        });
+                    done.complete(result);
+                }
                 Job::Catalogue {
                     workspace_id,
                     query,
