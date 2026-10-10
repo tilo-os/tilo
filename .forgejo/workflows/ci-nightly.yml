@@ -262,7 +262,7 @@ jobs:
         continue-on-error: true
         env:
           IGNORED_FILTER: >-
-            (package(shell) and (test(headless_examples_smoke::full_loop_writes_two_pngs) or test(session_lock_e2e::))) or
+            (package(shell) and (test(headless_examples_smoke::full_loop_writes_two_pngs) or test(headless_examples_smoke::mcp_live_proof_drives_a_compositor_over_mcp) or test(session_lock_e2e::))) or
             (package(format-host) and binary(integration))
         run: |
           rustup target add wasm32-wasip2
@@ -273,6 +273,28 @@ jobs:
             bash tools/with-test-environment.sh \
             cargo nextest run --workspace --locked --profile ci --run-ignored only \
             --test-threads 1 -E "$IGNORED_FILTER"
+
+      # agent-seats-proof.py drives two concurrent MCP sessions through the compositor's
+      # `agent-control` feature, which the workspace build leaves off: rebuild the shell with it
+      # and the terminal the proof opens in each agent's strip, then run just that proof.
+      - name: Run the agent seats proof
+        if: ${{ !cancelled() && steps.workspace-tests.outcome != 'skipped' }}
+        continue-on-error: true
+        run: |
+          # Keep the ignored-tests report: this run writes the same junit.xml.
+          mkdir -p target/ci/junit
+          if [ -f target/nextest/ci/junit.xml ]; then
+            mv target/nextest/ci/junit.xml target/ci/junit/ignored.xml
+          fi
+          cargo build --locked -p terminal --bin terminal
+          TILO_TERMINAL_BINARY="$PWD/target/debug/terminal" \
+          bash tools/ci/measure.sh "nightly agent seats proof" -- \
+            bash scripts/ci-run.sh "cargo nextest agent seats" -- \
+            bash tools/with-test-environment.sh \
+            cargo nextest run -p shell --features agent-control --locked --profile ci \
+            --run-ignored only --test-threads 1 \
+            -E 'test(headless_examples_smoke::agent_seats_proof_keeps_two_agents_apart)'
+          mv target/nextest/ci/junit.xml target/ci/junit/agent-seats.xml
 
       - name: Report ignored tests
         if: ${{ !cancelled() && steps.workspace-tests.outcome != 'skipped' }}

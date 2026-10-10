@@ -44,8 +44,10 @@ import time
 import urllib.request
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
-SHELL = REPO / "target" / "debug" / "shell"
-TERMINAL = REPO / "target" / "debug" / "terminal"
+# The nightly ignored-test lane points these at the binaries Cargo built for the run
+# (the shell with `--features agent-control`).
+SHELL = pathlib.Path(os.environ.get("TILO_SHELL_BINARY", REPO / "target" / "debug" / "shell"))
+TERMINAL = pathlib.Path(os.environ.get("TILO_TERMINAL_BINARY", REPO / "target" / "debug" / "terminal"))
 PROTOCOL = "2025-06-18"
 # What a shell types to title its terminal (OSC 2) with the quoted text after it.
 TITLE = "printf '\\033]2;%s\\007' "
