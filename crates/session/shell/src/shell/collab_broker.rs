@@ -273,19 +273,28 @@ pub fn spawn_native_harness(
         None,
         &publisher,
         Some(membership),
-        CertificateProvisioning::HarnessDevices(Arc::new(trusted_devices)),
+        CertificateProvisioning::HarnessDevices(Arc::new(trusted_devices), None),
         None,
     )
 }
 
-/// Production owner/read pipeline with explicitly authorized synthetic devices.
-/// No enrollment or input grant is created by this test-only constructor.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) type NativeReadHarnessWrapper = Arc<
+    dyn Fn(
+            Arc<dyn tilo_action_broker::services::NativeDocumentReads>,
+        ) -> Arc<dyn tilo_action_broker::services::NativeDocumentReads>
+        + Send
+        + Sync,
+>;
 #[cfg(test)]
-pub(crate) fn spawn_native_owner_harness(
+/// Production owner/read pipeline with already-authorized synthetic devices.
+/// The wrapper is confined to this test harness; enrollment and custody checks stay intact.
+pub(crate) fn spawn_native_owner_harness_with_reads(
     socket: PathBuf,
     membership: crate::shell::state::WorkspaceTreeHandle,
     trusted_devices: Vec<[u8; 32]>,
     network: &Arc<ShellNetwork>,
+    reads: Option<NativeReadHarnessWrapper>,
 ) -> std::io::Result<BrokerHandle> {
     let publisher = PeerPublisher::with_optional_owner_commit(
         Some(network.clone()),
@@ -299,7 +308,7 @@ pub(crate) fn spawn_native_owner_harness(
         Some(network),
         &publisher,
         Some(membership),
-        CertificateProvisioning::HarnessDevices(Arc::new(trusted_devices)),
+        CertificateProvisioning::HarnessDevices(Arc::new(trusted_devices), reads),
         None,
     )
 }
@@ -340,7 +349,7 @@ pub fn spawn_native_peer(
 enum CertificateProvisioning {
     Production,
     #[cfg(any(test, feature = "test-support"))]
-    HarnessDevices(Arc<Vec<[u8; 32]>>),
+    HarnessDevices(Arc<Vec<[u8; 32]>>, Option<NativeReadHarnessWrapper>),
 }
 
 impl CertificateProvisioning {
@@ -348,7 +357,7 @@ impl CertificateProvisioning {
         match self {
             Self::Production => false,
             #[cfg(any(test, feature = "test-support"))]
-            Self::HarnessDevices(_) => true,
+            Self::HarnessDevices(..) => true,
         }
     }
 }
@@ -804,6 +813,10 @@ fn spawn_inner(
     } else {
         tilo_action_broker::services::HostServices::default()
     };
+    #[cfg(any(test, feature = "test-support"))]
+    if let CertificateProvisioning::HarnessDevices(_, Some(wrap)) = &certificate_provisioning {
+        services.committed_documents = services.committed_documents.map(|reads| wrap(reads));
+    }
     services.record_content = record_content;
     // The same service the identity broker answers key requests from: its
     // changes tell each route's endpoint when to ask again. A session broker
@@ -880,7 +893,7 @@ fn spawn_inner(
             )?
         }
         #[cfg(any(test, feature = "test-support"))]
-        CertificateProvisioning::HarnessDevices(trusted_devices) => {
+        CertificateProvisioning::HarnessDevices(trusted_devices, _) => {
             tilo_action_broker::collab_broker::spawn_with_test_services(
                 capnp_socket_path,
                 authority,
