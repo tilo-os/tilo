@@ -2525,3 +2525,5 @@ device-fabric-error-input-decline-unavailable = Deine abgelehnten Eingabegeräte
 device-fabric-error-input-decline-save-failed = Die Eingabesteuerung wurde widerrufen, aber die Ablehnung konnte nicht gespeichert werden. Automatische Eingabe bleibt deaktiviert.
 
 device-fabric-error-input-sequence-exhausted = Die Eingabesequenz ist ausgeschöpft. Fordere eine neue Steuerungsberechtigung an.
+
+device-fabric-error-input-cleanup-pending = Vorherige Eingaben werden noch freigegeben. Versuche es erneut.
