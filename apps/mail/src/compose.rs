@@ -2550,13 +2550,11 @@ mod tests {
     use winit::keyboard::{Key, NamedKey, SmolStr};
 
     fn key(logical: Key, text: Option<&str>) -> WindowEvent {
-        let ev =
-            ui::synthetic_input::key_event(logical, text.map(SmolStr::new), ElementState::Pressed);
-        WindowEvent::KeyboardInput {
-            device_id: winit::event::DeviceId::dummy(),
-            event: ev,
-            is_synthetic: false,
-        }
+        ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
+            logical,
+            text.map(SmolStr::new),
+            ElementState::Pressed,
+        ))
     }
 
     fn win() -> ComposeWindow {

@@ -923,11 +923,10 @@ use ui::synthetic_input::cursor_moved;
 use ui::synthetic_input::mouse_press;
 
 fn mouse_press_right() -> WindowEvent {
-    WindowEvent::MouseInput {
-        device_id: winit::event::DeviceId::dummy(),
-        state: ElementState::Pressed,
-        button: MouseButton::Right,
-    }
+    ui::synthetic_input::mouse_input(
+        ui::winit::event::ElementState::Pressed,
+        ui::winit::event::MouseButton::Right,
+    )
 }
 
 use ui::synthetic_input::mouse_release;

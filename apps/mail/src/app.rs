@@ -5057,20 +5057,12 @@ mod tests {
     use super::*;
     use crate::resource::TestMail;
     use automerge::ReadDoc;
-    use winit::event::MouseButton;
 
     fn cursor_at(p: Point) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(p.x, p.y),
-        }
+        ui::synthetic_input::cursor_moved(p.x, p.y)
     }
     fn left_press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
+        ui::synthetic_input::mouse_press()
     }
     fn esc_event() -> WindowEvent {
         named_key(NamedKey::Escape)
@@ -5110,11 +5102,7 @@ mod tests {
     }
 
     fn left_release() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        }
+        ui::synthetic_input::mouse_release()
     }
 
     fn app() -> (MailApp, AutoCommit) {

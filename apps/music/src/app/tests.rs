@@ -753,17 +753,10 @@ fn click_track(app: &mut MusicApp, doc: &mut AutoCommit, id: &str) {
 }
 
 fn cursor_at(p: Point) -> WindowEvent {
-    WindowEvent::CursorMoved {
-        device_id: winit::event::DeviceId::dummy(),
-        position: winit::dpi::PhysicalPosition::new(p.x, p.y),
-    }
+    ui::synthetic_input::cursor_moved(p.x, p.y)
 }
 fn press(button: MouseButton) -> WindowEvent {
-    WindowEvent::MouseInput {
-        device_id: winit::event::DeviceId::dummy(),
-        state: ElementState::Pressed,
-        button,
-    }
+    ui::synthetic_input::mouse_input(ui::winit::event::ElementState::Pressed, button)
 }
 /// Drive one event through the production `handle_event` path.
 /// Send a row-control click through the same custody and action runner as
@@ -804,19 +797,11 @@ fn send_with(
 }
 
 fn released(button: MouseButton) -> WindowEvent {
-    WindowEvent::MouseInput {
-        device_id: winit::event::DeviceId::dummy(),
-        state: ElementState::Released,
-        button,
-    }
+    ui::synthetic_input::mouse_input(ui::winit::event::ElementState::Released, button)
 }
 
 fn wheel(lines_y: f32) -> WindowEvent {
-    WindowEvent::MouseWheel {
-        device_id: winit::event::DeviceId::dummy(),
-        delta: winit::event::MouseScrollDelta::LineDelta(0.0, lines_y),
-        phase: winit::event::TouchPhase::Moved,
-    }
+    ui::synthetic_input::mouse_wheel(0.0, lines_y)
 }
 
 /// A character keypress event (logical key + committed text). like the other app event-path tests.

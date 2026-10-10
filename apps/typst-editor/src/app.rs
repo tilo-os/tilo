@@ -1788,7 +1788,6 @@ fn save_file(path: &std::path::Path, bytes: &[u8]) -> Result<(), tilo_files::FsE
 #[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod tests {
     use super::*;
-    use winit::dpi::PhysicalPosition;
     use winit::event::Modifiers;
 
     use automerge::ROOT;
@@ -1927,10 +1926,7 @@ mod tests {
     }
 
     fn cursor(p: Point) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: PhysicalPosition::new(p.x, p.y),
-        }
+        ui::synthetic_input::cursor_moved(p.x, p.y)
     }
 
     use ui::synthetic_input::mouse_press;
@@ -2097,7 +2093,6 @@ mod tests {
     // ---- helpers for the preview-interaction + diagnostics tests ----------
 
     use crate::compile::DiagKind;
-    use winit::event::TouchPhase;
     use winit::keyboard::ModifiersState;
 
     use ui::synthetic_input::char_key;
@@ -2105,11 +2100,7 @@ mod tests {
     /// A vertical wheel notch (`+` = up/away). A tilt component can be supplied
     /// via `x` for the horizontal-pan path.
     fn wheel(x: f32, y: f32) -> WindowEvent {
-        WindowEvent::MouseWheel {
-            device_id: winit::event::DeviceId::dummy(),
-            delta: MouseScrollDelta::LineDelta(x, y),
-            phase: TouchPhase::Moved,
-        }
+        ui::synthetic_input::mouse_wheel(x, y)
     }
 
     /// Like [`send`] but with explicit modifiers held.

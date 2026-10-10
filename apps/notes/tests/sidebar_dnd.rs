@@ -23,11 +23,7 @@ use winit::keyboard::NamedKey;
 use ui::synthetic_input::cursor_moved;
 
 fn mouse(state: ElementState, button: MouseButton) -> WindowEvent {
-    WindowEvent::MouseInput {
-        device_id: winit::event::DeviceId::dummy(),
-        state,
-        button,
-    }
+    ui::synthetic_input::mouse_input(state, button)
 }
 
 use ui::synthetic_input::named_key;

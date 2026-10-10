@@ -4854,20 +4854,15 @@ mod architecture_tests {
     }
 
     fn mouse(button: MouseButton, state: ElementState) -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            button,
-            state,
-        }
+        ui::synthetic_input::mouse_input(state, button)
     }
 
     fn key(named: WNamedKey) -> WindowEvent {
-        let event = ui::synthetic_input::key_event(WKey::Named(named), None, ElementState::Pressed);
-        WindowEvent::KeyboardInput {
-            device_id: winit::event::DeviceId::dummy(),
-            event,
-            is_synthetic: false,
-        }
+        ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
+            WKey::Named(named),
+            None,
+            ElementState::Pressed,
+        ))
     }
 
     /// Find-in-page focus handoff, DPI through find reflow and the daily shortcut capture set.
