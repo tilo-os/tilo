@@ -53,14 +53,6 @@ thread_local! {
     static SHELL_PRESENTS_HISTORY: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
 }
 
-/// Test seam: keep the shell out of the tree the window offers its History
-/// control to. The published host History door remains available without
-/// adding a second toolbar; the component host can invoke that door directly.
-#[doc(hidden)]
-pub fn present_history_in_shell_for_test(present: bool) {
-    SHELL_PRESENTS_HISTORY.set(present);
-}
-
 /// The test id of the sidebar header's "New note" button.
 pub(crate) const NEW_NOTE_BUTTON_ID: &str = "new-note";
 /// The test id of the note header's "Note actions" button.

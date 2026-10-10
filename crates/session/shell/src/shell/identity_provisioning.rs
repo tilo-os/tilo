@@ -10,8 +10,6 @@
 //! Intentionally thin: cryptographic logic stays in
 //! `threshold-identity`, visual logic stays in `ui`.
 
-use getrandom::{SysRng, rand_core::UnwrapErr};
-use rand_core::Rng;
 use serde::{Deserialize, Serialize};
 use std::fs::OpenOptions;
 use std::io::{self, Read};
@@ -825,29 +823,6 @@ pub fn pairing_channel_at(
     }))
 }
 
-/// Create a private, bounded broker spool under the runtime identity root.
-/// The returned handle can be dropped and reopened with [`pairing_channel_at`]
-/// by another process; protocol state is not owned by the UI lifetime.
-///
-/// # Errors
-///
-/// Returns an error when the identity root is unavailable or the durable
-/// pairing protocol cannot be initialized.
-pub fn new_pairing_channel() -> Result<SharedPairingChannel, IdentityFlowError> {
-    let root = std::env::var_os("TILO_IDENTITY_ROOT")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .ok_or_else(|| {
-            IdentityFlowError::Io(io::Error::new(
-                io::ErrorKind::NotFound,
-                "pairing broker unavailable: TILO_IDENTITY_ROOT is not configured",
-            ))
-        })?;
-    let mut id = [0u8; 16];
-    UnwrapErr(SysRng).fill_bytes(&mut id);
-    pairing_channel_at(root.join("pairing-broker").join(hex::encode(id)))
-}
-
 /// Start the long-lived invite broker when the administrator has provided a
 /// reachable bind/advertise pair. With neither variable set the feature is
 /// honestly unavailable; a half-configuration is rejected.
@@ -919,6 +894,7 @@ pub fn start_configured_invite_broker() -> io::Result<Option<PairingBrokerServer
 #[cfg(test)]
 mod tests {
     use super::*;
+    use getrandom::{SysRng, rand_core::UnwrapErr};
     use std::time::SystemTime;
     use threshold_identity::ThresholdIdentity;
     use ui::widget::identity_flow::MemoryIdentityStore;

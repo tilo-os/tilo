@@ -15,9 +15,13 @@ architecture, all read from the ELF file itself:
 - `symbol_relocations`: relocations that need a symbol lookup (everything
   but the relative ones), the loader's slow path.
 
-It also names the `DT_NEEDED` libraries. A media library there is loaded by
-every app, media or not; `[targets] needed_absent` names them and the gate
-reports them until the runtime no longer needs them.
+It also names the `DT_NEEDED` libraries. A media library there would be loaded
+by every app, media or not: `[targets] needed_absent` names them, and the
+build gate fails when one is in the runtime's `DT_NEEDED`, in the closure of
+libraries every app loads with it, or in the closure of a built app that
+`apps_without_media` lists (TIL-713). GLib and GStreamer reach the runtime
+through `tools/ci/runtime-dylib-lazy-link.py`, which loads them on first use
+and records them in the `.tilo.lazy_needed` section; the gate reports those.
 
 Three gates, as for the per-app tapp budgets (tapp_size_ratchet.py):
 
@@ -77,6 +81,12 @@ TIMEOUT_SECONDS = 120
 
 # ELF constants (64-bit little-endian only: both shipped architectures).
 SHT_RELA, SHT_DYNAMIC, SHT_RELR = 4, 6, 19
+# The libraries tools/ci/runtime-dylib-lazy-link.py loads on first use.
+LAZY_SECTION = ".tilo.lazy_needed"
+# Where the loader finds what no RUNPATH or library directory names.
+SYSTEM_DIRECTORIES = tuple(pathlib.Path(directory) for directory in (
+    "/lib64", "/usr/lib64", "/lib", "/usr/lib", "/lib/x86_64-linux-gnu", "/usr/lib/x86_64-linux-gnu",
+    "/lib/aarch64-linux-gnu", "/usr/lib/aarch64-linux-gnu"))
 DT_NEEDED = 1
 RELATIVE = {62: 8, 183: 1027}  # e_machine -> R_*_RELATIVE: x86_64, aarch64
 MACHINES = {62: "x86_64", 183: "aarch64"}
@@ -88,6 +98,7 @@ class ElfStats:
     bytes: int
     sections: dict[str, int] = field(default_factory=dict)
     needed: list[str] = field(default_factory=list)
+    lazy_needed: list[str] = field(default_factory=list)
     relocations: int = 0
     symbol_relocations: int = 0
     relocation_bytes: int = 0
@@ -156,6 +167,8 @@ def read_elf(path: pathlib.Path) -> ElfStats:
             addresses = _relr_addresses(body[:size - size % 8])
             stats.relocations += len(addresses)
             pages.update(address // PAGE for address in addresses)
+        elif name == LAZY_SECTION:
+            stats.lazy_needed = [entry.decode("utf-8", "replace") for entry in body.split(b"\0") if entry]
         elif kind == SHT_DYNAMIC:
             strings_header = headers[link]
             strings = data[strings_header[4]:strings_header[4] + strings_header[5]]
@@ -183,6 +196,11 @@ class Budget:
     def targets(self) -> dict[str, int]:
         return {metric: value for metric, value in tapp.ints(self.data.get("targets", {})).items()
                 if metric in METRICS}
+
+    @property
+    def apps_without_media(self) -> list[str]:
+        values = self.data.get("apps_without_media", [])
+        return [value for value in values if isinstance(value, str)] if isinstance(values, list) else []
 
     @property
     def needed_absent(self) -> list[str]:
@@ -250,7 +268,8 @@ def describe(stats: ElfStats) -> list[str]:
             f"runtime {stats.arch}: {stats.relocations} dynamic relocations "
             f"({stats.symbol_relocations} with a symbol lookup) in {stats.relocation_bytes} bytes, "
             f"writing {stats.relocated_bytes // PAGE} pages ({stats.relocated_bytes} bytes) per app process",
-            f"runtime {stats.arch}: DT_NEEDED " + " ".join(stats.needed)]
+            f"runtime {stats.arch}: DT_NEEDED " + " ".join(stats.needed),
+            f"runtime {stats.arch}: loaded on first media use: " + (" ".join(stats.lazy_needed) or "nothing")]
 
 
 def judge(stats: ElfStats, budget: Budget) -> tuple[int, list[str]]:
@@ -280,10 +299,12 @@ def judge(stats: ElfStats, budget: Budget) -> tuple[int, list[str]]:
                          f"[runtime.{arch}] {metric} = {proposed}, and drop it from its raise files")
         else:
             lines.append(f"runtime {arch} {metric}: {value}, within its budget of {limit}{goal}")
-    loaded = [name for name in stats.needed if any(name.startswith(prefix) for prefix in budget.needed_absent)]
+    loaded = [name for name in stats.needed if media(name, budget)]
     if loaded:
-        lines.append(f"runtime {arch}: every app loads {' '.join(loaded)}; KPI target: none of "
-                     f"{', '.join(budget.needed_absent)} (TIL-604)")
+        missing = True
+        lines.append(f"error: runtime {arch}: every app loads {' '.join(loaded)}; none of "
+                     f"{', '.join(budget.needed_absent)} may be DT_NEEDED (TIL-713): link the runtime "
+                     "through tools/ci/runtime-dylib-lazy-link.py")
     if over:
         lines += [f"A deliberate growth adds one raise file for the change, {DIRECTORY}/raises/<change>.toml",
                   "(the other architecture's job prints its own lines; DEVELOPMENT.md, \"Runtime size\"):",
@@ -294,11 +315,89 @@ def judge(stats: ElfStats, budget: Budget) -> tuple[int, list[str]]:
     return (1 if over or missing else 0), lines
 
 
-def measure(path: pathlib.Path, budget: Budget, arch: str | None = None) -> tuple[int, list[str], ElfStats]:
+def media(name: str, budget: Budget) -> bool:
+    return any(name.startswith(prefix) for prefix in budget.needed_absent)
+
+
+def find_library(name: str, arch: str, directories: list[pathlib.Path]) -> tuple[pathlib.Path, ElfStats] | None:
+    """The first file called `name` in `directories` that is an ELF object for `arch`."""
+    for directory in directories:
+        candidate = directory / name
+        if not candidate.is_file():
+            continue
+        try:
+            stats = read_elf(candidate)
+        except (ValueError, struct.error):
+            continue
+        if stats.arch == arch:
+            return candidate, stats
+    return None
+
+
+def closure(path: pathlib.Path, stats: ElfStats,
+            directories: list[pathlib.Path]) -> tuple[dict[str, tuple[ElfStats, str]], list[str]]:
+    """Every object the loader maps for `path`, each with what needs it, and what cannot be found."""
+    found: dict[str, tuple[ElfStats, str]] = {path.name: (stats, "")}
+    queue = [(path.name, stats)]
+    problems = []
+    while queue:
+        parent, parent_stats = queue.pop(0)
+        for name in parent_stats.needed:
+            if name in found:
+                continue
+            located = find_library(name, stats.arch, directories)
+            if located is None:
+                problems.append(f"error: {path.name}: cannot find {name} (needed by {parent}) in "
+                                f"{' '.join(str(d) for d in directories)}")
+                continue
+            found[name] = (located[1], parent)
+            queue.append((name, located[1]))
+    return found, problems
+
+
+def closure_lines(path: pathlib.Path, stats: ElfStats, budget: Budget,
+                  directories: list[pathlib.Path]) -> tuple[int, list[str]]:
+    """Fail when any object loaded with `path` is a library of `needed_absent`."""
+    found, errors = closure(path, stats, [path.parent, *directories])
+    for name, (_, parent) in found.items():
+        if media(name, budget):
+            chain = [name]
+            while parent:
+                chain.append(parent)
+                parent = found[parent][1]
+            errors.append(f"error: {path.name} loads {name} at exec ({' <- '.join(chain)}); none of "
+                          f"{', '.join(budget.needed_absent)} may be (TIL-713)")
+    pages = sum(entry[0].relocated_bytes for entry in found.values()) // PAGE
+    summary = (f"{path.name}: {len(found)} objects at exec, relocations write {pages} pages "
+               f"across them: {' '.join(found)}")
+    return (1 if errors else 0), [*errors, summary]
+
+
+def measure(path: pathlib.Path, budget: Budget, arch: str | None = None, apps: list[pathlib.Path] = (),
+            directories: list[pathlib.Path] | None = None) -> tuple[int, list[str], ElfStats]:
+    """The dylib against its budgets; with `directories`, also what it and `apps` load at exec."""
     stats = read_elf(path)
     if arch is not None and stats.arch != arch:
         return 1, [f"error: {path} is built for {stats.arch}, not {arch}"], stats
     status, lines = judge(stats, budget)
+    if directories is None:
+        return status, lines, stats
+    # What every app loads with the runtime, built or not.
+    checked, more = closure_lines(path, stats, budget, directories)
+    status |= checked
+    lines += more
+    if not apps:
+        lines.append("no app of apps_without_media was built; checked what every app loads with the runtime")
+    for app in apps:
+        try:
+            app_stats = read_elf(app)
+        except (ValueError, struct.error) as error:
+            status = 1
+            lines.append(f"error: {app}: {error}")
+            continue
+        checked, more = closure_lines(app, app_stats, budget, [path.parent, *directories])
+        status |= checked
+        lines += more
     return status, lines, stats
 
 
@@ -471,6 +570,8 @@ def increases(before: Budget, after: Budget, new_raises: set[str]) -> list[str]:
             problems.append(f"KPI target {metric} raised; targets only decrease")
     if set(before.needed_absent) - set(after.needed_absent):
         problems.append("[targets] needed_absent lost an entry; targets only tighten")
+    if set(before.apps_without_media) - set(after.apps_without_media):
+        problems.append("apps_without_media lost an entry; targets only tighten")
     old, allowance = before.totals(), after.added(new_raises)
     for key, total in sorted(after.totals().items()):
         if key in old and total - old[key] > allowance.get(key, 0):
@@ -500,6 +601,11 @@ def main(argv: list[str] | None = None) -> int:
     measured.add_argument("dylib", type=pathlib.Path)
     measured.add_argument("--arch")
     measured.add_argument("--summary", type=pathlib.Path)
+    measured.add_argument("--apps-dir", type=pathlib.Path,
+                          help="where the built apps are; checks what the runtime and each built app of "
+                               "apps_without_media load at exec")
+    measured.add_argument("--library-dir", type=pathlib.Path, action="append", default=[],
+                          help="a directory the loader searches (the Rust libstd's); repeatable")
     published_parser = commands.add_parser("published", help="the newest published runtimes against their budgets")
     published_parser.add_argument("entries", type=pathlib.Path)
     published_parser.add_argument("--registry", default=REGISTRY)
@@ -507,12 +613,22 @@ def main(argv: list[str] | None = None) -> int:
     published_parser.add_argument("--summary", type=pathlib.Path)
     checked = commands.add_parser("check-budget", help="budgets only decrease without a raise file")
     checked.add_argument("--base", required=True)
+    commands.add_parser("apps-without-media", help="the apps budget.toml lists as playing no media, one a line")
     args = parser.parse_args(argv)
     try:
         current = load()
         if args.command == "measure":
-            status, lines, _ = measure(args.dylib, current, args.arch)
+            directories = None
+            apps: list[pathlib.Path] = []
+            if args.apps_dir is not None:
+                directories = [*args.library_dir, *SYSTEM_DIRECTORIES]
+                apps = [args.apps_dir / name for name in current.apps_without_media
+                        if (args.apps_dir / name).is_file()]
+            status, lines, _ = measure(args.dylib, current, args.arch, apps, directories)
             return emit(status, lines, args.summary)
+        if args.command == "apps-without-media":
+            print("\n".join(current.apps_without_media))
+            return 0
         if args.command == "published":
             entries = json.loads(args.entries.read_text(encoding="utf-8"))
             status, lines, values = published(entries, current, args.registry.rstrip("/"))

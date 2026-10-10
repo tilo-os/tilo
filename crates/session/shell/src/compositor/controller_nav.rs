@@ -89,21 +89,7 @@ pub enum NavIntent {
     MoveGroupRight,
 }
 
-impl NavIntent {
-    /// Intents that edit the desktop's own layout rather than an app.
-    pub const fn is_chrome(self) -> bool {
-        matches!(
-            self,
-            Self::FocusPreviousWindow
-                | Self::FocusNextWindow
-                | Self::PreviousStrip
-                | Self::NextStrip
-                | Self::MoveGroupLeft
-                | Self::MoveGroupRight
-                | Self::QuickSettings
-        )
-    }
-}
+impl NavIntent {}
 
 /// The four face buttons by the role their printed legend carries.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

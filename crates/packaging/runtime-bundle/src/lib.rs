@@ -372,20 +372,6 @@ pub fn system_bundle_path(version: &str) -> PathBuf {
 /// Ed25519 key per line, `#` comments.
 pub const TRUSTED_PUBLISHERS_FILE: &str = "/etc/tilo/runtime-bundle-trusted-publishers.txt";
 
-/// Read a trusted-publisher list, ignoring blank and `#` lines; `None` when
-/// the file is absent or unreadable.
-#[must_use]
-pub fn load_trusted_publishers(path: &Path) -> Option<Vec<String>> {
-    let text = fs::read_to_string(path).ok()?;
-    Some(
-        text.lines()
-            .map(str::trim)
-            .filter(|line| !line.is_empty() && !line.starts_with('#'))
-            .map(str::to_ascii_lowercase)
-            .collect(),
-    )
-}
-
 /// Walk the search path and return the first existing bundle dir with a `bundle.toml` (per-user, then system).
 pub fn resolve_bundle_path(version: &str) -> Option<PathBuf> {
     if let Ok(p) = default_bundle_path(version)

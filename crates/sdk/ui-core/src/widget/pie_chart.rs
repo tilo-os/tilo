@@ -939,21 +939,15 @@ impl Widget for PieChart {
         _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
-        if !matches!(action, crate::a11y::Action::Activate) {
-            return false;
-        }
-        let Some(key) = key_path.last() else {
+        let Some(id) = crate::widget::chart_navigation::activated_id(
+            action,
+            key_path,
+            self.slices.iter().filter(|s| s.interactive).map(|s| &s.id),
+        ) else {
             return false;
         };
-        if let Some(slice) = self
-            .slices
-            .iter()
-            .find(|s| s.interactive && crate::a11y::hash_key(&s.id) == *key)
-        {
-            self.activated = Some(slice.id.clone());
-            return true;
-        }
-        false
+        self.activated = Some(id.clone());
+        true
     }
     fn name(&self) -> &'static str {
         "PieChart"
