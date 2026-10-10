@@ -74,6 +74,13 @@ BUDGETS = {
     # to a usable greeter (whole seconds, the boot gate's unit), and the render-path gate's
     # per-frame presentation and main-thread work on a software renderer.
     "boot_to_greeter_s": 20, "render_frame_ms": 1000, "render_frame_work_ms": 100,
+    # Userspace start to greetd active (R06), and the greeter's sign-in request to a drawn
+    # desktop whose control socket answers (R08): the account's first sign-in, with cold
+    # caches and first-login setup, and the next one. The same disk measured 4.4-4.5 s and
+    # 6.8-8.8 s to the greeter and 3.7-5.7 s to the desktop on runners of one class with
+    # no CPU steal, so these catch a stall of seconds, not drift; the records carry the
+    # trend. Software-rendered: the first frame waits on lavapipe compiling the renderer.
+    "userspace_to_greeter_s": 10.0, "sign_in_first_usable_s": 10.0, "sign_in_again_usable_s": 10.0,
 }
 
 # Run in a German session (a second slot), after the main pass.
@@ -81,14 +88,16 @@ DE_PASS = ("U03", "U04", "S03")
 # A14 runs before anything else opens Files, so it times the session's first launch. R05
 # runs last but P03, so the adapter lines of every app the run opened are in the log; R07
 # and A16 judge everything the run rendered and launched. R06 reads this boot's
-# timestamps, so it may run anywhere. A15 times apps R02 has already opened once.
+# timestamps, so it may run anywhere. A15 times apps R02 has already opened once. R08 signs
+# the dev account in at seat0's greeter, which starts a second compositor: it runs after
+# every check that measures or renders the slot's session.
 ORDER = ["P01", "P02", "R06", "R01", "A14", "R02", "R03", "A15", "R04",
          "W01", "W02", "W03", "W04", "W05", "W06", "W07", "W08", "W09", "W10", "W11", "W12",
          "W13", "W14", "W15", "W16", "W17", "W18", "W19", "W20", "W21",
          "A01", "A02", "A03", "A04", "A05", "A06", "A07",
          "A08", "A09", "A10", "A11", "A12", "A13",
          "S01", "S02", "S04", "S05", "S06", "S07", "S08", "S09",
-         "U01", "U02", "B01", "B02", "B03", "B04", "B05", "B06", "B07", "R07", "A16", "R05", "P03"]
+         "U01", "U02", "B01", "B02", "B03", "B04", "B05", "B06", "B07", "R07", "A16", "R05", "R08", "P03"]
 
 
 def git(*args: str, repo: Path = REPO) -> str:
