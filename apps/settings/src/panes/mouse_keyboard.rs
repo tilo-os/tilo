@@ -22,18 +22,18 @@ use settings_store::hardware::{
     TouchpadScrollMethod,
 };
 use taffy::{NodeId, TaffyTree};
-use ui::framework::{ActionControl, Effect as _, EffectAnswer, EffectCx, Effected, LiveRow};
+use ui::framework::{Effect as _, EffectAnswer, EffectCx, Effected, LiveRow};
 use ui::i18n::ArgValue;
 use ui::text_assistance::TextAssistancePrefs;
 use ui::theme::Theme;
 use ui::tilo_actions::ResourcePresentation;
-use ui::tilo_resource::{self, Binds};
+use ui::tilo_resource;
 use ui::widget::{
     AppModel, Button, Dropdown, ModelPath, Row, Slider, Spacer, Text, TextInput, Toggle, Widget,
 };
 use vello::kurbo::{Point, Rect};
 
-use crate::effects::{SettingsEffect, effect};
+use crate::effects::effect;
 use crate::host::{Followed, PaneCx};
 use crate::i18n::{t, t_args};
 use crate::input_sources::{CatalogEntry, installed_catalog};
@@ -43,54 +43,6 @@ use crate::settings_app::SettingsApp;
 use crate::widgets::{
     El, caption, card, error_caption, field_row, rows, setting_row, setting_row_described,
 };
-
-/// Bind a control to a Settings effect where it is built.
-trait BindEffect<I>: ActionControl<I> {
-    fn bound(self, cx: &PaneCx, effect: impl Binds<SettingsEffect, I>) -> Self
-    where
-        I: 'static,
-    {
-        cx.bind(self, effect)
-    }
-
-    /// Bound to the field at `path` of section `T` through `value`.
-    fn bound_field_with<T, V>(
-        self,
-        cx: &PaneCx,
-        path: tilo_resource::Path<T, V>,
-        value: impl Fn(I) -> Result<V, String> + Send + Sync + 'static,
-    ) -> Self
-    where
-        T: crate::host::Section,
-        V: tilo_resource::Model + tilo_resource::Settable + 'static,
-        I: 'static,
-        Self: Sized,
-    {
-        cx.bind_field_with(self, path, value)
-    }
-
-    /// Bound to the verb `verb` of section `T`.
-    fn bound_verb<T>(self, cx: &PaneCx, verb: impl Binds<T, I>) -> Self
-    where
-        T: crate::host::Section,
-        I: 'static,
-        Self: Sized,
-    {
-        cx.bind_verb(self, verb)
-    }
-
-    /// Bound to the field at `path` of section `T`.
-    fn bound_field<T>(self, cx: &PaneCx, path: tilo_resource::Path<T, I>) -> Self
-    where
-        T: crate::host::Section,
-        I: tilo_resource::Model + tilo_resource::Settable + 'static,
-        Self: Sized,
-    {
-        cx.bind_field(self, path)
-    }
-}
-
-impl<I, C: ActionControl<I>> BindEffect<I> for C {}
 
 /// The compose-key choice that turns it off.
 const COMPOSE_DISABLED: &str = "disabled";
@@ -1673,34 +1625,36 @@ impl MouseKeyboardPane {
         content.push(setting_row(
             &t("input-map-level"),
             Box::new(
-                id_dropdown(
-                    (0..map.level_count())
-                        .map(|level| {
-                            (
-                                level.to_string(),
-                                format!("{} {}", t("input-map-level"), level + 1),
-                            )
-                        })
-                        .collect(),
-                    &level.to_string(),
-                    "input.map.level",
-                    &t("input-map-level"),
-                )
-                .bound(&self.cx, effect(InputEffect::SET_PREVIEW_LEVEL)),
+                self.cx.bind(
+                    id_dropdown(
+                        (0..map.level_count())
+                            .map(|level| {
+                                (
+                                    level.to_string(),
+                                    format!("{} {}", t("input-map-level"), level + 1),
+                                )
+                            })
+                            .collect(),
+                        &level.to_string(),
+                        "input.map.level",
+                        &t("input-map-level"),
+                    ),
+                    effect(InputEffect::SET_PREVIEW_LEVEL),
+                ),
             ),
         ));
         let inspected = self.last.keyboard_inspected_key.clone();
         content.push(setting_row(
             &t("input-map-inspect-key"),
-            Box::new(
+            Box::new(self.cx.bind(
                 id_dropdown(
                     map.inspection_keys(),
                     &inspected,
                     "input.map.inspect-key",
                     &t("input-map-inspect-key"),
-                )
-                .bound(&self.cx, effect(InputEffect::INSPECT_KEYBOARD_KEY)),
-            ),
+                ),
+                effect(InputEffect::INSPECT_KEYBOARD_KEY),
+            )),
         ));
         let live = self.editor.get().selected.is_none()
             && (self.editor.get().view == keyboard_editor::SourceView::Live
@@ -1734,12 +1688,14 @@ impl MouseKeyboardPane {
             .with_id("input.keyboard-map.details"),
         ));
         content.push(Box::new(
-            map.with_inspected_key(&inspected)
-                .with_extra_levels(self.last.keyboard_preview_extra_levels)
-                .with_preview_level(level)
-                .with_live_layout(live)
-                .selectable()
-                .bound(&self.cx, effect(InputEffect::INSPECT_KEYBOARD_KEY)),
+            self.cx.bind(
+                map.with_inspected_key(&inspected)
+                    .with_extra_levels(self.last.keyboard_preview_extra_levels)
+                    .with_preview_level(level)
+                    .with_live_layout(live)
+                    .selectable(),
+                effect(InputEffect::INSPECT_KEYBOARD_KEY),
+            ),
         ));
         let Some(map) = content.pop() else {
             return content;
@@ -1851,15 +1807,11 @@ impl MouseKeyboardPane {
         id: &str,
         on: bool,
     ) -> El {
-        setting_row_described(
-            &t(label),
-            &t(description),
-            Box::new(
-                Toggle::from_state(&ui::LocalState::new(on))
-                    .with_id(id)
-                    .bound_field(&self.cx, field),
-            ),
-        )
+        self.cx
+            .row(t(label))
+            .described(t(description))
+            .id(id)
+            .toggle(&ui::LocalState::new(on), field)
     }
 
     /// A switch over a per-device choice that, unset, follows the shared one.
@@ -1871,15 +1823,11 @@ impl MouseKeyboardPane {
         id: &str,
         on: bool,
     ) -> El {
-        setting_row_described(
-            &t(label),
-            &t(description),
-            Box::new(
-                Toggle::from_state(&ui::LocalState::new(on))
-                    .with_id(id)
-                    .bound_field_with(&self.cx, field, |on| Ok(Some(on))),
-            ),
-        )
+        self.cx
+            .row(t(label))
+            .described(t(description))
+            .id(id)
+            .toggle_some(&ui::LocalState::new(on), field)
     }
 
     /// A dropdown over stable ids for one of a tablet's or pad's choices.
@@ -1900,21 +1848,21 @@ impl MouseKeyboardPane {
         );
         let device = device.to_owned();
         match action {
-            "map-to" => dropdown.bound(
-                &self.cx,
+            "map-to" => self.cx.bind(
+                dropdown,
                 effect(InputEffect::SET_TABLET_OUTPUT)
                     .map(move |output: String| (device.clone(), output)),
             ),
             "lower-button" | "upper-button" | "third-button" => {
                 let button = action.trim_end_matches("-button").to_owned();
-                dropdown.bound(
-                    &self.cx,
+                self.cx.bind(
+                    dropdown,
                     effect(InputEffect::SET_TABLET_BUTTON)
                         .map(move |choice: String| (device.clone(), button.clone(), choice)),
                 )
             }
-            "eraser" => dropdown.bound(
-                &self.cx,
+            "eraser" => self.cx.bind(
+                dropdown,
                 effect(InputEffect::SET_TABLET_ERASER)
                     .map(move |choice: String| (device.clone(), choice)),
             ),
@@ -1923,15 +1871,15 @@ impl MouseKeyboardPane {
                     .strip_prefix("button-")
                     .and_then(|button| button.parse::<u32>().ok())
                 {
-                    return dropdown.bound(
-                        &self.cx,
+                    return self.cx.bind(
+                        dropdown,
                         effect(InputEffect::SET_PAD_BUTTON)
                             .map(move |choice: String| (device.clone(), button, choice)),
                     );
                 }
                 match parse_dial_action_id(other) {
-                    Some((dial, index, mode)) => dropdown.bound(
-                        &self.cx,
+                    Some((dial, index, mode)) => self.cx.bind(
+                        dropdown,
                         effect(InputEffect::SET_PAD_DIAL).map(move |choice: String| {
                             (device.clone(), dial.to_owned(), index, mode, choice)
                         }),
@@ -1947,13 +1895,13 @@ impl MouseKeyboardPane {
             Toggle::from_state(&ui::LocalState::new(on)).with_id(&format!("{resource}.{action}"));
         let device = device.to_owned();
         match action {
-            "keep-aspect" => toggle.bound(
-                &self.cx,
+            "keep-aspect" => self.cx.bind(
+                toggle,
                 effect(InputEffect::SET_TABLET_KEEP_ASPECT)
                     .map(move |on: bool| (device.clone(), on)),
             ),
-            _ => toggle.bound(
-                &self.cx,
+            _ => self.cx.bind(
+                toggle,
                 effect(InputEffect::SET_TABLET_LEFT_HANDED)
                     .map(move |on: bool| (device.clone(), on)),
             ),
@@ -1962,13 +1910,11 @@ impl MouseKeyboardPane {
 
     fn device_slider(&self, resource: &str, device: &str, action: &str, value: f64) -> Slider {
         let device = device.to_owned();
-        Slider::from_state(&ui::LocalState::new(value))
-            .with_id(&format!("{resource}.{action}"))
-            .bound(
-                &self.cx,
-                effect(InputEffect::SET_TABLET_TIP_FEEL)
-                    .map(move |feel: f64| (device.clone(), feel)),
-            )
+        self.cx.bind(
+            Slider::from_state(&ui::LocalState::new(value))
+                .with_id(&format!("{resource}.{action}")),
+            effect(InputEffect::SET_TABLET_TIP_FEEL).map(move |feel: f64| (device.clone(), feel)),
+        )
     }
 
     /// Everything that is specific to a touchpad, starting with whether it
@@ -1993,21 +1939,17 @@ impl MouseKeyboardPane {
                     "input.touchpad_disabled_on_external_mouse",
                     last.touchpad_disabled_on_external_mouse,
                 ),
-                setting_row(
-                    &t("input-touchpad-speed"),
-                    Box::new(
-                        Slider::from_state(&ui::LocalState::new(
+                self.cx
+                    .row(t("input-touchpad-speed"))
+                    .id("input.touchpad_pointer_speed")
+                    .named("input-touchpad-speed")
+                    .slider_with(
+                        &ui::LocalState::new(
                             last.touchpad_pointer_speed.unwrap_or(last.pointer_speed),
-                        ))
-                        .bound_field_with(
-                            &self.cx,
-                            InputPrefs::paths().touchpad_pointer_speed,
-                            |speed| fraction(speed).map(Some),
-                        )
-                        .with_id("input.touchpad_pointer_speed")
-                        .with_accessible_name("input-touchpad-speed"),
+                        ),
+                        InputPrefs::paths().touchpad_pointer_speed,
+                        |speed| fraction(speed).map(Some),
                     ),
-                ),
                 self.optional_row(
                     "input-touchpad-natural-scroll",
                     "input-touchpad-natural-scroll-description",
@@ -2061,45 +2003,31 @@ impl MouseKeyboardPane {
         card(
             &t("input-clicking-title"),
             rows(vec![
-                setting_row(
-                    &t("input-click-method"),
-                    Box::new(
-                        id_dropdown(
-                            localized_choices(&CLICK_METHOD_CHOICES),
-                            click_method_id(self.last.touchpad_click_method),
-                            "input.touchpad_click_method",
-                            &t("input-click-method"),
-                        )
-                        .bound_field_with(
-                            &self.cx,
-                            InputPrefs::paths().touchpad_click_method,
-                            |id: String| {
-                                click_method_for_id(&id)
-                                    .ok_or_else(|| format!("`{id}` is not a click method"))
-                            },
-                        ),
+                self.cx
+                    .row(t("input-click-method"))
+                    .id("input.touchpad_click_method")
+                    .keyed_choice(
+                        localized_choices(&CLICK_METHOD_CHOICES),
+                        click_method_id(self.last.touchpad_click_method),
+                        InputPrefs::paths().touchpad_click_method,
+                        |id: String| {
+                            click_method_for_id(&id)
+                                .ok_or_else(|| format!("`{id}` is not a click method"))
+                        },
                     ),
-                ),
                 caption(&t("input-click-method-caption")),
-                setting_row(
-                    &t("input-scroll-method"),
-                    Box::new(
-                        id_dropdown(
-                            localized_choices(&SCROLL_METHOD_CHOICES),
-                            scroll_method_id(self.last.touchpad_scroll_method),
-                            "input.touchpad_scroll_method",
-                            &t("input-scroll-method"),
-                        )
-                        .bound_field_with(
-                            &self.cx,
-                            InputPrefs::paths().touchpad_scroll_method,
-                            |id: String| {
-                                scroll_method_for_id(&id)
-                                    .ok_or_else(|| format!("`{id}` is not a scroll method"))
-                            },
-                        ),
+                self.cx
+                    .row(t("input-scroll-method"))
+                    .id("input.touchpad_scroll_method")
+                    .keyed_choice(
+                        localized_choices(&SCROLL_METHOD_CHOICES),
+                        scroll_method_id(self.last.touchpad_scroll_method),
+                        InputPrefs::paths().touchpad_scroll_method,
+                        |id: String| {
+                            scroll_method_for_id(&id)
+                                .ok_or_else(|| format!("`{id}` is not a scroll method"))
+                        },
                     ),
-                ),
             ]),
         )
     }
@@ -2110,21 +2038,17 @@ impl MouseKeyboardPane {
         card(
             &t("input-mouse-title"),
             rows(vec![
-                setting_row(
-                    &t("input-mouse-speed"),
-                    Box::new(
-                        Slider::from_state(&ui::LocalState::new(
+                self.cx
+                    .row(t("input-mouse-speed"))
+                    .id("input.mouse_pointer_speed")
+                    .named("input-mouse-speed")
+                    .slider_with(
+                        &ui::LocalState::new(
                             last.mouse_pointer_speed.unwrap_or(last.pointer_speed),
-                        ))
-                        .bound_field_with(
-                            &self.cx,
-                            InputPrefs::paths().mouse_pointer_speed,
-                            |speed| fraction(speed).map(Some),
-                        )
-                        .with_id("input.mouse_pointer_speed")
-                        .with_accessible_name("input-mouse-speed"),
+                        ),
+                        InputPrefs::paths().mouse_pointer_speed,
+                        |speed| fraction(speed).map(Some),
                     ),
-                ),
                 self.optional_row(
                     "input-mouse-natural-scroll",
                     "input-mouse-natural-scroll-description",
@@ -2158,43 +2082,34 @@ impl MouseKeyboardPane {
                     "input.middle_emulation",
                     self.last.middle_emulation,
                 ),
-                setting_row(
-                    &t("input-acceleration"),
-                    Box::new(
-                        Dropdown::from_state(
-                            accel_options(),
-                            &ui::LocalState::new(accel_shown(&self.last.accel_profile)),
-                        )
-                        .bound_field_with(
-                            &self.cx,
-                            InputPrefs::paths().accel_profile,
-                            |shown: String| {
-                                accel_from_label(&shown).map(str::to_owned).ok_or_else(|| {
-                                    format!("`{shown}` is not an acceleration profile")
-                                })
-                            },
-                        )
-                        .with_id("input.accel_profile")
-                        .with_placeholder(&accel_shown(&self.last.accel_profile)),
+                self.cx
+                    .row(t("input-acceleration"))
+                    .id("input.accel_profile")
+                    .choice(
+                        accel_options(),
+                        &ui::LocalState::new(accel_shown(&self.last.accel_profile)),
+                        InputPrefs::paths().accel_profile,
+                        |shown: String| {
+                            accel_from_label(&shown)
+                                .map(str::to_owned)
+                                .ok_or_else(|| format!("`{shown}` is not an acceleration profile"))
+                        },
                     ),
-                ),
-                setting_row_described(
-                    &t("input-scroll-speed"),
-                    &t("input-scroll-speed-description"),
-                    Box::new(
-                        Slider::from_state(&ui::LocalState::new(
-                            settings_store::hardware::scroll_speed_to_slider(
-                                self.last.scroll_speed,
-                            ),
-                        ))
-                        .bound_field_with(&self.cx, InputPrefs::paths().scroll_speed, |position| {
+                self.cx
+                    .row(t("input-scroll-speed"))
+                    .described(t("input-scroll-speed-description"))
+                    .id("input.scroll_speed")
+                    .named("input-scroll-speed")
+                    .slider_with(
+                        &ui::LocalState::new(settings_store::hardware::scroll_speed_to_slider(
+                            self.last.scroll_speed,
+                        )),
+                        InputPrefs::paths().scroll_speed,
+                        |position| {
                             fraction(position)
                                 .map(settings_store::hardware::scroll_speed_from_slider)
-                        })
-                        .with_id("input.scroll_speed")
-                        .with_accessible_name("input-scroll-speed"),
+                        },
                     ),
-                ),
             ]),
         )
     }
@@ -2203,16 +2118,15 @@ impl MouseKeyboardPane {
         card(
             &t("input-keyboard-title"),
             rows(vec![
-                setting_row_described(
-                    &t("input-key-repeat"),
-                    &self.key_repeat_description(),
-                    Box::new(
-                        Slider::from_state(&ui::LocalState::new(self.key_repeat_slider_value()))
-                            .bound_verb(&self.cx, InputPrefs::SET_KEY_REPEAT)
-                            .with_id("input.key_repeat")
-                            .with_accessible_name(&t("input-key-repeat")),
+                self.cx
+                    .row(t("input-key-repeat"))
+                    .described(self.key_repeat_description())
+                    .id("input.key_repeat")
+                    .named(t("input-key-repeat"))
+                    .slider_verb(
+                        &ui::LocalState::new(self.key_repeat_slider_value()),
+                        InputPrefs::SET_KEY_REPEAT,
                     ),
-                ),
                 caption(&t("input-keyboard-caption")),
             ]),
         )
@@ -2252,48 +2166,39 @@ impl MouseKeyboardPane {
         card(
             &t("input-spell-title"),
             rows(vec![
-                setting_row_described(
-                    &t("input-spell-check"),
-                    &t("input-spell-check-desc"),
-                    Box::new(
-                        Toggle::from_state(&ui::LocalState::new(self.text.get().check_spelling))
-                            .with_id("text.check_spelling")
-                            .bound_field(&self.cx, TextAssistancePrefs::paths().check_spelling),
+                self.cx
+                    .row(t("input-spell-check"))
+                    .described(t("input-spell-check-desc"))
+                    .id("text.check_spelling")
+                    .toggle(
+                        &ui::LocalState::new(self.text.get().check_spelling),
+                        TextAssistancePrefs::paths().check_spelling,
                     ),
-                ),
-                setting_row_described(
-                    &t("input-spell-auto"),
-                    &t("input-spell-auto-desc"),
-                    Box::new(
-                        Toggle::from_state(&ui::LocalState::new(self.text.get().auto_correct))
-                            .with_id("text.auto_correct")
-                            .bound_field(&self.cx, TextAssistancePrefs::paths().auto_correct),
+                self.cx
+                    .row(t("input-spell-auto"))
+                    .described(t("input-spell-auto-desc"))
+                    .id("text.auto_correct")
+                    .toggle(
+                        &ui::LocalState::new(self.text.get().auto_correct),
+                        TextAssistancePrefs::paths().auto_correct,
                     ),
-                ),
-                setting_row(
-                    &t("input-spell-language"),
-                    Box::new(
-                        id_dropdown(
-                            spelling_language_choices(),
-                            &self.text.get().spelling_language,
-                            "text.spelling_language",
-                            &t("input-spell-language"),
-                        )
-                        .bound_field_with(
-                            &self.cx,
-                            TextAssistancePrefs::paths().spelling_language,
-                            |language: String| {
-                                if SPELLING_LANGUAGES.iter().any(|(id, _)| *id == language) {
-                                    Ok(language)
-                                } else {
-                                    Err(format!(
-                                        "`{language}` is not a spelling language Settings offers"
-                                    ))
-                                }
-                            },
-                        ),
+                self.cx
+                    .row(t("input-spell-language"))
+                    .id("text.spelling_language")
+                    .keyed_choice(
+                        spelling_language_choices(),
+                        &self.text.get().spelling_language,
+                        TextAssistancePrefs::paths().spelling_language,
+                        |language: String| {
+                            if SPELLING_LANGUAGES.iter().any(|(id, _)| *id == language) {
+                                Ok(language)
+                            } else {
+                                Err(format!(
+                                    "`{language}` is not a spelling language Settings offers"
+                                ))
+                            }
+                        },
                     ),
-                ),
                 caption(&t("input-spell-caption")),
             ]),
         )
@@ -2733,6 +2638,7 @@ impl Widget for MouseKeyboardPane {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::effects::SettingsEffect;
     use crate::host::testing::{INPUT, TEXT_ASSISTANCE, edit_field};
     use crate::resource::SettingsShell;
     use ui::prelude::TestApp;

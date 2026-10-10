@@ -18,6 +18,7 @@ pub struct Row<'a> {
     label: String,
     description: Option<String>,
     id: Option<String>,
+    name: Option<String>,
 }
 
 impl PaneCx {
@@ -28,6 +29,7 @@ impl PaneCx {
             label: label.into(),
             description: None,
             id: None,
+            name: None,
         }
     }
 }
@@ -42,6 +44,13 @@ impl Row<'_> {
     /// Its control's widget id, as tests, captures and agents find it.
     pub fn id(mut self, id: impl Into<String>) -> Self {
         self.id = Some(id.into());
+        self
+    }
+
+    /// Its slider's accessible name, where the slider names itself apart
+    /// from the row.
+    pub fn named(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
         self
     }
 
@@ -61,6 +70,19 @@ impl Row<'_> {
     /// A toggle showing `on`, setting the section's field `field`.
     pub fn toggle<T: Section>(self, on: &LocalState<bool>, field: Path<T, bool>) -> El {
         let toggle = self.cx.bind_field(self.toggle_widget(on), field);
+        self.control(Box::new(toggle))
+    }
+
+    /// A toggle showing `on`, setting the section's optional field `field`
+    /// (unset follows a shared choice) to each flip.
+    pub fn toggle_some<T: Section>(
+        self,
+        on: &LocalState<bool>,
+        field: Path<T, Option<bool>>,
+    ) -> El {
+        let toggle = self
+            .cx
+            .bind_field_with(self.toggle_widget(on), field, |on| Ok(Some(on)));
         self.control(Box::new(toggle))
     }
 
@@ -135,6 +157,58 @@ impl Row<'_> {
         self.control(Box::new(slider))
     }
 
+    /// A slider showing `value`, setting the section's field `field` to what
+    /// `value_of` makes of each committed position.
+    pub fn slider_with<T, V>(
+        self,
+        value: &LocalState<f64>,
+        field: Path<T, V>,
+        value_of: impl Fn(f64) -> Result<V, String> + Send + Sync + 'static,
+    ) -> El
+    where
+        T: Section,
+        V: Model + Settable + 'static,
+    {
+        let slider = self
+            .cx
+            .bind_field_with(self.slider_widget(value), field, value_of);
+        self.control(Box::new(slider))
+    }
+
+    /// A slider showing `value`, invoking the section's verb `verb` with each
+    /// committed position.
+    pub fn slider_verb<T: Section>(self, value: &LocalState<f64>, verb: impl Binds<T, f64>) -> El {
+        let slider = self.cx.bind_verb(self.slider_widget(value), verb);
+        self.control(Box::new(slider))
+    }
+
+    /// A chooser of `choices` (a stable id and the label shown for it), on
+    /// `selected`, named by the row's label, setting the section's field
+    /// `field` to what `value` makes of the chosen id.
+    pub fn keyed_choice<T, V>(
+        self,
+        choices: Vec<(String, String)>,
+        selected: &str,
+        field: Path<T, V>,
+        value: impl Fn(String) -> Result<V, String> + Send + Sync + 'static,
+    ) -> El
+    where
+        T: Section,
+        V: Model + Settable + 'static,
+    {
+        let mut chooser = Dropdown::from_state(
+            choices.iter().map(|(id, _)| id.clone()).collect(),
+            &LocalState::new(selected.to_owned()),
+        )
+        .with_resolved_accessible_name(&self.label);
+        if let Some(id) = &self.id {
+            chooser = chooser.with_id(id);
+        }
+        chooser.set_value_options(choices);
+        let chooser = self.cx.bind_field_with(chooser, field, value);
+        self.control(Box::new(chooser))
+    }
+
     /// A slider showing `value`, invoking `effect` with each committed value.
     pub fn slider_effect(
         self,
@@ -168,9 +242,12 @@ impl Row<'_> {
     }
 
     fn slider_widget(&self, value: &LocalState<f64>) -> Slider {
-        let slider = Slider::from_state(value);
-        match &self.id {
-            Some(id) => slider.with_id(id),
+        let mut slider = Slider::from_state(value);
+        if let Some(id) = &self.id {
+            slider = slider.with_id(id);
+        }
+        match &self.name {
+            Some(name) => slider.with_accessible_name(name),
             None => slider,
         }
     }

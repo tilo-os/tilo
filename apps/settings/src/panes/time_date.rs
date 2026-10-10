@@ -28,7 +28,7 @@ use ui::LocalState;
 use ui::framework::{EffectAnswer, EffectCx, Effected};
 use ui::theme::Theme;
 use ui::tilo_resource;
-use ui::widget::{AppModel, Dropdown, ModelPath, Toggle, Widget};
+use ui::widget::{AppModel, ModelPath, Toggle, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Line, Point, Rect, RoundedRect, Stroke};
 use winit::event::{ElementState, MouseButton, WindowEvent};
@@ -906,15 +906,9 @@ impl TimeDatePane {
                 &t("time-auto"),
                 &t_args("time-status-error", &[("error", error.as_str().into())]),
             ),
-            (None, automatic) => setting_row(
-                &t("time-auto"),
-                Box::new(
-                    self.cx.bind(
-                        Toggle::from_state(&LocalState::new(automatic.unwrap_or(false)))
-                            .with_id("time.auto"),
-                        effect(TimeDateEffect::SET_AUTOMATIC_TIME),
-                    ),
-                ),
+            (None, automatic) => self.cx.row(t("time-auto")).id("time.auto").toggle_effect(
+                &LocalState::new(automatic.unwrap_or(false)),
+                effect(TimeDateEffect::SET_AUTOMATIC_TIME),
             ),
         }
     }
@@ -926,24 +920,15 @@ impl TimeDatePane {
                 &t("time-timezone"),
                 &t_args("time-zones-error", &[("error", error.as_str().into())]),
             ),
-            None => setting_row(
-                &t("time-timezone"),
-                Box::new(
-                    self.cx.bind(
-                        Dropdown::from_state(
-                            self.timezones.clone(),
-                            &LocalState::new(self.timezone.clone()),
-                        )
-                        .with_id("time.timezone")
-                        .with_placeholder(&if self.timezone_unknown {
-                            t("time-zone-unread")
-                        } else {
-                            self.timezone.clone()
-                        }),
-                        effect(TimeDateEffect::SET_TIME_ZONE),
-                    ),
+            None => self
+                .cx
+                .row(t("time-timezone"))
+                .id("time.timezone")
+                .choice_effect(
+                    self.timezones.clone(),
+                    &LocalState::new(self.timezone.clone()),
+                    effect(TimeDateEffect::SET_TIME_ZONE),
                 ),
-            ),
         }
     }
 

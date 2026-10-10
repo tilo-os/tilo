@@ -310,16 +310,15 @@ impl DisplayModel {
             return None;
         }
         let mut content = vec![caption(&t("display-shared-description"))];
-        content.push(setting_row_described(
-            &t("display-shared-auto-input"),
-            &t("display-shared-auto-description"),
-            Box::new(self.cx.bind(
-                Toggle::from_state(&LocalState::new(
-                    self.automatic_display_prefs.get().automatic_display_input,
-                )),
-                effect(DisplayEffect::SET_AUTOMATIC_DISPLAY_INPUT),
-            )),
-        ));
+        content.push(
+            self.cx
+                .row(t("display-shared-auto-input"))
+                .described(t("display-shared-auto-description"))
+                .toggle_effect(
+                    &LocalState::new(self.automatic_display_prefs.get().automatic_display_input),
+                    effect(DisplayEffect::SET_AUTOMATIC_DISPLAY_INPUT),
+                ),
+        );
         for display in layout.displays.iter().chain(&layout.inactive) {
             let row = self.shared_row(display).into_resource();
             let device = display.device.clone();

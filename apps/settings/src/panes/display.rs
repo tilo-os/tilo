@@ -2158,16 +2158,13 @@ impl DisplayModel {
     fn build_brightness_card(&self) -> El {
         let prefs = *self.prefs.get();
         let automatic_brightness = if self.ambient_sensor_available {
-            setting_row(
-                &t("display-auto-brightness"),
-                Box::new(
-                    self.cx.bind(
-                        Toggle::from_state(&LocalState::new(prefs.auto_brightness))
-                            .with_id("display.auto_brightness"),
-                        effect(DisplayEffect::SET_AUTOMATIC_BRIGHTNESS),
-                    ),
-                ),
-            )
+            self.cx
+                .row(t("display-auto-brightness"))
+                .id("display.auto_brightness")
+                .toggle_effect(
+                    &LocalState::new(prefs.auto_brightness),
+                    effect(DisplayEffect::SET_AUTOMATIC_BRIGHTNESS),
+                )
         } else {
             value_row(&t("display-auto-brightness"), &t("display-no-ambient"))
         };
@@ -2182,57 +2179,43 @@ impl DisplayModel {
                             &[("error", error.as_str().into())],
                         ),
                     ),
-                    None => setting_row(
-                        &t("display-brightness"),
-                        Box::new(
-                            self.cx.bind(
-                                Slider::from_state(&LocalState::new(f64::from(self.brightness)))
-                                    .with_id("display.brightness"),
-                                effect(DisplayEffect::SET_BRIGHTNESS),
-                            ),
+                    None => self
+                        .cx
+                        .row(t("display-brightness"))
+                        .id("display.brightness")
+                        .slider_effect(
+                            &LocalState::new(f64::from(self.brightness)),
+                            effect(DisplayEffect::SET_BRIGHTNESS),
                         ),
-                    ),
                 },
                 automatic_brightness,
-                setting_row(
-                    &t("display-night-light"),
-                    Box::new(
-                        self.cx.bind_field(
-                            Toggle::from_state(&LocalState::new(prefs.night_light))
-                                .with_id("display.night_light"),
-                            crate::prefs::DisplayPrefs::paths().night_light,
-                        ),
+                self.cx
+                    .row(t("display-night-light"))
+                    .id("display.night_light")
+                    .toggle(
+                        &LocalState::new(prefs.night_light),
+                        crate::prefs::DisplayPrefs::paths().night_light,
                     ),
-                ),
-                setting_row_described(
-                    &t("display-night-light-schedule"),
-                    &t("display-night-light-schedule-desc"),
-                    Box::new(
-                        self.cx.bind_field(
-                            Toggle::from_state(&LocalState::new(prefs.night_light_schedule))
-                                .with_id("display.night_light_schedule"),
-                            crate::prefs::DisplayPrefs::paths().night_light_schedule,
-                        ),
+                self.cx
+                    .row(t("display-night-light-schedule"))
+                    .described(t("display-night-light-schedule-desc"))
+                    .id("display.night_light_schedule")
+                    .toggle(
+                        &LocalState::new(prefs.night_light_schedule),
+                        crate::prefs::DisplayPrefs::paths().night_light_schedule,
                     ),
-                ),
-                setting_row(
-                    &t("display-night-light-warmth"),
-                    Box::new(
-                        self.cx.bind_field_with(
-                            Dropdown::from_state(
-                                temperature_options(),
-                                &LocalState::new(temperature_label(prefs.night_light_temperature)),
-                            )
-                            .with_id("display.night_light_temperature")
-                            .with_placeholder(&temperature_label(prefs.night_light_temperature)),
-                            crate::prefs::DisplayPrefs::paths().night_light_temperature,
-                            |label: String| {
-                                temperature_from_label(&label)
-                                    .ok_or_else(|| format!("`{label}` is not a Night Light warmth"))
-                            },
-                        ),
+                self.cx
+                    .row(t("display-night-light-warmth"))
+                    .id("display.night_light_temperature")
+                    .choice(
+                        temperature_options(),
+                        &LocalState::new(temperature_label(prefs.night_light_temperature)),
+                        crate::prefs::DisplayPrefs::paths().night_light_temperature,
+                        |label: String| {
+                            temperature_from_label(&label)
+                                .ok_or_else(|| format!("`{label}` is not a Night Light warmth"))
+                        },
                     ),
-                ),
                 caption(&t("display-night-light-caption")),
             ]),
         )
