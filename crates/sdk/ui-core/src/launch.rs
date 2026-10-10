@@ -873,6 +873,11 @@ fn run_parsed(
     } else {
         None
     };
+    // The font database likewise, so the app's first text renderer finds
+    // the catalog verified and the fonts read.
+    if opens_native_window(&args) {
+        prepare_font_database_beside();
+    }
     match dispatch_definition(spec, &args)? {
         DefinitionDispatch::Native(app) => {
             #[cfg(any(windows, target_os = "linux"))]
@@ -902,6 +907,20 @@ fn run_parsed(
         }
     }
     Ok(())
+}
+
+/// Start building the process's font database in the background
+/// (`text_render::prepare_font_database`): only the database, so it neither
+/// shapes text nor touches the GPU the renderer preparation is opening. Where
+/// no background work can run, the first text renderer builds it as before.
+#[cfg(feature = "native")]
+fn prepare_font_database_beside() {
+    let _ = crate::background::Background::current().spawn("font-database-prepare", || {
+        tilo_startup_metrics::span(
+            "font-database-prepare",
+            crate::text_render::prepare_font_database,
+        );
+    });
 }
 
 #[cfg(feature = "native")]
