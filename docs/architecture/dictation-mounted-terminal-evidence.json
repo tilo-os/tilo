@@ -13,7 +13,7 @@
   },
   "archives": {
     "mounted-r7-build-receipt.json": {
-      "file": "tools/release/fixtures/terminal_dictation_20261010/mounted-r7-build-receipt.json",
+      "file": "tools/release/fixtures/terminal_dictation_20261010/managed-r5-build-receipt.json",
       "original_sha256": "88cd6f67e18c640f6ab400c49d988a96f0dcc4a4d198c6eac930e2beeccdc536",
       "portable_file_sha256": "109308916034826fbeec359cc705132dc61a8befe5b91c150ebf486719bcca54"
     },
@@ -23,7 +23,7 @@
       "portable_file_sha256": "e222c95c58d610270ee2334a495a809db6f8a51c172d51be704f194b204d4b9b"
     },
     "mounted-r7-managed-outer.py": {
-      "file": "tools/release/fixtures/terminal_dictation_20261010/mounted-r7-managed-outer.py",
+      "file": "tools/release/fixtures/terminal_dictation_20261010/mounted-r10-managed-outer.py",
       "original_sha256": "04433437f023e1c04960d97c7373e3e9fddf6b621c480ca59e1e8beec71a4a60",
       "portable_file_sha256": "04433437f023e1c04960d97c7373e3e9fddf6b621c480ca59e1e8beec71a4a60"
     },
@@ -38,17 +38,17 @@
       "portable_file_sha256": "05e75b573ec0817923912fa8b48f2a3f9febee7f099fd68d40f1b6de2f406a4b"
     },
     "mounted-r8-build-receipt.json": {
-      "file": "tools/release/fixtures/terminal_dictation_20261010/mounted-r8-build-receipt.json",
+      "file": "tools/release/fixtures/terminal_dictation_20261010/managed-r5-build-receipt.json",
       "original_sha256": "88cd6f67e18c640f6ab400c49d988a96f0dcc4a4d198c6eac930e2beeccdc536",
       "portable_file_sha256": "109308916034826fbeec359cc705132dc61a8befe5b91c150ebf486719bcca54"
     },
     "mounted-r8-managed-inner.py": {
-      "file": "tools/release/fixtures/terminal_dictation_20261010/mounted-r8-managed-inner.py",
+      "file": "tools/release/fixtures/terminal_dictation_20261010/mounted-r7-managed-inner.py",
       "original_sha256": "e222c95c58d610270ee2334a495a809db6f8a51c172d51be704f194b204d4b9b",
       "portable_file_sha256": "e222c95c58d610270ee2334a495a809db6f8a51c172d51be704f194b204d4b9b"
     },
     "mounted-r8-managed-outer.py": {
-      "file": "tools/release/fixtures/terminal_dictation_20261010/mounted-r8-managed-outer.py",
+      "file": "tools/release/fixtures/terminal_dictation_20261010/mounted-r10-managed-outer.py",
       "original_sha256": "04433437f023e1c04960d97c7373e3e9fddf6b621c480ca59e1e8beec71a4a60",
       "portable_file_sha256": "04433437f023e1c04960d97c7373e3e9fddf6b621c480ca59e1e8beec71a4a60"
     },
@@ -63,7 +63,7 @@
       "portable_file_sha256": "496ede14f73d698f14327100e10319f4d6fdf3d818266be852a073716b7e8b74"
     },
     "mounted-r10-build-receipt.json": {
-      "file": "tools/release/fixtures/terminal_dictation_20261010/mounted-r10-build-receipt.json",
+      "file": "tools/release/fixtures/terminal_dictation_20261010/managed-r5-build-receipt.json",
       "original_sha256": "88cd6f67e18c640f6ab400c49d988a96f0dcc4a4d198c6eac930e2beeccdc536",
       "portable_file_sha256": "109308916034826fbeec359cc705132dc61a8befe5b91c150ebf486719bcca54"
     },
@@ -88,7 +88,7 @@
       "portable_file_sha256": "1cc74ac48f9f208e966d06db3cfa80f5879aaa23dcc43ae6ea28f9772b2dde6d"
     },
     "mounted-r11-build-receipt.json": {
-      "file": "tools/release/fixtures/terminal_dictation_20261010/mounted-r11-build-receipt.json",
+      "file": "tools/release/fixtures/terminal_dictation_20261010/managed-r5-build-receipt.json",
       "original_sha256": "88cd6f67e18c640f6ab400c49d988a96f0dcc4a4d198c6eac930e2beeccdc536",
       "portable_file_sha256": "109308916034826fbeec359cc705132dc61a8befe5b91c150ebf486719bcca54"
     },
@@ -108,12 +108,12 @@
       "portable_file_sha256": "28ac9dfcb592bacfe10701b939c945c6c3c3076248d768f75394a5e1ce0405f6"
     },
     "mounted-r11-managed-outer.py": {
-      "file": "tools/release/fixtures/terminal_dictation_20261010/mounted-r11-managed-outer.py",
+      "file": "tools/release/fixtures/terminal_dictation_20261010/mounted-r10-managed-outer.py",
       "original_sha256": "04433437f023e1c04960d97c7373e3e9fddf6b621c480ca59e1e8beec71a4a60",
       "portable_file_sha256": "04433437f023e1c04960d97c7373e3e9fddf6b621c480ca59e1e8beec71a4a60"
     },
     "mounted-r12-build-receipt.json": {
-      "file": "tools/release/fixtures/terminal_dictation_20261010/mounted-r12-build-receipt.json",
+      "file": "tools/release/fixtures/terminal_dictation_20261010/managed-r5-build-receipt.json",
       "original_sha256": "88cd6f67e18c640f6ab400c49d988a96f0dcc4a4d198c6eac930e2beeccdc536",
       "portable_file_sha256": "109308916034826fbeec359cc705132dc61a8befe5b91c150ebf486719bcca54"
     },
@@ -128,17 +128,17 @@
       "portable_file_sha256": "4bb53e4305c196906e8bea540b53e505f29d63294bda913520cd14baa0219f25"
     },
     "mounted-r12-managed-inner.py": {
-      "file": "tools/release/fixtures/terminal_dictation_20261010/mounted-r12-managed-inner.py",
+      "file": "tools/release/fixtures/terminal_dictation_20261010/mounted-r11-managed-inner.py",
       "original_sha256": "28ac9dfcb592bacfe10701b939c945c6c3c3076248d768f75394a5e1ce0405f6",
       "portable_file_sha256": "28ac9dfcb592bacfe10701b939c945c6c3c3076248d768f75394a5e1ce0405f6"
     },
     "mounted-r12-managed-outer.py": {
-      "file": "tools/release/fixtures/terminal_dictation_20261010/mounted-r12-managed-outer.py",
+      "file": "tools/release/fixtures/terminal_dictation_20261010/mounted-r10-managed-outer.py",
       "original_sha256": "04433437f023e1c04960d97c7373e3e9fddf6b621c480ca59e1e8beec71a4a60",
       "portable_file_sha256": "04433437f023e1c04960d97c7373e3e9fddf6b621c480ca59e1e8beec71a4a60"
     },
     "recorded-r13-build-receipt.json": {
-      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r13-build-receipt.json",
+      "file": "tools/release/fixtures/terminal_dictation_20261010/managed-r5-build-receipt.json",
       "original_sha256": "88cd6f67e18c640f6ab400c49d988a96f0dcc4a4d198c6eac930e2beeccdc536",
       "portable_file_sha256": "109308916034826fbeec359cc705132dc61a8befe5b91c150ebf486719bcca54"
     },
@@ -168,12 +168,12 @@
       "portable_file_sha256": "6b89131644e97c4b2999e30b97a78cfe33e39e734cf6cea8c7bd2a85349b48fd"
     },
     "recorded-r14-build-receipt.json": {
-      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r14-build-receipt.json",
+      "file": "tools/release/fixtures/terminal_dictation_20261010/managed-r5-build-receipt.json",
       "original_sha256": "88cd6f67e18c640f6ab400c49d988a96f0dcc4a4d198c6eac930e2beeccdc536",
       "portable_file_sha256": "109308916034826fbeec359cc705132dc61a8befe5b91c150ebf486719bcca54"
     },
     "recorded-r14-recorded-manifest.json": {
-      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r14-recorded-manifest.json",
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r13-recorded-manifest.json",
       "original_sha256": "6463ad7d158992c8338f81b913a5dfd0677edca99deb7c31b059537d7775109d",
       "portable_file_sha256": "d8b0958d068d3e181ba9035f50ab24309faf1786b25a37ccffcfaa83fe76a250"
     },
@@ -188,7 +188,7 @@
       "portable_file_sha256": "61a7fdc4e561e43fc6486120b83f127243b6504914a50ebb1e0576134861c794"
     },
     "recorded-r14-managed-inner.py": {
-      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r14-managed-inner.py",
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r13-managed-inner.py",
       "original_sha256": "accb0bb035f215be77bce958ebc5c47bf30628440befada8df567f469a85ac5b",
       "portable_file_sha256": "accb0bb035f215be77bce958ebc5c47bf30628440befada8df567f469a85ac5b"
     },
@@ -198,12 +198,12 @@
       "portable_file_sha256": "d33de49735db88b36d627797ce0da45feaed4b396545c2db565522d0594a6b6a"
     },
     "recorded-r17-build-receipt.json": {
-      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r17-build-receipt.json",
+      "file": "tools/release/fixtures/terminal_dictation_20261010/managed-r5-build-receipt.json",
       "original_sha256": "88cd6f67e18c640f6ab400c49d988a96f0dcc4a4d198c6eac930e2beeccdc536",
       "portable_file_sha256": "109308916034826fbeec359cc705132dc61a8befe5b91c150ebf486719bcca54"
     },
     "recorded-r17-recorded-manifest.json": {
-      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r17-recorded-manifest.json",
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r13-recorded-manifest.json",
       "original_sha256": "6463ad7d158992c8338f81b913a5dfd0677edca99deb7c31b059537d7775109d",
       "portable_file_sha256": "d8b0958d068d3e181ba9035f50ab24309faf1786b25a37ccffcfaa83fe76a250"
     },
@@ -223,12 +223,12 @@
       "portable_file_sha256": "4601f6a81a7e7d6c38c39306e5e9ed6162529ab9fe14ce4b57c2dd7435a82d10"
     },
     "recorded-r17-managed-outer.py": {
-      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r17-managed-outer.py",
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r14-managed-outer.py",
       "original_sha256": "33ee17679e406160b4c6ae3d9edbacd4f93a69ff5a48fa262b484bfbee28ac70",
       "portable_file_sha256": "d33de49735db88b36d627797ce0da45feaed4b396545c2db565522d0594a6b6a"
     },
     "recorded-r23-build-receipt.json": {
-      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r23-build-receipt.json",
+      "file": "tools/release/fixtures/terminal_dictation_20261010/managed-r5-build-receipt.json",
       "original_sha256": "88cd6f67e18c640f6ab400c49d988a96f0dcc4a4d198c6eac930e2beeccdc536",
       "portable_file_sha256": "109308916034826fbeec359cc705132dc61a8befe5b91c150ebf486719bcca54"
     },
@@ -253,12 +253,12 @@
       "portable_file_sha256": "84491e3b20d00ac2bfebf5ddc602b50afa708eb0b6402fe4845b3234d0b052c3"
     },
     "recorded-r23-managed-outer.py": {
-      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r23-managed-outer.py",
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r14-managed-outer.py",
       "original_sha256": "33ee17679e406160b4c6ae3d9edbacd4f93a69ff5a48fa262b484bfbee28ac70",
       "portable_file_sha256": "d33de49735db88b36d627797ce0da45feaed4b396545c2db565522d0594a6b6a"
     },
     "recorded-r24-build-receipt.json": {
-      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r24-build-receipt.json",
+      "file": "tools/release/fixtures/terminal_dictation_20261010/managed-r5-build-receipt.json",
       "original_sha256": "88cd6f67e18c640f6ab400c49d988a96f0dcc4a4d198c6eac930e2beeccdc536",
       "portable_file_sha256": "109308916034826fbeec359cc705132dc61a8befe5b91c150ebf486719bcca54"
     },
@@ -278,22 +278,22 @@
       "portable_file_sha256": "6fa7611846a3bf77f4ba70d24dd37ee224d445da607429c0fd99ccea6a1b8fda"
     },
     "recorded-r24-managed-inner.py": {
-      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r24-managed-inner.py",
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r13-managed-inner.py",
       "original_sha256": "accb0bb035f215be77bce958ebc5c47bf30628440befada8df567f469a85ac5b",
       "portable_file_sha256": "accb0bb035f215be77bce958ebc5c47bf30628440befada8df567f469a85ac5b"
     },
     "recorded-r24-managed-outer.py": {
-      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r24-managed-outer.py",
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r14-managed-outer.py",
       "original_sha256": "33ee17679e406160b4c6ae3d9edbacd4f93a69ff5a48fa262b484bfbee28ac70",
       "portable_file_sha256": "d33de49735db88b36d627797ce0da45feaed4b396545c2db565522d0594a6b6a"
     },
     "recorded-r25-build-receipt.json": {
-      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r25-build-receipt.json",
+      "file": "tools/release/fixtures/terminal_dictation_20261010/managed-r5-build-receipt.json",
       "original_sha256": "88cd6f67e18c640f6ab400c49d988a96f0dcc4a4d198c6eac930e2beeccdc536",
       "portable_file_sha256": "109308916034826fbeec359cc705132dc61a8befe5b91c150ebf486719bcca54"
     },
     "recorded-r25-recorded-manifest.json": {
-      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r25-recorded-manifest.json",
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r24-recorded-manifest.json",
       "original_sha256": "9931470eddad57defa2f37ee79463a65007810d2938323fbfe5fd41abd633d3f",
       "portable_file_sha256": "45aba7424bd460b7f2ac7bf41112dc479efaf9e9940bc0243ace7abc47c49e88"
     },
@@ -313,17 +313,17 @@
       "portable_file_sha256": "8c206104161e32b508237252093ca5284bcc7a9447eca402c05f4279950ad681"
     },
     "recorded-r25-managed-outer.py": {
-      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r25-managed-outer.py",
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r14-managed-outer.py",
       "original_sha256": "33ee17679e406160b4c6ae3d9edbacd4f93a69ff5a48fa262b484bfbee28ac70",
       "portable_file_sha256": "d33de49735db88b36d627797ce0da45feaed4b396545c2db565522d0594a6b6a"
     },
     "recorded-r26-build-receipt.json": {
-      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r26-build-receipt.json",
+      "file": "tools/release/fixtures/terminal_dictation_20261010/managed-r5-build-receipt.json",
       "original_sha256": "88cd6f67e18c640f6ab400c49d988a96f0dcc4a4d198c6eac930e2beeccdc536",
       "portable_file_sha256": "109308916034826fbeec359cc705132dc61a8befe5b91c150ebf486719bcca54"
     },
     "recorded-r26-recorded-manifest.json": {
-      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r26-recorded-manifest.json",
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r24-recorded-manifest.json",
       "original_sha256": "9931470eddad57defa2f37ee79463a65007810d2938323fbfe5fd41abd633d3f",
       "portable_file_sha256": "45aba7424bd460b7f2ac7bf41112dc479efaf9e9940bc0243ace7abc47c49e88"
     },
@@ -338,7 +338,7 @@
       "portable_file_sha256": "0a19ba6f560426291301baac03ae406094e09449c4a5ad408a47dd2752dad53d"
     },
     "recorded-r26-managed-inner.py": {
-      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r26-managed-inner.py",
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r25-managed-inner.py",
       "original_sha256": "8c206104161e32b508237252093ca5284bcc7a9447eca402c05f4279950ad681",
       "portable_file_sha256": "8c206104161e32b508237252093ca5284bcc7a9447eca402c05f4279950ad681"
     },
@@ -368,22 +368,22 @@
       "portable_file_sha256": "fe959f0d63f01ea9d52d01918dc72143758f3ea8bebdc182dd50d680c0c2aa1d"
     },
     "recorded-r27-recorded-manifest.json": {
-      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r27-recorded-manifest.json",
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r24-recorded-manifest.json",
       "original_sha256": "9931470eddad57defa2f37ee79463a65007810d2938323fbfe5fd41abd633d3f",
       "portable_file_sha256": "45aba7424bd460b7f2ac7bf41112dc479efaf9e9940bc0243ace7abc47c49e88"
     },
     "recorded-r27-build-receipt.json": {
-      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r27-build-receipt.json",
+      "file": "tools/release/fixtures/terminal_dictation_20261010/managed-r5-build-receipt.json",
       "original_sha256": "88cd6f67e18c640f6ab400c49d988a96f0dcc4a4d198c6eac930e2beeccdc536",
       "portable_file_sha256": "109308916034826fbeec359cc705132dc61a8befe5b91c150ebf486719bcca54"
     },
     "recorded-r28-managed-outer.py": {
-      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r28-managed-outer.py",
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r27-managed-outer.py",
       "original_sha256": "1f42d34aa65cb84b62ca3f2a8f1e28285eb44298dce3a032bbebaf600434ec13",
       "portable_file_sha256": "fb9b4475ef3e652287f1c76ee9bc92c5c0ee059ed83cde0d4ae4d68c00a5e291"
     },
     "recorded-r28-managed-inner.py": {
-      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r28-managed-inner.py",
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r27-managed-inner.py",
       "original_sha256": "c01801a34517dd8069153b3a25e8a8eff31a5eb516dded887195259315a7d6e3",
       "portable_file_sha256": "c01801a34517dd8069153b3a25e8a8eff31a5eb516dded887195259315a7d6e3"
     },
@@ -408,12 +408,12 @@
       "portable_file_sha256": "038b0408d79dd6b3a9ec3142d7f31f80cf93698a09adc13a6395c3f2ff2c3c0d"
     },
     "recorded-r29-managed-outer.py": {
-      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r29-managed-outer.py",
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r27-managed-outer.py",
       "original_sha256": "1f42d34aa65cb84b62ca3f2a8f1e28285eb44298dce3a032bbebaf600434ec13",
       "portable_file_sha256": "fb9b4475ef3e652287f1c76ee9bc92c5c0ee059ed83cde0d4ae4d68c00a5e291"
     },
     "recorded-r29-managed-inner.py": {
-      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r29-managed-inner.py",
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r27-managed-inner.py",
       "original_sha256": "c01801a34517dd8069153b3a25e8a8eff31a5eb516dded887195259315a7d6e3",
       "portable_file_sha256": "c01801a34517dd8069153b3a25e8a8eff31a5eb516dded887195259315a7d6e3"
     },
@@ -438,7 +438,7 @@
       "portable_file_sha256": "6c7a5f6a2c439988c86c1bdf145f39061d081f04c3c84084e2aa8e7411f945fc"
     },
     "recorded-r30-managed-outer.py": {
-      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r30-managed-outer.py",
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r27-managed-outer.py",
       "original_sha256": "1f42d34aa65cb84b62ca3f2a8f1e28285eb44298dce3a032bbebaf600434ec13",
       "portable_file_sha256": "fb9b4475ef3e652287f1c76ee9bc92c5c0ee059ed83cde0d4ae4d68c00a5e291"
     },
@@ -458,7 +458,7 @@
       "portable_file_sha256": "402da61882e452bbdb3ae4f75741b37756d98d8ab149b77a42b987083c368291"
     },
     "recorded-r30-recorded-manifest.json": {
-      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r30-recorded-manifest.json",
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r29-recorded-manifest.json",
       "original_sha256": "7abcb21728ecffa4deb06cba4dc85c64e740c0efc1177c646a87a481d2a9ba0d",
       "portable_file_sha256": "be50374dce8981ec04ce151d54e7acae12498f0cf48a2beccc0d497ad1e761d7"
     },
@@ -478,12 +478,12 @@
       "portable_file_sha256": "bfe1dadec673a2d1045f4815d55f635ca4398b40dd8a4227e9cbcdd17479c971"
     },
     "recorded-r31-managed-outer.py": {
-      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r31-managed-outer.py",
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r27-managed-outer.py",
       "original_sha256": "1f42d34aa65cb84b62ca3f2a8f1e28285eb44298dce3a032bbebaf600434ec13",
       "portable_file_sha256": "fb9b4475ef3e652287f1c76ee9bc92c5c0ee059ed83cde0d4ae4d68c00a5e291"
     },
     "recorded-r31-managed-inner.py": {
-      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r31-managed-inner.py",
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r27-managed-inner.py",
       "original_sha256": "c01801a34517dd8069153b3a25e8a8eff31a5eb516dded887195259315a7d6e3",
       "portable_file_sha256": "c01801a34517dd8069153b3a25e8a8eff31a5eb516dded887195259315a7d6e3"
     },
@@ -498,7 +498,7 @@
       "portable_file_sha256": "bd97a6e924f94e3a22d842223f112fa9addf8b300c88800c1aebfbd67feb1de3"
     },
     "recorded-r31-recorded-manifest.json": {
-      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r31-recorded-manifest.json",
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r29-recorded-manifest.json",
       "original_sha256": "7abcb21728ecffa4deb06cba4dc85c64e740c0efc1177c646a87a481d2a9ba0d",
       "portable_file_sha256": "be50374dce8981ec04ce151d54e7acae12498f0cf48a2beccc0d497ad1e761d7"
     },
