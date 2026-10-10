@@ -693,6 +693,8 @@ pub struct FrameBuilder {
     floating_overlays: Vec<(u64, ForeignSurfaceWidget)>,
     /// Per-output fullscreen client painted above the unchanged tiled scene.
     fullscreen_overlay: Option<(u64, ForeignSurfaceWidget)>,
+    /// A system-modal prompt is up: the desktop is dimmed beneath it.
+    system_modal_scrim: bool,
     /// The session is locked: a capture sees nothing of the desktop at all.
     session_locked: bool,
     /// XDG and input-method transient surfaces.  These are intentionally
@@ -994,6 +996,7 @@ impl FrameBuilder {
             osk_overlay: None,
             floating_overlays: Vec::new(),
             fullscreen_overlay: None,
+            system_modal_scrim: false,
             session_locked: false,
             transient_overlays: Vec::new(),
             floating_transfer_proxies: Vec::new(),
@@ -1954,6 +1957,7 @@ impl FrameBuilder {
                 &self.presence,
             );
         }
+        self.draw_system_modal_scrim(&mut scene);
         for (_, surface) in &mut self.transient_overlays {
             if surface.is_mapped() {
                 surface.draw(
@@ -2096,6 +2100,10 @@ impl FrameBuilder {
             fullscreen_on_top =
                 crate::shell::scanout_candidate::DrawnOnTop::last_in(scene, draws_before);
             Some(vec![bounds?])
+        });
+        overlay_part(above, "shell.system-modal-scrim", desktop, |scene| {
+            self.draw_system_modal_scrim(scene);
+            self.system_modal_scrim.then(|| vec![desktop])
         });
         overlay_part(above, "shell.popups", desktop, |scene| {
             self.transient_overlays
@@ -3828,6 +3836,31 @@ impl FrameBuilder {
             widget.place_floating(rect);
             (surface_id, widget)
         });
+    }
+
+    /// Dim the whole desktop beneath a system-modal prompt.
+    fn draw_system_modal_scrim(&self, scene: &mut Scene) {
+        if !self.system_modal_scrim {
+            return;
+        }
+        let bounds = Rect::new(0.0, 0.0, self.viewport.0, self.viewport.1);
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            Color::from_rgba8(0, 0, 0, 110),
+            None,
+            &bounds,
+        );
+    }
+
+    /// Show or hide the scrim a system-modal prompt dims the desktop with.
+    pub fn set_system_modal_scrim(&mut self, shown: bool) {
+        self.system_modal_scrim = shown;
+    }
+
+    /// Whether the desktop is dimmed under a system-modal prompt.
+    pub fn system_modal_scrim(&self) -> bool {
+        self.system_modal_scrim
     }
 
     pub fn fullscreen_surface_rect(&self) -> Option<(u64, Rect)> {

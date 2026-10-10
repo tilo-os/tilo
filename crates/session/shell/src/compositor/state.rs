@@ -1181,6 +1181,9 @@ pub struct State {
     /// XDG popups are separate surfaces, not tabs.  They are captured and
     /// composed above their parent through this registry.
     pub(crate) popups: Vec<TrackedPopup>,
+    /// Dialog toplevels with no window to sit on: centred over a scrim, above
+    /// the desktop, never a tab. See [`State::show_as_system_modal`].
+    pub(crate) system_modals: Vec<SurfaceId>,
     /// Answers to `xdg_wm_base.ping`, per client: how a screenshot after
     /// input learns the clients in it finished answering the input.
     pub shell_pongs: crate::compositor::client_settle::Pongs,
@@ -1848,6 +1851,7 @@ impl State {
             content_type_state,
             client_input: crate::compositor::client_input::ClientInput::default(),
             popups: Vec::new(),
+            system_modals: Vec::new(),
             shell_pongs: crate::compositor::client_settle::Pongs::default(),
             popup_manager: PopupManager::default(),
             input_method_popups: Vec::new(),
@@ -5614,10 +5618,11 @@ impl State {
         self.popups.iter().map(|popup| &popup.surface)
     }
 
-    pub(crate) fn is_transient_surface(&self, id: SurfaceId) -> bool {
-        self.popups
-            .iter()
-            .any(|popup| surface_id(popup.surface.wl_surface()) == id)
+    pub fn is_transient_surface(&self, id: SurfaceId) -> bool {
+        self.system_modals.contains(&id)
+            || self.popups
+                .iter()
+                .any(|popup| surface_id(popup.surface.wl_surface()) == id)
             || self
                 .input_method_popups
                 .iter()
@@ -5894,6 +5899,9 @@ impl XdgDialogHandler for State {
     fn modal_changed(&mut self, toplevel: ToplevelSurface, is_modal: bool) {
         let surface_id = surface_id(toplevel.wl_surface());
         crate::compositor::foreign::store().set_sheet_modal(surface_id, is_modal);
+        if is_modal {
+            self.sync_toplevel_parent(&toplevel);
+        }
     }
 }
 
@@ -5909,7 +5917,7 @@ impl State {
 
     /// Bring `surface`'s place in the desktop in line with its xdg parent:
     /// a sheet on the parent's tile while it has one, a tab otherwise.
-    fn sync_toplevel_parent(&mut self, surface: &ToplevelSurface) {
+    pub(crate) fn sync_toplevel_parent(&mut self, surface: &ToplevelSurface) {
         let id = surface_id(surface.wl_surface());
         if self.osk_surface == Some(id)
             || self.is_floating_toplevel(id)
@@ -5923,10 +5931,12 @@ impl State {
             .parent()
             .map(|parent| surface_id(&parent))
             .filter(|parent| self.can_host_sheet(*parent));
-        // A system prompt names no parent: it is a dialog of whatever the
-        // person is working in, and must not take a place in the strip.
-        let implicit = parent.is_none() && self.is_system_prompt_toplevel(surface);
-        if implicit && was_sheet {
+        // A dialog without a usable parent (a system prompt, a modal or
+        // fixed-size window that names none) is still a dialog: it sits on
+        // the window the person is working in, or over the desktop, and
+        // never takes a place in the strip.
+        let implicit = parent.is_none() && self.is_dialog_toplevel(surface);
+        if implicit && (was_sheet || self.system_modals.contains(&id)) {
             return;
         }
         let parent = parent.or_else(|| {
@@ -5934,6 +5944,10 @@ impl State {
                 .then(|| self.system_prompt_host(id))
                 .flatten()
         });
+        if implicit && parent.is_none() {
+            self.show_as_system_modal(surface);
+            return;
+        }
         let Some(parent) = parent else {
             if was_sheet {
                 store.detach_sheet(id);
@@ -5987,20 +6001,34 @@ impl State {
         );
     }
 
-    /// Whether `surface` is a prompt the system or a host service raises for
-    /// the whole session (keyring unlock, polkit agent, portal dialog) rather
-    /// than an app window: a host process, never a package-launched or guest
-    /// client, announcing one of [`SYSTEM_PROMPT_APP_IDS`].
-    fn is_system_prompt_toplevel(&self, surface: &ToplevelSurface) -> bool {
-        let announced = wl_compositor::with_states(surface.wl_surface(), |states| {
+    /// Whether `surface` is a dialog rather than an app window, judged from
+    /// what the client says about it and never from its name alone:
+    /// an xdg parent (also what xwayland-satellite sends for X11
+    /// `WM_TRANSIENT_FOR` and dialog windows), the `xdg_dialog_v1` modal
+    /// hint, or a fixed small size (`min == max`) before its first
+    /// configure. A host-process toplevel announcing one of
+    /// [`SYSTEM_PROMPT_APP_IDS`] counts too, as an extra signal.
+    fn is_dialog_toplevel(&self, surface: &ToplevelSurface) -> bool {
+        if surface.parent().is_some() {
+            return true;
+        }
+        let (app_id, modal) = wl_compositor::with_states(surface.wl_surface(), |states| {
             states
                 .data_map
                 .get::<XdgToplevelSurfaceData>()
-                .and_then(|data| data.lock().ok().and_then(|d| d.app_id.clone()))
+                .and_then(|data| {
+                    data.lock()
+                        .ok()
+                        .map(|data| (data.app_id.clone(), data.modal))
+                })
+                .unwrap_or((None, false))
         });
-        let Some(app_id) = announced else {
-            return false;
-        };
+        if modal {
+            return true;
+        }
+        if !surface.is_initial_configure_sent() && self.has_dialog_sized_limits(surface) {
+            return true;
+        }
         let host_process = surface
             .wl_surface()
             .client()
@@ -6010,7 +6038,90 @@ impl State {
                     .map(|state| state.package_id.is_none() && state.legacy_guest.is_none())
             })
             .unwrap_or(true);
-        host_process && SYSTEM_PROMPT_APP_IDS.contains(&app_id.as_str())
+        host_process
+            && app_id
+                .as_deref()
+                .is_some_and(|app_id| SYSTEM_PROMPT_APP_IDS.contains(&app_id))
+    }
+
+    /// The client fixed its size (`min == max`, both set) to something that
+    /// fits well inside the output: a dialog's shape, not a document's.
+    fn has_dialog_sized_limits(&self, surface: &ToplevelSurface) -> bool {
+        let (min, max) = wl_compositor::with_states(surface.wl_surface(), |states| {
+            let mut cached = states
+                .cached_state
+                .get::<smithay::wayland::shell::xdg::SurfaceCachedState>();
+            let current = cached.current();
+            (current.min_size, current.max_size)
+        });
+        let (out_w, out_h) = self.output_size;
+        min == max
+            && min.w > 0
+            && min.h > 0
+            && i64::from(min.w) * 3 <= i64::from(out_w) * 2
+            && i64::from(min.h) * 3 <= i64::from(out_h) * 2
+    }
+
+    /// Whether a system-modal prompt is up.
+    pub fn has_system_modal(&self) -> bool {
+        !self.system_modals.is_empty()
+    }
+
+    pub fn top_system_modal(&self) -> Option<SurfaceId> {
+        self.system_modals.last().copied()
+    }
+
+    /// Re-evaluate `surface` once it is known to be a toplevel that may be a
+    /// dialog, before its opening configure (see `flush_configures`).
+    pub(crate) fn classify_opening_dialog(&mut self, surface: &ToplevelSurface) {
+        if !surface.is_initial_configure_sent() {
+            self.sync_toplevel_parent(surface);
+        }
+    }
+
+    pub fn is_system_modal(&self, id: SurfaceId) -> bool {
+        self.system_modals.contains(&id)
+    }
+
+    /// Show a dialog that has no window to sit on as a system-modal
+    /// overlay: centred on the output over a scrim, owning the keyboard,
+    /// not a tab, and nothing in the strip moves.
+    fn show_as_system_modal(&mut self, surface: &ToplevelSurface) {
+        let id = surface_id(surface.wl_surface());
+        let _ = {
+            let mut tree = self.workspace_tree.write();
+            tab_binding::close_tab_for_destroyed_surface(&mut tree, id)
+        };
+        self.client_input.promote_to_overlay(id);
+        let (out_w, out_h) = self.output_size;
+        surface.with_pending_state(|pending| {
+            pending.size = None;
+            pending.bounds = (out_w > 0 && out_h > 0).then(|| (out_w, out_h).into());
+        });
+        self.system_modals.push(id);
+        tracing::info!(
+            target: "shell::compositor::foreign",
+            surface_id = id,
+            "showing a parentless dialog as a system-modal overlay"
+        );
+    }
+
+    /// The system-modal prompts and where they sit: centred on the output.
+    pub fn system_modal_surfaces(&self) -> Vec<(SurfaceId, Rect)> {
+        let (out_w, out_h) = (
+            f64::from(self.output_size.0.max(0)),
+            f64::from(self.output_size.1.max(0)),
+        );
+        self.system_modals
+            .iter()
+            .filter_map(|&id| {
+                let (w, h) = crate::compositor::foreign::store().frame_size(id)?;
+                let (w, h) = (f64::from(w), f64::from(h));
+                let x = ((out_w - w) / 2.0).max(0.0).floor();
+                let y = ((out_h - h) / 2.0).max(0.0).floor();
+                Some((id, Rect::new(x, y, x + w, y + h)))
+            })
+            .collect()
     }
 
     /// The window a system prompt is shown over: what has the keyboard, else
@@ -6283,6 +6394,9 @@ impl XdgShellHandler for State {
             "accepted Wayland toplevel"
         );
 
+        // A dialog that names its role up front never stays a tab.
+        self.sync_toplevel_parent(&surface);
+
         // Start the clock the deferred opening configure is bounded against — adoption is when the wait becomes worth giving up on.
         crate::compositor::foreign::store().note_adopted(surface_id);
         observe_toplevel_startup(&surface);
@@ -6323,6 +6437,7 @@ impl XdgShellHandler for State {
         }
         crate::shell::launcher::note_surface_gone(surface_id, asked_to_close || person_reached_it);
         self.release_sheets_of_destroyed(surface_id);
+        self.system_modals.retain(|id| *id != surface_id);
         crate::compositor::toplevel_icon::forget(surface_id);
         if self.osk_surface == Some(surface_id) {
             self.osk_surface = None;

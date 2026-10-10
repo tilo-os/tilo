@@ -5000,7 +5000,8 @@ pub fn flush_configures(state: &mut crate::compositor::state::State) -> usize {
     let mut sent: usize = 0;
     for toplevel in toplevels {
         let id = crate::compositor::state::surface_id(toplevel.wl_surface());
-        if store().is_sheet(id) {
+        state.classify_opening_dialog(&toplevel);
+        if store().is_sheet(id) || state.is_system_modal(id) {
             // A sheet sizes itself; its bounds were staged when it attached.
             if !toplevel.is_initial_configure_sent() {
                 toplevel.send_configure();
