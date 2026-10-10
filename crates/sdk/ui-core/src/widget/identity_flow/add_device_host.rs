@@ -20,7 +20,7 @@ use std::collections::HashMap;
 use collab_types::Ed25519PublicKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use rand_core::Rng;
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, TaffyTree};
 use threshold_identity::{DkgSession, EnrolmentRound1, EnrolmentRound2};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -34,7 +34,7 @@ use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::identity_flow::sheet::{
     Align, BodyScroll, FORM_SHEET_WIDTH, Resolved, Role, Rows, SheetSpec, line_height, paint_cell,
-    paint_qr, paint_text, paragraph_height, resolve, with_layout_renderer,
+    paint_qr, paint_text, paragraph_height, resolve, screen_style, with_layout_renderer,
 };
 use crate::widget::identity_flow::{
     IdentityFlowError, PairingHandshake, PairingPayload, ScreenOutcome, derive_pairing_code,
@@ -487,16 +487,7 @@ impl Widget for AddDeviceHostScreen {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.layout_theme = Some(theme.clone());
-        // The screen owns the viewport, so the sheet centres on the window
-        // rather than inside a fixed box at the origin.
-        let style = Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
-            ..Default::default()
-        };
-        taffy.widget_leaf(style, node_map, self)
+        taffy.widget_leaf(screen_style(), node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {

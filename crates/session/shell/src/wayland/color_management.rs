@@ -590,12 +590,6 @@ impl ImageDescriptionData {
         (self.identity & 0xFFFF_FFFF) as u32
     }
 
-    /// High 32 bits of the identity for the `ready2` event.
-    #[must_use]
-    pub fn identity_hi(&self) -> u32 {
-        (self.identity >> 32) as u32
-    }
-
     fn information_colors(
         &self,
     ) -> Option<(Option<ColorPrimaries>, Option<TransferCharacteristics>)> {

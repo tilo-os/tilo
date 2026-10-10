@@ -3039,17 +3039,6 @@ impl FileExplorerWidget {
         self.status_bubble.set_hover(true, now);
     }
 
-    /// `--shots`: let the status bubble that the first load would raise be
-    /// the one that already faded, so a capture shows it only when its
-    /// scenario stages it.
-    pub fn debug_quiet_status_bubble(&mut self) {
-        let long_ago = ui::time::now().checked_sub(Duration::from_secs(60));
-        if let Some(then) = long_ago {
-            let label = self.footer_label();
-            self.status_bubble.show(&label, then);
-        }
-    }
-
     /// Paint the transient floating status bubble at the window's
     /// bottom-right, the reclaimed home of the old footer strip. It surfaces
     /// on a real change (dir load, selection, an operation result) or while the
@@ -5247,18 +5236,6 @@ impl FileExplorerWidget {
         self.favs.clone()
     }
 
-    /// Open the right-click context menu at `at` (headless shots demo).
-    #[doc(hidden)]
-    pub fn debug_open_context_menu(&mut self, at: Point) {
-        self.open_context_menu(at);
-    }
-
-    /// Open the shared toolbar overflow menu (headless shots demo).
-    #[doc(hidden)]
-    pub fn debug_open_view_menu(&mut self) {
-        self.open_view_menu();
-    }
-
     /// Seed the local-only Trash Undo affordance for an offscreen review. The
     /// sentinel is deliberately not a real path, so headless rendering never
     /// mutates a user's Trash.
@@ -5279,14 +5256,6 @@ impl FileExplorerWidget {
         self.open_templates_submenu(anchor);
     }
 
-    /// Open the toolbar's actual ⋯ menu for an offscreen visual review. This
-    /// is intentionally separate from the pointer-context fixture above: the
-    /// two surfaces have different anchors and should never be conflated.
-    #[doc(hidden)]
-    pub fn debug_show_view_menu(&mut self) {
-        self.open_view_menu();
-    }
-
     /// Open the places drawer over the file view (the narrow layout's
     /// hamburger action), settled deterministically for a headless
     /// screenshot. In the wide layout the places list is already docked.
@@ -5294,15 +5263,6 @@ impl FileExplorerWidget {
     pub fn debug_open_places_drawer(&mut self) {
         self.nav.open_sidebar();
         self.nav.snap();
-    }
-
-    /// Show a favourite being dragged to the top of Favourites, for a
-    /// capture: the places list is rebuilt with the drag staged.
-    #[doc(hidden)]
-    pub fn debug_stage_favorite_drag(&mut self) {
-        self.stage_favorite_drag = true;
-        self.places_shown = None;
-        self.structure_dirty = true;
     }
 
     /// Whether the places drawer / docked sidebar is currently revealed.

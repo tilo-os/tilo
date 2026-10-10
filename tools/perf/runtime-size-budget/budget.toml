@@ -23,12 +23,19 @@
 headroom = 0.01
 architectures = ["x86_64", "aarch64"]
 
+# Apps that play no media. Release / apps fails when a built one, or the
+# runtime itself, loads a library of needed_absent at exec (TIL-713). Only
+# grows.
+apps_without_media = ["calculator", "clocks", "notes", "totp", "weather"]
+
 # What the runtime should cost (TIL-604): at most 150 MB, relocation tables
 # under 1 MB, at most 4 MB of relocation-dirtied memory per app process, and
 # few enough symbol lookups for relocation to take under 3 ms. Every app loads
 # a DT_NEEDED library, so none of needed_absent belongs there: media libraries
-# are for the apps that play media. The gates report a target not met; the
-# budgets below are what fails. Targets only tighten.
+# are for the apps that play media, and the runtime loads them on first use
+# (tools/ci/runtime-dylib-lazy-link.py, TIL-713); the gates fail on one. The
+# other targets are reported when not met; the budgets below are what fails.
+# Targets only tighten.
 [targets]
 bytes = 150000000
 relocation_bytes = 1000000
@@ -39,15 +46,18 @@ needed_absent = ["libgst", "libglib-2.0", "libgobject-2.0", "libgio-2.0"]
 # Measured by Release / apps 90216 (x86_64) and 90299 (aarch64) with packed
 # relocations and -Bsymbolic-functions (TIL-604). The published runtime before
 # them (so.tilo.runtime 0.1.90033) was 241944696 / 223411008 bytes, with
-# 10.1 MB of relocation tables and 62k symbol relocations on each.
+# 10.1 MB of relocation tables and 62k symbol relocations on each. Symbol
+# relocations then fell with GLib and GStreamer loaded on first use (TIL-713,
+# Release / apps 90457 against 90458): 13558 -> 11970 (x86_64) and
+# 13571 -> 11983 (aarch64).
 [runtime.x86_64]
 bytes = 234618880
 relocation_bytes = 458752
 relocated_bytes = 7798784
-symbol_relocations = 13696
+symbol_relocations = 12096
 
 [runtime.aarch64]
 bytes = 215089152
 relocation_bytes = 458752
 relocated_bytes = 7471104
-symbol_relocations = 13760
+symbol_relocations = 12160

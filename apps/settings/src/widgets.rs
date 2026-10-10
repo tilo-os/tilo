@@ -175,18 +175,6 @@ pub fn field_row(label: &str, control: El) -> El {
     choice_row_stacked(label, control)
 }
 
-/// [`slider_row`] with a helper line under the label.
-pub fn slider_row_described(label: &str, description: &str, control: El) -> El {
-    stacked_block(
-        vec![
-            Box::new(Text::new(label)) as El,
-            caption(description),
-            control,
-        ],
-        Rhythm::Tight,
-    )
-}
-
 /// One entry of a list of things (a printer, a user, a device): its name with
 /// any status marks on the top line, what is worth knowing about it hugging
 /// the name below, and the actions that apply to it under the text. Every

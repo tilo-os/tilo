@@ -3758,27 +3758,6 @@ impl ShellNetwork {
         )
     }
 
-    /// [`Self::issue_invite`], for a person this machine will name.
-    /// The name remains authority-side and is correlated with the exact
-    /// signed invite when it is redeemed.
-    ///
-    /// # Errors
-    ///
-    /// Same conditions as [`Self::issue_invite`].
-    pub fn issue_invite_named(
-        &self,
-        local: crate::shell::state::WorkspaceId,
-        expiry_seconds_from_now: u64,
-        invitee: &str,
-    ) -> Result<String, String> {
-        self.issue_invite_named_with_role(
-            local,
-            expiry_seconds_from_now,
-            invitee,
-            crate::network::invite::InviteRole::Editor,
-        )
-    }
-
     /// Mint a named invite carrying the exact role the owner selected.
     ///
     /// # Errors

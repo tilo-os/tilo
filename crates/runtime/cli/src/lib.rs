@@ -49,7 +49,7 @@
 )]
 
 use std::fs;
-use std::io::{self, IsTerminal, Write};
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -105,18 +105,6 @@ unsafe fn libc_signal_ignore_sigpipe() {
 /// The process's package id from `TILO_PACKAGE_ID`, falling back to a dev default.
 pub fn package_id() -> String {
     std::env::var("TILO_PACKAGE_ID").unwrap_or_else(|_| "tilo-standalone".to_string())
-}
-
-/// Print to stdout if it's a terminal, else write unstyled — small enough
-/// to skip the `output` module for simple hello-world code paths.
-///
-/// # Errors
-///
-/// Returns the underlying I/O error if the write to stdout fails.
-pub fn println_terminal_aware(text: &str) -> io::Result<()> {
-    let mut out = io::stdout().lock();
-    let _ = out.is_terminal(); // ensure the trait is imported at call sites
-    writeln!(out, "{text}")
 }
 
 /// Like `fs::create_dir_all`, but the error names the offending path.

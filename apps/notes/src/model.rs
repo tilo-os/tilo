@@ -138,14 +138,6 @@ impl Workspace {
         id
     }
 
-    pub fn rename_tag(&mut self, id: TagId, name: &str) -> bool {
-        let Some(tag) = self.data.tags.iter_mut().find(|tag| tag.id == id) else {
-            return false;
-        };
-        tag.name = name.trim().to_string();
-        true
-    }
-
     /// Remove a tag and every keyed assignment to it. The corresponding
     /// document action writes Automerge map tombstones for both the tag and
     /// edges, so stale replicas cannot display dangling chips after sync.
