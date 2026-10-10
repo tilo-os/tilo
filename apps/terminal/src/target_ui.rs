@@ -2,6 +2,7 @@
 // the target picker it opens, and the environments panel. Included into the
 // widget's module next to `main_body.rs`.
 
+use crate::i18n::t;
 use crate::sessions::OpenState;
 use crate::target::{EnvironmentSummary, Location, RelaySummary, SessionTarget};
 use ui::widget::{Button, ButtonFace, ButtonRole, ControlSize, TextInput};
@@ -45,10 +46,6 @@ enum RowAction {
     Grant,
     Rename,
     Open,
-}
-
-fn t(key: &str) -> String {
-    ui::i18n::I18nManager::lookup(key, None)
 }
 
 /// The tools and granted folders of an environment, as the panel shows them.

@@ -27,7 +27,8 @@
 //! divides by collaborators and hours. Fan-out latency is publish to receipt
 //! by each other member of the room. Store fsyncs per edit divides the file
 //! and directory barriers the relay's workspace stores issued by the deltas
-//! it committed.
+//! it committed; listed entries per edit divides the directory entries they
+//! listed to retain them the same way.
 //!
 //! The samples go to `--out DIR/hosting-load.json` for
 //! `tools/perf/adapters.py hosting-load`, which turns them into records and
@@ -228,6 +229,7 @@ struct Window {
     /// Deltas the relay committed and fanned out.
     deltas: u64,
     store_fsyncs: u64,
+    store_listed_entries: u64,
     hours: f64,
 }
 
@@ -243,6 +245,9 @@ impl Window {
             live_bytes: after.bytes_sent_live.saturating_sub(before.bytes_sent_live),
             deltas: after.deltas_received.saturating_sub(before.deltas_received),
             store_fsyncs: after.store_fsyncs.saturating_sub(before.store_fsyncs),
+            store_listed_entries: after
+                .store_listed_entries
+                .saturating_sub(before.store_listed_entries),
             hours: elapsed.as_secs_f64() / SECONDS_PER_HOUR,
         }
     }
@@ -320,6 +325,16 @@ impl Report {
             .collect()
     }
 
+    /// Directory entries listed per committed delta: zero while every
+    /// lineage's index is current, a lineage's length when it is not.
+    fn store_listed_entries_per_edit(&self) -> Vec<f64> {
+        self.windows
+            .iter()
+            .filter(|window| window.deltas > 0)
+            .map(|window| float(window.store_listed_entries) / float(window.deltas))
+            .collect()
+    }
+
     /// Resident memory each connected, active collaborator adds to the relay.
     fn rss_mib(&self) -> Vec<f64> {
         let collaborators = float(u64::try_from(self.collaborators).unwrap_or(u64::MAX));
@@ -349,6 +364,7 @@ impl Report {
                 "hosting.relay.frame_bytes_per_collab_hour": kpi("bytes", self.app_bytes()),
                 "hosting.relay.fanout_ms": kpi("ms", self.fanout_ms.clone()),
                 "hosting.relay.store_fsyncs_per_edit": kpi("count", self.store_fsyncs_per_edit()),
+                "hosting.relay.store_listed_entries_per_edit": kpi("count", self.store_listed_entries_per_edit()),
             },
         })
     }
@@ -359,7 +375,7 @@ impl Report {
              undelivered_edits={} cpu_s_per_collab_hour_p50={:.3} rss_mib_per_collab_p50={:.3} \
              egress_mb_per_collab_hour_p50={:.3} frame_mb_per_collab_hour_p50={:.3} \
              live_frame_mb_per_collab_hour_p50={:.3} fanout_ms_p50={:.1} fanout_ms_p99={:.1} \
-             store_fsyncs_per_edit_p50={:.3}",
+             store_fsyncs_per_edit_p50={:.3} store_listed_entries_per_edit_p50={:.3}",
             self.collaborators,
             self.rooms,
             self.windows.len(),
@@ -374,6 +390,7 @@ impl Report {
             nearest_rank(&self.fanout_ms, 50),
             nearest_rank(&self.fanout_ms, 99),
             median(self.store_fsyncs_per_edit()),
+            median(self.store_listed_entries_per_edit()),
         )
     }
 }

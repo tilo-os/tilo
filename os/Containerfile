@@ -2953,6 +2953,24 @@ RUN case "${TILO_GENERATION}" in \
       "${TILO_GENERATION}" > /usr/lib/bootc/kargs.d/02-generation.toml \
  && echo "generation ${TILO_GENERATION}: sealed via kargs.d, readable at /usr/lib/tilo/generation"
 
+# ---- The app store, without the host's files twice --------------------------
+# The env-runtime the store preinstalls (the builder's install-env-runtime.sh)
+# is built from the same frozen RPM snapshot as this rootfs, so most of its
+# files are byte-identical to the host's /usr; but the store is its own layer,
+# which no hard link can reach across, and every pull carried those bytes twice
+# (TIL-735). Here, on the rootfs's packages, a copy of the store leaves them out
+# and names the host file for each in the image's host-sources; package-store
+# imports them from there, every byte checked against the image's signed hash.
+# The rootfs's final RUN checks each named host file again, after the last
+# step that changes one, and puts back any that no longer matches.
+FROM rootfs-base AS app-store
+RUN --network=none \
+    --mount=type=bind,from=native-builder-payload,source=/usr/share/tilo-apps,target=/run/tilo-apps-built,ro \
+    --mount=type=bind,source=os/scripts/seed-env-runtime.py,target=/run/tilo-seed-env-runtime.py,ro \
+    mkdir -p /out/usr/share \
+    && cp -a /run/tilo-apps-built /out/usr/share/tilo-apps \
+    && python3 /run/tilo-seed-env-runtime.py prune /out/usr/share/tilo-apps /
+
 # ---------------------------------------------------------------------------
 # The Tilo build outputs, last
 # ---------------------------------------------------------------------------
@@ -3023,7 +3041,7 @@ COPY --from=native-builder-payload \
 # trust is the user's `~/.config/tilo/trusted-attestors.toml`, and this key is
 # deliberately absent from it — a preinstalled package is self-signed by the
 # image build, and claims nothing more.
-COPY --from=native-builder-payload /usr/share/tilo-apps/ /usr/share/tilo-apps/
+COPY --from=app-store /out/usr/share/tilo-apps/ /usr/share/tilo-apps/
 # The shell and the browser engine must resolve every library they load from
 # this rootfs: a gap is a loader error at the first launch, on a device.
 ARG CHROMIUM_RUNTIME_VERSION
@@ -3109,6 +3127,8 @@ RUN --mount=type=bind,source=os/scripts/clean-bootc-transient-state.py,target=/u
     --mount=type=bind,source=os/scripts/verify-boot-ordering.sh,target=/usr/local/libexec/tilo-verify-boot-ordering.sh,ro \
     --mount=type=bind,source=os/scripts/verify-rpm-files.sh,target=/usr/local/libexec/tilo-verify-rpm-files.sh,ro \
     --mount=type=bind,source=os/scripts/pin-directory-times.py,target=/usr/local/libexec/tilo-pin-directory-times.py,ro \
+    --mount=type=bind,source=os/scripts/seed-env-runtime.py,target=/usr/local/libexec/tilo-seed-env-runtime.py,ro \
+    --mount=type=bind,from=native-builder-payload,source=/usr/share/tilo-apps,target=/usr/local/libexec/tilo-apps-built,ro \
     find /usr/lib /usr/lib64 \
       \( -path '*/ossl-modules/legacy.so' -o -path '*/engines-3/*.so' \
          -o -name 'libshout.so*' \
@@ -3169,6 +3189,11 @@ RUN --mount=type=bind,source=os/scripts/clean-bootc-transient-state.py,target=/u
     && { [ ! -d /etc/udev/hwdb.d ] || [ -z "$(ls -A /etc/udev/hwdb.d)" ]; } \
     && /usr/lib/systemd/systemd-update-done --root=/ \
     && test -s /etc/.updated \
+    # The store's env-runtime takes some of its files from the host
+    # (app-store): each must still be what it stood in for now that nothing
+    # changes /usr any more; one that is not ships in the store again.
+    && python3 /usr/local/libexec/tilo-seed-env-runtime.py heal \
+         /usr/share/tilo-apps /usr/local/libexec/tilo-apps-built / \
     && python3 /usr/local/libexec/tilo-clean-bootc-transient-state.py \
     && bash /usr/local/libexec/tilo-verify-boot-ordering.sh \
     && sh /usr/local/libexec/tilo-verify-rpm-files.sh \

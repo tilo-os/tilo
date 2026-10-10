@@ -81,8 +81,12 @@ impl LegacyWorkspaceProjection for WorkspaceTreeHandle {
         {
             workspace
                 .effect_receipts
-                .push(crate::policy::redacted_effect_receipt(
-                    invocation, actor, context, status,
+                .push(tilo_desktop_model::WorkspaceEffectReceipt::redacted(
+                    invocation,
+                    actor,
+                    context,
+                    status,
+                    tilo_clock::unix_now_i64(),
                 ));
         }
         drop(tree);

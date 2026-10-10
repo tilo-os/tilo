@@ -44,6 +44,10 @@ use tilo_ui::theme::Theme;
 use tilo_ui::widget::Widget;
 
 #[path = "../../../dev/ui-examples/examples/common/gallery_scene.rs"]
+#[expect(
+    dead_code,
+    reason = "this regression renders only the typography showcase from the shared gallery scene"
+)]
 mod gallery_scene;
 
 const LOGICAL_WIDTH: u32 = 1160;

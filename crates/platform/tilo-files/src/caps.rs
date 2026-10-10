@@ -35,16 +35,10 @@ pub enum Feature {
     Attributes,
 }
 
-#[cfg_attr(
-    not(all(target_arch = "wasm32", target_os = "unknown")),
-    allow(dead_code, reason = "reported only by the web backend")
-)]
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) const WEB_BLOCKING: &str =
     "In a browser only app data, settings and state the page has loaded answer at once.";
-#[cfg_attr(
-    not(all(target_arch = "wasm32", target_os = "unknown")),
-    allow(dead_code, reason = "reported only by the web backend")
-)]
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) const WEB_BLOCKING_LOCKS: &str = "A browser page cannot wait for a lock synchronously.";
 pub(crate) const NO_DISK_WATCH: &str = "This build cannot watch folders.";
 /// Native watching needs the `watch` feature.

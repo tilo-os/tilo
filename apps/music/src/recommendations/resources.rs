@@ -19,7 +19,7 @@ pub fn resource_by_id(lib: &Library, id: &str) -> Option<Resource> {
             Resource::new(
                 id,
                 "music.recommendation-preferences",
-                ui::i18n!("music-recommendations-title"),
+                crate::i18n::t("music-recommendations-title"),
             )
             .with_action(open())
             .with_children(Input::ALL.into_iter().filter_map(|input| {
@@ -37,7 +37,7 @@ pub fn resource_by_id(lib: &Library, id: &str) -> Option<Resource> {
                 format!(
                     "{}: {}",
                     input.label(),
-                    ui::i18n!(if enabled {
+                    crate::i18n::t(if enabled {
                         "music-recommendations-enabled"
                     } else {
                         "music-recommendations-disabled"
@@ -46,7 +46,7 @@ pub fn resource_by_id(lib: &Library, id: &str) -> Option<Resource> {
             )
             .with_action(immediate_spec(
                 "set-input",
-                &ui::i18n!(if enabled {
+                &crate::i18n::t(if enabled {
                     "music-recommendations-disable"
                 } else {
                     "music-recommendations-enable"
@@ -74,7 +74,7 @@ pub fn resource_by_id(lib: &Library, id: &str) -> Option<Resource> {
             )
             .with_action(immediate_spec(
                 "set-preferred",
-                &ui::i18n!(if preferred {
+                &crate::i18n::t(if preferred {
                     "music-recommendations-unprefer"
                 } else {
                     "music-recommendations-prefer"
@@ -110,7 +110,7 @@ fn song_resource(lib: &Library, id: &str, track: &str) -> Option<Resource> {
     } else {
         play.unavailable(
             "missing_track",
-            ui::i18n!("music-recommendations-missing-track"),
+            crate::i18n::t("music-recommendations-missing-track"),
         )
     };
     let row = Resource::new(id, "music.recommendation", label)
@@ -123,7 +123,7 @@ fn song_resource(lib: &Library, id: &str, track: &str) -> Option<Resource> {
         .with_action(play)
         .with_action(immediate_spec(
             if dismissed { "restore" } else { "dismiss" },
-            &ui::i18n!(if dismissed {
+            &crate::i18n::t(if dismissed {
                 "music-recommendations-restore"
             } else {
                 "music-recommendations-dismiss"

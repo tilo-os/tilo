@@ -52,41 +52,61 @@ GLOBAL_INPUTS = (
 
 
 
-def shell_integration_only(root: Path, path: str, packages: dict) -> bool:
-    """Audit a direct module of shell's separate integration-test target.
+def integration_only(root: Path, path: str, packages: dict, by_dir: dict) -> bool:
+    """Audit a separate integration target outside the SDK's tested packages.
 
-    SDK consumers build shell's library, not this target. Keep nested fixtures,
-    standalone binaries, build scripts and source-referenced modules affected.
-    The ordinary native selector remains responsible for all integration tests.
+    SDK consumers build dependency libraries and apps, not their test targets.
+    Keep it.rs harnesses, nested fixtures, build scripts and source references affected.
+    The ordinary native selector still selects these integration tests.
     """
     relative = Path(path)
-    directory = Path("crates/session/shell/tests")
-    if relative.parent != directory or relative.suffix != ".rs":
+    owner = owner_for(path, by_dir)
+    if owner is None or owner in SDK_PACKAGES:
         return False
-    shell = packages.get("shell", {})
-    targets = shell.get("targets", [])
-    test_root = root / directory / "it.rs"
-    if not any(target.get("kind") == ["test"] and
-               Path(target["src_path"]).resolve() == test_root.resolve()
-               for target in targets):
+    package = packages[owner]
+    directory = Path(package["manifest_path"]).parent / "tests"
+    changed = root / relative
+    if (changed.parent.resolve() != directory.resolve() or
+            relative.suffix != ".rs" or relative.name == "it.rs" or
+            changed.is_symlink() or directory.is_symlink()):
         return False
+    targets = package.get("targets", [])
     if any("custom-build" in target.get("kind", []) or
            (target.get("kind") != ["test"] and
-            Path(target["src_path"]).resolve() == (root / relative).resolve())
+            Path(target["src_path"]).resolve() == changed.resolve())
            for target in targets):
         return False
     try:
+        # A changed standalone target must be observed too; deleted or unknown
+        # inputs retain the lanes. Modules need an explicit direct declaration.
+        changed.read_text()
         module = r'#\[path\s*=\s*"' + re.escape(relative.name) + r'"\]\s*mod\s+\w+\s*;'
-        if not re.search(module, test_root.read_text()):
+        test_roots = [Path(target["src_path"]) for target in targets
+                      if target.get("kind") == ["test"] and
+                      Path(target["src_path"]).parent.resolve() == directory.resolve()]
+        if not any(test_root.resolve() == changed.resolve() or
+                   re.search(module, test_root.read_text()) for test_root in test_roots):
             return False
         # Fail closed if a library, binary, example or build script names the
         # module. Include comments too: a conservative false positive is cheap.
         for package in packages.values():
             package_dir = Path(package["manifest_path"]).parent
-            sources = set((package_dir / "src").rglob("*.rs"))
+            source_roots = [package_dir / "src"]
+            if package["name"] in SDK_PACKAGES:
+                source_roots.append(package_dir / "tests")
+            sources = set()
+            for source_root in source_roots:
+                # rglob omits directory links and extensionless file aliases.
+                # Either can make SDK code consume a dependency's test file.
+                if source_root.is_symlink() or any(
+                        entry.is_symlink()
+                        for entry in source_root.rglob("*")):
+                    return False
+                sources |= set(source_root.rglob("*.rs"))
             sources |= {Path(target["src_path"]) for target in package.get("targets", [])
                         if target.get("kind") != ["test"]}
-            if any(relative.name in source.read_text() for source in sources):
+            if any(source.resolve() == changed.resolve() or
+                   relative.name in source.read_text() for source in sources):
                 return False
     except (OSError, UnicodeError):
         return False
@@ -100,7 +120,7 @@ def affected(root: Path, changed: list[str], metadata: dict,
     seeds |= {name for d, name in by_dir.items() if d.parts[:1] == ("apps",)}
     reverse = reverse_dependencies(packages, root)
     for path in changed:
-        if shell_integration_only(root, path, packages):
+        if integration_only(root, path, packages, by_dir):
             continue
         if path == "Cargo.lock":
             # Attributed to the packages whose locked inputs changed; unattributable

@@ -501,12 +501,7 @@ fn direct_reason(scanouts: &[ScanoutEntry]) -> &str {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "independent facts about one output, reported together when direct scanout is refused"
-)]
 struct DirectEligibility<'a> {
-    color_managed: bool,
     hardware_cursor: bool,
     event_pageflips: bool,
     renderer_pci: &'a str,
@@ -517,11 +512,9 @@ struct DirectEligibility<'a> {
 /// Why one output cannot render straight into its own scanout target, or `None` when it
 /// can. Each output is judged alone: other outputs, and how they present, play no part.
 /// A rotated output is eligible: its final pass turns the frame on the GPU
-/// (`shell::render::orientation`).
+/// (`shell::render::orientation`). So is an ICC-profiled one: the same pass maps it through
+/// the profile (`shell::render::icc_lut`).
 fn direct_scanout_rejection(input: DirectEligibility<'_>) -> Option<&'static str> {
-    if input.color_managed {
-        return Some("output color transform is active");
-    }
     if !input.hardware_cursor {
         return Some("hardware cursor plane is unavailable");
     }
@@ -902,7 +895,6 @@ mod direct_eligibility_tests {
 
     fn eligible() -> DirectEligibility<'static> {
         DirectEligibility {
-            color_managed: false,
             hardware_cursor: true,
             event_pageflips: true,
             renderer_pci: "0000:66:00.0",
@@ -914,17 +906,17 @@ mod direct_eligibility_tests {
     #[test]
     fn direct_eligibility_is_per_scanout() {
         // Two outputs side by side: the plain one renders direct while its
-        // colour-managed sibling names its own reason. Neither is judged by the
-        // count of outputs it shares the desktop with.
+        // sibling without a cursor plane names its own reason. Neither is judged
+        // by the count of outputs it shares the desktop with.
         let plain = eligible();
-        let calibrated = DirectEligibility {
-            color_managed: true,
+        let software_cursor = DirectEligibility {
+            hardware_cursor: false,
             ..eligible()
         };
         assert_eq!(direct_scanout_rejection(plain), None);
         assert_eq!(
-            direct_scanout_rejection(calibrated),
-            Some("output color transform is active")
+            direct_scanout_rejection(software_cursor),
+            Some("hardware cursor plane is unavailable")
         );
     }
 
@@ -933,13 +925,6 @@ mod direct_eligibility_tests {
         // Phase `direct_path_requires_the_complete_safe_contract`.
         assert_eq!(direct_scanout_rejection(eligible()), None);
         for (rejected, reason) in [
-            (
-                DirectEligibility {
-                    color_managed: true,
-                    ..eligible()
-                },
-                "output color transform is active",
-            ),
             (
                 DirectEligibility {
                     hardware_cursor: false,
@@ -2091,9 +2076,10 @@ fn keeps_shown_image(
 
 /// Render one output straight into its own direct scanout target and hand it to KMS.
 ///
-/// A rotated output renders its surface upright and is turned by the final GPU pass. The
-/// colour-managed and software-cursor cases have no exact GPU implementation yet and remain
-/// on the established readback presenter, with the reason logged.
+/// A rotated output renders its surface upright and is turned by the final GPU pass; an
+/// ICC-profiled SDR output is mapped through its profile in the same pass. The
+/// software-cursor case has no GPU implementation yet and remains on the established
+/// readback presenter, with the reason logged.
 #[allow(
     clippy::too_many_lines,
     reason = "one output's eligibility, target lifetime, render and submission form one transaction whose failures each pick the presenter"
@@ -2109,7 +2095,6 @@ fn present_direct(
 ) -> DirectOutcome {
     let drm_bus_id = entry.scanout.drm_bus_id();
     let eligibility = DirectEligibility {
-        color_managed: entry.color_transform.is_some(),
         hardware_cursor: entry.scanout.hardware_cursor_active(),
         event_pageflips: entry.scanout.event_pageflips_available(),
         renderer_pci: &renderer.pci_bus_id,
@@ -2214,6 +2199,16 @@ fn present_direct(
     let Some(targets) = entry.direct_targets.as_mut() else {
         return DirectOutcome::Readback;
     };
+    // A new ICC profile changes what every pixel looks like while the scene may not have
+    // changed: the next frame renders in full rather than keep the old calibration.
+    let calibration = entry
+        .color_lut
+        .as_ref()
+        .map(crate::shell::render::icc_lut::IccLut::id);
+    if entry.direct_calibration != calibration {
+        entry.direct_calibration = calibration;
+        bridge.invalidate_output_view(view);
+    }
     // A client buffer on the CRTC means the targets' pixels are not what is shown.
     let shown = targets.presented() && !targets.shows_client();
     if keeps_shown_image(bridge, view, frame, shown, sharing) {
@@ -2255,6 +2250,7 @@ fn present_direct(
         paint::OutputSignal {
             sdr_white_nits,
             hdr_layers: frame.hdr_layers,
+            color_lut: entry.color_lut.as_ref(),
         },
     );
     let stats = match painted {
@@ -2343,6 +2339,7 @@ fn present_client(
     let eligibility = client_scanout::ClientEligibility {
         enabled: client_scanout::client_scanout_enabled(),
         upright: view.orientation == settings_store::hardware::OutputTransform::Normal,
+        uncalibrated: entry.color_lut.is_none(),
         covers_output: candidate.covers(entry.position, view.size),
         client_buffer: dmabuf.is_some(),
         opaque: client.as_ref().is_some_and(|frame| frame.opaque()),
@@ -4123,6 +4120,7 @@ mod lone_output_tests {
                 paint::OutputSignal {
                     sdr_white_nits: crate::shell::color_pipeline::SDR_REFERENCE_WHITE_NITS,
                     hdr_layers: &[],
+                    color_lut: None,
                 },
             )
             .expect("the output's frame renders")

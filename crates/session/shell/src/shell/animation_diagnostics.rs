@@ -116,34 +116,6 @@ pub(crate) fn animating_leaves(root: &dyn ui::widget::Widget) -> Vec<String> {
     out
 }
 
-/// Paths to the deepest widgets under `root` asking to be redrawn: who made
-/// a still desktop paint. Allocates, so only the paint-stats diagnostic calls
-/// it.
-pub(crate) fn redrawing_leaves(root: &dyn ui::widget::Widget) -> Vec<String> {
-    fn walk(widget: &dyn ui::widget::Widget, path: &str, out: &mut Vec<String>) {
-        if !widget.needs_redraw() {
-            return;
-        }
-        let here = match widget.test_id() {
-            Some(id) => format!("{path}/{}#{id}", widget.name()),
-            None => format!("{path}/{}", widget.name()),
-        };
-        let before = out.len();
-        widget.for_each_child(&mut |child| walk(child, &here, out));
-        if out.len() == before {
-            let detail = widget
-                .as_any()
-                .and_then(|any| any.downcast_ref::<crate::shell::foreign::ForeignSurfaceWidget>())
-                .map(|foreign| format!(" {}", foreign.animation_detail()))
-                .unwrap_or_default();
-            out.push(format!("{here}{detail}"));
-        }
-    }
-    let mut out = Vec::new();
-    walk(root, "", &mut out);
-    out
-}
-
 /// Paths to the deepest widgets under `root` whose one-shot wake deadline
 /// is `due` or earlier: who will wake an otherwise idle loop next. Allocates,
 /// so only diagnostics call it.

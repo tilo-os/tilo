@@ -990,7 +990,7 @@ impl TerminalWidget {
                 Failure::Rejected => "terminal-editor-rejected",
                 Failure::Unknown | Failure::Retired => "terminal-editor-unconfirmed",
             };
-            return Some(ui::i18n::I18nManager::lookup_plain(key));
+            return Some(crate::i18n::t(key));
         }
         None
     }
@@ -4693,7 +4693,7 @@ impl TerminalWidget {
         );
         self.find_menu_index = Some(menu.items().len());
         menu.push(MenuItem::action(
-            ui::i18n::I18nManager::lookup("terminal-find-scrollback", None),
+            crate::i18n::t("terminal-find-scrollback"),
             || {},
         ));
         // This preference is useful secondary chrome, but never at the cost

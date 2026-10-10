@@ -1,7 +1,10 @@
 //! Shared scenario registry and command-line dispatcher for the three UI
 //! example surfaces.
 
-#![allow(dead_code)] // Each binary intentionally compiles one surface subset.
+#![expect(
+    dead_code,
+    reason = "each example binary includes this registry and constructs only its own surface"
+)]
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Surface {

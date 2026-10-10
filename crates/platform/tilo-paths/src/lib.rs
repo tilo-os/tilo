@@ -108,10 +108,7 @@ pub fn home() -> Option<PathBuf> {
     }
 }
 
-#[cfg_attr(
-    windows,
-    expect(dead_code, reason = "Windows asks the shell for the profile folder")
-)]
+#[cfg(not(windows))]
 fn home_from(
     var: &dyn Fn(&str) -> Option<OsString>,
     account_home: impl FnOnce() -> Option<PathBuf>,
