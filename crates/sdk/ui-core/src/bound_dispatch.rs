@@ -1447,6 +1447,12 @@ pub(crate) fn encode_resource_action(
 ) -> Result<tilo_actions::EncodedAction, tilo_actions::DoorError> {
     if let Some(arguments) = arguments {
         tilo_actions::door::encode_json(resources, address, arguments)
+    } else if argument.is_none()
+        && tilo_actions::door::resolve(resources, address).is_some_and(|spec| {
+            !spec.params().is_empty() && spec.params().iter().all(|param| !param.required)
+        })
+    {
+        tilo_actions::door::encode_json(resources, address, &serde_json::Map::new())
     } else {
         tilo_actions::door::encode(resources, address, argument)
     }
@@ -4735,6 +4741,10 @@ mod device_actor_tests;
 #[cfg(test)]
 #[path = "bound_dispatch/native_text_tests.rs"]
 mod native_text_tests;
+
+#[cfg(test)]
+#[path = "bound_dispatch/invocation_arguments_tests.rs"]
+mod invocation_arguments_tests;
 
 #[cfg(test)]
 pub(crate) mod document_admission_probe {
