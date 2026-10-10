@@ -521,6 +521,14 @@ pub struct BrowserWidget {
     /// Set when live browsing has no running engine; the page area explains
     /// it instead of showing a blank page.
     engine_problem: Option<EngineProblem>,
+    /// The engine being fetched from the host, when it is missing.
+    engine_setup: Option<crate::engine_setup::EngineSetup>,
+    /// Whether the first use has already asked for the engine.
+    engine_setup_tried: bool,
+    /// What the page area last drew of the setup.
+    engine_setup_shown: Option<crate::engine_setup::Setup>,
+    /// Where the host is asked for the engine; a test supplies its own.
+    engine_installer: fn() -> Option<Box<dyn ui::webview::chromium::install::EngineInstaller>>,
 }
 
 impl BrowserWidget {
@@ -835,6 +843,10 @@ impl BrowserWidget {
             motion_reduced: false,
             pending_controls: std::collections::VecDeque::new(),
             engine_problem: None,
+            engine_setup: None,
+            engine_setup_tried: false,
+            engine_setup_shown: None,
+            engine_installer: ui::webview::chromium::install::host_installer,
         }
     }
 
@@ -1360,10 +1372,52 @@ impl BrowserWidget {
                 if self.engine_problem != Some(EngineProblem::NotInstalled) {
                     return Err("the browser engine is already installed".into());
                 }
-                ui::portal::open_uri_detached(ENGINE_INSTALL_URI);
+                // Under way: nothing to start. Failed: try again.
+                if self.engine_setup.as_ref().is_none_or(|setup| {
+                    matches!(setup.state(), crate::engine_setup::Setup::Failed(_))
+                }) && !self.begin_engine_setup()
+                {
+                    // No host to ask (outside Tilo): the Store is the way.
+                    ui::portal::open_uri_detached(ENGINE_INSTALL_URI);
+                }
             }
         }
         Ok(())
+    }
+
+    /// Ask the host for the engine and follow it. Whether there was a host
+    /// to ask.
+    fn begin_engine_setup(&mut self) -> bool {
+        self.engine_setup = (self.engine_installer)().map(|installer| {
+            crate::engine_setup::EngineSetup::start(
+                installer,
+                Some(self.initial_url.clone()).filter(|url| is_supported_web_url(url)),
+                ui::WakeHandle::new(),
+            )
+        });
+        self.engine_setup_shown = None;
+        self.structure_dirty = true;
+        self.engine_setup.is_some()
+    }
+
+    /// First use without the engine installs it: asked for once when the
+    /// window opens, followed each frame so the page area shows progress.
+    fn drive_engine_setup(&mut self) {
+        if self.engine_problem != Some(EngineProblem::NotInstalled) {
+            return;
+        }
+        if !self.engine_setup_tried {
+            self.engine_setup_tried = true;
+            self.begin_engine_setup();
+        }
+        let now = self
+            .engine_setup
+            .as_ref()
+            .map(crate::engine_setup::EngineSetup::state);
+        if now != self.engine_setup_shown {
+            self.engine_setup_shown = now;
+            self.structure_dirty = true;
+        }
     }
 
     fn page_loading(&self) -> bool {
@@ -2098,7 +2152,11 @@ impl BrowserWidget {
         } else if self.show_library {
             self.build_library_composition(theme, &notices)
         } else if let Some(problem) = self.engine_problem {
-            engine_problem_state(problem, self.unit_binding("browser.page", "install-engine"))
+            engine_problem_state(
+                problem,
+                self.unit_binding("browser.page", "install-engine"),
+                self.engine_setup_shown.as_ref(),
+            )
         } else if let Some(error) = &self.load_error {
             let recovery = EmptyState::error("Couldn’t open this page", error)
                 .with_icon(Icon::Wifi)
@@ -3433,7 +3491,12 @@ fn user_message(problem: EngineProblem) -> String {
 fn engine_problem_state(
     problem: EngineProblem,
     install: Option<ActionBinding<()>>,
+    setup: Option<&crate::engine_setup::Setup>,
 ) -> Box<dyn Widget> {
+    use crate::engine_setup::Setup;
+    if let (EngineProblem::NotInstalled, Some(setup)) = (problem, setup) {
+        return engine_setup_state(setup, install);
+    }
     let state = match problem {
         EngineProblem::NotInstalled => {
             let state = EmptyState::new(ui::webview::chromium::runtime::NOT_INSTALLED_MESSAGE)
@@ -3457,6 +3520,73 @@ fn engine_problem_state(
             .with_fill_remaining_height()
             .push(Box::new(state)),
     )
+}
+
+/// The page area while the host fetches the engine: what is happening and
+/// how far along, in the toolkit's own empty state and progress bar.
+fn engine_setup_state(
+    setup: &crate::engine_setup::Setup,
+    retry: Option<ActionBinding<()>>,
+) -> Box<dyn Widget> {
+    use crate::engine_setup::Setup;
+    use ui::webview::chromium::install::InstallPhase;
+    let mut column = Column::new()
+        .with_no_padding()
+        .with_gap(0.0)
+        .with_fill_remaining_height();
+    match setup {
+        Setup::Fetching {
+            phase,
+            received,
+            total,
+        } => {
+            let message = match (phase, total) {
+                (InstallPhase::Preparing, _) => "Preparing…".to_owned(),
+                (InstallPhase::Installing, _) => "Installing…".to_owned(),
+                (InstallPhase::Downloading, Some(total)) => format!(
+                    "Downloading, {} of {}",
+                    megabytes(*received),
+                    megabytes(*total)
+                ),
+                (InstallPhase::Downloading, None) => {
+                    format!("Downloading, {}", megabytes(*received))
+                }
+            };
+            column = column.push(Box::new(
+                EmptyState::new("Getting the browser engine")
+                    .with_icon(Icon::Download)
+                    .with_message(message)
+                    .busy(),
+            ));
+            let bar = setup.fraction().map_or_else(
+                ui::widget::ProgressBar::indeterminate,
+                ui::widget::ProgressBar::new,
+            );
+            column = column.push(Box::new(bar.with_label("Browser engine")));
+        }
+        Setup::Reopened => {
+            column = column.push(Box::new(
+                EmptyState::new("The browser engine is ready")
+                    .with_icon(Icon::Info)
+                    .with_message("Browser opened in a new window. You can close this one."),
+            ));
+        }
+        Setup::Failed(error) => {
+            let state = EmptyState::error("Couldn’t get the browser engine", error)
+                .with_icon(Icon::Download)
+                .with_action("Try again")
+                .with_action_id("browser.install-engine");
+            column = column.push(Box::new(match retry {
+                Some(binding) => state.on_action(binding),
+                None => state,
+            }));
+        }
+    }
+    Box::new(column)
+}
+
+fn megabytes(bytes: u64) -> String {
+    format!("{} MB", bytes.div_ceil(1_000_000))
 }
 
 fn address_state(widget: &dyn Widget) -> Option<(String, String)> {
@@ -4747,6 +4877,7 @@ impl BrowserWidget {
         }
         self.tick_back_hold(ui::time::now());
         self.follow_history();
+        self.drive_engine_setup();
         self.apply_engine_events();
         self.apply_panel_events();
         self.structure_dirty |= self.run_pending_commands();
@@ -6186,6 +6317,129 @@ mod tests {
         let root = automerge::ROOT;
         widget.sync(&state, &root);
         (state, root)
+    }
+
+    /// What a scripted host answers, one look at a time, and the fresh
+    /// instances it was asked to start.
+    type Looks = std::collections::VecDeque<Result<InstallStatus, String>>;
+    type Relaunches = Arc<std::sync::Mutex<Vec<Option<String>>>>;
+    static HOST: std::sync::Mutex<Option<(Looks, Relaunches)>> = std::sync::Mutex::new(None);
+    use ui::webview::chromium::install::{EngineInstaller, InstallPhase, InstallStatus};
+
+    struct ScriptedHost(Looks, Relaunches);
+
+    impl EngineInstaller for ScriptedHost {
+        fn status(&mut self) -> Result<InstallStatus, String> {
+            self.0.pop_front().unwrap_or(Ok(InstallStatus::Installed))
+        }
+        fn relaunch(&mut self, uri: Option<&str>) -> Result<(), String> {
+            self.1.lock().unwrap().push(uri.map(str::to_owned));
+            Ok(())
+        }
+    }
+
+    fn scripted_host() -> Option<Box<dyn EngineInstaller>> {
+        let (looks, relaunches) = HOST.lock().unwrap().take()?;
+        Some(Box::new(ScriptedHost(looks, relaunches)))
+    }
+
+    fn script(looks: Looks) -> Relaunches {
+        let relaunches = Relaunches::default();
+        *HOST.lock().unwrap() = Some((looks, Arc::clone(&relaunches)));
+        relaunches
+    }
+
+    /// Frames until the setup shows `wanted`, or the test gives up.
+    fn until_setup(
+        widget: &mut BrowserWidget,
+        wanted: impl Fn(&crate::engine_setup::Setup) -> bool,
+    ) {
+        for _ in 0..400 {
+            let _ = synced(widget);
+            if widget.engine_setup_shown.as_ref().is_some_and(&wanted) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("setup stuck at {:?}", widget.engine_setup_shown);
+    }
+
+    /// First use without the engine: the Browser asks the host for it,
+    /// shows the progress, and reopens once it is installed. A failure
+    /// offers a retry that asks again. Nothing here is a message to read or
+    /// a command to run.
+    #[test]
+    fn a_missing_engine_is_installed_on_first_use_with_progress() {
+        use crate::engine_setup::Setup;
+        // One test owns the scripted host: statics are process-wide.
+        let relaunches = script(
+            [
+                Ok(InstallStatus::Installing {
+                    phase: InstallPhase::Preparing,
+                    received: 0,
+                    total: None,
+                }),
+                Ok(InstallStatus::Installing {
+                    phase: InstallPhase::Downloading,
+                    received: 40_000_000,
+                    total: Some(80_000_000),
+                }),
+                Ok(InstallStatus::Installed),
+            ]
+            .into(),
+        );
+        let mut w = BrowserWidget::with_engine(
+            unavailable_engine(BrowsingMode::Normal, EngineProblem::NotInstalled),
+            false,
+        );
+        w.engine_problem = Some(EngineProblem::NotInstalled);
+        w.engine_installer = scripted_host;
+        w.initial_url = "https://tilo.so/".into();
+
+        // The first frame starts the install without anyone pressing a button.
+        let _ = synced(&mut w);
+        assert!(w.engine_setup.is_some(), "first use asks the host");
+
+        until_setup(&mut w, |setup| {
+            matches!(
+                setup,
+                Setup::Fetching {
+                    phase: InstallPhase::Downloading,
+                    received: 40_000_000,
+                    ..
+                }
+            )
+        });
+        assert_eq!(w.engine_setup_shown.as_ref().unwrap().fraction(), Some(0.5));
+        // The page area is the toolkit's progress state.
+        layout_at(&mut w, 900.0, 600.0);
+
+        until_setup(&mut w, |setup| *setup == Setup::Reopened);
+        assert_eq!(
+            *relaunches.lock().unwrap(),
+            [Some("https://tilo.so/".to_owned())],
+            "a fresh Browser starts on the page being opened, with the engine mounted"
+        );
+        layout_at(&mut w, 900.0, 600.0);
+
+        // A failed install says so and the one button asks again.
+        let relaunches = script([Err("offline".to_owned())].into());
+        let mut w = BrowserWidget::with_engine(
+            unavailable_engine(BrowsingMode::Normal, EngineProblem::NotInstalled),
+            false,
+        );
+        w.engine_problem = Some(EngineProblem::NotInstalled);
+        w.engine_installer = scripted_host;
+        until_setup(
+            &mut w,
+            |setup| matches!(setup, Setup::Failed(message) if message == "offline"),
+        );
+        layout_at(&mut w, 900.0, 600.0);
+        let _retry = script([Ok(InstallStatus::Installed)].into());
+        w.perform_browser_operation(BrowserOperation::InstallEngine)
+            .expect("retrying is the page's install action");
+        until_setup(&mut w, |setup| *setup == Setup::Reopened);
+        assert!(relaunches.lock().unwrap().is_empty());
     }
 
     /// Page actions, as an agent reaches them: published on `browser.page`,

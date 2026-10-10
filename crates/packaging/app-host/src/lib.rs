@@ -44,6 +44,8 @@ pub mod client;
 pub mod fetch;
 pub mod install;
 #[cfg(feature = "service")]
+pub mod runtime_request;
+#[cfg(feature = "service")]
 pub mod service;
 #[cfg(all(unix, feature = "test-support"))]
 pub mod testing;

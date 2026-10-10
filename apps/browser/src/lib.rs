@@ -47,6 +47,7 @@ mod credentials;
 mod daily_controls;
 pub mod downloads;
 pub mod effects;
+mod engine_setup;
 pub mod extensions;
 pub mod history;
 pub mod library;

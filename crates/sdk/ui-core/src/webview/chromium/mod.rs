@@ -3,6 +3,7 @@
     clippy::disallowed_methods,
     reason = "native host runner: the Chromium helper process is supervised by threads"
 )]
+pub mod install;
 mod protocol;
 pub mod runtime;
 mod shared;

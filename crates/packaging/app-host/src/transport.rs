@@ -17,6 +17,7 @@ use crate::app_host_capnp::app_host;
 /// After the `QAH1` marker: a big-endian `u32` length, then the launcher's
 /// JSON handoff.
 const HANDOFF_FRAMING: wire_frame::Framing = wire_frame::Framing::big_endian(1024).reject_empty();
+use crate::runtime_request::RuntimeRequests;
 use crate::service::AppHostServer;
 use package_store::{Catalog, PackageStore};
 
@@ -55,12 +56,17 @@ pub async fn serve(
     catalog: Arc<Catalog>,
     max_store_bytes: u64,
 ) -> anyhow::Result<()> {
+    // One set of installs for every app that asks for a runtime it declared.
+    let requests = RuntimeRequests::new(Arc::clone(&catalog));
     loop {
         let (stream, _) = listener.accept().await?;
         let store = Arc::clone(&store);
         let catalog = Arc::clone(&catalog);
+        let requests = Arc::clone(&requests);
         tokio::task::spawn_local(async move {
-            if let Err(e) = handle_connection(stream, store, catalog, max_store_bytes).await {
+            if let Err(e) =
+                handle_connection(stream, store, catalog, requests, max_store_bytes).await
+            {
                 tracing::warn!(error = %e, "app-host connection terminated");
             }
         });
@@ -85,6 +91,7 @@ pub async fn handle_connection(
     mut stream: tokio::net::UnixStream,
     store: Arc<PackageStore>,
     catalog: Arc<Catalog>,
+    requests: Arc<RuntimeRequests>,
     max_store_bytes: u64,
 ) -> anyhow::Result<()> {
     let mut magic = [0u8; 4];
@@ -96,10 +103,24 @@ pub async fn handle_connection(
         .ok_or(wire_frame::FrameError::Closed)?;
     let handoff: serde_json::Value = serde_json::from_slice(&bytes)?;
     anyhow::ensure!(
-        handoff.get("protocol").and_then(serde_json::Value::as_u64) == Some(1)
-            && handoff.get("app_id").and_then(serde_json::Value::as_str) == Some("so.tilo.store"),
-        "caller is not authorized for app-host"
+        handoff.get("protocol").and_then(serde_json::Value::as_u64) == Some(1),
+        "unsupported app-host handoff"
     );
+    let app_id = handoff
+        .get("app_id")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("caller is not authorized for app-host"))?
+        .to_owned();
+    if app_id != "so.tilo.store" {
+        // The only thing any other app is served is the narrow request for a
+        // runtime its own manifest declares; the package-management interface
+        // is the Store's alone.
+        let stream = stream.into_std()?;
+        stream.set_nonblocking(false)?;
+        return tokio::task::spawn_blocking(move || requests.serve(&app_id, stream))
+            .await?
+            .map_err(Into::into);
+    }
     let (reader, writer) = stream.into_split();
     let reader = reader.compat();
     let writer = tokio_util::compat::TokioAsyncWriteCompatExt::compat_write(writer);
