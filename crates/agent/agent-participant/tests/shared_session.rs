@@ -66,9 +66,9 @@ use tilo_relay::daemon::{Relay, RelayIdentity};
 use tilo_relay::web::{TlsSource, WebConfig};
 use tilo_relay_client::Approver;
 use tilo_relay_protocol::agents::{
-    AGENTS_PROVIDER, AgentDelegation, AgentScope, AgentStatus, AgentsStatus, MESSAGE_ACTION,
-    PAUSE_ACTION, RESUME_ACTION, SPAWN_ACTION, STATUS_ACTION, STOP_ACTION, SUPERVISOR_RESOURCE,
-    TaskState, agent_resource,
+    AGENTS_PROVIDER, AgentDelegation, AgentScope, AgentStatus, AgentsStatus, CANCEL_TASK_ACTION,
+    MESSAGE_ACTION, PAUSE_ACTION, RESUME_ACTION, SPAWN_ACTION, STATUS_ACTION, STOP_ACTION,
+    SUPERVISOR_RESOURCE, TaskState, agent_resource,
 };
 use tilo_relay_protocol::live::{LiveFrame, LiveParticipant, LiveRecord, ParticipantKind};
 use tilo_user_identity::{
@@ -760,9 +760,10 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
         "action": "edit",
         "arguments": {"text": "Planned beside the loop"},
     }]);
+    let release_later = release_plan.clone();
     let releaser = std::thread::spawn(move || {
         std::thread::sleep(Duration::from_millis(1_500));
-        release_plan.send(planned_steps).unwrap();
+        release_later.send(planned_steps).unwrap();
     });
     let gated = control.message("gated").unwrap();
     let started = Instant::now();
@@ -807,6 +808,114 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
         "Planned beside the loop",
     )
     .await;
+
+    // 12. A plan still being made when the agent is paused, its task is
+    // cancelled or the agent is stopped carries out nothing by itself: a
+    // pause holds the late plan until resume, and a cancelled or stopped
+    // task's late plan is dropped. Each step goes through the agent's
+    // action door while the loop pumps.
+    let gated_edit = |text: &str| {
+        serde_json::json!([{
+            "app": SCRATCHPAD,
+            "record": route.record,
+            "resource": "scratchpad.note",
+            "action": "edit",
+            "arguments": {"text": text},
+        }])
+    };
+    let task_of = |id: &str| {
+        control
+            .info()
+            .tasks
+            .into_iter()
+            .find(|task| task.id == id)
+            .unwrap()
+    };
+    let no_edit = |what: &str| {
+        assert!(
+            !browser_events.drain().iter().any(
+                |event| matches!(event, PeerEvent::Document(document) if document.route == route)
+            ),
+            "{what}"
+        );
+    };
+    for (withdraw, text) in [
+        (PAUSE_ACTION, "Planned while paused"),
+        (CANCEL_TASK_ACTION, "Planned for a cancelled task"),
+        (STOP_ACTION, "Planned for a stopped agent"),
+    ] {
+        let given = call(
+            &browser,
+            host_key,
+            Some(&mut agent),
+            ActionAddress::new(&agent_id, MESSAGE_ACTION),
+            InvokeArgument::Text("gated".into()),
+        )
+        .await;
+        let task = completed(&given)["taskId"].as_str().unwrap().to_owned();
+        wait_for("the planner to take the task", || {
+            agent.pump();
+            let planning = task_of(&task).state == TaskState::Running;
+            async move { planning.then_some(()) }
+        })
+        .await;
+        let argument = if withdraw == CANCEL_TASK_ACTION {
+            InvokeArgument::Text(task.clone())
+        } else {
+            InvokeArgument::None
+        };
+        completed(
+            &call(
+                &browser,
+                host_key,
+                Some(&mut agent),
+                ActionAddress::new(&agent_id, withdraw),
+                argument,
+            )
+            .await,
+        );
+        let released = Instant::now();
+        release_plan.send(gated_edit(text)).unwrap();
+        agent.run_until(Some(Instant::now() + Duration::from_millis(500)), |_| false);
+        assert!(
+            plan_ready
+                .lock()
+                .unwrap()
+                .is_some_and(|ready| ready >= released),
+            "the late plan for {withdraw} was not made"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let late = task_of(&task);
+        assert!(
+            late.steps.is_empty(),
+            "a late plan took a step after {withdraw}: {late:?}"
+        );
+        no_edit(&format!("a late plan edited the record after {withdraw}"));
+        if withdraw == PAUSE_ACTION {
+            assert_eq!(late.state, TaskState::Running, "{late:?}");
+            completed(
+                &call(
+                    &browser,
+                    host_key,
+                    Some(&mut agent),
+                    ActionAddress::new(&agent_id, RESUME_ACTION),
+                    InvokeArgument::None,
+                )
+                .await,
+            );
+            receive_until(
+                &mut agent,
+                &browser_events,
+                &route,
+                &mut page,
+                agent_cert.device_public_key,
+                text,
+            )
+            .await;
+        } else {
+            assert_eq!(late.state, TaskState::Cancelled, "{late:?}");
+        }
+    }
     completed(
         &call(
             &browser,
