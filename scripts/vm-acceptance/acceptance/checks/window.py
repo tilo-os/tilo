@@ -755,6 +755,7 @@ def typing(ctx, res):
     ctx.shot("W17-typed")
     res.metrics["real_keyboard_ran_command"] = bool(real)
     if real:
+        core.assert_terminal_shell_performance(ready)
         return
     # Tell a product bug from a harness one: the same through the control socket.
     ctx.vm.key("ctrl+u")

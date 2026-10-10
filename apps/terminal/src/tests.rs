@@ -395,6 +395,15 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
         )
         .unwrap();
         ui::widget::Widget::sync(&mut widget, &doc, &automerge::ROOT);
+        let deadline = std::time::Instant::now() + HANG_BOUND;
+        while matches!(widget.session_state(), crate::sessions::OpenState::Opening) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "healthy open must finish"
+            );
+            ui::widget::Widget::update(&mut widget, &doc, &automerge::ROOT);
+            std::thread::yield_now();
+        }
         assert_eq!(widget.session_state(), &crate::sessions::OpenState::Open);
         drop(widget);
         server.join().unwrap();
@@ -441,6 +450,15 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
         )
         .unwrap();
         ui::widget::Widget::sync(&mut widget, &doc, &automerge::ROOT);
+        let deadline = std::time::Instant::now() + HANG_BOUND;
+        while matches!(widget.session_state(), crate::sessions::OpenState::Opening) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "open failure must finish"
+            );
+            ui::widget::Widget::update(&mut widget, &doc, &automerge::ROOT);
+            std::thread::yield_now();
+        }
         assert!(
             matches!(
                 widget.session_state(),

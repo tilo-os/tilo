@@ -518,8 +518,7 @@ pub struct TerminalWidget {
     native_read_only: bool,
     pty_write: Arc<Mutex<Box<dyn Write + Send>>>,
     pty_master: Arc<Mutex<Box<dyn MasterPty + Send>>>,
-    #[cfg(unix)]
-    service_lifetime: Option<std::os::unix::net::UnixStream>,
+    service_lifetime: Option<runtime_portal::pending_connection::SessionLifetime>,
     output_rx: Receiver<Vec<u8>>,
     /// At most one reader chunk that did not fit the current bounded pump.
     /// Retaining it locally preserves byte ordering without an unbounded
@@ -798,7 +797,6 @@ impl TerminalWidget {
             native_read_only: false,
             pty_write: writer,
             pty_master: master,
-            #[cfg(unix)]
             service_lifetime: None,
             output_rx,
             deferred_output: std::cell::Cell::new(None),
@@ -1192,6 +1190,7 @@ impl TerminalWidget {
         let (lifecycle, startup_reason) = match &self.sessions.state {
             OpenState::Fixed => ("fixed", None),
             OpenState::Unopened => ("unopened", None),
+            OpenState::Opening => ("opening", None),
             OpenState::Open => ("open", None),
             OpenState::AwaitingAllow => ("awaiting_allow", None),
             OpenState::Failed(reason) => ("failed", Some(reason.as_str())),
@@ -1817,7 +1816,8 @@ impl TerminalWidget {
     /// the compositor's tile host) and `Widget::sync`. Returns whether any
     /// bytes were processed this call.
     fn pump(&mut self) -> bool {
-        let native_activity = self.poll_native_ime();
+        let open_activity = self.poll_session_open();
+        let native_activity = self.poll_native_ime() || open_activity;
         // Drain every queued read and coalesce them into one buffer, then feed
         // the parser once. The reader thread hands over one `Vec` per ~8 KB
         // `read`, and a burst (`cat` of a big file, a full-screen redraw)
@@ -2343,7 +2343,9 @@ impl TerminalWidget {
                 .is_some_and(crate::target::SessionTarget::is_host)
                 && matches!(
                     self.sessions.state,
-                    crate::sessions::OpenState::Open | crate::sessions::OpenState::AwaitingAllow
+                    crate::sessions::OpenState::Open
+                        | crate::sessions::OpenState::Opening
+                        | crate::sessions::OpenState::AwaitingAllow
                 );
             if !(already_selected || self.request_device_shell()) {
                 return Err("The device shell could not open".into());
@@ -6387,8 +6389,7 @@ pub struct TerminalBackend {
     /// re-attaches to it.
     pub relay_session: Option<String>,
     native_editor: Option<crate::native_editor::Socket>,
-    #[cfg(unix)]
-    service_lifetime: Option<std::os::unix::net::UnixStream>,
+    service_lifetime: Option<runtime_portal::pending_connection::SessionLifetime>,
     #[cfg(windows)]
     pub child: Box<dyn portable_pty::Child + Send + Sync>,
 }
@@ -6507,7 +6508,6 @@ impl TerminalBackend {
             shell_name,
             relay_session: None,
             native_editor: None,
-            #[cfg(unix)]
             service_lifetime: None,
             #[cfg(windows)]
             child,
@@ -7013,7 +7013,9 @@ pub(crate) fn ush_backend_on(
         shell_name: if target.is_host() { "host" } else { "ush" }.into(),
         relay_session: response.relay_session,
         native_editor,
-        service_lifetime: Some(stream.try_clone().map_err(|e| failed(&e))?),
+        service_lifetime: Some(runtime_portal::pending_connection::SessionLifetime::new(
+            stream.try_clone().map_err(|e| failed(&e))?,
+        )),
     })
 }
 
@@ -7162,10 +7164,7 @@ impl TerminalWidget {
         self.begin_local_session();
         let widget = self;
         widget.attach_native_editor(backend.native_editor);
-        #[cfg(unix)]
-        {
-            widget.service_lifetime = backend.service_lifetime;
-        }
+        widget.service_lifetime = backend.service_lifetime;
         #[cfg(windows)]
         {
             // ConPTY keeps its output pipe open while the pseudoconsole exists.
@@ -7210,7 +7209,7 @@ impl TerminalWidget {
         let reader_lifetime = widget
             .service_lifetime
             .as_ref()
-            .and_then(|socket| socket.try_clone().ok());
+            .and_then(|socket| socket.clone_for_reader().ok());
         #[cfg(unix)]
         let session_open = move || reader_lifetime.as_ref().is_some_and(lifetime_socket_open);
         #[cfg(not(unix))]
@@ -7283,6 +7282,13 @@ impl TerminalWidget {
         let mut widget = Self::without_process(ContentStore::memory());
         widget.sessions = crate::sessions::Sessions::hosted(services);
         Ok(widget)
+    }
+
+    /// Construct a live hosted tab without doing socket IO on the host.
+    pub(crate) fn spawn_hosted_deferred() -> Self {
+        let mut widget = Self::without_process(ContentStore::memory());
+        widget.sessions = crate::sessions::Sessions::hosted_deferred();
+        widget
     }
 
     /// A live hosted tab whose required supervisor is unavailable. Keep the
