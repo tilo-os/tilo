@@ -1,6 +1,10 @@
 //! What one commit costs and what survives a crash (TIL-732): the barriers a
 //! delta commit issues, the sequence reservation across a restart, and a
 //! writer killed in the middle of committing.
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "each test keeps its workspace owner state alive until it ends, as a daemon's owner lives"
+)]
 
 use super::{SEQUENCE_RESERVATION_NS, State, isolated_test_workers, replay};
 use crate::coedit::CoeditPayload;
@@ -53,7 +57,7 @@ fn edit(index: u32) -> Vec<u8> {
 /// The owner's work for one admitted edit, as `peer.rs` drives it: take a
 /// sequence, retain the frame to `Done`, then dispose of the transaction's
 /// scratch. Asserts the retention created no scratch directory.
-fn commit(state: &mut State, sequence: u64, index: u32) {
+fn commit(state: &State, sequence: u64, index: u32) {
     let mut build = state
         .store
         .start_retain(&CHANNEL, Some(sequence), edit(index))
@@ -90,12 +94,12 @@ fn a_delta_commit_costs_its_record_barriers_only() {
     // reservation, and leave every ancestor synced.
     for index in 0..2 {
         let sequence = state.next_sequence_at(now).unwrap();
-        commit(&mut state, sequence, index);
+        commit(&state, sequence, index);
     }
     let before = crate::store::thread_fsyncs();
     for index in 2..10 {
         let sequence = state.next_sequence_at(now).unwrap();
-        commit(&mut state, sequence, index);
+        commit(&state, sequence, index);
     }
     // The record and its directory; Apple repeats the directory with
     // F_FULLFSYNC (`retained::durable_write`).
@@ -164,7 +168,7 @@ fn killed_writer_child() {
     // Bounded, in case the parent died without killing this process.
     for index in 0..100_000 {
         let sequence = state.next_sequence().unwrap();
-        commit(&mut state, sequence, index);
+        commit(&state, sequence, index);
         writeln!(out, "{ACKED}{index} {sequence}").unwrap();
         out.flush().unwrap();
     }
@@ -234,6 +238,6 @@ fn a_killed_writer_loses_no_acknowledged_edit() {
     assert!(resumed > last, "{resumed} reissues host order {last}");
     // The store takes the next edit cleanly after the crash.
     let next = u32::try_from(retained.len()).unwrap();
-    commit(&mut state, resumed, next);
+    commit(&state, resumed, next);
     assert_eq!(retained_edits(&state.store), (0..=next).collect::<Vec<_>>());
 }
