@@ -1847,3 +1847,5 @@ mod sms_first_journey;
 
 #[path = "messaging_native_first_tests.rs"]
 mod native_first_journey;
+#[path = "messaging_whatsapp_first_tests.rs"]
+mod whatsapp_first_tests;
