@@ -342,13 +342,8 @@ fn observe_owned_runtime(
     use crate::run_observation::{RuntimeSample, sample_process, verify_process};
     owned_container(handle).map_err(|_| "runtime custody unavailable")?;
     let started = Instant::now();
-    let captured_at_unix_ms = u64::try_from(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|_| "observation wall clock unavailable")?
-            .as_millis(),
-    )
-    .map_err(|_| "observation timestamp overflow")?;
+    let captured_at_unix_ms =
+        tilo_clock::try_unix_now_ms().ok_or("observation wall clock unavailable")?;
     let boot_id = std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
         .map_err(|_| "boot identity unavailable")?;
     if boot_id.trim().len() != 36 {

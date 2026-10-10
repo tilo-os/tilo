@@ -48,11 +48,11 @@ pub struct Workspace {
     /// Completed transfers retaining the outgoing owner's signed authorization
     /// and the exact recipient's signed acceptance. This is append-only audit
     /// evidence, not a second source of current ownership.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "crate::history::omitted")]
     pub ownership_transfer_audit: Vec<collab_types::OwnershipTransferAuditV1>,
     /// Owner-signed cancellations retained so a cancelled proposal cannot be
     /// replayed after restart.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "crate::history::omitted")]
     pub ownership_transfer_cancellations: Vec<collab_types::OwnershipTransferCancellationV1>,
     /// **Every** permission in this room, as capabilities — one list, one
     /// vocabulary (room membership, file shares, portal grants), so it
@@ -75,7 +75,7 @@ pub struct Workspace {
     pub tasks: Vec<WorkspaceTask>,
     /// Consequential effects are activity, but never pretend to be edits to
     /// an app's collaborative document.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "crate::history::omitted")]
     pub effect_receipts: Vec<WorkspaceEffectReceipt>,
     /// Shortcuts saved in this workspace: a person's own in their personal
     /// workspace, shared ones in a collaborative one. Projected as a CRDT
@@ -119,6 +119,30 @@ pub const PROFILE_ASSIGN_ACTION_ID: &str = "profile.assign";
 pub const APP_ACTION_GRANT_ACTION_ID: &str = "app-action.grant";
 /// Governance action taking such a grant back.
 pub const APP_ACTION_REVOKE_ACTION_ID: &str = "app-action.revoke";
+
+/// The resource the workspace publishes its governance actions on, for the
+/// room `room`. An action grant names a resource, so a grant of a
+/// governance action names this one.
+#[must_use]
+pub fn governance_resource_id(room: &RoomId) -> String {
+    format!("workspace.permissions:{room}")
+}
+
+/// The resource the workspace publishes one permission profile on, named
+/// `name`, with that profile's own `profile.assign`. A grant of assigning
+/// that one profile names this resource.
+#[must_use]
+pub fn permission_profile_resource_id(room: &RoomId, name: &str) -> String {
+    format!(
+        "workspace.permission-profile:{room}:{}",
+        hex::encode(
+            blake3::hash(name.as_bytes())
+                .as_bytes()
+                .get(..12)
+                .unwrap_or_default()
+        )
+    )
+}
 
 /// A role's stable name, as a collaborator row records it
 /// ([`crate::Collaborator::role_id`]). Surfaces translate it for display
@@ -366,7 +390,12 @@ impl Workspace {
     /// without `Admin` cannot widen anyone's access, including their
     /// own. `None` when the grantor lacks that authority.
     pub fn grant_as_at(&mut self, grantor: &UserId, cap: CapOverride, now: u64) -> Option<String> {
-        if !self.may_administer_at(grantor, now) {
+        // Workspace policy never matches an action-on-every-resource-of-a-kind
+        // scope, which only a shortcut's grant is checked against: as a
+        // workspace capability it would be a grant or restriction that does
+        // nothing.
+        if !self.may_administer_at(grantor, now) || matches!(cap.scope, Scope::ActionOnKind { .. })
+        {
             return None;
         }
         let cap = cap.granted_by(Principal::Person(grantor.clone()));
@@ -392,6 +421,17 @@ impl Workspace {
         )
     }
 
+    /// The governance action `action` of this workspace, as a capability
+    /// check names it.
+    #[must_use]
+    pub fn governance_action(&self, action: &str) -> ResourceRef {
+        ResourceRef::Action {
+            app: WORKSPACE_GOVERNANCE_APP_ID.into(),
+            resource: governance_resource_id(&self.room),
+            action: action.into(),
+        }
+    }
+
     /// Actor-general form used by the broker. Agents and apps have no ambient
     /// role; they can manage profiles only when explicitly granted this exact
     /// governance action (or the containing governance app/workspace).
@@ -409,10 +449,7 @@ impl Workspace {
     ) -> Result<(), PermissionProfileMutationError> {
         if !self.allows_at(
             actor,
-            &ResourceRef::Action {
-                app: WORKSPACE_GOVERNANCE_APP_ID.into(),
-                action: PROFILE_SAVE_ACTION_ID.into(),
-            },
+            &self.governance_action(PROFILE_SAVE_ACTION_ID),
             Verb::Admin,
             now,
         ) {
@@ -476,23 +513,29 @@ impl Workspace {
         expiry: Expiry,
         now: u64,
     ) -> Result<Vec<String>, PermissionProfileMutationError> {
-        if !self.allows_at(
-            actor,
-            &ResourceRef::Action {
-                app: WORKSPACE_GOVERNANCE_APP_ID.into(),
-                action: PROFILE_ASSIGN_ACTION_ID.into(),
-            },
-            Verb::Admin,
-            now,
-        ) {
-            return Err(PermissionProfileMutationError::NotAdministrator);
-        }
         let profile = self
             .permission_profiles
             .iter()
             .find(|profile| profile.name.eq_ignore_ascii_case(profile_name.trim()))
-            .cloned()
-            .ok_or(PermissionProfileMutationError::NotFound)?;
+            .cloned();
+        // Assigning is published on the workspace's permissions and on each
+        // profile's own resource: a grant on either reaches this profile.
+        let on_profile = profile.as_ref().map(|profile| ResourceRef::Action {
+            app: WORKSPACE_GOVERNANCE_APP_ID.into(),
+            resource: permission_profile_resource_id(&self.room, &profile.name),
+            action: PROFILE_ASSIGN_ACTION_ID.into(),
+        });
+        if !self.allows_at(
+            actor,
+            &self.governance_action(PROFILE_ASSIGN_ACTION_ID),
+            Verb::Admin,
+            now,
+        ) && !on_profile
+            .is_some_and(|resource| self.allows_at(actor, &resource, Verb::Admin, now))
+        {
+            return Err(PermissionProfileMutationError::NotAdministrator);
+        }
+        let profile = profile.ok_or(PermissionProfileMutationError::NotFound)?;
         let grantor = actor
             .principals
             .iter()
@@ -898,6 +941,55 @@ impl Workspace {
             shortcuts: Vec::new(),
             schedule_claims: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
+        }
+    }
+
+    /// A copy holding what authority decisions read — identity, owner,
+    /// membership, capabilities, profiles, defaults — and none of the
+    /// layout or history: no strips, tasks, effect receipts, shortcuts,
+    /// schedule claims or ownership-transfer records. For a caller that
+    /// must not hold the tree while it asks [`Self::decide_at`] and its
+    /// kin, so the copy costs the policy, not the workspace's past.
+    #[must_use]
+    pub fn policy_view(&self) -> Self {
+        // Destructured, so a new field has to be sorted into one side.
+        let Self {
+            id,
+            room,
+            name,
+            strips: _,
+            collaborators,
+            owner,
+            pending_ownership_transfer,
+            ownership_transfer_audit: _,
+            ownership_transfer_cancellations: _,
+            capabilities,
+            permission_profiles,
+            default_apps,
+            tasks: _,
+            effect_receipts: _,
+            shortcuts: _,
+            schedule_claims: _,
+            shared_surfaces,
+        } = self;
+        Self {
+            id: *id,
+            room: *room,
+            name: name.clone(),
+            strips: Vec::new(),
+            collaborators: collaborators.clone(),
+            owner: owner.clone(),
+            pending_ownership_transfer: pending_ownership_transfer.clone(),
+            ownership_transfer_audit: Vec::new(),
+            ownership_transfer_cancellations: Vec::new(),
+            capabilities: capabilities.clone(),
+            permission_profiles: permission_profiles.clone(),
+            default_apps: default_apps.clone(),
+            tasks: Vec::new(),
+            effect_receipts: Vec::new(),
+            shortcuts: Vec::new(),
+            schedule_claims: Vec::new(),
+            shared_surfaces: shared_surfaces.clone(),
         }
     }
 

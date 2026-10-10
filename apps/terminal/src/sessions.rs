@@ -248,7 +248,7 @@ impl Sessions {
             return;
         }
         if matches!(self.source, Source::Hosted { .. }) {
-            self.legacy_vms = xdg_paths::xdg::data_home()
+            self.legacy_vms = tilo_paths::xdg::data_home()
                 .map(|data| legacy_vms_under(&data))
                 .unwrap_or_default();
         }

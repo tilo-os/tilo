@@ -65,10 +65,7 @@ fn h264_aac_mp4_plays_pauses_seeks_and_resumes_through_app_actions() {
         exercise_app(Path::new(&root));
         return;
     }
-    let nonce = ui::time::wall()
-        .duration_since(ui::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
+    let nonce = ui::time::try_unix_now_ns().unwrap();
     let root =
         std::env::temp_dir().join(format!("tilo MP4 日本語 #%-{}-{nonce}", std::process::id()));
     std::fs::create_dir(&root).unwrap();

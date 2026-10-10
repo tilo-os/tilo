@@ -41,11 +41,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -56,9 +52,11 @@ use std::path::{Path, PathBuf};
 use serde_json::{Map, Value};
 
 pub mod app_scope;
+pub mod appearance;
 pub mod continuity;
 pub mod day_schedule;
 pub mod device_displays;
+pub mod dictation;
 pub mod display_control;
 pub mod display_identify;
 pub mod display_mode;
@@ -66,8 +64,11 @@ pub mod display_placement;
 pub mod display_scale;
 pub mod display_tools;
 pub mod hardware;
+mod key;
 pub mod keyboard_shortcuts;
 pub mod keyboard_sources;
+#[cfg(feature = "watch")]
+pub mod live;
 pub mod magnifier;
 pub mod notification_policy;
 pub mod person_displays;
@@ -80,11 +81,12 @@ pub mod system_sounds;
 #[cfg(feature = "watch")]
 pub mod watch;
 
+pub use key::{Key, SectionWrite};
 pub use section_digest::SectionDigest;
 pub use session::{SessionPaths, SessionSettings};
 pub use source::{
-    ChangeSignal, ConditionalUpdate, DisplayUpdate, HostDocument, Listener, SettingsSource,
-    install_source, installed_source, merge_section,
+    ChangeOrigin, ChangeSignal, ConditionalUpdate, DisplayUpdate, HostDocument, Listener,
+    SectionChange, SettingsSource, install_source, installed_source, merge_section,
 };
 
 /// The file name under the Tilo config root.
@@ -225,10 +227,18 @@ fn object_section(mut doc: Map<String, Value>, name: &str) -> Map<String, Value>
 }
 
 /// Merge `values` into the top-level section `name`, preserving every other section and
-/// every key of `name` that `values` does not mention. This is the only supported write:
-/// creates the config directory and file on first use, and writes through a temp file +
-/// rename so a crash mid-write can't leave a half-written document — which would otherwise
-/// reset every pane at once.
+/// every key of `name` that `values` does not mention. Creates the config directory and
+/// file on first use, and writes through a temp file + rename so a crash mid-write can't
+/// leave a half-written document — which would otherwise reset every pane at once.
+///
+/// This is the raw, untyped write every other write reduces to. Production code names a
+/// setting through a [`Key`] (one leaf) or a [`SectionWrite`] (several leaves of one
+/// section) instead, so a misspelt section or a mistyped value cannot compile.
+/// `tools/policy/check_settings_writes.py` refuses a string-literal section name here
+/// outside this crate; the callers left are the ones that move a section they own as a
+/// whole: the framework's `ui::storage` scopes and app settings channel, the device
+/// fabric's roamed write-back, the Settings app's multi-section document writers and
+/// schema owners that name their section through their own constant.
 ///
 /// # Errors
 ///
@@ -240,6 +250,63 @@ pub fn update_section(name: &str, values: Map<String, Value>) -> std::io::Result
         return source.update_section(name, values);
     }
     update_section_at(&file_write_path()?, name, values)
+}
+
+/// [`update_section`], recording who and what made the change with every leaf it changes.
+/// Only the session's records keep a history; a process writing the file directly is
+/// taken in by the session with no origin.
+///
+/// # Errors
+///
+/// As [`update_section`].
+pub fn update_section_by(
+    name: &str,
+    values: Map<String, Value>,
+    origin: &ChangeOrigin,
+) -> std::io::Result<()> {
+    if let Some(source) = installed_source() {
+        return source.update_section_by(name, values, origin);
+    }
+    update_section_at(&file_write_path()?, name, values)
+}
+
+/// Read section `name` and merge what `change` makes of it, as one step no other write
+/// lands inside: under the installed source's lock, else under the file's lock. `change`
+/// is called once. This is the read-modify-write behind [`Key::update`].
+///
+/// # Errors
+///
+/// As [`update_section`].
+pub fn update_section_with(
+    name: &str,
+    origin: &ChangeOrigin,
+    change: &mut SectionChange<'_>,
+) -> std::io::Result<()> {
+    if let Some(source) = installed_source() {
+        return source.update_section_with(name, origin, change);
+    }
+    update_section_with_at(&file_write_path()?, name, change)
+}
+
+/// [`update_section_with`] on the settings file at `path`, under its lock. Taking the lock
+/// creates the directory, so that even the first write is taken under it.
+///
+/// # Errors
+///
+/// The file cannot be locked, or the document can't be serialised or written.
+pub fn update_section_with_at(
+    path: &Path,
+    name: &str,
+    change: &mut SectionChange<'_>,
+) -> std::io::Result<()> {
+    let _lock = session::lock_copy(path)?;
+    let mut doc = load_at(path);
+    let current = match doc.get(name) {
+        Some(Value::Object(section)) => section.clone(),
+        _ => Map::new(),
+    };
+    merge_section(&mut doc, name, change(&current));
+    write_atomic(path, &Value::Object(doc))
 }
 
 /// The canonical file path, with the same test isolation guard as writes.
@@ -483,10 +550,7 @@ mod tests {
         let p = std::env::temp_dir().join(format!(
             "tilo-settings-store-{}-{:?}-{}",
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos(),
+            tilo_clock::try_unix_now_ns().unwrap(),
             TMPDIR_SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));
         std::fs::create_dir_all(&p).unwrap();
@@ -781,7 +845,8 @@ mod tests {
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 mod parent_durability_tests {
     use super::*;
     use std::{cell::RefCell, rc::Rc};

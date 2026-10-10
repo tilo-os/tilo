@@ -398,12 +398,6 @@ impl WeatherApp {
         Self::assemble(core)
     }
 
-    /// The id of the currently selected city, if any. Lets a test observe where
-    /// a search activation navigated.
-    pub fn selected_city(&self) -> Option<crate::model::LocationId> {
-        self.core.borrow().model.selected_location().map(|l| l.id)
-    }
-
     /// Spawn the worker (idempotent) and queue the initial forecast refresh
     /// for every saved location. No-op for the offline capture/test path.
     fn ensure_service(&mut self) {
@@ -746,34 +740,11 @@ mod interaction_tests {
     use vello::kurbo::Point as KPoint;
     use winit::dpi::PhysicalPosition;
     use winit::event::{
-        DeviceId, ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, TouchPhase,
-        WindowEvent,
+        ElementState, Modifiers, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent,
     };
-    use winit::keyboard::{Key, KeyLocation, NamedKey, NativeKeyCode, PhysicalKey, SmolStr};
+    use winit::keyboard::{Key, NamedKey, SmolStr};
 
-    fn synth_device() -> DeviceId {
-        unsafe { std::mem::zeroed() }
-    }
-
-    /// Build a real `WindowEvent::KeyboardInput`. winit 0.30 keeps
-    /// `KeyEvent::platform_specific` `pub(crate)`, so the struct is
-    /// zero-initialised (every public field tolerates the all-zero bit
-    /// pattern) and the fields the handler reads are overwritten — the same
-    /// trick the ui/shell and sibling-app test harnesses use.
-    fn key_event(logical_key: Key, text: Option<&str>) -> WindowEvent {
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = logical_key;
-        ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-        ev.location = KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = text.map(SmolStr::new);
-        WindowEvent::KeyboardInput {
-            device_id: synth_device(),
-            event: ev,
-            is_synthetic: false,
-        }
-    }
+    use ui::synthetic_input::key_press;
 
     struct Harness {
         app: Framed<WeatherApp>,
@@ -827,7 +798,7 @@ mod interaction_tests {
 
         fn move_to(&mut self, x: f64, y: f64) {
             self.dispatch(&WindowEvent::CursorMoved {
-                device_id: synth_device(),
+                device_id: winit::event::DeviceId::dummy(),
                 position: PhysicalPosition::new(x, y),
             });
         }
@@ -835,12 +806,12 @@ mod interaction_tests {
         fn click(&mut self, x: f64, y: f64) {
             self.move_to(x, y);
             self.dispatch(&WindowEvent::MouseInput {
-                device_id: synth_device(),
+                device_id: winit::event::DeviceId::dummy(),
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
             });
             self.dispatch(&WindowEvent::MouseInput {
-                device_id: synth_device(),
+                device_id: winit::event::DeviceId::dummy(),
                 state: ElementState::Released,
                 button: MouseButton::Left,
             });
@@ -849,7 +820,7 @@ mod interaction_tests {
         fn press(&mut self, x: f64, y: f64) {
             self.move_to(x, y);
             self.dispatch(&WindowEvent::MouseInput {
-                device_id: synth_device(),
+                device_id: winit::event::DeviceId::dummy(),
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
             });
@@ -857,7 +828,7 @@ mod interaction_tests {
 
         fn release(&mut self) {
             self.dispatch(&WindowEvent::MouseInput {
-                device_id: synth_device(),
+                device_id: winit::event::DeviceId::dummy(),
                 state: ElementState::Released,
                 button: MouseButton::Left,
             });
@@ -866,14 +837,14 @@ mod interaction_tests {
         fn right_click(&mut self, x: f64, y: f64) {
             self.move_to(x, y);
             self.dispatch(&WindowEvent::MouseInput {
-                device_id: synth_device(),
+                device_id: winit::event::DeviceId::dummy(),
                 state: ElementState::Pressed,
                 button: MouseButton::Right,
             });
         }
 
         fn key(&mut self, logical_key: Key, text: Option<&str>) {
-            self.dispatch(&key_event(logical_key, text));
+            self.dispatch(&key_press(logical_key, text));
         }
 
         /// Centre-y of the saved-place row at `i`, from the live list.
@@ -967,7 +938,7 @@ mod interaction_tests {
             let content = h.app.nav.geometry().content_column;
             h.move_to(content.center().x, content.y0 + 120.0);
             h.dispatch(&WindowEvent::MouseWheel {
-                device_id: synth_device(),
+                device_id: winit::event::DeviceId::dummy(),
                 delta: MouseScrollDelta::LineDelta(0.0, -1.0),
                 phase: TouchPhase::Moved,
             });
@@ -994,7 +965,7 @@ mod interaction_tests {
             let p = vp.center();
             h.move_to(p.x, p.y);
             h.dispatch(&WindowEvent::MouseWheel {
-                device_id: synth_device(),
+                device_id: winit::event::DeviceId::dummy(),
                 delta: MouseScrollDelta::LineDelta(-2.0, 0.0),
                 phase: TouchPhase::Moved,
             });

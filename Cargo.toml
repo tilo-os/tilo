@@ -192,6 +192,7 @@ members = [
     "crates/hosting/tilo-relay",
     "crates/hosting/tilo-relay-client",
     "crates/hosting/tilo-relay-protocol",
+    "crates/hosting/tilo-relay-session",
 
     # Media
     "crates/media/ocr",
@@ -240,6 +241,7 @@ members = [
     "crates/platform/tilo-capture",
     "crates/platform/tilo-clipboard",
     "crates/platform/tilo-input-context",
+    "crates/platform/tilo-platform-caps",
     "crates/platform/tilo-clock",
     "crates/platform/tilo-contact-directory",
     "crates/platform/tilo-dialogs",
@@ -316,6 +318,7 @@ members = [
     "crates/system/durable-store",
     "crates/system/fs",
     "crates/system/fs-content",
+    "crates/system/fs-protocol",
     "crates/system/fs-native",
     "crates/system/host-fs",
     "crates/system/host-info",
@@ -336,6 +339,7 @@ members = [
     "crates/system/tilo-dav",
     "crates/system/tilo-oauth",
     "crates/system/tilo-native-certs",
+    "crates/system/tilo-nm",
     "crates/system/tilo-rollback",
     "crates/system/tilo-seal",
     "crates/system/tilo-sibling-unlock",
@@ -343,7 +347,6 @@ members = [
     "crates/system/tinker",
     "crates/system/tts",
     "crates/system/wire-frame",
-    "crates/system/xdg-paths",
 
     # Text
     "crates/text/emoji",

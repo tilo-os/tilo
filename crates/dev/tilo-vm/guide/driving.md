@@ -80,7 +80,7 @@ named "Throwaway test identity" and marked as one beside its record, and the
 op never replaces or adopts a real identity. A newly minted identity comes
 with fresh desktop state: tilo-vmd stops the session, removes the user's
 `~/.config/tilo/state.json` and the files beside it that belong to it
-(`state.automerge`, its `.meta`, `state.json.invocations`), and starts it
+(`state.automerge`, its `.log` and `.meta`, `state.json.invocations`), and starts it
 again, since a workspace made before the identity belongs to the Unix user
 and hides app launches. Running the same create again keeps the identity and the layout.
 

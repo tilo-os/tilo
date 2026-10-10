@@ -484,7 +484,10 @@ mod tests {
                              key: &str,
                              modifiers: ModifiersState| {
                 frame.dispatch_event(
-                    &crate::shell::test_support::typed_key_event(Key::Character(key.into())),
+                    &ui::synthetic_input::key_input(
+                        &Key::Character(key.into()),
+                        winit::event::ElementState::Pressed,
+                    ),
                     &Modifiers::from(modifiers),
                     &mut ui::widget::Edits::lend(&mut document),
                     &automerge::ROOT,

@@ -53,10 +53,6 @@ impl Encoder {
         }
     }
 
-    pub fn packet_count(&self) -> usize {
-        self.packets.len()
-    }
-
     /// Check that `packet` still fits the decoded byte budget.
     ///
     /// # Errors

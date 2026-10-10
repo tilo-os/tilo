@@ -107,11 +107,6 @@ pub fn open_project_address(id: Id) -> ActionAddress {
     ActionAddress::new(project_resource_id(id), "open")
 }
 
-/// Canonical view action selecting one calendar collection.
-pub fn open_calendar_address(id: &str) -> ActionAddress {
-    ActionAddress::new(calendar_resource_id(id), "open")
-}
-
 /// Opening an item — an event, an occurrence, a task, a project or a
 /// calendar — as the item offers it.
 pub(crate) fn open_spec(item: String) -> ActionSpec {
@@ -1798,9 +1793,7 @@ mod tests {
     use ui::widget::Widget;
 
     fn registry() -> ActionRegistry {
-        let mut r = ActionRegistry::new();
-        register(&mut r);
-        r
+        ActionRegistry::with(register)
     }
 
     fn find_kind<'a>(resources: &'a [Resource], kind: &str) -> Option<&'a Resource> {

@@ -42,6 +42,9 @@ mod resource_support;
 pub mod mounted_resource;
 
 tilo_automerge_isolate::test_worker!();
+// Room actions hold each record in a confined app worker: this binary,
+// started again.
+tilo_agent_participant::app_worker!();
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -633,6 +636,14 @@ impl Browser {
     /// Create `app`'s record the way a page does, then close it: nobody has
     /// it open afterwards.
     fn create(&mut self, app: &str) -> DocumentRoute {
+        self.create_before_publish(app, |_| {})
+    }
+
+    fn create_before_publish(
+        &mut self,
+        app: &str,
+        before_publish: impl FnOnce(&DocumentRoute),
+    ) -> DocumentRoute {
         let mut page = Replica::open(
             &common::catalogue(),
             app,
@@ -648,6 +659,7 @@ impl Browser {
             record: page.wire_record().to_owned(),
         };
         let mutation = page.take_mutation().unwrap();
+        before_publish(&route);
         self.peer.publish(route.clone(), &mutation).unwrap();
         // The host never echoes a device's own change back to it.
         let bytes = match mutation {
@@ -718,6 +730,7 @@ fn request(provider: &str, address: ActionAddress, argument: InvokeArgument) -> 
         context: None,
         confirmation: None,
         revision: None,
+        wait_ms: None,
     }
 }
 
@@ -818,7 +831,7 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let hosted = start(&root, &host, state.path()).await;
-    let _steward = steward::Steward::start(&hosted.relay, &root).await;
+    let steward = steward::Steward::start(&hosted.relay, &root).await;
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     let host_key = host.cert.device_public_key;
 
@@ -962,9 +975,14 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
 
     // 5. Cancel: an invocation queued behind another is cancelled before it
     // starts and never runs; a finished one cannot be cancelled.
-    // The first job mounts a record the host has never mounted, which keeps
-    // the service busy while the cancel for the second arrives.
-    let busy_route = browser.create(SHEETS);
+    // Hold the first record's real host admission so its mount cannot finish
+    // before the queued invocation's cancel arrives. A cold mount alone is
+    // not a synchronization boundary on a fast or differently scheduled host.
+    let mut held = None;
+    let busy_route = browser.create_before_publish(SHEETS, |route| {
+        held = Some(steward.hold_admission(route, host_key));
+    });
+    let held = held.unwrap();
     browser.peer.barrier().unwrap().recv().unwrap().unwrap();
     let slow = request(
         &record_provider(&busy_route),
@@ -972,6 +990,7 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
         sheet_named("Busy"),
     );
     let queued = request(&sheets_provider, new_sheet, sheet_named("Never"));
+    held.requested().await;
     browser.send(RemoteActionMessage::Invoke(slow.clone()));
     browser.send(RemoteActionMessage::Invoke(queued.clone()));
     browser.send(RemoteActionMessage::Cancel {
@@ -987,10 +1006,11 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
             _ => None,
         })
         .await;
+    drop(held);
     let queued_receipt = browser.receipt(queued.invocation).await;
     let slow_receipt = browser.receipt(slow.invocation).await;
     assert!(
-        !matches!(slow_receipt.status, ReceiptStatus::Accepted),
+        matches!(slow_receipt.status, ReceiptStatus::Completed { .. }),
         "{slow_receipt:?}"
     );
     match cancel {
@@ -999,9 +1019,7 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
                 matches!(queued_receipt.status, ReceiptStatus::Cancelled { .. }),
                 "{queued_receipt:?}"
             );
-            browser.send(RemoteActionMessage::Observe {
-                invocation: queued.invocation,
-            });
+            browser.send(RemoteActionMessage::observe(queued.invocation));
             let observed = browser
                 .answer("observe", |answer| match answer {
                     RemoteActionMessage::Update { invocation, state }

@@ -155,7 +155,10 @@ class AppReleaseTests(unittest.TestCase):
         with self.subTest(phase='actual packaging closure inputs never silently select zero'):
             inputs = {
                 "tools/ci/rustc-thin-app-wrapper.sh": "binary",
+                "tools/ci/runtime-dylib-lazy-link.py": "binary",
                 "os/scripts/bake-runtime-bundle.sh": "packaging",
+                "os/scripts/collect-runtime-dependencies.py": "packaging",
+                "os/scripts/verify-runtime-bundle-closure.sh": "verification",
                 "os/scripts/verify-elf-hardening.sh": "verification",
                 "os/Containerfile.builder": "binary",
                 "os/external-assets/github-assets.tsv": "binary",

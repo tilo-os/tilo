@@ -474,6 +474,15 @@ and `tilo.generation=` reach the sealed command line through the same mechanism
 that already existed for the unsealed one. `os/dev/uki.sh` is the script it runs,
 and it fails the build if the generation did not make it into the seal.
 
+The board images (`os/Containerfile.board`) and the dev installer base
+(`os/Containerfile.dev-installer-base`) seal the same way, with the same
+`uki-tools` and `uki` stages. The tools come from one list,
+`os/dev/uki-tools.packages`, and every `uki` stage declares the same seal inputs
+(`TILO_CFS_DIGEST`, `TILO_SEAL_GENERATION`). `tools/policy/check_uki_pipeline.py`
+fails when one copy changes alone, and when a `final` stage adds anything but
+the UKI. The composefs probe under `os/dev/composefs/` is deliberately separate,
+and its header says why.
+
 Two details matter at the release boundary:
 
 - **An ordinary development build does not sign the UKI.** Published release

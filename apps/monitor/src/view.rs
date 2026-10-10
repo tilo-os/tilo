@@ -500,15 +500,9 @@ fn origin_of(taffy: &TaffyTree<()>, node: NodeId, parent: Point) -> Point {
 }
 
 fn rect_of(taffy: &TaffyTree<()>, node: NodeId, origin: Point) -> Rect {
-    taffy.layout(node).map_or(Rect::ZERO, |layout| {
-        Rect::from_origin_size(
-            (
-                origin.x + f64::from(layout.location.x),
-                origin.y + f64::from(layout.location.y),
-            ),
-            (f64::from(layout.size.width), f64::from(layout.size.height)),
-        )
-    })
+    taffy
+        .layout(node)
+        .map_or(Rect::ZERO, |layout| ui::widget::placed(layout, origin))
 }
 
 /// Child node ids of the last layout.

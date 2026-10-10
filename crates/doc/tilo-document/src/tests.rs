@@ -951,3 +951,102 @@ fn the_document_remembers_the_file_it_was_read_from_and_written_to() {
         Some(tilo_content::hash_bytes(b"saved").as_str())
     );
 }
+
+/// The body's blocks as `(id, kind, alt)`.
+fn block_alts(replica: &Replica<RichText>) -> Vec<(String, String, Option<String>)> {
+    let c = replica.state().unwrap().containers().clone();
+    model::materialize(replica.doc(), &c)
+        .blocks
+        .into_iter()
+        .map(|block| {
+            let alt = match block.attrs.get("alt") {
+                Some(tilo_doc::AttrVal::Str(alt)) => Some(alt.clone()),
+                None => None,
+                other => panic!("alt is {other:?}"),
+            };
+            (block.id, block.kind, alt)
+        })
+        .collect()
+}
+
+#[test]
+fn an_image_description_is_set_and_cleared_only_on_an_image() {
+    let mut replica = document(1);
+    let paragraph = replica.state().unwrap().body().id_at(1).unwrap().to_owned();
+    replica
+        .apply_action(
+            &RichTextAction::InsertImage {
+                block: paragraph.clone(),
+                at: 0,
+                content: "ab".repeat(32),
+                mime: "image/jpeg".into(),
+                len: 1_024,
+                width: Some(640),
+                height: Some(480),
+            },
+            "Insert image",
+        )
+        .unwrap();
+    let image = block_alts(&replica)
+        .into_iter()
+        .find(|(_, kind, _)| kind == "image")
+        .map(|(id, _, _)| id)
+        .expect("the image was inserted");
+    let set = |blocks: Vec<String>, alt: &str| RichTextAction::SetBlockAttr {
+        region: RegionKind::Body,
+        blocks,
+        key: "alt".into(),
+        value: action::AttrVal::Str(alt.into()),
+    };
+
+    let heads = replica.heads();
+    for (blocks, alt) in [
+        // A paragraph has no description to set.
+        (vec![paragraph.clone()], "A desk light"),
+        // Nor does a mixed selection, even with an image in it.
+        (vec![image.clone(), paragraph], "A desk light"),
+        // Blank, multi-line and oversized descriptions.
+        (vec![image.clone()], "   "),
+        (vec![image.clone()], "A desk\nlight"),
+        (
+            vec![image.clone()],
+            &"x".repeat(action::MAX_IMAGE_ALT_CHARS + 1),
+        ),
+        // A stale image.
+        (vec!["gone".to_owned()], "A desk light"),
+    ] {
+        assert!(
+            replica
+                .apply_action(&set(blocks, alt), "Describe image")
+                .is_err(),
+            "{alt:?} was accepted"
+        );
+    }
+    assert_eq!(replica.heads(), heads, "nothing was written");
+
+    let alt = "Chalk-white articulated desk light on a desk, with a deep-teal campaign panel to the right.";
+    replica
+        .apply_action(&set(vec![image.clone()], alt), "Describe image")
+        .unwrap();
+    let described = block_alts(&replica);
+    assert!(described.contains(&(image.clone(), "image".into(), Some(alt.to_owned()))));
+    assert!(
+        described
+            .iter()
+            .filter(|(id, _, _)| *id != image)
+            .all(|(_, _, alt)| alt.is_none()),
+        "only the image is described"
+    );
+
+    replica
+        .apply_action(
+            &RichTextAction::ClearBlockAttr {
+                region: RegionKind::Body,
+                blocks: vec![image],
+                key: "alt".into(),
+            },
+            "Clear image description",
+        )
+        .unwrap();
+    assert!(block_alts(&replica).iter().all(|(_, _, alt)| alt.is_none()));
+}

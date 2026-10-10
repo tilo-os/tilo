@@ -41,7 +41,7 @@ use crate::accesskit_bridge::{
 use crate::permissions::PermissionContext;
 use crate::presence::PresenceCtx;
 use crate::state::State;
-use crate::synthetic_input::key_event;
+use crate::synthetic_input::key_input;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::{EventCtx, TaffyTreeExt, Widget};
@@ -531,7 +531,6 @@ pub struct FrameHarness {
     history_chrome_enabled: bool,
     history_layout: Option<crate::standalone_history_host::HostHistoryLayout>,
     history_focus_pending: bool,
-    #[allow(dead_code, reason = "used by feature-gated history input paths")]
     history_pointer_owned: bool,
     text: TextRenderer,
     theme: Theme,
@@ -1405,14 +1404,6 @@ impl FrameHarness {
         self.continue_pending_history_control_checked(token, false)
     }
 
-    /// Continue after the caller explicitly confirmed this exact current item.
-    pub fn confirm_pending_history_control(
-        &mut self,
-        token: &crate::history_mode::pending_controls::ContinuationToken,
-    ) -> Option<crate::history_mode::pending_controls::PendingControlStatus> {
-        self.continue_pending_history_control_checked(token, true)
-    }
-
     /// Cancel one exact retained control without dispatching it.
     pub fn cancel_pending_history_control(
         &mut self,
@@ -1945,54 +1936,15 @@ impl FrameHarness {
     /// [`UndoButton`](crate::widget::UndoButton) both arrive here, so a
     /// scenario cannot pass against a path the user never takes.
     pub fn perform_undo(&mut self) -> bool {
-        if self.pump_component_wakes_checked().is_err() {
-            return false;
-        }
-        if crate::history_mode::embedded::keyboard_captured(
-            self.root.as_ref(),
-            self.focused,
-            &self.taffy,
-        ) || self
-            .history
-            .as_ref()
-            .is_some_and(|history| history.captures_input())
-        {
-            return false;
-        }
-        let author = self.author.clone();
-        let done = if let Some(binding) = self
-            .focused
-            .and_then(|node| self.bindings.binding_for(node))
-            .or_else(|| self.root.callback_binding())
-        {
-            Self::history_through_component(
-                &mut *self.root,
-                &mut self.state.doc,
-                &binding,
-                crate::undo::UndoRequest::Undo,
-                &self.action_registry,
-            )
-        } else if let Some(owner) = self.focused.and_then(|node| self.bindings.legacy_for(node)) {
-            crate::bound_dispatch::legacy_history_request(
-                &owner,
-                crate::undo::UndoRequest::Undo,
-                &self.permissions,
-                &author,
-            )
-            .ok()
-            .flatten()
-            .is_some()
-        } else {
-            self.state.undo_as(Some(&author), None, None).is_some()
-        };
-        if done {
-            self.relayout();
-        }
-        done
+        self.perform_history(crate::undo::UndoRequest::Undo)
     }
 
     /// Redo the last undone action. The mirror of [`Self::perform_undo`].
     pub fn perform_redo(&mut self) -> bool {
+        self.perform_history(crate::undo::UndoRequest::Redo)
+    }
+
+    fn perform_history(&mut self, request: crate::undo::UndoRequest) -> bool {
         if self.pump_component_wakes_checked().is_err() {
             return false;
         }
@@ -2017,13 +1969,13 @@ impl FrameHarness {
                 &mut *self.root,
                 &mut self.state.doc,
                 &binding,
-                crate::undo::UndoRequest::Redo,
+                request,
                 &self.action_registry,
             )
         } else if let Some(owner) = self.focused.and_then(|node| self.bindings.legacy_for(node)) {
             crate::bound_dispatch::legacy_history_request(
                 &owner,
-                crate::undo::UndoRequest::Redo,
+                request,
                 &self.permissions,
                 &author,
             )
@@ -2031,7 +1983,11 @@ impl FrameHarness {
             .flatten()
             .is_some()
         } else {
-            self.state.redo_as(Some(&author), None, None).is_some()
+            match request {
+                crate::undo::UndoRequest::Undo => self.state.undo_as(Some(&author), None, None),
+                crate::undo::UndoRequest::Redo => self.state.redo_as(Some(&author), None, None),
+            }
+            .is_some()
         };
         if done {
             self.relayout();
@@ -2501,12 +2457,6 @@ impl FrameHarness {
         self.render_png_on(out, self.theme.tokens.colors.surfaces.content);
     }
 
-    /// [`FrameHarness::render_png`] over a transparent background, for a
-    /// capture composited onto something else afterwards.
-    pub fn render_png_transparent(&self, out: &std::path::Path) {
-        self.render_png_on(out, vello::peniko::Color::TRANSPARENT);
-    }
-
     /// Rasterise the most recently laid-out frame over the window ground, as
     /// tightly packed RGBA8 rows `viewport.0` pixels wide. Empty in a browser
     /// page, which cannot read a frame back synchronously.
@@ -2615,13 +2565,6 @@ impl FrameHarness {
     pub fn records(&self) -> Option<&crate::record::RecordSet> {
         self.drain_component_wakes();
         self.records.as_ref()
-    }
-
-    /// The record the root widget names, if any. Read before installing a
-    /// record set so an app that does not use records is left alone.
-    pub fn root_record_intent(&self) -> Option<crate::record::RecordCheckout> {
-        self.drain_component_wakes();
-        crate::record::capability::record_intent(self.root.as_ref())
     }
 
     /// Deliver a trusted shell operation through the mounted app adapter.
@@ -3227,7 +3170,11 @@ impl FrameHarness {
             && let Some(saved) = self.ordinary_palette_return_focus.take()
             && !self.focus_trap_active
         {
-            let (allowed, _) = self.history_app_focus_order(self.child_node);
+            let restrictions = crate::history_mode::embedded::FocusRestrictions::collect(
+                self.root.as_ref(),
+                &self.taffy,
+            );
+            let (allowed, _) = self.history_app_focus_order(self.child_node, &restrictions);
             // SAFETY: this final layout owns the freshly admitted tree.
             self.focused = unsafe { saved.restore(&self.node_map, &self.bindings, Some(&allowed)) };
         }
@@ -3625,14 +3572,17 @@ impl FrameHarness {
             });
             return order;
         }
-        if self.history.is_some() || crate::history_mode::embedded::has_surfaces(self.root.as_ref())
-        {
+        let restrictions = crate::history_mode::embedded::FocusRestrictions::collect(
+            self.root.as_ref(),
+            &self.taffy,
+        );
+        if self.history.is_some() || restrictions.has_surfaces() {
             let root = self
                 .history
                 .as_ref()
                 .and_then(|history| history.review_layout_node())
                 .unwrap_or(self.child_node);
-            order = self.history_app_focus_order(root).0;
+            order = self.history_app_focus_order(root, &restrictions).0;
         } else {
             order =
                 crate::focus_navigation::order(self.child_node, self.root.as_ref(), &self.taffy).0;
@@ -3640,13 +3590,16 @@ impl FrameHarness {
         order
     }
 
-    fn history_app_focus_order(&self, root: NodeId) -> (Vec<NodeId>, bool) {
+    fn history_app_focus_order(
+        &self,
+        root: NodeId,
+        restrictions: &crate::history_mode::embedded::FocusRestrictions,
+    ) -> (Vec<NodeId>, bool) {
         crate::focus_navigation::mapped_order(root, &self.taffy, |node| {
-            let allowed =
-                crate::history_mode::embedded::allows_focus(self.root.as_ref(), node, &self.taffy)
-                    && self.history.as_ref().is_none_or(|history| {
-                        !history.captures_input() || history.owns_node(node, &self.taffy)
-                    });
+            let allowed = restrictions.allows(node)
+                && self.history.as_ref().is_none_or(|history| {
+                    !history.captures_input() || history.owns_node(node, &self.taffy)
+                });
             self.inspect_node(node, |widget| {
                 (
                     allowed && widget.is_focusable() && widget.is_enabled(),
@@ -3662,15 +3615,17 @@ impl FrameHarness {
         &mut self,
         before_layout: Option<crate::widget::layout::CompositionFocus>,
     ) {
-        let (mut order, trapped) = if self.history.is_some()
-            || crate::history_mode::embedded::has_surfaces(self.root.as_ref())
-        {
+        let restrictions = crate::history_mode::embedded::FocusRestrictions::collect(
+            self.root.as_ref(),
+            &self.taffy,
+        );
+        let (mut order, trapped) = if self.history.is_some() || restrictions.has_surfaces() {
             let root = self
                 .history
                 .as_ref()
                 .and_then(|history| history.review_layout_node())
                 .unwrap_or(self.child_node);
-            let (order, app_trap) = self.history_app_focus_order(root);
+            let (order, app_trap) = self.history_app_focus_order(root, &restrictions);
             (
                 order,
                 app_trap
@@ -3697,7 +3652,7 @@ impl FrameHarness {
             // Bound component delegates can be absent from Widget::children's
             // generic order. Eligibility comes from this newly admitted layout,
             // with the same embedded-history restrictions as mapped traversal.
-            let (allowed, _) = self.history_app_focus_order(self.child_node);
+            let (allowed, _) = self.history_app_focus_order(self.child_node, &restrictions);
             let restored = self.focus_before_trap.take().and_then(|saved| unsafe {
                 saved.restore(&self.node_map, &self.bindings, Some(&allowed))
             });
@@ -6884,10 +6839,13 @@ impl FrameHarness {
                     crate::bound_dispatch::resolve_resource_invocation(
                         &resources, address, argument, json, confirmed,
                     )?;
-                if !self
-                    .permissions
-                    .permits_invocation(&app_id, spec, arguments.as_ref(), argument)
-                {
+                if !self.permissions.permits_invocation(
+                    &app_id,
+                    &address.resource,
+                    spec,
+                    arguments.as_ref(),
+                    argument,
+                ) {
                     return Err(crate::bound_dispatch::denied(spec));
                 }
                 crate::invocation_scope::check_continuation(
@@ -6912,6 +6870,7 @@ impl FrameHarness {
                     &self.action_registry,
                     self.action_transport.as_mut(),
                     crate::bound_dispatch::ResourceOperation {
+                        target_route: None,
                         address,
                         resource,
                         spec,
@@ -7028,6 +6987,7 @@ impl FrameHarness {
                 if !crate::bound_dispatch::permits_local_value(
                     &self.permissions,
                     &crate::collaboration::local_app_id(),
+                    &intent.address.resource,
                     spec,
                     arguments.as_ref(),
                     None,
@@ -7053,6 +7013,7 @@ impl FrameHarness {
                     &self.action_registry,
                     self.action_transport.as_mut(),
                     crate::bound_dispatch::ResourceOperation {
+                        target_route: None,
                         address: &intent.address,
                         resource,
                         spec,
@@ -7137,6 +7098,7 @@ impl FrameHarness {
         if !crate::bound_dispatch::permits_local_value(
             &self.permissions,
             &crate::collaboration::local_app_id(),
+            &address.resource,
             spec,
             arguments.as_ref(),
             None,
@@ -7158,6 +7120,7 @@ impl FrameHarness {
             &self.action_registry,
             self.action_transport.as_mut(),
             crate::bound_dispatch::ResourceOperation {
+                target_route: None,
                 address,
                 resource,
                 spec,
@@ -7429,6 +7392,14 @@ impl FrameHarness {
     /// Returns an error when `name` is absent or its widget has no tappable
     /// layout rectangle.
     pub fn tap_named(&mut self, name: &str) -> Result<(), String> {
+        let center = self.named_center(name)?;
+        self.tap_at(center.x, center.y);
+        Ok(())
+    }
+
+    /// The centre of the named widget's laid-out rect, once pending
+    /// component wakes have landed.
+    fn named_center(&mut self, name: &str) -> Result<Point, String> {
         self.pump_component_wakes();
         let rect = self
             .targets()
@@ -7438,9 +7409,7 @@ impl FrameHarness {
         if rect.width() <= 0.0 || rect.height() <= 0.0 {
             return Err(format!("widget {name:?} has an empty rect: {rect:?}"));
         }
-        let center = rect.center();
-        self.tap_at(center.x, center.y);
-        Ok(())
+        Ok(rect.center())
     }
 
     /// Click the centre of the named widget. `Err` names the target when it
@@ -7451,17 +7420,8 @@ impl FrameHarness {
     ///
     /// Returns an error if the widget is not found or has a zero-sized rect.
     pub fn click_named(&mut self, name: &str) -> Result<(), String> {
-        self.pump_component_wakes();
-        let rect = self
-            .targets()
-            .get(name)
-            .copied()
-            .ok_or_else(|| format!("no addressable widget named {name:?}"))?;
-        if rect.width() <= 0.0 || rect.height() <= 0.0 {
-            return Err(format!("widget {name:?} has an empty rect: {rect:?}"));
-        }
-        let c = rect.center();
-        self.click_at(c.x, c.y);
+        let center = self.named_center(name)?;
+        self.click_at(center.x, center.y);
         Ok(())
     }
 
@@ -7488,7 +7448,7 @@ impl FrameHarness {
         self.pump_component_wakes();
         let key = parse_key(spec);
         for state in [ElementState::Pressed, ElementState::Released] {
-            self.send_host_event(&key_event(&key, state));
+            self.send_host_event(&key_input(&key, state));
         }
     }
 
@@ -8706,34 +8666,6 @@ fn parse_key(spec: &str) -> Key {
 // there is nothing yet to unwind. Threading a `Result` through instead
 // would mean every one of the ~15 call sites across `apps/*` duplicates
 // this same exit, for no behavioural change.
-#[allow(
-    clippy::exit,
-    reason = "arg-parsing entry point mirrors a CLI flag parser: fails fast before any window/Drop state exists, exactly like the callers already do via `std::process::exit(tilo_ui::headless::run(..))`"
-)]
-pub fn spec_from_args(args: &[String]) -> Option<Spec> {
-    let raw = value_arg(args, "--headless-drive")?;
-    match parse_spec(&raw) {
-        Ok(spec) => Some(spec),
-        Err(e) => {
-            eprintln!("--headless-drive: {e}");
-            std::process::exit(2);
-        }
-    }
-}
-
-fn value_arg(args: &[String], flag: &str) -> Option<String> {
-    let mut it = args.iter().skip(1);
-    let eq = format!("{flag}=");
-    while let Some(a) = it.next() {
-        if a == flag {
-            return it.next().cloned();
-        }
-        if let Some(rest) = a.strip_prefix(&eq) {
-            return Some(rest.to_string());
-        }
-    }
-    None
-}
 
 /// Parse the `--headless-drive` payload.
 ///
@@ -8998,6 +8930,69 @@ fn write_headless_output(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn closing_focus_trap_enumerates_history_once() {
+        let state = State::new();
+        let (root, visits) = crate::history_mode::focus_tests::FocusHistoryRoot::new(2_000, &state);
+        let mut frame = FrameHarness::new_with_controlled_inputs(
+            state,
+            Box::new(root),
+            (900, 650),
+            Theme::dark(),
+            crate::font_catalog::fixture_renderer(),
+            crate::permissions::UserId("fixture".into()),
+        );
+        frame.focus_trap_active = true;
+        visits.set(0);
+        frame.update_focus_trap(None);
+        assert!(!frame.focus_trap_active);
+        assert_eq!(
+            visits.get(),
+            1,
+            "trap closure reuses the same History snapshot"
+        );
+    }
+
+    #[test]
+    fn history_focus_order_rechecks_input_capture_between_calls() {
+        let state = State::new();
+        let (root, visits) = crate::history_mode::focus_tests::FocusHistoryRoot::new(3, &state);
+        let frame = FrameHarness::new_with_controlled_inputs(
+            state,
+            Box::new(root),
+            (900, 650),
+            Theme::dark(),
+            crate::font_catalog::fixture_renderer(),
+            crate::permissions::UserId("fixture".into()),
+        );
+        let live_rows = |order: Vec<NodeId>| {
+            order
+                .into_iter()
+                .filter_map(|node| {
+                    frame
+                        .inspect_node(node, |widget| widget.test_id().map(str::to_owned))
+                        .unwrap()
+                        .filter(|id| id.starts_with("row-"))
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(live_rows(frame.focus_order()), ["row-0", "row-1", "row-2"]);
+        crate::history_mode::capability::visit_framework_history(
+            frame.root.as_ref(),
+            &mut |history, _| {
+                assert!(history.request_open());
+            },
+        );
+        visits.set(0);
+        let captured = frame.focus_order();
+        assert_eq!(visits.get(), 1);
+        assert!(!captured.is_empty(), "History controls stay focusable");
+        assert!(
+            live_rows(captured).is_empty(),
+            "fresh capture denies live rows"
+        );
+    }
     use automerge::transaction::Transactable;
 
     /// A widget that asks for frames as configured, over its children.
@@ -9108,15 +9103,14 @@ mod tests {
             _theme: &Theme,
             node_map: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
-            let node = taffy.leaf_node(Style {
+            let style = Style {
                 size: taffy::Size {
                     width: taffy::Dimension::percent(1.0),
                     height: taffy::Dimension::percent(1.0),
                 },
                 ..Style::default()
-            });
-            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-            node
+            };
+            taffy.widget_leaf(style, node_map, self)
         }
         fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
             let layout = taffy
@@ -9261,9 +9255,7 @@ mod tests {
             _theme: &Theme,
             node_map: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
-            let node = taffy.leaf_node(Style::default());
-            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-            node
+            taffy.widget_leaf(Style::default(), node_map, self)
         }
         fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
         fn draw(
@@ -9557,7 +9549,7 @@ mod tests {
         frame.send_host_event(&WindowEvent::ModifiersChanged(
             winit::event::Modifiers::from(winit::keyboard::ModifiersState::CONTROL),
         ));
-        frame.send_host_event(&key_event(
+        frame.send_host_event(&key_input(
             &Key::Character("k".into()),
             ElementState::Pressed,
         ));
@@ -9595,14 +9587,14 @@ mod tests {
         frame.send_host_event(&WindowEvent::ModifiersChanged(
             winit::event::Modifiers::from(winit::keyboard::ModifiersState::SUPER),
         ));
-        frame.send_host_event(&key_event(
+        frame.send_host_event(&key_input(
             &Key::Character("a".into()),
             ElementState::Pressed,
         ));
         frame.send_host_event(&WindowEvent::ModifiersChanged(
             winit::event::Modifiers::default(),
         ));
-        frame.send_host_event(&key_event(
+        frame.send_host_event(&key_input(
             &Key::Character("x".into()),
             ElementState::Pressed,
         ));
@@ -9617,7 +9609,7 @@ mod tests {
         frame.send_host_event(&WindowEvent::ModifiersChanged(
             winit::event::Modifiers::default(),
         ));
-        frame.send_host_event(&key_event(
+        frame.send_host_event(&key_input(
             &Key::Named(winit::keyboard::NamedKey::Tab),
             ElementState::Pressed,
         ));
@@ -9625,7 +9617,7 @@ mod tests {
         frame.send_host_event(&WindowEvent::ModifiersChanged(
             winit::event::Modifiers::from(winit::keyboard::ModifiersState::ALT),
         ));
-        frame.send_host_event(&key_event(
+        frame.send_host_event(&key_input(
             &Key::Named(winit::keyboard::NamedKey::ArrowUp),
             ElementState::Pressed,
         ));
@@ -9635,7 +9627,7 @@ mod tests {
                 winit::keyboard::ModifiersState::ALT | winit::keyboard::ModifiersState::SHIFT,
             ),
         ));
-        frame.send_host_event(&key_event(
+        frame.send_host_event(&key_input(
             &Key::Named(winit::keyboard::NamedKey::ArrowLeft),
             ElementState::Pressed,
         ));
@@ -9652,7 +9644,7 @@ mod tests {
         document.set_platform_conventions(crate::platform::PlatformConventions::new(
             crate::platform::Platform::MacOs,
         ));
-        document.send_host_event(&key_event(
+        document.send_host_event(&key_input(
             &Key::Character("a".into()),
             ElementState::Pressed,
         ));
@@ -9663,7 +9655,7 @@ mod tests {
         document.send_host_event(&WindowEvent::ModifiersChanged(
             winit::event::Modifiers::from(winit::keyboard::ModifiersState::SUPER),
         ));
-        document.send_host_event(&key_event(
+        document.send_host_event(&key_input(
             &Key::Character("z".into()),
             ElementState::Pressed,
         ));
@@ -10280,17 +10272,14 @@ mod tests {
             _theme: &Theme,
             node_map: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
-            let node = taffy
-                .new_leaf(Style {
-                    size: Size {
-                        width: Dimension::length(120.0),
-                        height: Dimension::length(40.0),
-                    },
-                    ..Default::default()
-                })
-                .unwrap();
-            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-            node
+            let style = Style {
+                size: Size {
+                    width: Dimension::length(120.0),
+                    height: Dimension::length(40.0),
+                },
+                ..Default::default()
+            };
+            taffy.widget_leaf(style, node_map, self)
         }
 
         fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -10398,17 +10387,14 @@ mod tests {
             _theme: &Theme,
             node_map: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
-            let node = taffy
-                .new_leaf(Style {
-                    size: Size {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::percent(1.0),
-                    },
-                    ..Default::default()
-                })
-                .unwrap();
-            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-            node
+            let style = Style {
+                size: Size {
+                    width: Dimension::percent(1.0),
+                    height: Dimension::percent(1.0),
+                },
+                ..Default::default()
+            };
+            taffy.widget_leaf(style, node_map, self)
         }
 
         fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -10491,8 +10477,8 @@ mod tests {
         use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
 
         let key = Key::Character("Q".into());
-        let pressed = key_event(&key, ElementState::Pressed);
-        let released = key_event(&key, ElementState::Released);
+        let pressed = key_input(&key, ElementState::Pressed);
+        let released = key_input(&key, ElementState::Released);
 
         for (window_event, expected_state, expected_text) in [
             (pressed, ElementState::Pressed, Some("Q")),
@@ -11892,9 +11878,7 @@ mod a11y_driver_tests {
             _t: &crate::theme::Theme,
             node_map: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
-            let n = taffy.new_leaf(taffy::Style::default()).unwrap();
-            node_map.insert(n, std::ptr::from_mut::<dyn Widget>(self));
-            n
+            taffy.widget_leaf(taffy::Style::default(), node_map, self)
         }
         fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: vello::kurbo::Point) {}
         fn draw(
@@ -13635,27 +13619,19 @@ mod framed_tests {
             _theme: &Theme,
             node_map: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
-            let node = taffy
-                .new_leaf(Style {
-                    size: Size {
-                        width: Dimension::length(self.width),
-                        height: Dimension::length(40.0),
-                    },
-                    ..Default::default()
-                })
-                .unwrap();
-            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-            node
+            let style = Style {
+                size: Size {
+                    width: Dimension::length(self.width),
+                    height: Dimension::length(40.0),
+                },
+                ..Default::default()
+            };
+            taffy.widget_leaf(style, node_map, self)
         }
 
         fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
             let layout = taffy.layout(node).unwrap();
-            self.rect = Rect::new(
-                origin.x + f64::from(layout.location.x),
-                origin.y + f64::from(layout.location.y),
-                origin.x + f64::from(layout.location.x + layout.size.width),
-                origin.y + f64::from(layout.location.y + layout.size.height),
-            );
+            self.rect = crate::widget::placed(layout, origin);
         }
 
         fn draw(
@@ -13690,13 +13666,7 @@ mod framed_tests {
         }
     }
 
-    fn press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
+    use crate::synthetic_input::mouse_press;
 
     #[test]
     fn framed_root_runs_a_frame_on_mount_and_recomposes_after_mutable_access() {
@@ -13728,7 +13698,7 @@ mod framed_tests {
     fn dispatch_to_root_reaches_the_root_and_keeps_the_retained_tree() {
         let mut probe = Framed::new(State::new(), Probe::new(120.0), (400, 200), Theme::dark());
         let outcome = Framed::harness_mut(&mut probe)
-            .dispatch_to_root_outcome(&press(), &winit::event::Modifiers::default());
+            .dispatch_to_root_outcome(&mouse_press(), &winit::event::Modifiers::default());
         assert!(outcome.handled);
         assert_eq!(outcome.focus_target, None);
         assert_eq!(probe.presses, 1);
@@ -13767,9 +13737,7 @@ mod framed_tests {
             _theme: &Theme,
             node_map: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
-            let node = taffy.new_leaf(Style::default()).unwrap();
-            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-            node
+            taffy.widget_leaf(Style::default(), node_map, self)
         }
 
         fn measure(
@@ -13787,13 +13755,7 @@ mod framed_tests {
 
         fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
             let layout = taffy.layout(node).unwrap();
-            self.rect = Rect::from_origin_size(
-                (
-                    origin.x + f64::from(layout.location.x),
-                    origin.y + f64::from(layout.location.y),
-                ),
-                (f64::from(layout.size.width), f64::from(layout.size.height)),
-            );
+            self.rect = crate::widget::placed(layout, origin);
         }
 
         fn draw(

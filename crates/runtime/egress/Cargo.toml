@@ -12,7 +12,10 @@ name = "tilo_egress"
 path = "src/lib.rs"
 
 [dependencies]
+# The grant grammar and the policy over it, shared with the launcher's gate.
+collab-types = { path = "../../collab/collab-types" }
 libc.workspace = true
+tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 thiserror.workspace = true
 tracing.workspace = true
 workspace-hack = { version = "0.1" }

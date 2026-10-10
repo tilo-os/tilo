@@ -157,6 +157,9 @@ pub enum Command {
         /// VM's, read over SSH).
         #[arg(long, requires = "direct")]
         cmdline: Option<String>,
+        /// Shell only: record phase CPU timing at each stand-in slot startup.
+        #[arg(long)]
+        frame_cpu_trace: bool,
     },
     /// Keyboard, pointer, touch, pen and gamepad input on a headful slot's own seat (real kernel input path).
     #[command(
@@ -255,6 +258,9 @@ pub enum Command {
         /// Content hashes the target has verified; at most eight.
         #[arg(long)]
         cached_layer: Vec<String>,
+        /// Stream bounded raw chunks with a verified footer instead of base64.
+        #[arg(long)]
+        binary: bool,
     },
     /// Package one app on the architecture-configured remote builder.
     #[command(
@@ -1163,6 +1169,26 @@ pub enum SeatCommand {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn shell_swap_accepts_explicit_frame_cpu_recording() {
+        let cli = Cli::try_parse_from(["tilo-vm", "swap", "shell", "--frame-cpu-trace"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Swap {
+                frame_cpu_trace: true,
+                ..
+            })
+        ));
+        let cli = Cli::try_parse_from(["tilo-vm", "swap", "shell"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Swap {
+                frame_cpu_trace: false,
+                ..
+            })
+        ));
+    }
+
+    #[test]
     fn target_flag_works_before_and_after_swap() {
         use clap::Parser as _;
         for args in [
@@ -1465,7 +1491,7 @@ mod tests {
             .unwrap();
             assert!(cli.json);
             assert!(
-                matches!(cli.command, Some(Command::Swap { ref component, slot: Some(ref slot), ref from, builder: None, profile: None, direct: false, jobs: None, cmdline: None }) if component == "fs" && slot == "vm" && from == "layer:ab")
+                matches!(cli.command, Some(Command::Swap { ref component, slot: Some(ref slot), ref from, builder: None, profile: None, direct: false, jobs: None, cmdline: None, frame_cpu_trace: false }) if component == "fs" && slot == "vm" && from == "layer:ab")
             );
             assert!(Cli::try_parse_from(["tilo-vm", "swap", "vm", "fs"]).is_err());
             let cli =

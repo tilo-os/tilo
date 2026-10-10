@@ -12,9 +12,8 @@
 //!   and remotes, with fetch / pull / push and ahead/behind tracking.
 //!
 //! The live binary reads a real repository through [`repo`] (libgit2 via
-//! `git2`): the one the record opens, a path on the command line, else the
-//! one around the working directory. When none is reachable it opens an
-//! empty repository picker. Screenshots use a bundled [`sample`] so they
+//! `git2`): the one the record opens or an explicitly selected launch path.
+//! Until a repository is selected, it opens an empty repository picker. Screenshots use a bundled [`sample`] so they
 //! show a fully populated state offline. All rendering is theme-driven;
 //! durable UI preferences live in the CRDT via [`settings`].
 //!
@@ -36,11 +35,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )

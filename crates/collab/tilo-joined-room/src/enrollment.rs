@@ -61,9 +61,8 @@ pub(crate) fn restore(
         return Err("native persisted descriptor acknowledgement is incomplete".into());
     }
     if let (Some(hint), Some(host)) = (&record.hint, &record.host) {
-        let metadata =
-            tilo_delivery_protocol::delivery_v3::descriptor::inspect_persisted_hint(hint, host)
-                .map_err(|e| e.to_string())?;
+        let metadata = tilo_delivery_protocol::descriptor::inspect_persisted_hint(hint, host)
+            .map_err(|e| e.to_string())?;
         if record.floor.as_ref().is_some_and(|floor| {
             floor.generation != metadata.generation || floor.digest != metadata.descriptor_digest
         }) {
@@ -411,18 +410,53 @@ impl NativeWorkspaceOwner {
     /// Admit and durably commit a document write signed by this device,
     /// with its outgoing custody, before any receipt.
     ///
+    /// # Sequence contract
+    /// The envelope is signed before this owner turn starts, so its sequence
+    /// must come from [`collab_types::next_unordered_document_sequence`] (as
+    /// every SDK document signer does). A dense `floor + 1` read through
+    /// [`Self::with_current`] races [`Self::reconcile_outgoing`], which
+    /// reserves `floor + 1` for a recovery projection without exact evidence
+    /// in its own turn; the write is then refused as stale. A caller that
+    /// needs the dense sequence prepares it inside the turn with
+    /// [`Self::commit_document_with_current`].
+    ///
     /// # Errors
-    /// The request is not an admissible local document write, or the record
-    /// cannot be published.
+    /// The request is not an admissible local document write, its signed
+    /// sequence is stale, or the record cannot be published.
     pub fn commit_document(
         &self,
         request: tilo_peer_state::owner_commit::OwnerCommitRequest,
         now: SystemTime,
     ) -> Result<tilo_peer_state::owner_commit::OwnerCommitReceipt, String> {
+        let room = RoomId::parse(&request.room).ok_or("invalid native document room")?;
+        self.commit_document_with_current(room, |_| Ok(request), now)
+    }
+
+    /// Prepare a signed local document mutation from the current committed
+    /// room and admit it in the same owner turn. This keeps its sequence and
+    /// document basis current when other publications race the caller.
+    ///
+    /// # Errors
+    /// The room is fenced, preparation fails, or exact admission and durable
+    /// publication refuse the prepared write.
+    pub fn commit_document_with_current(
+        &self,
+        room: RoomId,
+        prepare: impl FnOnce(
+            &crate::NativeCommittedView,
+        )
+            -> Result<tilo_peer_state::owner_commit::OwnerCommitRequest, String>,
+        now: SystemTime,
+    ) -> Result<tilo_peer_state::owner_commit::OwnerCommitReceipt, String> {
         use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitReceipt};
+        let _turn = self.0.mutation.lock();
+        let mut candidate = self.with_current(room, |view| Ok(view.clone()))?;
+        let request = prepare(&candidate)?;
+        if RoomId::parse(&request.room) != Some(room) {
+            return Err("prepared native document room differs from selected room".into());
+        }
         let outgoing = publication::prepare(&request)?;
         let binding = request.binding()?;
-        let room = RoomId::parse(&request.room).ok_or("invalid native document room")?;
         let CommitOperation::Document {
             app,
             record,
@@ -431,8 +465,6 @@ impl NativeWorkspaceOwner {
         else {
             return Err("unsupported native owner commit family".into());
         };
-        let _turn = self.0.mutation.lock();
-        let mut candidate = self.with_current(room, |view| Ok(view.clone()))?;
         let device = candidate.device().device_public_key;
         if envelope.author.as_bytes() != &device {
             return Err("native local publication signer differs from selected device".into());

@@ -29,9 +29,7 @@ use ui::framework::{EffectAnswer, EffectCx, Effected};
 use ui::theme::Theme;
 use ui::tilo_resource;
 use ui::widget::{AppModel, Button, Dropdown, ModelPath, Row, Spacer, Toggle, Widget};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
-use winit::event::WindowEvent;
+use vello::kurbo::Rect;
 
 use crate::effects::effect;
 use crate::host::{Followed, PaneCx};
@@ -194,11 +192,65 @@ pub fn text_size_name(shown: &str) -> String {
         .map_or_else(|| shown.to_owned(), |(english, _)| (*english).to_owned())
 }
 
+/// The person's current appearance selectors and controls, before the OS
+/// resolves Automatic mode. Theme documents and their private content are not
+/// part of this read surface.
+#[derive(serde::Serialize)]
+struct AppearanceInspection<'a> {
+    schema: &'static str,
+    theme: &'a str,
+    mode: &'a str,
+    dark_theme: &'a str,
+    light_theme: &'a str,
+    density: f64,
+    ui_scale: f64,
+    text_scale: f64,
+    high_contrast: bool,
+    reduce_motion: bool,
+    schedule: &'a str,
+    sunrise: &'a str,
+    sunset: &'a str,
+    wallpaper_scope: &'a str,
+    wallpaper_target: &'a str,
+}
+
+impl<'a> From<&'a AppearancePrefs> for AppearanceInspection<'a> {
+    fn from(prefs: &'a AppearancePrefs) -> Self {
+        Self {
+            schema: "tilo.settings.appearance.v1",
+            theme: &prefs.theme,
+            mode: &prefs.mode,
+            dark_theme: &prefs.dark_theme,
+            light_theme: &prefs.light_theme,
+            density: prefs.density,
+            ui_scale: prefs.ui_scale,
+            text_scale: prefs.text_scale,
+            high_contrast: prefs.high_contrast,
+            reduce_motion: prefs.reduce_motion,
+            schedule: &prefs.schedule,
+            sunrise: &prefs.sunrise,
+            sunset: &prefs.sunset,
+            wallpaper_scope: &prefs.wallpaper_scope,
+            wallpaper_target: &prefs.wallpaper_target,
+        }
+    }
+}
+
 /// The look of the desktop and every app: theme, scale, contrast, motion,
 /// the day-and-night schedule and the wallpaper.
 #[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
 #[effect(operation = "settings.effect")]
 pub enum AppearanceEffect {
+    /// Read the person's current selectors and schedule without resolving
+    /// Automatic mode or changing the OS-controlled theme.
+    #[effect(
+        view,
+        returns,
+        device_only,
+        permission = "read",
+        label = "Inspect appearance preferences"
+    )]
+    InspectAppearance,
     /// Set the theme every app draws with.
     #[effect(idempotent)]
     SetTheme {
@@ -279,6 +331,12 @@ pub(crate) fn answer(
             .ok_or_else(|| format!("`{value}` is not a {what}"))
     };
     match effect {
+        AppearanceEffect::InspectAppearance => {
+            let prefs = host.settings::<AppearancePrefs>().get();
+            serde_json::to_value(AppearanceInspection::from(&prefs))
+                .map(Effected::value)
+                .map_err(|error| format!("the appearance preferences could not be read: {error}"))
+        }
         AppearanceEffect::SetTheme { theme } => {
             if !AppearancePrefs::THEMES.contains(&theme.as_str()) {
                 return Err(format!("`{theme}` is not a theme"));
@@ -462,8 +520,7 @@ pub struct AppearancePane {
     wallpaper_status: LocalState<Option<String>>,
     status_shown: Option<String>,
     structure_dirty: bool,
-    composed: Option<Box<dyn Widget>>,
-    rect: Rect,
+    composed: ui::widget::Composed,
 }
 
 impl AppearancePane {
@@ -480,8 +537,7 @@ impl AppearancePane {
             wallpaper_status,
             status_shown,
             structure_dirty: false,
-            composed: None,
-            rect: Rect::ZERO,
+            composed: ui::widget::Composed::default(),
         }
     }
 
@@ -772,9 +828,7 @@ impl Widget for AppearancePane {
             self.status_shown = status;
             self.structure_dirty = true;
         }
-        if let Some(c) = &mut self.composed {
-            c.sync(state, root);
-        }
+        self.composed.sync(state, root);
     }
     fn build_layout(
         &mut self,
@@ -782,83 +836,21 @@ impl Widget for AppearancePane {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let mut composed = self.build_composition();
-        let child = composed.build_layout(taffy, theme, node_map);
-        self.composed = Some(composed);
-        let style = taffy::Style {
-            display: taffy::Display::Flex,
-            flex_direction: taffy::FlexDirection::Column,
-            size: taffy::Size {
-                width: taffy::Dimension::percent(1.0),
-                height: taffy::Dimension::auto(),
-            },
-            ..Default::default()
-        };
-        let node = taffy.new_with_children(style, &[child]).unwrap_or(child);
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let composition = self.build_composition();
+        let child = self
+            .composed
+            .build_layout(composition, taffy, theme, node_map);
+        crate::panes::pane_node(taffy, child, node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
-        if let Some(c) = &mut self.composed
-            && let Ok(children) = taffy.children(node)
-            && let Some(&cn) = children.first()
-        {
-            c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
-        }
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut ui::text_render::TextRenderer,
-        theme: &Theme,
-        presence: &ui::presence::PresenceCtx,
-    ) {
-        if let Some(c) = &mut self.composed {
-            c.draw(scene, transform, text_renderer, theme, presence);
-        }
-    }
-
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        if let Some(c) = &mut self.composed
-            && let Ok(children) = ctx.taffy.children(ctx.node_id)
-            && let Some(&cn) = children.first()
-        {
-            c.handle_event(event, &mut ctx.reborrow(ctx.path, cn));
-        }
-    }
+    ui::forward_to_composed!(composed);
 
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
         // This pane paints only its composition. Keep a child's local visual
         // change local instead of expanding it to the whole form.
-        if let Some(composed) = &self.composed {
+        if let Some(composed) = self.composed.element() {
             composed.collect_damage(regions);
         }
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        self.composed
-            .as_ref()
-            .map(|c| c.as_ref() as &dyn Widget)
-            .into_iter()
-            .collect()
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.composed
-            .as_mut()
-            .map(|c| c.as_mut() as &mut (dyn Widget + '_))
-            .into_iter()
-            .collect()
     }
 
     fn name(&self) -> &'static str {
@@ -867,15 +859,8 @@ impl Widget for AppearancePane {
 
     fn take_structure_dirty(&mut self) -> bool {
         let own = std::mem::take(&mut self.structure_dirty);
-        let child = self
-            .composed
-            .as_mut()
-            .is_some_and(|c| c.take_structure_dirty());
+        let child = self.composed.take_structure_dirty();
         own || child
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 
     /// Surface the user's current appearance choice so the running Settings
@@ -1069,3 +1054,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "appearance/inspection_tests.rs"]
+mod inspection_tests;

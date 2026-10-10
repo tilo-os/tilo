@@ -51,8 +51,13 @@ pub struct AppActionConsentRequest {
     pub app_id: String,
     /// The application whose action it wants to use.
     pub target_app: String,
-    /// The action's id within `target_app`, as a grant scopes it.
+    /// The resource of `target_app` that publishes the action, as a grant
+    /// scopes it.
+    pub resource: String,
+    /// The action's id on `resource`, as a grant scopes it.
     pub action: String,
+    /// The resource as its publisher labels it.
+    pub resource_label: String,
     /// The action as its publisher labels it.
     pub action_label: String,
     pub risk: tilo_actions::RiskLevel,

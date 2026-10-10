@@ -185,10 +185,7 @@ async fn connected_io_join_send_subscribe_read() {
 async fn named_pipe_join_send_subscribe_read() {
     use tokio::net::windows::named_pipe::{ClientOptions, ServerOptions};
 
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
+    let nonce = tilo_clock::try_unix_now_ns().unwrap();
     let name = format!(r"\\.\pipe\tilo-rpc-test-{}-{nonce}", std::process::id());
     let server = ServerOptions::new()
         .first_pipe_instance(true)

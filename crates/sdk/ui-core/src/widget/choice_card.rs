@@ -320,12 +320,6 @@ impl ChoiceCard {
         self
     }
 
-    /// The height a card takes in `theme`, for hosts that reserve room for
-    /// a pinned stack of cards before laying it out.
-    pub fn height_for(theme: &Theme) -> f32 {
-        px(card_height(theme))
-    }
-
     #[must_use]
     pub fn with_enabled(mut self, enabled: bool) -> Self {
         self.control = self.control.with_enabled(enabled);
@@ -358,16 +352,15 @@ impl Widget for ChoiceCard {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             flex_shrink: 0.0,
             size: Size {
                 width: Dimension::percent(1.0),
                 height: Dimension::length(px(card_height(theme))),
             },
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {

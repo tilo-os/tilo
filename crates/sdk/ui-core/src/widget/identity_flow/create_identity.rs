@@ -40,7 +40,7 @@ use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
 use getrandom::{SysRng, rand_core::UnwrapErr};
-use taffy::{Dimension, Display, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, TaffyTree};
 use threshold_identity::ThresholdIdentity;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
@@ -55,8 +55,9 @@ use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::identity_flow::sheet::{
-    Align, BodyScroll, FORM_SHEET_WIDTH, Resolved, Role, Rows, SheetSpec, edited, line_height,
-    paint_text, paragraph_height, place_field, resolve, with_layout_renderer,
+    Align, BodyScroll, FORM_SHEET_WIDTH, Resolved, Role, Rows, SheetSpec, edited, field_leaf,
+    line_height, paint_text, paragraph_height, place_field, resolve, screen_style,
+    with_layout_renderer,
 };
 use crate::widget::identity_flow::{
     IdentityFlowError, IdentityRecord, IdentityStore, ScreenOutcome,
@@ -541,39 +542,14 @@ impl Widget for CreateIdentityScreen {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.layout_theme = Some(theme.clone());
-        // The field is a child node of its own — placed by the sheet, not
-        // by taffy (`Display::None`), but present in the tree so the host's
-        // focus order and the accessibility tree line up with `children()`.
-        let field = taffy.leaf_node(Style {
-            display: Display::None,
-            ..Default::default()
-        });
+        let field = field_leaf(taffy);
         node_map.insert(field, std::ptr::from_mut::<dyn Widget>(&mut self.name));
         self.name_node = Some(field);
-        // The screen owns the viewport, so the sheet centres on the window
-        // rather than inside a fixed box at the origin.
-        let node = taffy.parent_node(
-            Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
-                ..Default::default()
-            },
-            &[field],
-        );
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_node(screen_style(), &[field], node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         // Hit rects are ready before the first paint and after every
         // state change that reshapes the body.
         if let Some(theme) = self.layout_theme.clone() {
@@ -693,6 +669,7 @@ mod tests {
     use super::*;
     use crate::widget::identity_flow::MemoryIdentityStore;
     use automerge::AutoCommit;
+    use taffy::Size;
 
     #[test]
     fn create_identity_submit_validates_name_and_stores_record() {

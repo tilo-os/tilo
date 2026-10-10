@@ -33,16 +33,6 @@
 //! [`http`](mod@http) remain for desktop-only code that has not moved to
 //! [`Client`].
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::panic,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 mod caps;
 #[cfg(feature = "http")]
 mod client;

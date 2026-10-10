@@ -17,7 +17,6 @@
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
-use ui::time::UNIX_EPOCH;
 use ui::widget::{AppModel, ModelPath};
 
 use taffy::{NodeId, TaffyTree};
@@ -48,14 +47,6 @@ use crate::widgets::SharedPlayer;
 use ui::tilo_resource::{ActionDecl, Invoke};
 
 pub(crate) const QUALITIES: [&str; 4] = ["1080p", "720p", "480p", "auto"];
-
-fn history_now_ms() -> u64 {
-    ui::time::wall()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| {
-            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
-        })
-}
 
 /// Pull the frames the player's engine decoded into its surface, as the
 /// player's own `sync` does every frame; it reads no document.
@@ -362,7 +353,7 @@ impl TubeApp {
                 ));
             }
             TubeEffect::MarkWatched { video } => {
-                let at_ms = history_now_ms();
+                let at_ms = ui::time::unix_now_ms();
                 self.edit_history(&WatchHistory::RECORD.with((video, at_ms)));
             }
             TubeEffect::ForgetWatched { video } => {
@@ -558,7 +549,7 @@ impl TubeApp {
                 && self.change_preferences(|current| *current = settings)
         });
 
-        let watched_at_ms = history_now_ms();
+        let watched_at_ms = ui::time::unix_now_ms();
         let pulled: Vec<(String, u64)> = remote
             .watch_history
             .into_iter()
@@ -859,28 +850,10 @@ impl TubeApp {
         self.follow_history();
     }
 
-    /// `--shots` builder: start on an EMPTY Home in its loading state, so a still
-    /// captures the skeleton the real (online) app shows on a cold start before
-    /// live results land — proving the no-fake-content default reads as
-    /// "loading", not a blank page.
-    #[must_use]
-    pub fn with_loading_home_shot(mut self) -> Self {
-        self.show_loading_home();
-        self
-    }
-
     fn show_loading_home(&mut self) {
         self.model = TubeModel::default();
         self.model.feed_loading = true;
         self.model.route = Route::Home;
-    }
-
-    /// `--shots` builder for the terminal offline/empty state after a live
-    /// fetch failed. Kept distinct from the cold-start loading skeleton.
-    #[must_use]
-    pub fn with_empty_home_shot(mut self) -> Self {
-        self.show_empty_home();
-        self
     }
 
     fn show_empty_home(&mut self) {
@@ -931,16 +904,6 @@ impl TubeApp {
         self.model.route = route;
     }
 
-    /// Secret-free offscreen proof of the real device lifecycle surface. The
-    /// route is scrolled to the card so wide and narrow screenshots exercise
-    /// pending approval, active sync, revocation, and broker-key messaging.
-    #[cfg(feature = "grayjay-sync")]
-    #[must_use]
-    pub fn with_device_sync_shot(mut self) -> Self {
-        self.show_device_sync_sample();
-        self
-    }
-
     #[cfg(feature = "grayjay-sync")]
     fn show_device_sync_sample(&mut self) {
         self.model.route = Route::Settings;
@@ -949,26 +912,6 @@ impl TubeApp {
         self.scroll_cells
             .borrow_mut()
             .insert("settings".into(), Rc::new(Cell::new((0.0, f32::MAX))));
-    }
-
-    /// Test/shots hook: the first video's watch page as playback starts,
-    /// opened from Home. Without a network there is no stream to decode, so
-    /// the player shows the video's art in its place, as it does in the live
-    /// app until the first frame arrives; a hermetic capture never shows a
-    /// synthesized picture as if it were the video. (The real decode path is
-    /// captured by `with_live_frame_for_shot` under `--live-shots`.)
-    #[must_use]
-    pub fn with_playing_demo_for_test(self) -> Self {
-        let id = self
-            .model
-            .videos
-            .first()
-            .map_or_else(|| "vid_donut".to_string(), |v| v.id.clone());
-        let mut app = self.with_route_shot(Route::Watch(id.clone()));
-        app.player_video = Some(id);
-        // A video just started shows its transport, as the live player does.
-        app.player.borrow_mut().reveal_controls();
-        app
     }
 
     /// `--live-shots` hook: open the shared player on a real, directly-playable
@@ -1556,7 +1499,7 @@ impl TubeApp {
     /// Shared by the card and search-result open paths and by autoplay-next so they stay
     /// in lockstep.
     fn open_video(&mut self, id: String) {
-        let watched_at_ms = history_now_ms();
+        let watched_at_ms = ui::time::unix_now_ms();
         self.edit_history(&WatchHistory::RECORD.with((id.clone(), watched_at_ms)));
         self.navigate_to(Route::Watch(id.clone()));
         self.model.playhead = 0.0;
@@ -2199,12 +2142,7 @@ impl Widget for TubeApp {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = crate::widgets::node_layout(taffy, node);
-        let rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        let rect = ui::widget::placed(layout, origin);
         // A new window size re-sizes the width-driven watch page.
         if rect.size() != self.rect.size() {
             self.shell_stale = true;

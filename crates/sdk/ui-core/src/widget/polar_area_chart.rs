@@ -12,7 +12,7 @@ use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Arc, Circle, ParamCurve, Point, Rect, Stroke};
 use vello::peniko::{Color, Fill};
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::event::WindowEvent;
 
 use crate::a11y::{AccessNode, AccessState, Role};
 use crate::color_compat::ColorCompat;
@@ -21,7 +21,7 @@ use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::chart_navigation::{
-    ChartNavAction, ChartTouchAction, ChartTouchTracker, chart_nav_action, moved_index,
+    ChartNavAction, ChartTouchTracker, InteractiveChart, handle_chart_event, moved_index,
 };
 use crate::widget::{TaffyTreeExt, Widget};
 
@@ -350,6 +350,46 @@ fn sector_path(
     path
 }
 
+impl InteractiveChart for PolarAreaChart {
+    fn interaction(&mut self) -> (&mut Point, &mut bool, &mut ChartTouchTracker) {
+        (
+            &mut self.pointer,
+            &mut self.keyboard_inspection,
+            &mut self.touch,
+        )
+    }
+    fn update_hover(&mut self) {
+        self.hovered = self.hit(self.pointer).map(str::to_owned);
+    }
+    fn clear_hover(&mut self) {
+        self.hovered = None;
+    }
+    fn activate_hovered(&mut self) -> bool {
+        let Some(id) = &self.hovered else {
+            return false;
+        };
+        self.activated = Some(id.clone());
+        true
+    }
+    fn move_keyboard_inspection(&mut self, action: ChartNavAction) -> bool {
+        let candidates = self
+            .data
+            .iter()
+            .filter(|datum| datum.value.is_finite() && datum.value >= 0.0)
+            .map(|datum| datum.id.as_str())
+            .collect::<Vec<_>>();
+        let current = self
+            .hovered
+            .as_deref()
+            .and_then(|id| candidates.iter().position(|candidate| *candidate == id));
+        self.hovered = moved_index(current, candidates.len(), action)
+            .and_then(|index| candidates.get(index))
+            .map(|id| (*id).to_owned());
+        self.update_inspection_anchor();
+        self.hovered.is_some()
+    }
+}
+
 impl Widget for PolarAreaChart {
     fn build_layout(
         &mut self,
@@ -357,24 +397,17 @@ impl Widget for PolarAreaChart {
         _theme: &Theme,
         map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: Dimension::percent(1.0),
                 height: Dimension::length(self.height),
             },
             ..Default::default()
-        });
-        map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, map, self)
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x + layout.size.width),
-            origin.y + f64::from(layout.location.y + layout.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
     }
     #[allow(
         clippy::too_many_lines,
@@ -532,69 +565,7 @@ impl Widget for PolarAreaChart {
         }
     }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        if let Some(action) = self.touch.handle(event, ctx.scale_factor) {
-            match action {
-                ChartTouchAction::Inspect(point) => {
-                    self.pointer = point;
-                    self.hovered = self.hit(point).map(str::to_owned);
-                    self.keyboard_inspection = false;
-                }
-                ChartTouchAction::Activate(point) => {
-                    self.pointer = point;
-                    self.hovered = self.hit(point).map(str::to_owned);
-                    if let Some(id) = &self.hovered {
-                        self.activated = Some(id.clone());
-                        *ctx.handled = true;
-                        *ctx.focus_target = Some(ctx.node_id);
-                    }
-                }
-                ChartTouchAction::Clear => self.hovered = None,
-            }
-            return;
-        }
-        if let WindowEvent::CursorMoved { position, .. } = event {
-            self.pointer = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
-            self.hovered = self.hit(self.pointer).map(str::to_owned);
-            self.keyboard_inspection = false;
-        }
-        if matches!(event, WindowEvent::CursorLeft { .. }) && !self.keyboard_inspection {
-            self.hovered = None;
-        }
-        if matches!(
-            event,
-            WindowEvent::MouseInput {
-                state: ElementState::Released,
-                button: MouseButton::Left,
-                ..
-            }
-        ) && let Some(id) = self.hit(self.pointer).map(str::to_owned)
-        {
-            self.activated = Some(id);
-            *ctx.handled = true;
-        }
-        if let Some(action) = chart_nav_action(event) {
-            if action == ChartNavAction::Activate {
-                self.activated.clone_from(&self.hovered);
-            } else {
-                let candidates = self
-                    .data
-                    .iter()
-                    .filter(|datum| datum.value.is_finite() && datum.value >= 0.0)
-                    .map(|datum| datum.id.as_str())
-                    .collect::<Vec<_>>();
-                let current = self
-                    .hovered
-                    .as_deref()
-                    .and_then(|id| candidates.iter().position(|candidate| *candidate == id));
-                self.hovered = moved_index(current, candidates.len(), action)
-                    .and_then(|index| candidates.get(index))
-                    .map(|id| (*id).to_owned());
-                self.keyboard_inspection = self.hovered.is_some();
-                self.update_inspection_anchor();
-            }
-            *ctx.handled = true;
-            *ctx.focus_target = Some(ctx.node_id);
-        }
+        handle_chart_event(self, event, ctx);
     }
     fn accessibility(&self) -> Option<AccessNode> {
         let mut root = AccessNode::new(Role::Group).with_name(if self.title.is_empty() {
@@ -630,22 +601,15 @@ impl Widget for PolarAreaChart {
         _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
-        if !matches!(action, crate::a11y::Action::Activate) {
-            return false;
-        }
-        let Some(key) = keys.last() else {
+        let Some(id) = crate::widget::chart_navigation::activated_id(
+            action,
+            keys,
+            self.data.iter().map(|d| &d.id),
+        ) else {
             return false;
         };
-        if let Some(datum) = self
-            .data
-            .iter()
-            .find(|d| crate::a11y::hash_key(&d.id) == *key)
-        {
-            self.activated = Some(datum.id.clone());
-            true
-        } else {
-            false
-        }
+        self.activated = Some(id.clone());
+        true
     }
     fn name(&self) -> &'static str {
         "PolarAreaChart"

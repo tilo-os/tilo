@@ -101,9 +101,7 @@ pub fn name_range(
     let key = format!("{GROUPS_KEY}{}", hex16(start));
     let label: String = label.trim().chars().take(MAX_LABEL_LEN).collect();
     let by = doc.get_actor().to_hex_string();
-    let at = crate::time::wall()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX));
+    let at = i64::try_from(crate::time::unix_now_ms()).unwrap_or(i64::MAX);
     // Replacing the whole record rather than patching fields keeps a rename and
     // a re-scope atomic: a peer never observes the new label against the old
     // range.

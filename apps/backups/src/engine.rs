@@ -13,7 +13,6 @@ use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Component, Path, PathBuf};
-use ui::time::UNIX_EPOCH;
 use walkdir::WalkDir;
 
 use crate::model::RetentionPolicy;
@@ -154,10 +153,8 @@ pub fn create_snapshot(
     let (source, destination) = validate_paths(source, destination)?;
     let snapshots = prepare_repository(&destination)?.join(SNAPSHOTS_DIR);
     fs::create_dir_all(&snapshots)?;
-    let now = ui::time::wall()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|_| BackupError::InvalidSnapshot("System clock is before 1970".into()))?
-        .as_secs();
+    let now = ui::time::try_unix_now()
+        .ok_or_else(|| BackupError::InvalidSnapshot("System clock is before 1970".into()))?;
     let mut suffix = 0_u32;
     let (id, stage, final_path) = loop {
         let id = if suffix == 0 {

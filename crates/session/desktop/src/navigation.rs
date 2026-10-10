@@ -230,7 +230,7 @@ impl DesktopSurface {
                 continue;
             }
             if let Some(row) = self.row_mut(strip) {
-                row.scroll_group_into_view_animated(group, ui::clock::Instant::now());
+                row.scroll_group_into_view_animated(group, ui::time::Instant::now());
             }
             self.navigation.framed.insert(strip, key);
         }

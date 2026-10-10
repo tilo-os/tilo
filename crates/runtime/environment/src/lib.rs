@@ -13,17 +13,6 @@
 //! and `perm allow-host` is [`Environment::ALLOW_HOST`].
 //! History and undo come from the record layer.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        clippy::panic,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 use std::collections::BTreeMap;
 use std::path::{Component, Path};
 use std::str::FromStr;
@@ -423,46 +412,18 @@ pub fn dir_grant(path: &Path, write: bool) -> Result<CapOverride, String> {
 
 /// A host as a `NetHost` grant spells it: `*`, `example.com`, or
 /// `.example.com` for the domain and everything under it (`*.example.com`
-/// is accepted and written that way). Lower-case, no trailing dot.
+/// is accepted and written that way). Lower-case, no trailing dot. The
+/// grammar is [`collab_types::caps::NetHostPattern`]'s, the one apps' grants
+/// are read with too.
 ///
 /// # Errors
 /// Returns the reason when `host` is not a host name: empty, an address
 /// (egress is decided by name, so a literal would bypass the resolver that
 /// decides), or characters DNS names do not carry.
 pub fn normalize_host(host: &str) -> Result<String, String> {
-    let trimmed = host.trim().trim_end_matches('.');
-    if trimmed == "*" {
-        return Ok("*".to_owned());
-    }
-    let (domain, name) = match trimmed
-        .strip_prefix("*.")
-        .or_else(|| trimmed.strip_prefix('.'))
-    {
-        Some(rest) => (true, rest),
-        None => (false, trimmed),
-    };
-    let name = name.to_ascii_lowercase();
-    if name.parse::<std::net::IpAddr>().is_ok() || name.starts_with('[') {
-        return Err(format!(
-            "{host:?} is an address; hosts are allowed by name (example.com), so the \
-             resolver that decides what the guest reaches cannot be bypassed"
-        ));
-    }
-    let label_ok = |l: &str| {
-        !l.is_empty()
-            && l.len() <= 63
-            && !l.starts_with('-')
-            && !l.ends_with('-')
-            && l.bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-    };
-    if name.is_empty() || name.len() > 253 || !name.split('.').all(label_ok) {
-        return Err(format!(
-            "{host:?} is not a host: name one (example.com), a domain with everything \
-             under it (*.example.com), or * for any host"
-        ));
-    }
-    Ok(if domain { format!(".{name}") } else { name })
+    collab_types::caps::NetHostPattern::parse(host)
+        .map(|pattern| pattern.to_string())
+        .map_err(|reason| reason.to_string())
 }
 
 /// The grant id for a host: stable, so allowing it again replaces one

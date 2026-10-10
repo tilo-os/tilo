@@ -33,7 +33,7 @@ use rand_core::Rng;
 use serde::{Deserialize, Serialize};
 use serde_bytes as serde_bytes_codec;
 use sha2::{Digest, Sha512};
-use taffy::{NodeId, Style, TaffyTree};
+use taffy::{NodeId, TaffyTree};
 use threshold_identity::{EnrolmentRound1, EnrolmentRound2, ThresholdError, ThresholdIdentity};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -662,9 +662,7 @@ impl PairingHandshake {
             PairingBackend::Memory(_) => true,
             #[cfg(unix)]
             PairingBackend::Durable(backend) => {
-                let now = crate::time::wall()
-                    .duration_since(SystemTime::UNIX_EPOCH)
-                    .map_or(u64::MAX, |duration| duration.as_secs());
+                let now = crate::time::try_unix_now().unwrap_or(u64::MAX);
                 now < backend.expires_unix && !backend.root.join("cancelled").exists()
             }
             PairingBackend::Remote { .. } => false,
@@ -795,9 +793,7 @@ impl PairingHandshake {
         backend: &DurablePairingBackend,
         nonce: &[u8; 16],
     ) -> Option<PairingChannelState> {
-        let now = crate::time::wall()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .map_or(u64::MAX, |duration| duration.as_secs());
+        let now = crate::time::try_unix_now().unwrap_or(u64::MAX);
         if now >= backend.expires_unix || backend.root.join("cancelled").exists() {
             return None;
         }
@@ -814,9 +810,7 @@ impl PairingHandshake {
         nonce: &[u8; 16],
         update: impl FnOnce(&mut PairingChannelState),
     ) -> bool {
-        let now = crate::time::wall()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .map_or(u64::MAX, |duration| duration.as_secs());
+        let now = crate::time::try_unix_now().unwrap_or(u64::MAX);
         if now >= backend.expires_unix || backend.root.join("cancelled").exists() {
             return false;
         }
@@ -897,26 +891,6 @@ impl PairingHandshake {
                     &PairingBrokerRequest::PutPairerRound1(*nonce, round1),
                 );
             }
-        }
-    }
-
-    pub fn take_pairer_round1(&self, nonce: &[u8; 16]) -> Option<EnrolmentRound1> {
-        let key = hex::encode(nonce);
-        match &self.backend {
-            PairingBackend::Memory(inner) => inner
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .get_mut(&key)?
-                .pairer_round1
-                .take(),
-            #[cfg(unix)]
-            PairingBackend::Durable(backend) => {
-                let mut out = None;
-                Self::durable_update(backend, nonce, |state| out = state.pairer_round1.take())
-                    .then_some(())?;
-                out
-            }
-            PairingBackend::Remote { .. } => None,
         }
     }
 
@@ -1608,9 +1582,7 @@ impl InviteRedemptionAuthority {
         // across processes. `File`'s OS lock is released automatically after
         // a crash, unlike a sentinel lockfile.
         let _issue_lock = self.issue_lock()?;
-        let now = crate::time::wall()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .map_or(0, |value| value.as_secs());
+        let now = crate::time::unix_now();
         for entry in std::fs::read_dir(&self.root)?
             .filter_map(Result::ok)
             .take(512)
@@ -2453,13 +2425,6 @@ impl Widget for IdentityFlow {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let fill = Style {
-            size: taffy::Size {
-                width: taffy::Dimension::percent(1.0),
-                height: taffy::Dimension::percent(1.0),
-            },
-            ..Default::default()
-        };
         let screen = match self.current_widget_mut() {
             Some(screen) => vec![screen.build_layout(taffy, theme, node_map)],
             // The terminal card owns the viewport like every other screen;
@@ -2467,19 +2432,12 @@ impl Widget for IdentityFlow {
             // edge, half off-screen.
             None => Vec::new(),
         };
-        let node = taffy.parent_node(fill, &screen);
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_node(sheet::screen_style(), &screen, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = crate::widget::placed(&layout, origin);
         // The screen is the flow's first taffy child; its layout is
         // relative to the flow's rect.
         let screen_node = taffy
@@ -2591,14 +2549,10 @@ impl Widget for IdentityFlow {
 pub(super) mod test_events {
     use taffy::{NodeId, Style, TaffyTree};
     use vello::kurbo::Point;
-    use winit::event::{DeviceId, ElementState, KeyEvent, MouseButton, WindowEvent};
+    use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
     use winit::keyboard::{Key, KeyLocation, NamedKey, PhysicalKey};
 
     use crate::widget::TaffyTreeExt;
-
-    fn synth_device() -> DeviceId {
-        unsafe { std::mem::zeroed() }
-    }
 
     /// A key press carrying `logical_key` and the OS's printable `text`,
     /// built the way the headless driver builds its own key events.
@@ -2619,7 +2573,7 @@ pub(super) mod test_events {
             logical_key,
         );
         WindowEvent::KeyboardInput {
-            device_id: synth_device(),
+            device_id: winit::event::DeviceId::dummy(),
             event,
             is_synthetic: false,
         }
@@ -2637,14 +2591,14 @@ pub(super) mod test_events {
 
     pub(crate) fn cursor_at(p: Point) -> WindowEvent {
         WindowEvent::CursorMoved {
-            device_id: synth_device(),
+            device_id: winit::event::DeviceId::dummy(),
             position: winit::dpi::PhysicalPosition::new(p.x, p.y),
         }
     }
 
     pub(crate) fn left_press() -> WindowEvent {
         WindowEvent::MouseInput {
-            device_id: synth_device(),
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Pressed,
             button: MouseButton::Left,
         }

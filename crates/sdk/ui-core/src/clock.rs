@@ -5,10 +5,7 @@
 //! ([`freeze_for_capture`]) so a frame shows the same date and time on every
 //! run, and an app that reads the system clock directly breaks that.
 //!
-//! The toolkit's monotonic and wall clock types are re-exported here too;
-//! new code names them through `ui::time`.
-
-pub use crate::time::*;
+//! Clock types and epoch readings are `ui::time`'s.
 
 /// The local date and time every screenshot capture shows:
 /// 30 June 2026, 10:42.

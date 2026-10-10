@@ -34,6 +34,7 @@ pub(super) struct FloatingRuntime {
     pub client: Option<FloatingSurfaceServiceClient>,
     /// The authenticated shell's palette survives private settings reloads.
     pub host_theme: Option<crate::Theme>,
+    network_status_active: bool,
     host_shell_allow: Option<std::rc::Weak<std::cell::RefCell<crate::widget::HostShellAllow>>>,
     display_move: Option<(
         u64,
@@ -73,6 +74,7 @@ impl FloatingRuntime {
             capture_host_required: client.is_some(),
             client,
             host_theme: None,
+            network_status_active: false,
             host_shell_allow: None,
             display_move: None,
             next_display_move: 0,
@@ -96,7 +98,25 @@ impl FloatingRuntime {
     }
 }
 
+impl Drop for FloatingRuntime {
+    fn drop(&mut self) {
+        if self.network_status_active {
+            tilo_host::network_status::clear_host_status();
+        }
+    }
+}
+
 impl App {
+    /// Pump the real native host channel in compositor-free acceptance fixtures.
+    /// Returns whether this launch's inherited connection is still present.
+    /// This exposes no connection injection or permission bypass.
+    #[cfg(all(feature = "native", feature = "test-support"))]
+    pub fn pump_native_host_for_test(&mut self) -> bool {
+        let _entry = self.enter_wake_scope();
+        self.pump_floating_surface_service();
+        self.floating.client.is_some()
+    }
+
     /// Withhold this app's windows from screenshots, recordings, screen
     /// sharing and remote viewers — for windows that show secrets, such as a
     /// password manager's. The local display is unaffected; captures show a
@@ -636,7 +656,19 @@ impl App {
                     self.floating.coordinate_offsets.remove(id);
                     self.floating.suspended_ids.insert(id.clone());
                 }
-                FloatingSurfaceHostMessage::Appearance { .. } => {
+                FloatingSurfaceHostMessage::Appearance { network_status, .. } => {
+                    if let Some(status) = network_status {
+                        self.floating.network_status_active = true;
+                        tilo_host::network_status::set_host_status(
+                            status.available,
+                            status.metered,
+                        );
+                    } else {
+                        if self.floating.network_status_active {
+                            tilo_host::network_status::clear_host_status();
+                        }
+                        self.floating.network_status_active = false;
+                    }
                     if let Some(theme) = message.configured_theme() {
                         self.floating.host_theme = Some(theme.clone());
                         if self.accessibility.base_theme.document != theme.document {
@@ -671,6 +703,10 @@ impl App {
     }
     #[cfg(feature = "native")]
     fn reattach_after_floating_service_loss(&mut self) {
+        if self.floating.network_status_active {
+            tilo_host::network_status::clear_host_status();
+            self.floating.network_status_active = false;
+        }
         if let Some((_, reply)) = self.floating.display_move.take()
             && let Some(reply) = reply.upgrade()
         {
@@ -832,9 +868,82 @@ fn open_standalone_instance(target: Option<&str>) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(all(test, feature = "native"))]
+#[cfg(test)]
+#[cfg(feature = "native")]
 mod host_shell_allow_tests {
     use super::*;
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn network_status_follows_the_real_service_pump_and_discards_disconnected_host() {
+        use crate::floating_surface::HostNetworkStatus;
+        use std::io::Write;
+        use std::os::unix::net::UnixStream;
+        let (app_side, mut shell_side) = UnixStream::pair().unwrap();
+        let mut app = App::new_with_controlled_inputs(
+            crate::State::new(),
+            Box::new(crate::widget::Container::new()),
+        );
+        app.floating.client = Some(FloatingSurfaceServiceClient::from_stream(app_side).unwrap());
+        for metered in [None, Some(true), Some(false)] {
+            let mut message = FloatingSurfaceHostMessage::appearance(&Default::default());
+            if let FloatingSurfaceHostMessage::Appearance { network_status, .. } = &mut message {
+                *network_status = Some(HostNetworkStatus {
+                    available: Some(true),
+                    metered,
+                });
+            }
+            let mut frame = serde_json::to_vec(&message).unwrap();
+            frame.push(b'\n');
+            shell_side.write_all(&frame).unwrap();
+            app.pump_floating_surface_service();
+            assert_eq!(tilo_host::network_status::current().metered, metered);
+        }
+        drop(shell_side);
+        app.pump_floating_surface_service();
+        assert!(!app.floating.network_status_active);
+        assert_ne!(tilo_host::network_status::current().metered, Some(false));
+        // An older host has no richer status; the same appearance still parses.
+        let old: FloatingSurfaceHostMessage =
+            serde_json::from_str(r#"{"type":"appearance","workspace_hue":180}"#).unwrap();
+        assert!(matches!(
+            old,
+            FloatingSurfaceHostMessage::Appearance {
+                network_status: None,
+                ..
+            }
+        ));
+        // Loss is terminal for this App: pumping again cannot reacquire a
+        // consumed inherited descriptor or resurrect the stale snapshot.
+        app.pump_floating_surface_service();
+        assert!(app.floating.client.is_none());
+        assert_ne!(tilo_host::network_status::current().metered, Some(false));
+        drop(app);
+
+        // A fresh App gets a fresh launch connection. This controlled fixture
+        // covers closure; the launcher boundary fixture qualifies discovery.
+        let (app_side, mut shell_side) = UnixStream::pair().unwrap();
+        let mut relaunched = App::new_with_controlled_inputs(
+            crate::State::new(),
+            Box::new(crate::widget::Container::new()),
+        );
+        relaunched.floating.client =
+            Some(FloatingSurfaceServiceClient::from_stream(app_side).unwrap());
+        let mut message = FloatingSurfaceHostMessage::appearance(&Default::default());
+        if let FloatingSurfaceHostMessage::Appearance { network_status, .. } = &mut message {
+            *network_status = Some(HostNetworkStatus {
+                available: Some(true),
+                metered: Some(false),
+            });
+        }
+        let mut frame = serde_json::to_vec(&message).unwrap();
+        frame.push(b'\n');
+        shell_side.write_all(&frame).unwrap();
+        relaunched.pump_floating_surface_service();
+        assert_eq!(tilo_host::network_status::current().metered, Some(false));
+        drop(relaunched);
+        assert_ne!(tilo_host::network_status::current().metered, Some(false));
+    }
+
     #[cfg(unix)]
     #[test]
     fn device_shell_operation_is_acknowledged_by_the_real_service_pump() {

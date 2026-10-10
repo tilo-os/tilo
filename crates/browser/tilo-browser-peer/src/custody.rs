@@ -280,7 +280,7 @@ pub async fn issue_device_cert(
             "the root certifies devices, never itself".into(),
         ));
     }
-    let now = crate::clock::now_ns();
+    let now = tilo_clock::unix_now_ns();
     let mut cert = DeviceCert {
         user_public_key,
         device_public_key,
@@ -324,7 +324,7 @@ pub async fn certify_with_root(
 }
 
 fn check_host(host_cert: &DeviceCert, user_public_key: [u8; 32]) -> Result<(), CertifyError> {
-    verify_device_cert_at(host_cert, crate::clock::now_ns())
+    verify_device_cert_at(host_cert, tilo_clock::unix_now_ns())
         .map_err(|error| CertifyError::Denied(format!("host certificate refused: {error}")))?;
     if host_cert.user_public_key != user_public_key || !host_cert.capabilities.can_act_as_host {
         return Err(CertifyError::Denied(
@@ -339,7 +339,7 @@ async fn signed_request(
     label: &str,
     signer: &dyn DeviceSigner,
 ) -> Result<CertificationRequest, CertifyError> {
-    let now = crate::clock::now_ns();
+    let now = tilo_clock::unix_now_ns();
     let unsigned = CertificationRequest {
         version: CERTIFICATION_SCHEMA_VERSION,
         user_public_key,
@@ -383,7 +383,7 @@ fn check_issued(
     cert: &DeviceCert,
     host_cert: &DeviceCert,
 ) -> Result<(), CertifyError> {
-    let now = crate::clock::now_ns();
+    let now = tilo_clock::unix_now_ns();
     let refused = |reason: String| CertifyError::Denied(reason);
     verify_issued_cert(
         request,

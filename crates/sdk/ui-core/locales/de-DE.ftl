@@ -480,6 +480,9 @@ dictation-copy-transcript = Transkript kopieren
 dictation-discard-transcript = Transkript verwerfen
 
 dropdown-no-matches = Keine passende Auswahl
+host-native-history-unobserved = Der Bearbeitungsverlauf des ursprünglichen Felds wurde noch nicht bestätigt.
+host-native-history-unconfirmed = Die Verlaufsänderung dieser Seite wurde nicht bestätigt. Prüfe die Seite, bevor du es erneut versuchst.
+host-native-page-history-scope = Rückgängig und Wiederholen gelten für den Bearbeitungsverlauf dieser Seite. Die letzte Änderung kann in einem anderen Feld liegen.
 
 # Shared native screen topology canvas
 display-arrangement-name = Bildschirmanordnung
@@ -492,3 +495,10 @@ display-arrangement-item-position = { $width } × { $height } bei { $x }, { $y }
 device-display-session-unavailable = Die Tilo-Sitzung ist nicht verfügbar.
 device-display-request-pending = Eine Anfrage zur Bildschirmposition steht bereits aus.
 device-display-session-disconnected = Die Verbindung zur Tilo-Sitzung wurde getrennt.
+
+terminal-editor-busy = Der Editor bestätigt noch die vorherige Eingabe. Prüfe das Feld, bevor du weiteren Text eingibst.
+terminal-editor-rejected = Das Feld wurde geändert, bevor diese Eingabe eingefügt werden konnte. Prüfe das Feld, bevor du es erneut versuchst.
+terminal-editor-unconfirmed = Der Editor hat diese Eingabe nicht bestätigt. Prüfe das Feld, bevor du es erneut versuchst.
+
+app-activate-window = Dieses Fenster anzeigen
+app-activate-window-description = Die Plattform bitten, das vorhandene Fenster anzuzeigen, ohne den Dokumentbesitzer zu wechseln.

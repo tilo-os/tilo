@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import re
 import time
 import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from .vm import VmError
 
 # Who fixes what: each area's failures are routed to its owner.
 AREAS = {
@@ -84,9 +87,36 @@ def run_check(ctx, chk: Check) -> Result:
         res.detail = _join(res.detail, f"{type(exc).__name__}: {exc}")
         (ctx.out / "errors").mkdir(exist_ok=True)
         (ctx.out / "errors" / f"{chk.id}.txt").write_text(traceback.format_exc())
+    leave_unlocked(ctx, chk, res)
     res.seconds = round(time.monotonic() - started, 2)
     ctx.current = None
     return res
+
+
+LEFT_LOCKED = "left the session locked"
+
+
+def leave_unlocked(ctx, chk: Check, res: Result) -> None:
+    """Every check runs in the one session the run shares, so none may hand the next a locked
+    one: while locked the compositor refuses every action and snapshot (on purpose), and every
+    later check would report `session_locked` instead of its subject. A check that ends with
+    the session locked fails, however it ended, and the harness restarts the slot's session
+    (a fresh compositor starts unlocked; nothing goes around the lock itself)."""
+    try:
+        locked = ctx.state()["chrome"].get("session_locked")
+    except (VmError, KeyError, TypeError):
+        return  # no state to read: the next check that needs one reports why
+    if not locked:
+        return
+    res.status = "fail"
+    ctx.facts.setdefault("session_recovered_after", []).append(chk.id)
+    try:
+        ctx.vm.restart_session()
+    except VmError as exc:
+        res.detail = _join(res.detail, f"{LEFT_LOCKED}, and restarting the slot session failed: "
+                                       f"{exc.reason()}")
+        return
+    res.detail = _join(res.detail, f"{LEFT_LOCKED}; the harness restarted the slot session")
 
 
 def _join(a: str, b: str) -> str:
@@ -187,6 +217,39 @@ def overlap(a, b) -> float:
 
 TRACE = "$HOME/.local/state/tilo/session-logs/frame-trace.csv"
 TRACE_FLUSH_S = 1.05
+SESSION_LOG = "$HOME/.local/state/tilo/session-logs/latest.log"
+
+# The compositor's own timing of each workspace switch
+# (crates/session/shell/src/compositor/switch_latency.rs), one session-log line each.
+SWITCH_FIELDS = ("first_queued_us", "first_shown_us", "settled_queued_us", "settled_shown_us",
+                 "frames", "dropped", "interval_us")
+SWITCH_LINE = re.compile(r"(?:^|\s)WORKSPACE-SWITCH ((?:[a-z_]+=[0-9]+ ?)+)$")
+
+
+def parse_switch_lines(text: str) -> list[dict]:
+    """Every `WORKSPACE-SWITCH` line in `text`, in order."""
+    samples = []
+    for line in text.splitlines():
+        match = SWITCH_LINE.search(line.rstrip())
+        if match is None:
+            continue
+        fields = dict(pair.split("=", 1) for pair in match.group(1).split())
+        if any(name not in fields for name in SWITCH_FIELDS):
+            raise Unobservable(f"a WORKSPACE-SWITCH line lacks fields: {line.strip()}")
+        samples.append({name: int(fields[name]) for name in SWITCH_FIELDS})
+    return samples
+
+
+def session_log_mark(ctx) -> int:
+    """Lines in the session log now; `switch_lines_after` reads past them."""
+    out = ctx.vm.exec(f'wc -l < "{SESSION_LOG}" 2>/dev/null || echo 0', check=False)
+    digits = [l.strip() for l in out.splitlines() if l.strip().isdigit()]
+    return int(digits[0]) if digits else 0
+
+
+def switch_lines_after(ctx, mark: int) -> list[dict]:
+    return parse_switch_lines(ctx.vm.exec(
+        f'tail -n +{mark + 1} "{SESSION_LOG}" 2>/dev/null | grep -a "WORKSPACE-SWITCH"; true', check=False))
 
 
 def _parse_trace(text: str) -> tuple[list[dict], str]:
@@ -521,6 +584,41 @@ def parse_processes(text: str) -> dict:
 
 def processes(ctx) -> dict:
     return parse_processes(ctx.vm.root_exec(PROCESSES))
+
+
+# Read as root, for one process (the compositor): what its anonymous memory is. Its
+# status lines, its smaps_rollup (Anonymous, Pss_Anon, Rss, ...), and its 20 largest
+# mappings by Anonymous kB: one `[heap]` or a run of 64 MiB-aligned `[anon]` regions
+# (glibc arenas) reads differently from one GPU buffer that doubled.
+SHELL_MEMORY = r'''
+pid=__PID__
+awk '/^(VmRSS|RssAnon|RssFile|RssShmem|VmSwap|Threads):/ {print "S", $1, $2}' /proc/$pid/status
+awk 'NR > 1 && $3 == "kB" {print "R", $1, $2}' /proc/$pid/smaps_rollup
+awk '/^[0-9a-f]+-[0-9a-f]+ / {range = $1; name = "[anon]"; if (NF >= 6) {name = $6; for (i = 7; i <= NF; i++) name = name " " $i}}
+     /^Anonymous:/ && $2 > 0 {print "A", $2, range, name}' /proc/$pid/smaps | sort -k2,2nr | head -n 20
+'''
+
+
+def parse_shell_memory(text: str) -> dict:
+    """`SHELL_MEMORY` output -> {"status_kib", "smaps_rollup_kib", "top_anon_mappings"}."""
+    status, rollup, top = {}, {}, []
+    for line in text.splitlines():
+        f = line.split()
+        if len(f) >= 3 and f[0] in ("S", "R") and f[2].isdigit():
+            (status if f[0] == "S" else rollup)[f[1].rstrip(":")] = int(f[2])
+        elif len(f) >= 4 and f[0] == "A" and f[1].isdigit():
+            top.append({"anon_kib": int(f[1]), "range": f[2], "name": " ".join(f[3:])})
+    return {"status_kib": status, "smaps_rollup_kib": rollup, "top_anon_mappings": top}
+
+
+def shell_memory(ctx, pid: int) -> dict:
+    """The compositor's memory breakdown; Unobservable when its anonymous RSS cannot be read."""
+    m = parse_shell_memory(ctx.vm.root_exec(SHELL_MEMORY.replace("__PID__", str(int(pid)))))
+    if "RssAnon" not in m["status_kib"] or "Anonymous" not in m["smaps_rollup_kib"]:
+        raise Unobservable(f"the compositor's (pid {pid}) status and smaps_rollup could not be read")
+    m["pid"] = pid
+    m["anon_rss_mib"] = round(m["status_kib"]["RssAnon"] / 1024, 1)
+    return m
 
 
 def app_cgroup(table: dict, app_id: str) -> dict:

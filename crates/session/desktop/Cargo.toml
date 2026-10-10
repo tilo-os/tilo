@@ -32,6 +32,7 @@ tilo-copy-lint = { path = "../../dev/copy-lint" }
 word-processor = { path = "../../../apps/word-processor" }
 chat = { path = "../../../apps/chat", default-features = false }
 notes = { path = "../../../apps/notes" }
+ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false, features = ["test-support"] }
 
 [lints]
 workspace = true

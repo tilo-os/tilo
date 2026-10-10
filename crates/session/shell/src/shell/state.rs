@@ -5,16 +5,14 @@ use tilo_automerge::ApplyIncoming;
 use tilo_clock::unix_now_i64;
 
 mod local_app_records;
+mod tree_handle;
 mod window_hosting;
 use super::fs_authority::schedule_fs_authority_publication;
 #[cfg(test)]
 use super::fs_authority::wait_for_fs_authority_publication_idle;
 pub use local_app_records::LocalAppRecord;
+pub use tree_handle::{WeakWorkspaceTreeHandle, WorkspaceTreeHandle, WorkspaceTreeWriteGuard};
 pub use window_hosting::WindowHosting;
-
-fn now_unix_nanos() -> u64 {
-    tilo_clock::unix_now_ns()
-}
 
 pub use collab_types::caps::{
     Actor, CapDecision, CapOverride, Effect, Expiry, Principal, ResourceRef, Scope, Subject, Verb,
@@ -877,15 +875,7 @@ impl FsExport {
     }
 }
 
-/// Shared handle to a single [`WorkspaceTree`], cloned by the
-/// compositor, portal and peer-sync so every mutation lands on the same
-/// tree. `parking_lot::RwLock` rather than a `Mutex`: readers vastly
-/// outnumber writers at ~60 Hz repaint, and an uncontended read lock is
-/// ~10 ns.
-pub type WorkspaceTreeHandle = std::sync::Arc<parking_lot::RwLock<WorkspaceTree>>;
-
-/// Constructors for [`WorkspaceTreeHandle`] — Rust won't let us add
-/// inherent methods to a type alias, so they live on this trait instead.
+/// Constructors for [`WorkspaceTreeHandle`] used by tests across modules.
 pub trait WorkspaceTreeHandleExt: Sized {
     /// A handle wrapped around a default (empty) tree.
     fn test_default() -> Self;
@@ -906,7 +896,7 @@ impl std::ops::DerefMut for WorkspaceTree {
 
 impl WorkspaceTreeHandleExt for WorkspaceTreeHandle {
     fn test_default() -> Self {
-        std::sync::Arc::new(parking_lot::RwLock::new(WorkspaceTree::default()))
+        Self::new(WorkspaceTree::default())
     }
 }
 
@@ -915,7 +905,7 @@ impl WorkspaceTree {
     /// (there should only ever be one instance) and returns the shared
     /// handle every subsystem clones from.
     pub fn shared(self) -> WorkspaceTreeHandle {
-        std::sync::Arc::new(parking_lot::RwLock::new(self))
+        WorkspaceTreeHandle::new(self)
     }
 }
 
@@ -1110,6 +1100,30 @@ impl WorkspaceTree {
         let _ = tilo_resource::history::commit_stamped(&mut self.doc);
     }
 
+    /// A copy of the tree with an empty [`Self::doc`] and no
+    /// [`Self::room_docs`]: a candidate to encode and maybe install, without
+    /// copying every document and its whole history. Before installing it,
+    /// [`Self::adopt_documents_of`] the tree it was copied from.
+    pub(crate) fn clone_without_documents(&mut self) -> Self {
+        let doc = std::mem::replace(&mut self.doc, AutoCommit::new());
+        let room_docs = std::mem::take(&mut self.room_docs);
+        let copy = self.clone();
+        self.doc = doc;
+        self.room_docs = room_docs;
+        copy
+    }
+
+    /// Take `source`'s documents into a tree made by
+    /// [`Self::clone_without_documents`]. A room document this tree already
+    /// holds is newer than `source`'s and stays. Anything written to this
+    /// tree's placeholder [`Self::doc`] is dropped: reseed it from the cache.
+    pub(crate) fn adopt_documents_of(&mut self, source: &mut Self) {
+        self.doc = std::mem::replace(&mut source.doc, AutoCommit::new());
+        for (room, doc) in source.room_docs.drain() {
+            self.room_docs.entry(room).or_insert(doc);
+        }
+    }
+
     /// Snapshot of the current automerge change-graph heads, the
     /// baseline peer-sync computes what to send against. Takes `&mut
     /// self` because `AutoCommit` flushes any pending transaction
@@ -1300,7 +1314,7 @@ impl WorkspaceTree {
     ) -> bool {
         if !self.governs_room(room)
             || tilo_user_identity::verify_device_cert(&device_cert).is_err()
-            || device_cert.is_expired_at(now_unix_nanos())
+            || device_cert.is_expired_at(tilo_clock::unix_now_ns())
             || device_cert.device_label.is_empty()
             || device_cert.device_label.trim() != device_cert.device_label
             || device_cert.device_label.len()
@@ -1482,7 +1496,7 @@ impl WorkspaceTree {
             .flat_map(|identity| identity.revocations.iter())
             .map(|entry| (entry.user_public_key, entry.revoked_device_public_key))
             .collect::<std::collections::BTreeSet<_>>();
-        let now = now_unix_nanos();
+        let now = tilo_clock::unix_now_ns();
         identities
             .into_iter()
             .filter_map(|(peer, identity)| {
@@ -1956,9 +1970,16 @@ impl WorkspaceTree {
         &self,
         room: RoomId,
     ) -> std::collections::BTreeMap<String, GovernedPeerIdentity> {
+        Self::peer_identities_of(self.room_docs.get(&room))
+    }
+
+    /// The valid governed identities room document `doc` carries.
+    fn peer_identities_of(
+        doc: Option<&AutoCommit>,
+    ) -> std::collections::BTreeMap<String, GovernedPeerIdentity> {
         use automerge::{ROOT, ReadDoc, ScalarValue, Value};
         let mut out = std::collections::BTreeMap::new();
-        let Some(doc) = self.room_docs.get(&room) else {
+        let Some(doc) = doc else {
             return out;
         };
         let Some((_, object)) = doc
@@ -1983,7 +2004,9 @@ impl WorkspaceTree {
             };
             if endpoint.as_bytes() == &identity.device_cert.device_public_key
                 && tilo_user_identity::verify_device_cert(&identity.device_cert).is_ok()
-                && !identity.device_cert.is_expired_at(now_unix_nanos())
+                && !identity
+                    .device_cert
+                    .is_expired_at(tilo_clock::unix_now_ns())
                 && identity.revocations.len()
                     <= tilo_user_identity::MAX_TRUSTED_IDENTITY_PROJECTION_DEVICES
                 && identity.revocations.iter().all(|entry| {
@@ -2004,9 +2027,14 @@ impl WorkspaceTree {
         &self,
         room: RoomId,
     ) -> std::collections::BTreeMap<String, String> {
+        Self::peer_names_of(self.room_docs.get(&room))
+    }
+
+    /// Every name room document `doc` carries.
+    fn peer_names_of(doc: Option<&AutoCommit>) -> std::collections::BTreeMap<String, String> {
         use automerge::{ROOT, ReadDoc, ScalarValue, Value};
         let mut out = std::collections::BTreeMap::new();
-        let Some(doc) = self.room_docs.get(&room) else {
+        let Some(doc) = doc else {
             return out;
         };
         let Some((_, peers_id)) = doc.get(&ROOT, Self::ROOM_PEERS_KEY).ok().flatten() else {
@@ -2137,6 +2165,16 @@ impl WorkspaceTree {
         )
     }
 
+    /// Whether `heads`, a peer's heads of `room`, name a change this
+    /// machine does not hold.
+    pub fn room_lacks_any(&mut self, room: RoomId, heads: &[ChangeHash]) -> bool {
+        self.room_docs.get_mut(&room).is_some_and(|doc| {
+            heads
+                .iter()
+                .any(|head| doc.get_change_meta_by_hash(head).is_none())
+        })
+    }
+
     /// The sender of a batch for `room` as this machine knows it: the
     /// transport-authenticated origin, and the person and role behind it when
     /// the network layer has authenticated that person. A sender with no
@@ -2224,14 +2262,14 @@ impl WorkspaceTree {
         let before = Self::governance_of(self.room_docs.get(&room));
         let after = Self::governance_of(Some(candidate));
         let Some(proposed) = after
-            .3
+            .identities
             .get(endpoint)
             .and_then(|bytes| serde_json::from_slice::<GovernedPeerIdentity>(bytes).ok())
         else {
             return false;
         };
         let Ok(admitted) = before
-            .3
+            .identities
             .get(endpoint)
             .map(|bytes| serde_json::from_slice::<GovernedPeerIdentity>(bytes))
             .transpose()
@@ -2244,8 +2282,8 @@ impl WorkspaceTree {
             return false;
         }
         let certificate = &proposed.device_cert;
-        let now = now_unix_nanos();
-        let prior_owner = before.0.as_deref().or_else(|| {
+        let now = tilo_clock::unix_now_ns();
+        let prior_owner = before.owner.as_deref().or_else(|| {
             self.workspace_in_room(room)
                 .and_then(|workspace| workspace.owner.as_deref())
         });
@@ -2256,13 +2294,13 @@ impl WorkspaceTree {
             || certificate.is_expired_at(now)
             || certificate.issued_at_ns > now
             || tilo_user_identity::verify_device_cert(certificate).is_err()
-            || after.0.as_deref() != Some(hex::encode(certificate.user_public_key).as_str())
-            || prior_owner.is_some_and(|owner| after.0.as_deref() != Some(owner))
+            || after.owner.as_deref() != Some(hex::encode(certificate.user_public_key).as_str())
+            || prior_owner.is_some_and(|owner| after.owner.as_deref() != Some(owner))
         {
             return false;
         }
         let mut revocations = tilo_user_identity::RevocationList::new();
-        for bytes in before.3.values().chain(after.3.values()) {
+        for bytes in before.identities.values().chain(after.identities.values()) {
             let Ok(identity) = serde_json::from_slice::<GovernedPeerIdentity>(bytes) else {
                 return false;
             };
@@ -2363,6 +2401,14 @@ impl WorkspaceTree {
             staged_before = Some(staged);
         }
         let before = staged_before.as_ref().or_else(|| self.room_docs.get(&room));
+        // Another device of the person that governs the room may have named
+        // or certified a peer; what it changed is adopted below.
+        let governed_peers_before = self.governs_room(room).then(|| {
+            (
+                Self::peer_names_of(before),
+                Self::peer_identities_of(before),
+            )
+        });
         let now = tilo_clock::unix_now();
         let authority = self.room_authority(room);
         let local_person = self.local_person;
@@ -2441,6 +2487,12 @@ impl WorkspaceTree {
             }
         }
         let records_changed = self.queue_inbound_records(room, &candidate);
+        let peers_changed = governed_peers_before.is_some_and(|(names, identities)| {
+            self.adopt_governed_peers(room, &names, &identities, &candidate)
+        });
+        if peers_changed {
+            self.queue_save();
+        }
 
         self.room_docs.insert(room, candidate);
 
@@ -2449,7 +2501,7 @@ impl WorkspaceTree {
         let contents_changed = self.merge_room_contents(room);
 
         let Some(ws) = self.desktop.workspaces.iter_mut().find(|w| w.room == room) else {
-            return Ok(records_changed || contents_changed);
+            return Ok(records_changed || contents_changed || peers_changed);
         };
         let mut fields_changed = false;
         if let Some(name) = name
@@ -2501,7 +2553,7 @@ impl WorkspaceTree {
             self.seed_doc_from_cache();
             self.queue_save();
         }
-        let landed = fields_changed || records_changed || media_changed;
+        let landed = fields_changed || records_changed || media_changed || peers_changed;
         if landed {
             // A peer's window is in the tree now but not on screen yet —
             // this runs on the network thread, and only the frame
@@ -2509,6 +2561,57 @@ impl WorkspaceTree {
             self.desktop.room_epoch = self.desktop.room_epoch.wrapping_add(1);
         }
         Ok(landed)
+    }
+
+    /// Adopt what an admitted batch changed in `room`'s governed peer names
+    /// and identities into this machine's own, when it governs the room too.
+    /// Every device of the person who owns a room governs it, and each
+    /// projects its own names into the shared document, sweeping the ones
+    /// it does not hold: without adopting a co-governor's naming, two such
+    /// devices delete and restore each other's entries forever, a change a
+    /// second each way on a desktop nobody uses. Only the delta is taken,
+    /// so an entry this machine holds and the batch did not touch stays.
+    /// The admission already refused a governance change from anyone but
+    /// the room's governor.
+    fn adopt_governed_peers(
+        &mut self,
+        room: RoomId,
+        names_before: &std::collections::BTreeMap<String, String>,
+        identities_before: &std::collections::BTreeMap<String, GovernedPeerIdentity>,
+        candidate: &AutoCommit,
+    ) -> bool {
+        fn adopt<V: Clone + PartialEq>(
+            local: &mut std::collections::BTreeMap<String, V>,
+            before: &std::collections::BTreeMap<String, V>,
+            after: &std::collections::BTreeMap<String, V>,
+        ) -> bool {
+            let mut changed = false;
+            for (key, value) in after {
+                if before.get(key) != Some(value) && local.get(key) != Some(value) {
+                    local.insert(key.clone(), value.clone());
+                    changed = true;
+                }
+            }
+            for key in before.keys().filter(|key| !after.contains_key(*key)) {
+                changed |= local.remove(key).is_some();
+            }
+            changed
+        }
+        let names = self.room_peer_names.entry(room).or_default();
+        let mut changed = adopt(names, names_before, &Self::peer_names_of(Some(candidate)));
+        if names.is_empty() {
+            self.room_peer_names.remove(&room);
+        }
+        let identities = self.room_peer_identities.entry(room).or_default();
+        changed |= adopt(
+            identities,
+            identities_before,
+            &Self::peer_identities_of(Some(candidate)),
+        );
+        if identities.is_empty() {
+            self.room_peer_identities.remove(&room);
+        }
+        changed
     }
 
     /// Seed the automerge doc from the cache. Idempotent and diff-aware:
@@ -4304,12 +4407,6 @@ impl WorkspaceTree {
             self.continuation_owned_tabs.insert(tab, room);
         }
         true
-    }
-
-    pub fn note_continuation_tab_closed(&mut self, tab: TabId) {
-        if let Some(room) = self.continuation_owned_tabs.remove(&tab) {
-            self.continuation_closed_tabs.insert(tab, room);
-        }
     }
 
     /// Remove rooms which exist here solely because of a continuation offer
@@ -8568,6 +8665,7 @@ mod permission_profile_assignment {
                 PermissionProfileRule::grant(
                     Scope::Action {
                         app: "org.tilo.Builds".into(),
+                        resource: "builds.release".into(),
                         action: "release.approve".into(),
                     },
                     Verb::Write,
@@ -8599,6 +8697,7 @@ mod permission_profile_assignment {
                 &Actor::person(None, "ada"),
                 &ResourceRef::Action {
                     app: "org.tilo.Builds".into(),
+                    resource: "builds.release".into(),
                     action: "release.approve".into(),
                 },
                 Verb::Write,

@@ -244,9 +244,8 @@ pub struct GitClientApp {
     preferences: Option<ui::framework::Setting<Settings>>,
     control_actions: Option<ui::framework::Actions<crate::resource::GitClient>>,
 
-    /// No repository is bound and none was reachable at launch — the app shows
-    /// the honest "open a repository" empty state rather than any placeholder
-    /// data. Cleared once a repo is opened (via the path field or at startup).
+    /// No repository is bound: keep the "open a repository" empty state
+    /// until an explicit path or restored record selects a repository.
     awaiting_repo: bool,
     /// Which embedded text field holds focus, if any.
     focus: Option<Field>,
@@ -273,13 +272,6 @@ pub struct GitClientApp {
     settings: Settings,
     /// Fingerprint of the last shared-repo projection written to the document.
     shared_repo_fingerprint: Option<String>,
-    /// Set once after the first sync seeds the settings into the doc.
-    /// An initial preference was forced at construction (the split-diff
-    /// screenshot scenario), so the first sync keeps it rather than adopting
-    /// the document's persisted value. Interactive toggles never set this —
-    /// they go through the action executor, which writes the document
-    /// directly.
-    settings_forced: bool,
 
     screen: Screen,
     rect: Rect,
@@ -389,44 +381,6 @@ impl GitClientApp {
         app
     }
 
-    /// `--shots --scenario`: open a screen directly so each one can be
-    /// reviewed from a single frame.
-    pub fn shot_screen(&mut self, screen: Screen) {
-        self.switch_screen(screen);
-    }
-
-    /// `--shots --scenario split`: the side-by-side diff layout, pinned so
-    /// the document sync does not fold it back to the stored preference.
-    pub fn shot_split_diff(&mut self) {
-        self.settings.diff_layout = DiffLayout::SideBySide;
-        self.settings_forced = true;
-    }
-
-    /// `--shots --scenario commit`: a typed commit message so the commit
-    /// button renders enabled.
-    pub fn shot_commit_message(&mut self, message: &str) {
-        self.commit_input.set_text(message);
-    }
-
-    /// `--shots --scenario discard`: the confirmation for discarding the
-    /// first unstaged file, shown over its diff.
-    pub fn shot_confirm_discard(&mut self) {
-        if let Some(file) = self.model.unstaged.first() {
-            let name = file.name().to_string();
-            self.selected_change = Some((ChangeArea::Unstaged, 0));
-            self.confirm = Some(Confirm::DiscardFile {
-                area: ChangeArea::Unstaged,
-                index: 0,
-                name,
-            });
-        }
-    }
-
-    /// `--shots --scenario drawer`: the list drawer open in a narrow window.
-    pub fn shot_open_drawer(&mut self) {
-        self.staged = Staged::OpenDrawer;
-    }
-
     /// Construct from an explicit model — used by the sample path and tests.
     pub fn from_model(mut model: RepoModel, diffs: DiffMap) -> Self {
         let graph_layout = graph::layout(&mut model.commits);
@@ -490,7 +444,6 @@ impl GitClientApp {
             remote_job: None,
             settings: Settings::default(),
             shared_repo_fingerprint: None,
-            settings_forced: false,
             screen: Screen::Changes,
             rect: Rect::ZERO,
             selected_change,
@@ -2762,12 +2715,7 @@ impl Widget for GitClientApp {
         // Real fallback rather than a panic if `node` somehow doesn't
         // belong to this tree, matching every `ui` widget's `apply_layout`.
         let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = ui::widget::placed(&layout, origin);
         // The drawer adopts the new width now, so the next press is tested
         // against the layout the next paint shows.
         self.drawer.resolve(self.rect);
@@ -3584,20 +3532,11 @@ impl GitClientApp {
                     return;
                 }
                 self.opened.clone_from(&state.repository);
-                match &state.repository {
-                    Some(path) => {
-                        if !self.bind_repository(std::path::Path::new(path)) {
-                            self.last_error = Some(format!("No git repository at {path}"));
-                            self.open_input.set_text(path);
-                        }
-                    }
-                    None if first => {
-                        let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
-                        if !self.bind_repository(&cwd) {
-                            self.open_input.set_text(&cwd.to_string_lossy());
-                        }
-                    }
-                    None => {}
+                if let Some(path) = &state.repository
+                    && !self.bind_repository(std::path::Path::new(path))
+                {
+                    self.last_error = Some(format!("No git repository at {path}"));
+                    self.open_input.set_text(path);
                 }
             }
             RunMode::Past => self.show_model(state.repo.clone(), DiffMap::new()),
@@ -3726,6 +3665,13 @@ impl GitClientApp {
             return Err(ui::i18n!("git-remote-busy"));
         }
         match effect {
+            GitClientEffect::RunApprovedCheck { check_id } => {
+                let checked = cx.approved_check(&check_id)?;
+                return Ok(cx.spawn(
+                    |_| checked,
+                    |_app, observed, _cx| observed.map(Effected::value),
+                ));
+            }
             effect @ (GitClientEffect::ShowChanges
             | GitClientEffect::ShowHistory
             | GitClientEffect::ShowBranches
@@ -3954,6 +3900,23 @@ impl GitClientApp {
 mod tests {
     use super::*;
     use ui::widget::Widget;
+
+    #[test]
+    fn live_initial_view_stays_empty_until_the_repository_is_explicitly_bound() {
+        let mut app = GitClientApp::new();
+        let mut state = crate::doc::GitClientState::default();
+        app.present_state(&state);
+        assert!(app.awaiting_repo);
+        assert!(app.repo_path.is_none());
+        assert!(app.model.branches.is_empty());
+        assert!(app.model.commits.is_empty());
+        let repository = tempfile::tempdir().unwrap();
+        git2::Repository::init(repository.path()).unwrap();
+        state.repository = Some(repository.path().to_string_lossy().into_owned());
+        app.present_state(&state);
+        assert!(!app.awaiting_repo);
+        assert_eq!(app.repo_path.as_deref(), Some(repository.path()));
+    }
 
     /// Build an app over the bundled sample, laid out at `w` x 800 with the
     /// flap settled to its mode default so geometry is deterministic.

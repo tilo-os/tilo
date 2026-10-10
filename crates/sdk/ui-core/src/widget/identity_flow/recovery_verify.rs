@@ -20,7 +20,7 @@
 use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
-use taffy::{Dimension, Display, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::Color;
@@ -35,7 +35,8 @@ use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::identity_flow::sheet::{
     Align, BodyScroll, GRID_SHEET_WIDTH, Resolved, Role, Rows, SheetSpec, WordGrid, edited,
-    paint_text, paragraph_height, place_field, resolve, with_layout_renderer,
+    field_leaf, paint_text, paragraph_height, place_field, resolve, screen_style,
+    with_layout_renderer,
 };
 use crate::widget::identity_flow::{RecoveryChallenge, ScreenOutcome};
 use crate::widget::modal_dialog::ModalAction;
@@ -658,10 +659,7 @@ impl Widget for RecoveryVerifyScreen {
         let order = self.visual_order();
         let mut leaves = Vec::with_capacity(order.len());
         for slot in order {
-            let leaf = taffy.leaf_node(Style {
-                display: Display::None,
-                ..Default::default()
-            });
+            let leaf = field_leaf(taffy);
             if let Some(editor) = self.editors.get_mut(slot) {
                 node_map.insert(leaf, std::ptr::from_mut::<dyn Widget>(editor));
             }
@@ -670,30 +668,11 @@ impl Widget for RecoveryVerifyScreen {
             }
             leaves.push(leaf);
         }
-        // The screen owns the viewport, so the sheet centres on the window
-        // rather than inside a fixed box at the origin.
-        let node = taffy.parent_node(
-            Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
-                ..Default::default()
-            },
-            &leaves,
-        );
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_node(screen_style(), &leaves, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         if let Some(theme) = self.layout_theme.clone() {
             with_layout_renderer(&theme, |tr| {
                 self.resolve(&theme, tr);

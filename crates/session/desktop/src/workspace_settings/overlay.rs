@@ -6,7 +6,7 @@
 
 use crate::authority::WorkspaceAuthority as _;
 use crate::i18n::{t, t_args};
-use ui::clock::{Duration, Instant};
+use ui::time::{Duration, Instant};
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
@@ -405,14 +405,6 @@ impl WorkspaceSettingsOverlay {
 
     pub fn device_toggle_rects(&self) -> &[Rect] {
         &self.device_toggle_rects
-    }
-
-    pub fn move_workspace_rects(&self) -> [Rect; 2] {
-        self.move_rects
-    }
-
-    pub fn delete_workspace_rect(&self) -> Rect {
-        self.delete_rect
     }
 
     pub fn name_rect(&self) -> Rect {

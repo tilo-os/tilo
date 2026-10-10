@@ -566,12 +566,6 @@ pub fn select_video_from_registry(codec: VideoCodec) -> Selection {
     select_video(codec, HwEncPolicy::from_env(), registry_has)
 }
 
-/// [`select_video_from_registry`] for audio.
-#[cfg(any(gst_decode, gst_encode, gst_realtime))]
-pub fn select_audio_from_registry(codec: AudioCodec) -> Selection {
-    select_audio(codec, HwEncPolicy::from_env(), registry_has)
-}
-
 #[cfg(test)]
 #[allow(
     clippy::cast_precision_loss,

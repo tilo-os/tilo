@@ -10,6 +10,41 @@ use std::time::Duration;
 use tokio::sync::mpsc as async_mpsc;
 
 const DEADLINE: Duration = Duration::from_secs(3);
+type ProgressReply =
+    std::pin::Pin<Box<dyn std::future::Future<Output = (u64, Result<Snapshot, String>)>>>;
+/// Per-command transport evidence, containing no PCM, route or identity data.
+#[derive(Default)]
+struct DispatchProgress {
+    requests: u32,
+    replies: u32,
+    backpressure: u32,
+    last: Option<Snapshot>,
+}
+impl DispatchProgress {
+    fn timeout(&self, command: &Command) {
+        let operation = match command {
+            Command::Open {} => "open",
+            Command::Write { .. } => "write",
+            Command::Pause { .. } => "pause",
+            Command::Volume { .. } => "volume",
+            Command::Flush { .. } => "flush",
+            Command::Status { .. } => "status",
+            Command::Close { .. } => "close",
+        };
+        tracing::warn!(
+            target: "tilo::audio_output",
+            operation,
+            requests = self.requests,
+            replies = self.replies,
+            backpressure = self.backpressure,
+            queued_frames = self.last.as_ref().map(|last| last.queued_frames),
+            rendered_frames = self.last.as_ref().map(|last| last.rendered_frames),
+            paused = self.last.as_ref().map(|last| last.paused),
+            ready = self.last.as_ref().map(|last| last.ready),
+            "governed audio command reached its existing deadline"
+        );
+    }
+}
 struct Job {
     command: Command,
     reply: mpsc::SyncSender<Result<Snapshot, String>>,
@@ -42,20 +77,46 @@ pub(super) fn install(channel: runtime_collab::ChannelHandle) {
     tokio::task::spawn_local(async move {
         let _live = Live(worker.clone());
         let mut generation = None;
+        let mut progress_reply: Option<ProgressReply> = None;
+        let mut progress_superseded = false;
         let mut progress = tokio::time::interval(Duration::from_millis(50));
         progress.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             let job = tokio::select! { biased;
                 job = stop_receive.recv() => job,
                 job = receive.recv() => job,
-                _ = progress.tick(), if generation.is_some() => {
-                    if let Some(current) = generation {
-                        if let Ok(Ok(snapshot)) = tokio::time::timeout(DEADLINE, channel.audio_output_command(&Command::Status { generation: current })).await {
-                            worker.observe(snapshot);
-                        } else {
-                            worker.fail("Governed audio output progress ended".into());
-                            generation = None;
+                reply = async {
+                    match progress_reply.as_mut() {
+                        Some(reply) => reply.await,
+                        None => std::future::pending().await,
+                    }
+                }, if progress_reply.is_some() => {
+                    progress_reply = None;
+                    if generation == Some(reply.0) {
+                        match reply.1 {
+                            Ok(snapshot) if !progress_superseded => worker.observe(snapshot),
+                            Ok(_) => {},
+                            Err(error) => {
+                                worker.fail(error);
+                                generation = None;
+                            }
                         }
+                    }
+                    continue;
+                },
+                _ = progress.tick(), if generation.is_some() && progress_reply.is_none() => {
+                    if let Some(current) = generation {
+                        // A slow observation must not consume the PCM caller's reply budget.
+                        // Poll one bounded request beside the command lanes, never ahead of them.
+                        let channel = channel.clone();
+                        progress_superseded = false;
+                        progress_reply = Some(Box::pin(async move {
+                            let result = tokio::time::timeout(DEADLINE, channel.audio_output_command(&Command::Status { generation: current }))
+                                .await
+                                .map_err(|_| "Governed audio output progress ended".to_string())
+                                .and_then(|result| result.map_err(|error| error.to_string()));
+                            (current, result)
+                        }));
                     }
                     continue;
                 },
@@ -63,20 +124,31 @@ pub(super) fn install(channel: runtime_collab::ChannelHandle) {
             let Some(job) = job else {
                 break;
             };
+            let mut transport = DispatchProgress::default();
             let result = tokio::time::timeout(
                 DEADLINE,
-                dispatch(&channel, &job.command, &mut stop_receive),
+                dispatch(&channel, &job.command, &mut stop_receive, &mut transport),
             )
             .await
-            .map_err(|_| "Governed audio output timed out".to_string())
+            .map_err(|_| {
+                transport.timeout(&job.command);
+                "Governed audio output timed out".to_string()
+            })
             .and_then(|result| result);
             if let Ok(snapshot) = &result {
+                // Even a flush/pause acknowledgment can supersede a status
+                // without changing the generation or PCM sequence counters.
+                progress_superseded |= progress_reply.is_some();
                 if matches!(job.command, Command::Open {})
                     && let Ok(mut failure) = worker.failure.lock()
                 {
                     *failure = None;
                 }
-                generation = (!snapshot.closed).then_some(snapshot.generation);
+                let next_generation = (!snapshot.closed).then_some(snapshot.generation);
+                if generation != next_generation {
+                    progress_reply = None;
+                }
+                generation = next_generation;
                 worker.observe(snapshot.clone());
             } else if let Err(error) = &result {
                 worker.fail(error.clone());
@@ -92,16 +164,21 @@ fn dispatch<'a>(
     channel: &'a runtime_collab::ChannelHandle,
     command: &'a Command,
     urgent: &'a mut async_mpsc::Receiver<Job>,
+    progress: &'a mut DispatchProgress,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Snapshot, String>> + 'a>> {
     Box::pin(async move {
         loop {
+            progress.requests = progress.requests.saturating_add(1);
             let snapshot = channel
                 .audio_output_command(command)
                 .await
                 .map_err(|error| error.to_string())?;
+            progress.replies = progress.replies.saturating_add(1);
+            progress.last = Some(snapshot.clone());
             if let Command::Write { sequence, .. } = command
                 && snapshot.accepted_sequence < *sequence
             {
+                progress.backpressure = progress.backpressure.saturating_add(1);
                 // A full PCM queue must not hold pause, seek or teardown behind its retry.
                 tokio::select! { biased;
                     Some(job) = urgent.recv() => {
@@ -278,7 +355,10 @@ mod tests {
     //! SDK wire scheduling fixtures, not proofs of native launcher custody or device output.
     use super::*;
     use runtime_collab::collab_capnp::{channel_handle, collab_service};
-    use std::{cell::RefCell, rc::Rc};
+    use std::{
+        cell::{Cell, RefCell},
+        rc::Rc,
+    };
 
     #[derive(Clone, Default)]
     struct Peer(Rc<RefCell<(bool, bool, Vec<Command>)>>);
@@ -333,6 +413,201 @@ mod tests {
         }
     }
 
+    #[derive(Clone)]
+    struct DelayedProgressPeer {
+        status_started: Rc<tokio::sync::Notify>,
+        accepted: Rc<RefCell<Vec<i16>>>,
+        generation: Rc<Cell<u64>>,
+        fail_progress: bool,
+    }
+    impl channel_handle::Server for DelayedProgressPeer {
+        #[expect(
+            clippy::future_not_send,
+            reason = "the Cap'n Proto fixture retains Rc capabilities and runs only on the SDK LocalSet"
+        )]
+        fn audio_output_command(
+            self: Rc<Self>,
+            params: channel_handle::AudioOutputCommandParams,
+            mut results: channel_handle::AudioOutputCommandResults,
+        ) -> impl std::future::Future<Output = Result<(), capnp::Error>> + 'static {
+            let command = Command::decode(params.get().unwrap().get_command().unwrap()).unwrap();
+            async move {
+                let (generation, sequence) = match command {
+                    Command::Open {} => {
+                        self.generation.set(self.generation.get() + 1);
+                        (self.generation.get(), 0)
+                    }
+                    Command::Status { generation } => {
+                        self.status_started.notify_one();
+                        tokio::time::sleep(Duration::from_secs(2)).await;
+                        if self.fail_progress && generation == 7 {
+                            return Err(capnp::Error::failed("generation ended".into()));
+                        }
+                        (generation, 0)
+                    }
+                    Command::Write {
+                        generation,
+                        sequence,
+                        samples,
+                    } => {
+                        *self.accepted.borrow_mut() = samples;
+                        tokio::time::sleep(Duration::from_secs(2)).await;
+                        (generation, sequence)
+                    }
+                    _ => (self.generation.get(), 0),
+                };
+                let snapshot = Snapshot {
+                    generation,
+                    accepted_sequence: sequence,
+                    rendered_frames: if sequence > 0 { 960 } else { 0 },
+                    queued_frames: 0,
+                    paused: false,
+                    ready: true,
+                    closed: false,
+                };
+                results
+                    .get()
+                    .set_reply(&serde_json::to_vec(&snapshot).unwrap());
+                Ok(())
+            }
+        }
+    }
+    impl collab_service::Server for DelayedProgressPeer {
+        fn join_channel(
+            self: Rc<Self>,
+            _: collab_service::JoinChannelParams,
+            mut results: collab_service::JoinChannelResults,
+        ) -> impl std::future::Future<Output = Result<(), capnp::Error>> + 'static {
+            results
+                .get()
+                .set_handle(capnp_rpc::new_client(self.as_ref().clone()));
+            std::future::ready(Ok(()))
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn governed_output_delayed_progress_does_not_lose_accepted_pcm_reply() {
+        tokio::task::LocalSet::new().run_until(async {
+            let peer = DelayedProgressPeer {
+                status_started: Rc::new(tokio::sync::Notify::new()),
+                accepted: Rc::new(RefCell::new(Vec::new())),
+                generation: Rc::new(Cell::new(6)),
+                fail_progress: false,
+            };
+            let channel = runtime_collab::CollabClient::from_raw(capnp_rpc::new_client(peer.clone()))
+                .join_channel("fixture", &[]).await.unwrap();
+            install(channel);
+            let mut output = tokio::task::spawn_blocking(media::audio_output::open)
+                .await.unwrap().unwrap();
+            tokio::time::timeout(Duration::from_secs(1), peer.status_started.notified())
+                .await.unwrap();
+            let (output, result) = tokio::task::spawn_blocking(move || {
+                let result = output.write(&vec![16384; MAX_SAMPLES]);
+                (output, result)
+            }).await.unwrap();
+            assert_eq!(*peer.accepted.borrow(), vec![16384; MAX_SAMPLES]);
+            assert!(result.is_ok(), "individually subdeadline status and accepted PCM replies must not combine into a lost write reply: {result:?}");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            assert_eq!(output.cached_observation().rendered_frames, 960,
+                "a progress reply captured before the write must not erase its newer acknowledgment");
+        }).await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn governed_output_progress_failure_is_scoped_to_its_generation() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                for replace in [false, true] {
+                    let peer = DelayedProgressPeer {
+                        status_started: Rc::new(tokio::sync::Notify::new()),
+                        accepted: Rc::new(RefCell::new(Vec::new())),
+                        generation: Rc::new(Cell::new(6)),
+                        fail_progress: true,
+                    };
+                    let channel =
+                        runtime_collab::CollabClient::from_raw(capnp_rpc::new_client(peer.clone()))
+                            .join_channel("fixture", &[])
+                            .await
+                            .unwrap();
+                    install(channel);
+                    let first = tokio::task::spawn_blocking(media::audio_output::open)
+                        .await
+                        .unwrap()
+                        .unwrap();
+                    tokio::time::timeout(Duration::from_secs(1), peer.status_started.notified())
+                        .await
+                        .unwrap();
+                    if replace {
+                        let replacement = tokio::task::spawn_blocking(media::audio_output::open)
+                            .await
+                            .unwrap()
+                            .unwrap();
+                        assert_eq!(peer.generation.get(), 8);
+                        tokio::time::sleep(Duration::from_millis(2050)).await;
+                        assert_eq!(
+                            replacement.cached_error(),
+                            None,
+                            "an old progress failure must not poison a newly opened generation"
+                        );
+                    } else {
+                        tokio::time::sleep(Duration::from_millis(2050)).await;
+                        assert!(
+                            first.cached_error().is_some(),
+                            "current-generation progress failure must remain observable"
+                        );
+                    }
+                }
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn governed_output_timeout_distinguishes_rpc_wait_from_queue_backpressure() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                for delayed_rpc in [true, false] {
+                    let client = if delayed_rpc {
+                        capnp_rpc::new_client(DelayedProgressPeer {
+                            status_started: Rc::new(tokio::sync::Notify::new()),
+                            accepted: Rc::new(RefCell::new(Vec::new())),
+                            generation: Rc::new(Cell::new(7)),
+                            fail_progress: false,
+                        })
+                    } else {
+                        capnp_rpc::new_client(Peer::default())
+                    };
+                    let channel = runtime_collab::CollabClient::from_raw(client)
+                        .join_channel("fixture", &[])
+                        .await
+                        .unwrap();
+                    let (_urgent, mut receive) = async_mpsc::channel(8);
+                    let write = Command::Write {
+                        generation: 7,
+                        sequence: 1,
+                        samples: vec![16384; 1920],
+                    };
+                    let mut transport = DispatchProgress::default();
+                    let result = tokio::time::timeout(
+                        Duration::from_millis(50),
+                        dispatch(&channel, &write, &mut receive, &mut transport),
+                    )
+                    .await;
+                    assert!(result.is_err());
+                    if delayed_rpc {
+                        assert_eq!(transport.requests, 1);
+                        assert_eq!(transport.replies, 0);
+                        assert_eq!(transport.backpressure, 0);
+                        assert!(transport.last.is_none());
+                    } else {
+                        assert!(transport.replies > 0);
+                        assert!(transport.backpressure > 0);
+                        assert!(transport.last.is_some());
+                    }
+                }
+            })
+            .await;
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn governed_output_full_pcm_lane_still_processes_flush_and_close() {
         tokio::task::LocalSet::new()
@@ -360,13 +635,18 @@ mod tests {
                         sequence: 1,
                         samples: vec![16384; 2],
                     };
+                    let mut transport = DispatchProgress::default();
                     let result = tokio::time::timeout(
                         Duration::from_secs(1),
-                        dispatch(&channel, &write, &mut receive),
+                        dispatch(&channel, &write, &mut receive, &mut transport),
                     )
                     .await
                     .unwrap();
                     assert!(received.try_recv().unwrap().is_ok());
+                    assert!(transport.backpressure > 0);
+                    assert!(transport.replies > 0);
+                    assert!(transport.requests >= transport.replies);
+                    assert!(transport.last.is_some());
                     if matches!(stop, Command::Flush { .. }) {
                         assert_eq!(result.unwrap().accepted_sequence, 1);
                     } else {

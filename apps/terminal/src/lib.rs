@@ -24,11 +24,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -36,6 +32,7 @@
 
 pub mod actions;
 mod graphics;
+mod native_editor;
 pub mod resource;
 mod scenarios;
 pub mod screen;
@@ -96,7 +93,7 @@ pub struct HostedProcessServices {
 #[cfg(unix)]
 impl Default for HostedProcessServices {
     fn default() -> Self {
-        let ush = xdg_paths::xdg::runtime_dir()
+        let ush = tilo_paths::xdg::runtime_dir()
             .and_then(|runtime| Self::discover_from_runtime_dir(&runtime).ush);
         Self { ush }
     }

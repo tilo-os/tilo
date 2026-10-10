@@ -2163,13 +2163,7 @@ impl Widget for TileHost {
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let _running = self.running();
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         if let TileContent::App(w) = &mut self.content {
             // Guards a structural mismatch: content is `App` but the taffy
             // node has no child yet (build_layout ran while content was
@@ -2781,6 +2775,28 @@ impl TileHost {
             transform,
             &shape,
         );
+        // Everything up to the matching pop is clipped to the tile, so the
+        // tile bounds whatever its content changes: a damage part.
+        let content = crate::scene_parts::PartKey::new("ui.tile-content", ());
+        let bounds = vec![transform.transform_rect_bbox(self.rect)];
+        crate::scene_parts::part(scene, content, bounds, |scene| {
+            self.draw_clipped_content(scene, transform, tr, theme, presence, &shape);
+        });
+        scene.pop_layer();
+        self.draw_edge(scene, transform, theme, radius);
+    }
+
+    /// The tile's content inside its clip: the opening card, the app (or a
+    /// card in its place), and the card dissolving over an arrived app.
+    fn draw_clipped_content(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+        shape: &RoundedRect,
+    ) {
         // An app asked for but not arrived gets the card in place of the
         // app, not behind it: its early buffer is the client's own size,
         // not the tab's, and painting it would show the window visibly
@@ -2860,7 +2876,7 @@ impl TileHost {
                         vello::peniko::BlendMode::default(),
                         1.0 - t,
                         transform,
-                        &shape,
+                        shape,
                     );
                     draw_opening_card(
                         scene,
@@ -2876,8 +2892,6 @@ impl TileHost {
                 }
             }
         }
-        scene.pop_layer();
-        self.draw_edge(scene, transform, theme, radius);
     }
 }
 
@@ -3257,9 +3271,7 @@ mod tests {
             _theme: &Theme,
             node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
-            let n = taffy.leaf_node(Style::default());
-            node_map.insert(n, std::ptr::from_mut::<dyn Widget>(self));
-            n
+            taffy.widget_leaf(Style::default(), node_map, self)
         }
         fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
         fn draw(
@@ -3352,9 +3364,7 @@ mod tests {
             _theme: &Theme,
             node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
-            let node = taffy.leaf_node(Style::default());
-            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-            node
+            taffy.widget_leaf(Style::default(), node_map, self)
         }
         fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
         fn draw(
@@ -3430,20 +3440,10 @@ mod tests {
             let mut taffy = TaffyTree::new();
             let mut node_map = std::collections::HashMap::new();
             let node = host.build_layout(&mut taffy, &Theme::default(), &mut node_map);
-            let mut handled = true;
-            host.handle_event(
-                &WindowEvent::Focused(true),
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &winit::event::Modifiers::default(),
-                    state: crate::widget::Edits::lend(&mut AutoCommit::new()),
-                    path: &ROOT,
-                    handled: &mut handled,
-                    focus_target: &mut None,
-                    node_id: node,
-                    taffy: &taffy,
-                },
-            );
+            crate::testing::Dispatch::new()
+                .handled(true)
+                .layout(&taffy, node)
+                .send(&mut host, &WindowEvent::Focused(true));
             assert_eq!(calls.get(), 0);
         }
     }
@@ -4172,9 +4172,7 @@ mod tests {
             _theme: &Theme,
             node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
-            let node = taffy.leaf_node(Style::default());
-            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-            node
+            taffy.widget_leaf(Style::default(), node_map, self)
         }
         fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
         fn draw(
@@ -4225,9 +4223,7 @@ mod tests {
             self.0
                 .borrow_mut()
                 .push(super::super::panic_scope::current());
-            let node = taffy.leaf_node(Style::default());
-            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-            node
+            taffy.widget_leaf(Style::default(), node_map, self)
         }
         fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
         fn draw(
@@ -4495,9 +4491,7 @@ mod tests {
             _theme: &Theme,
             node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
-            let n = taffy.leaf_node(Style::default());
-            node_map.insert(n, std::ptr::from_mut::<dyn Widget>(self));
-            n
+            taffy.widget_leaf(Style::default(), node_map, self)
         }
         fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
         fn draw(
@@ -4551,9 +4545,7 @@ mod tests {
             _theme: &Theme,
             node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
-            let n = taffy.leaf_node(Style::default());
-            node_map.insert(n, std::ptr::from_mut::<dyn Widget>(self));
-            n
+            taffy.widget_leaf(Style::default(), node_map, self)
         }
         fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
         fn draw(
@@ -5051,28 +5043,17 @@ mod tests {
             assert!(toolbar.width() > 0.0 && toolbar.height() > 0.0);
             let body = Point::new(toolbar.center().x, toolbar.y1 + 40.0);
             assert!(host.get_rect().contains(body) && !toolbar.contains(body));
-            let device = unsafe { std::mem::zeroed() };
+            let device = winit::event::DeviceId::dummy();
             let motion = |point: Point| WindowEvent::CursorMoved {
                 device_id: device,
                 position: (point.x * scale, point.y * scale).into(),
             };
-            let mut doc = AutoCommit::new();
+            let mut sender = crate::testing::Dispatch::new()
+                .scale_factor(scale)
+                .layout(&tree, node);
             let mut send = |event: &WindowEvent| {
                 calls.set(0);
-                let mut handled = false;
-                host.handle_event(
-                    event,
-                    &mut crate::widget::EventCtx {
-                        scale_factor: scale,
-                        modifiers: &winit::event::Modifiers::default(),
-                        state: crate::widget::Edits::lend(&mut doc),
-                        path: &ROOT,
-                        handled: &mut handled,
-                        focus_target: &mut None,
-                        node_id: node,
-                        taffy: &tree,
-                    },
-                );
+                let handled = sender.send(&mut host, event).handled;
                 (handled, calls.get())
             };
             let wheel = WindowEvent::MouseWheel {

@@ -2606,12 +2606,7 @@ impl Widget for PlayerApp {
         let Ok(layout) = taffy.layout(node) else {
             return;
         };
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = ui::widget::placed(layout, origin);
         let new_origin = Point::new(self.rect.x0, self.rect.y0);
         let Ok(children) = taffy.children(node) else {
             return;

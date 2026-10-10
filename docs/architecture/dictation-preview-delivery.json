@@ -1,0 +1,69 @@
+{
+  "schema": 1,
+  "status": "Production pending-preview coalescing; hardware-free validation",
+  "problem": "Unread drafts shared an eight-event queue with actor lifecycle events. A stalled compositor filled it and aborted recognition with Protocol.",
+  "change": "One bounded zeroizing pending-preview slot; separate ordered lifecycle queue. Nonblocking compositor poll gives lifecycle priority; final or stopped retires pending preview.",
+  "bounds_unchanged": "Audio4MiB queue,16KiB recognized-text bound,15s startup/105s capture/60s final windows; same microphone consent, original-field and vocabulary revocation checks.",
+  "source_sha256": "49b0347f82165b24004f22b45beb9bd5ca162018593a36a38ea7358cd3e4f765",
+  "before_fixture_source_sha256": "a248a5bb01fc066c690f5481d140a7432616397a84ae3092f3e5f3d3c7194082",
+  "regression_sha256": "44e229b98fd9dade5e21f59501da29f59ccbf836b34b37145bae43ff04b5d230",
+  "proof": {
+    "before": {
+      "receipt": "voice-dictation-preview-before.log",
+      "build_seconds": 274,
+      "tests": 1,
+      "passed": 0,
+      "failed": 1,
+      "failure": "production event publisher returned Protocol while compositor did not read"
+    },
+    "after": {
+      "receipt": "voice-dictation-preview-after.log",
+      "build_seconds": 219,
+      "tests": 6,
+      "passed": 6,
+      "test_seconds": 18.094
+    },
+    "same_regression_assertions": true,
+    "behavior_preserving_before_setup": "Extracted the original sync_channel(8) constructor, used by production actor and unchanged regression. No behavior/guard change before failing proof."
+  },
+  "verification": {
+    "native_wayland_original_field_journeys": {
+      "passed": true,
+      "tests": 2,
+      "test_seconds": 0.55,
+      "build_seconds": 141,
+      "receipt": "voice-dictation-preview-native-fields.log",
+      "cases": [
+        "input_method_wire::dictation_reaches_native_chrome_as_one_corrected_ime_commit",
+        "input_method_wire::dictation_cancels_when_native_field_identity_changes_at_identical_geometry"
+      ]
+    },
+    "default_shell_all_target_clippy": {
+      "passed": true,
+      "seconds": 102,
+      "receipt": "voice-dictation-preview-final-clippy.log"
+    },
+    "required_shell_test_target_check": {
+      "passed": true,
+      "receipt": "voice-dictation-preview-shell-check.log"
+    },
+    "staged_and_commit_hooks": {
+      "initial_staged_passed": true,
+      "final_receipt": "voice-dictation-preview-hooks-final.log",
+      "commit_receipt": "voice-dictation-preview-commit.log",
+      "publication_gated_on_success": true
+    },
+    "final_source_runtime_tests": {
+      "passed": true,
+      "tests": 6,
+      "test_seconds": 18.079,
+      "receipt": "voice-dictation-preview-final-tests.log",
+      "build_seconds": 116
+    },
+    "initial_clippy_failure": "significant_drop_tightening: preview MutexGuard held through return expression. Corrected with explicit early drop, no allow; failed receipt retained."
+  },
+  "qualification_limits": "Publisher regression simulates64 unread drafts, final and cancellation. Existing actual private-pipe actor tests cover framing/backpressure, cancellation/restart/reaping, slow final and dictionary removal/revocation. No actual ASR accuracy, physical microphone/device, full-app or renderer installed-cancellation qualification in this increment.",
+  "holds": "Native model admission/delivery/signing/install/deploy remain held; renderer full runtime qualification/publication separately outstanding under unchanged guards; holdout32 untouched",
+  "qualification_source_sha256": "4b73738e9b70fb893ea6915507551b9e43ba2ace8904c61af6e76145784d70a3",
+  "verification_note": "Six runtime tests and two native Wayland journeys passed before lint-only explicit MutexGuard early drop. Six runtime tests rerun on final source; regression assertions unchanged. Native Wayland journeys not redundantly rerun for the early-release statement."
+}

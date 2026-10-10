@@ -1,0 +1,11 @@
+# The packages of the throwaway `uki-tools` stage that seals an image: ukify, the
+# systemd-boot EFI stub it wraps the kernel in, and binutils, whose objcopy reads
+# the sealed command line back out of the UKI.
+# One package per line. This file is the only place they are named: the uki-tools
+# stages of os/Containerfile, os/Containerfile.board and
+# os/Containerfile.dev-installer-base install exactly this list from the frozen RPM
+# snapshot, os/dev/derive-rpm-package-set.py reads it into that snapshot, and
+# tools/policy/check_uki_pipeline.py keeps the three stages identical.
+systemd-ukify
+systemd-boot-unsigned
+binutils

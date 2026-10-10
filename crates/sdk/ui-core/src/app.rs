@@ -89,8 +89,10 @@ pub const WINDOW_LOST: &str = "the window stopped without being closed";
 pub const WINDOW_LOST_EXIT_CODE: i32 = 70;
 
 #[cfg(feature = "native")]
+mod input_publication;
+#[cfg(feature = "native")]
 mod surface;
-#[cfg(all(windows, feature = "native"))]
+#[cfg(all(any(windows, target_os = "linux"), feature = "native"))]
 pub(crate) use native_runner::prepare_native_renderer;
 #[cfg(feature = "native")]
 pub use surface::AppSurface;
@@ -503,7 +505,7 @@ pub use crate::action_locus::ActionUiRoute;
 )]
 pub struct App {
     retirement: Option<crate::semantic_document_read::retirement::RootRetirementPrelude>,
-    #[cfg(all(windows, feature = "native"))]
+    #[cfg(all(any(windows, target_os = "linux"), feature = "native"))]
     startup_renderer: Option<native_runner::RendererPreparation>,
     control_domain: crate::ControlDomain,
     wake_scope: Option<crate::wake::WakeScope>,
@@ -1326,7 +1328,7 @@ impl App {
             self.controlled_installed_history_definition = Some(controlled_definition);
         }
         self.init_layout();
-        self.validate_history_registration()
+        tilo_startup_metrics::span("history-validate", || self.validate_history_registration())
     }
 
     /// Construct an explicitly detached app for headless or test execution.
@@ -1403,18 +1405,6 @@ impl App {
         Ok(Self::from_scoped_parts_with_custody(
             scope, state, root, domain,
         ))
-    }
-
-    /// Construct with an explicit live producer capability before any factory callback.
-    pub fn from_factory_with_control_custody(
-        state: State,
-        factory: impl FnOnce(&crate::ControlDomain) -> Box<dyn Widget>,
-    ) -> Self {
-        let scope = crate::wake::WakeScope::new();
-        let _entry = scope.enter();
-        let domain = crate::control_custody::ControlDomain::outer();
-        let root = factory(&domain);
-        Self::from_scoped_parts_with_custody(scope, state, root, domain)
     }
 
     pub(crate) fn from_scoped_parts_with_custody(
@@ -1655,6 +1645,7 @@ impl App {
             &mut declared,
         );
         trace.finish(CacheResult::NotApplicable);
+        tilo_startup_metrics::startup_mark("actions-declared-done");
         *self.actions.resource_cache.borrow_mut() = Some(ResourceCache {
             key: key.clone(),
             declared,
@@ -2388,14 +2379,19 @@ impl App {
     /// from the previous process; shell continuation still wins when both exist.
     pub(crate) fn init_layout_with_dev_view(&mut self, dev_view: Option<crate::view::View>) {
         let _entry = self.enter_wake_scope();
-        self.refresh_control_action_availability();
+        // Startup marks name each step, so a slow first layout says which one.
+        tilo_startup_metrics::span("init-layout-actions", || {
+            self.refresh_control_action_availability();
+        });
         self.component_close_reports.extend(
             crate::component_lifecycle::take_component_close_reports(self.root_widget.as_mut()),
         );
         self.bindings.clear();
         self.layout.node_map.clear();
-        self.build_history_presentation();
-        self.update_focusable_order();
+        tilo_startup_metrics::span("init-layout-history", || self.build_history_presentation());
+        tilo_startup_metrics::span("init-layout-focus-order", || {
+            self.update_focusable_order();
+        });
         if let Some(view) = self.continuation.pending_view.take() {
             <Self as crate::view::FreezeThaw>::restore_view(self, &view);
         } else if let Some(view) = dev_view {
@@ -2534,22 +2530,6 @@ impl App {
         self.invalidate_widget_resource_cache();
     }
 
-    /// Inspect controlled launch composition without opening a native window.
-    /// Available only to downstream runner tests through `test-support`.
-    #[cfg(any(test, feature = "test-support"))]
-    #[must_use]
-    pub fn controlled_history_definitions_for_test(
-        &self,
-    ) -> (
-        Option<&'static crate::history_mode::HistoryDefinition>,
-        Option<&'static crate::history_mode::HistoryDefinition>,
-    ) {
-        (
-            self.controlled_installed_history_definition,
-            crate::history_mode::capability::document_history_definition(self.root_widget.as_ref()),
-        )
-    }
-
     /// Takes effect when the window is created, so set before [`App::run`].
     #[must_use]
     pub fn with_window_title(mut self, title: impl Into<String>) -> Self {
@@ -2645,7 +2625,7 @@ mod occlusion_probe_event_tests {
     #[test]
     fn occlusion_probe_only_explicit_exposure_or_interaction_bypasses_backoff() {
         let pointer = WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             position: winit::dpi::PhysicalPosition::new(10.0, 20.0),
         };
         assert!(render_probe_event(&pointer));
@@ -2706,7 +2686,6 @@ fn auxiliary_redraw_allowed(render: Option<&RenderThreadHandle>) -> bool {
 }
 
 #[cfg(test)]
-#[allow(dead_code, reason = "used by feature-gated render retry tests")]
 fn render_retry_deadline(outcome: FrameOutcome, now: Instant) -> Option<Instant> {
     matches!(outcome, FrameOutcome::Skipped | FrameOutcome::Reconfigured).then(|| {
         now.checked_add(Duration::from_nanos(16_666_667))
@@ -2914,7 +2893,8 @@ mod document_routes;
 #[path = "app/focus_selection_tests.rs"]
 mod focus_selection_tests;
 
-#[cfg(all(test, feature = "local-daemons"))]
+#[cfg(test)]
+#[cfg(feature = "local-daemons")]
 #[path = "app/local_privacy_tests.rs"]
 mod local_privacy_tests;
 
@@ -3846,7 +3826,7 @@ pub(crate) mod ordinary_confirmation_tests {
             }
         }
         fn key(&mut self, key: &str) {
-            let event = crate::synthetic_input::key_event(
+            let event = crate::synthetic_input::key_input(
                 &Key::Character(key.into()),
                 ElementState::Pressed,
             );
@@ -4385,7 +4365,7 @@ pub(crate) mod ordinary_confirmation_tests {
                     &crate::a11y::Action::SetValue("not-a-value-field".into()),
                 );
                 layout(&mut app);
-                app.action_palette_handle_key(&crate::synthetic_input::key_event(
+                app.action_palette_handle_key(&crate::synthetic_input::key_input(
                     &Key::Named(NamedKey::Enter),
                     ElementState::Pressed,
                 ));
@@ -4586,7 +4566,7 @@ pub(crate) mod ordinary_confirmation_tests {
             host.value("CONFIRM");
             for key in [NamedKey::Tab, NamedKey::Tab] {
                 let event =
-                    crate::synthetic_input::key_event(&Key::Named(key), ElementState::Pressed);
+                    crate::synthetic_input::key_input(&Key::Named(key), ElementState::Pressed);
                 match &mut host {
                     Host::Native(app) => {
                         assert!(app.action_palette_handle_event(&event, 1.0));
@@ -4596,7 +4576,7 @@ pub(crate) mod ordinary_confirmation_tests {
                 }
             }
             assert_eq!(host.focused_label().as_deref(), Some("Cancel"));
-            let event = crate::synthetic_input::key_event(
+            let event = crate::synthetic_input::key_input(
                 &Key::Named(NamedKey::Enter),
                 ElementState::Pressed,
             );

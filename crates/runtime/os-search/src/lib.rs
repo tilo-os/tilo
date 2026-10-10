@@ -16,17 +16,6 @@
 //! resource's opening action as the owner and invokes it through the action
 //! host, so a result the owner may no longer open opens nothing.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        clippy::panic,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 #[cfg(all(unix, not(target_os = "macos")))]
 pub mod dbus;
 mod entry;

@@ -31,9 +31,7 @@ use ui::tilo_resource::{self, Binds};
 use ui::widget::{
     AppModel, Button, Dropdown, ModelPath, Row, Slider, Spacer, Text, TextInput, Toggle, Widget,
 };
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
-use winit::event::WindowEvent;
+use vello::kurbo::{Point, Rect};
 
 use crate::effects::{SettingsEffect, effect};
 use crate::host::{Followed, PaneCx};
@@ -1666,11 +1664,10 @@ pub struct MouseKeyboardPane {
     tablets: Vec<InputDeviceSnapshot>,
     pads: Vec<InputDeviceSnapshot>,
     structure_dirty: bool,
-    composed: Option<Box<dyn Widget>>,
+    composed: ui::widget::Composed,
     composed_text_growth_bits: u32,
     source_row_height: f32,
     composed_locale_revision: u64,
-    rect: Rect,
     map_cache: KeyboardPreviewCacheHandle,
     osk_always: bool,
     next_device_poll: Option<ui::time::Instant>,
@@ -1706,11 +1703,10 @@ impl MouseKeyboardPane {
             tablets: Vec::new(),
             pads: Vec::new(),
             structure_dirty: false,
-            composed: None,
+            composed: ui::widget::Composed::default(),
             composed_text_growth_bits: 1.0_f32.to_bits(),
             source_row_height: ui::tokens::Metrics::default().panel_row_height,
             composed_locale_revision: ui::i18n::I18nManager::revision(),
-            rect: Rect::ZERO,
             map_cache: std::rc::Rc::default(),
             osk_always: area.osk_always,
             next_device_poll: None,
@@ -1939,7 +1935,7 @@ impl MouseKeyboardPane {
                 editor.pending = None;
                 self.editor.set(editor);
             }
-            self.composed = None;
+            self.composed.clear();
             self.structure_dirty = true;
         }
         let sections = InputSections::for_devices(snapshot);
@@ -1955,7 +1951,7 @@ impl MouseKeyboardPane {
             self.tablets = tablets;
             self.pads = pads;
             self.structure_dirty = true;
-            self.composed = None;
+            self.composed.clear();
         }
     }
 
@@ -2671,6 +2667,8 @@ impl MouseKeyboardPane {
 }
 
 impl Widget for MouseKeyboardPane {
+    ui::forward_to_composed!(composed);
+
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
         if self.hardware_live
             && self
@@ -2692,7 +2690,7 @@ impl Widget for MouseKeyboardPane {
         if editor != self.last_editor {
             self.last_editor = editor;
             self.structure_dirty = true;
-            self.composed = None;
+            self.composed.clear();
         }
         let identity = ui::local_identity::bound().map(|identity| identity.group_public_key);
         let dictionary = ui::personal_dictionary::snapshot().ok();
@@ -2715,7 +2713,7 @@ impl Widget for MouseKeyboardPane {
                     })
                 });
             self.structure_dirty = true;
-            self.composed = None;
+            self.composed.clear();
         }
         // The controls are built from the values: a change rebuilds them.
         if self.input.refresh() {
@@ -2723,15 +2721,13 @@ impl Widget for MouseKeyboardPane {
             last.normalise_keyboard_sources();
             self.last = last;
             self.structure_dirty = true;
-            self.composed = None;
+            self.composed.clear();
         }
         if self.text.refresh() {
             self.structure_dirty = true;
-            self.composed = None;
+            self.composed.clear();
         }
-        if let Some(c) = &mut self.composed {
-            c.sync(state, root);
-        }
+        self.composed.sync(state, root);
     }
 
     fn build_layout(
@@ -2746,93 +2742,29 @@ impl Widget for MouseKeyboardPane {
             .max(theme.tokens.metrics.min_pointer_target + theme.tokens.spacing.s2);
         if self.source_row_height.to_bits() != source_row_height.to_bits() {
             self.source_row_height = source_row_height;
-            self.composed = None;
+            self.composed.clear();
         }
         let locale_revision = ui::i18n::I18nManager::revision();
         if self.composed_text_growth_bits != growth_bits
             || self.composed_locale_revision != locale_revision
         {
-            self.composed = None;
+            self.composed.clear();
             self.composed_text_growth_bits = growth_bits;
             self.composed_locale_revision = locale_revision;
         }
         // Layout is not a model change. Retain open/search/focus caches until
         // observed settings or device changes require new controls.
-        let mut composed = self
+        let composition = self
             .composed
             .take()
             .unwrap_or_else(|| self.build_composition());
-        let child = composed.build_layout(taffy, theme, node_map);
-        self.composed = Some(composed);
-        let style = taffy::Style {
-            display: taffy::Display::Flex,
-            flex_direction: taffy::FlexDirection::Column,
-            size: taffy::Size {
-                width: taffy::Dimension::percent(1.0),
-                height: taffy::Dimension::auto(),
-            },
-            ..Default::default()
-        };
+        let child = self
+            .composed
+            .build_layout(composition, taffy, theme, node_map);
         // `child` was just created in this same tree, so this call is not
         // reachable to fail; if it (impossibly) did, wrap it in itself
         // rather than panic this panic=abort process.
-        let node = taffy.new_with_children(style, &[child]).unwrap_or(child);
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
-    }
-
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
-        if let Some(c) = &mut self.composed
-            && let Ok(children) = taffy.children(node)
-            && let Some(&cn) = children.first()
-        {
-            c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
-        }
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut ui::text_render::TextRenderer,
-        theme: &Theme,
-        presence: &ui::presence::PresenceCtx,
-    ) {
-        if let Some(c) = &mut self.composed {
-            c.draw(scene, transform, text_renderer, theme, presence);
-        }
-    }
-
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        if let Some(c) = &mut self.composed
-            && let Ok(children) = ctx.taffy.children(ctx.node_id)
-            && let Some(&cn) = children.first()
-        {
-            c.handle_event(event, &mut ctx.reborrow(ctx.path, cn));
-        }
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        self.composed
-            .as_ref()
-            .map(|c| c.as_ref() as &dyn Widget)
-            .into_iter()
-            .collect()
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.composed
-            .as_mut()
-            .map(|c| c.as_mut() as &mut (dyn Widget + '_))
-            .into_iter()
-            .collect()
+        crate::panes::pane_node(taffy, child, node_map, self)
     }
 
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
@@ -2843,16 +2775,9 @@ impl Widget for MouseKeyboardPane {
         "MouseKeyboardPane"
     }
 
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-
     fn take_structure_dirty(&mut self) -> bool {
         let own = std::mem::take(&mut self.structure_dirty);
-        let child = self
-            .composed
-            .as_mut()
-            .is_some_and(|composed| composed.take_structure_dirty());
+        let child = self.composed.take_structure_dirty();
         own || child
     }
 }
@@ -2862,6 +2787,7 @@ mod tests {
     use super::*;
     use crate::resource::SettingsShell;
     use ui::prelude::TestApp;
+    use winit::event::WindowEvent;
 
     #[test]
     fn mounted_dictionary_actions_add_edit_remove_reset_and_survive_restart() {

@@ -120,7 +120,7 @@ fn authority_bootstrap_needs_no_roster_and_others_need_held_governance() {
     )
     .expect("the invite's authority supplies the first governance");
     assert_eq!(
-        super::super::governance_of(Some(&admitted.candidate)).0,
+        super::super::governance_of(Some(&admitted.candidate)).owner,
         Some(person_id(OWNER))
     );
     let stranger = key(0xB0);

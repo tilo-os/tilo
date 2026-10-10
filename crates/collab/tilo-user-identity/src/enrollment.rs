@@ -73,7 +73,7 @@ pub struct EnrollmentToken {
     pub issuer_device_public_key: [u8; 32],
     /// Ed25519 signature over
     /// `blake3(ENROLLMENT_PREIMAGE_TAG || postcard(view))`.
-    #[serde(with = "serde_bytes_64")]
+    #[serde(with = "crate::cert::serde_bytes_64")]
     pub signature: [u8; 64],
 }
 
@@ -265,29 +265,6 @@ pub fn decode_enrollment_token(text: &str) -> Result<EnrollmentToken, Enrollment
     let bytes = decode_crockford(text).ok_or(EnrollmentError::MalformedBase32)?;
     let token: EnrollmentToken = from_canonical_bytes(&bytes)?;
     Ok(token)
-}
-
-mod serde_bytes_64 {
-    use serde::de::Error as _;
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
-    pub fn serialize<S: Serializer>(bytes: &[u8; 64], s: S) -> Result<S::Ok, S::Error> {
-        serde_bytes::Bytes::new(bytes).serialize(s)
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<[u8; 64], D::Error> {
-        let v: serde_bytes::ByteBuf = serde_bytes::ByteBuf::deserialize(d)?;
-        let bytes = v.into_vec();
-        if bytes.len() != 64 {
-            return Err(D::Error::custom(format!(
-                "expected 64-byte signature, got {}",
-                bytes.len()
-            )));
-        }
-        let mut out = [0u8; 64];
-        out.copy_from_slice(&bytes);
-        Ok(out)
-    }
 }
 
 #[cfg(test)]
