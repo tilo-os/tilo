@@ -329,6 +329,7 @@ members = [
     "crates/system/power",
     "crates/system/projector",
     "crates/system/sandbox-core",
+    "crates/system/secret-service",
     "crates/system/secret-vault",
     "crates/system/settings-store",
     "crates/system/ssh-agent-client",
