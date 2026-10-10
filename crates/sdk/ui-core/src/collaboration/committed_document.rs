@@ -799,14 +799,14 @@ fn capture_budget() -> &'static ByteBudget {
     static BUDGET: std::sync::OnceLock<ByteBudget> = std::sync::OnceLock::new();
     BUDGET.get_or_init(ByteBudget::new)
 }
-#[allow(
-    clippy::future_not_send,
-    reason = "capnp-rpc channel futures are !Send by design; driven only on the shovel LocalSet"
-)]
 /// How long an assembled capture waits for the broker to accept its
 /// acknowledgement; equal to the polling Open deadline.
 const ACKNOWLEDGEMENT_DEADLINE: Duration = Duration::from_secs(2);
 
+#[allow(
+    clippy::future_not_send,
+    reason = "capnp-rpc channel futures are !Send by design; driven only on the shovel LocalSet"
+)]
 async fn read_capture(
     channel: &runtime_collab::ChannelHandle,
     first: Reply,
