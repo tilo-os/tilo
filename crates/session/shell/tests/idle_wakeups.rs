@@ -1,4 +1,4 @@
-//! How often an idle desktop wakes the machine (TIL-614).
+//! How often an idle desktop wakes the machine.
 //!
 //! A desktop nobody is touching should leave the CPU asleep. Every timer, poll
 //! or self-rescheduling worker in the compositor, or in anything it started,
@@ -41,34 +41,21 @@ use ui::widget::identity_flow::IdentityRecord;
 /// Most wakeups per second the idle desktop may cost, across every thread of
 /// the compositor and its children. The product target is 5/s.
 ///
-/// Measured on CI's shared x86-64 runner (headless, llvmpipe, debug build;
-/// `docs/benchmarks/idle-wakeups-2026-10-09.md` has the tables): 60/s with
-/// the frame loop parked, and up to 2008/s while TIL-696 spins it. There the
-/// Terminal's record save status leaves a wake deadline that never moves, so
-/// the loop runs ~950 times a second without painting and every iteration
-/// wakes `tilo-settings-read`, until an unrelated paint (at the latest the
-/// clock's next minute) ends it; which a run sees depends on the wall clock.
-/// A spin's rate also follows the runner's speed, so until TIL-696 lands
-/// the budget is the spinning measurement plus a half.
-///
-/// TIL-704 parked the audio-output authority watchdog while no output is
-/// open (20/s before, 0/s after): the parked desktop measured 31.9/s (run
-/// 89960). With TIL-696 fixed, this drops to that plus a quarter, 40/s.
-///
-/// TIL-707 parked the collaboration broker's service thread (20.1/s before,
-/// 0.0/s after, run 90830), which comes off that parked figure too.
-///
-/// TIL-696: the frame loop answers a widget deadline once instead of waking
-/// for it until something paints. On the shared builder (debug, llvmpipe)
-/// the spinning desktop measured 3021/s and its loop 1495 ticks/s; parked,
-/// 13.2/s and 0 ticks/s. The budget is that plus a quarter.
+/// Measured headless (llvmpipe, debug build;
+/// `docs/benchmarks/idle-wakeups-2026-10-09.md` has the tables). The
+/// audio-output authority watchdog now parks while no output is open, and
+/// the collaboration broker's service thread while nothing is due. A
+/// widget's overdue wake deadline used to keep the idle frame loop spinning
+/// without painting, waking `tilo-settings-read` on every pass (3021/s on
+/// the shared builder); the loop now answers such a deadline once. Parked,
+/// the builder measured 13.2/s. The budget is that plus a quarter.
 const IDLE_WAKEUP_BUDGET: f64 = 16.5;
 
 /// Most iterations per second the compositor's frame loop may make while
 /// idle, from its `paint-stats` lines. A loop that wakes on a deadline that
 /// never moves spins without blocking, which context switches hardly show.
-/// Measured 0/s parked, and 946/s (CI) to 1495/s (builder) while TIL-696
-/// spun it; with TIL-696 fixed an idle loop parks.
+/// Measured 0/s parked; it was 946/s (CI) to 1495/s (builder) while a
+/// widget's overdue wake deadline kept it spinning. An idle loop parks.
 const LOOP_TICK_BUDGET: f64 = 1.0;
 
 /// How long the desktop is left alone after both apps are drawn, so startup

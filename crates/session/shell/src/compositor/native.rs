@@ -15094,7 +15094,7 @@ mod tests {
         }
         let gated = started.elapsed();
         eprintln!(
-            "TIL-136 legacy-share pass per idle wakeup, 8 workspaces x 24 windows: walked {:?}, gated {:?}",
+            "legacy-share pass per idle wakeup, 8 workspaces x 24 windows: walked {:?}, gated {:?}",
             walked / WAKEUPS,
             gated / WAKEUPS,
         );
