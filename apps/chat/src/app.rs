@@ -2762,11 +2762,33 @@ impl ChatApp {
         };
         match hit {
             Hit::Send => "send",
-            Hit::AgentWindow if self.agent_window_is_return() => "return",
-            Hit::AgentWindow => "float",
+            Hit::AgentWindow | Hit::AgentDragHandle if self.agent_window_is_return() => "return",
+            Hit::AgentWindow | Hit::AgentDragHandle => "float",
             Hit::FocusMain | Hit::FocusThread => "editor",
             _ => "other",
         }
+    }
+
+    fn agent_float_frontier_snapshot(&self) -> serde_json::Value {
+        let current_agent = self.direct_agent.as_deref();
+        let retained = current_agent.and_then(|agent| {
+            let channel = ChatDoc::agent_conversation_channel_id(&self.context_ws, agent);
+            self.agent_surfaces.get(&channel)
+        });
+        serde_json::json!({
+            "context_matches_active_workspace": self.context_ws == self.active_ws,
+            "context_workspace_present": self.workspaces.iter()
+                .any(|workspace| workspace.id == self.context_ws),
+            "current_agent_present": current_agent.is_some(),
+            "current_agent_admitted": current_agent
+                .is_some_and(|agent| self.room_agents.iter().any(|known| known == agent)),
+            "retained_surface_present": retained.is_some(),
+            "retained_attachment_app": retained.is_some_and(|surface| matches!(
+                surface.placement.attachment(),
+                ui::floating_surface::Attachment::App { .. }
+            )),
+            "pending_present_request_count": self.agent_surface_requests.len(),
+        })
     }
 
     fn agent_message_submission_phase(message: &AgentMessageSubmission) -> &'static str {
@@ -5620,6 +5642,7 @@ impl Widget for ChatApp {
             "app": "so.tilo.chat",
             "keyboard_control": self.keyboard_control_snapshot(),
             "composer_focused": self.composer_main.is_focused(),
+            "agent_float_frontier": self.agent_float_frontier_snapshot(),
             "agent_task": current,
             "agent_task_presentation": Self::agent_task_snapshot(self),
             "agent_message_progress": self.agent_message_progress_snapshot(),

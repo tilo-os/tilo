@@ -44,11 +44,72 @@ import atspi_external_client as atspi
 # AT-SPI's stable wire value for AtspiRole::Heading. The external client
 # intentionally exposes numeric roles because AccessKit has no role-name call.
 AT_SPI_ROLE_HEADING = 83
+AT_SPI_ROLE_TAB = 37
+AT_SPI_ROLE_BUTTON = 43
 # atspi_common::State::Enabled is ordinal 8 in the two-word state set.
 AT_SPI_ENABLED_STATE_BIT = 1 << 8
 
 
-def accessible_subtree(client, root, limit):
+PERMISSION_OBSERVATION_COUNTS = (
+    "catalogue_pages", "catalogue_incomplete", "catalogue_stale", "catalogue_complete",
+    "chat_processes", "windows", "nodes", "interface_queries", "headings", "notices",
+    "retained", "mutable", "editable", "queue_tabs", "queue_buttons", "at_unobservable",
+)
+PERMISSION_OBSERVATION_FIELDS = PERMISSION_OBSERVATION_COUNTS + (
+    "assignment_unexpired_start", "assignment_unexpired_after_catalogue", "assignment_unexpired_after_at",
+    "catalogue_elapsed_ms", "at_elapsed_ms", "sample_elapsed_ms", "message_present", "queue_present",
+    "at_attempted", "at_matched", "queue_control_present", "private_editor_state_matches",
+)
+
+
+def permission_count(observation, key, amount=1):
+    if observation is not None:
+        observation[key] = min(1_000_000, observation.get(key, 0) + amount)
+
+
+def permission_phase_observation(output, phase, expires_unix):
+    return {"path": output / f"person-{phase}-write-restriction-observations.json",
+            "expires": expires_unix, "samples": [], "samples_seen": 0,
+            "totals": {key: 0 for key in PERMISSION_OBSERVATION_COUNTS}}
+
+
+def permission_phase_checkpoint(state, sample, phase):
+    now = time.monotonic()
+    sample[f"{phase}_elapsed_ms"] = max(0, round((now - sample["_phase_started"]) * 1000))
+    sample[f"assignment_unexpired_after_{phase}"] = time.time() < state["expires"]
+    sample["_phase_started"] = now
+
+
+@contextlib.contextmanager
+def permission_phase_sample(state):
+    started = time.monotonic()
+    sample = {key: 0 for key in PERMISSION_OBSERVATION_COUNTS}
+    sample.update({"_started": started, "_phase_started": started,
+                   "assignment_unexpired_start": time.time() < state["expires"],
+                   "assignment_unexpired_after_catalogue": None, "assignment_unexpired_after_at": None,
+                   "at_attempted": False, "at_matched": False})
+    try:
+        yield sample
+    finally:
+        sample["sample_elapsed_ms"] = max(0, round((time.monotonic() - started) * 1000))
+        state["samples_seen"] += 1
+        state["samples"].append({key: sample[key] for key in PERMISSION_OBSERVATION_FIELDS if key in sample})
+        if len(state["samples"]) > 32:
+            state["samples"] = state["samples"][:16] + state["samples"][-16:]
+        for key in PERMISSION_OBSERVATION_COUNTS:
+            state["totals"][key] = min(1_000_000, state["totals"][key] + sample[key])
+        public = {"samples_seen": state["samples_seen"], "samples": state["samples"],
+                  "totals": dict(state["totals"]),
+                  "dropped_samples": max(0, state["samples_seen"] - len(state["samples"])),
+                  "private_content_recorded": False}
+        try:
+            state["path"].write_text(json.dumps(public, indent=2) + "\n")
+        except OSError:
+            # Diagnostics cannot replace the original acceptance or refusal.
+            pass
+
+
+def accessible_subtree(client, root, limit, *, observation=None):
     """Walk one bounded window tree without reading editable descendants."""
     pending = [root]
     seen = set()
@@ -58,7 +119,9 @@ def accessible_subtree(client, root, limit):
         if path in seen:
             continue
         seen.add(path)
+        permission_count(observation, "nodes")
         result[path] = client.property(path, "Name")
+        permission_count(observation, "interface_queries")
         if "org.a11y.atspi.EditableText" in client.interfaces(path):
             continue
         children = client.call(path, "org.a11y.atspi.Accessible.GetChildren")
@@ -184,7 +247,7 @@ def foreign_frames(response):
 
 def agent_conversation_accessibility(agent_name, *, detached=False, diagnostic_path=None,
                                      composer_name="Message composer", stale_only=False,
-                                     include_send=False):
+                                     include_send=False, observation=None):
     """Observe the actual Chat route without reading private editor content."""
     address = atspi.atspi_address()
     peers = atspi.bus_pids(address)
@@ -209,6 +272,7 @@ def agent_conversation_accessibility(agent_name, *, detached=False, diagnostic_p
         if pid is None or process_program(pid) != "chat":
             continue
         observed["chat_processes"] += 1
+        permission_count(observation, "chat_processes")
         client = atspi.AtspiClient(address, bus)
         try:
             # A suspended secondary window can retain a stale accessible tree.
@@ -219,8 +283,11 @@ def agent_conversation_accessibility(agent_name, *, detached=False, diagnostic_p
             matches = {}
             windows = dict.fromkeys(atspi.PATH_RE.findall(children))
             observed["window_roots"] += len(windows)
+            permission_count(observation, "windows", len(windows))
             for window in windows:
-                tree = accessible_subtree(client, window, atspi.APP_TREE_NODE_LIMIT)
+                tree = (accessible_subtree(client, window, atspi.APP_TREE_NODE_LIMIT)
+                        if observation is None else accessible_subtree(
+                            client, window, atspi.APP_TREE_NODE_LIMIT, observation=observation))
                 observed["complete_windows"] += 1
                 headings = [
                     path
@@ -230,11 +297,15 @@ def agent_conversation_accessibility(agent_name, *, detached=False, diagnostic_p
                     )
                     if client.role(path) == AT_SPI_ROLE_HEADING
                 ]
-                composers = [path for path in client.named(tree, composer_name)
+                composer_paths = client.named(tree, composer_name)
+                permission_count(observation, "interface_queries", len(composer_paths))
+                composers = [path for path in composer_paths
                              if "org.a11y.atspi.EditableText" in client.interfaces(path)]
                 controls = client.named(tree, control_name)
                 drag_handles = client.named(tree, "Drag conversation")
                 observed["heading_matches"] += len(headings)
+                permission_count(observation, "headings", len(headings))
+                permission_count(observation, "editable", len(composers))
                 observed["composer_matches"] += len(composers)
                 observed["control_matches"] += len(controls)
                 observed["drag_handle_matches"] += len(drag_handles)
@@ -254,6 +325,7 @@ def agent_conversation_accessibility(agent_name, *, detached=False, diagnostic_p
                 record()
                 return next(iter(matches.values()))
         except atspi.GateError as error:
+            permission_count(observation, "at_unobservable")
             if stale_only and not stale_editor_transport(error):
                 raise
             # A stale object during a real tree replacement is not success;
@@ -568,7 +640,21 @@ def chat_accessibility_control(label):
             continue
     if len(matches) > 1:
         raise RuntimeError(f"Chat published duplicate {label} controls")
-    return matches[0] if matches else None
+    if not matches:
+        return None
+    access = matches[0]
+    client = atspi.AtspiClient(address, access["bus"])
+    try:
+        name = atspi.property_text(client.property(access["control"], "Name"))
+    except atspi.GateError as error:
+        if re.search(
+                r" failed: Error: GDBus\.Error:org\.freedesktop\.DBus\.Error\.UnknownObject:",
+                str(error)):
+            return None  # Discovery may resolve the current node before any effect.
+        raise
+    if name is None:
+        raise RuntimeError("the current Chat control identity is unobservable")
+    return access if name == label else None
 
 
 def ensure_chat_category_visible(socket, label, process, *, diagnostic_path=None):
@@ -1369,12 +1455,13 @@ def decoded_accessible_names(tree):
     return decoded
 
 
-def accessible_names(access):
+def accessible_names(access, *, observation=None):
     """Read only the bounded names in one already-matched Chat window."""
     client = atspi.AtspiClient(atspi.atspi_address(), access["bus"])
-    return set(decoded_accessible_names(accessible_subtree(
-        client, access["window"], atspi.APP_TREE_NODE_LIMIT
-    )).values())
+    tree = (accessible_subtree(client, access["window"], atspi.APP_TREE_NODE_LIMIT)
+            if observation is None else accessible_subtree(
+                client, access["window"], atspi.APP_TREE_NODE_LIMIT, observation=observation))
+    return set(decoded_accessible_names(tree).values())
 
 
 def activate_named_agent_control(access, label):
@@ -1397,7 +1484,7 @@ def activate_named_agent_control(access, label):
     return True
 
 
-def agent_write_restricted_accessibility(agent_name, expected):
+def agent_write_restricted_accessibility(agent_name, expected, *, observation=None):
     """Observe the mounted read-only Agent view without exporting its draft."""
     address = atspi.atspi_address()
     matches = {}
@@ -1406,11 +1493,15 @@ def agent_write_restricted_accessibility(agent_name, expected):
         pid = atspi.app_process(proxy_pid, expected_program="chat")
         if pid is None or process_program(pid) != "chat":
             continue
+        permission_count(observation, "chat_processes")
         client = atspi.AtspiClient(address, bus)
         try:
             children = client.call(atspi.ROOT_PATH, "org.a11y.atspi.Accessible.GetChildren")
             for window in dict.fromkeys(atspi.PATH_RE.findall(children)):
-                tree = accessible_subtree(client, window, atspi.APP_TREE_NODE_LIMIT)
+                permission_count(observation, "windows")
+                tree = (accessible_subtree(client, window, atspi.APP_TREE_NODE_LIMIT)
+                        if observation is None else accessible_subtree(
+                            client, window, atspi.APP_TREE_NODE_LIMIT, observation=observation))
                 headings = client.named(
                     {path: name.casefold() for path, name in tree.items()},
                     f"{agent_name.casefold()}, agent",
@@ -1419,10 +1510,34 @@ def agent_write_restricted_accessibility(agent_name, expected):
                     tree, "You cannot send messages in this conversation."
                 )
                 retained = client.named(tree, expected)
-                mutable = [path for path, name in decoded_accessible_names(tree).items()
-                           if name in forbidden]
-                editable = [path for path in tree
-                            if "org.a11y.atspi.EditableText" in client.interfaces(path)]
+                permission_count(observation, "headings", len(headings))
+                permission_count(observation, "notices", len(notices))
+                permission_count(observation, "retained", len(retained))
+                mutable = []
+                for path, name in decoded_accessible_names(tree).items():
+                    if name not in forbidden:
+                        continue
+                    if name == "Queue task":
+                        try:
+                            role = client.role(path)
+                        except atspi.GateError:
+                            permission_count(observation, "at_unobservable")
+                            raise RuntimeError("restricted Queue control role is unobservable") from None
+                        if role == AT_SPI_ROLE_TAB:
+                            permission_count(observation, "queue_tabs")
+                            continue
+                        if role != AT_SPI_ROLE_BUTTON:
+                            permission_count(observation, "at_unobservable")
+                            raise RuntimeError("restricted Queue control role is unobservable")
+                        permission_count(observation, "queue_buttons")
+                    mutable.append(path)
+                editable = []
+                for path in tree:
+                    permission_count(observation, "interface_queries")
+                    if "org.a11y.atspi.EditableText" in client.interfaces(path):
+                        editable.append(path)
+                permission_count(observation, "mutable", len(mutable))
+                permission_count(observation, "editable", len(editable))
                 if (len(headings) == 1 and len(notices) == 1 and len(retained) == 1
                         and not mutable and not editable):
                     key = (headings[0], notices[0], retained[0])
@@ -1434,6 +1549,7 @@ def agent_write_restricted_accessibility(agent_name, expected):
                         "private_content_recorded": False,
                     })
         except atspi.GateError:
+            permission_count(observation, "at_unobservable")
             continue
     if len(matches) > 1:
         raise RuntimeError("duplicate write-restricted Agent conversations were published")
@@ -1636,7 +1752,8 @@ def current_same_floating_presentation(response, previous):
 
 
 def wait_for_keyboard_float_presentation(socket, output, previous, primary, process, *,
-                                         diagnostic_name="keyboard-float-native-observations.json"):
+                                         diagnostic_name="keyboard-float-native-observations.json",
+                                         label="keyboard-activated Tide Float"):
     """Diagnose raw native frames without changing the existing acceptance filter."""
     evidence = {"observation_count": 0, "initial": None, "last": None}
 
@@ -1685,10 +1802,11 @@ def wait_for_keyboard_float_presentation(socket, output, previous, primary, proc
             json.dumps(evidence, indent=2) + "\n")
         return fresh_floating_presentation(presented_floating_frame(response, "so.tilo.chat"), previous)
 
-    return wait_for("keyboard-activated Tide Float", observe, process)
+    return wait_for(label, observe, process)
 
 
-def current_detached_control_target(socket, previous, agent_name, draft, expected_editor):
+def current_detached_control_target(socket, previous, agent_name, draft, expected_editor, *,
+                                    diagnostic_path=None):
     """Bind one fresh AT control extent to its exact current native child."""
     current = current_same_floating_presentation(
         call(socket, {"op": "foreign_frames"}), previous
@@ -1698,7 +1816,27 @@ def current_detached_control_target(socket, previous, agent_name, draft, expecte
     access = agent_conversation_accessibility(agent_name, detached=True)
     if access is None:
         return None
-    if private_editor_observation(access, draft) != expected_editor:
+    observed = private_editor_observation(access, draft)
+    if diagnostic_path is not None:
+        evidence = closed_editor_continuity(expected_editor, observed)
+        evidence.update({
+            "same_native_child": native_surface_id(current) == native_surface_id(previous),
+            "same_logical_child": current.get("floating_id") == previous.get("floating_id"),
+            "child_keyboard_focused": current.get("keyboard_focused")
+                if type(current.get("keyboard_focused")) is bool else None,
+            "child_suspended": current.get("suspended")
+                if type(current.get("suspended")) is bool else None,
+            "child_transferring": current.get("transferring")
+                if type(current.get("transferring")) is bool else None,
+            "child_ordinary_route": current.get("input_route") is None
+                and current.get("input_source_surface_id") is None,
+            "private_content_recorded": False,
+        })
+        try:
+            diagnostic_path.write_text(json.dumps(evidence, indent=2) + "\n")
+        except OSError:
+            pass  # Preserve the exact original continuity refusal.
+    if observed != expected_editor:
         raise RuntimeError("refreshing Return changed private editor state")
     first_geometry = presented_content_geometry(current)
     confirmed = current_same_floating_presentation(
@@ -2503,7 +2641,8 @@ def native_float_return(socket, room, record, output, size, process):
     current_frame, access, return_target = wait_for(
         "current detached Tide Return control",
         lambda: current_detached_control_target(
-            socket, frame, "Tide", draft, before_return_editor
+            socket, frame, "Tide", draft, before_return_editor,
+            diagnostic_path=output / "pointer-return-editor-continuity.json",
         ),
         process,
     )
@@ -3302,14 +3441,13 @@ def native_ime_float_return(socket, output, size, process, fcitx_identity, env):
     returned_access = wait_for_conversation_control_focus(
         returned_access, output, process, detached=False, control="drag", socket=socket)
     require_ok(call(socket, {"op": "key", "key": "Enter"}))
-    keyboard_frame = wait_for(
-        "keyboard-activated Rime proof Float",
-        lambda: fresh_floating_presentation(
-            presented_floating_frame(call(socket, {"op": "foreign_frames"}), "so.tilo.chat"),
-            frame,
-        ),
-        process,
+    keyboard_frame = wait_for_keyboard_float_presentation(
+        socket, output, frame, returned, process,
+        diagnostic_name="ime-keyboard-float-native-observations.json",
+        label="keyboard-activated Rime proof Float",
     )
+    if fresh_floating_presentation(keyboard_frame, frame) is None:
+        raise RuntimeError("keyboard Float did not present its fresh exact native child")
     keyboard_access = wait_for(
         "keyboard-activated Rime proof editor",
         lambda: agent_conversation_accessibility("Tide", detached=True), process,
@@ -4106,6 +4244,138 @@ def actions(socket, query=""):
     if "err" in response:
         raise RuntimeError(f"actions enumeration refused: {response['err']['code']}")
     return response["answer"]["actions"]
+
+
+def permission_actions_snapshot(socket, *, observation=None):
+    """Read one complete, settled listing before proving an offer absent."""
+    rows = []
+    cursor = None
+    revision = None
+    total = None
+    seen = set()
+    for _ in range(16):
+        request = {"op": "actions_enumerate", "query": "", "wait_ms": 250,
+                   "limit": 2000, "detail": "compact"}
+        if cursor is not None:
+            request["cursor"] = cursor
+        response = call(socket, request)
+        permission_count(observation, "catalogue_pages")
+        if not isinstance(response, dict):
+            raise RuntimeError("permission listing metadata is unobservable")
+        if "err" in response:
+            error = response["err"]
+            if not isinstance(error, dict):
+                raise RuntimeError("permission listing metadata is unobservable")
+            if error.get("code") == "stale_cursor":
+                permission_count(observation, "catalogue_stale")
+                return None
+            raise RuntimeError("permission listing observation was refused")
+        page = response.get("answer")
+        if not isinstance(page, dict):
+            raise RuntimeError("permission listing metadata is unobservable")
+        if page.get("complete") is False or page.get("settled") is False:
+            permission_count(observation, "catalogue_incomplete")
+            return None
+        entries = page.get("actions")
+        count = page.get("count")
+        page_total = page.get("total")
+        page_revision = page.get("revision")
+        truncated = page.get("truncated")
+        next_cursor = page.get("next_cursor")
+        if (page.get("complete") is not True or page.get("settled") is not True
+                or not isinstance(entries, list) or any(not isinstance(row, dict) for row in entries)
+                or type(count) is not int or count != len(entries) or count > 2000
+                or type(page_total) is not int or not count <= page_total <= 32000
+                or not isinstance(page_revision, str) or not page_revision
+                or type(truncated) is not bool
+                or (truncated and (not isinstance(next_cursor, str) or not next_cursor or not count))
+                or (not truncated and next_cursor is not None)):
+            raise RuntimeError("permission listing metadata is unobservable")
+        for row in entries:
+            validate_permission_listing_row(row)
+        if revision is not None and (page_revision != revision or page_total != total):
+            permission_count(observation, "catalogue_stale")
+            return None
+        revision, total = page_revision, page_total
+        rows.extend(entries)
+        if len(rows) > total:
+            raise RuntimeError("permission listing row count is inconsistent")
+        if not truncated:
+            if len(rows) != total:
+                raise RuntimeError("permission listing row count is inconsistent")
+            permission_count(observation, "catalogue_complete")
+            return rows
+        if next_cursor in seen or len(rows) >= total:
+            raise RuntimeError("permission listing continuation is inconsistent")
+        seen.add(next_cursor)
+        cursor = next_cursor
+    raise RuntimeError("permission listing exceeded its observation bound")
+
+
+def validate_permission_listing_row(row):
+    """Malformed routing metadata cannot become evidence of an absent offer."""
+    routing = ("application", "room", "record", "resource", "operation")
+    if (any(not isinstance(row.get(field), str) for field in ("provider", "id"))
+            or any(field not in row or (row[field] is not None and not isinstance(row[field], str))
+                   for field in routing)
+            or "semantic_identity" not in row):
+        raise RuntimeError("permission listing action identity is unobservable")
+    hierarchy = [row[field] for field in routing]
+    if any(value is None for value in hierarchy) and not all(value is None for value in hierarchy):
+        raise RuntimeError("permission listing action identity is unobservable")
+    identity = row["semantic_identity"]
+    if identity is not None and (not isinstance(identity, dict)
+                                 or set(identity) != {"kind", "key"}
+                                 or not all(isinstance(identity[field], str) for field in ("kind", "key"))
+                                 or all(value is None for value in hierarchy)):
+        raise RuntimeError("permission listing action identity is unobservable")
+
+
+def permission_offer_pair(socket, room, record, *, observation=None):
+    """Observe Message and Queue from the same settled authority revision."""
+    rows = (permission_actions_snapshot(socket) if observation is None else
+            permission_actions_snapshot(socket, observation=observation))
+    if rows is None:
+        return None
+    messages = [row for row in rows if row.get("application") == "so.tilo.chat"
+                and row.get("room") == room and row.get("record") == record
+                and row.get("semantic_identity") == {"kind": "chat.agent", "key": "chat.person:tide"}
+                and row.get("operation") == "message"]
+    queues = [row for row in rows if row.get("application") == "so.tilo.desktop"
+              and row.get("room") == room and row.get("record") == "tasks"
+              and row.get("resource") == "desktop:tasks" and row.get("operation") == "queue"]
+    if len(messages) > 1 or len(queues) > 1:
+        raise RuntimeError("ambiguous permission proof action")
+    if observation is not None:
+        observation["message_present"] = bool(messages)
+        observation["queue_present"] = bool(queues)
+    return (messages[0] if messages else None, queues[0] if queues else None)
+
+
+def initial_permission_offer_pair(socket, room, record):
+    pair = permission_offer_pair(socket, room, record)
+    return pair if pair is not None and all(row is not None for row in pair) else None
+
+
+def restricted_permission_offer_pair(socket, room, record, restricted, *, observation=None):
+    pair = (permission_offer_pair(socket, room, record) if observation is None else
+            permission_offer_pair(socket, room, record, observation=observation))
+    if pair is None:
+        return None
+    message, queue = pair
+    if restricted == "message":
+        if message is not None:
+            return None
+        if queue is None:
+            raise RuntimeError("Chat restriction also removed the independent Task offer")
+    elif restricted == "queue":
+        if queue is not None:
+            return None
+        if message is None:
+            raise RuntimeError("Task restriction also removed the independent Message offer")
+    else:
+        raise RuntimeError("permission proof restriction scope is invalid")
+    return pair
 
 
 def canonical_read_refusal_kind(message):
@@ -5691,6 +5961,9 @@ def managed_agent_marker_stage(socket, room, record, provider, output, process, 
                 json.dumps(latest_marker_binding, indent=2) + "\n"
             )
         raise
+    require_ok(call(socket, {"op": "snapshot", "path": str(
+        output / f"agent-action-marker-unobscured-{size}.png"
+    )}))
     activate_shell_accessibility_control(marker, marker["label"])
     reopened_message_draft = reopen_marker_composer_while_live(
         socket, agent, marker, shell_windows, process, output=output, pointer=True,
@@ -6708,21 +6981,30 @@ def native_chat_write_downgrade(socket, room, record, person, output, size, proc
     message_before = prepare_private_permission_draft(
         socket, message_access, message_draft, 8, output, process
     )
-    stale_message = wait_for("fresh Message offer before Chat restriction", lambda:
-                             offered_agent_action(socket, room, record, "tide", "message"), process)
-    opposite = offered_desktop_action(socket, room, "tasks", "desktop:tasks", "queue")
-    if opposite is None:
-        raise RuntimeError("independent Queue offer is absent before Chat restriction")
+    stale_message, opposite = wait_for("fresh independent offers before Chat restriction", lambda:
+                                      initial_permission_offer_pair(socket, room, record), process)
     chat_profile = assign_expiring_app_write_restriction(
         socket, room, person, "so.tilo.chat", "Native Chat write restriction", process
     )
+    phase_observation = permission_phase_observation(output, "chat", chat_profile["expires_unix"])
 
     def chat_restricted():
-        if offered_agent_action(socket, room, record, "tide", "message") is not None:
-            return None
-        if offered_desktop_action(socket, room, "tasks", "desktop:tasks", "queue") is None:
-            raise RuntimeError("Chat restriction also removed the independent Task offer")
-        return agent_write_restricted_accessibility("Tide", message_draft)
+        with permission_phase_sample(phase_observation) as sample:
+            try:
+                pair = restricted_permission_offer_pair(
+                    socket, room, record, "message", observation=sample)
+            finally:
+                permission_phase_checkpoint(phase_observation, sample, "catalogue")
+            if pair is None:
+                return None
+            sample["at_attempted"] = True
+            try:
+                restricted = agent_write_restricted_accessibility(
+                    "Tide", message_draft, observation=sample)
+                sample["at_matched"] = restricted is not None
+                return restricted
+            finally:
+                permission_phase_checkpoint(phase_observation, sample, "at")
 
     restricted_chat = wait_for("mounted Chat.Write restriction", chat_restricted, process)
     observation = observe_hidden_permission_offer(
@@ -6786,34 +7068,41 @@ def native_task_write_downgrade(socket, room, record, person, output, size, proc
     queue_before = prepare_private_permission_draft(
         socket, queue_access, queue_draft, 8, output, process
     )
-    stale_queue = wait_for("fresh Queue offer before Task restriction", lambda:
-                           offered_desktop_action(
-                               socket, room, "tasks", "desktop:tasks", "queue"
-                           ), process)
-    opposite = offered_agent_action(socket, room, record, "tide", "message")
-    if opposite is None:
-        raise RuntimeError("independent Message offer is absent before Task restriction")
+    opposite, stale_queue = wait_for("fresh independent offers before Task restriction", lambda:
+                                    initial_permission_offer_pair(socket, room, record), process)
     task_profile = assign_expiring_app_write_restriction(
         socket, room, person, "so.tilo.desktop", "Native Task write restriction", process
     )
+    phase_observation = permission_phase_observation(output, "task", task_profile["expires_unix"])
 
     def task_restricted():
-        if offered_desktop_action(socket, room, "tasks", "desktop:tasks", "queue") is not None:
-            return None
-        if offered_agent_action(socket, room, record, "tide", "message") is None:
-            raise RuntimeError("Task restriction also removed the independent Message offer")
-        access = agent_conversation_accessibility(
-            "Tide", composer_name="Task instruction composer"
-        )
-        if access is None:
-            return None
-        observed = private_editor_observation(access, queue_draft)
-        names = accessible_names(access)
-        if "Queue task" in names:
-            return None
-        return (access, observed) if same_private_editor_state(
-            observed, queue_before
-        ) else None
+        with permission_phase_sample(phase_observation) as sample:
+            try:
+                pair = restricted_permission_offer_pair(
+                    socket, room, record, "queue", observation=sample)
+            finally:
+                permission_phase_checkpoint(phase_observation, sample, "catalogue")
+            if pair is None:
+                return None
+            sample["at_attempted"] = True
+            try:
+                access = agent_conversation_accessibility(
+                    "Tide", composer_name="Task instruction composer", observation=sample)
+                sample["at_matched"] = access is not None
+                if access is None:
+                    return None
+                observed = private_editor_observation(access, queue_draft)
+                permission_count(sample, "retained", int(observed.get("draft_matches") is True))
+                names = accessible_names(access, observation=sample)
+                sample["queue_control_present"] = "Queue task" in names
+                sample["private_editor_state_matches"] = same_private_editor_state(observed, queue_before)
+                if "Queue task" in names:
+                    return None
+                return (access, observed) if same_private_editor_state(
+                    observed, queue_before
+                ) else None
+            finally:
+                permission_phase_checkpoint(phase_observation, sample, "at")
 
     restricted_access, queue_restricted = wait_for("mounted Task.Write restriction", task_restricted, process)
     observation = observe_hidden_permission_offer(

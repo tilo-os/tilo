@@ -108,6 +108,8 @@ fn safe_snapshot(snapshot: Option<Value>) -> Value {
                 .and_then(safe_chat_message_progress).unwrap_or(Value::Null),
             "agent_message_submission": snapshot.get("agent_message_submission")
                 .and_then(safe_chat_message_submission).unwrap_or(Value::Null),
+            "agent_float_frontier": snapshot.get("agent_float_frontier")
+                .and_then(safe_chat_float_frontier).unwrap_or(Value::Null),
         });
         if let Some(control) = snapshot.get("keyboard_control").and_then(Value::as_str)
             && matches!(
@@ -302,6 +304,31 @@ fn safe_chat_message_submission(value: &Value) -> Option<Value> {
     }))
 }
 
+fn safe_chat_float_frontier(value: &Value) -> Option<Value> {
+    const BOOLEAN_FIELDS: [&str; 6] = [
+        "context_matches_active_workspace",
+        "context_workspace_present",
+        "current_agent_present",
+        "current_agent_admitted",
+        "retained_surface_present",
+        "retained_attachment_app",
+    ];
+    let object = value.as_object()?;
+    if object.len() != BOOLEAN_FIELDS.len() + 1 {
+        return None;
+    }
+    let mut safe = serde_json::Map::new();
+    for field in BOOLEAN_FIELDS {
+        safe.insert(field.into(), Value::Bool(object.get(field)?.as_bool()?));
+    }
+    let pending = object.get("pending_present_request_count")?.as_u64()?;
+    if pending > 64 {
+        return None;
+    }
+    safe.insert("pending_present_request_count".into(), pending.into());
+    Some(Value::Object(safe))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -314,6 +341,18 @@ mod tests {
             "phase": "waiting_for_reply",
             "unavailable": false,
             "private_output": "must never leave the app",
+        })
+    }
+
+    fn float_frontier() -> Value {
+        serde_json::json!({
+            "context_matches_active_workspace": true,
+            "context_workspace_present": true,
+            "current_agent_present": true,
+            "current_agent_admitted": true,
+            "retained_surface_present": true,
+            "retained_attachment_app": true,
+            "pending_present_request_count": 1,
         })
     }
 
@@ -481,6 +520,39 @@ mod tests {
             assert!(effect["after"].get("composer_focused").is_none());
             assert!(!effect.to_string().contains("PRIVATE"));
         }
+    }
+
+    #[test]
+    fn chat_float_frontier_is_closed_strict_and_bounded() {
+        let snapshot = serde_json::json!({
+            "app": "so.tilo.chat",
+            "keyboard_control": "float",
+            "agent_float_frontier": float_frontier(),
+        });
+        let safe = safe_snapshot(Some(snapshot.clone()));
+        assert_eq!(safe["agent_float_frontier"], float_frontier());
+
+        for (field, invalid) in [
+            ("context_matches_active_workspace", serde_json::json!(1)),
+            ("context_workspace_present", Value::Null),
+            ("current_agent_present", serde_json::json!("PRIVATE")),
+            ("current_agent_admitted", serde_json::json!(0)),
+            ("retained_surface_present", serde_json::json!([])),
+            ("retained_attachment_app", serde_json::json!({})),
+            ("pending_present_request_count", serde_json::json!(65)),
+        ] {
+            let mut changed = snapshot.clone();
+            changed["agent_float_frontier"][field] = invalid;
+            let safe = safe_snapshot(Some(changed));
+            assert!(safe["agent_float_frontier"].is_null());
+            assert!(!safe.to_string().contains("PRIVATE"));
+        }
+
+        let mut with_private = snapshot;
+        with_private["agent_float_frontier"]["private_agent"] = serde_json::json!("PRIVATE-NAME");
+        let safe = safe_snapshot(Some(with_private));
+        assert!(safe["agent_float_frontier"].is_null());
+        assert!(!safe.to_string().contains("PRIVATE"));
     }
 
     #[test]

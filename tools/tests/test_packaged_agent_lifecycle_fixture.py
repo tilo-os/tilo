@@ -26,6 +26,334 @@ PROOF = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(PROOF)
 
 
+class CurrentChatControlTests(unittest.TestCase):
+    def observe(self, *, reply="(<'Show conversation navigation'>,)", error=None):
+        client = PROOF.atspi.AtspiClient("owned-address", "owned-chat")
+        with ExitStack() as context:
+            context.enter_context(patch.object(PROOF.atspi, "atspi_address", return_value="owned-address"))
+            context.enter_context(patch.object(PROOF.atspi, "bus_pids", return_value={"owned-chat": 41}))
+            context.enter_context(patch.object(PROOF.atspi, "app_process", return_value=42))
+            context.enter_context(patch.object(PROOF, "process_program", return_value="chat"))
+            context.enter_context(patch.object(PROOF.atspi, "AtspiClient", return_value=client))
+            reads = context.enter_context(patch.object(client, "call", return_value="([objectpath '/window'],)"))
+            context.enter_context(patch.object(PROOF, "accessible_subtree", return_value={
+                "/reveal": "(<'Show conversation navigation'>,)"}))
+            identity = context.enter_context(patch.object(client, "property", return_value=reply,
+                                                          side_effect=error))
+            try:
+                return PROOF.chat_accessibility_control("Show conversation navigation")
+            finally:
+                reads.assert_called_once_with(PROOF.atspi.ROOT_PATH,
+                                              "org.a11y.atspi.Accessible.GetChildren")
+                identity.assert_called_once_with("/reveal", "Name")
+
+    def test_exact_current_named_control_is_returned_without_effect_calls(self):
+        self.assertEqual(self.observe(), {"bus": "owned-chat", "window": "/window",
+                                         "control": "/reveal", "label": "Show conversation navigation"})
+
+    def test_retired_object_is_rediscovered_before_any_focus_or_activation(self):
+        self.assertIsNone(self.observe(error=PROOF.atspi.GateError(
+            "call failed: Error: GDBus.Error:org.freedesktop.DBus.Error.UnknownObject: retired")))
+        self.assertIsNone(self.observe(reply="(<'Hide conversation navigation'>,)"))
+
+    def test_other_errors_and_unparseable_identity_are_not_stale_readiness(self):
+        for code in ("AccessDenied", "NoReply", "UnknownInterface"):
+            with self.subTest(code=code), self.assertRaises(PROOF.atspi.GateError):
+                self.observe(error=PROOF.atspi.GateError(
+                    f"call failed: Error: GDBus.Error:org.freedesktop.DBus.Error.{code}: private-error"))
+        with self.assertRaisesRegex(RuntimeError, "current Chat control identity is unobservable"):
+            self.observe(reply="malformed-private-identity")
+
+
+class PermissionSnapshotTests(unittest.TestCase):
+    @staticmethod
+    def page(rows, *, revision="authority", total=None, cursor=None, **extra):
+        return {"answer": {"actions": rows, "count": len(rows),
+                           "total": len(rows) if total is None else total,
+                           "revision": revision, "complete": True, "settled": True,
+                           "truncated": cursor is not None, "next_cursor": cursor, **extra}}
+
+    @staticmethod
+    def offers():
+        return ({"provider": "chat", "id": "message-id", "resource": "agent:tide",
+                 "application": "so.tilo.chat", "room": "room", "record": "record",
+                 "semantic_identity": {"kind": "chat.agent", "key": "chat.person:tide"},
+                 "operation": "message"},
+                {"provider": "desktop", "id": "queue-id", "semantic_identity": None,
+                 "application": "so.tilo.desktop", "room": "room", "record": "tasks",
+                 "resource": "desktop:tasks", "operation": "queue"})
+
+    def test_complete_pair_is_sampled_once_and_independent_absence_is_explicit(self):
+        message, queue = self.offers()
+        for rows, expected in (([message, queue], (message, queue)),
+                               ([queue], (None, queue)), ([message], (message, None)),
+                               ([], (None, None))):
+            with self.subTest(rows=rows), patch.object(
+                    PROOF, "call", return_value=self.page(rows)) as observe:
+                self.assertEqual(PROOF.permission_offer_pair("socket", "room", "record"), expected)
+                observe.assert_called_once_with("socket", {
+                    "op": "actions_enumerate", "query": "", "wait_ms": 250,
+                    "limit": 2000, "detail": "compact"})
+
+    def test_incomplete_or_unsettled_listing_is_not_permission_absence(self):
+        for extra in ({"complete": False}, {"settled": False}):
+            with self.subTest(extra=extra), patch.object(
+                    PROOF, "call", return_value=self.page([], **extra)):
+                self.assertIsNone(PROOF.permission_offer_pair("socket", "room", "record"))
+
+    def test_later_page_retains_queue_under_the_same_revision(self):
+        message, queue = self.offers()
+        with patch.object(PROOF, "call", side_effect=[
+                self.page([message], total=2, cursor="page-two"),
+                self.page([queue], total=2)]) as observe:
+            self.assertEqual(PROOF.permission_offer_pair("socket", "room", "record"),
+                             (message, queue))
+        self.assertEqual(observe.call_args_list[1].args[1]["cursor"], "page-two")
+        self.assertNotIn("after_revision", observe.call_args_list[1].args[1])
+
+    def test_changed_revision_total_or_stale_cursor_discards_the_whole_snapshot(self):
+        message, queue = self.offers()
+        for second in (self.page([queue], revision="changed", total=2),
+                       self.page([queue], total=3),
+                       {"err": {"code": "stale_cursor"}}):
+            with self.subTest(second=second), patch.object(PROOF, "call", side_effect=[
+                    self.page([message], total=2, cursor="next"), second]):
+                self.assertIsNone(PROOF.permission_actions_snapshot("socket"))
+
+    def test_malformed_metadata_and_other_refusals_fail_closed(self):
+        for response in (None, ["PRIVATE"], {"err": ["PRIVATE"]},
+                         {"answer": {}}, {"err": {"code": "not_permitted"}},
+                         self.page([], complete=None), self.page([], settled=None),
+                         self.page([], count=True), self.page([], total=True),
+                         self.page([], revision=""), self.page([], next_cursor="unexpected"),
+                         self.page(["not a row"]), self.page([], total=1)):
+            with self.subTest(response=response), patch.object(PROOF, "call", return_value=response):
+                with self.assertRaises(RuntimeError) as refused:
+                    PROOF.permission_actions_snapshot("socket")
+                self.assertNotIn("PRIVATE", str(refused.exception))
+
+    def test_duplicate_exact_offers_fail_closed(self):
+        message, queue = self.offers()
+        for rows in ([message, message, queue], [message, queue, queue]):
+            with self.subTest(rows=rows), patch.object(PROOF, "call", return_value=self.page(rows)):
+                with self.assertRaisesRegex(RuntimeError, "ambiguous permission proof action"):
+                    PROOF.permission_offer_pair("socket", "room", "record")
+
+    def test_malformed_matching_owner_rows_cannot_be_treated_as_absent(self):
+        message, queue = self.offers()
+        malformed = [
+            {**message, "semantic_identity": {"kind": "chat.agent", "key": 37}},
+            {**message, "semantic_identity": {"kind": "chat.agent"}},
+            {**message, "semantic_identity": ["PRIVATE"]},
+            {**message, "semantic_identity": {"kind": "chat.agent", "key": "chat.person:tide", "extra": True}},
+            {**message, "provider": None}, {**message, "id": ["PRIVATE"]},
+            {**message, "application": 37}, {**message, "room": None},
+            {field: value for field, value in message.items() if field != "resource"},
+        ]
+        for row in malformed:
+            with self.subTest(row=row), patch.object(PROOF, "call", return_value=self.page([row, queue])):
+                with self.assertRaisesRegex(RuntimeError, "identity is unobservable") as refused:
+                    PROOF.permission_offer_pair("socket", "room", "record")
+                self.assertNotIn("PRIVATE", str(refused.exception))
+
+    def test_nonhierarchical_wire_row_remains_observable(self):
+        row = {"provider": "system", "id": "system-action", "semantic_identity": None,
+               **{field: None for field in ("application", "room", "record", "resource", "operation")}}
+        with patch.object(PROOF, "call", return_value=self.page([row])):
+            self.assertEqual(PROOF.permission_offer_pair("socket", "room", "record"), (None, None))
+
+    def test_cursor_loop_and_page_bound_fail_closed(self):
+        row = self.offers()[1]
+        with patch.object(PROOF, "call", return_value=self.page([row], total=3, cursor="same")):
+            with self.assertRaisesRegex(RuntimeError, "continuation is inconsistent"):
+                PROOF.permission_actions_snapshot("socket")
+        with patch.object(PROOF, "call", side_effect=[
+                self.page([row], total=17, cursor=f"next-{n}") for n in range(16)]):
+            with self.assertRaisesRegex(RuntimeError, "observation bound"):
+                PROOF.permission_actions_snapshot("socket")
+
+    def test_initial_pair_requires_both_offers_without_interpreting_loading_as_absence(self):
+        message, queue = self.offers()
+        for pair in (None, (None, queue), (message, None), (None, None)):
+            with self.subTest(pair=pair), patch.object(PROOF, "permission_offer_pair", return_value=pair):
+                self.assertIsNone(PROOF.initial_permission_offer_pair("socket", "room", "record"))
+
+
+    def test_restriction_proof_requires_the_independent_offer_in_the_same_snapshot(self):
+        message, queue = self.offers()
+        for scope, pair in (("message", (None, queue)), ("queue", (message, None))):
+            with self.subTest(scope=scope), patch.object(PROOF, "permission_offer_pair", return_value=pair):
+                self.assertEqual(PROOF.restricted_permission_offer_pair(
+                    "socket", "room", "record", scope), pair)
+        for scope in ("message", "queue"):
+            with self.subTest(scope=scope), patch.object(PROOF, "permission_offer_pair", return_value=None):
+                self.assertIsNone(PROOF.restricted_permission_offer_pair(
+                    "socket", "room", "record", scope))
+            with self.subTest(scope=scope), patch.object(PROOF, "permission_offer_pair", return_value=(None, None)):
+                with self.assertRaisesRegex(RuntimeError, "also removed the independent"):
+                    PROOF.restricted_permission_offer_pair("socket", "room", "record", scope)
+            with self.subTest(scope=scope), patch.object(PROOF, "permission_offer_pair", return_value=(message, queue)):
+                self.assertIsNone(PROOF.restricted_permission_offer_pair(
+                    "socket", "room", "record", scope))
+
+
+class RestrictedQueueRoleTests(unittest.TestCase):
+    def observe(self, role, *, revoked=False, editable=False, forbidden=None, queue_button=False,
+                observation=None):
+        client = PROOF.atspi.AtspiClient("address", "owned")
+        notice = ("This agent is no longer available here. Your draft is kept on this device."
+                  if revoked else "You cannot send messages in this conversation.")
+        tree = {"/heading": "(<'Tide, agent'>,)", "/notice": f"(<'{notice}'>,)",
+                "/return": "(<'Return conversation'>,)", "/draft": "(<'PRIVATE-DRAFT'>,)",
+                "/queue": "(<'Queue task'>,)"}
+        if forbidden:
+            tree["/mutable"] = f"(<'{forbidden}'>,)"
+        if queue_button:
+            tree["/queue-button"] = "(<'Queue task'>,)"
+
+        def wire_call(path, method, *args, **kwargs):
+            if method == "org.a11y.atspi.Accessible.GetChildren":
+                return "['/window']"
+            if method == "org.a11y.atspi.Accessible.GetRole":
+                if path == "/queue-button":
+                    return "(uint32 43,)"
+                if isinstance(role, Exception):
+                    raise role
+                return role
+            raise AssertionError("unexpected accessibility wire method")
+
+        with patch.object(PROOF.atspi, "AtspiClient", return_value=client), \
+                patch.object(PROOF.atspi, "atspi_address", return_value="address"), \
+                patch.object(PROOF.atspi, "bus_pids", return_value={"owned": 7}), \
+                patch.object(PROOF.atspi, "app_process", return_value=7), \
+                patch.object(PROOF, "process_program", return_value="chat"), \
+                patch.object(client, "call", side_effect=wire_call), \
+                patch.object(client, "interfaces", return_value=(
+                    "org.a11y.atspi.EditableText" if editable else "([],)")), \
+                patch.object(PROOF, "accessible_subtree", return_value=tree):
+            return (PROOF.agent_read_only_accessibility("Tide", detached=True) if revoked else
+                    PROOF.agent_write_restricted_accessibility(
+                        "Tide", "PRIVATE-DRAFT", observation=observation))
+
+    def test_queue_tab_is_only_allowed_in_a_write_restricted_view(self):
+        observed = self.observe("(uint32 37,)")
+        self.assertTrue(observed["notice_present"])
+        self.assertTrue(observed["draft_matches"])
+        self.assertEqual(observed["mutable_controls"], 0)
+        self.assertEqual(observed["editable_composers"], 0)
+        self.assertNotIn("PRIVATE-DRAFT", json.dumps(observed))
+        self.assertIsNone(self.observe("(uint32 37,)", revoked=True))
+
+    def test_queue_send_button_and_other_mutating_controls_stay_forbidden(self):
+        self.assertIsNone(self.observe("(uint32 43,)"))
+        self.assertIsNone(self.observe("(uint32 37,)", queue_button=True))
+        for label in ("Send message", "Send direction", "Stop current task"):
+            with self.subTest(label=label):
+                self.assertIsNone(self.observe("(uint32 37,)", forbidden=label))
+        self.assertIsNone(self.observe("(uint32 37,)", editable=True))
+
+    def test_unknown_malformed_and_unreadable_queue_roles_fail_closed(self):
+        for role in ("()", "(uint32 0,)", "(uint32 36,)", "('37',)",
+                     "(true,)", "PRIVATE malformed role", "(uint32 -37,)"):
+            with self.subTest(role=role), self.assertRaisesRegex(RuntimeError, "role is unobservable"):
+                self.observe(role)
+        with self.assertRaisesRegex(RuntimeError, "role is unobservable") as refused:
+            self.observe(PROOF.atspi.GateError("PRIVATE unreadable role"))
+        self.assertNotIn("PRIVATE", str(refused.exception))
+
+
+class PermissionPhaseDiagnosticsTests(unittest.TestCase):
+    def test_bounded_samples_record_expiry_phase_timing_without_private_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = PROOF.permission_phase_observation(pathlib.Path(directory), "chat", 100)
+            with patch.object(PROOF.time, "monotonic", side_effect=[1, 1.25, 1.75, 2]), \
+                    patch.object(PROOF.time, "time", side_effect=[99, 99.5, 100]):
+                with PROOF.permission_phase_sample(state) as sample:
+                    sample["PRIVATE-DRAFT"] = "PRIVATE-DRAFT"
+                    PROOF.permission_count(sample, "catalogue_complete")
+                    sample["message_present"], sample["queue_present"] = False, True
+                    PROOF.permission_phase_checkpoint(state, sample, "catalogue")
+                    sample["at_attempted"] = True
+                    PROOF.permission_phase_checkpoint(state, sample, "at")
+            payload = json.loads(state["path"].read_text())
+            observed = payload["samples"][0]
+            self.assertEqual((observed["catalogue_elapsed_ms"], observed["at_elapsed_ms"],
+                              observed["sample_elapsed_ms"]), (250, 500, 1000))
+            self.assertTrue(observed["assignment_unexpired_start"])
+            self.assertTrue(observed["assignment_unexpired_after_catalogue"])
+            self.assertFalse(observed["assignment_unexpired_after_at"])
+            self.assertFalse(payload["private_content_recorded"])
+            self.assertNotIn("PRIVATE", json.dumps(payload))
+            self.assertNotIn("expires", json.dumps(payload))
+            for _ in range(35):
+                with PROOF.permission_phase_sample(state):
+                    pass
+            payload = json.loads(state["path"].read_text())
+            self.assertEqual(len(payload["samples"]), 32)
+            self.assertEqual(payload["samples_seen"], 36)
+            self.assertEqual(payload["dropped_samples"], 4)
+            self.assertEqual(payload["samples"][0]["catalogue_elapsed_ms"], 250)
+            self.assertEqual(payload["totals"]["catalogue_complete"], 1)
+
+    def test_original_refusal_is_preserved_even_when_diagnostic_write_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = PROOF.permission_phase_observation(pathlib.Path(directory), "chat", 100)
+            original = RuntimeError("original refusal")
+            with patch.object(pathlib.Path, "write_text", side_effect=OSError("write failed")):
+                with self.assertRaises(RuntimeError) as refused:
+                    with PROOF.permission_phase_sample(state):
+                        raise original
+            self.assertIs(refused.exception, original)
+
+    def test_actual_catalogue_reads_count_complete_incomplete_and_stale_outcomes(self):
+        message, queue = PermissionSnapshotTests.offers()
+        cases = ((PermissionSnapshotTests.page([queue]), "catalogue_complete"),
+                 (PermissionSnapshotTests.page([], complete=False), "catalogue_incomplete"),
+                 ({"err": {"code": "stale_cursor"}}, "catalogue_stale"))
+        for response, counter in cases:
+            observed = {}
+            with self.subTest(counter=counter), patch.object(PROOF, "call", return_value=response) as call:
+                pair = PROOF.permission_offer_pair("socket", "room", "record", observation=observed)
+            self.assertEqual(observed["catalogue_pages"], 1)
+            self.assertEqual(observed[counter], 1)
+            call.assert_called_once()
+            if counter == "catalogue_complete":
+                self.assertEqual(pair, (None, queue))
+                self.assertFalse(observed["message_present"])
+                self.assertTrue(observed["queue_present"])
+            else:
+                self.assertIsNone(pair)
+                self.assertNotIn("message_present", observed)
+
+    def test_actual_read_only_observer_counts_roles_and_retained_matches_without_text(self):
+        observed = {}
+        result = RestrictedQueueRoleTests().observe("(uint32 37,)", observation=observed)
+        self.assertIsNotNone(result)
+        self.assertEqual(observed["chat_processes"], 1)
+        self.assertEqual(observed["windows"], 1)
+        self.assertEqual(observed["headings"], 1)
+        self.assertEqual(observed["notices"], 1)
+        self.assertEqual(observed["retained"], 1)
+        self.assertEqual(observed["queue_tabs"], 1)
+        self.assertEqual(observed["interface_queries"], 5)
+        self.assertEqual(observed["mutable"], 0)
+        self.assertEqual(observed["editable"], 0)
+        self.assertNotIn("PRIVATE", json.dumps(observed))
+
+    def test_subtree_instrumentation_counts_existing_reads_only(self):
+        client = unittest.mock.Mock()
+        client.property.return_value = "(<'PRIVATE'>,)"
+        client.interfaces.return_value = "([],)"
+        client.call.return_value = "[]"
+        observed = {}
+        self.assertEqual(PROOF.accessible_subtree(client, "/window", 10, observation=observed),
+                         {"/window": "(<'PRIVATE'>,)"})
+        self.assertEqual(observed, {"nodes": 1, "interface_queries": 1})
+        client.property.assert_called_once_with("/window", "Name")
+        client.interfaces.assert_called_once_with("/window")
+        client.call.assert_called_once_with("/window", "org.a11y.atspi.Accessible.GetChildren")
+
+
 class FixtureAppearanceTests(unittest.TestCase):
     def test_normal_settings_merge_preserves_provider_input_and_accessibility(self):
         for theme, mode, contrast in (("light", "light", False),
@@ -590,6 +918,7 @@ class PresentedEditorTargetTests(unittest.TestCase):
                         patch.object(PROOF, "process_program", return_value="chat"), \
                         patch.object(client, "call", return_value="['/window']"), \
                         patch.object(client, "interfaces", return_value="([],)"), \
+                        patch.object(client, "role", return_value=PROOF.AT_SPI_ROLE_BUTTON), \
                         patch.object(PROOF, "accessible_subtree", return_value=tree):
                     result = PROOF.agent_read_only_accessibility("Tide", detached=True) \
                         if mode == "revoked" else PROOF.agent_write_restricted_accessibility(
@@ -5522,6 +5851,51 @@ class PresentedEditorTargetTests(unittest.TestCase):
                 "socket", previous, "Tide", "private", {"selection": [1, 2]}
             ))
             component.assert_not_called()
+
+    def test_return_continuity_diagnostic_classifies_without_weakening_refusal(self):
+        previous = {"app_id": "so.tilo.chat", "floating_id": "private-surface",
+                    "surface_id": 7, "frame_seq": 1}
+        current = {**previous, "frame_seq": 2, "presented": True,
+                   "pixels_ready": True, "last_error": None,
+                   "keyboard_focused": True, "suspended": False, "transferring": False}
+        before = {"draft_matches": True, "caret": 9, "selection": [8, 9],
+                  "accessibility_focused": False}
+        for change in ({"accessibility_focused": True}, {"caret": 8}, {"selection": None}):
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as directory, \
+                    patch.object(PROOF, "call", return_value={"answer": {"frames": [current]}}) as reads, \
+                    patch.object(PROOF, "agent_conversation_accessibility", return_value={
+                        "bus": "private-bus", "control": "/private-return"}), \
+                    patch.object(PROOF, "private_editor_observation", return_value={**before, **change}), \
+                    patch.object(PROOF, "component_global_target") as target:
+                path = pathlib.Path(directory) / "continuity.json"
+                with self.assertRaisesRegex(RuntimeError, "refreshing Return changed private editor state"):
+                    PROOF.current_detached_control_target(
+                        "socket", previous, "Tide", "private-draft", before,
+                        diagnostic_path=path)
+                observed = json.loads(path.read_text())
+                self.assertEqual(observed["accessibility_focus_equal"],
+                                 "accessibility_focused" not in change)
+                self.assertEqual(observed["caret_equal"], "caret" not in change)
+                self.assertEqual(observed["selection_equal"], "selection" not in change)
+                self.assertTrue(observed["content_matches"])
+                self.assertTrue(observed["same_native_child"])
+                self.assertFalse(observed["private_content_recorded"])
+                self.assertTrue(all(type(value) is bool for value in observed.values()))
+                self.assertNotIn("private", path.read_text().replace("private_content_recorded", ""))
+                reads.assert_called_once_with("socket", {"op": "foreign_frames"})
+                target.assert_not_called()
+
+    def test_return_diagnostic_write_failure_preserves_original_refusal(self):
+        child = {"app_id": "so.tilo.chat", "floating_id": "float", "surface_id": 7,
+                 "frame_seq": 1, "presented": True, "pixels_ready": True, "last_error": None}
+        with patch.object(PROOF, "call", return_value={"answer": {"frames": [child]}}), \
+                patch.object(PROOF, "agent_conversation_accessibility", return_value={}), \
+                patch.object(PROOF, "private_editor_observation", return_value={"caret": 2}), \
+                patch.object(pathlib.Path, "write_text", side_effect=PermissionError("private-error")):
+            with self.assertRaisesRegex(RuntimeError, "refreshing Return changed private editor state"):
+                PROOF.current_detached_control_target(
+                    "socket", child, "Tide", "private-draft", {"caret": 1},
+                    diagnostic_path=pathlib.Path("unused"))
 
     def test_ime_return_refreshes_target_only_while_exact_real_composition_survives(self):
         primary, child, access, editor, _ = self.return_editor_continuity_subjects()
