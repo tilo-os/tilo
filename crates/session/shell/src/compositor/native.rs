@@ -11470,6 +11470,8 @@ pub fn run() {
         );
         let mut transient_surfaces = state.popup_surfaces();
         transient_surfaces.extend(state.input_method_popup_surfaces());
+        transient_surfaces.extend(state.system_modal_surfaces());
+        frame_builder.set_system_modal_scrim(state.has_system_modal());
         frame_builder.set_transient_surfaces(&transient_surfaces);
         frame_builder.set_floating_transfer_surfaces(
             &state.pending_floating_toplevels,

@@ -1067,6 +1067,12 @@ pub fn sync_keyboard_focus(state: &mut State, fb: &FrameBuilder) {
     let candidate = state
         .focused_output_presentation_surface()
         .or_else(|| state.headless_keyboard_focus())
+        .or_else(|| {
+            // A system-modal prompt owns the keyboard while it is shown.
+            state
+                .top_system_modal()
+                .filter(|id| fb.transient_surface_rect(*id).is_some())
+        })
         .or(overlay_focus)
         .or_else(|| state.personal_keyboard_focus())
         .or_else(|| {
