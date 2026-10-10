@@ -429,10 +429,22 @@ frame it appears in:
   upright (a rotated scanout would show the buffer unturned), it has no ICC
   profile (the buffer would skip the calibration the final pass applies),
   the candidate covers exactly this output, it is a
-  client dma-buf (`gpu_frames::client_frame`), the buffer is opaque
-  (`XRGB8888`, the format the output's 8-bit targets have — a legacy flip
-  cannot change formats), the output is SDR and the frame composites no
-  HDR layer (`client_scanout_rejection`).
+  client dma-buf (`gpu_frames::client_frame`), the buffer is opaque and
+  scans out as `XRGB8888` (the format the output's 8-bit targets have — a
+  legacy flip cannot change formats), the output is SDR and the frame
+  composites no HDR layer (`client_scanout_rejection`).
+- An `ARGB8888` buffer counts as opaque when the commit's
+  `wl_surface.set_opaque_region` covers the whole surface — what browsers
+  and GPU toolkits send for an opaque window, since they allocate `ARGB`
+  swapchains regardless. The pre-commit hook judges the region
+  (`compositor::opaque_region::covers`, measuring the surface at its
+  largest so it errs toward compositing) and the verdict travels with the
+  buffer (`foreign::DmabufCommit::opaque`) to `GpuFrame::opaque`. Such a
+  frame is drawn ignoring its alpha on every route, exactly as an `X`
+  format is, and the presenter makes its framebuffer as `XRGB8888`
+  (`client_scanout::scanout_fourcc`): the same bytes, alpha ignored. A
+  partial region — rounded corners, a shadow — or none keeps the buffer
+  composited.
 - KMS is asked before anything changes. The primary plane's `IN_FORMATS`
   must list the buffer's format and modifier; the buffer becomes a
   framebuffer (`ADDFB2` with modifiers) and a `TEST_ONLY` atomic commit

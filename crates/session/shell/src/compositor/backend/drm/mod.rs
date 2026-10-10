@@ -2335,6 +2335,12 @@ fn present_client(
     };
     let client = crate::shell::gpu_frames::client_frame(&candidate.image);
     let dmabuf = client.as_ref().and_then(|frame| frame.dmabuf().cloned());
+    let opaque = client.as_ref().is_some_and(|frame| frame.opaque());
+    // An `ARGB` buffer whose client declared it opaque is shown as `XRGB`.
+    let fourcc = dmabuf.as_ref().map(|dmabuf| {
+        use smithay::backend::allocator::Buffer as _;
+        client_scanout::scanout_fourcc(dmabuf.format().code, opaque)
+    });
     let targets = entry.direct_targets.as_ref()?;
     let eligibility = client_scanout::ClientEligibility {
         enabled: client_scanout::client_scanout_enabled(),
@@ -2342,16 +2348,13 @@ fn present_client(
         uncalibrated: entry.color_lut.is_none(),
         covers_output: candidate.covers(entry.position, view.size),
         client_buffer: dmabuf.is_some(),
-        opaque: client.as_ref().is_some_and(|frame| frame.opaque()),
+        opaque,
         sdr: !targets.format().is_hdr() && !entry.hdr_wanted(),
         no_hdr_layers: frame.hdr_layers.is_empty(),
-        same_format: dmabuf.as_ref().is_some_and(|dmabuf| {
-            use smithay::backend::allocator::Buffer as _;
-            dmabuf.format().code == targets.format().fourcc()
-        }),
+        same_format: fourcc == Some(targets.format().fourcc()),
     };
     let refused = client_scanout::client_scanout_rejection(eligibility);
-    let (Some(client), Some(dmabuf), None) = (client, dmabuf, refused) else {
+    let (Some(client), Some(dmabuf), Some(fourcc), None) = (client, dmabuf, fourcc, refused) else {
         let reason = refused.unwrap_or("no client buffer");
         entry.scanout.note_client_scanout(
             output,
@@ -2377,7 +2380,7 @@ fn present_client(
         owe(bridge);
         return Some(DirectOutcome::Deferred);
     }
-    let framebuffer = match entry.scanout.client_framebuffer(&dmabuf) {
+    let framebuffer = match entry.scanout.client_framebuffer(&dmabuf, fourcc) {
         Ok(framebuffer) => framebuffer,
         Err(reason) => {
             entry
