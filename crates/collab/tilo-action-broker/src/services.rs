@@ -1,4 +1,7 @@
 //! Explicit host services. These are process-owned capabilities, never wire flags.
+mod task_execution;
+pub use task_execution::{NativeTaskActionRequirement, NativeTaskBinding, WorkspaceTaskExecution};
+
 use std::sync::Arc;
 use tilo_desktop_model::{DesktopTree, RoomId, Workspace, WorkspaceTaskStatus};
 
@@ -1029,6 +1032,7 @@ pub struct HostServices {
     pub audio_output: Option<Arc<dyn AudioOutputServices>>,
     pub desktop_commands: Option<Arc<dyn DesktopCommands>>,
     pub workspace_memberships: Option<Arc<dyn WorkspaceMemberships>>,
+    pub task_execution: Option<Arc<dyn WorkspaceTaskExecution>>,
     /// Documents proposed into the room and the owner's answers. Without it
     /// nothing can be proposed.
     pub document_imports: Option<Arc<dyn DocumentImports>>,

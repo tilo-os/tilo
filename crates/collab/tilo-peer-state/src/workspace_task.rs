@@ -178,6 +178,14 @@ pub enum WorkspaceTaskCommand {
         expected_budget: Option<collab_types::task_budget::TaskExecutionBudget>,
         budget: Option<collab_types::task_budget::TaskExecutionBudget>,
     },
+    /// Person approval of one exact queued task frontier; grants no app/resource authority.
+    /// Appended after the parent coordination commands to preserve postcard indices.
+    ApproveRun {
+        task_id: String,
+        agent_id: String,
+        expected_run_epoch: u64,
+        after_revision: u64,
+    },
 }
 
 impl WorkspaceTaskCommand {
@@ -186,6 +194,10 @@ impl WorkspaceTaskCommand {
         match self {
             Self::Queue { assigned_agent, .. }
             | Self::StartRun {
+                agent_id: assigned_agent,
+                ..
+            }
+            | Self::ApproveRun {
                 agent_id: assigned_agent,
                 ..
             } => Some(assigned_agent),
@@ -309,14 +321,8 @@ fn dispatch(
             *route,
             resource.as_deref().cloned(),
         ),
-        WorkspaceTaskCommand::StartRun { task_id, agent_id } => start_run(
-            tasks,
-            controls,
-            context.actor,
-            task_id,
-            agent_id,
-            context.now,
-        ),
+        command @ (WorkspaceTaskCommand::ApproveRun { .. }
+        | WorkspaceTaskCommand::StartRun { .. }) => dispatch_run(tasks, controls, context, command),
         WorkspaceTaskCommand::Direction { task_id, text } => direct(
             tasks,
             controls,
@@ -384,6 +390,38 @@ fn dispatch(
             task_id,
             (*run_epoch, *after_revision),
         ),
+    }
+}
+
+fn dispatch_run(
+    tasks: &mut [WorkspaceTask],
+    controls: &mut std::collections::BTreeMap<String, WorkspaceTaskControl>,
+    context: &CommandContext<'_>,
+    command: &WorkspaceTaskCommand,
+) -> Result<(String, WorkspaceTaskMutationResult), String> {
+    match command {
+        WorkspaceTaskCommand::ApproveRun {
+            task_id,
+            agent_id,
+            expected_run_epoch,
+            after_revision,
+        } => approve_run(
+            tasks,
+            controls,
+            context,
+            task_id,
+            agent_id,
+            (*expected_run_epoch, *after_revision),
+        ),
+        WorkspaceTaskCommand::StartRun { task_id, agent_id } => start_run(
+            tasks,
+            controls,
+            context.actor,
+            task_id,
+            agent_id,
+            context.now,
+        ),
+        _ => Err("not a run admission command".into()),
     }
 }
 
@@ -776,6 +814,58 @@ fn start_run(
     if !matches!(actor, AdmittedTaskActor::Host { .. }) {
         return Err("only the workspace host may start a task run".into());
     }
+    begin_run(tasks, controls, task_id, agent_id, now, None)
+}
+
+fn approve_run(
+    tasks: &mut [WorkspaceTask],
+    controls: &mut std::collections::BTreeMap<String, WorkspaceTaskControl>,
+    context: &CommandContext<'_>,
+    task_id: &str,
+    agent_id: &str,
+    frontier: (u64, u64),
+) -> Result<(String, WorkspaceTaskMutationResult), String> {
+    let AdmittedTaskActor::Person { id: person, device } = context.actor else {
+        return Err("only an admitted person may approve a task run".into());
+    };
+    let task = task_mut(tasks, task_id)?;
+    let control = controls
+        .get(task_id)
+        .ok_or("task has no execution control")?;
+    if task.status != WorkspaceTaskStatus::Queued
+        || task
+            .resource
+            .as_ref()
+            .is_some_and(|resource| resource.agent_request.is_some())
+        || control.active_run.is_some()
+        || control.run_epoch != frontier.0
+        || control.directions.last().map_or(0, |value| value.revision) != frontier.1
+    {
+        return Err("queued task frontier changed; review before approving".into());
+    }
+    begin_run(
+        tasks,
+        controls,
+        task_id,
+        agent_id,
+        context.now,
+        Some(tilo_desktop_model::WorkspaceTaskApproval {
+            person: person.clone(),
+            device: *device,
+            approved_at: context.now,
+            instruction_revision: frontier.1,
+        }),
+    )
+}
+
+fn begin_run(
+    tasks: &mut [WorkspaceTask],
+    controls: &mut std::collections::BTreeMap<String, WorkspaceTaskControl>,
+    task_id: &str,
+    agent_id: &str,
+    now: i64,
+    approval: Option<tilo_desktop_model::WorkspaceTaskApproval>,
+) -> Result<(String, WorkspaceTaskMutationResult), String> {
     let task = task_mut(tasks, task_id)?;
     if task.status.is_finished()
         || task.route == WorkspaceTaskRoute::Manual
@@ -792,19 +882,24 @@ fn start_run(
         .checked_add(1)
         .ok_or("task run epoch exhausted")?;
     let epoch = control.run_epoch;
+    let (actor, verb) = approval.as_ref().map_or_else(
+        || (format!("agent:{agent_id}"), "start-run"),
+        |value| (value.person.clone(), "approve-run"),
+    );
     control.active_run = Some(WorkspaceTaskActiveRun {
         epoch,
         agent_id: agent_id.to_owned(),
         started_at: now,
         applied_direction_revision: 0,
+        approval,
     });
     control.execution = None;
     task.status = WorkspaceTaskStatus::InProgress;
     task.updated_at = now;
     task.audit.push(WorkspaceTaskAuditEvent::new(
         now,
-        format!("agent:{agent_id}"),
-        "start-run",
+        actor,
+        verb,
         [(
             "run",
             tilo_actions::Scalar::of(&epoch).unwrap_or_else(|| tilo_actions::Scalar::from(0)),

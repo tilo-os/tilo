@@ -337,8 +337,8 @@ fn the_picker_lists_environments_the_host_and_legacy_vms_only_when_reported() {
     );
     widget.open_target_menu();
     let labels = widget.target_menu_labels().unwrap();
-    let host = ui::i18n::I18nManager::lookup("terminal-target-host", None);
-    let manage = ui::i18n::I18nManager::lookup("terminal-target-manage", None);
+    let host = crate::i18n::t("terminal-target-host");
+    let manage = crate::i18n::t("terminal-target-manage");
     assert_eq!(labels[0], "Default");
     assert_eq!(labels[1], "Work");
     assert_eq!(
@@ -620,7 +620,7 @@ fn the_picker_offers_run_on_for_the_persons_relays_and_agents_name_one() {
     widget.sync(&doc, &ROOT);
     widget.open_target_menu();
     let labels = widget.target_menu_labels().unwrap();
-    let run_on = ui::i18n::I18nManager::lookup("terminal-run-on", None);
+    let run_on = crate::i18n::t("terminal-run-on");
     assert!(
         !labels.iter().any(|l| l.contains(&run_on)),
         "without relays there is nowhere else to run: {labels:?}"
@@ -632,7 +632,7 @@ fn the_picker_offers_run_on_for_the_persons_relays_and_agents_name_one() {
     }]);
     widget.open_target_menu();
     let labels = widget.target_menu_labels().unwrap();
-    let here = ui::i18n::I18nManager::lookup("terminal-run-on-this-device", None);
+    let here = crate::i18n::t("terminal-run-on-this-device");
     assert!(labels.contains(&format!("✓ {run_on} {here}")), "{labels:?}");
     assert!(labels.contains(&format!("{run_on} Home")), "{labels:?}");
 

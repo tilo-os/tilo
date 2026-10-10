@@ -110,8 +110,8 @@ impl Library {
         let mut entries = crate::search_type::library_entries(self);
         entries.push(
             SearchEntry::new(
-                ui::i18n!("music-recommendations-tune"),
-                ui::i18n!("music-recommendations-help"),
+                crate::i18n::t("music-recommendations-tune"),
+                crate::i18n::t("music-recommendations-help"),
             )
             .anchored(crate::recommendations::PREFERENCES),
         );
@@ -471,7 +471,7 @@ mod tests {
             TestApp::<MusicShell>::capture_at(Some("recommendations-feedback"), (1280, 2400))
                 .unwrap();
         assert!(app.state().recommendations.is_dismissed("tk_g2"));
-        let label = ui::i18n!("music-recommendations-restore");
+        let label = crate::i18n::t("music-recommendations-restore");
         let target = app
             .harness()
             .a11y_node_named(&label)

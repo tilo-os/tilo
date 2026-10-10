@@ -1265,7 +1265,7 @@ impl Widget for MusicApp {
         }
         let page_name = match &self.view {
             View::Home => "Home".to_string(),
-            View::Recommendations => ui::i18n!("music-recommendations-title"),
+            View::Recommendations => crate::i18n::t("music-recommendations-title"),
             View::Songs => "Songs".to_string(),
             View::Albums => "Albums".to_string(),
             View::Artists => "Artists".to_string(),
@@ -1742,11 +1742,11 @@ impl Widget for MusicApp {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        // Keep frames flowing while playing / a toast fades, and — crucially —
-        // while the streaming worker has an in-flight search or stream
-        // resolution, so its result is drained (and applied to the audio
-        // engine) promptly without waiting for the next input event.
-        self.pb.playing
+        // Settled playback needs observation updates, not a full repaint at
+        // every display refresh. Leave the executor time to serve its bounded
+        // PCM output lane, especially when the renderer uses the CPU.
+        // Startup, worker replies and visible animations still wake promptly.
+        (self.pb.playing && ui::time::now() >= self.last_tick + super::PLAYBACK_POLL_INTERVAL)
             || self.audio.needs_poll()
             || self.resource_stream_invocation.is_some()
             || !self.effect_replies.is_empty()
@@ -1769,6 +1769,19 @@ impl Widget for MusicApp {
                 .frame_theme
                 .as_ref()
                 .is_some_and(|theme| self.body_scroll.needs_animation_frame(theme))
+    }
+
+    fn next_wake_deadline(&self) -> Option<Instant> {
+        self.pb
+            .playing
+            .then_some(self.last_tick + super::PLAYBACK_POLL_INTERVAL)
+            .into_iter()
+            .chain(
+                self.children()
+                    .into_iter()
+                    .filter_map(Widget::next_wake_deadline),
+            )
+            .min()
     }
 
     fn primary_vertical_scroll(&self) -> Option<ui::widget::PrimaryScrollRegion> {
@@ -1798,6 +1811,10 @@ impl Widget for MusicApp {
 
     fn mark_drawn(&mut self) {
         self.dirty = false;
+        // Recording a frame can outlast the playback interval. Start the
+        // next interval after that work so a slow paint cannot immediately
+        // request another paint and crowd out the output worker.
+        self.last_tick = ui::time::now();
     }
 }
 
@@ -1943,7 +1960,7 @@ impl MusicApp {
             }
             MusicEffect::NewSpotifyPlaylist => {
                 if !self.spotify_catalogue {
-                    return Err(ui::i18n!("music-spotify-select-first"));
+                    return Err(crate::i18n::t("music-spotify-select-first"));
                 }
                 self.on_begin_new_playlist(None);
                 self.name_prompt = Some(super::NamePrompt::NewSpotifyPlaylist);
@@ -3003,7 +3020,7 @@ impl MusicApp {
     fn view_title(&self) -> String {
         match &self.view {
             View::Home => "Home".into(),
-            View::Recommendations => ui::i18n!("music-recommendations-title"),
+            View::Recommendations => crate::i18n::t("music-recommendations-title"),
             View::Songs => "Songs".into(),
             View::Albums => "Albums".into(),
             View::Artists => "Artists".into(),
@@ -3248,13 +3265,19 @@ impl MusicApp {
             );
             y += f64::from(size.height) + look.sibling;
         }
-        y = Self::section_heading(ctx, look, body, y, &ui::i18n!("music-spotify-remote-queue"));
-        let mut lines = vec![ui::i18n!("music-spotify-remote-queue-help")];
+        y = Self::section_heading(
+            ctx,
+            look,
+            body,
+            y,
+            &crate::i18n::t("music-spotify-remote-queue"),
+        );
+        let mut lines = vec![crate::i18n::t("music-spotify-remote-queue-help")];
         if let Some(error) = &self.source_error {
             lines.push(error.clone());
         }
         if let Some((snapshot, observed)) = &self.spotify_remote_queue {
-            lines.push(ui::i18n::I18nManager::format(
+            lines.push(crate::i18n::t_args(
                 "music-spotify-remote-queue-age",
                 &[("seconds", observed.elapsed().as_secs().to_string().into())],
             ));
@@ -3266,17 +3289,17 @@ impl MusicApp {
             }
             if let Some(items) = queue["queue"].as_array() {
                 if items.is_empty() {
-                    lines.push(ui::i18n!("music-spotify-remote-queue-empty"));
+                    lines.push(crate::i18n::t("music-spotify-remote-queue-empty"));
                 }
                 lines.extend(items.iter().take(50).enumerate().map(|(i, item)| {
                     format!("{}. {}", i + 1, super::spotify::remote_item_label(item))
                 }));
             }
             if snapshot["truncated"].as_bool() == Some(true) {
-                lines.push(ui::i18n!("music-spotify-remote-queue-truncated"));
+                lines.push(crate::i18n::t("music-spotify-remote-queue-truncated"));
             }
         } else {
-            lines.push(ui::i18n!("music-spotify-remote-queue-unloaded"));
+            lines.push(crate::i18n::t("music-spotify-remote-queue-unloaded"));
         }
         for line in lines {
             y = Self::provider_note(ctx, look, body, y, &line) + look.sibling;
@@ -3286,7 +3309,7 @@ impl MusicApp {
             look,
             body,
             y + look.sibling,
-            &ui::i18n!("music-spotify-local-queue"),
+            &crate::i18n::t("music-spotify-local-queue"),
         )
     }
 
@@ -4179,7 +4202,7 @@ impl MusicApp {
             ),
         ];
         let id = header.id.to_string();
-        let spotify_menu_label = ui::i18n!("music-spotify-playlist-actions");
+        let spotify_menu_label = crate::i18n::t("music-spotify-playlist-actions");
         match header.kind {
             DetailKind::Album { saved } => buttons.push((
                 if saved {

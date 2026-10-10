@@ -964,6 +964,15 @@ pub(crate) struct BoundOwnerMark {
     document: Option<(Vec<automerge::ChangeHash>, usize)>,
 }
 
+#[cfg(feature = "native")]
+impl BoundOwnerMark {
+    pub(crate) fn is_committed(&self) -> bool {
+        self.document
+            .as_ref()
+            .is_some_and(|(_, pending)| *pending == 0)
+    }
+}
+
 /// Every live bound owner under `root`, once each, in tree order.
 #[cfg(feature = "native")]
 pub(crate) fn bound_owner_marks(root: &dyn Widget, outer: &AutoCommit) -> Vec<BoundOwnerMark> {

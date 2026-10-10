@@ -117,7 +117,13 @@ fn set_test_agent_membership(joined: &Enrolled, agent: &str, admitted: bool) {
     }
 }
 
-fn queued_and_started_task(joined: &Enrolled) -> (String, tilo_user_identity::DeviceCert) {
+fn queued_task(
+    joined: &Enrolled,
+) -> (
+    String,
+    tilo_user_identity::DeviceCert,
+    tilo_user_identity::DeviceCert,
+) {
     admit_test_agent(joined, "scribe");
     let (caller, host) = joined
         .owner
@@ -164,6 +170,11 @@ fn queued_and_started_task(joined: &Enrolled) -> (String, tilo_user_identity::De
     let tilo_desktop_model::WorkspaceTaskMutationResult::Queued { task_id } = result else {
         panic!("queue result")
     };
+    (task_id, caller, host)
+}
+
+fn queued_and_started_task(joined: &Enrolled) -> (String, tilo_user_identity::DeviceCert) {
+    let (task_id, caller, host) = queued_task(joined);
     joined
         .owner
         .commit_workspace_task_command(
@@ -1547,6 +1558,165 @@ fn manual_owner_commands_refuse_host_impersonation_and_agent_instruction_carrier
         joined.owner.workspace_task_snapshot(joined.room).unwrap(),
         before
     );
+}
+
+#[test]
+fn removed_agent_cannot_admit_action_for_retained_run() {
+    let joined = enrolled();
+    let (task_id, _) = queued_and_started_task(&joined);
+    joined
+        .owner
+        .with_task_action_admission(joined.room, &task_id, "scribe", 1, 0, || Ok(()))
+        .unwrap();
+    set_test_agent_membership(&joined, "scribe", false);
+    let mut invoked = false;
+    let result =
+        joined
+            .owner
+            .with_task_action_admission(joined.room, &task_id, "scribe", 1, 0, || {
+                invoked = true;
+                Ok(())
+            });
+    assert!(
+        result.is_err(),
+        "removed agent must lose retained task execution authority"
+    );
+    assert!(
+        !invoked,
+        "a denied admission must not reach the application"
+    );
+}
+
+#[test]
+fn person_run_approval_replays_exactly_and_retains_direction_fences_after_restart() {
+    let joined = enrolled();
+    let (task_id, caller, host) = queued_task(&joined);
+    let approval = OwnerCommitRequest {
+        room: ROOM.into(),
+        operation: CommitOperation::WorkspaceTaskCommand {
+            invocation: uuid::Uuid::from_u128(500),
+            authority: WorkspaceTaskAuthority::Person {
+                caller: caller.clone(),
+            },
+            command: WorkspaceTaskCommand::ApproveRun {
+                task_id: task_id.clone(),
+                agent_id: "scribe".into(),
+                expected_run_epoch: 0,
+                after_revision: 0,
+            },
+        },
+    };
+    let reopened = assert_approval_replay(&joined, &approval, &task_id, caller.device_public_key);
+    let mut changed_request = approval;
+    let CommitOperation::WorkspaceTaskCommand { invocation, .. } = &mut changed_request.operation
+    else {
+        panic!("approval");
+    };
+    *invocation = uuid::Uuid::from_u128(501);
+    assert!(
+        reopened
+            .commit_workspace_task_command(changed_request, joined.now)
+            .is_err()
+    );
+    let direction = OwnerCommitRequest {
+        room: ROOM.into(),
+        operation: CommitOperation::WorkspaceTaskCommand {
+            invocation: uuid::Uuid::from_u128(502),
+            authority: WorkspaceTaskAuthority::Person { caller },
+            command: WorkspaceTaskCommand::DirectionForRun {
+                task_id: task_id.clone(),
+                run_epoch: 1,
+                after_revision: 0,
+                text: "Keep the compatibility warning".into(),
+            },
+        },
+    };
+    reopened
+        .commit_workspace_task_command(direction, joined.now)
+        .unwrap();
+    assert!(
+        reopened
+            .with_task_action_admission(
+                joined.room,
+                &task_id,
+                "scribe",
+                1,
+                0,
+                || -> Result<(), String> { panic!("unseen direction must fence execution") }
+            )
+            .is_err()
+    );
+    let ack = OwnerCommitRequest {
+        room: ROOM.into(),
+        operation: CommitOperation::WorkspaceTaskCommand {
+            invocation: uuid::Uuid::from_u128(503),
+            authority: WorkspaceTaskAuthority::Agent {
+                attestor: host,
+                agent_id: "scribe".into(),
+            },
+            command: WorkspaceTaskCommand::AppliedAck {
+                task_id: task_id.clone(),
+                run_epoch: 1,
+                revision: 1,
+            },
+        },
+    };
+    reopened
+        .commit_workspace_task_command(ack.clone(), joined.now)
+        .unwrap();
+    let after = std::fs::read(&joined.path).unwrap();
+    let restarted = open_file(&joined.path).unwrap();
+    restarted
+        .commit_workspace_task_command(ack, joined.now)
+        .unwrap();
+    assert_eq!(std::fs::read(&joined.path).unwrap(), after);
+    restarted
+        .with_task_action_admission(joined.room, &task_id, "scribe", 1, 1, || Ok(()))
+        .unwrap();
+    set_test_agent_membership(&joined, "scribe", false);
+    assert!(
+        joined
+            .owner
+            .with_task_action_admission(
+                joined.room,
+                &task_id,
+                "scribe",
+                1,
+                1,
+                || -> Result<(), String> { panic!("removed agent must not execute") }
+            )
+            .is_err()
+    );
+}
+
+fn assert_approval_replay(
+    joined: &Enrolled,
+    approval: &OwnerCommitRequest,
+    task_id: &str,
+    device: [u8; 32],
+) -> NativeWorkspaceOwner {
+    let receipt = joined
+        .owner
+        .commit_workspace_task_command(approval.clone(), joined.now)
+        .unwrap();
+    receipt.validate_for(approval).unwrap();
+    let bytes = std::fs::read(&joined.path).unwrap();
+    let reopened = open_file(&joined.path).unwrap();
+    reopened
+        .commit_workspace_task_command(approval.clone(), joined.now)
+        .unwrap()
+        .validate_for(approval)
+        .unwrap();
+    assert_eq!(std::fs::read(&joined.path).unwrap(), bytes);
+    let state = reopened.workspace_task_snapshot(joined.room).unwrap();
+    let run = state.controls[task_id].active_run.as_ref().unwrap();
+    assert_eq!(run.epoch, 1);
+    assert_eq!(run.approval.as_ref().unwrap().device, device);
+    assert_eq!(
+        state.tasks[0].audit.last().unwrap().actor,
+        run.approval.as_ref().unwrap().person
+    );
+    reopened
 }
 
 /// What the owner file held before byte fields became base64: the same

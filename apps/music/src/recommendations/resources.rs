@@ -19,7 +19,7 @@ pub fn resource_by_id(lib: &Library, id: &str) -> Option<Resource> {
             Resource::new(
                 id,
                 "music.recommendation-preferences",
-                ui::i18n!("music-recommendations-title"),
+                crate::i18n::t("music-recommendations-title"),
             )
             .with_action(open())
             .with_children(Input::ALL.into_iter().filter_map(|input| {
@@ -37,7 +37,7 @@ pub fn resource_by_id(lib: &Library, id: &str) -> Option<Resource> {
                 format!(
                     "{}: {}",
                     input.label(),
-                    ui::i18n!(if enabled {
+                    crate::i18n::t(if enabled {
                         "music-recommendations-enabled"
                     } else {
                         "music-recommendations-disabled"
@@ -88,7 +88,7 @@ fn song_resource(lib: &Library, id: &str, track: &str) -> Option<Resource> {
     } else {
         play.unavailable(
             "missing_track",
-            ui::i18n!("music-recommendations-missing-track"),
+            crate::i18n::t("music-recommendations-missing-track"),
         )
     };
     let row = Resource::new(id, "music.recommendation", label)

@@ -94,8 +94,52 @@ pub fn save_revocations(
     fs::create_dir_all(state_root)?;
     let bytes =
         serde_json::to_vec_pretty(entries).map_err(|error| StoreError::Json(error.to_string()))?;
-    tilo_files::native::atomic::write(&state_root.join(REVOCATIONS_FILE), &bytes)?;
+    atomic_write(&state_root.join(REVOCATIONS_FILE), &bytes)?;
     Ok(())
+}
+
+/// fsyncs the relay's workspace stores issued since this process started.
+static FSYNCS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+#[cfg(test)]
+thread_local! {
+    /// [`FSYNCS`] of this thread only: tests run in parallel, and a store
+    /// driven synchronously issues its barriers on the calling thread.
+    static THREAD_FSYNCS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// `tilo_files::native::atomic::write` syncs the staged file, and after the
+/// rename the directory holding it.
+const ATOMIC_WRITE_FSYNCS: u64 = 2;
+
+fn count_fsyncs(count: u64) {
+    FSYNCS.fetch_add(count, std::sync::atomic::Ordering::Relaxed);
+    #[cfg(test)]
+    THREAD_FSYNCS.with(|fsyncs| fsyncs.set(fsyncs.get().saturating_add(count)));
+}
+
+/// fsyncs (file and directory barriers) the relay's workspace stores have
+/// issued in this process: the cost the hosting bench divides by edits.
+#[must_use]
+pub fn fsyncs() -> u64 {
+    FSYNCS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+#[cfg(test)]
+pub(crate) fn thread_fsyncs() -> u64 {
+    THREAD_FSYNCS.with(std::cell::Cell::get)
+}
+
+/// `file.sync_all()`, counted in [`fsyncs`].
+pub(crate) fn fsync(file: &fs::File) -> io::Result<()> {
+    count_fsyncs(1);
+    file.sync_all()
+}
+
+/// `tilo_files::native::atomic::write`, counted in [`fsyncs`].
+pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    count_fsyncs(ATOMIC_WRITE_FSYNCS);
+    tilo_files::native::atomic::write(path, bytes)
 }
 
 /// Errors from store operations.
@@ -298,7 +342,7 @@ impl WorkspaceStore {
                 }
                 // Re-establish the durability barrier even after an interrupted
                 // previous attempt left the exact file visible.
-                fs::File::open(&path)?.sync_all()?;
+                fsync(&fs::File::open(&path)?)?;
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 let bytes = serde_json::to_vec(&Binding {
@@ -306,11 +350,11 @@ impl WorkspaceStore {
                     authority: authority.clone(),
                 })
                 .map_err(|e| StoreError::Json(e.to_string()))?;
-                tilo_files::native::atomic::write(&path, &bytes)?;
+                atomic_write(&path, &bytes)?;
             }
             Err(error) => return Err(error.into()),
         }
-        fs::File::open(&self.root)?.sync_all()?;
+        fsync(&fs::File::open(&self.root)?)?;
         self.shell_authority = Some(authority);
         self.tail_cache.invalidate();
         Ok(())
@@ -351,7 +395,7 @@ impl WorkspaceStore {
         if !self.pinned {
             return Ok(());
         }
-        tilo_files::native::atomic::write(&self.root.join(SNAPSHOT_FILE), bytes)?;
+        atomic_write(&self.root.join(SNAPSHOT_FILE), bytes)?;
         Ok(())
     }
 
@@ -407,7 +451,7 @@ impl WorkspaceStore {
             .map_err(|error| StoreError::Json(error.to_string()))?;
         #[cfg(test)]
         test_barrier::pause(&self.root, "membership-write");
-        tilo_files::native::atomic::write(&self.root.join(MEMBERSHIP_FILE), &bytes)?;
+        atomic_write(&self.root.join(MEMBERSHIP_FILE), &bytes)?;
         Ok(())
     }
 
@@ -457,7 +501,7 @@ impl WorkspaceStore {
         };
         let bytes = serde_json::to_vec_pretty(&encoded)
             .map_err(|error| StoreError::Json(error.to_string()))?;
-        tilo_files::native::atomic::write(&self.root.join(GOVERNED_ACCESS_FILE), &bytes)?;
+        atomic_write(&self.root.join(GOVERNED_ACCESS_FILE), &bytes)?;
         Ok(())
     }
 
@@ -483,7 +527,7 @@ impl WorkspaceStore {
         {
             Ok(mut file) => {
                 file.write_all(&bytes)?;
-                file.sync_all()?;
+                fsync(&file)?;
                 Ok(None)
             }
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
@@ -530,7 +574,7 @@ impl WorkspaceStore {
         }
         let bytes =
             serde_json::to_vec(record).map_err(|error| StoreError::Json(error.to_string()))?;
-        tilo_files::native::atomic::write(&path, &bytes)?;
+        atomic_write(&path, &bytes)?;
         Ok(())
     }
 
@@ -560,7 +604,7 @@ impl WorkspaceStore {
             .join(hex::encode(device));
         fs::create_dir_all(&directory)?;
         let path = directory.join(format!("{sequence:016x}.compute"));
-        tilo_files::native::atomic::write(&path, bytes)?;
+        atomic_write(&path, bytes)?;
         Ok(path)
     }
 
@@ -642,14 +686,25 @@ impl WorkspaceStore {
         // receive. The temp file is process-scoped, so two writers filling the
         // same peer's queue cannot publish each other's half-written bytes —
         // the fixed `.partial` name this used to use could.
-        tilo_files::native::atomic::write(&path, bytes)?;
-        // A live fanout may now rely on this exact fallback. Require directory
-        // durability instead of treating the atomic helper's best effort as a
-        // successful publication barrier.
-        for directory in pending_dir.ancestors().take(3) {
-            fs::File::open(directory)?.sync_all()?;
-        }
+        atomic_write(&path, bytes)?;
+        // A live fanout may now rely on this exact fallback.
+        Self::pending_durable(&pending_dir)?;
         Ok(path)
+    }
+
+    /// Complete the barrier for a file `atomic_write` just published in the
+    /// queue `directory`: it synced `directory` after the rename (Apple
+    /// repeats that with `F_FULLFSYNC`, as `retained::durable_write` does).
+    /// The queue's two ancestors change only when a queue is first created,
+    /// so they are synced whenever their entries changed since this process
+    /// last synced them.
+    fn pending_durable(directory: &Path) -> Result<(), StoreError> {
+        #[cfg(target_vendor = "apple")]
+        fsync(&fs::File::open(directory)?)?;
+        for ancestor in directory.ancestors().skip(1).take(2) {
+            retained::sync_dir_once(ancestor)?;
+        }
+        Ok(())
     }
 
     pub(crate) fn enqueue_continuity_pending(
@@ -666,10 +721,8 @@ impl WorkspaceStore {
             hex::encode(rand::random::<[u8; 16]>())
         ));
         continuity::write(self, &path, bytes, receipt)?;
-        tilo_files::native::atomic::write(&path, bytes)?;
-        for directory in directory.ancestors().take(3) {
-            fs::File::open(directory)?.sync_all()?;
-        }
+        atomic_write(&path, bytes)?;
+        Self::pending_durable(&directory)?;
         Ok(path)
     }
 
@@ -835,7 +888,7 @@ impl WorkspaceStore {
         for record in records {
             bytes.extend_from_slice(&record.encode());
         }
-        tilo_files::native::atomic::write(&self.root.join(COMMITS_FILE), &bytes)?;
+        atomic_write(&self.root.join(COMMITS_FILE), &bytes)?;
         Ok(())
     }
 

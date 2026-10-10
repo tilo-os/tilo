@@ -20,12 +20,6 @@ const MAX_RECORDED_FS_AUTHORITY_ATTEMPTS: usize = 16;
 /// Tail of the publisher's stderr kept per recorded attempt.
 const MAX_RECORDED_FS_AUTHORITY_STDERR: usize = 2048;
 
-pub fn permission_profile_document_key(name: &str) -> String {
-    blake3::hash(name.trim().to_lowercase().as_bytes())
-        .to_hex()
-        .to_string()
-}
-
 #[derive(Clone, Debug)]
 struct FsAuthorityPublication {
     acl: PathBuf,

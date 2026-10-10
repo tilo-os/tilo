@@ -365,6 +365,13 @@ struct EntryArgs {
     /// Newest pre-releases kept per target; older ones leave the entry.
     #[arg(long, default_value_t = registry_types::retention::DEFAULT_RETAINED_PER_CHANNEL)]
     keep_prereleases: usize,
+    /// Owner-verified catalogue used to reconcile never-published native
+    /// history after four newer releases with offered exact runtimes remain.
+    #[arg(long, requires = "registry_owner_pubkey")]
+    runtime_catalogue: Option<PathBuf>,
+    /// Existing registry owner pin used with --runtime-catalogue.
+    #[arg(long, requires = "runtime_catalogue")]
+    registry_owner_pubkey: Option<String>,
     /// Payload objects of a thin .tapp, as `split` wrote them; they are
     /// hosted beside the .tapp at `--url`.
     #[arg(long)]
@@ -1125,6 +1132,44 @@ fn cmd_pending(args: &PendingArgs) -> Result<()> {
     Ok(())
 }
 
+fn reconcile_entry_history(
+    args: &EntryArgs,
+    entry: &mut registry_types::RegistryEntry,
+    signer: &SigningKey,
+) -> Result<()> {
+    if let Some(catalogue_path) = &args.runtime_catalogue {
+        let bytes = std::fs::read(catalogue_path).context("read runtime catalogue")?;
+        let catalogue: registry_types::SignedRegistrySnapshot =
+            serde_json::from_slice(&bytes).context("decode runtime catalogue")?;
+        let owner = args
+            .registry_owner_pubkey
+            .as_deref()
+            .context("runtime catalogue requires an existing registry owner pin")?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .context("clock precedes Unix epoch")?
+            .as_secs();
+        registry_types::verify_snapshot(&catalogue, owner, now)
+            .context("verify runtime catalogue against registry owner")?;
+        let dropped = registry_client::runtime_history::reconcile(
+            entry,
+            &catalogue.entries,
+            &args.url,
+            signer,
+        )?;
+        for version in dropped {
+            eprintln!(
+                "reconciled unpublished {}@{} ({}) after four newer offered releases; exact runtime {} is no longer offered",
+                entry.package_id,
+                version.version,
+                version.target.architecture,
+                version.target.runtime.as_deref().unwrap_or_default()
+            );
+        }
+    }
+    Ok(())
+}
+
 fn cmd_entry(args: &EntryArgs) -> Result<()> {
     let file = &args.file;
     let url = args.url.as_str();
@@ -1163,7 +1208,7 @@ fn cmd_entry(args: &EntryArgs) -> Result<()> {
                 .context("decode entry metadata JSON")
         })
         .transpose()?;
-    let entry = if let Some(objects) = &args.objects {
+    let mut entry = if let Some(objects) = &args.objects {
         registry_client::build_entry_with_objects(
             registry_client::ThinPackage {
                 tapp: &tapp_bytes,
@@ -1189,6 +1234,7 @@ fn cmd_entry(args: &EntryArgs) -> Result<()> {
             &retention,
         )?
     };
+    reconcile_entry_history(args, &mut entry, &signer)?;
     let output = action.map_or_else(
         || serde_json::to_value(&entry),
         |action| {

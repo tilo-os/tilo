@@ -444,6 +444,7 @@ pub enum CollabRequest {
         update: runtime_collab::TaskRunUpdate,
     },
     ReportTaskRun {
+        request_id: Option<u64>,
         run_id: u64,
         lease: String,
         update: runtime_collab::TaskRunUpdate,
@@ -808,6 +809,14 @@ pub enum CollabEvent {
     TaskRunCancellation {
         request_id: u64,
         result: Result<bool, String>,
+    },
+    TaskRunControl {
+        request_id: u64,
+        control: runtime_collab::TaskRunControl,
+    },
+    TaskRunReportResult {
+        request_id: u64,
+        result: Result<(), String>,
     },
     WorkspaceControl {
         session_id: u64,
@@ -2123,33 +2132,6 @@ mod task4_route_tests {
         assert!(state.current(true).is_none());
         state.accept(Ok(b)).unwrap();
         assert!(state.current(true).is_some());
-    }
-}
-
-/// A host-owned document commit resolving to the broker-signed envelope.
-pub type HostDocumentCommit =
-    std::pin::Pin<Box<dyn std::future::Future<Output = Result<SignedOp, String>> + Send + 'static>>;
-
-/// Host-local capability, never selected by a wire peer. Called on the SDK
-/// shovel thread, while the application's ordinary owner thread keeps pumping.
-/// Implementations bind an exact route and revalidate current authority.
-/// Native launcher and explicit-key endpoints retain their existing signer.
-pub trait HostDocumentCommitter: Send + Sync {
-    fn commit(
-        &self,
-        route: &RouteSpec,
-        mutation: collab_types::DocumentMutation,
-    ) -> HostDocumentCommit;
-
-    /// Required custody must reach the concrete final owner intact. A legacy
-    /// committer cannot silently downgrade it to its unqualified commit method.
-    fn commit_scoped(
-        &self,
-        _route: &RouteSpec,
-        _mutation: collab_types::DocumentMutation,
-        _authorization: crate::invocation_scope::DocumentAuthorization,
-    ) -> HostDocumentCommit {
-        Box::pin(async { Err("host has no final scoped document evaluator".into()) })
     }
 }
 

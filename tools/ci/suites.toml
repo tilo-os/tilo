@@ -111,6 +111,8 @@ suites = [
   "os/tests/local_boot_esp.sh",
   "os/tests/test_no_ui_toolkits.py",
   "os/tests/test_flatpak_defaults.py",
+  "os/tests/test_hardlink_identical.py",
+  "os/tests/test_seed_env_runtime.py",
   "os/tests/test_boot_unit_ordering.py",
   "os/tests/podman_build_flags.sh",
   "os/tests/portal_config_validity.sh",
@@ -403,6 +405,7 @@ suites = [
   "scripts/vm-acceptance/test_store_chooser.py",
   "scripts/vm-acceptance/test_runtime_backing.py",
   "scripts/vm-acceptance/test_lock_guard.py",
+  "scripts/vm-acceptance/test_dialog_guard.py",
 ]
 
 [[group]]
@@ -449,6 +452,7 @@ suites = [
   "scripts/perf/settings_effects_test.py",
   "scripts/perf/word_processor_effects_test.py",
   "scripts/perf/worker_handoff_test.py",
+  "tools/perf/test_ab.py",
   "tools/perf/test_adapters.py",
   "tools/perf/test_compare.py",
   "tools/perf/test_image_size.py",
@@ -614,6 +618,7 @@ inputs = ["apps/*/Cargo.toml", "apps/*/tilo-app.toml"]
 readers = [
   "crates/packaging/tilo-app-package/tests/app_manifests.rs",
   "crates/packaging/tilo-app-package/src/validate.rs",
+  "crates/packaging/tilo-app-package/src/view.rs",
 ]
 
 [[cargo]]

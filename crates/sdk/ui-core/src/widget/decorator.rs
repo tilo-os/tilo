@@ -730,6 +730,12 @@ pub trait Decorator {
         self.inner_mut().native_view_frame_start()
     }
 
+    /// Decorators must opt in themselves: an outer handler can change what
+    /// its inner widget declares even when the inner scroll is view-only.
+    fn view_only_scroll(&self, _event: &WindowEvent) -> bool {
+        false
+    }
+
     fn primary_vertical_scroll(&self) -> Option<PrimaryScrollRegion> {
         self.inner().primary_vertical_scroll()
     }
@@ -1363,6 +1369,10 @@ impl<T: Decorator + 'static> Widget for T {
 
     fn native_view_frame_start(&mut self) {
         Decorator::native_view_frame_start(self)
+    }
+
+    fn view_only_scroll(&self, event: &WindowEvent) -> bool {
+        Decorator::view_only_scroll(self, event)
     }
 
     fn primary_vertical_scroll(&self) -> Option<PrimaryScrollRegion> {

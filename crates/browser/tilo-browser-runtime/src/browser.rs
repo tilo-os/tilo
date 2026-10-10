@@ -29,6 +29,8 @@ use tilo_desktop::feedback::PrivateFeedback;
 use crate::viewport::{SurfaceCaps, Viewport, ViewportState};
 
 thread_local! {
+    static FEEDBACK_STARTUPS: RefCell<HashMap<u32, tilo_desktop::feedback::transport::Startup>> =
+        RefCell::new(HashMap::new());
     static LOOP: RefCell<Option<EventLoopProxy<u64>>> = const { RefCell::new(None) };
     static MOUNTS: RefCell<HashMap<u64, Mount>> = RefCell::new(HashMap::new());
     static SERVICING: RefCell<std::collections::HashSet<u64>> = RefCell::new(std::collections::HashSet::new());
@@ -825,6 +827,34 @@ enum Root {
     Desktop(Box<crate::shell::BrowserShell>),
 }
 
+/// Trusted Rust startup handoff, separate from deserialized mount configuration.
+/// The certified peer must already exist. This never creates a peer or joins.
+pub(crate) fn register_feedback_startup(
+    peer: u32,
+    startup: tilo_desktop::feedback::transport::Startup,
+) -> Result<(), String> {
+    let device = startup
+        .reporter()
+        .device_public_key()
+        .ok_or("feedback reporter has no certified device")?;
+    if crate::replication::device_of(peer).as_deref() != Some(hex::encode(device).as_str()) {
+        return Err("feedback reporter does not own this certified peer".into());
+    }
+    FEEDBACK_STARTUPS.with_borrow_mut(|startups| {
+        if startups.contains_key(&peer) {
+            return Err("feedback startup already registered".into());
+        }
+        startups.insert(peer, startup);
+        Ok(())
+    })
+}
+
+pub(crate) fn forget_feedback_startup(peer: u32) {
+    FEEDBACK_STARTUPS.with_borrow_mut(|startups| {
+        startups.remove(&peer);
+    });
+}
+
 fn present_desktop(
     id: u64,
     config: &Config,
@@ -839,6 +869,9 @@ fn present_desktop(
     let wake = proxy()?;
     let (mut surface, handle, shared, persistence) = crate::desktop::mount(
         crate::desktop::Inputs {
+            feedback: config.peer.and_then(|peer| {
+                FEEDBACK_STARTUPS.with_borrow_mut(|startups| startups.remove(&peer))
+            }),
             owners: RecordOwners::with_store(Rc::clone(&dyn_store)),
             views,
             device: config.device.clone(),

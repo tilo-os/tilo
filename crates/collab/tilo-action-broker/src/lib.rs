@@ -10,8 +10,6 @@ pub mod collab_inbound;
 pub mod collab_outbound;
 pub mod collab_presence;
 pub mod collaboration_admin;
-pub mod host_documents;
-pub mod owner_turn;
 pub mod peer_actions;
 pub mod policy;
 pub mod policy_schedule;

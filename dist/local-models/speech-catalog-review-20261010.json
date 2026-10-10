@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "workflow": "release-local-model-catalog.yml",
+  "mode": "review-speech",
+  "run": 91547,
+  "source_commit": "5d29fb38e8e76bc5e3048a19c5503e1a2015a8ca",
+  "signature_domain": "tilo.local-model.catalog.v1",
+  "key_id": "tilo-local-model-release-2026-10",
+  "existing_public_key_unchanged": true,
+  "signature_verified": true,
+  "exact_source_models_verified": true,
+  "models": [
+    "u2net-subject",
+    "whisper-base-multilingual",
+    "whisper-small-q5_1-multilingual",
+    "whisper-tiny-multilingual"
+  ],
+  "artifact_sha256": {
+    "catalog.json": "9a49ee14fe18fd27326faa9c0560d40f507f88060b61c02a894491c44b913e33",
+    "keys.json": "09ff50f9ec376f350f55754aa5b6bfa6604b142fbcc9599b5d6a8c3a1e4ad011",
+    "source.json": "2d0eb5693a81467d0a235f486d2427eefc5e5d63189151d3207c4665a5b9de0d"
+  },
+  "publication_executed": false,
+  "installation_executed": false,
+  "microphone_accessed": false,
+  "run_url": "https://code.tilo.so/tilo/tilo/actions/runs/91547",
+  "verification": "Independent Ed25519 verification using the unchanged image public key over the production domain, NUL separator and compact UTF-8 payload; every signed model field matches the reviewed source after the compiler revision-to-version and artifact-file transformations."
+}

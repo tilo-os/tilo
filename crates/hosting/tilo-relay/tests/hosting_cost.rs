@@ -89,17 +89,17 @@ impl RawSubscriber {
             cert: device.cert.clone(),
             client_nonce: [7; 32],
         };
-        tilo_relay::framing::write_frame(&mut send, &postcard::to_allocvec(&hello).unwrap())
+        tilo_relay::frame::write_frame(&mut send, &postcard::to_allocvec(&hello).unwrap())
             .await
             .unwrap();
         let ack: tilo_relay::auth::HelloAck = postcard::from_bytes(
-            &tilo_relay::framing::read_frame(&mut recv, tilo_relay::transport::MAX_FRAME_BYTES)
+            &tilo_relay::frame::read_frame(&mut recv, tilo_relay::transport::MAX_FRAME_BYTES)
                 .await
                 .unwrap(),
         )
         .unwrap();
         let ack2 = tilo_relay::auth::build_hello_ack2(&device.sk, &ack.server_nonce);
-        tilo_relay::framing::write_frame(&mut send, &postcard::to_allocvec(&ack2).unwrap())
+        tilo_relay::frame::write_frame(&mut send, &postcard::to_allocvec(&ack2).unwrap())
             .await
             .unwrap();
         send.write_all(
@@ -131,7 +131,7 @@ impl RawSubscriber {
 
     /// The next frame as written: its size on the wire and its value.
     async fn next(&mut self) -> (usize, EnvelopeV2) {
-        let payload = tilo_relay::framing::read_frame(
+        let payload = tilo_relay::frame::read_frame(
             &mut self.recv,
             tilo_relay::transport::MAX_FRAME_BYTES + 1,
         )

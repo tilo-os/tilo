@@ -78,20 +78,7 @@ curl --fail --silent --show-error --retry 3 --retry-all-errors \
   "$prior_url" --output "$prior"
 printf '%s  %s\n' "$prior_sha" "$prior" | sha256sum --check --strict
 
-# Variable font filenames carry OpenType axis tags in brackets. Permit that
-# syntax only for font files in the runtime's font directory, retaining the
-# strict component allowlist for every other archive member.
-font_member='^runtime/tilo-runtime/[A-Za-z0-9][A-Za-z0-9._+-]*/lib/fonts/[A-Za-z0-9][A-Za-z0-9._+-]*\[[A-Za-z]{4}(,[A-Za-z]{4})*\]\.(ttf|otf)$'
-while IFS= read -r member; do
-  if [[ $member == tapp/ || $member == runtime/ || $member == index.json || $member == SHA256SUMS \
-        || $member =~ ^tapp/[A-Za-z0-9][A-Za-z0-9._+-]*\.tapp$ \
-        || $member =~ ^runtime(/[A-Za-z0-9][A-Za-z0-9._+-]*)+/?$ \
-        || $member =~ $font_member ]]; then
-    continue
-  fi
-  printf 'unexpected prior collection member: %s\n' "$member" >&2
-  exit 1
-done < <(tar -tzf "$prior")
+tar -tzf "$prior" | "$(dirname "${BASH_SOURCE[0]}")/apps/check-collection-members.sh" "prior collection"
 tar --extract --gzip --file "$prior" --directory "$prior_dir" \
   --no-same-owner --no-same-permissions
 [[ -d $prior_dir/tapp && -d $prior_dir/runtime/tilo-runtime ]] || {

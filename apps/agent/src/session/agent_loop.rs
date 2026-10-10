@@ -904,6 +904,12 @@ impl Session {
         turn: usize,
         timeout: Duration,
     ) -> Result<Option<LoopEnd>> {
+        if self.native_task.is_some() {
+            if self.task_cancelled(run)? {
+                return Ok(Some(LoopEnd::Cancelled("Cancelled before planning".into())));
+            }
+            self.incorporate_native_directions(run, conversation)?;
+        }
         let catalogue = self.task_catalogue();
         let targets = self.plan_targets(&catalogue);
         let body = conversation.body(&tools::loop_definitions());
@@ -926,6 +932,14 @@ impl Session {
                 "Cancelled before the next step".into(),
             )));
         }
+        if self
+            .native_task
+            .as_ref()
+            .is_some_and(|state| state.pending.is_some())
+        {
+            self.turn = None;
+            return Ok(None);
+        }
         state.streaming = None;
         state.stream_decided.clear();
         let mut results: HashMap<String, String> = HashMap::new();
@@ -947,6 +961,14 @@ impl Session {
             if self.cancellation_known()? {
                 self.turn = None;
                 return Ok(Some(LoopEnd::Cancelled("Cancelled while thinking".into())));
+            }
+            if self
+                .native_task
+                .as_ref()
+                .is_some_and(|state| state.pending.is_some())
+            {
+                self.turn = None;
+                return Ok(None);
             }
             self.poll_cancellation_every(run, THINKING_CANCELLATION_POLL)?;
             while let Some(call) = self.turn.as_mut().and_then(|turn| turn.ready.pop_front()) {
@@ -2246,6 +2268,8 @@ mod tests {
         /// Cancel after this many successful status surveys (zero disables).
         cancel_after_checks: usize,
         cancellation_checks: usize,
+        native_control: Option<runtime_collab::TaskRunControl>,
+        native_applied_revision: u64,
         /// Cancel once this many steps have been applied.
         cancel_after_steps: Option<usize>,
         /// How long the host takes to answer a report or a cancellation
@@ -2569,6 +2593,41 @@ mod tests {
         fn answer(&mut self, delay: Duration, event: CollabEvent) {
             self.held.push((ui::time::now() + delay, event));
         }
+
+        fn answer_cancellation(&mut self, request_id: u64, lease: &str) {
+            let (cancelled, delay, control) = {
+                let mut world = self.world.borrow_mut();
+                world.cancellation_checks += 1;
+                let cancelled = (world.cancel_after_checks != 0
+                    && world.cancellation_checks > world.cancel_after_checks)
+                    || world
+                        .cancel_after_steps
+                        .is_some_and(|steps| world.steps.len() >= steps);
+                let control = world.native_control.clone().map(|mut control| {
+                    let (_, revision) = runtime_collab::native_task_revision(lease).unwrap();
+                    control.from_revision = revision;
+                    control.applied_revision = world.native_applied_revision;
+                    control
+                        .directions
+                        .retain(|direction| direction.revision > revision);
+                    control
+                });
+                (cancelled, world.cancel_delay, control)
+            };
+            if let Some(control) = control {
+                self.events.push(CollabEvent::TaskRunControl {
+                    request_id,
+                    control,
+                });
+            }
+            self.answer(
+                delay,
+                CollabEvent::TaskRunCancellation {
+                    request_id,
+                    result: Ok(cancelled),
+                },
+            );
+        }
     }
 
     impl ui::collaboration::PeerTransport for Broker {
@@ -2645,24 +2704,21 @@ mod tests {
                         }
                     }
                 }
-                CollabRequest::TaskRunCancellation { request_id, .. } => {
-                    let (cancelled, delay) = {
-                        let mut world = self.world.borrow_mut();
-                        world.cancellation_checks += 1;
-                        let cancelled = (world.cancel_after_checks != 0
-                            && world.cancellation_checks > world.cancel_after_checks)
-                            || world
-                                .cancel_after_steps
-                                .is_some_and(|steps| world.steps.len() >= steps);
-                        (cancelled, world.cancel_delay)
-                    };
-                    self.answer(
-                        delay,
-                        CollabEvent::TaskRunCancellation {
-                            request_id: *request_id,
-                            result: Ok(cancelled),
-                        },
-                    );
+                CollabRequest::TaskRunCancellation {
+                    request_id, lease, ..
+                } => {
+                    self.answer_cancellation(*request_id, lease);
+                }
+                CollabRequest::ReportTaskRun {
+                    request_id, update, ..
+                } => {
+                    if let runtime_collab::TaskRunUpdate::DirectionsApplied { revision } = update {
+                        self.world.borrow_mut().native_applied_revision = *revision;
+                    }
+                    self.events.push(CollabEvent::TaskRunReportResult {
+                        request_id: request_id.expect("native reports await receipt"),
+                        result: Ok(()),
+                    });
                 }
                 CollabRequest::ReportEnrolledTask { request_id, .. }
                 | CollabRequest::AcceptEnrolledTask { request_id, .. } => {
@@ -2803,6 +2859,7 @@ mod tests {
             enrolled_active: Some(acceptance),
             enrolled_sequence: 0,
             task_deadline: None,
+            native_task: None,
             asked_at: ui::time::now(),
             last_route: None,
             broker_surfaces: surfaces,
@@ -2847,6 +2904,111 @@ mod tests {
             tools::PLAN,
             serde_json::json!({"reply": reply, "done": done}),
         )
+    }
+
+    fn native_fixture(latest: u64) -> Fixture {
+        let control = runtime_collab::TaskRunControl {
+            version: 1,
+            task_id: "task:loop".into(),
+            run_epoch: 1,
+            from_revision: 0,
+            applied_revision: 0,
+            latest_revision: latest,
+            directions: (1..=latest.min(8))
+                .map(|revision| runtime_collab::TaskDirection {
+                    revision,
+                    author: "person:reviewer".into(),
+                    text: "Keep compatibility examples".into(),
+                    issued_at: 42,
+                })
+                .collect(),
+            has_more: latest > 8,
+        };
+        let mut fixture = fixture(
+            "Prepare release notes",
+            World {
+                native_control: Some(control),
+                ..Default::default()
+            },
+            vec![turn(&[finish("Reviewed instructions", true)], 24)],
+        );
+        fixture.session.enrolled_active = None;
+        fixture.session.enrolled_custody = None;
+        fixture.run.lease = "native:00000000000000000000000000000000:0".into();
+        fixture.run.action_context = serde_json::to_value(
+            tilo_actions::ActionContext::default()
+                .with_purpose(fixture.run.title.as_str())
+                .with_group(
+                    fixture.run.task_id.as_str(),
+                    fixture.run.title.as_str(),
+                    "task",
+                ),
+        )
+        .unwrap();
+        super::super::validate_task_run(&fixture.run).unwrap();
+        fixture
+    }
+
+    #[test]
+    fn native_directions_enter_the_actual_model_request_before_actions() {
+        let mut fixture = native_fixture(1);
+        fixture.session.run_task(&fixture.run).unwrap();
+        let bodies = fixture.script.bodies.lock().unwrap();
+        assert_eq!(bodies.len(), 1);
+        let request = bodies[0].to_string();
+        drop(bodies);
+        assert!(request.contains("Keep compatibility examples"));
+        assert!(request.contains("person:reviewer"));
+        assert!(request.contains("issued_at"));
+        assert_eq!(fixture.world.borrow().native_applied_revision, 1);
+        assert!(fixture.sent.borrow().iter().any(|request| matches!(
+            request,
+            CollabRequest::ReportTaskRun {
+                update: runtime_collab::TaskRunUpdate::Succeeded { .. },
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn native_overflow_requires_review_without_acknowledging_any_direction() {
+        let mut fixture = native_fixture(9);
+        assert!(fixture.session.run_task(&fixture.run).is_err());
+        assert_eq!(fixture.world.borrow().native_applied_revision, 0);
+        assert!(fixture.script.bodies.lock().unwrap().is_empty());
+        assert!(!fixture.sent.borrow().iter().any(|request| matches!(
+            request,
+            CollabRequest::ReportTaskRun {
+                update: runtime_collab::TaskRunUpdate::DirectionsApplied { .. },
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn native_unfinished_answer_requests_review_instead_of_claiming_completion() {
+        let mut fixture = native_fixture(0);
+        *fixture.script.turns.lock().unwrap() =
+            vec![turn(&[finish("I need the owner's decision", false)], 24)].into();
+        fixture.session.run_task(&fixture.run).unwrap();
+        assert_eq!(
+            fixture.script.bodies.lock().unwrap().len(),
+            1,
+            "must exercise the actual model request"
+        );
+        let sent = fixture.sent.borrow();
+        let last = sent
+            .iter()
+            .rev()
+            .find_map(|request| match request {
+                CollabRequest::ReportTaskRun { update, .. } => Some(update),
+                _ => None,
+            })
+            .unwrap();
+        assert!(
+            matches!(last, runtime_collab::TaskRunUpdate::Failed { message } if message == "I need the owner's decision"),
+            "unfinished native work reported {last:?}"
+        );
     }
 
     /// The terminal task report.

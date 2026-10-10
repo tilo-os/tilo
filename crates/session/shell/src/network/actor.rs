@@ -27,6 +27,7 @@ use tilo_user_identity::{DeviceCert, RevocationList};
 use tokio::sync::mpsc;
 
 use crate::network::protocol::{MAX_PERSONAL_CONTINUITY_CHECKPOINT_BYTES, NeighbourMsg, SurfaceId};
+use crate::network::reachability::Reachability;
 use neighbour_wire::{Retention, retention};
 
 #[cfg(test)]
@@ -65,6 +66,107 @@ const LEGACY_PEER_WINDOW: Duration = Duration::from_secs(20);
 const HOST_CHECKPOINT_INTERVAL: Duration = Duration::from_secs(600);
 const MAX_GOSSIP_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_SURFACE_FRAME_BYTES: usize = 64 * 1024 * 1024;
+type SurfaceFanoutTasks = HashMap<(WorkspaceId, SurfaceId), (u64, tokio::task::JoinHandle<()>)>;
+
+fn finish_surface_fanout(
+    tasks: &mut SurfaceFanoutTasks,
+    key: (WorkspaceId, SurfaceId),
+    generation: u64,
+) -> bool {
+    if tasks
+        .get(&key)
+        .is_none_or(|(active, _)| *active != generation)
+    {
+        return false;
+    }
+    tasks.remove(&key);
+    true
+}
+
+/// Encoded delta frames reference earlier units: only raw captures may be
+/// coalesced. Keep their order within the existing one-frame byte budget.
+struct SurfaceFrameBacklog {
+    frames: VecDeque<NeighbourMsg>,
+    bytes: usize,
+    codec: Option<media::StreamCodec>,
+    awaiting_keyframe: bool,
+}
+
+impl Default for SurfaceFrameBacklog {
+    fn default() -> Self {
+        Self {
+            frames: VecDeque::new(),
+            bytes: 0,
+            codec: Some(media::StreamCodec::H264),
+            awaiting_keyframe: false,
+        }
+    }
+}
+
+impl SurfaceFrameBacklog {
+    fn frame_bytes(msg: &NeighbourMsg) -> usize {
+        let payload = match msg {
+            NeighbourMsg::SurfaceFrame { encoded_h264, .. } => encoded_h264.capacity(),
+            _ => 0,
+        };
+        // Pop shrinks whenever retained deque capacity exceeds four slots
+        // per remaining unit. Charge that storage as well as Vec capacity.
+        payload.saturating_add(std::mem::size_of::<NeighbourMsg>().saturating_mul(4))
+    }
+
+    fn lose_references(&mut self) {
+        self.frames = VecDeque::new();
+        self.bytes = 0;
+        self.awaiting_keyframe = self.codec.is_some();
+    }
+
+    fn admit(&mut self, msg: &NeighbourMsg) -> bool {
+        let keyframe = match msg {
+            NeighbourMsg::SurfaceFrame { encoded_h264, .. } => self
+                .codec
+                .is_none_or(|codec| media::realtime::is_keyframe(codec, encoded_h264)),
+            _ => false,
+        };
+        if self.awaiting_keyframe && !keyframe {
+            return false;
+        }
+        if keyframe {
+            self.awaiting_keyframe = false;
+        }
+        true
+    }
+
+    fn push(&mut self, msg: NeighbourMsg) {
+        let independent = match &msg {
+            NeighbourMsg::SurfaceFrame { encoded_h264, .. } => self
+                .codec
+                .is_none_or(|codec| media::realtime::is_keyframe(codec, encoded_h264)),
+            _ => false,
+        };
+        // A fresh keyframe supersedes the entire older pending chain. This
+        // keeps a slow route from accumulating multiple GOPs of stale video.
+        if independent {
+            self.lose_references();
+        }
+        let bytes = Self::frame_bytes(&msg);
+        if self.bytes.saturating_add(bytes) > MAX_SURFACE_FRAME_BYTES {
+            self.lose_references();
+        }
+        if bytes <= MAX_SURFACE_FRAME_BYTES && self.admit(&msg) {
+            self.bytes = self.bytes.saturating_add(bytes);
+            self.frames.push_back(msg);
+        }
+    }
+
+    fn pop(&mut self) -> Option<NeighbourMsg> {
+        let msg = self.frames.pop_front()?;
+        self.bytes = self.bytes.saturating_sub(Self::frame_bytes(&msg));
+        if self.frames.len().saturating_mul(4) < self.frames.capacity() {
+            self.frames.shrink_to_fit();
+        }
+        Some(msg)
+    }
+}
 const SURFACE_STREAM_ALPN: &[u8] = b"tilo-surface-stream/1";
 const PERSONAL_FABRIC_ALPN: &[u8] = b"tilo-personal-fabric/1";
 /// Largest byte chunk one personal-fabric transfer frame carries.
@@ -520,6 +622,7 @@ enum InternalEvent {
     },
     SurfaceFanoutComplete {
         ws: WorkspaceId,
+        generation: u64,
         msg: NeighbourMsg,
         outcomes: Vec<SurfaceFanoutOutcome>,
         all_delivered: bool,
@@ -551,6 +654,48 @@ enum InternalEvent {
     Closed {
         ws: WorkspaceId,
     },
+}
+
+async fn deliver_surface_frame(
+    endpoint: Endpoint,
+    addr: EndpointAddr,
+    cached: Option<iroh::endpoint::Connection>,
+    bytes: Vec<u8>,
+) -> SurfaceFanoutOutcome {
+    let peer = addr.id;
+    let connection = if let Some(connection) = cached {
+        Some(connection)
+    } else {
+        tokio::time::timeout(
+            Duration::from_millis(300),
+            endpoint.connect(addr, SURFACE_STREAM_ALPN),
+        )
+        .await
+        .ok()
+        .and_then(Result::ok)
+    };
+    let Some(connection) = connection else {
+        return SurfaceFanoutOutcome {
+            peer,
+            connection: None,
+            delivered: false,
+        };
+    };
+    let send_frame = async {
+        let mut stream = connection.open_uni().await.map_err(|_| ())?;
+        stream.write_all(&bytes).await.map_err(|_| ())?;
+        stream.finish().map_err(|_| ())?;
+        Ok::<(), ()>(())
+    };
+    let delivered = matches!(
+        tokio::time::timeout(Duration::from_millis(40), send_frame).await,
+        Ok(Ok(()))
+    );
+    SurfaceFanoutOutcome {
+        peer,
+        connection: Some(connection),
+        delivered,
+    }
 }
 
 struct SurfaceFanoutOutcome {
@@ -797,6 +942,43 @@ impl ProtocolHandler for PersonalFabricProtocol {
     }
 }
 
+/// Why `command` means a remote party is involved, so this device must be
+/// reachable from now on (`crate::network::reachability`): it dials a peer
+/// or host, enrols a device, administers a relay room, joins a call or
+/// sends to a named one of the person's devices. `None` for everything a
+/// lone desktop does by itself: joining and publishing to a topic nobody
+/// else is on (its rooms, its fabric broadcast) sends nothing, and a lone
+/// desktop does that on every local change.
+fn remote_party_command(command: &NetCmd) -> Option<&'static str> {
+    Some(match command {
+        NetCmd::Connect { .. } => "dialling a peer",
+        NetCmd::ConnectHost { .. } | NetCmd::NativeConnect(_) => "dialling a host",
+        NetCmd::GovernorAction { .. } | NetCmd::RoomAdmin { .. } => "talking to a room's host",
+        NetCmd::NativeEnrollment(_) => "enrolling a device",
+        NetCmd::NativeMedia(_) => "a call",
+        NetCmd::PublishPersonalFabricTarget { .. } | NetCmd::PublishNearbyTransfer { .. } => {
+            "sending to one of the person's devices"
+        }
+        NetCmd::PublishSurfaceTo { .. } => "streaming a window to a peer",
+        _ => return None,
+    })
+}
+
+/// Why `event` means a remote party reached this device (on a path that
+/// needed no relay, such as the local network), so it should be reachable
+/// through its relays too.
+fn remote_party_event(event: &InternalEvent) -> Option<&'static str> {
+    match event {
+        InternalEvent::Topic {
+            event: GossipEvent::NeighborUp(_),
+            ..
+        } => Some("a peer joined a topic"),
+        InternalEvent::PersonalFabric { .. } => Some("one of the person's devices connected"),
+        InternalEvent::SurfaceFrame { .. } => Some("a peer streamed a window"),
+        _ => None,
+    }
+}
+
 pub struct Actor;
 
 impl Actor {
@@ -813,12 +995,33 @@ impl Actor {
         host_identity: Option<HostIdentity>,
         listen_addrs: Arc<Mutex<Vec<EndpointAddr>>>,
     ) -> (mpsc::Sender<NetCmd>, tokio::task::JoinHandle<()>) {
+        Self::spawn_deferring_relays(
+            endpoint,
+            lookup,
+            host_identity,
+            listen_addrs,
+            Reachability::default(),
+        )
+    }
+
+    /// [`Self::spawn_reporting_addrs`] for an endpoint whose relays wait in
+    /// `reachability` until something needs this device reachable: the
+    /// actor wakes them when it dials a remote party or one reaches it
+    /// ([`remote_party_command`], [`remote_party_event`]).
+    pub fn spawn_deferring_relays(
+        endpoint: Endpoint,
+        lookup: MemoryLookup,
+        host_identity: Option<HostIdentity>,
+        listen_addrs: Arc<Mutex<Vec<EndpointAddr>>>,
+        reachability: Reachability,
+    ) -> (mpsc::Sender<NetCmd>, tokio::task::JoinHandle<()>) {
         Self::spawn_with_heartbeat(
             endpoint,
             lookup,
             host_identity,
             listen_addrs,
             HEARTBEAT_INTERVAL,
+            reachability,
         )
     }
 
@@ -831,6 +1034,7 @@ impl Actor {
         host_identity: Option<HostIdentity>,
         listen_addrs: Arc<Mutex<Vec<EndpointAddr>>>,
         heartbeat: Duration,
+        reachability: Reachability,
     ) -> (mpsc::Sender<NetCmd>, tokio::task::JoinHandle<()>) {
         if let Ok(mut out) = listen_addrs.lock() {
             out.push(endpoint.addr());
@@ -843,6 +1047,7 @@ impl Actor {
             listen_addrs,
             cmd_rx,
             heartbeat,
+            reachability,
         ));
         (cmd_tx, task)
     }
@@ -864,6 +1069,8 @@ struct ActorState {
     native_enrollment: super::invite::enrollment_driver::Registry,
     native_routes: native_ingress::Routes,
     listen_addrs: Arc<Mutex<Vec<EndpointAddr>>>,
+    /// The endpoint's relays, held back until a remote party appears.
+    reachability: Reachability,
     gossip: Gossip,
     internal_tx: mpsc::Sender<InternalEvent>,
     topics: HashMap<WorkspaceId, TopicRuntime>,
@@ -902,13 +1109,13 @@ struct ActorState {
     /// per frame avoids head-of-line blocking between viewers and frames.
     surface_connections: HashMap<EndpointId, iroh::endpoint::Connection>,
     /// At most one direct fanout per shared window may be dialing or
-    /// writing. A producer can submit frames faster than an unreachable peer's
-    /// dial timeout; retain only the newest pending frame of that window
-    /// instead of stalling the actor or building an unbounded queue of
-    /// obsolete video. Windows are independent, so one window's frames never
-    /// displace another's.
-    surface_fanout_tasks: HashMap<(WorkspaceId, SurfaceId), tokio::task::JoinHandle<()>>,
-    pending_surface_frames: HashMap<(WorkspaceId, SurfaceId), NeighbourMsg>,
+    /// writing. Pending encoded units retain their reference order within
+    /// the existing frame byte budget, without stalling the actor. On loss,
+    /// wait for the encoder's periodic keyframe before resuming delivery.
+    /// Windows are independent, so their units never displace each other.
+    surface_fanout_tasks: SurfaceFanoutTasks,
+    next_surface_fanout_generation: u64,
+    pending_surface_frames: HashMap<(WorkspaceId, SurfaceId), SurfaceFrameBacklog>,
     /// Windows streamed to named viewers only: their frames go to exactly
     /// these devices and never fall back to the workspace's gossip topic.
     surface_fanout_viewers: HashMap<(WorkspaceId, SurfaceId), Vec<EndpointId>>,
@@ -1227,6 +1434,9 @@ impl ActorState {
         reason = "the actor command match is the single auditable transport mutation boundary"
     )]
     async fn handle_command(&mut self, command: Option<NetCmd>) -> bool {
+        if let Some(why) = command.as_ref().and_then(remote_party_command) {
+            self.reachability.wake(why);
+        }
         match command {
             Some(NetCmd::PrivateMessages(reply)) => {
                 let _ = reply.send(self.private_messages.clone());
@@ -1315,7 +1525,7 @@ impl ActorState {
                     .retain(|(frame_ws, _), _| *frame_ws != ws);
                 self.surface_fanout_tasks.retain(|(task_ws, _), task| {
                     if *task_ws == ws {
-                        task.abort();
+                        task.1.abort();
                     }
                     *task_ws != ws
                 });
@@ -1363,6 +1573,7 @@ impl ActorState {
                 }
             }
             Some(NetCmd::Publish { ws, msg }) => {
+                self.observe_surface_stream(ws, &msg);
                 remember_governance(&mut self.governance, ws, &msg);
                 if self.native_routes.contains(ws)
                     && matches!(&msg, NeighbourMsg::AppDocument { envelope, .. } if envelope.encryption.is_some())
@@ -1620,7 +1831,18 @@ impl ActorState {
     fn start_surface_fanout(&mut self, ws: WorkspaceId, msg: NeighbourMsg) -> bool {
         let key = (ws, fanout_surface(&msg));
         if self.surface_fanout_tasks.contains_key(&key) {
-            self.pending_surface_frames.insert(key, msg);
+            self.pending_surface_frames
+                .entry(key)
+                .or_default()
+                .push(msg);
+            return true;
+        }
+        if !self
+            .pending_surface_frames
+            .entry(key)
+            .or_default()
+            .admit(&msg)
+        {
             return true;
         }
         let wire = SurfaceWireFrame {
@@ -1631,6 +1853,10 @@ impl ActorState {
             return false;
         };
         if bytes.len() > MAX_SURFACE_FRAME_BYTES {
+            self.pending_surface_frames
+                .entry(key)
+                .or_default()
+                .lose_references();
             tracing::warn!(ws, bytes = bytes.len(), "surface frame exceeds wire limit");
             return false;
         }
@@ -1658,6 +1884,11 @@ impl ActorState {
         let cached = self.surface_connections.clone();
         let endpoint = self.endpoint.clone();
         let internal_tx = self.internal_tx.clone();
+        let Some(generation) = self.next_surface_fanout_generation.checked_add(1) else {
+            tracing::warn!(ws, "surface fanout generation exhausted");
+            return false;
+        };
+        self.next_surface_fanout_generation = generation;
         let task = tokio::spawn(async move {
             let mut pending = FuturesUnordered::new();
             for addr in targets {
@@ -1665,41 +1896,7 @@ impl ActorState {
                 let cached = cached.get(&peer).cloned();
                 let endpoint = endpoint.clone();
                 let bytes = bytes.clone();
-                pending.push(async move {
-                    let connection = if let Some(connection) = cached {
-                        Some(connection)
-                    } else {
-                        tokio::time::timeout(
-                            Duration::from_millis(300),
-                            endpoint.connect(addr, SURFACE_STREAM_ALPN),
-                        )
-                        .await
-                        .ok()
-                        .and_then(Result::ok)
-                    };
-                    let Some(connection) = connection else {
-                        return SurfaceFanoutOutcome {
-                            peer,
-                            connection: None,
-                            delivered: false,
-                        };
-                    };
-                    let send_frame = async {
-                        let mut stream = connection.open_uni().await.map_err(|_| ())?;
-                        stream.write_all(&bytes).await.map_err(|_| ())?;
-                        stream.finish().map_err(|_| ())?;
-                        Ok::<(), ()>(())
-                    };
-                    let delivered = matches!(
-                        tokio::time::timeout(Duration::from_millis(40), send_frame).await,
-                        Ok(Ok(()))
-                    );
-                    SurfaceFanoutOutcome {
-                        peer,
-                        connection: Some(connection),
-                        delivered,
-                    }
-                });
+                pending.push(deliver_surface_frame(endpoint, addr, cached, bytes));
             }
             let mut outcomes = Vec::new();
             let mut sent = 0usize;
@@ -1712,13 +1909,14 @@ impl ActorState {
             let _ = internal_tx
                 .send(InternalEvent::SurfaceFanoutComplete {
                     ws,
+                    generation,
                     msg,
                     outcomes,
                     all_delivered: workspace_peer_count > 0 && sent == workspace_peer_count,
                 })
                 .await;
         });
-        self.surface_fanout_tasks.insert(key, task);
+        self.surface_fanout_tasks.insert(key, (generation, task));
         true
     }
 
@@ -1988,10 +2186,34 @@ impl ActorState {
         }
     }
 
+    fn observe_surface_stream(&mut self, ws: WorkspaceId, msg: &NeighbourMsg) {
+        match msg {
+            NeighbourMsg::SurfaceStreamStart { surface, codec, .. } => {
+                if let Some((_, task)) = self.surface_fanout_tasks.remove(&(ws, *surface)) {
+                    task.abort();
+                }
+                let backlog = self
+                    .pending_surface_frames
+                    .entry((ws, *surface))
+                    .or_default();
+                backlog.codec = media::StreamCodec::from_wire_label(codec);
+                backlog.lose_references();
+            }
+            NeighbourMsg::SurfaceStreamEnd { surface, .. } => {
+                self.pending_surface_frames.remove(&(ws, *surface));
+                if let Some((_, task)) = self.surface_fanout_tasks.remove(&(ws, *surface)) {
+                    task.abort();
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// [`NetCmd::PublishSurfaceTo`]: one window's stream to exactly its
     /// viewers. Frames take the per-window media fanout restricted to them;
     /// the stream's start, end and control grants go to each directly.
     async fn publish_surface_to(&mut self, ws: WorkspaceId, msg: NeighbourMsg, viewers: &[u64]) {
+        self.observe_surface_stream(ws, &msg);
         let targets = self
             .peers
             .keys()
@@ -2303,6 +2525,9 @@ impl ActorState {
         reason = "one exhaustive dispatcher over every internal actor event"
     )]
     async fn handle_internal(&mut self, internal: Option<InternalEvent>) -> bool {
+        if let Some(why) = internal.as_ref().and_then(remote_party_event) {
+            self.reachability.wake(why);
+        }
         match internal {
             Some(InternalEvent::ActionClosed { ws, peer, session }) => {
                 if self.host_sessions.get(&(ws, peer)).is_some_and(|runtime| {
@@ -2356,11 +2581,12 @@ impl ActorState {
             }
             Some(InternalEvent::SurfaceFanoutComplete {
                 ws,
+                generation,
                 msg,
                 outcomes,
                 all_delivered,
             }) => {
-                self.handle_surface_fanout_complete(ws, msg, outcomes, all_delivered)
+                self.handle_surface_fanout_complete(ws, generation, msg, outcomes, all_delivered)
                     .await;
             }
             Some(InternalEvent::PersonalFabric {
@@ -2499,12 +2725,15 @@ impl ActorState {
     async fn handle_surface_fanout_complete(
         &mut self,
         ws: WorkspaceId,
+        generation: u64,
         msg: NeighbourMsg,
         outcomes: Vec<SurfaceFanoutOutcome>,
         all_delivered: bool,
     ) {
         let key = (ws, fanout_surface(&msg));
-        self.surface_fanout_tasks.remove(&key);
+        if !finish_surface_fanout(&mut self.surface_fanout_tasks, key, generation) {
+            return;
+        }
         if !self.subscribers.contains_key(&ws) {
             self.pending_surface_frames.remove(&key);
             return;
@@ -2521,6 +2750,12 @@ impl ActorState {
         // A window streamed to named viewers only never falls back to the
         // workspace topic: a frame that missed them is superseded by the next.
         let targeted = self.surface_fanout_viewers.contains_key(&key);
+        if !all_delivered {
+            self.pending_surface_frames
+                .entry(key)
+                .or_default()
+                .lose_references();
+        }
         if !all_delivered && !targeted {
             publish(
                 &self.topics,
@@ -2533,7 +2768,10 @@ impl ActorState {
             )
             .await;
         }
-        if let Some(next) = self.pending_surface_frames.remove(&key)
+        if let Some(next) = self
+            .pending_surface_frames
+            .get_mut(&key)
+            .and_then(SurfaceFrameBacklog::pop)
             && !self.start_surface_fanout(ws, next.clone())
             && !targeted
         {
@@ -3535,11 +3773,13 @@ async fn run(
     listen_addrs: Arc<Mutex<Vec<EndpointAddr>>>,
     mut cmd_rx: mpsc::Receiver<NetCmd>,
     heartbeat_interval: Duration,
+    reachability: Reachability,
 ) {
     let (internal_tx, mut internal_rx) = mpsc::channel(256);
     let (input_tx, mut input_rx) = mpsc::channel(64);
     let gossip = Gossip::builder()
         .max_message_size(MAX_GOSSIP_MESSAGE_BYTES)
+        .broadcast_config(broadcast_config())
         .spawn(endpoint.clone());
     let private_messages = super::private_messages::Registry::new(endpoint.id());
     let router = Router::builder(endpoint.clone())
@@ -3565,7 +3805,9 @@ async fn run(
         private_messages: super::private_messages::Transport::new(
             endpoint.clone(),
             private_messages,
+            reachability.clone(),
         ),
+        reachability,
         endpoint,
         lookup,
         host_identity,
@@ -3595,6 +3837,7 @@ async fn run(
         wake: None,
         surface_connections: HashMap::new(),
         surface_fanout_tasks: HashMap::new(),
+        next_surface_fanout_generation: 0,
         surface_fanout_viewers: HashMap::new(),
         pending_surface_frames: HashMap::new(),
         personal_fabric_connections: HashMap::new(),
@@ -3645,7 +3888,7 @@ async fn run(
     for (_, host) in state.host_sessions {
         host.pump.abort();
     }
-    for (_, task) in state.surface_fanout_tasks {
+    for (_, (_, task)) in state.surface_fanout_tasks {
         task.abort();
     }
     let _ = router.shutdown().await;
@@ -3661,6 +3904,29 @@ async fn sleep_until_lapse(at: Option<Instant>) {
     match at {
         Some(at) => tokio::time::sleep_until(at.into()).await,
         None => std::future::pending().await,
+    }
+}
+
+/// How often gossip sweeps a topic's message caches. iroh-gossip's 1 s
+/// sweep is a timer per topic that never stops, the one thing that woke an
+/// idle, converged session several times a second; swept every
+/// [`GOSSIP_CACHE_SWEEP`] instead, an idle topic wakes its runtime a tenth
+/// as often.
+const GOSSIP_CACHE_SWEEP: Duration = Duration::from_secs(10);
+/// How long gossip keeps a message to answer a neighbour's graft for it.
+/// iroh-gossip's 30 s less the longer sweep, so a message is still gone
+/// within 30 s of arriving: a graft is asked for within a few round trips,
+/// and this cache holds whole messages of up to
+/// [`MAX_GOSSIP_MESSAGE_BYTES`].
+const GOSSIP_MESSAGE_RETENTION: Duration = Duration::from_secs(20);
+
+/// Plumtree broadcast settings: iroh-gossip's, with the cache swept every
+/// [`GOSSIP_CACHE_SWEEP`] instead of every second.
+fn broadcast_config() -> iroh_gossip::proto::PlumtreeConfig {
+    iroh_gossip::proto::PlumtreeConfig {
+        cache_evict_interval: GOSSIP_CACHE_SWEEP,
+        message_cache_retention: GOSSIP_MESSAGE_RETENTION,
+        ..iroh_gossip::proto::PlumtreeConfig::default()
     }
 }
 
@@ -4356,6 +4622,166 @@ fn topic_id(ws: WorkspaceId) -> TopicId {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn encoded_backlog_stale_completion_cannot_finish_a_restarted_stream() {
+        let key = (42, 31);
+        let mut tasks = SurfaceFanoutTasks::new();
+        tasks.insert(key, (1, tokio::spawn(std::future::pending())));
+        let (_, old) = tasks.remove(&key).expect("old stream task");
+        old.abort();
+        let current = tokio::spawn(std::future::pending());
+        let current_abort = current.abort_handle();
+        tasks.insert(key, (2, current));
+        assert!(!finish_surface_fanout(&mut tasks, key, 1));
+        assert!(
+            tasks.contains_key(&key),
+            "old completion retains the new task"
+        );
+        assert!(finish_surface_fanout(&mut tasks, key, 2));
+        current_abort.abort();
+        assert!(tasks.is_empty());
+        assert!(!finish_surface_fanout(&mut tasks, key, 2));
+    }
+
+    #[test]
+    fn encoded_backlog_accounts_for_retained_allocation_after_pop_and_refill() {
+        let mut backlog = SurfaceFrameBacklog::default();
+        for cycle in 0..4 {
+            for ts in 0..100 {
+                backlog.push(NeighbourMsg::SurfaceFrame {
+                    surface: 31,
+                    source_peer: 1,
+                    ts,
+                    encoded_h264: vec![0x41; 1024],
+                });
+                let allocated = backlog
+                    .frames
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<NeighbourMsg>())
+                    .saturating_add(
+                        backlog
+                            .frames
+                            .iter()
+                            .map(|msg| match msg {
+                                NeighbourMsg::SurfaceFrame { encoded_h264, .. } => {
+                                    encoded_h264.capacity()
+                                }
+                                _ => 0,
+                            })
+                            .sum::<usize>(),
+                    );
+                assert!(
+                    allocated <= backlog.bytes && allocated <= MAX_SURFACE_FRAME_BYTES,
+                    "cycle={cycle} accounted={} allocated={allocated}",
+                    backlog.bytes
+                );
+            }
+            for _ in 0..75 {
+                assert!(backlog.pop().is_some());
+                let allocated = backlog
+                    .frames
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<NeighbourMsg>())
+                    .saturating_add(
+                        backlog
+                            .frames
+                            .iter()
+                            .map(|msg| match msg {
+                                NeighbourMsg::SurfaceFrame { encoded_h264, .. } => {
+                                    encoded_h264.capacity()
+                                }
+                                _ => 0,
+                            })
+                            .sum::<usize>(),
+                    );
+                assert!(allocated <= backlog.bytes && allocated <= MAX_SURFACE_FRAME_BYTES);
+            }
+        }
+    }
+
+    #[test]
+    fn encoded_backlog_preserves_order_and_recovers_at_a_keyframe_after_loss() {
+        let frame = |ts, encoded_h264| NeighbourMsg::SurfaceFrame {
+            surface: 31,
+            source_peer: 1,
+            encoded_h264,
+            ts,
+        };
+        let mut backlog = SurfaceFrameBacklog::default();
+        for ts in 1..4 {
+            backlog.push(frame(ts, vec![0, 0, 1, 0x41]));
+        }
+        for expected in 1..4 {
+            assert!(
+                matches!(backlog.pop(), Some(NeighbourMsg::SurfaceFrame { ts, .. }) if ts == expected)
+            );
+        }
+        assert_eq!(backlog.bytes, 0);
+        // Fill the same production byte budget, including queue storage.
+        let payload = vec![
+            0x41;
+            MAX_SURFACE_FRAME_BYTES.saturating_sub(
+                std::mem::size_of::<NeighbourMsg>().saturating_mul(4)
+            )
+        ];
+        backlog.push(frame(4, payload));
+        assert_eq!(backlog.bytes, MAX_SURFACE_FRAME_BYTES);
+        backlog.push(frame(5, vec![0, 0, 1, 0x41]));
+        assert!(backlog.frames.is_empty());
+        assert_eq!(backlog.bytes, 0);
+        assert!(backlog.awaiting_keyframe);
+        backlog.push(frame(6, vec![0, 0, 1, 0x41]));
+        assert!(backlog.pop().is_none(), "lost references cannot be used");
+        backlog.push(frame(7, vec![0, 0, 1, 0x65]));
+        assert!(matches!(
+            backlog.pop(),
+            Some(NeighbourMsg::SurfaceFrame { ts: 7, .. })
+        ));
+        assert!(!backlog.awaiting_keyframe);
+        // A failed send uses this same production recovery transition.
+        backlog.lose_references();
+        backlog.codec = Some(media::StreamCodec::Vp9);
+        assert!(
+            !backlog.admit(&frame(8, vec![0, 0, 1, 0x65])),
+            "H264 is not a VP9 keyframe"
+        );
+        assert!(backlog.admit(&frame(9, vec![0x82, 0x49, 0x83, 0x42])));
+        backlog.codec = None;
+        backlog.lose_references();
+        assert!(
+            !backlog.awaiting_keyframe,
+            "independent pictures need no keyframe"
+        );
+        backlog.push(frame(10, vec![0xff, 0xd8]));
+        backlog.push(frame(11, vec![0xff, 0xd8]));
+        assert!(matches!(
+            backlog.pop(),
+            Some(NeighbourMsg::SurfaceFrame { ts: 11, .. })
+        ));
+        assert!(
+            backlog.pop().is_none(),
+            "independent pictures keep newest only"
+        );
+    }
+
+    /// A dial wakes the relays; what a lone desktop does on every local
+    /// change (join its own topic, publish to it) does not (TIL-740).
+    #[test]
+    fn only_a_remote_party_needs_this_device_reachable() {
+        let addr = EndpointAddr::new(iroh::SecretKey::generate().public());
+        assert!(remote_party_command(&NetCmd::Connect { addr: addr.clone() }).is_some());
+        assert!(
+            remote_party_command(&NetCmd::ConnectHost {
+                addr,
+                expectation: None,
+            })
+            .is_some()
+        );
+        let (on_event, _events) = mpsc::channel(1);
+        assert!(remote_party_command(&NetCmd::JoinWorkspace { ws: 7, on_event }).is_none());
+        assert!(remote_party_command(&NetCmd::LeaveWorkspace { ws: 7 }).is_none());
+    }
+
     #[test]
     fn a_remote_action_with_no_route_waits_for_that_peer_and_expires() {
         let mut pending = PendingRemoteActions::default();
@@ -4931,6 +5357,7 @@ mod tests {
             Some(identity),
             Arc::new(Mutex::new(Vec::new())),
             tick,
+            Reachability::default(),
         );
         let (events, rx) = mpsc::channel(64);
         cmd.send(NetCmd::JoinWorkspace {
@@ -6159,6 +6586,7 @@ mod tests {
             Some(identity_a),
             Arc::new(Mutex::new(Vec::new())),
             heartbeat,
+            Reachability::default(),
         );
         let (cmd_b, _task_b) = Actor::spawn_with_heartbeat(
             b,
@@ -6166,6 +6594,7 @@ mod tests {
             Some(identity_b),
             Arc::new(Mutex::new(Vec::new())),
             heartbeat,
+            Reachability::default(),
         );
         let (event_a, mut rx_a) = mpsc::channel(16);
         let (event_b, mut rx_b) = mpsc::channel(16);

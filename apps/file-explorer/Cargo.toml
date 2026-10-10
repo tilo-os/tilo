@@ -85,8 +85,7 @@ workspace-hack = { version = "0.1" }
 tilo-history = { path = "../../crates/sdk/tilo-history" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tempfile.workspace = true
-# The catalog tests parse each bundled locale exactly as Fluent will.
-fluent.workspace = true
+tilo-copy-lint = { path = "../../crates/dev/copy-lint" }
 tilo-test-env = { path = "../../crates/dev/test-env" }
 
 [target.'cfg(unix)'.dev-dependencies]

@@ -233,42 +233,6 @@ impl DesktopCommand {
     }
 }
 
-/// The grant set a [`DesktopCommand::SavePreset`] carries.
-///
-/// # Errors
-///
-/// Why the JSON is not a valid grant set.
-pub fn decode_preset(json: &str) -> Result<tilo_action_policy::Preset, String> {
-    let preset: tilo_action_policy::Preset =
-        serde_json::from_str(json).map_err(|error| format!("not a grant set: {error}"))?;
-    preset.validate().map_err(|error| error.to_string())?;
-    Ok(preset)
-}
-
-/// The subject and lifetime a [`DesktopCommand::AssignPreset`] names.
-///
-/// # Errors
-///
-/// When `kind` is not `person`, `app` or `agent`.
-pub fn preset_assignment(
-    kind: &str,
-    subject: &str,
-    expires_unix: u64,
-) -> Result<(tilo_action_policy::Subject, tilo_action_policy::Lifetime), String> {
-    let subject = match kind.trim().to_ascii_lowercase().as_str() {
-        "person" => tilo_action_policy::Subject::person(subject.trim()),
-        "app" => tilo_action_policy::Subject::app(subject.trim()),
-        "agent" => tilo_action_policy::Subject::agent(subject.trim()),
-        _ => return Err("subject_kind must be person, app, or agent".into()),
-    };
-    let lifetime = (expires_unix > 0)
-        .then_some(expires_unix)
-        .map_or(tilo_action_policy::Lifetime::UntilRevoked, |at| {
-            tilo_action_policy::Lifetime::Until(at.saturating_mul(1000))
-        });
-    Ok((subject, lifetime))
-}
-
 /// The shortcut a [`DesktopCommand::SaveShortcut`] carries.
 ///
 /// # Errors
@@ -998,27 +962,6 @@ fn move_group(
         .unwrap_or(groups.len());
     groups.insert(index, moved);
     Ok(())
-}
-
-/// [`apply_command`] on the workspace of `room` in `tree`: the reduction a
-/// host runs against the desktop it renders.
-///
-/// # Errors
-///
-/// Returns a description when `room` is not in `tree`, or as [`apply_command`].
-pub fn apply_in_room(
-    tree: &mut DesktopTree,
-    room: &str,
-    command: &DesktopCommand,
-    mint: &mut impl FnMut() -> Result<u64, String>,
-    create: &mut impl FnMut(&str, u64) -> Result<(String, TileContent), String>,
-) -> Result<(), String> {
-    let workspace = tree
-        .workspaces
-        .iter_mut()
-        .find(|workspace| workspace.room.to_string() == room)
-        .ok_or("command room is not in this desktop")?;
-    apply_command(workspace, command, mint, create)
 }
 
 /// An identity the owner already reserved in its own namespace, handed to a

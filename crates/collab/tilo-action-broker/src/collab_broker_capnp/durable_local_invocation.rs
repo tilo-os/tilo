@@ -24,7 +24,7 @@ impl LocalCaller {
     pub(super) fn admitted_in(&self) -> (String, AdmittedJoinIdentity) {
         (self.route.cluster_id.clone(), self.admitted.clone())
     }
-    fn capture(channel: &CapnpChannelHandle) -> Result<Self, String> {
+    pub(super) fn capture(channel: &CapnpChannelHandle) -> Result<Self, String> {
         let time = channel
             .state
             .registered_policy_time()?
@@ -54,6 +54,57 @@ impl LocalCaller {
     }
     fn owner(&self) -> InvocationOwner {
         self.owner.clone()
+    }
+    pub(super) fn authorize_retained_task(
+        &self,
+        state: &CapnpBrokerState,
+        record: &DurableInvocation,
+    ) -> Result<crate::services::NativeTaskActionRequirement, String> {
+        let current = self.current(state)?;
+        let contract: tilo_actions::ActionContract = serde_json::from_value(
+            record
+                .intent
+                .get("contract")
+                .cloned()
+                .ok_or("retained task contract absent")?,
+        )
+        .map_err(|_| "retained task contract invalid")?;
+        let app = record
+            .intent
+            .get("app_id")
+            .and_then(serde_json::Value::as_str)
+            .ok_or("retained task app absent")?;
+        let action = record
+            .intent
+            .get("action")
+            .and_then(serde_json::Value::as_str)
+            .ok_or("retained task action absent")?;
+        let resource = record
+            .intent
+            .get("resource")
+            .and_then(serde_json::Value::as_str)
+            .ok_or("retained task resource absent")?;
+        let resource_kind = record
+            .intent
+            .get("resource_kind")
+            .and_then(serde_json::Value::as_str)
+            .ok_or("retained task resource kind absent")?;
+        let now = state.checked_policy_time(Some(&self.time))?.1 / 1_000_000_000;
+        let need = contract.need();
+        state.authorize_invocation_permission(
+            &self.route.cluster_id,
+            (app, resource_kind, resource, action),
+            &need,
+            &current.broker_actor(),
+            now,
+        )?;
+        Ok(crate::services::NativeTaskActionRequirement {
+            app: app.into(),
+            resource_kind: resource_kind.into(),
+            resource: resource.into(),
+            action: action.into(),
+            need,
+        })
     }
     fn current(&self, state: &CapnpBrokerState) -> Result<AdmittedJoinIdentity, String> {
         if !state.is_accepting() {
@@ -109,6 +160,12 @@ impl Request {
 #[derive(Clone, Copy)]
 pub(super) enum DurableContext<'a> {
     Peer(&'a VerifiedActionCaller, &'a CallerInvocation),
+    Task {
+        caller: &'a LocalCaller,
+        binding: &'a crate::services::NativeTaskBinding,
+        invocation: tilo_actions::InvocationId,
+        intent: &'a serde_json::Value,
+    },
     Local {
         caller: &'a LocalCaller,
         request: &'a Request,
@@ -121,24 +178,31 @@ impl<'a> DurableContext<'a> {
         match self {
             Self::Peer(c, _) => c.owner(),
             Self::Local { caller, .. } => caller.owner(),
+            Self::Task { binding, .. } => InvocationOwner::NativeTask {
+                agent: binding.agent_id.clone(),
+                task: binding.task_id.clone(),
+                epoch: binding.epoch,
+            },
         }
     }
     pub(super) fn time(self) -> Option<&'a crate::peer_actions::PolicyTime> {
         match self {
             Self::Peer(c, _) => c.policy_time.as_ref(),
-            Self::Local { caller, .. } => Some(&caller.time),
+            Self::Local { caller, .. } | Self::Task { caller, .. } => Some(&caller.time),
         }
     }
     pub(super) fn invocation(self) -> tilo_actions::InvocationId {
         match self {
             Self::Peer(_, r) => r.invocation,
             Self::Local { request, .. } => request.invocation,
+            Self::Task { invocation, .. } => invocation,
         }
     }
     pub(super) fn intent(self) -> serde_json::Value {
         match self {
             Self::Peer(_, r) => r.intent(),
             Self::Local { request, .. } => request.intent(),
+            Self::Task { intent, .. } => intent.clone(),
         }
     }
     pub(super) fn origin(self) -> InvocationCaller {
@@ -148,13 +212,13 @@ impl<'a> DurableContext<'a> {
                 // This path has only the original signed device restriction.
                 foreign_restriction: false,
             },
-            Self::Local { caller, .. } => caller.origin(),
+            Self::Local { caller, .. } | Self::Task { caller, .. } => caller.origin(),
         }
     }
     pub(super) fn network(self) -> Option<tilo_relay_session::client::CertifiedAction> {
         match self {
             Self::Peer(c, _) => c.network.clone(),
-            Self::Local { .. } => None,
+            Self::Local { .. } | Self::Task { .. } => None,
         }
     }
     pub(super) fn before_admission(
@@ -167,6 +231,7 @@ impl<'a> DurableContext<'a> {
     ) -> Result<(), String> {
         let current = match self {
             Self::Peer(c, _) => state.current_action_caller(c)?,
+            Self::Task { caller, .. } => caller.current(state)?,
             Self::Local {
                 caller,
                 request,

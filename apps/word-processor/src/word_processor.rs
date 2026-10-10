@@ -920,24 +920,6 @@ impl WordProcessor {
         let _ = self.apply_rich(state, action);
     }
 
-    /// Whether the caret's block forces a page break before it (the
-    /// `page_break_before` block attr). False for a fresh/legacy block.
-    pub fn caret_page_break_before(&self, state: &AutoCommit) -> bool {
-        let Some(c) = self.containers.as_ref() else {
-            return false;
-        };
-        let snap = tilo_doc::model::materialize(state, c);
-        snap.blocks
-            .iter()
-            .find(|b| b.id == self.caret.block)
-            .is_some_and(|b| {
-                matches!(
-                    b.attrs.get("page_break_before"),
-                    Some(tilo_doc::AttrVal::Bool(true))
-                )
-            })
-    }
-
     /// Set the `page_break_before` attr on the caret's block (forcing pagination
     /// to start that block on a fresh page when `on`). Table cells are skipped —
     /// a cell breaking mid-table would split the grid.
@@ -1116,13 +1098,6 @@ impl WordProcessor {
     /// for an unknown id or an unbound document.
     pub fn reject_change(&mut self, state: &mut ui::widget::Edits<'_>, change_id: &str) {
         self.review_change(state, Some(change_id), false);
-    }
-
-    /// Accept every tracked change in the document. Processed in reverse
-    /// document order so an accepted deletion's text removal never shifts the
-    /// anchored range of an earlier-but-not-yet-processed change.
-    pub fn accept_all_changes(&mut self, state: &mut ui::widget::Edits<'_>) {
-        self.review_change(state, None, true);
     }
 
     fn review_change(&self, state: &mut ui::widget::Edits<'_>, id: Option<&str>, accept: bool) {

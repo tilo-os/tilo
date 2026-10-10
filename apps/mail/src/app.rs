@@ -745,65 +745,6 @@ impl MailApp {
         self.dirty = true;
     }
 
-    /// Open a blank "Add account" sheet with an email typed + servers
-    /// autofilled, so the shot shows the add flow with single-border fields.
-    pub fn prime_setup_add_shot(&mut self) {
-        self.open_setup_edit(None);
-        self.set_setup_input(0, "Alex Morgan");
-        self.set_setup_input(1, "alex@fastmail.com");
-        self.maybe_autofill();
-    }
-
-    /// Open a blank "Add account" sheet with a Gmail address — which presets to
-    /// OAuth — so the shot shows the OAuth sign-in flow.
-    pub fn prime_setup_oauth_shot(&mut self) {
-        self.open_setup_edit(None);
-        self.set_setup_input(0, "Alex Morgan");
-        self.set_setup_input(1, "alex.morgan@gmail.com");
-        self.maybe_autofill();
-    }
-
-    /// Select the bundled HTML newsletter so the reader renders it through the
-    /// sandboxed `WebView` (HTML-mail shot). Also demonstrates the filled-star
-    /// action (the newsletter is starred).
-    pub fn prime_html_mail_shot(&mut self) {
-        let id = {
-            let st = self.shared.borrow();
-            st.mailbox
-                .messages
-                .values()
-                .find(|m| m.from.email == "hello@fieldnotes.example")
-                .map(|m| m.id)
-        };
-        if let Some(id) = id {
-            let mut doc = automerge::AutoCommit::new();
-            self.shared
-                .borrow_mut()
-                .open_message(&mut ui::widget::Edits::lend(&mut doc), id);
-            self.process_intents();
-        }
-        self.dirty = true;
-    }
-
-    /// A configured mailbox before any messages have arrived.
-    pub fn prime_empty_shot(&mut self) {
-        let mut st = self.shared.borrow_mut();
-        let account = st.mailbox.account.clone();
-        st.mailbox = crate::model::Mailbox::new(account);
-        st.selected = None;
-        st.folder = Folder::Inbox;
-        st.dirty = true;
-        drop(st);
-        self.dirty = true;
-    }
-
-    /// A real in-flight sync indication over cached mail.
-    pub fn prime_loading_shot(&mut self) {
-        self.awaiting_engine = true;
-        self.shared.borrow_mut().status = Some("Syncing Inbox…".into());
-        self.dirty = true;
-    }
-
     /// Queue one worker request and account for it exactly once.  Every engine
     /// backend emits a matching `EngineEvent::Completed` after handling the
     /// request, including successful flag/move/purge writes.

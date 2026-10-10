@@ -1320,6 +1320,7 @@ dependencies = [
  "libc",
  "tempfile",
  "thiserror 2.0.21",
+ "tilo-test-env",
  "workspace-hack",
  "zeroize",
 ]
@@ -1431,8 +1432,6 @@ dependencies = [
 [[package]]
 name = "buffa-build"
 version = "0.9.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eee6b6b4a8d23f1f98a043f188f4d9d2ef8bee43191f42e93ac577f3c3b0f334"
 dependencies = [
  "buffa",
  "buffa-codegen",
@@ -4323,7 +4322,6 @@ dependencies = [
  "cloud-source",
  "ed25519-dalek 3.0.0",
  "flate2",
- "fluent",
  "fs-protocol",
  "fuser",
  "hex",
@@ -4347,6 +4345,7 @@ dependencies = [
  "tilo-automation",
  "tilo-automerge-fork",
  "tilo-clock",
+ "tilo-copy-lint",
  "tilo-doc-codecs",
  "tilo-fs",
  "tilo-history",
@@ -10632,10 +10631,12 @@ dependencies = [
  "tempfile",
  "tilo-actions",
  "tilo-app",
+ "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-history",
  "tilo-input-context",
  "tilo-keyboard-map",
+ "tilo-test-env",
  "tilo-vello",
  "tilo-winit",
  "tracing",
@@ -14045,6 +14046,7 @@ dependencies = [
  "test-http",
  "tilo-actions",
  "tilo-app",
+ "tilo-app-package",
  "tilo-automerge-fork",
  "tilo-bluez",
  "tilo-clock",
@@ -14276,7 +14278,6 @@ dependencies = [
  "ed25519-dalek 3.0.0",
  "emoji",
  "file-explorer",
- "fluent",
  "fnv",
  "futures-util",
  "gbm",
@@ -16286,6 +16287,7 @@ dependencies = [
  "tilo-relay",
  "tilo-relay-client",
  "tilo-relay-protocol",
+ "tilo-relay-session",
  "tilo-test-env",
  "tilo-ui",
  "tilo-user-identity",
@@ -16487,6 +16489,7 @@ dependencies = [
 name = "tilo-copy-lint"
 version = "0.1.0"
 dependencies = [
+ "fluent",
  "workspace-hack",
 ]
 
@@ -16586,6 +16589,7 @@ dependencies = [
  "chat",
  "collab-types",
  "desktop-policy",
+ "durable-store",
  "ed25519-dalek 3.0.0",
  "emoji",
  "fnv",
@@ -16594,9 +16598,11 @@ dependencies = [
  "serde",
  "serde_json",
  "taffy",
+ "tempfile",
  "tilo-action-policy",
  "tilo-actions",
  "tilo-app",
+ "tilo-app-state",
  "tilo-automerge-fork",
  "tilo-clock",
  "tilo-copy-lint",
@@ -16658,7 +16664,6 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "collab-types",
- "fluent",
  "serde",
  "serde_json",
  "taffy",
@@ -16796,11 +16801,13 @@ dependencies = [
 name = "tilo-egress"
 version = "0.1.0"
 dependencies = [
+ "bounded-command",
  "collab-types",
  "libc",
  "tempfile",
  "thiserror 2.0.21",
  "tilo-clock",
+ "tilo-test-env",
  "tracing",
  "workspace-hack",
 ]
@@ -17089,7 +17096,6 @@ name = "tilo-installed-apps"
 version = "0.1.0"
 dependencies = [
  "desktop-policy",
- "launcher",
  "package-store",
  "tempfile",
  "tilo-app-package",
@@ -17235,6 +17241,7 @@ name = "tilo-messaging-protocol"
 version = "0.1.0"
 dependencies = [
  "accounts",
+ "buffa-build",
  "chrono",
  "futures-util",
  "messages",
@@ -17761,7 +17768,6 @@ dependencies = [
  "ed25519-dalek 3.0.0",
  "iroh",
  "iroh-base",
- "n0-future",
  "postcard",
  "rand 0.10.1",
  "serde",
@@ -17826,7 +17832,6 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
- "wire-frame",
  "workspace-hack",
 ]
 

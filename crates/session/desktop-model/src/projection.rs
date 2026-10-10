@@ -1669,15 +1669,6 @@ pub fn contents_owners_of(doc: &AutoCommit) -> std::collections::BTreeMap<u16, S
         .collect()
 }
 
-/// The next counter a durable topology owner mints from, when the room
-/// records one.
-pub fn desktop_counter_of(doc: &AutoCommit) -> Option<u64> {
-    doc.get(&automerge::ROOT, ROOM_DESKTOP_COUNTER_KEY)
-        .ok()
-        .flatten()
-        .and_then(|(value, _)| value.as_u64())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -69,6 +69,9 @@ pub enum MessagesEffect {
         account: String,
         display_name: String,
     },
+    /// Retire an interrupted unpublished attempt and return to service selection.
+    #[effect(view, idempotent, label = "messages-first-reset")]
+    ResetFirstEnrollment,
     /// Interrupt only this account's private provisioning attempt.
     #[effect(view, idempotent, label = "messages-cancel-link")]
     CancelLink,

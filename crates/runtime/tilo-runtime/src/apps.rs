@@ -450,7 +450,7 @@ fn data_home(home: &Path) -> PathBuf {
 /// sandbox.
 fn launcher_candidates() -> Vec<PathBuf> {
     let mut out = Vec::new();
-    if launcher::dev_env::DEV_ENV_OVERRIDES
+    if package_store::dev_env::DEV_ENV_OVERRIDES
         && let Some(explicit) = std::env::var_os("TILO_LAUNCHER_BIN").filter(|v| !v.is_empty())
     {
         out.push(PathBuf::from(explicit));

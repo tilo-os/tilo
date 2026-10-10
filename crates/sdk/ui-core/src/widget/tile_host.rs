@@ -453,14 +453,6 @@ impl TileHost {
         let _entry = binding.enter().ok()?;
         Some(binding.lifetime_id.to_string())
     }
-    pub fn request_document_history(&self, target: &str) -> bool {
-        if self.document_history_target().as_deref() != Some(target) {
-            return false;
-        }
-        self.history
-            .as_ref()
-            .is_some_and(|history| history.request_open())
-    }
     /// Inactive retained tiles have no nodes in the current Taffy tree.
     pub(crate) fn discard_layout_nodes(&mut self) {
         self.live_callback_node = None;

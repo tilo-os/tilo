@@ -338,6 +338,7 @@ workspace-create-task = { $manual ->
 }
 workspace-attach-resource = Attached { $resource } to the task
 workspace-set-execution-budget = Set how long the task may run
+workspace-approve-run = Approved run { $run }
 workspace-start-run = Started run { $run }
 workspace-add-direction = Gave direction { $revision }
 workspace-apply-direction = Followed direction { $revision }
@@ -1044,3 +1045,10 @@ activity-task-review-status = { $status } · Agent: { $agent }
 activity-task-review-frontier = Run { $epoch } · instructions { $revision } · agent applied { $applied }
 activity-task-review-direction = { $author }: { $text }
 activity-task-review-missing = This task is no longer available in this workspace.
+
+activity-task-approve-run = Approve run
+activity-task-run-approved = Approved by { $person } · { $time }
+activity-task-awaiting-acceptance = Awaiting agent acceptance · may be offline
+activity-task-run-accepted = Agent accepted this run · last report { $time }
+activity-task-run-planning = Agent is planning this run · last report { $time }
+activity-task-run-executing = Agent is processing this run · last report { $time }

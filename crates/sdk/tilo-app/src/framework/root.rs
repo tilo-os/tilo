@@ -1304,6 +1304,12 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
         self.inner_mut().take_structure_dirty() || swapped
     }
 
+    // Input is forwarded unchanged; model, storage and policy wakes remain
+    // owned by the runner and still request their normal synchronization.
+    fn view_only_scroll(&self, event: &ui_core::winit::event::WindowEvent) -> bool {
+        self.content.view_only_scroll(event)
+    }
+
     fn record_owners(&self) -> Vec<ui_core::history_mode::HistoryOwner> {
         let mut owners = self.storage.person_owners();
         owners.extend(self.content.record_owners());

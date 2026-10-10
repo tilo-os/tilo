@@ -163,10 +163,10 @@ mod tests {
             }
             fixture
         }
-        fn pump(&mut self) {
+        fn pump(&mut self) -> Vec<winit::event::WindowEvent> {
             self.display.dispatch_clients(&mut self.state).unwrap();
             self.display.flush_clients().unwrap();
-            self.proxy.sync_for_field(
+            let events = self.proxy.sync_for_field(
                 &mut self.state,
                 Some(self.field),
                 Some(NativeFieldId::Widget(42)),
@@ -178,6 +178,7 @@ mod tests {
                 false,
                 None,
             );
+            events
         }
         fn consent(&mut self) -> super::super::SessionId {
             self.surface.request_toggle();
@@ -511,6 +512,7 @@ mod tests {
         )
         .unwrap();
         let deadline = tilo_test_env::hang_deadline();
+        let mut events = Vec::new();
         while fixture.state.dictation_target_id().is_some()
             || fixture.state.text_commit.dictation.recognition.is_some()
         {
@@ -518,12 +520,14 @@ mod tests {
                 Instant::now() < deadline,
                 "the final and actor teardown must complete"
             );
-            fixture.pump();
+            events.extend(fixture.pump());
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
+        // A final can be consumed by the native field before its actor retires.
+        events.extend(fixture.pump());
         assert!(fixture.state.take_native_dictation_commit());
         fixture.display.flush_clients().unwrap();
-        let events = fixture.proxy.drain_dictation_commit().unwrap();
+        events.extend(fixture.proxy.drain_dictation_commit().unwrap_or_default());
         let commits: Vec<_> = events
             .iter()
             .filter_map(|event| match event {
@@ -573,6 +577,7 @@ mod tests {
             )
             .unwrap();
             let deadline = tilo_test_env::hang_deadline();
+            let mut events = Vec::new();
             while fixture.state.dictation_target_id().is_some()
                 || fixture.state.text_commit.dictation.recognition.is_some()
             {
@@ -580,12 +585,14 @@ mod tests {
                     Instant::now() < deadline,
                     "final edit and worker teardown must complete"
                 );
-                fixture.pump();
+                events.extend(fixture.pump());
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
+            // Preserve the final across an additional native input turn.
+            events.extend(fixture.pump());
             assert!(fixture.state.take_native_dictation_commit());
             fixture.display.flush_clients().unwrap();
-            let events = fixture.proxy.drain_dictation_commit().unwrap();
+            events.extend(fixture.proxy.drain_dictation_commit().unwrap_or_default());
             let commits: Vec<_> = events
                 .iter()
                 .filter_map(|event| match event {

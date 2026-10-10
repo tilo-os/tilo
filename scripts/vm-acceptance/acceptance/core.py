@@ -8,7 +8,7 @@ import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .vm import VmError
+from .vm import VmError, wait_until
 
 # Who fixes what: each area's failures are routed to its owner.
 AREAS = {
@@ -88,6 +88,7 @@ def run_check(ctx, chk: Check) -> Result:
         (ctx.out / "errors").mkdir(exist_ok=True)
         (ctx.out / "errors" / f"{chk.id}.txt").write_text(traceback.format_exc())
     leave_unlocked(ctx, chk, res)
+    leave_no_dialog(ctx, chk, res)
     res.seconds = round(time.monotonic() - started, 2)
     ctx.current = None
     return res
@@ -117,6 +118,108 @@ def leave_unlocked(ctx, chk: Check, res: Result) -> None:
                                        f"{exc.reason()}")
         return
     res.detail = _join(res.detail, f"{LEFT_LOCKED}; the harness restarted the slot session")
+
+
+LEFT_OPEN = "left a dialog open"
+
+# Escape presses before the harness gives up on closing what a check left open: the
+# Invite composer's review step takes two (review, then the composer), a stack of
+# surfaces one each.
+DISMISS_ESCAPES = 4
+
+# Shell surfaces the state dump reports under `input_capture`, beside `overlays`.
+_CAPTURING = (("onboarding", "first-login onboarding"),
+              ("shortcut_help", "the shortcut help"),
+              ("projection", "the projection picker"))
+
+
+def open_surfaces(state: dict) -> list[str]:
+    """Every modal, overlay, prompt or dialog the state dump shows open, by name.
+
+    Each of these takes the keyboard from the window behind it (the compositor's
+    `chrome_captures_input`), so one left open by a check receives the next check's typing:
+    run 89618's A01 typed its Terminal command into the Invite composer W20 had opened.
+    `input_capture.chrome` is that same predicate, so it catches a capturing surface the
+    dump has no field of its own for; pointer hover over a maximized window's controls
+    (`maximized_controls`) is part of it too, and is not a dialog."""
+    chrome = state.get("chrome") or {}
+    found = [f"the {name.replace('_', ' ')} overlay"
+             for name, on in (chrome.get("overlays") or {}).items() if on]
+    if (chrome.get("palette") or {}).get("visible"):
+        found.append("search")
+    if (chrome.get("window_switcher") or {}).get("open"):
+        found.append("the window switcher")
+    peer = chrome.get("peer_sync") or {}
+    if peer.get("invite_name") is not None:
+        found.append("the Invite someone composer")
+    elif peer.get("invite_token") is not None:
+        found.append("an invite card showing a live token")
+    if peer.get("connect_input") is not None:
+        found.append("the Join card")
+    portal = chrome.get("portal_dialog")
+    if portal:
+        kind = portal.get("kind") if isinstance(portal, dict) else None
+        found.append(f"a portal dialog ({kind})" if kind else "a portal dialog")
+    if chrome.get("pending_grants_count"):
+        found.append("a permission prompt")
+    if chrome.get("editing_workspace_name") is not None:
+        found.append("the workspace-name editor")
+    capture = chrome.get("input_capture") or {}
+    found += [label for key, label in _CAPTURING if capture.get(key)]
+    # The power menu is an inner surface the overlays already name.
+    if capture.get("inner_surface") and not (chrome.get("overlays") or {}).get("power_menu"):
+        found.append("a modal shell surface (screenshot markup or capture)")
+    if not found and capture.get("chrome") and not capture.get("maximized_controls"):
+        found.append("a shell surface that captures input")
+    return found
+
+
+def dismiss_surfaces(ctx) -> str:
+    """Close whatever `open_surfaces` reports, the way a person cancels: Escape, re-reading
+    the dump after each press. Escape on a prompt answers it as dismissed (deny), never
+    confirmed. Still open after that, restart the slot's session: a fresh compositor opens
+    with none of them. Returns how it went; never raises."""
+    for _ in range(DISMISS_ESCAPES):
+        try:
+            ctx.vm.key("Escape")
+            time.sleep(0.6)
+            if not open_surfaces(ctx.state()):
+                return "the harness closed it with Escape"
+        except (VmError, KeyError, TypeError):
+            break
+    try:
+        ctx.vm.restart_session()
+    except VmError as exc:
+        return f"Escape did not close it, and restarting the slot session failed: {exc.reason()}"
+    try:
+        still = open_surfaces(ctx.state())
+    except (VmError, KeyError, TypeError):
+        still = []
+    if still:
+        return f"Escape did not close it, and after a slot session restart {', '.join(still)} is still open"
+    return "Escape did not close it; the harness restarted the slot session"
+
+
+def leave_no_dialog(ctx, chk: Check, res: Result) -> None:
+    """No check may hand the next one a desktop with a modal, overlay, prompt or dialog
+    open: it takes the keyboard, and the next check's input lands in it instead of in its
+    subject. A check that ends with any `open_surfaces` fails ("left a dialog open"), however
+    it ended, and the harness closes them before the next check. Runs after
+    `leave_unlocked`, which owns a locked session."""
+    try:
+        state = ctx.state()
+        if state["chrome"].get("session_locked"):
+            return
+        left = open_surfaces(state)
+    except (VmError, KeyError, TypeError):
+        return  # no state to read: the next check that needs one reports why
+    if not left:
+        return
+    res.status = "fail"
+    route = dismiss_surfaces(ctx)
+    ctx.facts.setdefault("dialog_recovered_after", []).append(
+        {"check": chk.id, "open": left, "route": route})
+    res.detail = _join(res.detail, f"{LEFT_OPEN} ({', '.join(left)}); {route}")
 
 
 def _join(a: str, b: str) -> str:
@@ -685,3 +788,98 @@ def app_cgroup(table: dict, app_id: str) -> dict:
     return {"pids": sorted(p["pid"] for p in mine), "cgroups": paths,
             "shared_with": {k: v for k, v in strangers.items() if v},
             "anon_rss_mb": round(sum(p["anon_rss_mb"] or 0 for p in mine), 1)}
+
+
+# -- Terminal: where its shell writes, and what its runtime is doing -----------
+
+# Terminal's shell runs in a `tilo-ush` guest whose `~` is the environment's own
+# home in the ush store, not the session's $HOME (docs/app-model/ush.md, "Storage").
+# A host shell (foot, a legacy terminal) writes to $HOME itself.
+_TERMINAL_HOMES = ('"$HOME" "${XDG_DATA_HOME:-$HOME/.local/share}"/ush/environments/*/home '
+                   '"${XDG_DATA_HOME:-$HOME/.local/share}"/ush/sessions/*/home')
+
+
+def terminal_probe(ctx, name: str) -> list[str]:
+    """Paths of `name` in any home a terminal's `~` can be: the session's and every
+    ush environment's (persistent) or session's (ephemeral)."""
+    out = ctx.vm.exec(f"for h in {_TERMINAL_HOMES}; do [ -e \"$h/{name}\" ] && echo \"$h/{name}\"; "
+                      "done; true")
+    return [l.strip() for l in out.splitlines() if l.strip() and not l.startswith("receipt:")]
+
+
+# How long a new Terminal window may stand before its shell runs. The first
+# session of an account also imports the environment's runtime into the user's
+# package store: 7.5-21 s on the CI VM depending on its load, 40-46 s while the
+# import synced once per file (TIL-708; runs 90460, 90980 and 90397, 90249).
+TERMINAL_SHELL_S = 45
+
+# Performance is a separate verdict from eventual readiness. The batched
+# import measured 7.5–21 s in runs 90460/90980; 30 s allows nine seconds of
+# load headroom but rejects the old 39.6 s baseline and 40–46 s imports.
+TERMINAL_SHELL_PERFORMANCE_S = 30
+
+
+def assert_terminal_shell_performance(seconds: float | None) -> None:
+    expect(seconds is not None, "Terminal shell readiness was not observed")
+    expect(seconds < TERMINAL_SHELL_PERFORMANCE_S,
+           f"Terminal shell startup took {seconds} s; performance requires "
+           f"less than {TERMINAL_SHELL_PERFORMANCE_S} s (readiness timeout is "
+           f"{TERMINAL_SHELL_S} s)")
+
+# Terminal's shells are not the app's processes: each runs in a guest the
+# `tilo-ush` user service starts, so they are found in its cgroup.
+_USH_SHELLS = ('cg=$(systemctl --user show -p ControlGroup --value tilo-ush.service 2>/dev/null); '
+               '[ -n "$cg" ] || exit 0; '
+               'for p in $(cat $(find "/sys/fs/cgroup$cg" -name cgroup.procs 2>/dev/null) 2>/dev/null); do '
+               '[ "$(cat /proc/$p/comm 2>/dev/null)" = bash ] && echo "$p"; done; true')
+
+
+def terminal_shells(ctx) -> set[int]:
+    """Pids of the shells running in Terminal's ush guests."""
+    out = ctx.vm.exec(_USH_SHELLS)
+    return {int(l) for l in out.split() if l.isdigit()}
+
+
+def wait_new_terminal_shell(ctx, before: set[int], timeout: float) -> float | None:
+    """Seconds until a shell not in `before` runs in a ush guest, or None after `timeout`.
+    A Terminal shows its pane and echoes keys before its guest exists; only a running
+    shell reads what is typed."""
+    started = time.monotonic()
+    if wait_until(lambda: terminal_shells(ctx) - before, timeout, 0.5):
+        return round(time.monotonic() - started, 1)
+    return None
+
+
+_USH_DIAGNOSTICS = r'''set +e
+data=${XDG_DATA_HOME:-$HOME/.local/share}
+echo "== units"
+systemctl --user status --no-pager -l tilo-ush.socket tilo-ush.service 2>&1 | head -40
+echo "== journal"
+journalctl --user -u tilo-ush.service -u tilo-ush.socket --no-pager -o short-precise -n 300 2>&1 | cut -c1-400
+echo "== processes"
+ps -u "$(id -u)" -o pid,ppid,etimes,time,pcpu,stat,wchan:24,args --forest 2>&1 | cut -c1-300
+for round in 1 2; do
+  echo "== tilo-ush threads (round $round): tid comm utime stime state"
+  for p in $(pgrep -u "$(id -u)" -x tilo-ush); do
+    echo "-- $p $(tr '\0' ' ' < /proc/$p/cmdline | cut -c1-200)"
+    for t in /proc/$p/task/*; do
+      printf '%s %s %s\n' "${t##*/}" "$(cat $t/comm)" "$(sed 's/.*) //' $t/stat | cut -d' ' -f1,12,13)"
+    done
+  done
+  [ $round = 2 ] || sleep 5
+done
+echo "== store"
+ls -la "$data/ush" "$data/ush/environments" "$data/ush/sessions" 2>&1 | head -40
+echo "== session logs mentioning ush or terminal"
+grep -rIh -i -E "tilo-ush|ush\.sock|so\.tilo\.terminal" "$HOME/.local/state/tilo/session-logs" 2>/dev/null \
+  | grep -v APP-STARTUP | tail -80 | cut -c1-400
+'''
+
+
+def ush_diagnostics(ctx) -> str:
+    """The shell runtime's units, journal, process tree, per-thread CPU over 5 s,
+    store layout and the session log's lines about it."""
+    try:
+        return ctx.vm.exec(_USH_DIAGNOSTICS, timeout=90, check=False)
+    except VmError as exc:
+        return f"diagnostics unavailable: {exc}"

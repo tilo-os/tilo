@@ -33,7 +33,6 @@ iroh.workspace = true
 iroh-base.workspace = true
 n0-future = "0.3.2"
 tokio = { workspace = true, features = ["sync", "macros", "io-util"] }
-wire-frame = { path = "../../system/wire-frame", features = ["tokio", "postcard"] }
 automerge.workspace = true
 tilo-automerge.workspace = true
 serde.workspace = true

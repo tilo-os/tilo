@@ -166,6 +166,27 @@ fn receipt_content(
     })
 }
 
+/// Pure canonical report projection for the system's feedback receipt service.
+/// The owner service must check its exact `RecordStore`'s current durability;
+/// this projection itself grants neither delivery confirmation nor authorship.
+/// # Errors
+/// Refuses missing reports, conflicting payloads or invalid attributed messages.
+pub fn canonical_feedback_projection(
+    doc: &Doc,
+    submission: &ui::feedback::Submission,
+) -> Result<(Receipt, String), ui::feedback::Error> {
+    submission.validate()?;
+    let report = report(doc, &submission.id)
+        .map_err(|_| ui::feedback::Error::ReceiptMismatch)?
+        .ok_or(ui::feedback::Error::ReceiptMismatch)?;
+    if report.submission != *submission {
+        return Err(ui::feedback::Error::ReceiptMismatch);
+    }
+    let receipt = receipt_content(doc, &submission.id, &submission.destination)
+        .map_err(|_| ui::feedback::Error::ReceiptMismatch)?;
+    Ok((receipt, report.author))
+}
+
 /// Read the report from its canonical owner after checking that exact record's
 /// current save status. The store is single-threaded, and no callback or yield
 /// separates this status check from the immutable document read.

@@ -400,7 +400,7 @@ impl PersonalAppsPane {
 pub fn installed_candidates() -> Vec<AppCandidate> {
     let mut out = Vec::new();
     for entry in package_store::list_installed().unwrap_or_default() {
-        let Ok(manifest) = launcher::manifest::read_manifest(&entry.manifest_path) else {
+        let Ok(manifest) = tilo_app_package::view::read_manifest(&entry.manifest_path) else {
             continue;
         };
         if manifest.entrypoint.gui_bin().is_none() {

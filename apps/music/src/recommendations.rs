@@ -29,7 +29,7 @@ impl Input {
     }
 
     pub fn label(self) -> String {
-        ui::i18n!(&format!("music-recommendations-input-{}", self.key()))
+        crate::i18n::t(&format!("music-recommendations-input-{}", self.key()))
     }
 }
 
@@ -113,7 +113,7 @@ impl Reason {
             Self::SavedAlbum(id) => ("saved", lib.album_title(id)),
             Self::FollowedArtist(id) => ("followed", lib.artist_name(id)),
             Self::SharedGenre { artist, genre } => {
-                return ui::i18n::I18nManager::format(
+                return crate::i18n::t_args(
                     "music-recommendations-reason-genre",
                     &[
                         ("artist", lib.artist_name(artist).into()),
@@ -122,7 +122,7 @@ impl Reason {
                 );
             }
         };
-        ui::i18n::I18nManager::format(
+        crate::i18n::t_args(
             &format!("music-recommendations-reason-{key}"),
             &[("name", name.into())],
         )

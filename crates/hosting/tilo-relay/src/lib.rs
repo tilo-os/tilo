@@ -147,7 +147,7 @@ pub use tilo_relay_client::frame;
 pub use tilo_relay_protocol::{
     auth, certify, config, home_peer, live, mesh, policy, process_lease,
 };
-pub use tilo_relay_session::{antientropy, client, coedit, framing, position};
+pub use tilo_relay_session::{antientropy, client, coedit, position};
 
 /// The relay wire messages ([`tilo_relay_protocol::transport`]) together with
 /// the envelope frame codec ([`frame`]), under the path the daemon and its

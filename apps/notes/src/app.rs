@@ -2573,6 +2573,18 @@ impl Widget for NotesApp {
         self.route_to_children(event, ctx);
     }
 
+    fn view_only_scroll(&self, event: &WindowEvent) -> bool {
+        matches!(event, WindowEvent::MouseWheel { .. })
+            && self.main.view_only_scroll(event)
+            && !self.note_menu.is_open()
+            && !self.shortcuts.is_visible()
+            && !self.sidebar.menu_is_open()
+            && !self.sidebar.is_renaming()
+            && self.pending_events.is_empty()
+            && !(self.shell.geometry().sidebar == SidebarPlacement::Drawer
+                && self.shell.is_sidebar_open())
+    }
+
     fn name(&self) -> &'static str {
         "NotesApp"
     }

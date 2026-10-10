@@ -175,6 +175,7 @@ the store (DEVELOPMENT.md, "Performance results") and publishes the nightly run'
 |---|---|---|---|
 | `boot.to_greeter_s`, `boot.{kernel,initrd,userspace}_s` | s | R06 | kernel+userspace to a usable greeter, and its phases |
 | `idle.shell_cpu_pct`, `idle.session_cpu_pct` | percent | R01 | compositor and whole session CPU over the idle window |
+| `idle.gpu_driver_cpu_pct` | percent | R01 | the part of `idle.shell_cpu_pct` on threads the GPU driver started (`llvmpipe-N`, and `tilo-gpu-driver`, the name the compositor gives threads started while it opens the device). On lavapipe this is the window's frames rasterised, a GPU's work on real hardware, so R01 and R02 judge a software renderer's compositor CPU without it; with no frame painted it must stay under `idle_software_raster_cpu_pct` (TIL-739) |
 | `idle.wakeups_per_s.shell`, `idle.loop_ticks_per_s` | per_s | R01 | context switches of the compositor's loop thread; loop ticks |
 | `idle.wakeups_per_s.shell_threads` | per_s | R01 | context switches of every thread of the compositor process |
 | `idle.frames` | count | R01 | frames painted while still |
@@ -253,6 +254,20 @@ one; the report's `session_recovered_after` lists those checks. W21, the one che
 on purpose, unlocks in a `finally` the way a person would (the passcode on the real
 keyboard), falls back to the restart, and records the route in its `unlock_recovery` metric.
 Nothing goes around the lock. The guard is unit-tested in `test_lock_guard.py`.
+
+For the same reason no check may leave a modal, overlay, prompt or dialog open: each takes
+the keyboard from the window behind it, and the next check's typing lands in it (run 89618's
+A01 typed its Terminal command into the Invite composer W20's first touch had opened on the
+launchpad). After the lock guard, `run_check` reads the state dump again (`core.open_surfaces`:
+the `overlays`, search, the window switcher, the Invite composer and Join card in `peer_sync`,
+`portal_dialog`, pending permission prompts, the workspace-name editor, the `input_capture`
+surfaces, and any other surface for which `input_capture.chrome` says the shell holds input,
+pointer hover over a maximized window's controls aside). A check that ended with one open
+fails ("left a dialog open (…)"), and the harness closes it the way a person cancels: Escape,
+then a slot session restart if Escape does not do it. Nothing is ever confirmed to clean up. The
+report's `dialog_recovered_after` lists each such check, what was open and how it was closed.
+`ctx.reset()` dismisses the same surfaces. A touch that is not itself under test lands where it
+activates nothing (W20 picks a point on no launchpad card). Unit-tested in `test_dialog_guard.py`.
 
 Budgets live in `run.py` (`BUDGETS`). The German pass (U03, U04, S03) runs after the
 English one: the shell takes its language from the session's environment, so the run

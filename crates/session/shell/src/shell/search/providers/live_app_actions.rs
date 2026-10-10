@@ -255,6 +255,42 @@ fn job_state_label(state: &str) -> String {
     }
 }
 
+/// Display only bounded application-reported progress, never outcome evidence or logs.
+fn job_subtitle(update: &tilo_actions::InvocationUpdate) -> String {
+    let tilo_actions::InvocationUpdate::Progress {
+        phase,
+        completed,
+        total,
+        ..
+    } = update
+    else {
+        return job_state_label(job_state(update));
+    };
+    let phase: String = phase
+        .chars()
+        .take(128)
+        .filter(|ch| !ch.is_control())
+        .collect();
+    let phase = phase.trim();
+    if phase.is_empty() {
+        return job_state_label("running");
+    }
+    let mut args = vec![("phase", phase.into())];
+    if let Some(completed) = completed {
+        args.push(("completed", completed.to_string().into()));
+    }
+    if let Some(total) = total {
+        args.push(("total", total.to_string().into()));
+    }
+    let key = match (completed, total) {
+        (Some(_), Some(_)) => "search-app-job-reported-counts",
+        (Some(_), None) => "search-app-job-reported-completed",
+        (None, Some(_)) => "search-app-job-reported-total",
+        (None, None) => "search-app-job-reported-phase",
+    };
+    t_args(key, &args)
+}
+
 pub fn job_status_id(id: u64) -> String {
     format!("job{ID_SEPARATOR}{id}")
 }
@@ -336,7 +372,7 @@ enum QueryProjection {
 enum AuxiliaryEntry {
     Job {
         id: u64,
-        state: &'static str,
+        subtitle: String,
         cancel: bool,
         actor: String,
     },
@@ -1094,17 +1130,17 @@ impl LiveAppActionsProvider {
                 if entries.len() >= root_limit {
                     break;
                 }
-                let state = job_state(&update);
+                let subtitle = job_subtitle(&update);
                 entries.push(AuxiliaryEntry::Job {
                     id,
-                    state,
+                    subtitle: subtitle.clone(),
                     cancel: false,
                     actor: actor.clone(),
                 });
                 if self.broker.can_cancel(id, &actor) && entries.len() < root_limit {
                     entries.push(AuxiliaryEntry::Job {
                         id,
-                        state,
+                        subtitle,
                         cancel: true,
                         actor: actor.clone(),
                     });
@@ -1270,7 +1306,7 @@ impl LiveAppActionsProvider {
         clippy::significant_drop_tightening,
         reason = "the broker handle is cloned once per callback; each clone moves into its own closure"
     )]
-    fn job_result(&self, id: u64, state: &'static str, cancel: bool, actor: &str) -> SearchResult {
+    fn job_result(&self, id: u64, subtitle: &str, cancel: bool, actor: &str) -> SearchResult {
         if cancel {
             let broker = self.broker.clone();
             let actor = actor.to_string();
@@ -1319,7 +1355,7 @@ impl LiveAppActionsProvider {
             provider_id: PROVIDER_ID.into(),
             id: job_status_id(id),
             title: t_args("search-app-job", &[("id", id.to_string().into())]),
-            subtitle: Some(job_state_label(state)),
+            subtitle: Some(subtitle.to_owned()),
             badge: None,
             score: -10,
             params: Vec::new(),
@@ -1366,7 +1402,7 @@ impl LiveAppActionsProvider {
         if cancel && !self.broker.can_cancel(id, &actor) {
             return page;
         }
-        let row = self.job_result(id, job_state(&update), cancel, &actor);
+        let row = self.job_result(id, &job_subtitle(&update), cancel, &actor);
         let bytes = row
             .title
             .len()
@@ -2200,7 +2236,6 @@ impl SearchProvider for LiveAppActionsProvider {
             && (needle.is_empty() || "jobs status progress".contains(&needle))
         {
             for (id, update) in self.broker.statuses(&actor) {
-                let state = job_state(&update);
                 let status_broker = self.broker.clone();
                 results.push(SearchResult {
                     kind: ResourceKind::Custom("action-job".into()),
@@ -2208,7 +2243,7 @@ impl SearchProvider for LiveAppActionsProvider {
                     provider_id: PROVIDER_ID.into(),
                     id: job_status_id(id),
                     title: t_args("search-app-job", &[("id", id.to_string().into())]),
-                    subtitle: Some(job_state_label(state)),
+                    subtitle: Some(job_subtitle(&update)),
                     badge: None,
                     score: -10,
                     params: Vec::new(),
@@ -2406,7 +2441,11 @@ impl SearchProvider for LiveAppActionsProvider {
                     .into_iter()
                     .find(|result| result.id == id);
             }
-            if ctx.chrome.search_resource_scope.is_some() {
+            // An explicit All-scope lookup already addresses its resource.
+            // Implicit palette lookups still respect the browsed resource.
+            if ctx.chrome.search_resource_scope.is_some()
+                && ctx.query_scope != Some(crate::shell::chrome_state::SearchScope::All)
+            {
                 return None;
             }
             let (app, cluster, record, resource, action) = Self::hierarchy(id)?;
@@ -2508,7 +2547,7 @@ impl SearchProvider for LiveAppActionsProvider {
                 snapshot.source_generation == source_generation && snapshot.scope == scope
             });
         format!(
-            "{}:{source_generation}:{}:{}:{}:{}:{}",
+            "{}:{source_generation}:{}:{}:{}:{}:{}:{}",
             if ready { "ready" } else { "indexing" },
             self.directory_epoch.load(Ordering::Relaxed),
             // Listing publishers is a memory read; it never asks an app.
@@ -2516,6 +2555,7 @@ impl SearchProvider for LiveAppActionsProvider {
             self.broker.statuses_generation(),
             ctx.chrome.active_local_user(),
             ctx.include_programmatic,
+            crate::shell::i18n::current_locale(),
         )
     }
 
@@ -2652,7 +2692,7 @@ impl SearchProvider for LiveAppActionsProvider {
                 let row = match entry {
                     AuxiliaryEntry::Job {
                         id,
-                        state,
+                        subtitle,
                         cancel,
                         actor,
                     } => {
@@ -2661,7 +2701,7 @@ impl SearchProvider for LiveAppActionsProvider {
                             work = work.saturating_add(1);
                             continue;
                         }
-                        self.job_result(*id, state, *cancel, actor)
+                        self.job_result(*id, subtitle, *cancel, actor)
                     }
                     AuxiliaryEntry::Directory {
                         root,
@@ -4019,6 +4059,82 @@ mod tests {
     }
 
     #[test]
+    fn canonical_exact_action_ignores_resource_palette_scope_but_keeps_visibility_and_withdrawal() {
+        use crate::shell::chrome_state::{SearchResourceScope, SearchScope};
+        use crate::shell::search::action_api::{ActionCatalog, ResourceRef};
+
+        let chrome = chrome();
+        let broker = broker_for(&chrome);
+        let room = chrome.borrow().tree().desktop.workspaces[0]
+            .room
+            .to_string();
+        let surface = PublishedSurface {
+            peer_id: 7,
+            app_id: "so.tilo.notes".into(),
+            route: CrdtRoute::app("so.tilo.notes", &room),
+            actions: vec![local_action("Read notebook", "read")],
+            live: true,
+        };
+        let resource = ResourceRef::new(
+            PROVIDER_ID,
+            LiveAppActionsProvider::result_id(&surface, &surface.actions[0]),
+        );
+        broker.replace_published_surfaces_for_test(vec![surface]);
+        let provider = Rc::new(LiveAppActionsProvider::new(broker.clone()));
+        let mut registry = crate::shell::search::SearchRegistry::new();
+        registry.register(provider.clone());
+        let doc = AutoCommit::new();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !exact_catalogue_contains(&registry, &resource, &chrome, &doc) {
+            assert!(
+                Instant::now() < deadline,
+                "the actual publication was never observed"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let palette_scope = SearchResourceScope {
+            peer_id: 9,
+            cluster_id: room,
+            app_id: "so.tilo.reader".into(),
+            resource: "book:42".into(),
+            label: "Book".into(),
+            kind: "book".into(),
+        };
+        chrome.borrow_mut().search_resource_scope = Some(palette_scope.clone());
+        assert!(
+            exact_catalogue_contains(&registry, &resource, &chrome, &doc),
+            "an explicitly addressed All-scope action must survive unrelated resource browsing"
+        );
+        assert!(
+            provider
+                .resolve(&resource.id, context("", &chrome.borrow(), &doc))
+                .is_none(),
+            "the implicit palette keeps its resource scope"
+        );
+        let deny = |_: &ResourceRef, _: &ResourceKind| false;
+        assert!(
+            !ActionCatalog::build_for_resource(
+                &registry,
+                &resource,
+                SearchScope::All,
+                None,
+                &chrome.borrow(),
+                &doc,
+                &automerge::ROOT,
+                &deny,
+            )
+            .contains(&resource),
+            "explicit addressing cannot bypass visibility"
+        );
+        assert_eq!(chrome.borrow().search_resource_scope, Some(palette_scope));
+        broker.replace_published_surfaces_for_test(Vec::new());
+        assert!(
+            !exact_catalogue_contains(&registry, &resource, &chrome, &doc),
+            "withdrawn publication must remain unavailable"
+        );
+    }
+
+    #[test]
     fn canonical_all_scope_does_not_inherit_the_active_app_palette_filter() {
         use crate::shell::chrome_state::SearchScope;
         use crate::shell::search::action_api::{ActionCatalog, AllVisible, ResourceRef};
@@ -4806,3 +4922,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "live_app_actions/job_progress_tests.rs"]
+mod job_progress_tests;

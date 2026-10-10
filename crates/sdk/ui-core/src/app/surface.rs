@@ -211,6 +211,7 @@ impl App {
         }
 
         let mut handled = false;
+        let mut view_only_scroll = false;
         let mut history_handled = matches!(event, WindowEvent::KeyboardInput { .. })
             && app
                 .focused_node
@@ -477,13 +478,16 @@ impl App {
             // later consumer in this event/frame shares the rebuilt one. Bare
             // hover that changed nothing keeps it: rebuilding the whole tree
             // per pointer move cost a full publication at the report rate.
-            app.invalidate_resources_after_input(
+            view_only_scroll = app.invalidate_resources_after_input(
                 &event,
                 handled
                     || history_handled
                     || focus_target.is_some()
                     || presentation_was_floating != presentation_is_floating,
                 &resources_before,
+                !history_handled
+                    && focus_target.is_none()
+                    && presentation_was_floating == presentation_is_floating,
             );
             floating_pointer_needs_redraw = matches!(event, WindowEvent::CursorMoved { .. })
                 && (used_desktop_pointer_space
@@ -629,8 +633,12 @@ impl App {
         app.announce_text_review(review_pre);
 
         if handled {
-            app.finalize_handled_native_event(&event, is_undo_redo, history_handled);
-            app.needs_sync = true;
+            if view_only_scroll && !history_handled && focus_target.is_none() {
+                app.commit_action_with_invalidation(false);
+            } else {
+                app.finalize_handled_native_event(&event, is_undo_redo, history_handled);
+                app.needs_sync = true;
+            }
             // Gating every handled event on `needs_redraw()` is
             // wrong: container widgets can mutate their own
             // active-index state without setting a descendant leaf's

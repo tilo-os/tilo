@@ -213,6 +213,18 @@ pub struct WorkspaceTaskActiveRun {
     pub started_at: i64,
     /// Highest contiguous direction revision durably incorporated by the agent.
     pub applied_direction_revision: u64,
+    /// Exact person approval retained across host/agent reconnects.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval: Option<WorkspaceTaskApproval>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceTaskApproval {
+    pub person: String,
+    pub device: [u8; 32],
+    pub approved_at: i64,
+    pub instruction_revision: u64,
 }
 
 /// Public execution milestones, not model reasoning or action output.

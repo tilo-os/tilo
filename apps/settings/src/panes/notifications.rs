@@ -90,7 +90,7 @@ fn installed_notification_apps_from(
 ) -> Vec<InstalledNotificationApp> {
     let mut apps = BTreeMap::new();
     for entry in package_store::list_installed().unwrap_or_default() {
-        let Ok(manifest) = launcher::manifest::read_manifest(&entry.manifest_path) else {
+        let Ok(manifest) = tilo_app_package::view::read_manifest(&entry.manifest_path) else {
             continue;
         };
         if manifest.entrypoint.gui_bin().is_none() {

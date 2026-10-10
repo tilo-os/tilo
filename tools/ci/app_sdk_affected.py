@@ -13,6 +13,7 @@ Prints `affected=true|false` and, with --github-output, appends it there.
 from __future__ import annotations
 
 import argparse
+import re
 from pathlib import Path
 import sys
 
@@ -50,6 +51,48 @@ GLOBAL_INPUTS = (
 )
 
 
+
+def shell_integration_only(root: Path, path: str, packages: dict) -> bool:
+    """Audit a direct module of shell's separate integration-test target.
+
+    SDK consumers build shell's library, not this target. Keep nested fixtures,
+    standalone binaries, build scripts and source-referenced modules affected.
+    The ordinary native selector remains responsible for all integration tests.
+    """
+    relative = Path(path)
+    directory = Path("crates/session/shell/tests")
+    if relative.parent != directory or relative.suffix != ".rs":
+        return False
+    shell = packages.get("shell", {})
+    targets = shell.get("targets", [])
+    test_root = root / directory / "it.rs"
+    if not any(target.get("kind") == ["test"] and
+               Path(target["src_path"]).resolve() == test_root.resolve()
+               for target in targets):
+        return False
+    if any("custom-build" in target.get("kind", []) or
+           (target.get("kind") != ["test"] and
+            Path(target["src_path"]).resolve() == (root / relative).resolve())
+           for target in targets):
+        return False
+    try:
+        module = r'#\[path\s*=\s*"' + re.escape(relative.name) + r'"\]\s*mod\s+\w+\s*;'
+        if not re.search(module, test_root.read_text()):
+            return False
+        # Fail closed if a library, binary, example or build script names the
+        # module. Include comments too: a conservative false positive is cheap.
+        for package in packages.values():
+            package_dir = Path(package["manifest_path"]).parent
+            sources = set((package_dir / "src").rglob("*.rs"))
+            sources |= {Path(target["src_path"]) for target in package.get("targets", [])
+                        if target.get("kind") != ["test"]}
+            if any(relative.name in source.read_text() for source in sources):
+                return False
+    except (OSError, UnicodeError):
+        return False
+    return True
+
+
 def affected(root: Path, changed: list[str], metadata: dict,
              base: str, head: str) -> tuple[bool, str]:
     packages, by_dir = package_maps(metadata, root)
@@ -57,6 +100,8 @@ def affected(root: Path, changed: list[str], metadata: dict,
     seeds |= {name for d, name in by_dir.items() if d.parts[:1] == ("apps",)}
     reverse = reverse_dependencies(packages, root)
     for path in changed:
+        if shell_integration_only(root, path, packages):
+            continue
         if path == "Cargo.lock":
             # Attributed to the packages whose locked inputs changed; unattributable
             # differences count as repository-wide.
