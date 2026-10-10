@@ -141,6 +141,16 @@ pub struct RecordedBackdrop {
     pub ground: Color,
 }
 
+impl RecordedBackdrop {
+    /// How far outside its bounds the surface's blurred pixels depend on what is drawn: the
+    /// kernel's reach, and what the halved passes' texels add to it (at most a quarter of the
+    /// deviation, twice over, once a texel is that large).
+    #[must_use]
+    pub fn reach(&self) -> f64 {
+        (self.blur_px.max(0.0) * (KERNEL_REACH + 1.0)).ceil() + 4.0
+    }
+}
+
 struct Recording {
     /// How many recordings this one is nested in. Placeholders are keyed by
     /// it, so a surface recorded by an inner host (an app frame drawn while

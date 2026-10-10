@@ -881,7 +881,10 @@ fn foreign_replacement_pixel_oracle(
         .map(|rect| u64::from(rect.width) * u64::from(rect.height))
         .sum();
     assert_eq!(
-        dirty_pixels * 2 < u64::from(NATIVE_WIDTH) * u64::from(NATIVE_HEIGHT),
+        crate::shell::render::paint::damage_is_profitable(
+            dirty_pixels,
+            u64::from(NATIVE_WIDTH) * u64::from(NATIVE_HEIGHT),
+        ),
         expect_sparse,
         "the ordinary width must exercise the unchanged sparse admission boundary"
     );
@@ -1191,7 +1194,10 @@ fn wide_foreign_commit_damage_tracks_exact_buffers_and_matches_dense_gpu_pixels(
             .map(|r| u64::from(r.width) * u64::from(r.height))
             .sum();
         assert!(
-            dirty_pixels * 2 < u64::from(NATIVE_WIDTH) * u64::from(NATIVE_HEIGHT),
+            crate::shell::render::paint::damage_is_profitable(
+                dirty_pixels,
+                u64::from(NATIVE_WIDTH) * u64::from(NATIVE_HEIGHT),
+            ),
             "a wide tile's two small edits must exercise sparse admission"
         );
         // A fresh dense oracle: its image atlas keeps the previous frame
@@ -2368,9 +2374,10 @@ fn assert_change_repaints_under(
         embedded_damage(frame)
     );
     paint_retained_and_compare(&mut retained, &mut dense, &changed, label);
-    // Damage over half the output renders whole, as the presenter does.
+    // Damage the presenter finds unprofitable renders whole.
     assert!(
-        pixels * 2 >= output || retained.last_sparse_render_attempts() >= 1,
+        !crate::shell::render::paint::damage_is_profitable(pixels, output)
+            || retained.last_sparse_render_attempts() >= 1,
         "{label}: the change must exercise the production sparse render path"
     );
     damage
@@ -2620,4 +2627,102 @@ fn typing_in_notes_repaints_what_changed_not_the_tile() {
             "{label}: the key reached the note's text: {before:?} -> {after:?}"
         );
     }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_typing_update_in_one_window_is_bounded_by_the_window_and_admitted_sparse() {
+    let (mut frame, _clock) = desktop_in(Theme::dark());
+    let label = "typing in a note, bounded by its window";
+    let title = open_a_note(&mut frame, label);
+    if !with_notes_on_screen(&frame, |_, notes| notes.main_title_editing_for_test()) {
+        point_at(&mut frame, title);
+        press(&mut frame, winit::event::MouseButton::Left);
+        settle(&mut frame, 2);
+    }
+    let body = with_notes_on_screen(&frame, |rect, notes| {
+        let panel = notes.main_panel_mut();
+        let title = panel.title_rect_for_test();
+        let line = Point::new(title.x0 + 24.0, panel.body_top_for_test() + 12.0);
+        Point::new(rect.x0 + line.x, rect.y0 + line.y)
+    });
+    point_at(&mut frame, body);
+    press(&mut frame, winit::event::MouseButton::Left);
+    settle(&mut frame, 3);
+    type_text(&mut frame, "The quick brown fox ");
+    settle(&mut frame, 3);
+    let tile = with_notes_on_screen(&frame, |rect, _| rect);
+    let tile = frame
+        .layout_rect_to_scene(tile)
+        .expect("the window is on the output");
+    let damage = assert_change_repaints_under(&mut frame, label, 100, |frame| {
+        type_text(frame, "j");
+        frame.relayout();
+    });
+    // The window's own tile, plus the tile rounding and shadow around it, and nothing else.
+    let fringe = 64.0;
+    for rect in &damage {
+        let region = Rect::new(
+            f64::from(rect.x),
+            f64::from(rect.y),
+            f64::from(rect.x + rect.width),
+            f64::from(rect.y + rect.height),
+        );
+        assert!(
+            region.x0 >= tile.x0 - fringe
+                && region.y0 >= tile.y0 - fringe
+                && region.x1 <= tile.x1 + fringe
+                && region.y1 <= tile.y1 + fringe,
+            "{label}: damage {region:?} leaves the window {tile:?}"
+        );
+    }
+    // Notes rebuilds its widget tree per key and reports its whole tile, so the damage is the
+    // window (87% of this 4K fixture, which Notes nearly fills); the presenter's gate decides
+    // admission and `assert_change_repaints_under` compared the pixels with a dense render.
+}
+
+#[test]
+fn a_blurred_surface_joins_only_the_damage_its_blur_can_see() {
+    use vello::peniko::{Blob, ImageAlphaType, ImageData, ImageFormat};
+    let (frame, _clock) = desktop_in(Theme::dark());
+    let blurred = |bounds: Rect| RecordedBackdrop {
+        image: ImageData {
+            data: Blob::new(Arc::new(vec![0, 0, 0, 255])),
+            format: ImageFormat::Rgba8,
+            alpha_type: ImageAlphaType::AlphaPremultiplied,
+            width: 1,
+            height: 1,
+        },
+        bounds,
+        blur_px: 20.0,
+        layer: 0,
+        below: Scene::new(),
+        ground: Color::BLACK,
+    };
+    let caret = FineDamageRect {
+        x: 1_000,
+        y: 1_000,
+        width: 16,
+        height: 32,
+    };
+    let near = blurred(Rect::new(1_020.0, 1_000.0, 1_400.0, 1_300.0));
+    let far = blurred(Rect::new(2_000.0, 100.0, 3_000.0, 600.0));
+    let nowhere = blurred(Rect::new(9_000.0, 9_000.0, 9_500.0, 9_500.0));
+    let regions = frame
+        .with_backdrop_damage(Some(vec![caret]), &[near.clone(), far, nowhere])
+        .expect("a blurred surface far from the damage keeps it sparse");
+    let near_bounds = frame
+        .native_damage_rect(Some(near.bounds))
+        .expect("on the output");
+    assert_eq!(
+        regions,
+        vec![caret, near_bounds],
+        "only the surface whose blur reaches the caret is repainted, and one on no display is not"
+    );
+    assert_eq!(
+        frame.with_backdrop_damage(Some(Vec::new()), &[near.clone()]),
+        Some(Vec::new()),
+        "an unchanged frame stays unchanged"
+    );
+    assert_eq!(frame.with_backdrop_damage(None, &[near]), None);
 }

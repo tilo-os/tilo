@@ -2324,9 +2324,14 @@ impl FrameBuilder {
 
     /// A floating surface shows a blur of what is below it, which can change
     /// without its own section changing (a ticking clock under its edge, a
-    /// repaint inside the blur's reach). Any frame that repaints part of the
-    /// screen therefore repaints every blurred surface too. An unchanged
-    /// frame (`Some` and empty) stays unchanged: nothing below moved.
+    /// repaint inside the blur's reach). A blurred surface is therefore
+    /// repainted with any damage that falls within its bounds and the reach
+    /// of its blur ([`RecordedBackdrop::reach`]): the blur reads nothing
+    /// further away, so damage elsewhere cannot change it, and a surface on
+    /// no display shows nothing to repair. (Every blurred surface used to join
+    /// every damage, so one tooltip's blur made a typed character repaint
+    /// the palette, the notifications and Quick Settings with it.) An
+    /// unchanged frame (`Some` and empty) stays unchanged: nothing below moved.
     fn with_backdrop_damage(
         &self,
         damage: Option<Vec<FineDamageRect>>,
@@ -2336,8 +2341,26 @@ impl FrameBuilder {
         if regions.is_empty() || surfaces.is_empty() {
             return Some(regions);
         }
+        let damaged = regions.clone();
         for surface in surfaces {
-            regions.push(self.native_damage_rect(Some(surface.bounds))?);
+            let Some(bounds) = self.native_damage_rect(Some(surface.bounds)) else {
+                // On no display: nothing of it is shown.
+                continue;
+            };
+            let reach = self
+                .native_damage_rect(Some(
+                    surface.bounds.inflate(surface.reach(), surface.reach()),
+                ))
+                .unwrap_or(bounds);
+            let touched = damaged.iter().any(|rect| {
+                rect.x < reach.x.saturating_add(reach.width)
+                    && reach.x < rect.x.saturating_add(rect.width)
+                    && rect.y < reach.y.saturating_add(reach.height)
+                    && reach.y < rect.y.saturating_add(rect.height)
+            });
+            if touched {
+                regions.push(bounds);
+            }
         }
         Some(regions)
     }
