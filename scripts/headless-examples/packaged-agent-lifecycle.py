@@ -56,12 +56,14 @@ PERMISSION_OBSERVATION_COUNTS = (
     "chat_processes", "windows", "nodes", "interface_queries", "headings", "notices",
     "retained", "mutable", "editable", "queue_tabs", "queue_buttons", "at_unobservable",
     "read_candidates", "read_exact_matches", "read_semantic_matches", "read_provider_matches",
+    "read_operation_global", "read_same_app_room", "read_same_app_room_semantic",
 )
 PERMISSION_OBSERVATION_FIELDS = PERMISSION_OBSERVATION_COUNTS + (
     "assignment_unexpired_start", "assignment_unexpired_after_catalogue", "assignment_unexpired_after_at",
     "catalogue_elapsed_ms", "at_elapsed_ms", "sample_elapsed_ms", "message_present", "queue_present",
     "at_attempted", "at_matched", "queue_control_present", "private_editor_state_matches",
     "read_unique_resource_matches", "read_unique_provider_matches",
+    "read_unique_semantic_record_matches",
 )
 PERMISSION_WINDOW_COUNTS = (
     "heading_count", "notice_count", "retained_count", "send_message_count",
@@ -5438,6 +5440,17 @@ def observe_hidden_permission_offer(socket, original, opposite, read_operation,
             if all(row.get(field) == original[field]
                     for field in ("provider", "application", "room", "record", "resource"))]
     if observation is not None:
+        global_reads = [row for row in catalogue if row.get("operation") == read_operation]
+        room_reads = [row for row in global_reads if all(
+            row.get(field) == original[field] for field in ("application", "room"))]
+        semantic_reads = [row for row in room_reads
+                          if row.get("semantic_identity") == original.get("semantic_identity")]
+        permission_count(observation, "read_operation_global", len(global_reads))
+        permission_count(observation, "read_same_app_room", len(room_reads))
+        permission_count(observation, "read_same_app_room_semantic", len(semantic_reads))
+        observation["read_unique_semantic_record_matches"] = (
+            semantic_reads[0].get("record") == original["record"]
+            if len(semantic_reads) == 1 else None)
         permission_count(observation, "read_candidates", len(candidates))
         permission_count(observation, "read_exact_matches", len(read))
         permission_count(observation, "read_semantic_matches", sum(

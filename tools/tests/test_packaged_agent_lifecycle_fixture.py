@@ -1844,7 +1844,8 @@ class PresentedEditorTargetTests(unittest.TestCase):
         cases = (([], (0, 0, 0, 0, None, None)),
                  ([{**read, "resource": "PRIVATE-new-alias"}], (1, 0, 1, 1, False, True)),
                  ([{**read, "provider": "PRIVATE-other-provider"}], (1, 0, 1, 0, True, False)),
-                 ([read, read], (2, 2, 2, 2, None, None)))
+                 ([read, read], (2, 2, 2, 2, None, None)),
+                 ([{**read, "record": "PRIVATE-other-record"}], (0, 0, 0, 0, None, None)))
         fields = ("read_candidates", "read_exact_matches", "read_semantic_matches",
                   "read_provider_matches", "read_unique_resource_matches", "read_unique_provider_matches")
         for rows, expected in cases:
@@ -1859,6 +1860,12 @@ class PresentedEditorTargetTests(unittest.TestCase):
                             access, access, (7, "start"), observation=sample)
                 receipt = json.loads(phase["path"].read_text())
                 self.assertEqual(tuple(receipt["samples"][0][field] for field in fields), expected)
+                sample = receipt["samples"][0]
+                self.assertEqual(sample["read_operation_global"], len(rows))
+                self.assertEqual(sample["read_same_app_room"], len(rows))
+                self.assertEqual(sample["read_same_app_room_semantic"], len(rows))
+                self.assertIs(sample["read_unique_semantic_record_matches"],
+                              rows[0]["record"] == original["record"] if len(rows) == 1 else None)
                 self.assertFalse(receipt["private_content_recorded"])
                 self.assertNotIn("PRIVATE", json.dumps(receipt))
 
