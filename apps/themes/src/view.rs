@@ -465,7 +465,7 @@ fn editor(cx: &ViewCx<Studio>, ui: &Ui, raw: &str) -> Element {
             let reset = {
                 let ui = ui.clone();
                 let raw = raw.clone();
-                Button::new("theme-reset", "themes-reset")
+                Button::new("theme-reset", "themes-reset-button")
                     .role(ButtonRole::Plain)
                     .on_view(move || {
                         ui.dispatcher
@@ -475,7 +475,7 @@ fn editor(cx: &ViewCx<Studio>, ui: &Ui, raw: &str) -> Element {
             let delete = {
                 let ui = ui.clone();
                 let raw = raw.clone();
-                Button::new("theme-delete", "themes-delete")
+                Button::new("theme-delete", "themes-delete-button")
                     .role(ButtonRole::Destructive)
                     .on_view(move || {
                         ui.dispatcher
@@ -543,11 +543,11 @@ fn editor(cx: &ViewCx<Studio>, ui: &Ui, raw: &str) -> Element {
             FormSection::new("themes-presence")
                 .content(Box::new(presence))
                 .field(Field::new(
-                    "themes-presence-lightness",
+                    "themes-presence-lightness-label",
                     slider(cx, &id, (0.35, 0.90), theme.presence.lightness.clone()),
                 ))
                 .field(Field::new(
-                    "themes-presence-chroma",
+                    "themes-presence-chroma-label",
                     slider(cx, &id, (0.04, 0.20), theme.presence.chroma.clone()),
                 )),
         )

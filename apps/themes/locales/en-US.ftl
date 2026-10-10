@@ -9,7 +9,7 @@ themes-missing = This theme was deleted.
 themes-apply = Apply
 themes-export = Copy as file
 themes-duplicate = Duplicate
-themes-delete = Delete theme
+themes-delete-button = Delete theme
 themes-name = Name
 themes-name-label = Name
 themes-palette = Palette
@@ -31,8 +31,8 @@ themes-emphasis = Emphasis
 themes-emphasis-kind = Actions and selection
 themes-tint = Tint
 themes-presence = Presence
-themes-presence-lightness = Lightness
-themes-presence-chroma = Colourfulness
+themes-presence-lightness-label = Lightness
+themes-presence-chroma-label = Colourfulness
 themes-shape-density = Shape and density
 themes-radius = Window corners
 themes-density = Spacing
@@ -47,7 +47,7 @@ themes-motion = Motion
 themes-blur = Blur behind menus
 themes-tint-opacity = Menu opacity
 
-themes-reset = Reset
+themes-reset-button = Reset
 
 ## History
 

@@ -20,7 +20,7 @@ pub mod keys {
     pub const THEMES_CHROMA: LabelKey = LabelKey::new("themes-chroma");
     pub const THEMES_CHROMA_HELP: LabelKey = LabelKey::new("themes-chroma-help");
     pub const THEMES_CUSTOMIZE: LabelKey = LabelKey::new("themes-customize");
-    pub const THEMES_DELETE: LabelKey = LabelKey::new("themes-delete");
+    pub const THEMES_DELETE_BUTTON: LabelKey = LabelKey::new("themes-delete-button");
     pub const THEMES_DENSITY: LabelKey = LabelKey::new("themes-density");
     pub const THEMES_DISTINCT_LETTERS: LabelKey = LabelKey::new("themes-distinct-letters");
     pub const THEMES_DISTINCT_LETTERS_HELP: LabelKey =
@@ -47,11 +47,13 @@ pub mod keys {
     pub const THEMES_PALETTE: LabelKey = LabelKey::new("themes-palette");
     pub const THEMES_POLARITY: LabelKey = LabelKey::new("themes-polarity");
     pub const THEMES_PRESENCE: LabelKey = LabelKey::new("themes-presence");
-    pub const THEMES_PRESENCE_CHROMA: LabelKey = LabelKey::new("themes-presence-chroma");
-    pub const THEMES_PRESENCE_LIGHTNESS: LabelKey = LabelKey::new("themes-presence-lightness");
+    pub const THEMES_PRESENCE_CHROMA_LABEL: LabelKey =
+        LabelKey::new("themes-presence-chroma-label");
+    pub const THEMES_PRESENCE_LIGHTNESS_LABEL: LabelKey =
+        LabelKey::new("themes-presence-lightness-label");
     pub const THEMES_PRESETS: LabelKey = LabelKey::new("themes-presets");
     pub const THEMES_RADIUS: LabelKey = LabelKey::new("themes-radius");
-    pub const THEMES_RESET: LabelKey = LabelKey::new("themes-reset");
+    pub const THEMES_RESET_BUTTON: LabelKey = LabelKey::new("themes-reset-button");
     pub const THEMES_RUNG_BASE: LabelKey = LabelKey::new("themes-rung-base");
     pub const THEMES_RUNG_CONTENT: LabelKey = LabelKey::new("themes-rung-content");
     pub const THEMES_RUNG_INSPECTOR: LabelKey = LabelKey::new("themes-rung-inspector");
