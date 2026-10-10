@@ -139,9 +139,9 @@ D2 = 5
 
 [apps.terminal]
 D1 = 4
-D2 = 4
-R1 = 50
-R2 = 56
+D2 = 3
+R1 = 45
+R2 = 54
 R3 = 3
 
 [apps.totp]
