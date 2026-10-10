@@ -378,6 +378,67 @@ fn canonical_owner_refuses_pending_edits_wrong_owner_and_wrong_reporter() {
 }
 
 #[test]
+fn signing_callback_cannot_acknowledge_after_policy_clock_becomes_unavailable() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    struct RetiringClockSigner {
+        signer: FixtureSigner,
+        available: Arc<AtomicBool>,
+    }
+    impl ReceiptSigner for RetiringClockSigner {
+        fn owner(&self) -> &Caller {
+            self.signer.owner()
+        }
+        fn sign(&mut self, request: &ReceiptSigningRequest) -> Result<Vec<u8>, Error> {
+            let signature = self.signer.sign(request)?;
+            self.available.store(false, Ordering::SeqCst);
+            Ok(signature)
+        }
+    }
+    let root = tempfile::tempdir().unwrap();
+    let (records, mut frame) = canonical(root.path());
+    let report = submission();
+    submit(&mut frame, &report);
+    records.try_flush().unwrap();
+    let available = Arc::new(AtomicBool::new(true));
+    let sampled = available.clone();
+    let mut admission = enrollment();
+    admission.permissions = admission
+        .permissions
+        .with_policy_time_sampler(Arc::new(move || {
+            if sampled.load(Ordering::SeqCst) {
+                Ok(0)
+            } else {
+                Err("retained owner policy clock unavailable".into())
+            }
+        }));
+    let mut service = CanonicalDestination::new(
+        admission.owner.clone(),
+        admission.destination.clone(),
+        CanonicalRecord {
+            records,
+            record: RecordId::package_primary(),
+            project: chat::feedback::canonical_feedback_projection,
+        },
+        Box::new(RetiringClockSigner {
+            signer: FixtureSigner {
+                owner: admission.owner.clone(),
+                key: SigningKey::from_bytes(&[41; 32]),
+            },
+            available: available.clone(),
+        }),
+    )
+    .unwrap();
+    assert!(matches!(
+        service.receipt(&report, &admission),
+        Err(Error::Invalid("feedback policy time unavailable"))
+    ));
+    assert!(!available.load(Ordering::SeqCst));
+}
+
+#[test]
 fn canonical_owner_refuses_attachment_without_durable_content_witness() {
     let root = tempfile::tempdir().unwrap();
     let (records, mut frame) = canonical(root.path());

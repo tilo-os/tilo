@@ -378,7 +378,7 @@ impl CanonicalDestination {
                 &Signature::from_slice(&signature).map_err(|_| Error::ReceiptMismatch)?,
             )
             .map_err(|_| Error::ReceiptMismatch)?;
-        if self.signer.owner() != &self.owner {
+        if self.signer.owner() != &self.owner || enrollment.authorize_receipt(submission)? != pin {
             return Err(Error::ReceiptMismatch);
         }
         // Signing-service callbacks cannot turn an old Saved state into an ack.
