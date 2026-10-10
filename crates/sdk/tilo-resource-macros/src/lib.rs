@@ -136,6 +136,7 @@ fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                 let mut texts = Vec::new();
                 let mut shapes = Vec::new();
                 let mut collections = Vec::new();
+                let mut sizes = Vec::new();
                 for field in &fields.named {
                     let ident = field.ident.as_ref().ok_or_else(|| {
                         syn::Error::new(field.span(), "named field without a name")
@@ -177,6 +178,7 @@ fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                                 })
                                 .collect(),
                         }));
+                        sizes.push(quote!((#field_name, self.#ident.len())));
                     }
                 }
                 let item_collections = if collections.is_empty() {
@@ -185,6 +187,10 @@ fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                     quote! {
                         fn item_collections(&self) -> ::std::vec::Vec<#krate::items::ItemCollection> {
                             ::std::vec![#(#collections),*]
+                        }
+
+                        fn item_collection_sizes(&self) -> ::std::vec::Vec<(&'static str, usize)> {
+                            ::std::vec![#(#sizes),*]
                         }
                     }
                 };
@@ -983,6 +989,35 @@ fn expand_resource(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Resul
         || quote!(::std::vec::Vec::new()),
         |path| quote!(#path(state)),
     );
+    // The declarations offered on items are known from how many items each
+    // collection holds, so the record's own actions publish without a child
+    // per item.
+    let offer_bound = if item_actions.is_empty() {
+        quote!()
+    } else {
+        quote! {
+            fn children_offer_bound(state: &Self) -> ::std::vec::Vec<&'static str> {
+                let others: ::std::vec::Vec<#krate::__private::Resource> = #children;
+                #krate::items::offered_on_items::<Self>(
+                    &others,
+                    &<Self as #krate::Fields>::item_collection_sizes(state),
+                    &[#(#item_actions),*],
+                )
+            }
+        }
+    };
+    // Without children of its own, everything the record publishes follows
+    // from its state and the locale, so the framework may keep one published
+    // tree per change instead of building it for every request.
+    let cache_epoch = if options.children.is_none() {
+        quote! {
+            fn publication_cache_epoch(_state: &Self) -> ::core::option::Option<::std::string::String> {
+                ::core::option::Option::Some(::std::string::String::new())
+            }
+        }
+    } else {
+        quote!()
+    };
     let children = if item_actions.is_empty() {
         children
     } else {
@@ -1133,6 +1168,9 @@ fn expand_resource(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Resul
                 let _ = state;
                 #children
             }
+
+            #offer_bound
+            #cache_epoch
 
             fn search(state: &Self) -> ::std::vec::Vec<#krate::SearchEntry> {
                 #search
