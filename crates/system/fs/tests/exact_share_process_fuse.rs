@@ -989,6 +989,7 @@ fn idle_share_recipient_stays_asleep() {
     let connections = connected(&viewer) - connections_before;
     let per_second = wakeups.blocking_per_second();
     let minutes = IDLE_SHARE_WINDOW.as_secs_f64() / 60.0;
+    let per_minute = |count: usize| f64::from(u32::try_from(count).unwrap_or(u32::MAX)) / minutes;
     eprintln!("idle fs mount-share:\n{wakeups}");
     eprintln!("its host, fs serve:\n{host_wakeups}");
     eprintln!(
@@ -996,9 +997,9 @@ fn idle_share_recipient_stays_asleep() {
          {:.1} connections/min opened, {connections_before} held; {:.1} durable writes/min \
          (at least {:.1} fsyncs/min): {writes:?}",
         host_wakeups.blocking_per_second(),
-        connections as f64 / minutes,
-        writes.len() as f64 / minutes,
-        2.0 * writes.len() as f64 / minutes,
+        per_minute(connections),
+        per_minute(writes.len()),
+        2.0 * per_minute(writes.len()),
     );
 
     // A host edit still reaches the open recipient. Move both clocks on
