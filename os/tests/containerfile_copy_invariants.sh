@@ -153,7 +153,10 @@ containerfile="$repo/os/Containerfile"
 # The app store arrives from the app-store stage, the builder's store with the
 # env-runtime's host-identical files left out and named in its host-sources
 # (TIL-735); the installed path is unchanged.
-expected_contract=2d0dd1ea813ea5c63d3b3a5c38ae6c73cefe768dd1e4e5b0b301c3fd0eb91400
+# tilo-network-start.service replaces tilo-network-start.timer: the network is
+# queued once logins are allowed instead of at OnBootSec=0, where it held the
+# greeter through network.target (TIL-767).
+expected_contract=0d1f26b3729368602066f2a95a54f9283ee8c2be31ae6626786b3c4161ae2b42
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
