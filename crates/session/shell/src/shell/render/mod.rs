@@ -1,3 +1,4 @@
+mod fullscreen_pass;
 pub mod hdr_composite;
 pub mod hdr_encode;
 pub mod icc_lut;
