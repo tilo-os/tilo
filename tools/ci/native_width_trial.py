@@ -186,7 +186,10 @@ def main():
         raise RuntimeError('Expected a fresh disposable checkout')
     root = Path('/sys/fs/cgroup')
     quota, period = map(int, (root / 'cpu.max').read_text().split())
-    if quota != 6 * period or int((root / 'memory.max').read_text()) != 22 * 1024**3:
+    memory_max = int((root / 'memory.max').read_text())
+    print('NATIVE_WIDTH_ENVELOPE=' + json.dumps({'quota': quota, 'period': period,
+          'memory_max': memory_max, 'affinity': sorted(os.sched_getaffinity(0))}), flush=True)
+    if quota != 6 * period or memory_max != 22 * 1024**3:
         raise RuntimeError('Expected enforced 6 CPU / 22 GiB envelope')
     cpus = sorted(os.sched_getaffinity(0))
     if len(cpus) < 8:

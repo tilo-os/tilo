@@ -39,9 +39,10 @@ jobs:
         run: python3 tools/ci/resolve_builder.py
   compare:
     needs: [builder]
-    # Existing paid x86 large pool; do not occupy a general feature-PR slot.
-    # Outer VM is unchanged. Strict in-job envelope is checked before building.
-    runs-on: runner-large
+    # Use the production general envelope: the large pool did not honor the
+    # requested lower container envelope, so its preflight refused compilation.
+    # Admission remains with the ordinary scheduler; no capacity is reserved.
+    runs-on: runner
     timeout-minutes: 120
     container:
       image: ${{ needs.builder.outputs.image }}
