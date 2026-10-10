@@ -42,7 +42,6 @@ tilo-user-identity = { path = "../../crates/collab/tilo-user-identity" }
 tilo-identity-host = { path = "../../crates/runtime/tilo-identity-host" }
 tilo-relay-protocol = { path = "../../crates/hosting/tilo-relay-protocol" }
 automerge.workspace = true
-tilo-automerge.workspace = true
 cap-fs-ext = "3.4.6"
 cap-primitives = "3.4.6"
 cap-std = "3.4.6"

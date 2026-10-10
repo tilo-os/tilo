@@ -25,7 +25,6 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 tilo-actions = { path = "../../crates/collab/actions" }
 bounded-command = { path = "../../crates/system/bounded-command" }
 automerge.workspace = true
-tilo-automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true

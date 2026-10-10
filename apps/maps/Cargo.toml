@@ -19,7 +19,6 @@ thin = ["dep:runtime-dylib"]
 [dependencies]
 lru.workspace = true
 fnv.workspace = true
-hex.workspace = true
 tilo-paths = { path = "../../crates/platform/tilo-paths" }
 tilo-files = { path = "../../crates/platform/tilo-files" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }

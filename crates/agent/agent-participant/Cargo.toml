@@ -104,7 +104,6 @@ tilo-crypto = { path = "../../system/tilo-crypto", features = ["tls-fixture"] }
 accounts = { path = "../../system/accounts", features = ["person"] }
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 tempfile.workspace = true
-tilo-document = { path = "../../doc/tilo-document" }
 tilo-relay = { path = "../../hosting/tilo-relay", features = ["agents"] }
 tilo-relay-client = { path = "../../hosting/tilo-relay-client" }
 tilo-moq = { path = "../../hosting/tilo-moq", features = ["relay"] }
@@ -126,7 +125,7 @@ postcard = { workspace = true, features = ["use-std"] }
 
 [package.metadata.cargo-machete]
 # Used by tilo-browser-peer's test support, which the tests include by path.
-ignored = ["bytes", "channel-crypto", "http-body-util", "hyper", "hyper-util", "neighbour-wire", "postcard", "rustls", "sha2", "tilo-test-env", "tokio-rustls"]
+ignored = ["bytes", "channel-crypto", "http-body-util", "hyper", "hyper-util", "neighbour-wire", "rustls", "sha2", "tokio-rustls"]
 
 [lints]
 workspace = true

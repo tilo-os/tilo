@@ -25,7 +25,6 @@ runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # HIG's file-access boundary), instead of a magic folder.
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 automerge.workspace = true
-tilo-automerge.workspace = true
 # Content-addressed book identity: the BLAKE3 hash of an EPUB's bytes is its id,
 # so annotations + reading progress follow the file across paths, devices and
 # peers. Same hash family the Tilo filesystem uses.

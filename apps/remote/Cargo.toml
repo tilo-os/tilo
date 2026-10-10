@@ -29,8 +29,6 @@ tilo-callstream = { path = "../../crates/collab/tilo-callstream" }
 # Tilo-device connections store the target's endpoint id; only the key types
 # are needed, not the iroh transport.
 iroh-base = { workspace = true, features = ["key"] }
-automerge.workspace = true
-tilo-automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true

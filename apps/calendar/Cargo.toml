@@ -34,7 +34,6 @@ chrono = { workspace = true, features = ["std", "clock"] }
 # gaps/folds, rather than depending on the host's current `/usr/share/zoneinfo`.
 chrono-tz = "0.10.4"
 automerge.workspace = true
-tilo-automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true

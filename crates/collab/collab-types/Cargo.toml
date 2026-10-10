@@ -22,7 +22,6 @@ path = "src/lib.rs"
 
 [dependencies]
 tilo-action-policy = { version = "0.1.0", path = "../action-policy" }
-tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 getrandom.workspace = true
 web-time = { version = "1", features = ["serde"] }
 ed25519-dalek = { workspace = true, features = ["serde", "rand_core"] }

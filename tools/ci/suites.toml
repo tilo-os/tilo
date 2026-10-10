@@ -871,6 +871,7 @@ package = "tilo-agent-participant"
 # the browser peer's relay test support.
 inputs = ["crates/sdk/ui-core/assets/fonts/", "crates/browser/tilo-browser-peer/tests/support/"]
 readers = [
+  "crates/agent/agent-participant/tests/asking_first.rs",
   "crates/agent/agent-participant/tests/room_actions.rs",
   "crates/agent/agent-participant/tests/host_agents.rs",
   "crates/agent/agent-participant/tests/session_coverage.rs",

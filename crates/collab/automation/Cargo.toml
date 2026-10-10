@@ -19,7 +19,6 @@ path = "src/lib.rs"
 [dependencies]
 tilo-action-policy = { version = "0.1.0", path = "../action-policy" }
 tilo-actions = { version = "0.1.0", path = "../actions" }
-collab-types = { version = "0.1.0", path = "../collab-types" }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
