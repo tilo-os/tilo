@@ -475,15 +475,7 @@ impl EmojiPicker {
         let columns = (((width - pad * 2.0) / cell).floor()).max(1.0);
         let grid_w = columns * cell;
         let group_count = self.catalogue.groups().len().max(1);
-        let room = width - pad * 2.0;
-        let capacity = usize_from_f64((room / self.group_width.max(1.0)).floor())
-            .max(1)
-            .min(group_count);
-        self.tab_columns = if room >= self.group_strip_width {
-            group_count
-        } else {
-            group_count.div_ceil(group_count.div_ceil(capacity))
-        };
+        self.tab_columns = self.group_column_count(width - pad * 2.0, group_count);
         let tabs_h = tabs_h * f64_from_usize(group_count.div_ceil(self.tab_columns));
         let fixed = pad * 2.0 + field_h + gap + tabs_h + gap + gap + footer_h;
         let grid_h = (cell * f64_from_usize(GRID_ROWS))
@@ -562,6 +554,17 @@ impl EmojiPicker {
         self.scroll = self.scroll.clamp(0.0, self.max_scroll());
         self.scroll_selected_into_view();
         self.layout_tones();
+    }
+
+    fn group_column_count(&self, room: f64, group_count: usize) -> usize {
+        let capacity = usize_from_f64((room / self.group_width.max(1.0)).floor())
+            .max(1)
+            .min(group_count);
+        if room >= self.group_strip_width {
+            group_count
+        } else {
+            group_count.div_ceil(group_count.div_ceil(capacity))
+        }
     }
 
     fn layout_tones(&mut self) {
