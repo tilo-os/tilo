@@ -529,7 +529,7 @@ fn a_bound_component_builds_participant_trees_against_its_own_record() {
         .find(|snapshot| snapshot.binding.same_component(&binding))
         .expect("component snapshot");
     let spec = tilo_actions::door::resolve(
-        &snapshot.resources,
+        snapshot.resources(),
         &tilo_actions::ActionAddress::new("test.doc", "mark"),
     )
     .expect("participant resolves mark");

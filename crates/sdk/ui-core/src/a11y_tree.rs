@@ -50,13 +50,17 @@ mod continuation;
 
 #[path = "a11y_tree/node_identity.rs"]
 mod node_identity;
+
+#[path = "a11y_tree/component_nodes.rs"]
+mod component_nodes;
+use component_nodes::ComponentNodes;
 pub(crate) use node_identity::AdmittedNodeNames;
 use node_identity::WidgetNodeMap;
 
 type HostedWidget<'a> = (Vec<usize>, &'a dyn Widget);
 type HostedByIndex<'a> = HashMap<usize, Vec<HostedWidget<'a>>>;
 use serde::{Deserialize, Serialize};
-use tilo_actions::{ActionInput, ActionSpec, Collects, EncodedAction, OperationKind, Resource};
+use tilo_actions::{ActionSpec, Collects, EncodedAction, OperationKind, Resource};
 
 /// Operation type used when the retained semantic tree projects an ordinary
 /// UI affordance into the resource/action catalogue. This makes the same
@@ -254,39 +258,6 @@ pub struct SemanticTree {
     components: Vec<ComponentNodes>,
 }
 
-/// The semantic nodes of one bound component's published resources, and the
-/// snapshot they were built from. Nothing else goes into them: an id, its
-/// actions and their bound targets come from the resource tree and the
-/// component's identity alone, so while the component hands over the same
-/// tree (the same `Rc`, which the bound resource cache keeps until the
-/// component's declarations change) they are exactly what a rebuild would
-/// produce (TIL-761).
-struct ComponentNodes {
-    /// `Weak`, so it neither keeps the tree alive nor matches an edited one
-    /// ([`Rc::make_mut`](std::rc::Rc::make_mut) detaches weak pointers).
-    source: std::rc::Weak<Vec<Resource>>,
-    binding: crate::bound_dispatch::CallbackBinding,
-    roots: Vec<SemanticId>,
-    nodes: HashMap<SemanticId, SemanticNode>,
-    order: Vec<SemanticId>,
-    prompted: PromptedMap,
-    bound_actions: HashMap<(SemanticId, String), crate::bound_dispatch::BoundActionTarget>,
-    duplicate_ids: Vec<SemanticId>,
-}
-
-impl ComponentNodes {
-    /// Whether these nodes are what `component` would build.
-    fn built_from(&self, component: &crate::bound_dispatch::BoundResourceSnapshot) -> bool {
-        self.binding.same_component(&component.binding)
-            && self.binding.instance_id == component.binding.instance_id
-            && self.binding.lifetime_id == component.binding.lifetime_id
-            && self
-                .source
-                .upgrade()
-                .is_some_and(|source| std::rc::Rc::ptr_eq(&source, &component.resources))
-    }
-}
-
 impl Default for SemanticTree {
     fn default() -> Self {
         Self::new()
@@ -445,42 +416,42 @@ impl SemanticTree {
 
         // Resource affordances hang off the root as their own subtrees.
         for res in resources {
-            let child = builder.visit_resource(res, None);
+            let child = builder.visit_resource(res);
             root_children.push(child);
         }
 
-        // A component handing over the snapshot its nodes were built from
-        // keeps them; any other is built afresh.
+        // A component handing over the tree its nodes were built from keeps
+        // them; one handing over a tree that shares all but some subtrees
+        // with it updates the nodes of those (TIL-766); any other is built
+        // afresh.
         let mut previous = std::mem::take(&mut self.components)
             .into_iter()
             .map(Some)
             .collect::<Vec<_>>();
         let mut next_components = Vec::with_capacity(components.len());
         let mut reused = Vec::with_capacity(components.len());
+        let mut updates = TreeDelta::default();
         for component in components {
             let kept = previous
                 .iter_mut()
                 .find_map(|slot| slot.take_if(|nodes| nodes.built_from(component)));
-            reused.push(kept.is_some());
-            let nodes = kept.unwrap_or_else(|| {
-                let mut part = Build::<BOUND>::new(&ptr_to_taffy, focused, actions_only);
-                let roots = component
-                    .resources
-                    .iter()
-                    .map(|resource| part.visit_resource(resource, Some(&component.binding)))
-                    .collect();
-                ComponentNodes {
-                    source: std::rc::Rc::downgrade(&component.resources),
-                    binding: component.binding.clone(),
-                    roots,
-                    nodes: part.nodes,
-                    order: part.order,
-                    prompted: part.prompted,
-                    bound_actions: part.bound_actions,
-                    duplicate_ids: part.duplicate_ids,
+            let kept = kept.or_else(|| {
+                if actions_only {
+                    return None;
                 }
+                let slot = previous.iter_mut().find(|slot| {
+                    slot.as_ref()
+                        .is_some_and(|nodes| nodes.same_owner(component))
+                })?;
+                let delta = slot.as_mut()?.update(component)?;
+                updates.added.extend(delta.added);
+                updates.removed.extend(delta.removed);
+                updates.updated.extend(delta.updated);
+                slot.take()
             });
-            root_children.extend(nodes.roots.iter().cloned());
+            reused.push(kept.is_some());
+            let nodes = kept.unwrap_or_else(|| ComponentNodes::build(component));
+            root_children.extend(nodes.roots().iter().cloned());
             next_components.push(nodes);
         }
         let previous = previous.into_iter().flatten().collect::<Vec<_>>();
@@ -519,7 +490,7 @@ impl SemanticTree {
                 root, node_map, admitted, focused, resources, components, false,
             );
         }
-        let delta = Sections {
+        let mut delta = Sections {
             nodes: &self.nodes,
             components: &previous,
         }
@@ -530,6 +501,14 @@ impl SemanticTree {
             },
             &reused,
         );
+        if !updates.added.is_empty() || !updates.removed.is_empty() || !updates.updated.is_empty() {
+            delta.added.extend(updates.added);
+            delta.removed.extend(updates.removed);
+            delta.updated.extend(updates.updated);
+            delta.added.sort();
+            delta.removed.sort();
+            delta.updated.sort();
+        }
 
         let mut duplicate_ids = builder.duplicate_ids;
         for component in &next_components {
@@ -604,7 +583,7 @@ impl SemanticTree {
             .filter_map(move |id| self.nodes.get(id))
             .chain(self.components.iter().flat_map(|component| {
                 component
-                    .order
+                    .order()
                     .iter()
                     .filter_map(move |id| component.nodes.get(id))
             }))
@@ -1195,96 +1174,19 @@ impl<'a, const BOUND: bool> Build<'a, BOUND> {
         id
     }
 
-    fn visit_resource(
-        &mut self,
-        res: &Resource,
-        binding: Option<&crate::bound_dispatch::CallbackBinding>,
-    ) -> SemanticId {
-        let id = binding.map_or_else(
-            || SemanticId::resource(res.id.as_str()),
-            |binding| {
-                SemanticId(format!(
-                    "ri:{}:{}:{}",
-                    binding.instance_id,
-                    binding.lifetime_id,
-                    res.id.as_str()
-                ))
-            },
-        );
-
-        let mut actions: Vec<SemanticAction> = Vec::new();
-        for spec in &res.actions {
-            actions.push(self.resource_action(&id, res.id.as_str(), spec));
-            if let Some(binding) = binding {
-                self.bound_actions.insert(
-                    (id.clone(), spec.id.clone()),
-                    crate::bound_dispatch::BoundActionTarget {
-                        physical_text: false,
-                        binding: binding.clone(),
-                        address: crate::bound_dispatch::BoundActionAddress {
-                            instance_id: binding.instance_id,
-                            address: tilo_actions::ActionAddress::new(res.id.as_str(), &spec.id),
-                        },
-                    },
-                );
-            }
-        }
-
+    /// A declared resource's node and its children's, beneath the root.
+    fn visit_resource(&mut self, res: &Resource) -> SemanticId {
+        let id = SemanticId::resource(res.id.as_str());
+        let actions = component_nodes::resource_actions(&id, res, None, &mut self.prompted, None);
         let mut children: Vec<SemanticId> = Vec::new();
         for child in &res.children {
-            children.push(self.visit_resource(child, binding));
+            children.push(self.visit_resource(child));
         }
-
-        let node = SemanticNode {
-            id: id.clone(),
-            // Component semantic addresses remain valid only for this captured lifetime.
-            durable_identity: binding.is_none(),
-            role: Role::Group,
-            name: Some(res.label.clone()),
-            value: None,
-            state: AccessState::default(),
-            bounds: None,
-            actions,
-            children,
-            widget_taffy_id: None,
-            semantic_target: None,
-        };
+        let node =
+            component_nodes::resource_semantic_node(id.clone(), res, actions, children, true);
         self.order.push(id.clone());
         self.insert_node(node);
         id
-    }
-
-    fn resource_action(
-        &mut self,
-        node_id: &SemanticId,
-        resource: &str,
-        spec: &ActionSpec,
-    ) -> SemanticAction {
-        let kind = match &spec.input {
-            ActionInput::Immediate(enc) => SemanticActionKind::App(enc.as_ref().clone()),
-            ActionInput::Deferred { .. } => SemanticActionKind::AppDeferred {
-                address: tilo_actions::ActionAddress::new(resource, &spec.id),
-            },
-            ActionInput::Prompted {
-                prompt,
-                placeholder,
-                collects,
-                build,
-            } => {
-                self.prompted
-                    .insert((node_id.clone(), spec.id.clone()), build.clone());
-                SemanticActionKind::AppPrompted {
-                    prompt: prompt.clone(),
-                    placeholder: placeholder.clone(),
-                    collects: *collects,
-                }
-            }
-        };
-        SemanticAction {
-            name: spec.id.clone(),
-            label: spec.label.clone(),
-            kind,
-        }
     }
 }
 
