@@ -282,6 +282,30 @@ def groups(tree: Tree, paths: Iterable[str]) -> dict[int, list[str]]:
     return {inode: sorted(names) for inode, names in found.items() if len(names) > 1}
 
 
+def directory_drift(raw: Tree, chunked: Tree) -> tuple[list[str], int]:
+    """Directories as chunkah wrote them, before the directory layer: only their times may differ.
+
+    The directory layer restores times. It must not be what hides a changed
+    mode, owner or extended attribute: how an upper layer's directory entry
+    merges with a lower one's xattrs differs between overlay stores, so the
+    lower entries have to be right already. Returns the problems and the
+    number of directories whose time the layer restores.
+    """
+    problems, restored = [], 0
+    for path, node in chunked.nodes.items():
+        before = raw.nodes.get(path)
+        if node.kind != "dir" or before is None or before.kind != "dir" or before.implicit:
+            continue
+        for field in ("mode", "uid", "gid", "xattrs"):
+            wrote, has = getattr(node, field), getattr(before, field)
+            if wrote != has:
+                shown = (oct(wrote), oct(has)) if field == "mode" else (repr(wrote), repr(has))
+                problems.append(f"/{path}: chunkah wrote the directory's {field} {shown[0]}, "
+                                f"the raw image has {shown[1]}")
+        restored += before.mtime != node.mtime
+    return sorted(problems), restored
+
+
 def compare(raw: Tree, chunked: Tree) -> Comparison:
     result = Comparison()
     kept = set()
@@ -434,6 +458,7 @@ def finish(raw_source: str, chunked: Path, name: str, archive: Path | None,
         raw_future = pool.submit(replay_source, raw_source)
         chunked_future = pool.submit(replay_source, f"oci:{chunked}")
         raw_tree, chunked_tree = raw_future.result(), chunked_future.result()
+    drift, restored = directory_drift(raw_tree, chunked_tree)
     layer = directory_layer(raw_tree)
     digest, manifest = finish_layout(chunked, raw_image.config, name, layer)
     # The proof runs on the layout as written: chunkah's layers, then the
@@ -443,6 +468,7 @@ def finish(raw_source: str, chunked: Path, name: str, archive: Path | None,
         raise ValueError(f"the layout names {final.manifest_digest}, not {digest}")
     replay(final, chunked_tree, start=len(manifest["layers"]) - 1)
     result = compare(raw_tree, chunked_tree)
+    result.problems[:0] = drift
     report = {
         "raw": raw_image.reference, "raw_layers": len(raw_image.manifest.get("layers", [])),
         "raw_compressed": sum(int(item["size"]) for item in raw_image.manifest.get("layers", [])),
@@ -451,6 +477,7 @@ def finish(raw_source: str, chunked: Path, name: str, archive: Path | None,
         "directory_layer": {"compressed": manifest["layers"][-1]["size"], "uncompressed": len(layer)},
         "paths": result.paths, "clamped_times": result.clamped, "pruned_paths": result.pruned,
         "pruned_bytes": result.pruned_bytes, "split_hard_link_groups": result.split_links,
+        "directory_times_restored": restored,
         "problems": len(result.problems), "seconds": round(time.monotonic() - started, 1),
         "before": before.manifest_digest,
     }

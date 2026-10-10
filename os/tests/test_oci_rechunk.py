@@ -120,7 +120,7 @@ RAW = [
 
 def chunked_layers(*, tool: bytes = b"tool v1", tool_mode: int = 0o755, tool_uid: int = 0,
                    tool_time: int = 700, cap: bool = True, fresh: bool = True, extra: bool = False,
-                   link: bool = True):
+                   link: bool = True, fonts_mode: int = 0o644):
     """What chunkah writes for RAW: two components, times capped, directories at their clamps."""
     tool_xattrs = {"security.capability": CAP} if cap else {}
     first = [entry("usr", "dir", mtime=50), entry("usr/bin", "dir", mtime=50),
@@ -132,7 +132,7 @@ def chunked_layers(*, tool: bytes = b"tool v1", tool_mode: int = 0o755, tool_uid
     first += [entry("usr/lib", "dir", mtime=50), entry("usr/lib/libz.so", "symlink", link="libz.so.1", mtime=50),
               entry("usr/lib/libz.so.1", data=b"zlib", mtime=800)]
     second = [entry("usr", "dir", mtime=60), entry("usr/share", "dir", mtime=60),
-              entry("usr/share/fonts", "dir", mtime=60, xattrs={"user.pinned": b"1"}),
+              entry("usr/share/fonts", "dir", mtime=60, mode=fonts_mode, xattrs={"user.pinned": b"1"}),
               entry("usr/share/fonts/sans.ttf", data=b"glyphs", mtime=1200),
               entry("etc", "dir", mtime=60), entry("etc/conf.d", "dir", mtime=60),
               entry("sysroot", "dir", mtime=60)]
@@ -177,6 +177,7 @@ class Rechunk(unittest.TestCase):
         self.assertEqual(report["pruned_bytes"], 64)
         self.assertGreater(report["clamped_times"], 0)
         self.assertEqual(report["chunked_layers"], 3)
+        self.assertEqual(report["directory_times_restored"], 8)  # every directory chunkah wrote
 
         image = rechunk.image_size.layout_image(root, None)
         self.assertEqual(image.manifest_digest, digest)
@@ -243,6 +244,15 @@ class Rechunk(unittest.TestCase):
 
     def test_a_missing_file_is_refused(self) -> None:
         self.assert_refused("missing: /etc/conf.d/fresh", fresh=False)
+
+    def test_a_directory_the_time_layer_would_mask_is_refused(self) -> None:
+        # The directory layer rewrites the mode too; the proof must not rely on it.
+        root = self.chunked(fonts_mode=0o700)
+        drift, _ = rechunk.directory_drift(rechunk.replay_source(f"oci:{self.raw}"),
+                                           rechunk.replay_source(f"oci:{root}"))
+        self.assertEqual(drift, ["/usr/share/fonts: chunkah wrote the directory's mode 0o700, the raw image has 0o644"])
+        with self.assertRaisesRegex(ValueError, "differs from the raw image in 1 ways"):
+            rechunk.finish(f"oci:{self.raw}", root, NAME, None, None)
 
     def test_a_whited_out_file_coming_back_is_refused(self) -> None:
         self.assert_refused("not in the raw image: /etc/conf.d/stale", extra=True)
