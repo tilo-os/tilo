@@ -291,9 +291,6 @@ files-a11y-shared-recipients = Für { $count } { $count ->
 files-a11y-version-conflict = Hat einen Versionskonflikt
 
 ## Dienst- und Empfangsfehler/status
-files-history-encode-failed = Verlaufsanfrage konnte nicht kodiert werden
-files-history-request-too-large = Verlaufsanfrage überschreitet ihre Übertragungsgrenze
-files-history-restore-failed = Diese Version konnte nicht wiederhergestellt werden: { $error }
 files-open-terminal-failed = Terminal konnte nicht geöffnet werden: { $error }
 files-conflict-strategy-unsupported = Diese Konfliktstrategie wird von Dateien noch nicht unterstützt
 files-conflict-encode-failed = Konfliktanfrage konnte nicht kodiert werden
@@ -311,7 +308,6 @@ files-share-response-truncated = Antwort des Freigabedienstes wurde abgeschnitte
 files-share-response-invalid = Ungültige Antwort des Freigabedienstes: { $error }
 files-share-refused = Freigabedienst hat die Anfrage abgelehnt ({ $code })
 files-received-refused = Empfangsdienst hat den Link abgelehnt ({ $code })
-files-received-retry-refused = Empfangsdienst konnte die Wiederholung nicht ausführen ({ $code })
 files-received-wrong-response = Empfangsdienst hat die falsche Antwort zurückgegeben
 files-received-encode-failed = Empfangsanfrage konnte nicht kodiert werden
 files-received-request-too-large = Empfangsanfrage überschreitet ihre Grenze

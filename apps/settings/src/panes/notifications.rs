@@ -31,7 +31,7 @@ use ui::tilo_resource;
 use ui::widget::{AppModel, Dropdown, ModelPath, Toggle, Widget};
 
 use crate::host::{Followed, PaneCx};
-use crate::i18n::{t, t_args};
+use crate::i18n::{english, t, t_args};
 use crate::prefs::NotificationPrefs;
 use crate::widgets::{
     El, StatusTone, caption, card, choice_row, error_row, rows, semantic_status_pill,
@@ -131,10 +131,6 @@ fn installed_notification_apps_from(
         .collect();
     apps.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.id.cmp(&b.id)));
     apps
-}
-
-fn english<T>(table: &'static [(&'static str, T)]) -> impl Iterator<Item = &'static str> {
-    table.iter().map(|(label, _)| *label)
 }
 
 /// One of an app's delivery choices a person turns on or off.

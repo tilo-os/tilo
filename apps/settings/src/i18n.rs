@@ -37,6 +37,14 @@ pub fn t_args(key: &str, args: &[(&str, ArgValue)]) -> String {
     CATALOG.t_args(key, args)
 }
 
+/// The English names of a `(label, value)` table, as an effect's or verb's
+/// choices.
+pub(crate) fn english<T>(
+    table: &'static [(&'static str, T)],
+) -> impl Iterator<Item = &'static str> {
+    table.iter().map(|(label, _)| *label)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

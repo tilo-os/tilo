@@ -28,7 +28,7 @@ use ui::widget::{AppModel, Dropdown, ModelPath, ProgressBar, Sparkline, Toggle, 
 
 use crate::effects::effect;
 use crate::host::{Followed, PaneCx};
-use crate::i18n::{t, t_args};
+use crate::i18n::{english, t, t_args};
 use crate::prefs::{PowerActionPref, PowerPrefs};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
@@ -207,11 +207,6 @@ fn health_explanation_shown(battery: &BatteryInfo) -> String {
         Some(60..=79) => t("power-health-reduced"),
         Some(_) => t("power-health-severe"),
     }
-}
-
-/// The English names of a `(label, value)` table, as an effect's choices.
-fn english<T>(table: &'static [(&'static str, T)]) -> impl Iterator<Item = &'static str> {
-    table.iter().map(|(label, _)| *label)
 }
 
 /// This device's power hardware, as the pane and the effects reach it.

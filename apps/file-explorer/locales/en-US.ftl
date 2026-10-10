@@ -301,9 +301,6 @@ files-a11y-shared-recipients = Shared with { $count } { $count ->
 files-a11y-version-conflict = Has a version conflict
 
 ## Service and received-share errors/status
-files-history-encode-failed = Could not encode the history request
-files-history-request-too-large = History request exceeds its wire bound
-files-history-restore-failed = Could not restore that version: { $error }
 files-open-terminal-failed = Could not open Terminal: { $error }
 files-conflict-strategy-unsupported = That conflict strategy is not supported by Files yet
 files-conflict-encode-failed = Could not encode the conflict request
@@ -321,7 +318,6 @@ files-share-response-truncated = Share response was truncated: { $error }
 files-share-response-invalid = Invalid share-service response: { $error }
 files-share-refused = Share service refused the request ({ $code })
 files-received-refused = Received-file service refused the link ({ $code })
-files-received-retry-refused = Received-file service could not retry ({ $code })
 files-received-wrong-response = Received-file service returned the wrong response
 files-received-encode-failed = Could not encode received-file request
 files-received-request-too-large = Received-file request exceeds its bound

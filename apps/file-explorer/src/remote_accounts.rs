@@ -9,7 +9,7 @@
 
 use std::path::{Path, PathBuf};
 
-use accounts::{Account, AccountId, AccountSyncHealth, AccountSyncStatusStore, AccountTypeId};
+use accounts::{Account, AccountId, AccountSyncHealth, AccountSyncStatusStore};
 use serde_json::Value;
 
 pub const WEBDAV_TYPE: &str = "webdav";
@@ -96,15 +96,6 @@ impl RemoteAccountHealth {
             Self::Error => Some("Attention"),
             Self::NeverChecked | Self::Syncing => Some("Syncing"),
         }
-    }
-}
-
-/// Load the externally configured file providers from the user's account
-/// store, mounted under the user's home.
-pub fn load() -> Vec<RemoteAccount> {
-    match accounts::config_root() {
-        Some(root) => load_in(&root, crate::model::user_home().as_deref()),
-        None => Vec::new(),
     }
 }
 
@@ -251,13 +242,6 @@ pub fn resource_id(id: &AccountId) -> String {
 pub fn account_of_resource(resource: &str) -> Option<String> {
     let hex_id = resource.strip_prefix("files.remote-account:")?;
     String::from_utf8(hex::decode(hex_id).ok()?).ok()
-}
-
-pub fn type_id(kind: RemoteAccountKind) -> AccountTypeId {
-    match kind {
-        RemoteAccountKind::WebDav => WEBDAV_TYPE.into(),
-        RemoteAccountKind::Nextcloud => NEXTCLOUD_TYPE.into(),
-    }
 }
 
 #[cfg(test)]
