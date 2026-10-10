@@ -208,10 +208,7 @@ impl NativeProcessEnvironment {
         let (workspace_id, workspace_scoped) = launcher_workspace(workspace)?;
         let mut permissions =
             permissions_for_participation(author, workspace_scoped, self.participation.as_deref())?;
-        if workspace_scoped
-            && let Some(source) = self.action_authority
-            && source().ok().flatten().is_some()
-        {
+        if workspace_scoped && let Some(source) = self.action_authority {
             let app = app_id.to_owned();
             let room = workspace_id.clone();
             let person = author.clone();
@@ -220,24 +217,27 @@ impl NativeProcessEnvironment {
             let initial = action_authority_context(&source, &room, &app, &person);
             if let Ok(initial) = initial {
                 deadline_unix_ms.store(initial.deadline_unix_ms, Ordering::Release);
-                let current_deadline = std::sync::Arc::clone(&deadline_unix_ms);
-                permissions = permissions.with_live_action_authority(
-                    app.clone(),
-                    std::sync::Arc::new(move || {
-                        match action_authority_context(&current_source, &room, &app, &person) {
-                            Ok(current) => {
-                                current_deadline.store(current.deadline_unix_ms, Ordering::Release);
-                                Ok(current.permissions)
-                            }
-                            Err(error) => {
-                                current_deadline.store(0, Ordering::Release);
-                                Err(error)
-                            }
-                        }
-                    }),
-                    deadline_unix_ms,
-                );
             }
+            // A configured host policy is still the authority boundary when
+            // its first observation fails. Retain that exact sampler so the
+            // app fails closed now and can observe a later valid replacement.
+            let current_deadline = std::sync::Arc::clone(&deadline_unix_ms);
+            permissions = permissions.with_live_action_authority(
+                app.clone(),
+                std::sync::Arc::new(move || {
+                    match action_authority_context(&current_source, &room, &app, &person) {
+                        Ok(current) => {
+                            current_deadline.store(current.deadline_unix_ms, Ordering::Release);
+                            Ok(current.permissions)
+                        }
+                        Err(error) => {
+                            current_deadline.store(0, Ordering::Release);
+                            Err(error)
+                        }
+                    }
+                }),
+                deadline_unix_ms,
+            );
         }
         let instance_id = self.continuity_instance.map_or_else(
             || Ok(stable_instance_id(&package_id)),
@@ -1266,6 +1266,137 @@ mod native_process_tests {
             crate::permissions::CapDecision::Allow
         );
         assert_eq!(permissions.directory_witness().unwrap(), allowed);
+    }
+
+    #[test]
+    fn native_host_initial_authority_failure_retains_bound_sampler_and_recovers() {
+        use crate::permissions::{
+            CapDecision, CapOverride, Effect, PermissionScope, ResourceRef, Scope, Subject, Verb,
+        };
+        use collab_types::caps::action_authority::AppActionAuthorityProjection;
+        use std::sync::{Arc, Mutex, atomic::AtomicUsize};
+
+        let temp = tempfile::tempdir().unwrap();
+        let room = "3f2b1c00-0000-4000-8000-000000000001";
+        let app = "so.tilo.chat";
+        let author = UserId("person-a".into());
+        let now_ms = crate::time::try_unix_now_ms().unwrap();
+        let valid = AppActionAuthorityProjection {
+            schema_version: 1,
+            room: room.into(),
+            app_id: app.into(),
+            person: author.0.clone(),
+            owner: Some(author.0.clone()),
+            capabilities: vec![],
+            issued_at_unix_ms: now_ms - 10,
+            valid_until_unix_ms: now_ms + 2_900,
+        };
+        let mut expired = valid.clone();
+        expired.issued_at_unix_ms = now_ms - 4_000;
+        expired.valid_until_unix_ms = now_ms - 1_000;
+        let mut failures = vec![
+            Ok(None),
+            Ok(Some(b"invalid".to_vec())),
+            Ok(Some(serde_json::to_vec(&expired).unwrap())),
+            Err("authority read unavailable".to_owned()),
+        ];
+        for (field, value) in [
+            ("room", "foreign-room"),
+            ("app_id", "so.tilo.other"),
+            ("person", "person-b"),
+        ] {
+            let mut mismatched = serde_json::to_value(&valid).unwrap();
+            mismatched[field] = value.into();
+            failures.push(Ok(Some(serde_json::to_vec(&mismatched).unwrap())));
+        }
+        for initial in failures {
+            for participation in ["author", "read-only"] {
+                let current = Arc::new(Mutex::new(initial.clone()));
+                let reads = Arc::new(AtomicUsize::new(0));
+                let source: tilo_host::action_authority::AuthoritySource = {
+                    let current = Arc::clone(&current);
+                    let reads = Arc::clone(&reads);
+                    Arc::new(move || {
+                        reads.fetch_add(1, Ordering::Relaxed);
+                        current.lock().unwrap().clone()
+                    })
+                };
+                let resolved = NativeProcessEnvironment {
+                    workspace_id: Some(room.into()),
+                    participation: Some(participation.into()),
+                    action_authority: Some(source),
+                    ..environment(temp.path())
+                }
+                .resolve(app, &author)
+                .unwrap();
+                assert_eq!(reads.load(Ordering::Relaxed), 1);
+                let permissions = resolved.permissions;
+                let baseline =
+                    permissions_for_participation(&author, true, Some(participation)).unwrap();
+                let record_write = PermissionScope::workspace(Verb::Write);
+                let own = ResourceRef::App(app.into());
+                let action = ResourceRef::Action {
+                    app: app.into(),
+                    resource: "conversation".into(),
+                    action: "send".into(),
+                };
+                assert!(permissions.has_live_action_authority());
+                assert_eq!(permissions.action_authority_deadline_unix_ms(), None);
+                assert_eq!(permissions.role(), baseline.role());
+                assert_eq!(
+                    permissions.check(&record_write),
+                    baseline.check(&record_write)
+                );
+                assert!(permissions.directory_witness().is_err());
+                for resource in [&own, &action] {
+                    assert_ne!(
+                        permissions.decide(resource, Verb::Write),
+                        CapDecision::Allow
+                    );
+                    assert_ne!(
+                        permissions.decide(resource, Verb::Admin),
+                        CapDecision::Allow
+                    );
+                }
+
+                *current.lock().unwrap() = Ok(Some(serde_json::to_vec(&valid).unwrap()));
+                assert!(permissions.directory_witness().is_ok());
+                assert_eq!(
+                    permissions.action_authority_deadline_unix_ms(),
+                    Some(valid.valid_until_unix_ms)
+                );
+                for resource in [&own, &action] {
+                    assert_eq!(
+                        permissions.decide(resource, Verb::Write) == CapDecision::Allow,
+                        participation == "author"
+                    );
+                }
+                assert_eq!(permissions.role(), baseline.role());
+                assert_eq!(
+                    permissions.check(&record_write),
+                    baseline.check(&record_write)
+                );
+
+                let mut restricted = valid.clone();
+                restricted.capabilities.push(CapOverride::new(
+                    Subject::person(&author.0),
+                    Scope::App(app.into()),
+                    Effect::Restrict,
+                    Verb::Read,
+                ));
+                *current.lock().unwrap() = Ok(Some(serde_json::to_vec(&restricted).unwrap()));
+                for resource in [&own, &action] {
+                    assert_ne!(
+                        permissions.decide(resource, Verb::Write),
+                        CapDecision::Allow
+                    );
+                }
+                assert_eq!(
+                    permissions.check(&record_write),
+                    baseline.check(&record_write)
+                );
+            }
+        }
     }
 
     #[test]
