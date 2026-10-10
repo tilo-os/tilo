@@ -138,6 +138,34 @@ The locale files overlap Dictation #2974 only at file level in independent hunks
 the top-bar entries are beside overview, and Dictation owns its later namespace.
 Messages #2881 and Files #3009 still have no edited-path overlap.
 
+## Responsive primary bar (2026-10-07)
+
+At 320 logical pixels the previous primary bar put Workspace Up over Clock by
+21 pixels. Constrained primary chrome now mounts the library Toolbar in the
+retained layout tree, using themed icon targets, priority overflow, native view
+actions and shared ContextMenu. The selected center reading stays visible; offline status is named and
+painted, and lower-priority commands remain available through More.
+
+The host respects popup pointer capture through release, cancels on focus loss,
+and updates unchanged toolbar names/toggles only when their state changes.
+Overflow can open the existing widget editor without losing the opening click;
+its existing semantic edit actions remain reachable. The shared Toolbar rejects
+held Enter/Space activation while allowing repeated directional navigation.
+
+Nine new production desktop regressions cover geometry, native certification,
+pointer/semantic intent delivery, repeated Escape, outside cancellation, resize,
+focus loss, visible semantic focus without continuous idle painting, editor
+semantic editing, monitor/calendar readings and offline presentation. Retained before
+captures and actual dark/light/high-contrast, 200% text and combined-scale row
+and overflow captures qualify this increment separately from overview's ambient
+avatar and intentional focus/shared-row baseline differences.
+
+Remaining inventory: live device/status and notification states; constrained
+workspace identity and collaborator/sharing density; full window resize and
+interrupted chrome journeys. The existing editor increment remains separately
+frozen pending its Files prerequisite. No Files broker, transfer or undo code is
+part of this responsive change.
+
 ## Owned overview clock fixture (2026-10-07)
 
 On base 411d51e9, the overview harness's ambient clock pin was ignored by the
@@ -153,8 +181,10 @@ This runner reproduces 7,082 differing pixels before and 6,807 after; the clock
 region now matches exactly, and all 275 before/after differences are confined
 to that region. The existing Home focus ring, shared creation row and fixture
 avatar differences remain for maintenance review. No baseline has been refreshed.
-The ready source PR carries inspected original PNG attachments and qualification
-results; protected landing and exact merged-main checks remain pending.
+Source PR #3413 merged through protected CI at
+337cfb86767cb3c6f2f450430732e3c01acb4f99. Exact-commit native/overview cases,
+shell test compilation and all-target Clippy passed; the unchanged full pixel
+oracle remains red as described above.
 
 Remaining primary-bar work is separate: collisions at 320 px, retained shared
 overflow controls and status/offline states. The qualified top-bar editor
