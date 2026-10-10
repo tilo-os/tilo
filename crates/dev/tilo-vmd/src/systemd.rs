@@ -51,7 +51,8 @@ const DEVICE_SESSION_TEMPLATE: &str = "tilo-board-headless-session@";
 /// The unit `tilo-seat-session` runs the compositor in while a display is
 /// connected, a PAM login on seat0. The headless compositor runs in the
 /// account's user manager, which gets the layers anyway.
-const DEVICE_SESSION_UNITS: &[&str] = &["tilo-board-drm-session.service"];
+const DEVICE_DRM_SESSION_UNIT: &str = "tilo-board-drm-session.service";
+const DEVICE_SESSION_UNITS: &[&str] = &[DEVICE_DRM_SESSION_UNIT];
 
 /// The board session's unit among `systemctl list-units --plain
 /// --no-legend` lines: the active instance, else the first one listed.
@@ -363,6 +364,46 @@ fn uid_of(user: &str) -> Option<u32> {
         .ok()?;
     let line = String::from_utf8_lossy(&output.stdout).into_owned();
     line.split(':').nth(2)?.trim().parse().ok()
+}
+
+/// Read the live owner session's PID from its manager, not the board's outer
+/// seat supervisor. The DRM and headless sessions have their own mount views.
+fn owner_control_pid_command(session: &Session, uid: u32, drm_active: bool) -> Command {
+    let board = session.unit.starts_with(DEVICE_SESSION_TEMPLATE);
+    let mut command = if board && !drm_active {
+        let mut command = Command::new("runuser");
+        command
+            .args(["-u", &session.user, "--", "env"])
+            .arg(format!("XDG_RUNTIME_DIR=/run/user/{uid}"))
+            .args(["systemctl", "--user"]);
+        command
+    } else {
+        Command::new("systemctl")
+    };
+    let unit = if board {
+        if drm_active {
+            DEVICE_DRM_SESSION_UNIT
+        } else {
+            "tilo-board-session.service"
+        }
+    } else {
+        &session.unit
+    };
+    command.args(["show", "--property=MainPID", "--value", unit]);
+    command
+}
+
+/// The ordinary owner CLI still passes the compositor's UID, namespace and
+/// launched-app checks. No process environment or developer credentials are read.
+fn owner_control_command(pid: u32, user: &str, uid: u32, args: &[String]) -> Command {
+    let env = [("XDG_RUNTIME_DIR".into(), format!("/run/user/{uid}"))];
+    let mut arguments = vec![
+        TILO_CONTROL.into(),
+        "--socket".into(),
+        format!("/run/user/{uid}/tilo-session/admin-control.sock"),
+    ];
+    arguments.extend_from_slice(args);
+    crate::exec::in_session(pid, user, &env, &arguments)
 }
 
 impl Apply for SystemdApply {
@@ -796,19 +837,46 @@ impl Apply for SystemdApply {
         if !Path::new(TILO_CONTROL).exists() {
             return Err(DaemonError::ControlMissing(TILO_CONTROL.into()));
         }
-        let output = Command::new("runuser")
-            .args(["-u", &session.user, "--", "env"])
-            .arg(format!(
-                "TILO_TEST_CONTROL={}",
-                session.control_socket.display()
-            ))
-            .arg(TILO_CONTROL)
-            .args(args)
-            .output()
-            .map_err(|e| DaemonError::Apply {
-                step: "tilo-control".into(),
-                detail: e.to_string(),
+        let mut command = if session.stand_in {
+            let mut command = Command::new("runuser");
+            command
+                .args(["-u", &session.user, "--", "env"])
+                .arg(format!(
+                    "TILO_TEST_CONTROL={}",
+                    session.control_socket.display()
+                ))
+                .arg(TILO_CONTROL)
+                .args(args);
+            command
+        } else {
+            let uid = self.account_uid(&session.user)?;
+            let pid = if session.login.is_some() {
+                self.session_pid(session)
+            } else {
+                let active = self.unit_state(DEVICE_DRM_SESSION_UNIT) == "active";
+                owner_control_pid_command(session, uid, active)
+                    .output()
+                    .ok()
+                    .filter(|output| output.status.success())
+                    .and_then(|output| String::from_utf8(output.stdout).ok())
+                    .and_then(|pid| pid.trim().parse::<u32>().ok())
+                    .filter(|pid| *pid > 0)
+            }
+            .filter(|pid| {
+                proc_field(*pid, "Uid:")
+                    .and_then(|value| value.split_whitespace().next()?.parse::<u32>().ok())
+                    == Some(uid)
+            })
+            .ok_or_else(|| DaemonError::Apply {
+                step: "owner control".into(),
+                detail: "no live session process owned by the device account".into(),
             })?;
+            owner_control_command(pid, &session.user, uid, args)
+        };
+        let output = command.output().map_err(|e| DaemonError::Apply {
+            step: "tilo-control".into(),
+            detail: e.to_string(),
+        })?;
         Ok(ControlResult {
             exit_code: output.status.code().unwrap_or(-1),
             stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
@@ -1294,6 +1362,51 @@ fn vkms_card(seat: &str) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn device_owner_controls_use_the_live_namespace_and_normal_socket() {
+        let apply = crate::apply::RecordingApply::with_device("quickuser");
+        let device = apply.device.unwrap();
+        let session = crate::apply::Session {
+            slot: "device".into(),
+            unit: device.unit,
+            user: device.account,
+            units: device.units,
+            control_socket: device.control_socket,
+            stand_in: false,
+            login: None,
+        };
+        for (active, program, unit) in [
+            (true, "systemctl", "tilo-board-drm-session.service"),
+            (false, "runuser", "tilo-board-session.service"),
+        ] {
+            let command = super::owner_control_pid_command(&session, 1000, active);
+            assert_eq!(command.get_program(), program);
+            assert_eq!(command.get_args().last().unwrap(), unit);
+            assert!(!command.get_args().any(|arg| arg == session.unit.as_str()));
+        }
+        let command = super::owner_control_command(1234, "quickuser", 1000, &["windows".into()]);
+        assert_eq!(command.get_program(), "nsenter");
+        let args: Vec<_> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(&args[..2], ["--target=1234", "--mount"]);
+        assert!(
+            args.windows(4)
+                .any(|args| args == ["runuser", "-u", "quickuser", "--"])
+        );
+        assert!(args.contains(&"--unset=TILO_TEST_CONTROL".into()));
+        assert_eq!(
+            &args[args.len() - 4..],
+            [
+                super::TILO_CONTROL,
+                "--socket",
+                "/run/user/1000/tilo-session/admin-control.sock",
+                "windows"
+            ]
+        );
+    }
+
     #[test]
     fn app_install_uses_the_verified_slot_namespace_and_never_ignores_runtime() {
         let command = super::app_install_command(

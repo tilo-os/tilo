@@ -507,8 +507,17 @@ pub fn activate(
         record.seat = Some(seat);
     }
 
-    let dropin = apply.session_layer_dropin(&record.name, generation.number, layers)?;
+    let dropin = if layers.is_empty() {
+        None
+    } else {
+        Some(apply.session_layer_dropin(&record.name, generation.number, layers)?)
+    };
     for unit in layered_units(&session, uid) {
+        let Some(dropin) = &dropin else {
+            apply.remove_dropin(&unit, LAYERS_DROPIN)?;
+            actions.push(Action::RemoveDropIn { unit });
+            continue;
+        };
         let text = if unit == session.unit
             && generation
                 .components
@@ -1087,6 +1096,64 @@ mod tests {
             );
         }
         g
+    }
+
+    #[test]
+    fn device_base_rollback_removes_only_its_layer_bindings() {
+        let mut apply = RecordingApply::with_device("quickuser");
+        apply.users.insert("quickuser".into(), 1000);
+        let mut slot = record("device", SlotKind::Device);
+        slot.device.clone_from(&apply.device);
+        let session = slot.session().unwrap();
+        let units = layered_units(&session, 1000);
+        let existing = (
+            "tilo-board-drm-session.service".into(),
+            "20-pi-renderer.conf".into(),
+        );
+        apply
+            .dropins
+            .insert(existing.clone(), "Environment=TILO_DRM_RENDERER=cpu".into());
+        for (number, layers) in [
+            (1, vec![PathBuf::from("/var/lib/tilo-vm/layers/h1")]),
+            (0, vec![]),
+        ] {
+            let generation = generation(
+                number,
+                if number == 0 {
+                    &[]
+                } else {
+                    &[("shell", "h1", Scope::Session, &[])]
+                },
+            );
+            activate(
+                &mut apply,
+                &mut slot,
+                &generation,
+                &layers,
+                Policy::SessionRestart,
+                &Restarts::default(),
+                SessionChange::Keep,
+            )
+            .unwrap();
+            for unit in &units {
+                assert_eq!(
+                    apply
+                        .dropins
+                        .contains_key(&(unit.clone(), LAYERS_DROPIN.into())),
+                    number != 0
+                );
+            }
+            assert_eq!(
+                apply.dropins[&existing],
+                "Environment=TILO_DRM_RENDERER=cpu"
+            );
+        }
+        assert!(
+            !apply
+                .calls
+                .iter()
+                .any(|call| call.starts_with("ensure_user"))
+        );
     }
 
     #[test]
