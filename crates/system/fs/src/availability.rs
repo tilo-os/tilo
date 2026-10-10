@@ -763,6 +763,29 @@ impl AvailabilityRegistry {
     }
 }
 
+/// Whether `record_id` is pinned, itself or through a stable ancestor, in a
+/// captured snapshot of `records`. Missing or cyclic ancestry is invalid
+/// durable state and counts as pinned, so it can never become permission to
+/// release local data.
+pub(crate) fn pinned_in_snapshot(records: &[RecordAvailability], record_id: FileRecordId) -> bool {
+    let mut current = Some(record_id);
+    let mut remaining = records.len().saturating_add(1);
+    while let Some(record_id) = current {
+        if remaining == 0 {
+            return true;
+        }
+        remaining = remaining.saturating_sub(1);
+        let Some(record) = records.iter().find(|record| record.record_id == record_id) else {
+            return true;
+        };
+        if record.policy == AvailabilityPolicy::Pinned {
+            return true;
+        }
+        current = record.parent;
+    }
+    false
+}
+
 fn refresh_replica_projection(record: &mut RecordAvailability, now_ms: u64) {
     let Some(version) = record.current_version else {
         record.replicas = ReplicaEvidence::default();
