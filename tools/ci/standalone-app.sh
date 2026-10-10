@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# The whole path of an app developer who has rustup and nothing from Tilo:
+# The whole path of an app developer with GCC, Python 3.11+, rustup and no Tilo:
 # one `cargo install`, then `tilo-app new`, `check` and `package` outside any
 # checkout. Run it where no GUI development package is installed; that is
 # what it proves.
 #
 #   tools/ci/standalone-app.sh [--bootstrap] [--git URL] [--branch NAME | --rev SHA]
 #
-# --bootstrap first installs gcc and rustup's default profile into a bare
+# --bootstrap first installs gcc, Python 3 and rustup's default profile into a bare
 # Fedora, and a font once `check` has asked for one. That is how
 # .forgejo/workflows/standalone-app.yml runs it:
 #
@@ -31,8 +31,8 @@ done
 step() { printf '\n==> %s\n' "$*"; }
 
 if [ "$bootstrap" = 1 ]; then
-  step "gcc and rustup, nothing else"
-  dnf -y -q install gcc
+  step "gcc, Python 3 for pinned font preparation, and rustup"
+  dnf -y -q install gcc python3
   # The checksum-pinned rustup of dist/ci/install-build-deps.sh.
   rustup_version=1.29.0
   case "$(uname -m)" in
