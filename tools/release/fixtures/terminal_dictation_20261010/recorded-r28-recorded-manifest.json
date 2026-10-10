@@ -1,0 +1,105 @@
+{
+  "private_stage": "${PUBLIC_ROOT}",
+  "installed": false,
+  "physical_microphone": false,
+  "model_revision": "5359861c739e955e79d9a303bcbc70fb988958b1",
+  "dataset_revision": "70bb2e84b976b7e960aa89f1c648e09c59f894dd",
+  "dataset_license": "CC-BY-4.0",
+  "dataset_attribution": "Google FLEURS de_de read speech",
+  "cases": [
+    {
+      "id": "de_de-0",
+      "language": "de",
+      "file": "de_de-0.wav",
+      "size": 574124,
+      "sha256": "cc46d12f9faf44a694e709c8bcf04028e686e6b4c1deefe3ac6dbd821a970630",
+      "reference": "F\u00fcr die besten Aussichten auf Hongkong sollten Sie die Insel verlassen und zum gegen\u00fcberliegenden Ufer von Kowloon fahren.",
+      "duration_seconds": 17.94,
+      "source_id": "2003",
+      "source_file": "10004059102127011984.wav",
+      "primary": true,
+      "source_sha256": "1603ed8fcea31a7f32f51d137eaa3516d15aca947898b81a136f4a9732f08ad2",
+      "transcription_sha256": "82fab72c58a347345675c238f2492bb997105a4ab45d69e2a2b34ed29082fa97"
+    },
+    {
+      "id": "de_de-1",
+      "language": "de",
+      "file": "de_de-1.wav",
+      "size": 357164,
+      "sha256": "97d77a9d323b903dcc10c608521fa07fb78766d4b65d016ba620caae442dece9",
+      "reference": "Er griff auch alles an, was ins Wasser kam; selbst ein gro\u00dfer Dinosaurier wie der T. Rex war ihm nicht gewachsen.",
+      "duration_seconds": 11.16,
+      "source_id": "1738",
+      "source_file": "10009182821551087671.wav",
+      "primary": true,
+      "source_sha256": "90d0470adf728783e98cc8dddd51e2c2cbf0d6bf360da65f7d2ac5c3e65876aa",
+      "transcription_sha256": "82fab72c58a347345675c238f2492bb997105a4ab45d69e2a2b34ed29082fa97"
+    },
+    {
+      "id": "de_de-2",
+      "language": "de",
+      "file": "de_de-2.wav",
+      "size": 397484,
+      "sha256": "653973c6e8fa8623883b83b429c112623011445bdbcf06da3db4358a71a5d06e",
+      "reference": "Wenn Sie den Film \u201eDas Verm\u00e4chtnis der Tempelritter\u201c gesehen haben, denken Sie vielleicht, dass auf die R\u00fcckseite der Unabh\u00e4ngigkeitserkl\u00e4rung eine Schatzkarte gezeichnet wurde.",
+      "duration_seconds": 12.42,
+      "source_id": "1849",
+      "source_file": "10014044777125235464.wav",
+      "primary": true,
+      "source_sha256": "13041e21e6a44d30da9595905fbb4367056191a513245b84e64a13449c8d08ea",
+      "transcription_sha256": "82fab72c58a347345675c238f2492bb997105a4ab45d69e2a2b34ed29082fa97"
+    }
+  ],
+  "model": {
+    "file": "small-q5_1.bin",
+    "size": 190085487,
+    "sha256": "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb",
+    "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-small-q5_1.bin",
+    "license": "MIT"
+  },
+  "audio_tools_package": {
+    "name": "pipewire-utils",
+    "version": "1.6.9-1.fc44",
+    "arch": "x86_64",
+    "url": "https://kojipkgs.fedoraproject.org/packages/pipewire/1.6.9/1.fc44/data/signed/6d9f90a6/x86_64/pipewire-utils-1.6.9-1.fc44.x86_64.rpm",
+    "bytes": 630196,
+    "sha256": "59ed2e78d3595525b3faa8f07a060971104fb264d4f092f79fc180ef9be8e2c2",
+    "signature_verified_before_use": false
+  },
+  "binaries": {
+    "target/debug/shell": {
+      "path": "${BUILD_ROOT}/target/debug/shell",
+      "bytes": 1240191000,
+      "sha256": "41b42cb4e2b5294f94b48e619194052531fa26ef972228853a063ca786cbdcd5"
+    },
+    "target/debug/terminal": {
+      "path": "${BUILD_ROOT}/target/debug/terminal",
+      "bytes": 401547880,
+      "sha256": "9f301dc77a5f6d7026445b78cc4d7c707d3a8091756cddf0073ff094d9883ad9"
+    },
+    "target/debug/tilo-ush": {
+      "path": "${BUILD_ROOT}/target/debug/tilo-ush",
+      "bytes": 114088208,
+      "sha256": "a66989e934e92239d553769afb781cf03be5845e1a647d37bd73803fdd944c6c"
+    },
+    "target/debug/tilo-speech-worker": {
+      "path": "${BUILD_ROOT}/target/debug/tilo-speech-worker",
+      "bytes": 25433216,
+      "sha256": "7154d7f5d66eb8c6ac492df1ccdd184952710a05eecf0e8696c4bb8360a13322"
+    },
+    "target/debug/examples/speech_qualify": {
+      "path": "${BUILD_ROOT}/target/debug/examples/speech_qualify",
+      "bytes": 43902904,
+      "sha256": "36c3b3f23519e5bfc4414bdcd47bd4c78156adddb7d5d4e48551239fd8571c81"
+    }
+  },
+  "sources": {
+    "crates/session/shell/src/shell/search/providers/live_app_actions.rs": "f59b0d9a85db3b1f310734664563603f9dd800ea4b732088095f19ad1cda6886",
+    "scripts/legacy-app-caret-e2e.py": "01096dbddd842fda96d05dd8aab93cc104290c5ffaf1bbe2d0019b19ab926291",
+    "tools/release/summarize_speech_benchmark.py": "c5dd4a4ca3079978283af644b3726a70eb5e96c51b509f6253c4a797a62381a7",
+    "crates/session/shell/src/shell/frame.rs": "e2f51f1c594ae1fad085febb7729afb1cd0c8bc0715e0cc75f76fed93ceb9b9d",
+    "crates/sdk/ui-core/src/bound_dispatch.rs": "08ac6ab7785366499f61c7182d48a43066100a9c4c4d560bb63738016a8beb33",
+    "crates/sdk/ui-core/src/record.rs": "3ab035c247db3f9b993f9efe04417b5ebdf9f67cf5cefac4903ea5d6ccf4f109",
+    "crates/runtime/ush/native/bash_editor.c": "5e07fd6cd31f10afe6c084a134dea4c9d0f3992f1081c612e9e57b6e5f879c1b"
+  }
+}

@@ -1,0 +1,45 @@
+{
+  "source_base_head": "33a2534967885791c13a432f99a270875afecc43",
+  "source_worktree_modified": true,
+  "source_identity": "exact canonical-stamp source digests and production binary hashes below",
+  "exit": 0,
+  "complete": true,
+  "owned_container_verified_absent": "dictation-recorded-r30-5592bd5f6bac",
+  "log_sha256": "5dfb8aeda946be780ec93ccb92f781b4220b7bd4218d7a4fb4ac83b00ae450a5",
+  "binaries": {
+    "target/debug/shell": {
+      "bytes": 1240191000,
+      "sha256": "41b42cb4e2b5294f94b48e619194052531fa26ef972228853a063ca786cbdcd5"
+    },
+    "target/debug/terminal": {
+      "bytes": 401547880,
+      "sha256": "9f301dc77a5f6d7026445b78cc4d7c707d3a8091756cddf0073ff094d9883ad9"
+    },
+    "target/debug/tilo-ush": {
+      "bytes": 114088208,
+      "sha256": "a66989e934e92239d553769afb781cf03be5845e1a647d37bd73803fdd944c6c"
+    },
+    "target/dictation-mounted-terminal-recorded-r30/host-root/usr/bin/bash": {
+      "bytes": 1551104,
+      "sha256": "379c1bfc53d08815975c647ad7da5d19d8e8a8566ce8097c50231c8b116e5e7b"
+    },
+    "target/dictation-mounted-terminal-recorded-r30/host-root/usr/lib/tilo/ush/bash-editor.so": {
+      "bytes": 27576,
+      "sha256": "2bc4d2b96d1b74d14a5e40c092164d5503eedef38b47bec8ab3593e0ee3a6415"
+    }
+  },
+  "candidate_source_sha256": {
+    "crates/session/shell/src/shell/search/providers/live_app_actions.rs": "f59b0d9a85db3b1f310734664563603f9dd800ea4b732088095f19ad1cda6886",
+    "apps/terminal/src/main_body.rs": "965dec1363b27e6ff864fb7f9dbf697ce81d268c54c72256cfd87175e3335b67",
+    "crates/sdk/ui-core/src/app/host_commands.rs": "18a5ebd644c9bf06cd34d6f9f6086cbea8289cc1858cec292d5c8bd7ea721b74",
+    "crates/session/shell/src/shell/frame.rs": "e2f51f1c594ae1fad085febb7729afb1cd0c8bc0715e0cc75f76fed93ceb9b9d",
+    "crates/sdk/ui-core/src/bound_dispatch.rs": "08ac6ab7785366499f61c7182d48a43066100a9c4c4d560bb63738016a8beb33",
+    "crates/sdk/ui-core/src/record.rs": "3ab035c247db3f9b993f9efe04417b5ebdf9f67cf5cefac4903ea5d6ccf4f109",
+    "crates/runtime/ush/native/bash_editor.c": "1e4a733c11199c43ab53f08ae54d0d188554d0e11259841618fdff7b04805cbe"
+  },
+  "privacy": {
+    "physical_microphone": false,
+    "installed": false,
+    "persistent_grants": false
+  }
+}

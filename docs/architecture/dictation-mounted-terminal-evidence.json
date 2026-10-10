@@ -1,7 +1,7 @@
 {
   "component": "Actual mounted Terminal selected-range native editing",
   "source_fix_head": "93fd86fa67f6da456327c4603a2238438750901b",
-  "overall_result": "NATIVE EDITING QUALIFIED; FULL MOUNTED SPEECH NOT YET QUALIFIED",
+  "overall_result": "NATIVE EDITING AND RECORDED MOUNTED TERMINAL JOURNEY PASS; PRIOR FOCUS-RETIREMENT FAILURE RETAINED; INSTALLED/HARDWARE/UNIVERSAL SUPPORT NOT QUALIFIED",
   "control_space_regression": "Actual widget Dispatch emits NUL for Named Space/Character Space/physical fallback under Control; red and green retained in validation logs. Plain space and keyboard regression tests PASS.",
   "mounted_r7": "FAIL selection remained 0..0 because Control-Space emitted byte32. Replacement and Undo not run.",
   "mounted_r8": "Original Unicode selection 0..6 observed; native acknowledged replacement cafe->salut visible with suffix preserved; editor can_undo=true. FAIL immediate semantic host Undo was unavailable. Undo/Redo and speech not qualified.",
@@ -226,10 +226,290 @@
       "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r17-managed-outer.py",
       "original_sha256": "33ee17679e406160b4c6ae3d9edbacd4f93a69ff5a48fa262b484bfbee28ac70",
       "portable_file_sha256": "d33de49735db88b36d627797ce0da45feaed4b396545c2db565522d0594a6b6a"
+    },
+    "recorded-r23-build-receipt.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r23-build-receipt.json",
+      "original_sha256": "88cd6f67e18c640f6ab400c49d988a96f0dcc4a4d198c6eac930e2beeccdc536",
+      "portable_file_sha256": "109308916034826fbeec359cc705132dc61a8befe5b91c150ebf486719bcca54"
+    },
+    "recorded-r23-recorded-manifest.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r23-recorded-manifest.json",
+      "original_sha256": "2f3085b36a1f113450fc322e7bce230bac2e88825e97a2b5d1d37027c5335a42",
+      "portable_file_sha256": "73d26397d5654048984d025c773222c8f02bb906edec9953769281e6a45f28c1"
+    },
+    "recorded-r23-managed.log.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r23-managed.log.json",
+      "original_sha256": "1090b7a5c297abe1b9f691005beda5b7b8cd6c28e961c563a9248b9e4c17926e",
+      "portable_file_sha256": "1d64da92660bd0c2226f789b677514a56e14613072f72ebfce4cb6c13b374e60"
+    },
+    "recorded-r23-receipt.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r23-receipt.json",
+      "original_sha256": "24b0f44d33caf8239af9d109061a5234b264a1f95384548babe3cfb652cfd766",
+      "portable_file_sha256": "24b0f44d33caf8239af9d109061a5234b264a1f95384548babe3cfb652cfd766"
+    },
+    "recorded-r23-managed-inner.py": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r23-managed-inner.py",
+      "original_sha256": "84491e3b20d00ac2bfebf5ddc602b50afa708eb0b6402fe4845b3234d0b052c3",
+      "portable_file_sha256": "84491e3b20d00ac2bfebf5ddc602b50afa708eb0b6402fe4845b3234d0b052c3"
+    },
+    "recorded-r23-managed-outer.py": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r23-managed-outer.py",
+      "original_sha256": "33ee17679e406160b4c6ae3d9edbacd4f93a69ff5a48fa262b484bfbee28ac70",
+      "portable_file_sha256": "d33de49735db88b36d627797ce0da45feaed4b396545c2db565522d0594a6b6a"
+    },
+    "recorded-r24-build-receipt.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r24-build-receipt.json",
+      "original_sha256": "88cd6f67e18c640f6ab400c49d988a96f0dcc4a4d198c6eac930e2beeccdc536",
+      "portable_file_sha256": "109308916034826fbeec359cc705132dc61a8befe5b91c150ebf486719bcca54"
+    },
+    "recorded-r24-recorded-manifest.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r24-recorded-manifest.json",
+      "original_sha256": "9931470eddad57defa2f37ee79463a65007810d2938323fbfe5fd41abd633d3f",
+      "portable_file_sha256": "45aba7424bd460b7f2ac7bf41112dc479efaf9e9940bc0243ace7abc47c49e88"
+    },
+    "recorded-r24-managed.log.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r24-managed.log.json",
+      "original_sha256": "7b12a53b8a8112e65ddb5dd188e4ddba47bdff8bf87a3015c5db824a74540d02",
+      "portable_file_sha256": "e1973691b7d7b49b2cf5b07784739c5d401ee58cc3622aaa21d05424b2ab945b"
+    },
+    "recorded-r24-receipt.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r24-receipt.json",
+      "original_sha256": "6fa7611846a3bf77f4ba70d24dd37ee224d445da607429c0fd99ccea6a1b8fda",
+      "portable_file_sha256": "6fa7611846a3bf77f4ba70d24dd37ee224d445da607429c0fd99ccea6a1b8fda"
+    },
+    "recorded-r24-managed-inner.py": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r24-managed-inner.py",
+      "original_sha256": "accb0bb035f215be77bce958ebc5c47bf30628440befada8df567f469a85ac5b",
+      "portable_file_sha256": "accb0bb035f215be77bce958ebc5c47bf30628440befada8df567f469a85ac5b"
+    },
+    "recorded-r24-managed-outer.py": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r24-managed-outer.py",
+      "original_sha256": "33ee17679e406160b4c6ae3d9edbacd4f93a69ff5a48fa262b484bfbee28ac70",
+      "portable_file_sha256": "d33de49735db88b36d627797ce0da45feaed4b396545c2db565522d0594a6b6a"
+    },
+    "recorded-r25-build-receipt.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r25-build-receipt.json",
+      "original_sha256": "88cd6f67e18c640f6ab400c49d988a96f0dcc4a4d198c6eac930e2beeccdc536",
+      "portable_file_sha256": "109308916034826fbeec359cc705132dc61a8befe5b91c150ebf486719bcca54"
+    },
+    "recorded-r25-recorded-manifest.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r25-recorded-manifest.json",
+      "original_sha256": "9931470eddad57defa2f37ee79463a65007810d2938323fbfe5fd41abd633d3f",
+      "portable_file_sha256": "45aba7424bd460b7f2ac7bf41112dc479efaf9e9940bc0243ace7abc47c49e88"
+    },
+    "recorded-r25-managed.log.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r25-managed.log.json",
+      "original_sha256": "fb59d015c7fb58c36a62859733c7d125e2ce6d5364ebe06cc9c2912bea133df0",
+      "portable_file_sha256": "eb5b4e189bd0145f7498234a8e41fcc384104c3d8c7c6d455d7e0c6020efc188"
+    },
+    "recorded-r25-receipt.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r25-receipt.json",
+      "original_sha256": "5f356504c223d9124af32f647a27eda390bcaea01d18e93653f31fa94296950b",
+      "portable_file_sha256": "5f356504c223d9124af32f647a27eda390bcaea01d18e93653f31fa94296950b"
+    },
+    "recorded-r25-managed-inner.py": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r25-managed-inner.py",
+      "original_sha256": "8c206104161e32b508237252093ca5284bcc7a9447eca402c05f4279950ad681",
+      "portable_file_sha256": "8c206104161e32b508237252093ca5284bcc7a9447eca402c05f4279950ad681"
+    },
+    "recorded-r25-managed-outer.py": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r25-managed-outer.py",
+      "original_sha256": "33ee17679e406160b4c6ae3d9edbacd4f93a69ff5a48fa262b484bfbee28ac70",
+      "portable_file_sha256": "d33de49735db88b36d627797ce0da45feaed4b396545c2db565522d0594a6b6a"
+    },
+    "recorded-r26-build-receipt.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r26-build-receipt.json",
+      "original_sha256": "88cd6f67e18c640f6ab400c49d988a96f0dcc4a4d198c6eac930e2beeccdc536",
+      "portable_file_sha256": "109308916034826fbeec359cc705132dc61a8befe5b91c150ebf486719bcca54"
+    },
+    "recorded-r26-recorded-manifest.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r26-recorded-manifest.json",
+      "original_sha256": "9931470eddad57defa2f37ee79463a65007810d2938323fbfe5fd41abd633d3f",
+      "portable_file_sha256": "45aba7424bd460b7f2ac7bf41112dc479efaf9e9940bc0243ace7abc47c49e88"
+    },
+    "recorded-r26-managed.log.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r26-managed.log.json",
+      "original_sha256": "dfa395b3e7524cd62e848bc845119d1c74bd92ba3113d34a2be88a1871fd463c",
+      "portable_file_sha256": "87c3316ec14b3e09275a369329c963fa21c3a05b6b1ae00f2d3b5a5cff697aef"
+    },
+    "recorded-r26-receipt.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r26-receipt.json",
+      "original_sha256": "0a19ba6f560426291301baac03ae406094e09449c4a5ad408a47dd2752dad53d",
+      "portable_file_sha256": "0a19ba6f560426291301baac03ae406094e09449c4a5ad408a47dd2752dad53d"
+    },
+    "recorded-r26-managed-inner.py": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r26-managed-inner.py",
+      "original_sha256": "8c206104161e32b508237252093ca5284bcc7a9447eca402c05f4279950ad681",
+      "portable_file_sha256": "8c206104161e32b508237252093ca5284bcc7a9447eca402c05f4279950ad681"
+    },
+    "recorded-r26-managed-outer.py": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r26-managed-outer.py",
+      "original_sha256": "f587a1b5d9a7d2d32d0d1fd39548f9a5644018f4cf3be217ef7396815bdc4fbe",
+      "portable_file_sha256": "b5833ceb743ebdc16dcc3dbdb8e6f6254ae01e353c1a82d10005e1ee2c7928e9"
+    },
+    "recorded-r27-managed-outer.py": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r27-managed-outer.py",
+      "original_sha256": "1f42d34aa65cb84b62ca3f2a8f1e28285eb44298dce3a032bbebaf600434ec13",
+      "portable_file_sha256": "fb9b4475ef3e652287f1c76ee9bc92c5c0ee059ed83cde0d4ae4d68c00a5e291"
+    },
+    "recorded-r27-managed-inner.py": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r27-managed-inner.py",
+      "original_sha256": "c01801a34517dd8069153b3a25e8a8eff31a5eb516dded887195259315a7d6e3",
+      "portable_file_sha256": "c01801a34517dd8069153b3a25e8a8eff31a5eb516dded887195259315a7d6e3"
+    },
+    "recorded-r27-receipt.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r27-receipt.json",
+      "original_sha256": "ebd6e906073b9ef5ff36d50a1c4889a0bc01f0aa77933a7a1112f9f5f0554d75",
+      "portable_file_sha256": "ebd6e906073b9ef5ff36d50a1c4889a0bc01f0aa77933a7a1112f9f5f0554d75"
+    },
+    "recorded-r27-managed.log.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r27-managed.log.json",
+      "original_sha256": "15db6b816d69215de4eff21798e17e9c01a02847d335964dd9365071506abe9c",
+      "portable_file_sha256": "fe959f0d63f01ea9d52d01918dc72143758f3ea8bebdc182dd50d680c0c2aa1d"
+    },
+    "recorded-r27-recorded-manifest.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r27-recorded-manifest.json",
+      "original_sha256": "9931470eddad57defa2f37ee79463a65007810d2938323fbfe5fd41abd633d3f",
+      "portable_file_sha256": "45aba7424bd460b7f2ac7bf41112dc479efaf9e9940bc0243ace7abc47c49e88"
+    },
+    "recorded-r27-build-receipt.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r27-build-receipt.json",
+      "original_sha256": "88cd6f67e18c640f6ab400c49d988a96f0dcc4a4d198c6eac930e2beeccdc536",
+      "portable_file_sha256": "109308916034826fbeec359cc705132dc61a8befe5b91c150ebf486719bcca54"
+    },
+    "recorded-r28-managed-outer.py": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r28-managed-outer.py",
+      "original_sha256": "1f42d34aa65cb84b62ca3f2a8f1e28285eb44298dce3a032bbebaf600434ec13",
+      "portable_file_sha256": "fb9b4475ef3e652287f1c76ee9bc92c5c0ee059ed83cde0d4ae4d68c00a5e291"
+    },
+    "recorded-r28-managed-inner.py": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r28-managed-inner.py",
+      "original_sha256": "c01801a34517dd8069153b3a25e8a8eff31a5eb516dded887195259315a7d6e3",
+      "portable_file_sha256": "c01801a34517dd8069153b3a25e8a8eff31a5eb516dded887195259315a7d6e3"
+    },
+    "recorded-r28-receipt.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r28-receipt.json",
+      "original_sha256": "69b666d342ab6b7bec38cca4218fb2d5e44fb3e6a60964da4c49be3499db5a6b",
+      "portable_file_sha256": "69b666d342ab6b7bec38cca4218fb2d5e44fb3e6a60964da4c49be3499db5a6b"
+    },
+    "recorded-r28-managed.log.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r28-managed.log.json",
+      "original_sha256": "1987330d6fdde055dc591158bea4a6e57b2068321106c7b1f08780af8cf8c0d2",
+      "portable_file_sha256": "e3b97f2b2693c5a9117b9affb27ebac3aff7f9ed21107ef2960986270c90add6"
+    },
+    "recorded-r28-recorded-manifest.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r28-recorded-manifest.json",
+      "original_sha256": "48949120868154516f0e091da22875e11e9373c2c3ef09484501afc52b7cca86",
+      "portable_file_sha256": "d903f7add1be3b8a352785dbf6bbfb9b0284bf4e2108df59c093e31fa485f6cc"
+    },
+    "recorded-r28-build-receipt.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r28-build-receipt.json",
+      "original_sha256": "ad1165b9e0c02a36266234cea85c9f8558165cb6ef3ba327ad3400b0a953a201",
+      "portable_file_sha256": "038b0408d79dd6b3a9ec3142d7f31f80cf93698a09adc13a6395c3f2ff2c3c0d"
+    },
+    "recorded-r29-managed-outer.py": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r29-managed-outer.py",
+      "original_sha256": "1f42d34aa65cb84b62ca3f2a8f1e28285eb44298dce3a032bbebaf600434ec13",
+      "portable_file_sha256": "fb9b4475ef3e652287f1c76ee9bc92c5c0ee059ed83cde0d4ae4d68c00a5e291"
+    },
+    "recorded-r29-managed-inner.py": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r29-managed-inner.py",
+      "original_sha256": "c01801a34517dd8069153b3a25e8a8eff31a5eb516dded887195259315a7d6e3",
+      "portable_file_sha256": "c01801a34517dd8069153b3a25e8a8eff31a5eb516dded887195259315a7d6e3"
+    },
+    "recorded-r29-receipt.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r29-receipt.json",
+      "original_sha256": "f219e30536d746e4678e9359501836dba18701e3529053f599ee2f4bdd2e9b1d",
+      "portable_file_sha256": "f219e30536d746e4678e9359501836dba18701e3529053f599ee2f4bdd2e9b1d"
+    },
+    "recorded-r29-managed.log.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r29-managed.log.json",
+      "original_sha256": "fe6c3dc21becb93904d8c452b67fb7ec1dc28878653a156caa5e0868ee56d67e",
+      "portable_file_sha256": "03009fda9bb7e487d45b739daed68f4cb66f314e2a3917ea971a351dcd533421"
+    },
+    "recorded-r29-recorded-manifest.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r29-recorded-manifest.json",
+      "original_sha256": "7abcb21728ecffa4deb06cba4dc85c64e740c0efc1177c646a87a481d2a9ba0d",
+      "portable_file_sha256": "be50374dce8981ec04ce151d54e7acae12498f0cf48a2beccc0d497ad1e761d7"
+    },
+    "recorded-r29-build-receipt.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r29-build-receipt.json",
+      "original_sha256": "3a9f7f241048f90e6ba1bd04dad1e2d2362008b606c40ccb71e9ff9e52038e7c",
+      "portable_file_sha256": "6c7a5f6a2c439988c86c1bdf145f39061d081f04c3c84084e2aa8e7411f945fc"
+    },
+    "recorded-r30-managed-outer.py": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r30-managed-outer.py",
+      "original_sha256": "1f42d34aa65cb84b62ca3f2a8f1e28285eb44298dce3a032bbebaf600434ec13",
+      "portable_file_sha256": "fb9b4475ef3e652287f1c76ee9bc92c5c0ee059ed83cde0d4ae4d68c00a5e291"
+    },
+    "recorded-r30-managed-inner.py": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r30-managed-inner.py",
+      "original_sha256": "33e4387b738bf74ad37bc9983e9c0be9c653d6f965138d6e5c0790b0862cda9a",
+      "portable_file_sha256": "33e4387b738bf74ad37bc9983e9c0be9c653d6f965138d6e5c0790b0862cda9a"
+    },
+    "recorded-r30-receipt.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r30-receipt.json",
+      "original_sha256": "2c1af1902e7db6e9298c46204120f870de8efe9583d326da9ec65705456cd161",
+      "portable_file_sha256": "2c1af1902e7db6e9298c46204120f870de8efe9583d326da9ec65705456cd161"
+    },
+    "recorded-r30-managed.log.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r30-managed.log.json",
+      "original_sha256": "5dfb8aeda946be780ec93ccb92f781b4220b7bd4218d7a4fb4ac83b00ae450a5",
+      "portable_file_sha256": "402da61882e452bbdb3ae4f75741b37756d98d8ab149b77a42b987083c368291"
+    },
+    "recorded-r30-recorded-manifest.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r30-recorded-manifest.json",
+      "original_sha256": "7abcb21728ecffa4deb06cba4dc85c64e740c0efc1177c646a87a481d2a9ba0d",
+      "portable_file_sha256": "be50374dce8981ec04ce151d54e7acae12498f0cf48a2beccc0d497ad1e761d7"
+    },
+    "recorded-r30-build-receipt.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r30-build-receipt.json",
+      "original_sha256": "f7fcb51e5907d1ce0b4832cf567ee03798c2ad8dbe4a7444bee65684f492a128",
+      "portable_file_sha256": "b909bef37bcc1d29fdf3a64083e9de71653ec0268b940691392c62d69f77f900"
+    },
+    "idle-stamp-red.log.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/idle-stamp-red.log.json",
+      "original_sha256": "2787047d11d81998942e63d016b3d04a77e4cf051ffaa61add48b002a5efbf78",
+      "portable_file_sha256": "d966ae23717f21904868f2028c2f59fcca8ab7e6c2db632f5ee540d85fc2845d"
+    },
+    "idle-stamp-green.log.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/idle-stamp-green.log.json",
+      "original_sha256": "9578e1f29abb86503355213db7ff78b28a96b310aff12d063effe03a2d9dab90",
+      "portable_file_sha256": "bfe1dadec673a2d1045f4815d55f635ca4398b40dd8a4227e9cbcdd17479c971"
+    },
+    "recorded-r31-managed-outer.py": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r31-managed-outer.py",
+      "original_sha256": "1f42d34aa65cb84b62ca3f2a8f1e28285eb44298dce3a032bbebaf600434ec13",
+      "portable_file_sha256": "fb9b4475ef3e652287f1c76ee9bc92c5c0ee059ed83cde0d4ae4d68c00a5e291"
+    },
+    "recorded-r31-managed-inner.py": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r31-managed-inner.py",
+      "original_sha256": "c01801a34517dd8069153b3a25e8a8eff31a5eb516dded887195259315a7d6e3",
+      "portable_file_sha256": "c01801a34517dd8069153b3a25e8a8eff31a5eb516dded887195259315a7d6e3"
+    },
+    "recorded-r31-receipt.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r31-receipt.json",
+      "original_sha256": "0f855a9439279f4e8bd72b191fe278806a3db312a40f3c80d9a07eb174a152cf",
+      "portable_file_sha256": "0f855a9439279f4e8bd72b191fe278806a3db312a40f3c80d9a07eb174a152cf"
+    },
+    "recorded-r31-managed.log.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r31-managed.log.json",
+      "original_sha256": "4eba39949a3e898101f2f0ebcec78b3705847720b390f73b92e19438d68129b2",
+      "portable_file_sha256": "bd97a6e924f94e3a22d842223f112fa9addf8b300c88800c1aebfbd67feb1de3"
+    },
+    "recorded-r31-recorded-manifest.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r31-recorded-manifest.json",
+      "original_sha256": "7abcb21728ecffa4deb06cba4dc85c64e740c0efc1177c646a87a481d2a9ba0d",
+      "portable_file_sha256": "be50374dce8981ec04ce151d54e7acae12498f0cf48a2beccc0d497ad1e761d7"
+    },
+    "recorded-r31-build-receipt.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r31-build-receipt.json",
+      "original_sha256": "c056b69f86d0065d5d7a3a61be312fce6b77627c93ef10ec5c5f034ff18db165",
+      "portable_file_sha256": "955cebacce2509ab76c18ba76028744b26ae8046dc70240cb4b156a1827a2567"
     }
   },
   "mounted_r10": "FAIL after waiting 25 seconds for actual mounted Terminal tilo.host:edit Undo availability. Same exact selected Unicode replacement and native can_undo=true observed, but shared semantic host history never advertised undo. No Undo/Redo or full speech claim. Owned container dictation-mounted-r10-da46cfa5b389 verified absent.",
-  "follow_up": "Qualify actual recorded speech, cancellation and focus retirement in mounted Terminal using an isolated public-audio source and ephemeral model witness. Keep physical microphone and user model installation/publication approvals separate.",
+  "follow_up": "Investigate the retained r29 recorder-retirement variability; qualify Terminal protected modes and broader editor coverage. Improve preview latency without degrading final language accuracy. Physical microphone, persistent user model installation and publication still require separate authorization.",
   "mounted_r11": "DIAGNOSTIC FAIL retained: original native can_undo=true reached App focused_undo_status through live BoundAppWidget, while shell cached unavailable Undo. Temporary diagnostics emitted flags/types only and were removed. No Undo or speech qualification.",
   "mounted_r12": "PASS actual mounted Terminal selected Unicode replacement and ONE semantic native Undo/Redo/Undo, restoring original anchor0/focus6 after Undo. Each operation succeeded only after native ACK. Two CPUs,3GiB,zero swap,256 pids; no hardware audio/GPU, deployment or persistent grant. Container dictation-mounted-r12-6ebf00479aaa verified absent. This proves native editing, not recorded speech.",
   "native_history_repair": {
@@ -270,6 +550,90 @@
       "recorded_r18": "FAIL after native editing baseline PASS: synthetic recorder never starts. Actual rebuilt candidate shell SHA cdfa8cd2cf8b4f5566c7a7d90f12c20b2ccbc24b490b15cc9dbe1c604eee2cc5. Owned container dictation-recorded-r18-791e83ed766c verified absent. No microphone or persistent grant.",
       "recorded_r19": "FAIL: post-consent public headless frame shows field-changed cancellation and submitted original Terminal line. No worker/recorder started; native editing baseline PASS. Owned container dictation-recorded-r19-f6cbd19af2d0 verified absent. Original hashed receipt/log retained privately.",
       "recorded_r20": "Diagnostic only: consent already retired before Enter, original selection changed from anchor0/focus6 to anchor0/focus5 after ArrowLeft. Diagnostic target export itself failed on set JSON serialization, so no full qualification claim. Owned container dictation-recorded-r20-1d2417d8f0a2 verified absent."
+    }
+  },
+  "consent_idle_stamp_cause": {
+    "diagnostic_run": "recorded-r23",
+    "diagnostic_claim": "failure diagnosis only; full speech not qualified",
+    "terminal_native_lease": "generation2/revision43/anchor0/focus6 remained stable across repeated observations",
+    "observed_equalities": {
+      "native_field_fingerprint": true,
+      "embedded_canonical_document_stamp": false,
+      "outer_native_document_stamp": true
+    },
+    "production_cause": "DocumentEditStamp hashed the exclusive callback admission generation, which advances during idle retained-owner update/settlement/sync even without document writes. The child editor was unchanged.",
+    "causal_regression": {
+      "test": "app::bound_component_tests::deferred_input_stamp_survives_an_idle_retained_owner_model_pass",
+      "red_tests": 1,
+      "red_failed": 1,
+      "red_assertion": "idle admission bookkeeping must not cancel a deferred native insertion",
+      "actual_production_path": "service_retained_owner_model",
+      "document_frontier_pending_and_history_revision_unchanged": true,
+      "admission_advanced": true
+    },
+    "repair": "Read canonical document frontier, pending operations, owner lifetime and actual UndoLog revision without an exclusive loan; retain custody, unavailable-record and counter-exhaustion refusals.",
+    "validation": {
+      "green_tests": 7,
+      "green_failed": 0,
+      "green_ignored": 0,
+      "runtime_seconds": 0.279,
+      "production_build": "PASS shell + Terminal, 2m57s",
+      "full_terminal_speech": "PASS r31 unchanged strict private recorded-audio journey; r29 reliability observation retained",
+      "shell_tests_compile": "PASS rcargo check --locked -j2 -p shell --tests, 2m07s",
+      "ui_all_targets_compile": "PASS rcargo check --locked -j2 -p tilo-ui --all-targets, 56.25s",
+      "clean_green_log": {
+        "file": "tools/release/fixtures/terminal_dictation_20261010/idle-stamp-green.log.json",
+        "sha256": "9578e1f29abb86503355213db7ff78b28a96b310aff12d063effe03a2d9dab90",
+        "passed": 7,
+        "failed": 0,
+        "ignored": 0,
+        "runtime_seconds": 0.315
+      }
+    }
+  },
+  "recorded_r23": "Diagnostic FAIL: stable native lease and child editor fingerprint, but embedded document stamp changes on idle admission. No full-speech qualification. Private container/model witness/keeper removed.",
+  "recorded_r24": "Partial FAIL after stamp repair: consent, recorder, streaming preview and native speech insertion succeed; full transcript assertion cannot observe horizontally scrolled Bash input in narrow ordinary viewport. Accuracy and recorded Undo/Redo are not qualified by this run. Native editing baseline passes; exact failure retained. Private container/model witness/keeper removed.",
+  "recorded_r25": "Partial FAIL: maximized viewport observes transcript with duplicate prompt artifacts (2/18 token errors); production native Undo acknowledges restoration, but visible grid retains transcript-tail artifacts so the exact original-text assertion fails. No full-speech qualification; failure retained. Investigating private capability-data reachability under the unchanged nested sandbox. Private container/model witness/keeper removed.",
+  "recorded_r26": "Fixture FAIL before original text: managed session startup reports Interrupted system call while maximize was invoked before actual native editor readiness. Exact public pinned-image xterm capability data was copied privately and hashed, but this run cannot qualify editing or speech. r27 adds an observable native startup barrier before ordinary maximize and preserves original readable capability-file modes. Private container/model witness/keeper removed.",
+  "recorded_r27": "FAIL exact Redo visible-buffer equality: recorded insertion visibly duplicates prompt while ONE Undo restores the exact original and Redo redraws a clean result. Native baseline PASS; preview8.6405s/final26.0518s; WER2/18 includes duplicated prompts. Startup readiness barrier and readable exact pinned-image terminfo are fixture corrections only. Full recorded journey not qualified; all owned processes/container/model witnesses removed.",
+  "recorded_r28": "FAIL final visible prompt-prefix assertion after forced-update-only repair: resetting Readline display bookkeeping without first clearing physical visible lines scrolls the result. Private native module compiles with warnings as errors, native baseline PASS. Full recorded journey not qualified; all owned processes/container/model witnesses removed.",
+  "recorded_r29": "PARTIAL PASS; overall FAIL. Actual recorded selected Unicode insertion and ONE semantic native Undo/Redo PASS with original selection restored; repeated cancellation PASS and recorder/worker retired. Opening a second Terminal during capture then fails recorder-retirement assertion after 15 seconds; exact focus transition under diagnosis. Full recorded journey not qualified. Private C build uses production source with warnings as errors; all owned containers/model witnesses/namespace keeper removed.",
+  "native_redraw_repair": {
+    "cause": "Admitted native edits arrive inside Readline getc_hook outside ordinary keystroke redisplay; direct old_display retained stale visible-line bookkeeping.",
+    "repair": "Clear the physical visible line then use public rl_forced_update_display. A consumed one-shot hook flag preserves only this edit checkpoint; later/reentrant redraws invalidate it normally.",
+    "causal_runs": [
+      "recorded-r27 exact Redo visible equality FAIL",
+      "recorded-r28 forced-update-only final visible prefix FAIL",
+      "recorded-r29 insertion and ONE Undo/Redo PASS; overall focus retirement still FAIL"
+    ],
+    "read_only_review": "No concrete issue found; lease/selection/text/history guards unchanged.",
+    "full_terminal_speech": "PASS r31 unchanged strict journey; r29 retirement failure retained"
+  },
+  "recorded_r30": "PASS full recorded journey with read-only before/after focus state dumps and 3-second diagnostic observation before unchanged retirement assertions. Actual focus moves to new group; text-input focus becomes null; actual insertion/ONE Undo/Redo/repeated cancel/focus-away-back/fresh cancel all PASS. Native original snapshot remains available as an observation, not seat ownership. No physical microphone/install/grant; all owned processes/container/model witnesses removed. r29 retirement deadline failure remains an unresolved reliability observation; an exact unmodified strict repeat is required.",
+  "recorded_r31": {
+    "result": "PASS full unchanged strict recorded journey",
+    "source_identity": "Exact dirty source and production binary hashes in archived receipt; same candidate as r29/r30",
+    "elapsed_seconds": 35.97641988701071,
+    "qualified": [
+      "actual native Unicode selection and replacement",
+      "recorded German speech through private PipeWire source and production worker",
+      "ONE semantic native Undo/Redo with original selection restored",
+      "repeated cancellation with recorder/worker retirement",
+      "focus away/back with recorder/worker retirement and unchanged original buffer",
+      "fresh repeated session cancellation"
+    ],
+    "limits": [
+      "r29 previously failed 15-second recorder retirement; r30 diagnostic and r31 unchanged strict repeat pass; reliability observation retained",
+      "no physical microphone or installed-image qualification",
+      "no Terminal password/PIN journey qualification",
+      "no universal custom/sandboxed/Flatpak editor qualification",
+      "two-core preview latency remains slow"
+    ],
+    "privacy": {
+      "physical_microphone": false,
+      "installed": false,
+      "persistent_grants": false,
+      "owned_container_verified_absent": "dictation-recorded-r31-e28baa7677a3"
     }
   }
 }

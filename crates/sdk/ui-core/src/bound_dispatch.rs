@@ -3466,6 +3466,43 @@ impl CallbackBinding {
             .action_generation(&self.checkout.id)
             .map_err(BoundDispatchError::Record)
     }
+    fn document_edit_stamp(
+        &self,
+        outer: &AutoCommit,
+    ) -> Result<DocumentEditStamp, BoundDispatchError> {
+        let active = self.check_record()?;
+        let _scope = self.enter()?;
+        if let Some(document) = active {
+            if !std::ptr::eq(document, outer) {
+                return Err(BoundDispatchError::Record(RecordOpenError::Busy));
+            }
+            return ACTIVE.with_borrow(|active| {
+                let handle = active
+                    .as_ref()
+                    .and_then(|entry| entry.3.as_ref())
+                    .ok_or(BoundDispatchError::Record(RecordOpenError::Busy))?;
+                let owned = handle
+                    .try_borrow()
+                    .map_err(|_| BoundDispatchError::Record(RecordOpenError::Busy))?;
+                let frame = owned
+                    .as_ref()
+                    .ok_or(BoundDispatchError::Record(RecordOpenError::Busy))?;
+                if !frame.state.generation.is_some_and(|value| value < u64::MAX)
+                    || frame.history.revision() == u64::MAX
+                {
+                    return Err(BoundDispatchError::Record(RecordOpenError::Busy));
+                }
+                Ok(DocumentEditStamp::for_owned_document(
+                    outer,
+                    self.lifetime_id,
+                    frame.history.revision(),
+                ))
+            });
+        }
+        self.records
+            .document_edit_stamp(&self.checkout.id, self.lifetime_id)
+            .map_err(BoundDispatchError::Record)
+    }
     pub(crate) fn drain_widget_actions(
         &self,
         widget: &mut dyn Widget,
@@ -3940,6 +3977,7 @@ pub(crate) fn restore_legacy_history(
 /// write authority; an unavailable stamp must invalidate deferred insertion.
 #[derive(Clone, PartialEq, Eq)]
 pub struct DocumentEditStamp {
+    // Exact owner lifetime and undo/redo revision, never callback admission.
     owner: Option<(uuid::Uuid, u64)>,
     frontier: Vec<ChangeHash>,
     pending: usize,
@@ -3956,9 +3994,9 @@ impl DocumentEditStamp {
         let mut hash = blake3::Hasher::new_keyed(key);
         hash.update(b"tilo.ime.embedded-edit.v1");
         hash.update(&u64::from(node).to_le_bytes());
-        if let Some((owner, generation)) = self.owner {
+        if let Some((owner, history_revision)) = self.owner {
             hash.update(owner.as_bytes());
-            hash.update(&generation.to_le_bytes());
+            hash.update(&history_revision.to_le_bytes());
         }
         hash.update(&self.pending.to_le_bytes());
         for head in &self.frontier {
@@ -3966,6 +4004,18 @@ impl DocumentEditStamp {
         }
         hash.update(&field);
         *hash.finalize().as_bytes()
+    }
+
+    pub(crate) fn for_owned_document(
+        document: &AutoCommit,
+        lifetime: uuid::Uuid,
+        history_revision: u64,
+    ) -> Self {
+        Self {
+            owner: Some((lifetime, history_revision)),
+            frontier: document.base_heads(),
+            pending: document.pending_ops(),
+        }
     }
 
     /// Snapshot an unbound host document without committing its open action.
@@ -3988,7 +4038,7 @@ pub struct BoundNodeMap {
     a11y_aliases: a11y_owner::OwnerAliases,
 }
 impl BoundNodeMap {
-    /// Read the nearest canonical record owner's monotonic edit generation.
+    /// Read the nearest canonical record owner's document and history stamp.
     /// Local writes, remote merges and undo/redo invalidate it, including an
     /// edit followed by its inverse. Reading does not open an action or commit.
     /// # Errors
@@ -4004,38 +4054,22 @@ impl BoundNodeMap {
             .get(&node)
             .filter(|entry| !entry.inactive)
             .ok_or(BoundDispatchError::MissingNode)?;
-        let owner = if let Some(binding) = &entry.binding {
-            let generation = binding
-                .generation()?
-                .ok_or(BoundDispatchError::Record(RecordOpenError::Busy))?;
-            Some((binding.lifetime_id, generation))
+        if let Some(binding) = &entry.binding {
+            binding.document_edit_stamp(document)
         } else if let Some(legacy) = &entry.legacy {
             legacy
                 .validate()
                 .map_err(|_| BoundDispatchError::ClosedLifetime)?;
             let (store, checkout) = legacy.store_checkout();
-            let generation = store
-                .action_generation(&checkout.id)
-                .map_err(BoundDispatchError::Record)?
-                .ok_or(BoundDispatchError::Record(RecordOpenError::Busy))?;
-            Some((
-                legacy
-                    .lifetime_id()
-                    .ok_or(BoundDispatchError::ClosedLifetime)?,
-                generation,
-            ))
+            let lifetime = legacy
+                .lifetime_id()
+                .ok_or(BoundDispatchError::ClosedLifetime)?;
+            store
+                .document_edit_stamp(&checkout.id, lifetime)
+                .map_err(BoundDispatchError::Record)
         } else {
-            None
-        };
-        Ok(if owner.is_some() {
-            DocumentEditStamp {
-                owner,
-                frontier: Vec::new(),
-                pending: 0,
-            }
-        } else {
-            DocumentEditStamp::for_document(document)
-        })
+            Ok(DocumentEditStamp::for_document(document))
+        }
     }
     /// Current admitted layout ancestry, including structural non-widget nodes.
     pub(crate) fn is_descendant(&self, mut node: NodeId, ancestor: NodeId) -> bool {
