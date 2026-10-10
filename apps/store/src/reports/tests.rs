@@ -136,6 +136,9 @@ fn history_entries_render_as_the_apps_sentences() {
         .collect();
     assert_eq!(
         sentences,
-        ["Started a report about so.tilo.notes", "Edited a report",]
+        [
+            "Started a report about so.tilo.notes",
+            "Described the concern of a report",
+        ]
     );
 }
