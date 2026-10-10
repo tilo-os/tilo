@@ -1685,23 +1685,6 @@ fn new_category_action_spec(workspace_id: &str) -> ActionSpec {
     )
 }
 
-/// What `read-message` returns for a message.
-pub fn message_read_schema() -> &'static serde_json::Value {
-    static SCHEMA: std::sync::OnceLock<serde_json::Value> = std::sync::OnceLock::new();
-    SCHEMA.get_or_init(|| {
-        serde_json::json!({"type":"object",
-            "required":["id","channel","parent","author","authorName","agent","mine","ts","edited","text","work","reference","sourceProvider"],
-            "properties":{
-                "id":{"type":"string"},"channel":{"type":"string"},"parent":{"type":["string","null"]},
-                "author":{"type":"string"},"authorName":{"type":"string"},"agent":{"type":"boolean"},
-                "mine":{"type":"boolean"},"ts":{"type":"integer"},"edited":{"type":"boolean"},
-                "text":{"type":"string"},"work":{"type":["object","null"]},
-                "reference":{"type":["object","null"]},
-                "sourceProvider":{"type":["string","null"]}
-            }})
-    })
-}
-
 /// An agent's record of what it did, on a message it wrote: the same
 /// [`ChatAction::SetAgentWork`] a delivered agent task writes.
 fn set_work_spec(channel: &str, message: &str) -> ActionSpec {

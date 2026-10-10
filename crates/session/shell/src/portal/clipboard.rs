@@ -372,16 +372,6 @@ impl ClipboardBackend {
             }
         }
     }
-    #[cfg(target_os = "linux")]
-    pub fn with_remote_desktop(
-        remote: super::remote_desktop::RemoteDesktopSessionHandle,
-        broker: ClipboardBrokerHandle,
-    ) -> Self {
-        Self::with_session_providers(
-            vec![ClipboardSessionProviderHandle::new(Arc::new(remote))],
-            broker,
-        )
-    }
     fn owner(hdr: &zbus::message::Header<'_>) -> zbus::fdo::Result<OwnedUniqueName> {
         hdr.sender()
             .cloned()

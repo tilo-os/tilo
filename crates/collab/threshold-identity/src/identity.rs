@@ -509,31 +509,6 @@ impl ThresholdIdentity {
         crate::signing::aggregate_signature(&self.group_public_key, partials, self.threshold)
     }
 
-    /// Static aggregator. Useful in coordinator processes that
-    /// hold the group public key but not a full
-    /// `ThresholdIdentity`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ThresholdError::DkgStateMisuse`] if `partials`
-    /// disagree with `message`, or an error if `partials` do not
-    /// combine into a valid signature.
-    pub fn aggregate_signature_static(
-        message: &[u8],
-        group_pk: &Ed25519PublicKey,
-        threshold: u16,
-        partials: &[SigningRound2Partial],
-    ) -> Result<Signature, ThresholdError> {
-        if let Some(first) = partials.first()
-            && first.signed_message_bytes != message
-        {
-            return Err(ThresholdError::DkgStateMisuse(
-                "static aggregator: partials disagree with message",
-            ));
-        }
-        crate::signing::aggregate_signature(group_pk, partials, threshold)
-    }
-
     /// Generate the paper-recovery share. **Only valid in threshold mode** —
     /// in 1-of-1 mode the "recovery share" would be the device's full key,
     /// defeating the purpose. Caller must enrol a second share first.

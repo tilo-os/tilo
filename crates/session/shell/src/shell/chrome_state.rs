@@ -1017,13 +1017,6 @@ impl ChromeState {
         self.peer_sync_request_results.remove(&request_id)
     }
 
-    /// Same effect as activating that record's row in search — a
-    /// reference is added to this room's index, no bytes move.
-    #[deprecated(note = "use push_tracked_record_request to retain authorization context")]
-    pub fn push_record_request(&mut self, id: impl Into<String>, kind: impl Into<String>) {
-        self.legacy_record_requests.push((id.into(), kind.into()));
-    }
-
     /// Queue an authorized record import against its exact workspace target.
     pub fn push_tracked_record_request(
         &mut self,
@@ -2638,11 +2631,6 @@ impl ChromeState {
 
     pub fn notification_history(&self) -> &[Notification] {
         self.notification_log.history()
-    }
-
-    /// Number of entries in the history log.
-    pub fn notification_history_count(&self) -> usize {
-        self.notification_log.history().len()
     }
 
     pub fn notification_badge_total(&self) -> u32 {

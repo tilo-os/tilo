@@ -18,7 +18,6 @@ path = "src/lib.rs"
 
 [dependencies]
 collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
-tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 wire-frame = { version = "0.1.0", path = "../wire-frame" }
 ed25519-dalek = { workspace = true, features = ["serde", "rand_core"] }
 rand.workspace = true

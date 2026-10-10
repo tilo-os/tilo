@@ -376,12 +376,6 @@ impl AudioEngine {
         let _ = uri;
     }
 
-    pub fn uses_spotify(&self) -> bool {
-        self.current_uri
-            .as_ref()
-            .is_some_and(|uri| uri.starts_with("spotify:track:"))
-    }
-
     pub fn take_spotify_transition(&mut self) -> Option<String> {
         #[cfg(feature = "spotify-native")]
         if let Some(native) = &self.native {

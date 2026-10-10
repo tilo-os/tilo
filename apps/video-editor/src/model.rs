@@ -1385,25 +1385,6 @@ impl Clip {
         true
     }
 
-    /// Move the named effect instance one slot toward the beginning/end of
-    /// the stack. The identity and its positional animation curve move
-    /// together.
-    pub fn move_effect_id(&mut self, id: Uuid, up: bool) -> bool {
-        let Some(index) = self.effect_index(id) else {
-            return false;
-        };
-        let target = if up {
-            index.checked_sub(1)
-        } else {
-            (index + 1 < self.effects.len()).then_some(index + 1)
-        };
-        let Some(target) = target else {
-            return false;
-        };
-        self.effects.swap(index, target);
-        self.anim.swap_effect_slots(index as u32, target as u32);
-        true
-    }
     /// Remove the effect at `idx` (no-op if out of range).
     pub fn remove_effect(&mut self, idx: usize) {
         if idx < self.effects.len() {

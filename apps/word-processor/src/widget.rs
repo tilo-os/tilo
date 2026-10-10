@@ -3099,20 +3099,6 @@ impl WordProcessorWidget {
         self.lifecycle.dirty = true;
     }
 
-    /// Edit the page margins on the page, as choosing Margins in the status
-    /// band does.
-    pub fn set_margins_mode(&mut self) {
-        self.toggle_layout_mode(LayoutMode::Margins);
-    }
-
-    /// Show or hide the document outline.
-    pub fn set_outline_open(&mut self, open: bool) {
-        if self.outline.is_open() != open {
-            self.outline.toggle();
-        }
-        self.lifecycle.dirty = true;
-    }
-
     /// Stage a representative non-destructive error toast for visual/a11y
     /// regression shots. Runtime failures use the same toast surface.
     pub fn stage_error_for_shot(&mut self) {

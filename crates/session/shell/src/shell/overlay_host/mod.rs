@@ -2452,17 +2452,6 @@ impl ShellOverlayHost {
         }
     }
 
-    /// Gate this host behind the shell-owned identity ceremony.
-    ///
-    /// This lives on the compositor root rather than in a pre-session winit
-    /// window: on a fresh machine there is no display server before `shell`,
-    /// and an application-shaped setup window could be imitated by an app.
-    #[must_use]
-    pub fn with_onboarding(mut self, identity_dir: std::path::PathBuf) -> Self {
-        self.onboarding = Some(crate::onboarding_view::OnboardingView::new(identity_dir));
-        self
-    }
-
     /// Activate first-login chrome on an already constructed compositor
     /// host. Production uses this after resolving the canonical XDG path.
     pub fn enable_onboarding(&mut self, identity_dir: std::path::PathBuf) {
@@ -2546,17 +2535,6 @@ impl ShellOverlayHost {
     /// Whether first-login chrome is still withholding the desktop.
     pub fn onboarding_active(&self) -> bool {
         self.onboarding.is_some()
-    }
-
-    /// Replace the protocol broker. Headless tests use this to drive
-    /// discovery, connection and failure states without receiver hardware.
-    #[must_use]
-    pub fn with_projection_backend(
-        mut self,
-        backend: Box<dyn crate::shell::projection::ProjectionBackend>,
-    ) -> Self {
-        self.projection_overlay = ProjectionOverlay::with_backend(backend);
-        self
     }
 
     pub fn projection(&self) -> &crate::shell::projection::ProjectionController {
@@ -6437,11 +6415,6 @@ impl ShellOverlayHost {
     #[cfg(any(test, debug_assertions))]
     pub fn tick_pending_tab_reorder_harvest_for_tests(&mut self) {
         self.harvest_pending_tab_reorder();
-    }
-
-    /// Test and deterministic-scenario entry point for same-strip tab moves.
-    pub fn tick_pending_group_topology_harvest_for_tests(&mut self) {
-        self.harvest_pending_group_topology();
     }
 
     /// Test-only: runs the per-frame decoration-search-chip handling outside `update`.

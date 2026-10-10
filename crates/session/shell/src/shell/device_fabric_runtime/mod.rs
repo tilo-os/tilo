@@ -1147,12 +1147,6 @@ pub fn fabric_peer_clock(
     with_fabric_clock(|core| core.estimate(peer, now_us))
 }
 
-/// Whether the fabric clock runs at all here: Media continuity is on.
-#[must_use]
-pub fn fabric_clock_enabled() -> bool {
-    with_fabric_clock(|core| core.enabled())
-}
-
 fn spatial_calibration_state()
 -> &'static Mutex<crate::shell::spatial_calibration::SpatialCalibrationState> {
     static STATE: OnceLock<Mutex<crate::shell::spatial_calibration::SpatialCalibrationState>> =
@@ -5327,21 +5321,6 @@ pub fn authorize_remote_audio(
     crate::shell::remote_audio::authorize(network, session_id, approved)
 }
 
-/// Choose which part of an inbound remote-audio route's stereo stream this
-/// device plays, e.g. one side of a stereo pair formed with another device.
-///
-/// # Errors
-///
-/// Returns an error for disabled policy, a stale route, or a playback stream
-/// that cannot restart.
-pub fn set_remote_audio_role(
-    session_id: [u8; 16],
-    role: media::sync_playout::ChannelRole,
-) -> Result<(), String> {
-    require_continuity(ContinuityCapability::Media)?;
-    crate::shell::remote_audio::set_role(session_id, role)
-}
-
 /// Stop an active remote-audio route and revoke its target-issued capability.
 ///
 /// # Errors
@@ -6633,36 +6612,6 @@ fn calibration_devices(
         .collect()
 }
 
-/// Admit locally measured geometry only after its hardware adapter has mapped
-/// the observation to an already certified exact peer. Proximity never enrolls
-/// or authenticates a device.
-///
-/// # Errors
-///
-/// Returns a message when display continuity is not enabled, the evidence
-/// does not name an online certified display, calibration state is
-/// unavailable, or the evidence is outside the calibration bounds.
-pub fn record_spatial_sensor_evidence(
-    network: &ShellNetwork,
-    evidence: crate::shell::spatial_calibration::SpatialEvidence,
-) -> Result<(), String> {
-    require_continuity(ContinuityCapability::DisplayInput)?;
-    let certified = network
-        .device_fabric()
-        .snapshots()
-        .get(&evidence.peer)
-        .is_some_and(|snapshot| snapshot.presence.online && snapshot.presence.capabilities.display);
-    if !certified {
-        return Err("sensor evidence does not name an online certified display".into());
-    }
-    spatial_calibration_state()
-        .lock()
-        .map_err(|_| crate::shell::i18n::t("device-fabric-error-spatial-unavailable"))?
-        .record_sensor_evidence(evidence)
-        .then_some(())
-        .ok_or_else(|| "sensor evidence is outside the bounded calibration profile".into())
-}
-
 fn spatial_calibration_proposals(
     network: &ShellNetwork,
 ) -> Vec<crate::shell::spatial_calibration::CalibrationProposal> {
@@ -6923,18 +6872,6 @@ fn checked_display_move(
     Ok((target, display.stamp.clone(), rect))
 }
 
-/// Compatibility helper for callers that use the original right-edge action.
-///
-/// # Errors
-///
-/// Returns the same placement or delivery errors as [`place_device`].
-pub fn place_device_right(
-    network: &ShellNetwork,
-    target: &crate::shell::personal_continuity::DeviceId,
-) -> Result<(), String> {
-    place_device(network, target, DisplayEdge::Right)
-}
-
 /// Explicitly allow one certified device to control this device until the
 /// short lease expires or is revoked.
 ///
@@ -7139,27 +7076,6 @@ fn revoke_input_control_inner(
         }
     }
     delivery_error.map_or(Ok(()), Err)
-}
-
-/// Send one lease-bound input event to an adjacent certified target.
-///
-/// # Errors
-///
-/// Returns an error if the target has not granted control, the lease expired,
-/// its capability excludes the event, or transport delivery fails.
-pub fn send_spatial_input(
-    network: &ShellNetwork,
-    target: &crate::shell::personal_continuity::DeviceId,
-    event: FabricInputEvent,
-) -> Result<(), String> {
-    let nonce = spatial_input_state()
-        .lock()
-        .map_err(|_| "spatial input state is unavailable".to_string())?
-        .received
-        .get(target)
-        .map(|lease| lease.nonce)
-        .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-control-not-granted"))?;
-    send_spatial_input_bound(network, target, nonce, event)
 }
 
 /// Current exact-controller pointer authority, never inferred from layout or
