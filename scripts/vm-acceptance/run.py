@@ -33,6 +33,7 @@ from acceptance.checks import (apps, basics, daily_apps, provenance, resources, 
                                startup, ui, window)
 from acceptance.context import Context  # noqa: E402
 from management import start_management  # noqa: E402
+from layer_artifacts import identities, verify as verify_artifacts  # noqa: E402
 from acceptance.vm import TiloVm, VmError, first_json  # noqa: E402
 
 REPO = HERE.parents[1]
@@ -263,20 +264,38 @@ def component_scopes(source: Path) -> dict[str, str]:
     return {c["name"]: c.get("scope", "session") for c in manifest.get("component", [])}
 
 
-def swap_components(vm: TiloVm, components: list[str], ref: str, source: Path) -> dict:
-    """Build each component from the worktree `source` on the host and swap it into the VM:
+def swap_components(vm: TiloVm, components: list[str], ref: str, source: Path,
+                    artifact: dict | None = None) -> dict:
+    """Build each component from `source` and swap it into the VM:
+    optional artifacts enter through verified import; the default path builds on the host.
     session components and apps into the run's slot, VM-wide ones into `vm`. Then read back the
     layer each slot runs, so P01 states what was tested: the base image plus these, from `ref`."""
     scopes = component_scopes(source)
     head = git("rev-parse", "HEAD", repo=source)
+    if artifact:
+        if head != artifact["expected"]["source_commit"]:
+            raise ValueError("artifact consumer source checkout does not match producer")
+        components = verify_artifacts(artifact["receipt"], artifact["expected"],
+                                      artifact["sha256"], components)
     swapped, slots = [], set()
     for component in components:
         slot = "vm" if scopes.get(component) == "vm" else vm.slot
         entry = {"component": component, "slot": slot}
         started = time.monotonic()
         try:
-            out = vm.run("--json", "swap", component, "--slot", slot, "--builder", "host",
-                         timeout=5400, slot=False, cwd=source)
+            if artifact:
+                expected = artifact["expected"]
+                out = vm.run("--json", "swap-artifact", component, "--slot", slot,
+                             "--receipt", str(artifact["receipt"]),
+                             "--source", expected["source_commit"],
+                             "--builder-image", expected["builder_image"],
+                             "--run-id", str(expected["run_id"]),
+                             "--run-attempt", str(expected["run_attempt"]),
+                             "--receipt-sha256", artifact["sha256"],
+                             timeout=5400, slot=False, cwd=source)
+            else:
+                out = vm.run("--json", "swap", component, "--slot", slot, "--builder", "host",
+                             timeout=5400, slot=False, cwd=source)
             entry["seconds"] = round(time.monotonic() - started)
             entry["result"] = whole_json(out)
             slots.add(slot)
@@ -333,6 +352,12 @@ def main() -> int:
     ap.add_argument("--swap-from", type=Path, help="the worktree --swap builds from (default: this one)")
     ap.add_argument("--swap-ref", help="the ref the swapped components are built from, for the report "
                     "(default: the --swap-from worktree's HEAD)")
+    ap.add_argument("--artifact-receipt", type=Path, help="same-run verified prebuilt layer receipt")
+    ap.add_argument("--artifact-source", help="exact producing source commit")
+    ap.add_argument("--artifact-builder-image", help="digest-pinned producing CI builder")
+    ap.add_argument("--artifact-run-id", type=int, help="producing workflow API run ID")
+    ap.add_argument("--artifact-run-attempt", type=int)
+    ap.add_argument("--artifact-receipt-sha256", help="receipt hash from authenticated producer output")
     ap.add_argument("--owners", help="area=owner,... to name who each area routes to")
     ap.add_argument("--records", type=Path, help="write the run's performance records here "
                     "(JSON lines, tools/perf/record.py)")
@@ -346,6 +371,19 @@ def main() -> int:
     swaps = [c.strip() for c in (args.swap or "").split(",") if c.strip()]
     swap_from = (args.swap_from or REPO).resolve()
     swap_ref = args.swap_ref or git("rev-parse", "HEAD", repo=swap_from)
+    artifact = None
+    handoff = (args.artifact_receipt, args.artifact_source, args.artifact_builder_image,
+               args.artifact_run_id, args.artifact_run_attempt, args.artifact_receipt_sha256)
+    if any(value is not None for value in handoff):
+        if not swaps or any(value is None for value in handoff):
+            ap.error("artifact mode requires swaps and all six --artifact-* identity arguments")
+        expected = identities(args.artifact_source, args.artifact_builder_image,
+                              args.artifact_run_id, args.artifact_run_attempt)
+        if git("rev-parse", "HEAD", repo=swap_from) != expected["source_commit"]:
+            ap.error("artifact source does not match acceptance checkout")
+        artifact = dict(receipt=args.artifact_receipt.resolve(), expected=expected,
+                        sha256=args.artifact_receipt_sha256)
+        verify_artifacts(artifact["receipt"], expected, artifact["sha256"], swaps)
     want_commit = git("rev-parse", args.commit) if args.commit else None
     if args.commit and not want_commit:
         want_commit = args.commit
@@ -413,7 +451,7 @@ def main() -> int:
                 print(f"the slot's logs: {logs}", file=sys.stderr)
             raise
         if swaps:
-            swapped = swap_components(vm, swaps, swap_ref, swap_from)
+            swapped = swap_components(vm, swaps, swap_ref, swap_from, artifact)
             if management:
                 if swapped["commit"] != management["commit"]:
                     raise VmError("management and session swaps have different source commits")
