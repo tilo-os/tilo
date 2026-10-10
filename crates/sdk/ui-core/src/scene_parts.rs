@@ -110,6 +110,55 @@ enum Boundary {
     Begin(PartKey),
     /// The bounds, in section coordinates, of everything the part drew.
     End(Vec<Rect>),
+    /// The end of a part with no bounds of its own ([`hinted`]): a change
+    /// inside it damages what its hint says changed when the hint follows
+    /// on from the compared frame's, and its enclosing part otherwise.
+    EndHinted(Option<DamageHint>),
+}
+
+/// What changed in a part's content between two generations of it, as the
+/// one who painted it knows: an embedded app's own widget damage.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DamageHint {
+    /// Who painted the content. A hint follows on only within one source.
+    pub source: u64,
+    /// The generation the damage is measured from.
+    pub from: u64,
+    /// The generation painted.
+    pub to: u64,
+    /// Where the content is placed: content placed elsewhere has moved.
+    pub placement: vello::kurbo::Affine,
+    /// Every pixel that differs between generations `from` and `to`, in the
+    /// section's coordinates, antialiasing, shadows and overhang included.
+    pub rects: Vec<Rect>,
+}
+
+impl DamageHint {
+    /// `self`'s damage when it describes the change from `previous`'s
+    /// content: the same source placed in the same place, painting the
+    /// generation that follows the one `previous` painted.
+    fn follows(&self, previous: &Self) -> Option<&[Rect]> {
+        (self.source == previous.source
+            && self.from == previous.to
+            && self.placement == previous.placement
+            && !self.rects.is_empty())
+        .then_some(self.rects.as_slice())
+    }
+
+    fn transformed(&self, transform: Option<vello::kurbo::Affine>) -> Self {
+        let Some(transform) = transform else {
+            return self.clone();
+        };
+        Self {
+            placement: transform * self.placement,
+            rects: self
+                .rects
+                .iter()
+                .map(|rect| transform.transform_rect_bbox(*rect))
+                .collect(),
+            ..self.clone()
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -209,7 +258,7 @@ fn boundary(scene: &mut Scene, boundary: Boundary) {
         };
         match boundary {
             Boundary::Begin(_) => log.open = log.open.saturating_add(1),
-            Boundary::End(_) => match log.open.checked_sub(1) {
+            Boundary::End(_) | Boundary::EndHinted(_) => match log.open.checked_sub(1) {
                 Some(open) => log.open = open,
                 None => log.broken = true,
             },
@@ -243,12 +292,51 @@ pub fn part<R>(
     result
 }
 
+/// Whether `scene` is split into parts for the active recording.
+pub fn is_tracked(scene: &Scene) -> bool {
+    RECORDING.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .is_some_and(|logs| logs.iter().any(|log| std::ptr::eq(log.scene, scene)))
+    })
+}
+
+/// Begin a part keyed `key` around draws too long to pass to [`part`] as one
+/// closure; [`end`] closes it, under the same contract. A part left open
+/// gives the section no parts.
+pub fn begin(scene: &mut Scene, key: PartKey) {
+    boundary(scene, Boundary::Begin(key));
+}
+
+/// Close the part [`begin`] opened, with the bounds of what it painted.
+pub fn end(scene: &mut Scene, bounds: Vec<Rect>) {
+    boundary(scene, Boundary::End(bounds));
+}
+
 /// [`part`] for a draw that knows what it painted only once it has: `draw`
 /// returns the bounds, under the same contract.
 pub fn part_drawn(scene: &mut Scene, key: PartKey, draw: impl FnOnce(&mut Scene) -> Vec<Rect>) {
     boundary(scene, Boundary::Begin(key));
     let bounds = draw(scene);
     boundary(scene, Boundary::End(bounds));
+}
+
+/// Draw one part of a section with no bounds of its own: `draw` paints
+/// content whose change since an earlier frame `hint` describes. A change
+/// inside the part damages the hint's rects when the hint follows on from
+/// the compared frame's (same source and placement, the next generation).
+/// Otherwise, or with no hint, the change belongs to the enclosing part, and
+/// outside every bounded part it is not proven.
+pub fn hinted<R>(
+    scene: &mut Scene,
+    key: PartKey,
+    hint: Option<DamageHint>,
+    draw: impl FnOnce(&mut Scene) -> R,
+) -> R {
+    boundary(scene, Boundary::Begin(key));
+    let result = draw(scene);
+    boundary(scene, Boundary::EndHinted(hint));
+    result
 }
 
 /// Record the parts of a scene drawn on its own (a retained scene a widget
@@ -295,6 +383,9 @@ pub fn append(
                         .map(|rect| transform.map_or(*rect, |t| t.transform_rect_bbox(*rect)))
                         .collect(),
                 ),
+                Boundary::EndHinted(hint) => {
+                    Boundary::EndHinted(hint.as_ref().map(|hint| hint.transformed(transform)))
+                }
             };
             log.events.push(Event {
                 boundary,
@@ -325,16 +416,38 @@ pub enum Unproven {
 }
 
 /// Damage, in section coordinates, between two frames of a section drawn
-/// with parts: the old and new bounds of every part whose commands changed.
-/// `Ok` with no rects means the section is unchanged.
+/// with parts: the old and new bounds of every part whose commands changed
+/// (or what a [`hinted`] part's hint says changed). `Ok` with no rects means
+/// the section is unchanged.
+///
+/// When the parts nested inside some part differ between the frames (a menu
+/// that opened inside an overlay drew a part of its own), the outermost
+/// parts are compared instead, each as a whole.
 pub fn damage(
     previous: &Scene,
     previous_parts: &SectionParts,
     current: &Scene,
     current_parts: &SectionParts,
 ) -> Result<Vec<Rect>, Unproven> {
-    let old_events = &previous_parts.events;
-    let new_events = &current_parts.events;
+    let (old_events, new_events) = (&previous_parts.events, &current_parts.events);
+    match compare(previous, old_events, current, new_events) {
+        Err(Unproven::Structure) => compare(
+            previous,
+            &outermost(old_events)?,
+            current,
+            &outermost(new_events)?,
+        ),
+        proven => proven,
+    }
+}
+
+/// [`damage`] for one list of boundaries per frame, compared piece by piece.
+fn compare(
+    previous: &Scene,
+    old_events: &[Event],
+    current: &Scene,
+    new_events: &[Event],
+) -> Result<Vec<Rect>, Unproven> {
     if old_events.len() != new_events.len()
         || old_events
             .iter()
@@ -343,8 +456,8 @@ pub fn damage(
     {
         return Err(Unproven::Structure);
     }
-    // The bounds of each part, found at its end, by the index of its begin.
-    let (old_bounds, new_bounds) = (part_bounds(old_events)?, part_bounds(new_events)?);
+    // How each part ends, found at its end, by the index of its begin.
+    let (old_ends, new_ends) = (part_ends(old_events)?, part_ends(new_events)?);
     let mut open: Vec<usize> = Vec::new();
     let mut damage = Vec::new();
     let mut changed = vec![false; old_events.len()];
@@ -355,14 +468,12 @@ pub fn damage(
         let old = slice(previous.encoding(), old_range).ok_or(Unproven::Corrupt)?;
         let new = slice(current.encoding(), new_range).ok_or(Unproven::Corrupt)?;
         if !old.encoding_eq(&new) {
-            let Some(&owner) = open.last() else {
-                return Err(Unproven::Section);
-            };
-            let old_part = *old_bounds.get(owner).ok_or(Unproven::Corrupt)?;
-            let new_part = *new_bounds.get(owner).ok_or(Unproven::Corrupt)?;
+            let (owner, rects) = changed_owner(&open, &old_ends, &new_ends)?;
             // A part claiming to paint nothing must not have drawn anything.
-            if (old_part.is_empty() && !old.encoding().draw_tags.is_empty())
-                || (new_part.is_empty() && !new.encoding().draw_tags.is_empty())
+            if let (Some(PartEnd::Bounds(old_part)), Some(PartEnd::Bounds(new_part))) =
+                (old_ends.get(owner), new_ends.get(owner))
+                && ((old_part.is_empty() && !old.encoding().draw_tags.is_empty())
+                    || (new_part.is_empty() && !new.encoding().draw_tags.is_empty()))
             {
                 return Err(Unproven::Unbounded);
             }
@@ -370,9 +481,9 @@ pub fn damage(
             if !*flag {
                 *flag = true;
                 // A part that changed in place has the same bounds twice.
-                for rect in old_part.iter().chain(new_part) {
-                    if !damage.contains(rect) {
-                        damage.push(*rect);
+                for rect in rects {
+                    if !damage.contains(&rect) {
+                        damage.push(rect);
                     }
                 }
             }
@@ -380,7 +491,7 @@ pub fn damage(
         // Advance past the boundary that ends this piece.
         match new_events.get(piece).map(|event| &event.boundary) {
             Some(Boundary::Begin(_)) => open.push(piece),
-            Some(Boundary::End(_)) => {
+            Some(Boundary::End(_) | Boundary::EndHinted(_)) => {
                 open.pop();
             }
             None => {}
@@ -395,29 +506,97 @@ pub fn damage(
     Ok(damage)
 }
 
+/// The part a change inside the `open` parts (innermost last) damages, and
+/// what it damages: the innermost part with bounds, its old and new bounds,
+/// unless a hinted part inside it has a hint that follows on, whose rects
+/// it damages instead.
+fn changed_owner(
+    open: &[usize],
+    old_ends: &[PartEnd<'_>],
+    new_ends: &[PartEnd<'_>],
+) -> Result<(usize, Vec<Rect>), Unproven> {
+    for &owner in open.iter().rev() {
+        let old_end = old_ends.get(owner).ok_or(Unproven::Corrupt)?;
+        let new_end = new_ends.get(owner).ok_or(Unproven::Corrupt)?;
+        match (old_end, new_end) {
+            (PartEnd::Bounds(old), PartEnd::Bounds(new)) => {
+                return Ok((owner, old.iter().chain(new.iter()).copied().collect()));
+            }
+            (PartEnd::Hint(Some(old)), PartEnd::Hint(Some(new))) => {
+                if let Some(rects) = new.follows(old) {
+                    return Ok((owner, rects.to_vec()));
+                }
+            }
+            (PartEnd::Hint(_), PartEnd::Hint(_)) => {}
+            _ => return Err(Unproven::Structure),
+        }
+    }
+    Err(Unproven::Section)
+}
+
 fn same_boundary_kind(old: &Boundary, new: &Boundary) -> bool {
     match (old, new) {
         (Boundary::Begin(old), Boundary::Begin(new)) => old == new,
-        (Boundary::End(_), Boundary::End(_)) => true,
+        (Boundary::End(_), Boundary::End(_)) | (Boundary::EndHinted(_), Boundary::EndHinted(_)) => {
+            true
+        }
         _ => false,
     }
 }
 
-/// The bounds of every part, indexed by the event that begins it.
-fn part_bounds(events: &[Event]) -> Result<Vec<&[Rect]>, Unproven> {
-    let mut bounds: Vec<&[Rect]> = vec![&[]; events.len()];
+/// How a part ends: with its bounds, or with a damage hint ([`hinted`]).
+#[derive(Clone, Copy)]
+enum PartEnd<'a> {
+    Bounds(&'a [Rect]),
+    Hint(Option<&'a DamageHint>),
+}
+
+/// How every part ends, indexed by the event that begins it.
+fn part_ends(events: &[Event]) -> Result<Vec<PartEnd<'_>>, Unproven> {
+    let mut ends = vec![PartEnd::Bounds(&[]); events.len()];
     let mut open = Vec::new();
     for (index, event) in events.iter().enumerate() {
-        match &event.boundary {
-            Boundary::Begin(_) => open.push(index),
-            Boundary::End(rects) => {
-                let begin = open.pop().ok_or(Unproven::Corrupt)?;
-                *bounds.get_mut(begin).ok_or(Unproven::Corrupt)? = rects;
+        let end = match &event.boundary {
+            Boundary::Begin(_) => {
+                open.push(index);
+                continue;
+            }
+            Boundary::End(rects) => PartEnd::Bounds(rects),
+            Boundary::EndHinted(hint) => PartEnd::Hint(hint.as_ref()),
+        };
+        let begin = open.pop().ok_or(Unproven::Corrupt)?;
+        *ends.get_mut(begin).ok_or(Unproven::Corrupt)? = end;
+    }
+    if open.is_empty() {
+        Ok(ends)
+    } else {
+        Err(Unproven::Corrupt)
+    }
+}
+
+/// The boundaries of the outermost parts only: each compares as a whole,
+/// whatever parts it draws inside.
+fn outermost(events: &[Event]) -> Result<Vec<Event>, Unproven> {
+    let mut depth = 0_usize;
+    let mut outer = Vec::new();
+    for event in events {
+        match event.boundary {
+            Boundary::Begin(_) => {
+                if depth == 0 {
+                    outer.push(event.clone());
+                }
+                depth = depth.saturating_add(1);
+            }
+            Boundary::End(_) | Boundary::EndHinted(_) => {
+                depth = depth.checked_sub(1).ok_or(Unproven::Corrupt)?;
+                if depth == 0 {
+                    outer.push(event.clone());
+                }
             }
         }
     }
-    if open.is_empty() {
-        Ok(bounds)
+    if depth == 0 {
+        Ok(outer)
     } else {
         Err(Unproven::Corrupt)
     }

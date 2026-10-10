@@ -100,10 +100,16 @@ fn shm_regions(rects: &[BufferRect]) -> Vec<crate::compositor::surface_readback:
 
 type BufferRect = smithay::utils::Rectangle<i32, smithay::utils::Buffer>;
 
-/// Keep only unambiguous buffer-coordinate damage. Surface-coordinate
-/// rectangles require viewport/scale conversion; absent or transformed hints
-/// remain whole-buffer damage rather than guessing that conversion.
-fn pending_buffer_rects(attrs: &wl_compositor::SurfaceAttributes) -> Option<Vec<BufferRect>> {
+/// The commit's damage in buffer pixels. Buffer-coordinate rectangles
+/// (`wl_surface.damage_buffer`) are taken as they are. Surface-coordinate
+/// ones (`wl_surface.damage`) cover `buffer_scale` buffer pixels per
+/// surface pixel while no viewport (`viewported`) crops or scales the
+/// buffer; with one, or with a transformed or offset buffer, or no damage,
+/// the whole buffer is damaged rather than guessing the conversion.
+fn pending_buffer_rects(
+    attrs: &wl_compositor::SurfaceAttributes,
+    viewported: bool,
+) -> Option<Vec<BufferRect>> {
     if attrs.buffer_transform
         != smithay::reexports::wayland_server::protocol::wl_output::Transform::Normal
         || attrs
@@ -118,12 +124,90 @@ fn pending_buffer_rects(attrs: &wl_compositor::SurfaceAttributes) -> Option<Vec<
         .damage
         .iter()
         .map(|damage| {
-            let wl_compositor::Damage::Buffer(rect) = damage else {
-                return None;
+            let rect = match damage {
+                wl_compositor::Damage::Buffer(rect) => *rect,
+                wl_compositor::Damage::Surface(rect) if !viewported => {
+                    surface_rect_in_buffer(*rect, attrs.buffer_scale)?
+                }
+                wl_compositor::Damage::Surface(_) => return None,
             };
-            (rect.size.w > 0 && rect.size.h > 0).then_some(*rect)
+            (rect.size.w > 0 && rect.size.h > 0).then_some(rect)
         })
         .collect()
+}
+
+/// A surface-local rectangle in the pixels of an untransformed buffer drawn
+/// at `scale` buffer pixels per surface pixel. Clients damage "everything"
+/// as `i32::MAX`-sized rectangles, so the scaling saturates.
+fn surface_rect_in_buffer(
+    rect: smithay::utils::Rectangle<i32, smithay::utils::Logical>,
+    scale: i32,
+) -> Option<BufferRect> {
+    if scale < 1 {
+        return None;
+    }
+    let scaled = |value: i32| value.saturating_mul(scale);
+    Some(BufferRect::new(
+        (scaled(rect.loc.x), scaled(rect.loc.y)).into(),
+        (scaled(rect.size.w), scaled(rect.size.h)).into(),
+    ))
+}
+
+#[cfg(test)]
+mod commit_damage_tests {
+    use super::{BufferRect, pending_buffer_rects, wl_compositor};
+    use smithay::utils::{Logical, Rectangle};
+
+    fn commit(damage: Vec<wl_compositor::Damage>, scale: i32) -> wl_compositor::SurfaceAttributes {
+        let mut attrs = wl_compositor::SurfaceAttributes::default();
+        attrs.damage = damage;
+        attrs.buffer_scale = scale;
+        attrs
+    }
+
+    fn surface(x: i32, y: i32, w: i32, h: i32) -> wl_compositor::Damage {
+        wl_compositor::Damage::Surface(Rectangle::<i32, Logical>::new((x, y).into(), (w, h).into()))
+    }
+
+    fn buffer(x: i32, y: i32, w: i32, h: i32) -> BufferRect {
+        BufferRect::new((x, y).into(), (w, h).into())
+    }
+
+    #[test]
+    fn surface_damage_covers_its_buffer_pixels_at_the_buffer_scale() {
+        let attrs = commit(
+            vec![
+                surface(10, 20, 30, 4),
+                wl_compositor::Damage::Buffer(buffer(1, 2, 3, 4)),
+            ],
+            2,
+        );
+        assert_eq!(
+            pending_buffer_rects(&attrs, false),
+            Some(vec![buffer(20, 40, 60, 8), buffer(1, 2, 3, 4)])
+        );
+    }
+
+    #[test]
+    fn surface_damage_under_a_viewport_damages_the_whole_buffer() {
+        let attrs = commit(vec![surface(10, 20, 30, 4)], 1);
+        assert_eq!(pending_buffer_rects(&attrs, true), None);
+        // Buffer damage needs no conversion, viewport or not.
+        let attrs = commit(vec![wl_compositor::Damage::Buffer(buffer(1, 2, 3, 4))], 1);
+        assert_eq!(
+            pending_buffer_rects(&attrs, true),
+            Some(vec![buffer(1, 2, 3, 4)])
+        );
+    }
+
+    #[test]
+    fn damaging_everything_in_surface_pixels_saturates() {
+        let attrs = commit(vec![surface(0, 0, i32::MAX, i32::MAX)], 2);
+        assert_eq!(
+            pending_buffer_rects(&attrs, false),
+            Some(vec![buffer(0, 0, i32::MAX, i32::MAX)])
+        );
+    }
 }
 
 use smithay::backend::allocator::Fourcc;
@@ -4105,6 +4189,15 @@ impl State {
             return;
         }
         let (association, capture) = wl_compositor::with_states(surface, |states| {
+            // A viewport crops or scales the buffer: surface-local damage
+            // then has no plain conversion to buffer pixels.
+            let viewported = {
+                let mut viewport = states
+                    .cached_state
+                    .get::<smithay::wayland::viewporter::ViewportCachedState>();
+                let pending = viewport.pending();
+                pending.src.is_some() || pending.dst.is_some()
+            };
             let mut attrs = states
                 .cached_state
                 .get::<wl_compositor::SurfaceAttributes>();
@@ -4125,7 +4218,7 @@ impl State {
                     return (association, None);
                 }
             };
-            let rects = pending_buffer_rects(attrs.pending());
+            let rects = pending_buffer_rects(attrs.pending(), viewported);
             drop(attrs);
             let damage = rects.as_deref().map(buffer_damage);
             let regions = rects.as_deref().map(shm_regions);

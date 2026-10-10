@@ -286,20 +286,40 @@ keyed **damage parts** (`ui::scene_parts`): a draw site marks a stretch of
 commands with a key and the bounds those commands can paint, and every
 boundary splits the section's encoded streams into pieces that are compared
 with the previous frame's piece by piece. A changed piece of a part damages
-that part's old and new bounds; a changed piece outside every part, or a
-different set of parts, leaves the frame dense. Parts today: each tile's
-clipped content, each tab pill, the peers' pointers and follow tethers, the
-follow chip and the notification stack. A retained scene carries its parts
-with it (`scene_parts::record` / `scene_parts::append`), so an in-process
-app's own parts (the terminal's rows and cursor) reach the compositor:
-typing or a peer's pointer moving repaints well under 1 % of a 4K output.
+that part's old and new bounds; a changed piece outside every part leaves the
+frame dense. When the parts nested inside a part differ between the frames (a
+menu opened inside an overlay drew a part of its own), the outermost parts
+are compared instead, each as a whole. Parts today: each tile's clipped
+content, each tab pill, the peers' pointers and follow tethers, the follow
+chip, the notification stack, and every overlay above Quick Settings: the
+palette's scrim and its card, the tab menu, the sheets and prompts, and the
+client surfaces floating over the desktop (popups, floating and fullscreen
+windows, the on-screen keyboard). An overlay's part is there whether or not
+the overlay is open, so opening, animating or closing it repaints that
+overlay; an overlay that cannot bound what it paints claims the whole
+desktop. A retained scene carries its parts with it (`scene_parts::record` /
+`scene_parts::append`), so an in-process app's own parts (the terminal's
+rows and cursor) reach the compositor: typing or a peer's pointer moving
+repaints well under 1 % of a 4K output.
 The shell's adaptive Area renderer canonicalizes each tile's segment order
 before coverage accumulation. Dense and retained repairs then round the same
 unchanged geometry to the same pixels despite GPU scheduling. Each successful
 repair settles its overflow counters before the next frame; explicit pinned
 `VELLO_BUMP_BUDGET=upstream` experiments retain Vello's existing exclusion from
 canonical ordering and do not carry this pixel-repeatability guarantee.
-Foreign buffer swaps keep their client-reported damage. Night light and the
+An in-process app also hands over its widget damage, as a window of its own
+would submit it (`App::surface_frame_with_damage`): its scene is a **hinted**
+part (`scene_parts::hinted`) whose hint names the generations it changed
+between and where, and its chrome and the layers over its widgets are
+window-sized parts. A frame compared with the one that painted the generation
+before repaints only that damage (a tooltip repaints its chip); any other
+change to the app (it moved, repainted whole, a frame was skipped) repaints
+its tile. A tile's edge and the tab list's focus ring are parts too. Foreign
+buffer swaps keep their
+client-reported damage, from `wl_surface.damage_buffer` as from
+`wl_surface.damage` (scaled to buffer pixels unless a viewport crops or
+scales the buffer). Strip pans still repaint every pixel of the strip: no
+presenter composites the retained strip layer (`FrameCache`). Night light and the
 colour filters are per-pixel tints drawn into the same scene, so frames under
 them stay sparse while the tint is unchanged; the magnifier and the
 crosshair, which follow the pointer, keep every frame dense.

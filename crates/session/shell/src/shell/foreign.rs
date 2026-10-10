@@ -4016,6 +4016,30 @@ impl ForeignSurfaceWidget {
         );
     }
 
+    /// Draw the surface as [`Widget::draw`] does and return every pixel it
+    /// painted, in scene coordinates, when all of it stays inside the
+    /// surface's rect: the client's picture over its card. `None` when it
+    /// may have painted past the rect: the words standing in for a picture
+    /// that has not arrived, a capture's placeholder, an agent's activity.
+    pub fn draw_bounded(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) -> Option<Rect> {
+        let marked = presence.has_visible_interactions(Instant::now());
+        self.draw(scene, transform, text_renderer, theme, presence);
+        let marked = marked || presence.has_visible_interactions(Instant::now());
+        let pictured = self
+            .cached
+            .as_ref()
+            .is_some_and(|image| self.fit_rect(image.width, image.height).is_some());
+        (pictured && !marked && !crate::shell::capture_protection::painting_for_capture())
+            .then(|| transform.transform_rect_bbox(self.rect).inflate(1.0, 1.0))
+    }
+
     pub fn surface_id(&self) -> SurfaceId {
         self.surface_id
     }
