@@ -10,11 +10,7 @@ use crate::model::FormatCategory;
 use automerge::AutoCommit;
 
 fn mouse(state: ElementState) -> WindowEvent {
-    WindowEvent::MouseInput {
-        device_id: winit::event::DeviceId::dummy(),
-        state,
-        button: MouseButton::Left,
-    }
+    ui::synthetic_input::mouse_input(state, ui::winit::event::MouseButton::Left)
 }
 
 /// Move the pointer to `p` and press and release the left button there.

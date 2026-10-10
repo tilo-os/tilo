@@ -850,12 +850,7 @@ mod tests {
     }
 
     fn key_event_with_state(key: Key, state: ElementState) -> WindowEvent {
-        let event = ui::synthetic_input::key_event(key, None, state);
-        WindowEvent::KeyboardInput {
-            device_id: winit::event::DeviceId::dummy(),
-            event,
-            is_synthetic: false,
-        }
+        ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(key, None, state))
     }
 
     fn key_event(named: NamedKey) -> WindowEvent {

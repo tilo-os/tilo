@@ -3110,24 +3110,13 @@ mod tests {
     }
 
     fn cursor(p: Point) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(p.x, p.y),
-        }
+        ui::synthetic_input::cursor_moved(p.x, p.y)
     }
     fn btn(state: ElementState) -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state,
-            button: MouseButton::Left,
-        }
+        ui::synthetic_input::mouse_input(state, ui::winit::event::MouseButton::Left)
     }
     fn wheel(y: f64) -> WindowEvent {
-        WindowEvent::MouseWheel {
-            device_id: winit::event::DeviceId::dummy(),
-            delta: MouseScrollDelta::LineDelta(0.0, y as f32),
-            phase: winit::event::TouchPhase::Moved,
-        }
+        ui::synthetic_input::mouse_wheel(0.0, y as f32)
     }
 
     /// A full click (move → press → release) at scene point `p`.

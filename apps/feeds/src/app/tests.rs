@@ -81,27 +81,19 @@ fn synth_device() -> winit::event::DeviceId {
 }
 
 fn cursor_at(p: Point) -> WindowEvent {
-    WindowEvent::CursorMoved {
-        device_id: synth_device(),
-        position: winit::dpi::PhysicalPosition::new(p.x, p.y),
-    }
+    ui::synthetic_input::cursor_moved(p.x, p.y)
 }
 
 fn press(button: MouseButton) -> WindowEvent {
-    WindowEvent::MouseInput {
-        device_id: synth_device(),
-        state: ElementState::Pressed,
-        button,
-    }
+    ui::synthetic_input::mouse_input(ui::winit::event::ElementState::Pressed, button)
 }
 
 fn key_event(key: Key, text: Option<&str>) -> WindowEvent {
-    let ev = ui::synthetic_input::key_event(key, text.map(Into::into), ElementState::Pressed);
-    WindowEvent::KeyboardInput {
-        device_id: synth_device(),
-        event: ev,
-        is_synthetic: false,
-    }
+    ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
+        key,
+        text.map(Into::into),
+        ElementState::Pressed,
+    ))
 }
 
 fn char_key(s: &str) -> WindowEvent {

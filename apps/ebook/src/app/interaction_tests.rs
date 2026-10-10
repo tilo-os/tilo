@@ -673,24 +673,18 @@ fn render_scene(app: &mut BooksApp, doc: &mut AutoCommit, w: f64, h: f64) -> Sce
 
 // Synthesised winit key presses, routed through the real `handle_event`.
 fn char_press(ch: &str) -> WindowEvent {
-    let ev = ui::synthetic_input::key_event(
+    ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
         Key::Character(ch.into()),
         Some(ch.into()),
         ElementState::Pressed,
-    );
-    WindowEvent::KeyboardInput {
-        device_id: DeviceId::dummy(),
-        event: ev,
-        is_synthetic: false,
-    }
+    ))
 }
 fn named_press(named: NamedKey) -> WindowEvent {
-    let ev = ui::synthetic_input::key_event(Key::Named(named), None, ElementState::Pressed);
-    WindowEvent::KeyboardInput {
-        device_id: DeviceId::dummy(),
-        event: ev,
-        is_synthetic: false,
-    }
+    ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
+        Key::Named(named),
+        None,
+        ElementState::Pressed,
+    ))
 }
 fn feed(app: &mut BooksApp, doc: &mut AutoCommit, ev: &WindowEvent) -> bool {
     Dispatch::new().doc(doc).send(app, ev).handled

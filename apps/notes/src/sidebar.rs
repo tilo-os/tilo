@@ -672,7 +672,7 @@ mod tests {
     use ui::text_render::TextRenderer;
     use ui::theme::Theme;
     use vello::kurbo::{Point, Rect};
-    use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
+    use winit::event::{ElementState, Modifiers, WindowEvent};
     use winit::keyboard::NamedKey;
 
     /// Lay the sidebar out at `rect` the way the drawer host does.
@@ -715,18 +715,11 @@ mod tests {
     }
 
     fn moved(point: Point) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(point.x, point.y),
-        }
+        ui::synthetic_input::cursor_moved(point.x, point.y)
     }
 
     fn button(state: ElementState) -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state,
-            button: MouseButton::Left,
-        }
+        ui::synthetic_input::mouse_input(state, ui::winit::event::MouseButton::Left)
     }
 
     use ui::synthetic_input::named_key;
