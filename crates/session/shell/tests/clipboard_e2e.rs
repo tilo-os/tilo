@@ -1099,14 +1099,18 @@ fn wait_for_clipboard_before(
     failure: &str,
     end: Instant,
 ) {
-    while !condition() && Instant::now() < end {
+    // Retain the successful production read: another short-budget read can
+    // return None even after the selection was observed.
+    let mut observed = condition();
+    while !observed && Instant::now() < end {
         dispatch_any(&mut [&mut *client], None, Duration::from_millis(5));
+        observed = condition();
     }
     assert!(
         Instant::now() < end,
         "{failure}: fixture exceeded its deadline"
     );
-    assert!(condition(), "{failure}");
+    assert!(observed, "{failure}");
 }
 
 fn cancellation_clipboard(app: &TestClient) -> (ui::clipboard::WaylandClipboard, Instant) {
@@ -1750,10 +1754,22 @@ fn native_borrowed_display_pastes_the_compositors_current_selection() {
     let payload = "https://example.com/native-paste";
     compositor.chrome_copy(payload, false);
     // Each read is bounded by the UI's short read budget; a loaded runner can
-    // need several before the compositor serves the selection.
+    // need several before the compositor serves the selection. Once the real
+    // reader observes it, another poll must not discard that observation.
+    let observed_payload = std::cell::Cell::new(false);
     wait_for_clipboard_before(
         &mut client,
-        || clipboard.text(ClipboardTarget::Clipboard).as_deref() == Some(payload),
+        || {
+            assert!(
+                !observed_payload.get(),
+                "polling continued after the native reader observed the selection"
+            );
+            let matches = clipboard.text(ClipboardTarget::Clipboard).as_deref() == Some(payload);
+            if matches {
+                observed_payload.set(true);
+            }
+            matches
+        },
         "the actual native reader lost a selection published by the compositor",
         tilo_test_env::hang_deadline(),
     );
@@ -1765,6 +1781,27 @@ fn native_borrowed_display_pastes_the_compositors_current_selection() {
             .as_deref(),
         Some(payload),
         "explicit paste must read the focused compositor selection"
+    );
+}
+
+#[test]
+#[should_panic(expected = "missing native selection: fixture exceeded its deadline")]
+fn native_borrowed_display_wait_refuses_a_missing_selection() {
+    let compositor = Compositor::start();
+    let mut client = TestClient::new(compositor.connect(), "org.tilo.test.native-missing-paste");
+    client.assert_is_tilo_compositor();
+    // SAFETY: client owns the display and outlives this backend.
+    let clipboard =
+        unsafe { ui::clipboard::WaylandClipboard::new(client.conn.backend().display_ptr().cast()) };
+    assert!(clipboard.wait_ready_for_wayland_test(deadline()));
+    client.map_window(&compositor);
+    client.roundtrip();
+    assert_eq!(clipboard.text(ClipboardTarget::Clipboard), None);
+    wait_for_clipboard_before(
+        &mut client,
+        || clipboard.text(ClipboardTarget::Clipboard).is_some(),
+        "missing native selection",
+        Instant::now() + Duration::from_millis(100),
     );
 }
 

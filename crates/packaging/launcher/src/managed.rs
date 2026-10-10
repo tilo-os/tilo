@@ -26,19 +26,6 @@ pub struct PackageTrust {
 }
 
 impl PackageTrust {
-    /// Load the same independently configured app trust used by the installer.
-    /// This never adds the installed package's self-declared publisher.
-    ///
-    /// # Errors
-    /// Refuses unavailable configuration roots or malformed trust/revocation files.
-    pub fn from_user_config() -> Result<Self, String> {
-        let attestors = tilo_app_package::default_trusted_attestors_path()
-            .ok_or("application trust configuration directory is unavailable")?;
-        let revoked = tilo_app_package::default_revoked_keys_path()
-            .ok_or("application revocation configuration directory is unavailable")?;
-        Self::from_config_paths(&attestors, &revoked)
-    }
-
     /// Load explicit host-owned paths; absent files mean no additional trust.
     ///
     /// # Errors

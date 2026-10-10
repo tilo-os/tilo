@@ -345,7 +345,7 @@ COPY examples /build/examples
 COPY vendor /build/vendor
 COPY dist /build/dist
 COPY docs/developers/tasks /build/docs/developers/tasks
-COPY tools/ci/rustc-thin-app-wrapper.sh /build/tools/ci/rustc-thin-app-wrapper.sh
+COPY tools/ci/rustc-thin-app-wrapper.sh tools/ci/runtime-dylib-lazy-link.py /build/tools/ci/
 COPY tools/policy/app_portability_rules.toml /build/tools/policy/app_portability_rules.toml
 COPY tools/policy/app_capability_usage.toml /build/tools/policy/app_capability_usage.toml
 COPY tools/protocols/airdrop_sender.py /build/tools/protocols/airdrop_sender.py
@@ -909,11 +909,15 @@ ENV RUNTIME_RELEASE=${RUNTIME_RELEASE}
 # scripts' SOURCE_DATE_EPOCH, not the fixed one the compile above ran with.
 ARG SOURCE_DATE_EPOCH=0
 ENV SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}
-# libstd is not on the system loader path and ldd reports it "not found", so
-# the dependency loop below never picks it up: it is included by name. The
-# closure check then loads every bundled object and thin app the way the
-# launcher does, with only the bundle's lib/ on LD_LIBRARY_PATH.
+# libstd is not on the system loader path, so it is included by name. The
+# bundle's other libraries are the native closure of the runtime and the thin
+# apps (os/scripts/collect-runtime-dependencies.py, with /out on the loader's
+# path), including GLib and GStreamer, which the runtime loads on first use
+# rather than at exec (TIL-713). The closure check then loads every bundled
+# object and thin app the way the launcher does, with only the bundle's lib/
+# on LD_LIBRARY_PATH.
 RUN --mount=type=bind,source=os/scripts/verify-runtime-bundle-closure.sh,target=/usr/local/libexec/tilo-verify-runtime-bundle-closure.sh,ro \
+    --mount=type=bind,source=os/scripts/collect-runtime-dependencies.py,target=/usr/local/libexec/tilo-collect-runtime-dependencies.py,ro \
     --mount=type=bind,source=os/registry-runtime-publisher.hex,target=/usr/local/share/tilo-registry-runtime-publisher.hex,ro \
     grep -Eqx '[0-9a-f]{64}' /usr/local/share/tilo-registry-runtime-publisher.hex \
     && cp /usr/local/share/tilo-registry-runtime-publisher.hex /out/registry-runtime-publisher.hex \
@@ -945,12 +949,9 @@ RUN --mount=type=bind,source=os/scripts/verify-runtime-bundle-closure.sh,target=
           --identity /out/runtime-bundle-identity.json \
           --out-root /usr/lib/tilo-runtime \
           --version-out /out/runtime-version); \
-        report="$(LD_LIBRARY_PATH=/out ldd /out/libruntime_dylib.so /out/thin-apps/*)"; \
-        if grep -Fq "not found" <<<"$report"; then printf "%s\n" "$report" >&2; exit 1; fi; \
-        while IFS= read -r dependency; do args+=(--include "$dependency"); done \
-          < <(printf "%s\n" "$report" \
-              | awk '\''{ for (i=1; i<=NF; i++) if ($i ~ /^\// && $i !~ /:$/) print $i }'\'' \
-              | sort -u); \
+        dependencies="$(python3 /usr/local/libexec/tilo-collect-runtime-dependencies.py \
+          --library-dir /out /out/libruntime_dylib.so /out/thin-apps/*)"; \
+        while IFS= read -r dependency; do args+=(--include "$dependency"); done <<<"$dependencies"; \
         "${args[@]}"' bundle "${RUST_LIBSTD}" \
       && /out/tilo-runtime-bundle key pubkey \
         --identity /out/runtime-bundle-identity.json \

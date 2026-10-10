@@ -406,11 +406,6 @@ impl PeerView {
         });
     }
 
-    /// Compat shim; prefer [`Self::record_key`] for new call sites.
-    pub fn record_key_no_mods(&mut self, keysym: u32, pressed: bool) {
-        self.record_key(keysym, pressed, 0);
-    }
-
     pub fn take_pending_inputs(&mut self) -> Vec<InputEvent> {
         std::mem::take(&mut self.pending_inputs)
     }

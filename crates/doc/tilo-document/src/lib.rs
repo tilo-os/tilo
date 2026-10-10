@@ -362,51 +362,6 @@ impl RichTextState {
             .collect()
     }
 
-    /// Up to `limit` blocks of `kind` nearest position `around`, in
-    /// document order: what a view near there lists (the sections, images
-    /// and tables around a caret) at the cost of the neighbourhood it looks
-    /// through, not of the document.
-    pub fn featured_near(&self, kind: &str, around: usize, limit: usize) -> Vec<Rc<BlockView>> {
-        /// How far either way to look.
-        const REACH: usize = 20_000;
-        // Few enough to list them all.
-        if self
-            .featured
-            .values()
-            .filter(|view| view.kind == kind)
-            .count()
-            <= limit
-        {
-            return self.featured(kind);
-        }
-        let mut found: Vec<(usize, Rc<BlockView>)> = Vec::new();
-        let len = self.body.len();
-        let at = |position: usize| {
-            self.body
-                .id_at(position)
-                .and_then(|id| self.featured.get(id))
-                .filter(|view| view.kind == kind)
-                .map(|view| (position, Rc::clone(view)))
-        };
-        for step in 0..=REACH {
-            let before = around.checked_sub(step);
-            let after = around.saturating_add(step);
-            if before.is_none() && after >= len {
-                break;
-            }
-            found.extend(before.and_then(at));
-            if step > 0 && after < len {
-                found.extend(at(after));
-            }
-            if found.len() >= limit {
-                break;
-            }
-        }
-        found.sort_by_key(|(position, _)| *position);
-        found.truncate(limit);
-        found.into_iter().map(|(_, view)| view).collect()
-    }
-
     pub fn header(&self) -> &Rc<Vec<BlockView>> {
         &self.header
     }

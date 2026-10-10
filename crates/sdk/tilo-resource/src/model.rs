@@ -267,6 +267,17 @@ pub trait Fields: Model {
         Vec::new()
     }
 
+    /// How many items each [`Collection`](crate::Collection) field holds, by
+    /// field, in the order of [`item_collections`](Self::item_collections),
+    /// without listing them. `#[derive(Model)]` counts them; the default
+    /// lists them.
+    fn item_collection_sizes(&self) -> Vec<(&'static str, usize)> {
+        self.item_collections()
+            .iter()
+            .map(|collection| (collection.field, collection.items.len()))
+            .collect()
+    }
+
     /// Write the fields to the map `obj`, which holds `before`: the
     /// operations [`write_fields`](Self::write_fields) would write, with
     /// each field compared to its value in `before` rather than read back

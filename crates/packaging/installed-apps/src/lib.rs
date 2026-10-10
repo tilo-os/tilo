@@ -89,26 +89,11 @@ impl InstalledApp {
             .map_or(self.display_name.as_str(), |(_, name)| name.as_str())
     }
 
-    /// Whether this package declares it opens `ext` (case-insensitive,
-    /// leading dot tolerated).
-    pub fn opens_extension(&self, ext: &str) -> bool {
-        let want = ext.trim().trim_start_matches('.').to_ascii_lowercase();
-        !want.is_empty() && self.opens_extensions.contains(&want)
-    }
-
     pub fn opens_mime(&self, mime: &str) -> bool {
         desktop_policy::ResourceKind::mime(mime).is_ok_and(|resource| {
             resource
                 .mime_name()
                 .is_some_and(|mime| self.opens_mime_types.iter().any(|claim| claim == mime))
-        })
-    }
-
-    pub fn opens_scheme(&self, scheme: &str) -> bool {
-        desktop_policy::ResourceKind::scheme(scheme).is_ok_and(|resource| {
-            resource
-                .scheme_name()
-                .is_some_and(|scheme| self.opens_uri_schemes.iter().any(|claim| claim == scheme))
         })
     }
 
