@@ -3872,7 +3872,7 @@ mod app_close_tests {
         let (state, caller, room, tree) = broker_with_tree(Arc::clone(&launcher), true);
         let provider = tilo_actions::remote::workspace_provider(&room);
         let query = tilo_actions::remote::CatalogueQuery {
-            provider: Some(provider.clone()),
+            provider: Some(provider),
             max_results: 64,
             ..Default::default()
         };
@@ -3904,7 +3904,7 @@ mod app_close_tests {
                 .is_some_and(|action| action.address.action == APPLICATION_CLOSE_ACTION)
         }));
 
-        let stale = answered(
+        let cursor_reply = answered(
             &state,
             &launcher,
             &caller,
@@ -3915,8 +3915,8 @@ mod app_close_tests {
             },
         )
         .0;
-        assert!(stale.stale_cursor);
-        assert!(stale.rows.is_empty());
+        assert!(cursor_reply.stale_cursor);
+        assert!(cursor_reply.rows.is_empty());
 
         {
             let mut tree = tree.write();

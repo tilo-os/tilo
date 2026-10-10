@@ -1253,11 +1253,14 @@ impl LiveAppActionsProvider {
         // This is the providers-only projection's stamp, not the eager rows'
         // digest. Sample after releasing the tree guard: admission re-reads it.
         let source_revision = current.as_ref().and_then(|(room, actor, _, _)| {
-            let session = self.action_sessions.open(room, Some(actor)).ok()?;
-            let mut answer = session.query(CatalogueQuery {
-                max_results: 0,
-                ..CatalogueQuery::default()
-            });
+            let mut answer =
+                self.action_sessions
+                    .open(room, Some(actor))
+                    .ok()?
+                    .query(CatalogueQuery {
+                        max_results: 0,
+                        ..CatalogueQuery::default()
+                    });
             match answer.poll_ready() {
                 PendingPoll::Ready(Ok(page)) if !page.stale_cursor => Some(page.revision),
                 _ => None,
@@ -4101,6 +4104,35 @@ mod tests {
         }
     }
 
+    fn wait_for_workspace_profile_action(
+        provider: &LiveAppActionsProvider,
+        ctx: &SearchContext<'_>,
+        outcome: &str,
+    ) {
+        let deadline = Instant::now()
+            .checked_add(Duration::from_secs(3))
+            .expect("the fixture deadline fits the monotonic clock");
+        loop {
+            let completed = provider.query_page(*ctx, None, SearchBudget::PALETTE);
+            if completed
+                .results
+                .iter()
+                .any(|row| row.id.ends_with("\u{1f}profile.save"))
+            {
+                break;
+            }
+            assert!(
+                provider.index_settling(ctx),
+                "{outcome}: the unanswered real broker page cannot settle"
+            );
+            assert!(
+                Instant::now() < deadline,
+                "{outcome}: the actual broker profile action did not arrive"
+            );
+            std::thread::yield_now();
+        }
+    }
+
     #[test]
     fn unanswered_workspace_service_page_retries_before_listing_settles() {
         for outcome in ["failed", "stale", "abandoned", "timed_out"] {
@@ -4176,28 +4208,7 @@ mod tests {
                 provider.index_settling(&ctx),
                 "{outcome}: a fresh page is still owed"
             );
-            let deadline = Instant::now()
-                .checked_add(Duration::from_secs(3))
-                .expect("the fixture deadline fits the monotonic clock");
-            loop {
-                let completed = provider.query_page(ctx, None, SearchBudget::PALETTE);
-                if completed
-                    .results
-                    .iter()
-                    .any(|row| row.id.ends_with("\u{1f}profile.save"))
-                {
-                    break;
-                }
-                assert!(
-                    provider.index_settling(&ctx),
-                    "{outcome}: the unanswered real broker page cannot settle"
-                );
-                assert!(
-                    Instant::now() < deadline,
-                    "{outcome}: the actual broker profile action did not arrive"
-                );
-                std::thread::yield_now();
-            }
+            wait_for_workspace_profile_action(&provider, &ctx, outcome);
             finish_local_index(&provider, &ctx);
             assert!(
                 !provider.index_settling(&ctx),

@@ -20,7 +20,7 @@ impl NativeCustodyProbe {
         references: Result<capnp::data_list::Reader<'_>, capnp::Error>,
     ) -> Result<(), capnp::Error> {
         let refs = references?;
-        if refs.len() == 0 {
+        if refs.is_empty() {
             self.ordinary_sends += 1;
             return Err(capnp::Error::failed(
                 "native custody cannot use ordinary send".into(),
