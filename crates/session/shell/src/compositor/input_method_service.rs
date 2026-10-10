@@ -790,9 +790,14 @@ mod tests {
         }
 
         fn install(&self, version: &str) {
-            std::fs::write(self.directory.path().join("payload/manifest.toml"), format!(
-                "[package]\nid = '{PACKAGE_ID}'\nversion = '{version}'\nkind = 'service'\n[entrypoint]\nbin = 'bin/app'\ntype = 'gui'\n"
-            )).unwrap();
+            std::fs::write(
+                self.directory.path().join("payload/manifest.toml"),
+                crate::shell::test_support::canonical_manifest(
+                    &format!("id = '{PACKAGE_ID}'\nversion = '{version}'\nkind = 'service'"),
+                    "[entrypoint]\nbin = 'bin/app'\ntype = 'gui'\n",
+                ),
+            )
+            .unwrap();
             crate::shell::launcher::invalidate_app_cache();
         }
 
@@ -939,7 +944,14 @@ mod tests {
         let running = Arc::clone(&fixture.osk().running);
         let other = fixture.directory.path().join("other");
         std::fs::create_dir_all(&other).unwrap();
-        std::fs::write(other.join("manifest.toml"), "[package]\nid = 'dev.tilo.other'\nversion = '1.0.0'\n[entrypoint]\nbin = 'bin/app'\ntype = 'gui'\n").unwrap();
+        std::fs::write(
+            other.join("manifest.toml"),
+            crate::shell::test_support::canonical_manifest(
+                "id = 'dev.tilo.other'\nversion = '1.0.0'\nkind = 'app'",
+                "[entrypoint]\nbin = 'bin/app'\ntype = 'gui'\n",
+            ),
+        )
+        .unwrap();
         std::fs::OpenOptions::new()
             .append(true)
             .open(fixture.directory.path().join("registry.toml"))

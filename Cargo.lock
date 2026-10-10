@@ -14028,6 +14028,7 @@ dependencies = [
  "test-http",
  "tilo-actions",
  "tilo-app",
+ "tilo-app-package",
  "tilo-automerge-fork",
  "tilo-bluez",
  "tilo-clock",
@@ -17037,7 +17038,6 @@ name = "tilo-installed-apps"
 version = "0.1.0"
 dependencies = [
  "desktop-policy",
- "launcher",
  "package-store",
  "tempfile",
  "tilo-app-package",

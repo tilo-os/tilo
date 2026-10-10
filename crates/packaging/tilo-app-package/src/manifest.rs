@@ -815,6 +815,19 @@ pub enum NetMode {
     Allowlist,
 }
 
+impl NetMode {
+    /// The manifest spelling.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Host => "host",
+            Self::DnsOnly => "dns-only",
+            Self::Allowlist => "allowlist",
+        }
+    }
+}
+
 /// `required@N`/`optional@N` — a declared dependency on a service protocol with a version pin.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ServiceReq {
@@ -1136,20 +1149,26 @@ impl Manifest {
     /// Returns [`ManifestParseError::Toml`] if `s` is not valid TOML for
     /// this schema.
     pub fn from_toml_str(s: &str) -> Result<Self, ManifestParseError> {
+        let m: Manifest = toml::from_str(s).map_err(ManifestParseError::Toml)?;
+        Ok(m.normalized())
+    }
+
+    /// What every decode applies after serde: idempotent, so a manifest
+    /// that already went through [`Manifest::from_toml_str`] is unchanged.
+    pub(crate) fn normalized(mut self) -> Self {
         // TOML encodes [sandbox.services] as service-name → "required@1"
-        // string; the generic decode loses the key, so post-process it below.
-        let mut m: Manifest = toml::from_str(s).map_err(ManifestParseError::Toml)?;
-        // Patch each ServiceReq's `protocol` field with the map key that named it.
-        let services = std::mem::take(&mut m.sandbox.services);
-        m.sandbox.services = services
+        // string; the generic decode loses the key, so patch each
+        // ServiceReq's `protocol` field with the map key that named it.
+        let services = std::mem::take(&mut self.sandbox.services);
+        self.sandbox.services = services
             .into_iter()
             .map(|(name, mut req)| {
                 req.protocol.clone_from(&name);
                 (name, req)
             })
             .collect();
-        m.providers.normalize();
-        Ok(m)
+        self.providers.normalize();
+        self
     }
 
     /// The system interfaces this package cannot work without: each
