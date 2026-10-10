@@ -23,6 +23,7 @@
 
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use ui::widget::TaffyTreeExt;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
@@ -317,21 +318,14 @@ impl Widget for AddressSuggestions {
         // `ui::widget::TaffyTreeExt`'s doc comment), and `Widget::build_layout`
         // returns a bare `NodeId` across every implementor, so there is
         // nowhere to surface a theoretical error.
-        #[allow(
-            clippy::unwrap_used,
-            reason = "taffy::TaffyTree::new_leaf cannot return Err; see ui::widget::TaffyTreeExt"
-        )]
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::length(self.width),
-                    height: Dimension::length(self.panel_height() as f32),
-                },
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let style = Style {
+            size: Size {
+                width: Dimension::length(self.width),
+                height: Dimension::length(self.panel_height() as f32),
+            },
+            ..Default::default()
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -516,7 +510,6 @@ impl Widget for AddressSuggestions {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use automerge::AutoCommit;
 
     fn entry(url: &str, title: &str) -> HistoryEntry {
         HistoryEntry {
@@ -714,43 +707,15 @@ mod tests {
             let mut w = AddressSuggestions::new();
             w.set_suggestions(three());
 
-            let mut taffy = TaffyTree::<()>::new();
-            let node = taffy.new_leaf(Style::default()).unwrap();
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            let mods = winit::event::Modifiers::default();
-
-            let mut send = |w: &mut AddressSuggestions, named: NamedKey| -> bool {
-                let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-                ev.logical_key = Key::Named(named);
-                ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-                    winit::keyboard::NativeKeyCode::Unidentified,
-                );
-                ev.location = winit::keyboard::KeyLocation::Standard;
-                ev.state = ElementState::Pressed;
-                ev.repeat = false;
-                ev.text = None;
+            let send = |w: &mut AddressSuggestions, named: NamedKey| -> bool {
+                let ev =
+                    ui::synthetic_input::key_event(Key::Named(named), None, ElementState::Pressed);
                 let event = WindowEvent::KeyboardInput {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: winit::event::DeviceId::dummy(),
                     event: ev,
                     is_synthetic: false,
                 };
-                let mut handled = false;
-                let mut focus = None;
-                w.handle_event(
-                    &event,
-                    &mut ui::widget::EventCtx {
-                        scale_factor: 1.0,
-                        modifiers: &mods,
-                        state: ui::widget::Edits::lend(&mut doc),
-                        path: &root,
-                        handled: &mut handled,
-                        focus_target: &mut focus,
-                        node_id: node,
-                        taffy: &taffy,
-                    },
-                );
-                handled
+                ui::testing::dispatch(w, &event)
             };
 
             assert!(send(&mut w, NamedKey::ArrowDown));
@@ -771,41 +736,18 @@ mod tests {
         {
             let mut w = AddressSuggestions::new();
             w.set_suggestions(three());
-            let mut taffy = TaffyTree::<()>::new();
-            let node = taffy.new_leaf(Style::default()).unwrap();
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            let mods = winit::event::Modifiers::default();
 
-            let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-            ev.logical_key = Key::Named(NamedKey::Escape);
-            ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-                winit::keyboard::NativeKeyCode::Unidentified,
+            let ev = ui::synthetic_input::key_event(
+                Key::Named(NamedKey::Escape),
+                None,
+                ElementState::Pressed,
             );
-            ev.location = winit::keyboard::KeyLocation::Standard;
-            ev.state = ElementState::Pressed;
-            ev.repeat = false;
-            ev.text = None;
             let event = WindowEvent::KeyboardInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 event: ev,
                 is_synthetic: false,
             };
-            let mut handled = false;
-            let mut focus = None;
-            w.handle_event(
-                &event,
-                &mut ui::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &mods,
-                    state: ui::widget::Edits::lend(&mut doc),
-                    path: &root,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: node,
-                    taffy: &taffy,
-                },
-            );
+            let handled = ui::testing::dispatch(&mut w, &event);
             assert!(handled);
             assert!(!w.is_visible(), "Escape clears the overlay");
         }
@@ -817,44 +759,20 @@ mod tests {
             w.set_anchor(Point::new(50.0, 100.0), 400.0);
             lay_out(&mut w);
 
-            let mut taffy = TaffyTree::<()>::new();
-            let node = taffy.new_leaf(Style::default()).unwrap();
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            let mods = winit::event::Modifiers::default();
-
             // Aim at the centre of the second row (idx 1).
             let r = w.get_rect();
             let row1_y = r.y0 + w.pad() + w.row_height() * 1.5;
-            let mut dispatch = |w: &mut AddressSuggestions, ev: WindowEvent| -> bool {
-                let mut handled = false;
-                let mut focus = None;
-                w.handle_event(
-                    &ev,
-                    &mut ui::widget::EventCtx {
-                        scale_factor: 1.0,
-                        modifiers: &mods,
-                        state: ui::widget::Edits::lend(&mut doc),
-                        path: &root,
-                        handled: &mut handled,
-                        focus_target: &mut focus,
-                        node_id: node,
-                        taffy: &taffy,
-                    },
-                );
-                handled
-            };
-            dispatch(
+            ui::testing::dispatch(
                 &mut w,
-                WindowEvent::CursorMoved {
-                    device_id: unsafe { std::mem::zeroed() },
+                &WindowEvent::CursorMoved {
+                    device_id: winit::event::DeviceId::dummy(),
                     position: winit::dpi::PhysicalPosition::new(r.x0 + 20.0, row1_y),
                 },
             );
-            let handled = dispatch(
+            let handled = ui::testing::dispatch(
                 &mut w,
-                WindowEvent::MouseInput {
-                    device_id: unsafe { std::mem::zeroed() },
+                &WindowEvent::MouseInput {
+                    device_id: winit::event::DeviceId::dummy(),
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                 },

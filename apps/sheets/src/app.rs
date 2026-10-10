@@ -14,6 +14,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use ui::time::Instant;
+use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, Edits, ModelPath};
 
 use automerge::transaction::Transactable;
@@ -862,12 +863,6 @@ impl SheetsApp {
     #[cfg(test)]
     pub(crate) fn select_range_for_test(&mut self, from: Addr, to: Addr) {
         self.grid.select_range_public(from, to);
-    }
-
-    /// The index of the active sheet. Lets a test observe where a Ctrl+K
-    /// activation navigated.
-    pub fn active_sheet_index(&self) -> usize {
-        self.active_sheet
     }
 
     /// Open the per-document settings sheet.
@@ -2599,30 +2594,21 @@ impl Widget for SheetsApp {
         self.grid.set_text_scale(self.text_scale);
 
         // `new_leaf` on a freshly created tree never fails.
-        #[allow(clippy::unwrap_used, reason = "new_leaf on a fresh tree cannot fail")]
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let style = Style {
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::percent(1.0),
+            },
+            ..Default::default()
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let Ok(l) = taffy.layout(node) else {
             return;
         };
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = ui::widget::placed(l, origin);
         self.relayout();
     }
 
@@ -5953,23 +5939,13 @@ pub(crate) mod tests {
         Modifiers::from(s)
     }
 
-    /// Synthesise a pressed `WindowEvent::KeyboardInput` (winit keeps
-    /// `KeyEventExtra` private, so we zero-init like the toolkit's own tests).
+    /// Synthesise a pressed `WindowEvent::KeyboardInput`.
     fn key_event(logical: winit::keyboard::Key) -> WindowEvent {
-        let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = logical;
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = None;
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        }
+        ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
+            logical,
+            None,
+            ElementState::Pressed,
+        ))
     }
 
     pub(super) fn char_event(s: &str) -> WindowEvent {
@@ -5994,25 +5970,11 @@ pub(crate) mod tests {
         ev: &WindowEvent,
         mods: Modifiers,
     ) -> bool {
-        let root = automerge::ROOT;
-        let mut handled = false;
-        let mut focus: Option<NodeId> = None;
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let node = taffy.new_leaf(Style::default()).unwrap();
-        app.handle_event(
-            ev,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &mods,
-                state: Edits::lend(doc),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-        handled
+        ui::testing::Dispatch::new()
+            .modifiers(mods)
+            .doc(doc)
+            .send(app, ev)
+            .handled
     }
 
     /// A cell edit takes an input-method composition: shown at the caret,

@@ -77,8 +77,6 @@ mod dmabuf_direct_capture_path;
 mod dmabuf_feedback_protocol;
 #[path = "document_open_e2e.rs"]
 mod document_open_e2e;
-#[path = "drm_backend_boot.rs"]
-mod drm_backend_boot;
 #[path = "e2e_shell_flows.rs"]
 mod e2e_shell_flows;
 #[path = "emoji_picker_commit.rs"]
@@ -121,6 +119,8 @@ mod identity_startup;
 mod idle_inhibit_protocol;
 #[path = "idle_settles.rs"]
 mod idle_settles;
+#[path = "idle_wakeups.rs"]
+mod idle_wakeups;
 #[path = "input_device_settings.rs"]
 mod input_device_settings;
 #[path = "input_method_wire.rs"]
@@ -244,3 +244,7 @@ mod xdg_activation;
 
 #[path = "vulkan_present_damage.rs"]
 mod vulkan_present_damage;
+
+#[cfg(feature = "test-support")]
+#[path = "network_cost_boundary.rs"]
+mod network_cost_boundary;

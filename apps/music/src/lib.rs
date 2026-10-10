@@ -38,11 +38,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -55,6 +51,7 @@ pub mod backend;
 pub mod commands;
 pub mod doc;
 mod files;
+mod i18n;
 #[cfg(test)]
 pub mod live_search;
 pub mod local_file;

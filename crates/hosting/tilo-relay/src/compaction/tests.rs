@@ -450,3 +450,81 @@ fn a_large_snapshot_is_framed_in_segments_the_fold_reads_back() {
     );
     assert_eq!(late_join(&store).get_heads(), doc.get_heads());
 }
+
+/// `observe` before it borrowed the body and peeked the variant tag: an owned
+/// decode of the payload and a full decode of its `NeighbourMsg`.
+fn observe_by_full_decode(delta: &[u8]) -> Option<([u8; 32], usize)> {
+    let (CoeditPayload::Checkpoint { channel, body }
+    | CoeditPayload::RetainedDelta { channel, body }) = CoeditPayload::decode(delta)?;
+    matches!(
+        postcard::from_bytes::<NeighbourMsg>(&body),
+        Ok(NeighbourMsg::AppDocument { .. })
+    )
+    .then_some((channel, delta.len()))
+}
+
+#[test]
+fn observe_classifies_like_full_decode() {
+    let mut doc = AutoCommit::new();
+    doc.put(ROOT, "title", "base").unwrap();
+    doc.commit();
+    let mut deltas: Vec<Vec<u8>> = [
+        device_frames(1, &DocumentMutation::Snapshot(doc.save()), false, 1),
+        device_frames(2, &DocumentMutation::Snapshot(doc.save()), true, 2),
+    ]
+    .concat()
+    .into_iter()
+    .map(|raw| {
+        let Envelope::Delta { delta, .. } = crate::transport::decode(&raw[4..]).unwrap() else {
+            panic!("device frames are deltas");
+        };
+        delta
+    })
+    .collect();
+    let other_bodies = [
+        postcard::to_stdvec(&NeighbourMsg::Heartbeat { peer: 3, ts: 4 }).unwrap(),
+        postcard::to_stdvec(&NeighbourMsg::PresenceCleared {
+            peer: 3,
+            key: "cursor".into(),
+        })
+        .unwrap(),
+        postcard::to_stdvec(&NeighbourMsg::SyncResp {
+            changes: vec![vec![1, 2]],
+            room: "room".into(),
+        })
+        .unwrap(),
+        Vec::new(),
+        vec![0xff; 16],
+    ];
+    for body in other_bodies {
+        for payload in [
+            CoeditPayload::Checkpoint {
+                channel: channel(),
+                body: body.clone(),
+            },
+            CoeditPayload::RetainedDelta {
+                channel: channel(),
+                body,
+            },
+        ] {
+            deltas.push(payload.encode().unwrap());
+        }
+    }
+    // Trailing bytes after a payload are tolerated by both decoders alike.
+    let trailing: Vec<Vec<u8>> = deltas
+        .iter()
+        .map(|delta| [delta.as_slice(), &[0, 1]].concat())
+        .collect();
+    deltas.extend(trailing);
+    // Plain workspace deltas that are no co-edit payload at all.
+    deltas.extend([vec![], vec![5, 0, 0], vec![0xff; 64]]);
+
+    let mut observed = 0;
+    for delta in &deltas {
+        let now = Compactor::observe(delta).map(|o| (o.channel, o.len));
+        assert_eq!(now, observe_by_full_decode(delta), "delta {delta:02x?}");
+        observed += usize::from(now.is_some());
+    }
+    assert!(observed >= 4, "app documents were observed: {observed}");
+    assert!(observed < deltas.len(), "other deltas were not");
+}

@@ -402,29 +402,6 @@ impl WordProcessor {
         (plain.join("\n"), blocks)
     }
 
-    /// Replace the character range `[char_start, char_end)` of `block_id` with
-    /// `text` (used by Find & Replace).
-    pub fn splice_block(
-        &mut self,
-        state: &mut ui::widget::Edits<'_>,
-        block_id: &str,
-        char_start: usize,
-        char_end: usize,
-        text: &str,
-    ) {
-        if self.containers.is_none() || self.ids.is_none() {
-            return;
-        }
-        let action = crate::actions::RichTextAction::SpliceText {
-            region: self.action_region(),
-            block: block_id.to_string(),
-            at: char_start,
-            del: char_end.saturating_sub(char_start),
-            ins: text.to_string(),
-        };
-        let _ = self.apply_rich(state, action);
-    }
-
     /// Replace the **entire body** with `markdown`, in place, on the live document:
     /// existing block ids are deleted and imported content appended as new blocks,
     /// so undo/redo and sync see one coherent action. Used by "New from template"
@@ -581,22 +558,6 @@ impl WordProcessor {
         ])
     }
 
-    /// Persist the page margins `[top, right, bottom, left]` (px) into the document
-    /// as four meta registers, so they round-trip through save/reopen and merge
-    /// field-by-field across replicas.
-    pub fn set_page_margins(&mut self, state: &mut ui::widget::Edits<'_>, margins: [f64; 4]) {
-        if self.containers.is_none() || self.ids.is_none() {
-            return;
-        }
-        let action = crate::actions::RichTextAction::SetPageMargins {
-            top: margins[0],
-            right: margins[1],
-            bottom: margins[2],
-            left: margins[3],
-        };
-        let _ = self.apply_rich(state, action);
-    }
-
     /// Assign a style id to every block in the selection (or the caret's block).
     /// Empty clears it, reverting to the kind-derived default style.
     pub fn set_block_style(&mut self, state: &mut ui::widget::Edits<'_>, style_id: &str) {
@@ -676,18 +637,6 @@ impl WordProcessor {
         sheet.styles.insert(new_id.clone(), props);
         self.set_stylesheet(state, &sheet);
         Some(new_id)
-    }
-
-    /// The caret's block id when it is an `image` block (i.e. an image is
-    /// "selected"), else `None`. Drives the panel's image-inspector affordances
-    /// (resize / flip) and the on-page selection handles.
-    pub fn selected_image_block(&self, state: &AutoCommit) -> Option<String> {
-        let c = self.containers.as_ref()?;
-        let snap = tilo_doc::model::materialize(state, c);
-        snap.blocks
-            .iter()
-            .find(|b| b.id == self.caret.block && b.kind == "image")
-            .map(|b| b.id.clone())
     }
 
     /// Set the explicit display size (px) of an `image` block, recording `width`
@@ -970,24 +919,6 @@ impl WordProcessor {
         let _ = self.apply_rich(state, action);
     }
 
-    /// Whether the caret's block forces a page break before it (the
-    /// `page_break_before` block attr). False for a fresh/legacy block.
-    pub fn caret_page_break_before(&self, state: &AutoCommit) -> bool {
-        let Some(c) = self.containers.as_ref() else {
-            return false;
-        };
-        let snap = tilo_doc::model::materialize(state, c);
-        snap.blocks
-            .iter()
-            .find(|b| b.id == self.caret.block)
-            .is_some_and(|b| {
-                matches!(
-                    b.attrs.get("page_break_before"),
-                    Some(tilo_doc::AttrVal::Bool(true))
-                )
-            })
-    }
-
     /// Set the `page_break_before` attr on the caret's block (forcing pagination
     /// to start that block on a fresh page when `on`). Table cells are skipped —
     /// a cell breaking mid-table would split the grid.
@@ -1006,14 +937,6 @@ impl WordProcessor {
             value: crate::actions::AttrVal::Bool(on),
         };
         let _ = self.apply_rich(state, action);
-    }
-
-    /// Toggle the page break on the caret's block (Ctrl+Enter when the caret
-    /// already starts a paragraph). Returns the new state.
-    pub fn toggle_page_break_before(&mut self, state: &mut ui::widget::Edits<'_>) -> bool {
-        let on = !self.caret_page_break_before(state);
-        self.set_page_break_before(state, on);
-        on
     }
 
     /// Insert a manual page break at the caret: split the current block (like
@@ -1174,19 +1097,6 @@ impl WordProcessor {
     /// for an unknown id or an unbound document.
     pub fn reject_change(&mut self, state: &mut ui::widget::Edits<'_>, change_id: &str) {
         self.review_change(state, Some(change_id), false);
-    }
-
-    /// Accept every tracked change in the document. Processed in reverse
-    /// document order so an accepted deletion's text removal never shifts the
-    /// anchored range of an earlier-but-not-yet-processed change.
-    pub fn accept_all_changes(&mut self, state: &mut ui::widget::Edits<'_>) {
-        self.review_change(state, None, true);
-    }
-
-    /// Reject every tracked change in the document (see [`Self::accept_all_changes`]
-    /// for the ordering rationale).
-    pub fn reject_all_changes(&mut self, state: &mut ui::widget::Edits<'_>) {
-        self.review_change(state, None, false);
     }
 
     fn review_change(&self, state: &mut ui::widget::Edits<'_>, id: Option<&str>, accept: bool) {
@@ -1450,12 +1360,6 @@ impl WordProcessor {
         self.block_num_attr(state, block, "indent")
     }
 
-    /// The first-line indent (px) of an arbitrary block — the `first_line_indent`
-    /// attr, `0.0` when unset.
-    pub fn block_first_line_indent(&self, state: &AutoCommit, block: &str) -> f64 {
-        self.block_num_attr(state, block, "first_line_indent")
-    }
-
     /// Set the left / hanging indent (px) on `block`. Clamped non-negative.
     pub fn set_block_indent(&mut self, state: &mut ui::widget::Edits<'_>, block: &str, px: f64) {
         self.set_block_attr(
@@ -1531,33 +1435,6 @@ impl WordProcessor {
             "tab_stops",
             crate::actions::AttrVal::Str(encoded),
         );
-    }
-
-    /// Add a tab stop at `px` (from the left text margin) on the caret's block.
-    pub fn add_tab_stop(&mut self, state: &mut ui::widget::Edits<'_>, px: f64) {
-        let block = self.caret.block.clone();
-        let mut stops = self.block_tab_stops(state, &block);
-        // Ignore a stop that coincides with an existing one.
-        if stops.iter().any(|p| (*p - px).abs() < 2.0) {
-            return;
-        }
-        stops.push(px.max(0.0));
-        self.set_block_tab_stops(state, &block, &stops);
-    }
-
-    /// Tab key: advance the caret to the next tab stop on its block, if any.
-    /// Returns `true` when a stop existed and the caret advanced (the caller then
-    /// skips the legacy "insert spaces" fallback). The advance is recorded in the
-    /// document as a single tab character so it survives save/reload and reflows
-    /// with edits — the layout treats the run up to the next stop as the tab's
-    /// width (full per-stop glyph expansion is a v1 limitation).
-    pub fn tab_advance(&mut self, state: &mut ui::widget::Edits<'_>) -> bool {
-        let stops = self.block_tab_stops(state, &self.caret.block.clone());
-        if stops.is_empty() {
-            return false;
-        }
-        self.insert_str(state, "\t");
-        true
     }
 
     /// Insert a `rows`×`cols` table after the caret block. Cells are modeled as

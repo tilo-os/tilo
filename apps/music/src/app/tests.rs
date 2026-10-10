@@ -708,12 +708,9 @@ fn media_handoff_waits_for_decoder_but_preserves_paused_preroll() {
 }
 
 // ---- synthetic winit events (drive `handle_event` like the real loop) --
-use winit::event::{DeviceId, ElementState, MouseButton, WindowEvent};
+use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::NamedKey;
 
-fn synth_device() -> DeviceId {
-    unsafe { std::mem::zeroed() }
-}
 /// Where the row of track `id` stands in the page's track tables.
 fn track_row(app: &MusicApp, id: &str) -> Rect {
     app.track_tables
@@ -764,13 +761,13 @@ fn click_track(app: &mut MusicApp, doc: &mut AutoCommit, id: &str) {
 
 fn cursor_at(p: Point) -> WindowEvent {
     WindowEvent::CursorMoved {
-        device_id: synth_device(),
+        device_id: winit::event::DeviceId::dummy(),
         position: winit::dpi::PhysicalPosition::new(p.x, p.y),
     }
 }
 fn press(button: MouseButton) -> WindowEvent {
     WindowEvent::MouseInput {
-        device_id: synth_device(),
+        device_id: winit::event::DeviceId::dummy(),
         state: ElementState::Pressed,
         button,
     }
@@ -806,30 +803,16 @@ fn send_with(
     mods: winit::event::Modifiers,
     doc: &mut AutoCommit,
 ) -> bool {
-    let mut taffy = TaffyTree::<()>::new();
-    let node = taffy.new_leaf(Style::default()).unwrap();
-    let mut handled = false;
-    let mut focus = None;
-    let root = automerge::ROOT;
-    app.handle_event(
-        ev,
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &mods,
-            state: ui::widget::Edits::lend(doc),
-            path: &root,
-            handled: &mut handled,
-            focus_target: &mut focus,
-            node_id: node,
-            taffy: &taffy,
-        },
-    );
-    handled
+    ui::testing::Dispatch::new()
+        .modifiers(mods)
+        .doc(doc)
+        .send(app, ev)
+        .handled
 }
 
 fn released(button: MouseButton) -> WindowEvent {
     WindowEvent::MouseInput {
-        device_id: synth_device(),
+        device_id: winit::event::DeviceId::dummy(),
         state: ElementState::Released,
         button,
     }
@@ -837,47 +820,30 @@ fn released(button: MouseButton) -> WindowEvent {
 
 fn wheel(lines_y: f32) -> WindowEvent {
     WindowEvent::MouseWheel {
-        device_id: synth_device(),
+        device_id: winit::event::DeviceId::dummy(),
         delta: winit::event::MouseScrollDelta::LineDelta(0.0, lines_y),
         phase: winit::event::TouchPhase::Moved,
     }
 }
 
-/// A character keypress event (logical key + committed text). `winit`'s
-/// per-platform `KeyEvent` field is `pub(crate)`, so — like the other app
-/// event-path tests — we zero the struct and set the public fields (the
-/// zeroed discriminants land on non-heap enum variants, so this is sound).
+/// A character keypress event (logical key + committed text). like the other app event-path tests.
 fn char_key(c: &str) -> WindowEvent {
-    use winit::keyboard::{Key, KeyLocation, NativeKeyCode, PhysicalKey};
-    let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-    ev.logical_key = Key::Character(c.into());
-    ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-    ev.location = KeyLocation::Standard;
-    ev.state = ElementState::Pressed;
-    ev.repeat = false;
-    ev.text = Some(c.into());
-    WindowEvent::KeyboardInput {
-        device_id: synth_device(),
-        event: ev,
-        is_synthetic: false,
-    }
+    use winit::keyboard::Key;
+    ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
+        Key::Character(c.into()),
+        Some(c.into()),
+        ElementState::Pressed,
+    ))
 }
 
 /// A named keypress event (Enter, Escape, Space, arrows …).
 fn named_key(named: winit::keyboard::NamedKey) -> WindowEvent {
-    use winit::keyboard::{Key, KeyLocation, NativeKeyCode, PhysicalKey};
-    let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-    ev.logical_key = Key::Named(named);
-    ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-    ev.location = KeyLocation::Standard;
-    ev.state = ElementState::Pressed;
-    ev.repeat = false;
-    ev.text = None;
-    WindowEvent::KeyboardInput {
-        device_id: synth_device(),
-        event: ev,
-        is_synthetic: false,
-    }
+    use winit::keyboard::Key;
+    ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
+        Key::Named(named),
+        None,
+        ElementState::Pressed,
+    ))
 }
 
 fn shift_mods() -> winit::event::Modifiers {
@@ -930,7 +896,7 @@ fn spotify_keyboard_creation_and_escape_use_accessible_shared_controls() {
             .unwrap();
         assert_eq!(app.surface_mut::<MusicApp>().source_widget_mode(), 3);
         let accessible = app.harness().focus_access_nodes();
-        let label = ui::i18n!("music-spotify-create-playlist");
+        let label = crate::i18n::t("music-spotify-create-playlist");
         assert!(
             accessible
                 .iter()
@@ -2963,16 +2929,15 @@ fn stream_operations_settle_exactly_once_for_their_request() {
                 app.take_effect_result(invocation).is_none(),
                 "resolver success alone is not audio-start success"
             );
-            // Exercise the same settlement branch `tick` uses after its real
-            // `frames_rendered()` observation. The value is deliberately
-            // greater than the invocation's captured baseline.
+            // A synthetic frame count cannot confirm this invalid stream.
+            // Real WAV startup, resume and EOF replay are proved separately
+            // through tick and the actual decoder in local_files tests.
+            assert!(!app.audio.is_playing_confirmed());
             app.settle_resource_stream_after_rendered_frames(u64::MAX);
+            assert!(app.take_effect_result(invocation).is_none());
+            assert_eq!(app.resource_stream_invocation.unwrap().0, invocation);
         }
-        #[cfg(feature = "audio")]
-        let update = app
-            .take_effect_result(invocation)
-            .expect("rendered PCM settles the audio invocation as playing");
-
+        #[cfg(not(feature = "audio"))]
         let tilo_actions::InvocationUpdate::Succeeded { output, .. } = update else {
             panic!("the bound resolver completion must succeed");
         };
@@ -2981,12 +2946,6 @@ fn stream_operations_settle_exactly_once_for_their_request() {
             output.value,
             Some(serde_json::json!({ "state": "resolved" })),
             "a no-audio build never labels URL resolution as actual playback"
-        );
-        #[cfg(feature = "audio")]
-        assert_eq!(
-            output.value,
-            Some(serde_json::json!({ "state": "playing" })),
-            "only post-render settlement may report actual playback"
         );
         let play = crate::actions::catalog_track_resource(&crate::actions::CatalogTrackResource {
             id: "tk_g1".into(),
@@ -3006,6 +2965,7 @@ fn stream_operations_settle_exactly_once_for_their_request() {
             tilo_actions::ExecutionMode::Background { cancellable: false },
             "playing a track answers when its audio starts"
         );
+        #[cfg(not(feature = "audio"))]
         play.contract
             .result
             .validate(&output)
@@ -4628,7 +4588,7 @@ fn recommendations_shared_input_and_dismiss_controls_record_canonical_actions() 
     assert!(!doc::load_library(&doc).recommendations.likes);
     assert_eq!(
         last_action_label(&mut doc).as_deref(),
-        Some(ui::i18n!("music-recommendations-change-inputs").as_str())
+        Some(crate::i18n::t("music-recommendations-change-inputs").as_str())
     );
     app.dispatch(
         Action::Recommendation(crate::actions::MusicAction::SetRecommendationInput {
@@ -4654,7 +4614,7 @@ fn recommendations_shared_input_and_dismiss_controls_record_canonical_actions() 
     );
     assert_eq!(
         last_action_label(&mut doc).as_deref(),
-        Some(ui::i18n!("music-recommendations-dismiss").as_str())
+        Some(crate::i18n::t("music-recommendations-dismiss").as_str())
     );
 }
 
@@ -4936,4 +4896,67 @@ fn playback_failure_does_not_advertise_retry_of_an_at_most_once_invocation() {
     assert_eq!(contract.retry, tilo_actions::RetryPolicy::AtMostOnce);
     assert!(!error.retryable);
     assert!(error.message.contains("Premium eligibility"));
+}
+
+#[test]
+fn settled_playback_uses_bounded_wakes_instead_of_vsync() {
+    let (mut app, _doc) = app_with_doc();
+    app.pb.playing = true;
+    app.toast = None;
+    app.mark_drawn();
+    let before = app.last_tick;
+    assert!(
+        !app.needs_animation_frame(),
+        "settled playback must leave time for the host output worker"
+    );
+    let deadline = app
+        .next_wake_deadline()
+        .expect("playback still gets polled");
+    assert!(deadline > before && deadline <= before + Duration::from_millis(100));
+    app.last_tick = ui::time::now()
+        .checked_sub(Duration::from_millis(101))
+        .expect("test clock has a preceding playback interval");
+    assert!(
+        app.needs_animation_frame(),
+        "a due playback wake paints its observation"
+    );
+    app.tick();
+    assert!(
+        !app.needs_animation_frame(),
+        "polling rearms the bounded wake"
+    );
+    app.last_tick = ui::time::now()
+        .checked_sub(Duration::from_millis(101))
+        .expect("a slow paint outlives the playback interval");
+    let completed_at = ui::time::now();
+    app.mark_drawn();
+    assert!(
+        !app.needs_animation_frame(),
+        "a completed slow paint must leave time before another paint"
+    );
+    assert!(
+        app.next_wake_deadline().expect("playback still wakes") > completed_at,
+        "the next interval starts after painting, not before it"
+    );
+    app.pb.playing = false;
+    assert!(
+        app.next_wake_deadline().is_none(),
+        "stopped playback stays asleep"
+    );
+}
+
+#[test]
+#[cfg(feature = "audio")]
+fn rendered_frames_without_decoder_confirmation_do_not_settle_play() {
+    let (mut app, _doc) = app_with_doc();
+    app.disconnect();
+    let invocation = tilo_actions::InvocationId::new();
+    app.begin_resource_stream_invocation(invocation, 1);
+    assert!(!app.audio.is_playing_confirmed());
+    app.settle_resource_stream_after_rendered_frames(1);
+    assert!(
+        app.take_effect_result(invocation).is_none(),
+        "PCM observations alone must not acknowledge confirmed playback"
+    );
+    assert_eq!(app.resource_stream_invocation.unwrap().0, invocation);
 }

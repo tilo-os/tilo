@@ -7,6 +7,8 @@ use sha2::{Digest as _, Sha256};
 
 #[path = "mounted_code/blocked_read.rs"]
 mod blocked_read;
+#[path = "mounted_code/read_recovery.rs"]
+mod read_recovery;
 
 // The mounted UI stays on the caller thread while Iroh and persistence can
 // progress independently, as on ShellNetwork's two-worker runtime.
@@ -38,6 +40,7 @@ pub(super) enum Journey {
     Document,
     PrivateAdmission,
     BlockedRead,
+    ReadRecovery,
 }
 
 pub(super) struct Context<'a> {
@@ -75,6 +78,10 @@ impl Mounted {
         );
         drop(unused_commands);
         network.cmd_tx = commands;
+        // Resource actions reach the governor through the network runtime;
+        // without one the first invocation is refused and the app's
+        // collaboration fails closed for the rest of the journey (#4001).
+        crate::shell::network::with_test_runtime(&mut network);
         let network = Arc::new(network);
         let room = RoomId::parse(tilo_joined_room::testing::ROOM).unwrap();
         network
@@ -180,7 +187,8 @@ pub(super) async fn run(
         context.directory.path(),
         authority.clone(),
         context.publisher.clone(),
-    );
+    )
+    .await;
     let first = Device {
         owner,
         identity: identity.clone(),
@@ -223,6 +231,8 @@ pub(super) async fn run(
     inspect_while_ui_caller_is_blocked(&context, &authority);
     if matches!(context.journey, Journey::BlockedRead) {
         blocked_read::run(&first, &mut mounted[0]).await;
+    } else if matches!(context.journey, Journey::ReadRecovery) {
+        read_recovery::run(&first, &mut mounted[0]).await;
     } else {
         edit_and_converge(
             &context,
@@ -451,9 +461,7 @@ async fn drive(
             }
             tokio::select! {
                 Some(request) = refreshes.recv() => {
-                    let mut governor = authority.lock().unwrap().take().unwrap();
-                    super::refresh::refresh_on_request(&mut governor, request).await.unwrap();
-                    *authority.lock().unwrap() = Some(governor);
+                    super::refresh::refresh_shared_on_request(authority, request).await.unwrap();
                     publish(authority, context.publisher);
                 }
                 Some(tilo_relay::Inbound::Delta { author, data }) = context.publisher.recv() => {

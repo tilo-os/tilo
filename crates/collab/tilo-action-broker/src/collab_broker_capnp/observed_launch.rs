@@ -178,20 +178,19 @@ impl CapnpChannelHandle {
             .membership
             .as_ref()
             .ok_or_else(|| "the action broker has no workspace authority".to_string())?;
-        let tree = membership.snapshot()?;
-        let workspace = tree
-            .workspaces
-            .iter()
-            .find(|workspace| workspace.room.to_string() == self.route().cluster_id)
-            .ok_or_else(|| "the application workspace is no longer hosted".to_string())?;
         let now = self.state.policy_now_ns()? / 1_000_000_000;
-        let caller = actor.policy_in(workspace, now);
-        if workspace.decide_at(&caller, &ResourceRef::App(app.to_owned()), Verb::Write, now)
-            != CapDecision::Allow
-        {
-            return Err("the caller is no longer allowed to launch that application".into());
-        }
-        Ok(())
+        membership
+            .decide_in_room(&self.route().cluster_id, |workspace| {
+                let workspace = workspace.ok_or("the application workspace is no longer hosted")?;
+                let caller = actor.policy_in(workspace, now);
+                if workspace.decide_at(&caller, &ResourceRef::App(app.to_owned()), Verb::Write, now)
+                    != CapDecision::Allow
+                {
+                    return Err("the caller is no longer allowed to launch that application");
+                }
+                Ok(())
+            })?
+            .map_err(str::to_owned)
     }
 
     pub(super) fn finish_observed_launch(

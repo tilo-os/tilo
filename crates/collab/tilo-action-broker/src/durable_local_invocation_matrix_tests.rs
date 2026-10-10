@@ -527,6 +527,7 @@ mod durable_local_matrix {
                     context: None,
                     confirmation: None,
                     revision: None,
+                    wait_ms: None,
                 };
                 assert!(matches!(
                     rig.state
@@ -764,8 +765,10 @@ mod durable_local_matrix {
                     self.entered.send(()).unwrap();
                     self.release.notified().await;
                 }
-                write_directory_row(results.get().init_resolution().init_found(), &self.row);
-                Ok(())
+                runtime_collab::write_action_directory_row(
+                    results.get().init_resolution().init_found(),
+                    &self.row,
+                )
             })
         }
     }
@@ -1064,6 +1067,7 @@ mod durable_local_matrix {
                     confirmation: None,
                     revision: None,
                     on_behalf_of: None,
+                    wait_ms: None,
                 };
                 assert!(matches!(
                     rig.state

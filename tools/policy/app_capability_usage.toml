@@ -69,7 +69,6 @@ paths = ["portal::open_uri", "portal::send_open_uri", "portal::open_uri_with", "
 
 [uses.notifications]
 crates = ["tilo-notify"]
-features = ["ui/notifications"]
 paths = ["ui::notify", "tilo_notify"]
 
 [uses."media.decode"]

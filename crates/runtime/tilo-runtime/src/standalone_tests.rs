@@ -12,6 +12,7 @@ use std::{
 use tilo_action_broker::services::{
     AppActionGrants, LegacyWorkspaceProjection, WorkspaceAuthority,
 };
+use tilo_actions::remote::{InvokeArgument, PendingPoll, RemoteActionTarget};
 use tilo_desktop_model::{RoomId, WorkspaceTaskStatus};
 use tilo_identity_host::broker::WorkspaceMembership;
 
@@ -35,7 +36,6 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
         },
         test_support::{Workspace, WorkspaceId, WorkspaceTree},
     };
-    use tilo_actions::remote::{InvokeArgument, PendingPoll, RemoteActionTarget};
 
     let mut workspace = Workspace::new(WorkspaceId(41), "Execution isolation");
     workspace.set_owner("a1".repeat(32));
@@ -96,6 +96,7 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
         context: None,
         confirmation: None,
         revision: None,
+        wait_ms: None,
     };
     let PendingPoll::Ready(Ok(receipt)) = host.invoke(&owner, request.clone()).poll_ready() else {
         panic!("the synthetic app must accept the invocation");
@@ -103,6 +104,11 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
     assert!(invocations.try_recv().is_ok());
     assert!(host.observe(&owner, &id).is_some());
     assert!(host.observe(&other, &id).is_none());
+    // Waiting on a change is authorized exactly as observing.
+    assert!(host.next_change(&other, &id).is_none());
+    let change = host
+        .next_change(&owner, &id)
+        .expect("the owner may wait on its invocation");
     assert_eq!(
         host.cancel(&other, &id),
         Err(ActionHostError::UnknownInvocation)
@@ -120,6 +126,13 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
         "retries must not dispatch again"
     );
     assert_eq!(host.cancel(&owner, &id), Ok(()));
+    // The cancellation request changed the invocation: the waiter wakes on
+    // it, well before the broker's one-second safety interval.
+    assert_eq!(
+        tokio::time::timeout(Duration::from_millis(500), change).await,
+        Ok(Some(())),
+        "a change wakes its waiter"
+    );
 }
 
 /// In the parent, runs the test at path `test` again in a child process
@@ -232,7 +245,7 @@ fn sdk_apps_join_a_standalone_session_and_publish_to_mcp() {
     let listed = tilo_rt::try_app()
         .unwrap()
         .block_on(async {
-            let mut server = McpServer::new(
+            let server = McpServer::new(
                 session.action_host().unwrap(),
                 session.room().to_owned(),
                 session.actor().to_owned(),

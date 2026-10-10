@@ -16,6 +16,7 @@ use crate::{
 const REPORTS: &str = "feedback_reports";
 
 pub(crate) mod receipt_read;
+pub(crate) mod status_read;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -330,6 +331,27 @@ fn receipt_content(
     })
 }
 
+/// Pure canonical report projection for the system's feedback receipt service.
+/// The owner service must check its exact `RecordStore`'s current durability;
+/// this projection itself grants neither delivery confirmation nor authorship.
+/// # Errors
+/// Refuses missing reports, conflicting payloads or invalid attributed messages.
+pub fn canonical_feedback_projection(
+    doc: &Doc,
+    submission: &Submission,
+) -> Result<(Receipt, String), ui::feedback::Error> {
+    submission.validate()?;
+    let report = report(doc, &submission.id)
+        .map_err(|_| ui::feedback::Error::ReceiptMismatch)?
+        .ok_or(ui::feedback::Error::ReceiptMismatch)?;
+    if report.submission != *submission {
+        return Err(ui::feedback::Error::ReceiptMismatch);
+    }
+    let receipt = receipt_content(doc, &submission.id, &submission.destination)
+        .map_err(|_| ui::feedback::Error::ReceiptMismatch)?;
+    Ok((receipt, report.author))
+}
+
 /// Read the report from its canonical owner after checking that exact record's
 /// current save status. The store is single-threaded, and no callback or yield
 /// separates this status check from the immutable document read.
@@ -449,6 +471,7 @@ pub fn publish(report: &Report) -> tilo_actions::Resource {
         .bound(),
     )
     .with_action(receipt_read::spec(&report.submission.id))
+    .with_action(status_read::spec(&report.submission.id))
     .with_action(triage_spec(report))
 }
 

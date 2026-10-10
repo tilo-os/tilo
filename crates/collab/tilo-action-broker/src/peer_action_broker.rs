@@ -5,7 +5,83 @@ use super::{
     InvocationInputs, LocalActionDirectoryRegistry, Rc, VerifiedActionCaller, VerifiedJoinIdentity,
     admit_verified_join_at,
 };
-use tilo_delivery_protocol::peer_actions::{ActionMessage, Confirmation};
+use tilo_delivery_protocol::peer_actions::{ActionMessage, ActionSignatureError, Confirmation};
+use tilo_relay_session::client::CertifiedAction;
+
+/// Why the broker refused a network request: the typed code its caller gets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PeerRefusal {
+    /// An effect arrived without its source device's signature.
+    SignatureRequired,
+    /// The signature, its freshness or its uniqueness failed.
+    Signature(ActionSignatureError),
+    /// The certified caller is not admitted to this room or action now.
+    NotAuthorised,
+    /// The exact route, revision or action is not offered.
+    UnknownAction,
+    /// The action needs a confirmation the request did not carry.
+    ConfirmationRequired,
+    /// The invocation id already names a different request.
+    InvocationConflict,
+    /// The invocation cannot be cancelled.
+    NotCancellable,
+    /// The request is malformed or not one the broker serves.
+    InvalidRequest,
+    /// Durable admission, the catalogue or the dispatcher is unavailable.
+    Unavailable,
+}
+
+impl PeerRefusal {
+    /// Stable code for `ActionMessage::Rejected`.
+    pub(crate) const fn code(self) -> &'static str {
+        match self {
+            Self::SignatureRequired => "action_signature_required",
+            Self::Signature(error) => error.code(),
+            Self::NotAuthorised => "action_not_authorised",
+            Self::UnknownAction => "unknown_action",
+            Self::ConfirmationRequired => "action_confirmation_required",
+            Self::InvocationConflict => "invocation_conflict",
+            Self::NotCancellable => "not_cancellable",
+            Self::InvalidRequest => "invalid_request",
+            Self::Unavailable => "action_unavailable",
+        }
+    }
+}
+
+/// A broker failure with no more specific meaning.
+impl From<String> for PeerRefusal {
+    fn from(_: String) -> Self {
+        Self::Unavailable
+    }
+}
+
+/// A broker failure with no more specific meaning.
+impl From<&'static str> for PeerRefusal {
+    fn from(_: &'static str) -> Self {
+        Self::Unavailable
+    }
+}
+
+/// Whether `evidence` carries what its message needs: an effect only ever
+/// runs on its source device's own signature over exactly this action, never
+/// on the relay's word. Freshness and replay are checked once, at delivery.
+pub(crate) fn signed_as_required(evidence: &CertifiedAction) -> Result<(), PeerRefusal> {
+    match evidence.signed() {
+        Some(signed) => {
+            signed
+                .verify(&evidence.certificate().device_public_key)
+                .map_err(PeerRefusal::Signature)?;
+            if signed.action() != evidence.action() {
+                return Err(PeerRefusal::Signature(ActionSignatureError::Signature));
+            }
+            Ok(())
+        }
+        None if evidence.action().message.requires_signature() => {
+            Err(PeerRefusal::SignatureRequired)
+        }
+        None => Ok(()),
+    }
+}
 
 impl CapnpBrokerState {
     pub(crate) fn peer_action_queue(&self) -> crate::peer_actions::PeerActionQueue {
@@ -31,6 +107,9 @@ impl CapnpBrokerState {
         if cert.capabilities.can_act_as_host || evidence.action().source != cert.device_public_key {
             return Err("device authority required".into());
         }
+        // Every admission, including a durable recheck of retained evidence,
+        // holds an effect to its source device's signature.
+        signed_as_required(evidence).map_err(|refusal| refusal.code().to_string())?;
         if let Some(authority) = self.certificate_authority.get() {
             match &policy_time {
                 Some(time) => {
@@ -45,17 +124,20 @@ impl CapnpBrokerState {
         } else {
             return Err("current certificate authority unavailable".into());
         }
-        let tree = self
+        let verified = VerifiedJoinIdentity::of(cert, self.capped_in(&room, cert));
+        let admitted = self
             .membership
             .as_ref()
             .ok_or("membership unavailable")?
-            .snapshot()?;
-        let admitted = admit_verified_join_at(
-            &tree,
-            &CrdtRoute::cluster(&room),
-            VerifiedJoinIdentity::of(cert, self.capped_in(&room, cert)),
-            now / 1_000_000_000,
-        )?;
+            .decide_in_room(&room, |workspace| {
+                admit_verified_join_at(
+                    workspace,
+                    &CrdtRoute::cluster(&room),
+                    verified,
+                    now / 1_000_000_000,
+                )
+            })??;
+
         Ok(VerifiedActionCaller {
             room,
             presentation: Vec::new(),
@@ -125,8 +207,8 @@ impl CapnpBrokerState {
                                     policy_time.as_ref(),
                                 )
                                 .await
-                                .unwrap_or_else(|_| ActionMessage::Rejected {
-                                    code: "action_unavailable_or_not_authorised".into(),
+                                .unwrap_or_else(|refusal| ActionMessage::Rejected {
+                                    code: refusal.code().into(),
                                 })),
                         },
                     };
@@ -163,14 +245,17 @@ impl CapnpBrokerState {
         poll: Option<tilo_actions::InvocationId>,
         notification: Option<tilo_actions::InvocationUpdate>,
         policy_time: Option<&crate::peer_actions::PolicyTime>,
-    ) -> Result<ActionMessage, String> {
-        let caller = self.verify_network_action_caller_with_policy_time(evidence, policy_time)?;
+    ) -> Result<ActionMessage, PeerRefusal> {
+        signed_as_required(evidence)?;
+        let caller = self
+            .verify_network_action_caller_with_policy_time(evidence, policy_time)
+            .map_err(|_| PeerRefusal::NotAuthorised)?;
         let host = self.invocation_host()?;
         if let Some(invocation) = poll {
             let mut observation = self.peer_observation(&caller, invocation).await?;
             if let Some(update) = notification {
                 if update.invocation() != invocation {
-                    return Err("notification identity mismatch".into());
+                    return Err(PeerRefusal::InvalidRequest);
                 }
                 if let ActionMessage::Observation {
                     update: retained @ Some(_),
@@ -213,10 +298,11 @@ impl CapnpBrokerState {
                 Ok(ActionMessage::BrokerCatalogue { host, catalogue })
             }
             ActionMessage::Status { invocation } => {
-                self.peer_observation(&caller, *invocation).await
+                Ok(self.peer_observation(&caller, *invocation).await?)
             }
             ActionMessage::Cancel { invocation } => {
-                self.cancel_verified_invocation(&caller, *invocation)?;
+                self.cancel_verified_invocation(&caller, *invocation)
+                    .map_err(|_| PeerRefusal::NotCancellable)?;
                 Ok(ActionMessage::CancellationRequested {
                     invocation: *invocation,
                 })
@@ -234,14 +320,14 @@ impl CapnpBrokerState {
                 revision,
             } => {
                 if *requested_host != host {
-                    return Err("journal host changed".into());
+                    return Err(PeerRefusal::Unavailable);
                 }
                 let request = CallerInvocation {
                     recipient: Some(evidence.action().target),
                     invocation: *invocation,
                     #[cfg(test)]
                     host,
-                    peer_id: app_peer.parse().map_err(|_| "invalid app peer")?,
+                    peer_id: app_peer.parse().map_err(|_| PeerRefusal::InvalidRequest)?,
                     app_id: app_id.clone(),
                     record_id: record_id.clone(),
                     resource: resource.clone(),
@@ -250,22 +336,17 @@ impl CapnpBrokerState {
                         .as_ref()
                         .map(serde_json::to_string)
                         .transpose()
-                        .map_err(|_| "invalid argument")?,
+                        .map_err(|_| PeerRefusal::InvalidRequest)?,
                     revision: revision.clone(),
                 };
                 if request.peer_id == ui::collaboration::CURRENT_CONNECTION_PEER_ID {
-                    return Err("local sentinel forbidden".into());
+                    return Err(PeerRefusal::InvalidRequest);
                 }
                 if let Some(record) = self.verified_invocation_status(&caller, *invocation)? {
-                    if record
-                        .intent
-                        .get("request")
-                        .unwrap_or(&serde_json::Value::Null)
-                        != &request.intent()
-                    {
-                        return Err("changed invocation intent".into());
+                    if !record.admitted_request_is(&request.intent()) {
+                        return Err(PeerRefusal::InvocationConflict);
                     }
-                    return self.peer_observation(&caller, *invocation).await;
+                    return Ok(self.peer_observation(&caller, *invocation).await?);
                 }
                 let actor = caller.admitted.broker_actor();
                 let resolved_offer = if let Some(revision) = revision {
@@ -279,11 +360,12 @@ impl CapnpBrokerState {
                             resource,
                             action,
                         )
-                        .await?;
+                        .await
+                        .map_err(|_| PeerRefusal::UnknownAction)?;
                     if offer.registered.app_id != *app_id
                         || offer.registered.route.record_id != *record_id
                     {
-                        return Err("directory route changed".into());
+                        return Err(PeerRefusal::UnknownAction);
                     }
                     Some(offer)
                 } else {
@@ -304,13 +386,13 @@ impl CapnpBrokerState {
                                 && s.route.cluster_id == caller.room
                                 && s.route.record_id == *record_id
                         })
-                        .ok_or("exact action route unavailable")?;
+                        .ok_or(PeerRefusal::UnknownAction)?;
                     let published = surface
                         .actions
                         .iter()
                         .find(|a| a.resource == *resource && a.action == *action)
                         .cloned()
-                        .ok_or("action no longer offered")?;
+                        .ok_or(PeerRefusal::UnknownAction)?;
                     (surface, published)
                 };
                 // The directory await is outside admission serialization. Recheck
@@ -319,21 +401,21 @@ impl CapnpBrokerState {
                     .admission_lock
                     .lock()
                     .map_err(|_| "admission unavailable")?;
-                let actor = self.current_action_caller(&caller)?.broker_actor();
+                let actor = self
+                    .current_action_caller(&caller)
+                    .map_err(|_| PeerRefusal::NotAuthorised)?
+                    .broker_actor();
                 if let Some(offer) = &resolved_offer {
-                    offer.check_registration(self, directories, request.peer_id)?;
+                    offer
+                        .check_registration(self, directories, request.peer_id)
+                        .map_err(|_| PeerRefusal::UnknownAction)?;
                 }
                 if let Some(record) = self.verified_invocation_status(&caller, *invocation)? {
-                    if record
-                        .intent
-                        .get("request")
-                        .unwrap_or(&serde_json::Value::Null)
-                        != &request.intent()
-                    {
-                        return Err("changed invocation intent".into());
+                    if !record.admitted_request_is(&request.intent()) {
+                        return Err(PeerRefusal::InvocationConflict);
                     }
                     drop(admission);
-                    return self.peer_observation(&caller, *invocation).await;
+                    return Ok(self.peer_observation(&caller, *invocation).await?);
                 }
                 let confirmation = confirmation.as_ref().map(|c| match c {
                     Confirmation::Confirm => DirectoryActionConfirmation::Confirmed,
@@ -349,7 +431,7 @@ impl CapnpBrokerState {
                         &offered.1.contract,
                         confirmation,
                     )
-                    .map_err(|_| "confirmation required")?;
+                    .map_err(|_| PeerRefusal::ConfirmationRequired)?;
                 self.dispatch_invocation_from_offered(
                     request.peer_id,
                     offered,
@@ -366,9 +448,9 @@ impl CapnpBrokerState {
                     revision.as_deref(),
                 )?;
                 drop(admission);
-                self.peer_observation(&caller, *invocation).await
+                Ok(self.peer_observation(&caller, *invocation).await?)
             }
-            _ => Err("unsupported action request".into()),
+            _ => Err(PeerRefusal::InvalidRequest),
         }
     }
     async fn peer_observation(

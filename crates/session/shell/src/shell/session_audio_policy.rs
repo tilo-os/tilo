@@ -12,41 +12,40 @@
 //! was a headset, headphones or a Bluetooth sink and it disappears, playing
 //! media is paused rather than suddenly coming out of the speakers — as on a
 //! phone. Plugging the device back in never resumes it.
+//!
+//! Observation is event-driven. A native registry watch
+//! ([`media::audio_watch`]) reports device changes within
+//! [`media::audio_watch::DEBOUNCE`], the settings file watch reports
+//! preference changes, and between them the worker blocks with no timer: an
+//! idle desktop neither shells `pw-dump` nor re-reads settings. Only when
+//! `PipeWire` cannot be watched does it fall back to polling — slower, but
+//! still observing, never blind.
 
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use media::audio::{AudioDevice, AudioGraph, GraphDelta};
 use media::audio_runtime::{PersistentAudioPolicy, PersistentAudioPreferences, RealAudioRuntime};
+use media::audio_watch::{AudioGraphWatch, GraphWatchEvent};
 use settings_store::system_sounds::SystemSoundEvent;
 
+/// Fallback only, while `PipeWire` cannot be watched: how often to shell
+/// `pw-dump` while the graph is still settling.
 const POLL_INTERVAL: Duration = Duration::from_millis(1200);
-/// After the graph and preferences stay still, stop shelling `pw-dump`
-/// every 1.2 s. Hotplug still lands within this window; `R01`'s empty
-/// desktop must not keep `pw-dump` / `WirePlumber` in the session budget.
+/// Fallback only: once the graph stays still, poll slower — but keep
+/// enumerating, so hotplug is still seen within this window.
 const IDLE_POLL_INTERVAL: Duration = Duration::from_secs(8);
 const STABLE_POLLS_BEFORE_IDLE: u8 = 3;
 
 fn poll_interval(stable_polls: u8) -> Duration {
-    if graph_is_idle(stable_polls) {
+    if stable_polls >= STABLE_POLLS_BEFORE_IDLE {
         IDLE_POLL_INTERVAL
     } else {
         POLL_INTERVAL
     }
-}
-
-fn graph_is_idle(stable_polls: u8) -> bool {
-    stable_polls >= STABLE_POLLS_BEFORE_IDLE
-}
-
-/// Shell `pw-dump` only while the graph is still settling or Settings
-/// changed. An empty or volume-only graph is topology-stable: keep polling
-/// it and `PipeWire` stays in the R01 session budget.
-fn should_enumerate(stable_polls: u8, prefs_changed: bool) -> bool {
-    prefs_changed || !graph_is_idle(stable_polls)
 }
 
 /// Devices and hardware only. Streams (including the `pw-dump` this
@@ -78,9 +77,300 @@ fn topology_unchanged(previous: Option<&str>, graph: &AudioGraph) -> bool {
     previous == Some(idle_signature(graph).as_str())
 }
 
+/// What wakes the policy worker. While `PipeWire` can be watched nothing
+/// else does: there is no timer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PolicyEvent {
+    /// The device graph changed, or the watch just started (the baseline).
+    GraphChanged,
+    /// The watch lost `PipeWire`: poll until it can watch again.
+    WatchLost,
+    /// The settings file changed.
+    SettingsChanged,
+    Stop,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Wake {
+    Event(PolicyEvent),
+    /// A fallback poll or a policy retry fell due.
+    Timeout,
+}
+
+/// The worker's side effects, so the production loop is tested without
+/// `PipeWire`, `MPRIS` or a settings file.
+trait PolicyEnv {
+    /// Read the whole graph.
+    fn enumerate(&mut self) -> AudioGraph;
+    fn load_preferences(&mut self) -> PersistentAudioPreferences;
+    /// Pause every playing player; `false` when that failed.
+    fn pause_playing_players(&mut self) -> bool;
+    /// Apply `preferences` to `graph`.
+    fn reconcile(
+        &mut self,
+        preferences: PersistentAudioPreferences,
+        graph: &AudioGraph,
+    ) -> Result<(), String>;
+    /// When the policy must reconcile again although nothing changed.
+    fn next_retry(&self) -> Option<Instant>;
+    fn device_sound(&mut self, event: SystemSoundEvent);
+    /// (Re)start the native graph watch; `false` when `PipeWire` cannot be
+    /// watched.
+    fn watch_graph(&mut self) -> bool;
+    /// Start the settings file watch; `false` when it cannot run.
+    fn watch_settings(&mut self) -> bool;
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Observation {
+    /// The native watch reports every change; sleep until one arrives.
+    Watching,
+    /// `PipeWire` could not be watched: poll `pw-dump` instead, enumerating
+    /// on every poll.
+    Polling { stable_polls: u8 },
+}
+
+struct PolicyWorker {
+    observation: Observation,
+    preferences: PersistentAudioPreferences,
+    /// Without a settings watch, preferences are re-read with each graph
+    /// change instead — still no periodic parse.
+    reload_preferences_with_graph: bool,
+    devices: DeviceRoster,
+    last_graph: Option<AudioGraph>,
+    last_error: Option<String>,
+}
+
+impl PolicyWorker {
+    fn start(env: &mut impl PolicyEnv) -> Self {
+        let reload_preferences_with_graph = !env.watch_settings();
+        let mut worker = Self {
+            observation: Observation::Watching,
+            preferences: env.load_preferences(),
+            reload_preferences_with_graph,
+            devices: DeviceRoster::default(),
+            last_graph: None,
+            last_error: None,
+        };
+        // A running watch sends the baseline itself.
+        if !env.watch_graph() {
+            tracing::warn!(
+                target: "tilo::audio_policy",
+                "PipeWire cannot be watched; polling the audio graph instead"
+            );
+            worker.observation = Observation::Polling { stable_polls: 0 };
+            worker.observe(env);
+        }
+        worker
+    }
+
+    /// How long to wait for an event before acting anyway. `None` — block
+    /// until an event — whenever the graph is watched and no retry is due.
+    fn next_wake(&self, now: Instant, retry: Option<Instant>) -> Option<Duration> {
+        let poll = match self.observation {
+            Observation::Watching => None,
+            Observation::Polling { stable_polls } => Some(poll_interval(stable_polls)),
+        };
+        // A retry already past was attempted; the next change retries again.
+        let retry = retry
+            .filter(|at| *at > now)
+            .map(|at| at.saturating_duration_since(now));
+        match (poll, retry) {
+            (Some(poll), Some(retry)) => Some(poll.min(retry)),
+            (poll, retry) => poll.or(retry),
+        }
+    }
+
+    fn handle(&mut self, wake: Wake, env: &mut impl PolicyEnv) {
+        match wake {
+            Wake::Event(PolicyEvent::GraphChanged) => self.observe(env),
+            Wake::Event(PolicyEvent::WatchLost) => {
+                if self.observation == Observation::Watching {
+                    tracing::warn!(
+                        target: "tilo::audio_policy",
+                        "lost the PipeWire watch; polling the audio graph until it is back"
+                    );
+                    self.observation = Observation::Polling { stable_polls: 0 };
+                    self.observe(env);
+                }
+            }
+            Wake::Event(PolicyEvent::SettingsChanged) => {
+                let preferences = env.load_preferences();
+                if preferences != self.preferences {
+                    self.preferences = preferences;
+                    self.reconcile(env);
+                }
+            }
+            Wake::Event(PolicyEvent::Stop) => {}
+            Wake::Timeout => match self.observation {
+                Observation::Polling { .. } if env.watch_graph() => {
+                    tracing::info!(
+                        target: "tilo::audio_policy",
+                        "watching the PipeWire audio graph again"
+                    );
+                    self.observation = Observation::Watching;
+                }
+                Observation::Polling { .. } => self.observe(env),
+                Observation::Watching => self.reconcile(env),
+            },
+        }
+    }
+
+    /// Read the graph and act on what changed since the last reading.
+    fn observe(&mut self, env: &mut impl PolicyEnv) {
+        if self.reload_preferences_with_graph {
+            self.preferences = env.load_preferences();
+        }
+        let graph = env.enumerate();
+        if let Observation::Polling { stable_polls } = &mut self.observation {
+            let previous = self.last_graph.as_ref().map(idle_signature);
+            *stable_polls = if topology_unchanged(previous.as_deref(), &graph) {
+                stable_polls.saturating_add(1)
+            } else {
+                0
+            };
+        }
+        for event in self.devices.observe(&graph) {
+            env.device_sound(event);
+        }
+        if let Some(previous) = self.last_graph.as_ref()
+            && enumerated(&graph)
+        {
+            let delta = AudioGraph::diff(previous, &graph);
+            if pause_on_removal(previous, &delta) && !env.pause_playing_players() {
+                tracing::warn!(
+                    target: "tilo::audio_policy",
+                    "private output removed but players could not be paused"
+                );
+            }
+        }
+        self.last_graph = Some(graph);
+        self.reconcile(env);
+    }
+
+    fn reconcile(&mut self, env: &mut impl PolicyEnv) {
+        let Some(graph) = self.last_graph.as_ref() else {
+            // The baseline reconciles once it arrives.
+            return;
+        };
+        let error = env.reconcile(self.preferences, graph).err();
+        if error != self.last_error {
+            match error.as_deref() {
+                Some(error) => tracing::warn!(
+                    target: "tilo::audio_policy",
+                    %error,
+                    "persistent audio preference could not be applied"
+                ),
+                None if self.last_error.is_some() => tracing::info!(
+                    target: "tilo::audio_policy",
+                    "persistent audio preference recovered"
+                ),
+                None => {}
+            }
+            self.last_error = error;
+        }
+    }
+}
+
+/// The worker's loop: block for the next event, or until the fallback poll
+/// or a policy retry falls due.
+fn run(env: &mut impl PolicyEnv, events: &Receiver<PolicyEvent>) {
+    let mut worker = PolicyWorker::start(env);
+    loop {
+        let wake = match worker.next_wake(Instant::now(), env.next_retry()) {
+            None => events
+                .recv()
+                .map_or(Wake::Event(PolicyEvent::Stop), Wake::Event),
+            Some(after) => match events.recv_timeout(after) {
+                Ok(event) => Wake::Event(event),
+                Err(RecvTimeoutError::Timeout) => Wake::Timeout,
+                Err(RecvTimeoutError::Disconnected) => Wake::Event(PolicyEvent::Stop),
+            },
+        };
+        if wake == Wake::Event(PolicyEvent::Stop) {
+            break;
+        }
+        worker.handle(wake, env);
+    }
+}
+
+/// The real session: `pw-dump`, `MPRIS`, the settings store and the native
+/// watches. Field order is drop order: the watches stop before the policy's
+/// bounded mono session restores the physical default.
+struct LiveEnv {
+    graph_watch: Option<AudioGraphWatch>,
+    settings_watch: Option<settings_store::watch::SettingsWatch>,
+    events: Sender<PolicyEvent>,
+    device_sounds: Sender<SystemSoundEvent>,
+    policy: PersistentAudioPolicy,
+}
+
+impl PolicyEnv for LiveEnv {
+    fn enumerate(&mut self) -> AudioGraph {
+        media::audio::enumerate()
+    }
+
+    fn load_preferences(&mut self) -> PersistentAudioPreferences {
+        load_preferences()
+    }
+
+    fn pause_playing_players(&mut self) -> bool {
+        crate::shell::mpris::pause_playing_players()
+    }
+
+    fn reconcile(
+        &mut self,
+        preferences: PersistentAudioPreferences,
+        graph: &AudioGraph,
+    ) -> Result<(), String> {
+        self.policy.reconcile(preferences, graph)
+    }
+
+    fn next_retry(&self) -> Option<Instant> {
+        self.policy.next_retry()
+    }
+
+    fn device_sound(&mut self, event: SystemSoundEvent) {
+        let _ = self.device_sounds.send(event);
+    }
+
+    fn watch_graph(&mut self) -> bool {
+        // One watch at a time: join a lost one before connecting again.
+        self.graph_watch = None;
+        let events = self.events.clone();
+        self.graph_watch = media::audio_watch::watch(move |event| {
+            let _ = events.send(match event {
+                GraphWatchEvent::Changed => PolicyEvent::GraphChanged,
+                GraphWatchEvent::Lost => PolicyEvent::WatchLost,
+            });
+        })
+        .inspect_err(
+            |error| tracing::debug!(target: "tilo::audio_policy", %error, "audio graph watch"),
+        )
+        .ok();
+        self.graph_watch.is_some()
+    }
+
+    fn watch_settings(&mut self) -> bool {
+        let events = self.events.clone();
+        self.settings_watch = settings_store::watch::watch_settings(move || {
+            let _ = events.send(PolicyEvent::SettingsChanged);
+        })
+        .inspect_err(|error| {
+            tracing::warn!(
+                target: "tilo::audio_policy",
+                %error,
+                "settings cannot be watched; re-reading them with each audio graph change"
+            );
+        })
+        .ok();
+        self.settings_watch.is_some()
+    }
+}
+
 #[derive(Debug)]
 pub struct SessionAudioPolicyOwner {
-    stop: Sender<()>,
+    events: Sender<PolicyEvent>,
     worker: Option<JoinHandle<()>>,
     device_sounds: Mutex<Receiver<SystemSoundEvent>>,
 }
@@ -94,73 +384,23 @@ impl SessionAudioPolicyOwner {
     /// exhaustion) — the caller runs the session without persistent audio
     /// transforms rather than tearing the whole desktop down over it.
     pub fn spawn() -> std::io::Result<Self> {
-        let (stop, rx) = mpsc::channel();
+        let (events, rx) = mpsc::channel();
         let (device_tx, device_sounds) = mpsc::channel();
+        let worker_events = events.clone();
         let worker = std::thread::Builder::new()
             .name("tilo-session-audio-policy".into())
             .spawn(move || {
-                let mut policy = PersistentAudioPolicy::new(Arc::new(RealAudioRuntime));
-                let mut last_error = None;
-                let mut devices = DeviceRoster::default();
-                let mut last_graph: Option<AudioGraph> = None;
-                let mut last_sig: Option<String> = None;
-                let mut last_prefs: Option<PersistentAudioPreferences> = None;
-                let mut stable_polls = 0_u8;
-                loop {
-                    let prefs = load_preferences();
-                    let prefs_changed = last_prefs.as_ref() != Some(&prefs);
-                    last_prefs = Some(prefs);
-                    if should_enumerate(stable_polls, prefs_changed) {
-                        let graph = media::audio::enumerate();
-                        if topology_unchanged(last_sig.as_deref(), &graph) && !prefs_changed {
-                            stable_polls = stable_polls.saturating_add(1);
-                        } else {
-                            stable_polls = 0;
-                        }
-                        last_sig = Some(idle_signature(&graph));
-                        for event in devices.observe(&graph) {
-                            let _ = device_tx.send(event);
-                        }
-                        if let Some(previous) = last_graph.as_ref()
-                            && enumerated(&graph)
-                        {
-                            let delta = AudioGraph::diff(previous, &graph);
-                            if pause_on_removal(previous, &delta)
-                                && !crate::shell::mpris::pause_playing_players()
-                            {
-                                tracing::warn!(
-                                    target: "tilo::audio_policy",
-                                    "private output removed but players could not be paused"
-                                );
-                            }
-                        }
-                        last_graph = Some(graph.clone());
-                        let error = policy.reconcile(prefs, &graph).err();
-                        if error != last_error {
-                            match error.as_deref() {
-                                Some(error) => tracing::warn!(
-                                    target: "tilo::audio_policy",
-                                    %error,
-                                    "persistent audio preference could not be applied"
-                                ),
-                                None if last_error.is_some() => tracing::info!(
-                                    target: "tilo::audio_policy",
-                                    "persistent audio preference recovered"
-                                ),
-                                None => {}
-                            }
-                            last_error = error;
-                        }
-                    }
-                    if rx.recv_timeout(poll_interval(stable_polls)).is_ok() {
-                        break;
-                    }
-                }
-                // `policy` drops here: its bounded mono session restores the
-                // physical default before the compositor exits.
+                let mut env = LiveEnv {
+                    graph_watch: None,
+                    settings_watch: None,
+                    events: worker_events,
+                    device_sounds: device_tx,
+                    policy: PersistentAudioPolicy::new(Arc::new(RealAudioRuntime)),
+                };
+                run(&mut env, &rx);
             })?;
         Ok(Self {
-            stop,
+            events,
             worker: Some(worker),
             device_sounds: Mutex::new(device_sounds),
         })
@@ -231,7 +471,7 @@ fn multiset_difference(a: &[String], b: &[String]) -> bool {
 
 impl Drop for SessionAudioPolicyOwner {
     fn drop(&mut self) {
-        let _ = self.stop.send(());
+        let _ = self.events.send(PolicyEvent::Stop);
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
@@ -454,14 +694,268 @@ mod tests {
         );
     }
 
+    /// The worker's world without `PipeWire`: each enumeration returns the
+    /// next scripted graph (then keeps returning the last one), and every
+    /// side effect is counted.
+    struct FakeEnv {
+        graphs: std::collections::VecDeque<AudioGraph>,
+        last: AudioGraph,
+        preferences: PersistentAudioPreferences,
+        graph_watchable: bool,
+        settings_watchable: bool,
+        enumerations: usize,
+        preference_loads: usize,
+        pauses: usize,
+        reconciles: usize,
+        sounds: Vec<SystemSoundEvent>,
+    }
+
+    impl FakeEnv {
+        fn new(graphs: impl IntoIterator<Item = AudioGraph>) -> Self {
+            Self {
+                graphs: graphs.into_iter().collect(),
+                last: AudioGraph::default(),
+                preferences: PersistentAudioPreferences::default(),
+                graph_watchable: true,
+                settings_watchable: true,
+                enumerations: 0,
+                preference_loads: 0,
+                pauses: 0,
+                reconciles: 0,
+                sounds: Vec::new(),
+            }
+        }
+    }
+
+    impl PolicyEnv for FakeEnv {
+        fn enumerate(&mut self) -> AudioGraph {
+            self.enumerations = self.enumerations.saturating_add(1);
+            if let Some(graph) = self.graphs.pop_front() {
+                self.last = graph;
+            }
+            self.last.clone()
+        }
+        fn load_preferences(&mut self) -> PersistentAudioPreferences {
+            self.preference_loads = self.preference_loads.saturating_add(1);
+            self.preferences
+        }
+        fn pause_playing_players(&mut self) -> bool {
+            self.pauses = self.pauses.saturating_add(1);
+            true
+        }
+        fn reconcile(
+            &mut self,
+            _preferences: PersistentAudioPreferences,
+            _graph: &AudioGraph,
+        ) -> Result<(), String> {
+            self.reconciles = self.reconciles.saturating_add(1);
+            Ok(())
+        }
+        fn next_retry(&self) -> Option<Instant> {
+            None
+        }
+        fn device_sound(&mut self, event: SystemSoundEvent) {
+            self.sounds.push(event);
+        }
+        fn watch_graph(&mut self) -> bool {
+            self.graph_watchable
+        }
+        fn watch_settings(&mut self) -> bool {
+            self.settings_watchable
+        }
+    }
+
+    /// A laptop's speakers, and a USB headset while it is plugged in — the
+    /// default output whenever it is there.
+    fn laptop(headset: bool) -> AudioGraph {
+        let mut sinks = vec![sink(
+            "alsa_output.pci-0000_00_1f.3.analog-stereo",
+            "Built-in Audio Analog Stereo",
+            !headset,
+        )];
+        let mut hardware = vec!["Built-in Audio"];
+        if headset {
+            sinks.push(sink(
+                "alsa_output.usb-Logi_USB_Headset-00.analog-stereo",
+                "USB Headset",
+                true,
+            ));
+            hardware.push("USB Headset");
+        }
+        AudioGraph {
+            sinks,
+            ..graph(&hardware)
+        }
+    }
+
+    /// Far more still observations than the three after which `bbbeed0a87`
+    /// stopped enumerating for good.
+    const LONG_STILL: usize = 20;
+    /// The baseline and every still reading after it.
+    const STILL_READINGS: usize = LONG_STILL + 1;
+
     #[test]
-    fn idle_session_skips_pw_dump_until_preferences_change() {
-        assert!(should_enumerate(0, false));
-        assert!(should_enumerate(STABLE_POLLS_BEFORE_IDLE, true));
-        assert!(
-            !should_enumerate(STABLE_POLLS_BEFORE_IDLE, false),
-            "R01's 30s empty desktop must not shell pw-dump at all once idle"
+    fn removal_of_private_output_pauses_after_settling() {
+        let mut graphs = vec![laptop(true); LONG_STILL];
+        graphs.push(laptop(false));
+        let (events, rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let mut env = FakeEnv::new(graphs);
+            run(&mut env, &rx);
+            env
+        });
+        for _ in 0..=LONG_STILL {
+            events.send(PolicyEvent::GraphChanged).unwrap();
+        }
+        events.send(PolicyEvent::Stop).unwrap();
+        let env = worker.join().unwrap();
+        assert_eq!(env.enumerations, STILL_READINGS, "one reading per change");
+        assert_eq!(
+            env.pauses, 1,
+            "unplugging the headset after the graph settled must pause playback"
         );
+        assert_eq!(env.sounds, [SystemSoundEvent::DeviceDisconnected]);
+    }
+
+    #[test]
+    fn idle_session_skips_pw_dump_until_the_graph_changes() {
+        let mut env = FakeEnv::new([laptop(true)]);
+        let mut worker = PolicyWorker::start(&mut env);
+        assert_eq!(
+            env.enumerations, 0,
+            "the watch's baseline is the first read"
+        );
+        worker.handle(Wake::Event(PolicyEvent::GraphChanged), &mut env);
+        let now = Instant::now();
+        for later in [0, 4, 30, 3600] {
+            assert_eq!(
+                worker.next_wake(now.checked_add(Duration::from_secs(later)).unwrap(), None),
+                None,
+                "R01's 30s empty desktop must not shell pw-dump at all once idle"
+            );
+        }
+        assert_eq!(env.enumerations, 1);
+        assert_eq!(env.preference_loads, 1, "settings are read on change only");
+        for _ in 0..LONG_STILL {
+            worker.handle(Wake::Event(PolicyEvent::GraphChanged), &mut env);
+        }
+        assert_eq!(
+            env.enumerations, STILL_READINGS,
+            "a change after any amount of stillness is still read"
+        );
+        assert_eq!(worker.next_wake(now, None), None);
+    }
+
+    #[test]
+    fn unreachable_pipewire_falls_back_to_polling_that_still_sees_hotplug() {
+        let mut env = FakeEnv::new([laptop(true)]);
+        env.graph_watchable = false;
+        let mut worker = PolicyWorker::start(&mut env);
+        assert_eq!(env.enumerations, 1, "polling reads its own baseline");
+        let now = Instant::now();
+        assert_eq!(worker.next_wake(now, None), Some(POLL_INTERVAL));
+        for _ in 0..LONG_STILL {
+            worker.handle(Wake::Timeout, &mut env);
+        }
+        assert_eq!(
+            worker.next_wake(now, None),
+            Some(IDLE_POLL_INTERVAL),
+            "a still graph is polled slower"
+        );
+        assert_eq!(
+            env.enumerations, STILL_READINGS,
+            "but every poll still reads the graph"
+        );
+        env.graphs.push_back(laptop(false));
+        worker.handle(Wake::Timeout, &mut env);
+        assert_eq!(env.pauses, 1, "hotplug lands within one idle poll");
+        assert_eq!(env.sounds, [SystemSoundEvent::DeviceDisconnected]);
+
+        env.graph_watchable = true;
+        let before = env.enumerations;
+        worker.handle(Wake::Timeout, &mut env);
+        assert_eq!(worker.next_wake(now, None), None, "watching again");
+        assert_eq!(env.enumerations, before, "the watch sends the baseline");
+    }
+
+    #[test]
+    fn a_lost_watch_polls_until_it_is_back() {
+        let mut env = FakeEnv::new([laptop(true)]);
+        let mut worker = PolicyWorker::start(&mut env);
+        worker.handle(Wake::Event(PolicyEvent::GraphChanged), &mut env);
+        worker.handle(Wake::Event(PolicyEvent::WatchLost), &mut env);
+        assert_eq!(env.enumerations, 2, "a lost watch reads the graph at once");
+        assert_eq!(worker.next_wake(Instant::now(), None), Some(POLL_INTERVAL));
+    }
+
+    #[test]
+    fn settings_changes_reconcile_without_reading_the_graph() {
+        let mut env = FakeEnv::new([laptop(true)]);
+        let mut worker = PolicyWorker::start(&mut env);
+        worker.handle(Wake::Event(PolicyEvent::GraphChanged), &mut env);
+        let (reads, reconciles) = (env.enumerations, env.reconciles);
+        worker.handle(Wake::Event(PolicyEvent::SettingsChanged), &mut env);
+        assert_eq!(env.reconciles, reconciles, "an unrelated setting changed");
+        env.preferences.mono_output = true;
+        worker.handle(Wake::Event(PolicyEvent::SettingsChanged), &mut env);
+        assert_eq!(env.reconciles, reconciles.saturating_add(1));
+        assert_eq!(env.enumerations, reads, "the graph did not change");
+    }
+
+    #[test]
+    fn without_a_settings_watch_preferences_follow_graph_changes() {
+        let mut env = FakeEnv::new([laptop(true)]);
+        env.settings_watchable = false;
+        let mut worker = PolicyWorker::start(&mut env);
+        worker.handle(Wake::Event(PolicyEvent::GraphChanged), &mut env);
+        assert_eq!(env.preference_loads, 2);
+        assert_eq!(worker.next_wake(Instant::now(), None), None);
+    }
+
+    #[test]
+    fn a_due_retry_wakes_once_and_a_past_one_never_spins() {
+        let mut env = FakeEnv::new([laptop(true)]);
+        let mut worker = PolicyWorker::start(&mut env);
+        worker.handle(Wake::Event(PolicyEvent::GraphChanged), &mut env);
+        let now = Instant::now();
+        let retry = now.checked_add(Duration::from_secs(5)).unwrap();
+        assert_eq!(
+            worker.next_wake(now, Some(retry)),
+            Some(Duration::from_secs(5))
+        );
+        assert_eq!(worker.next_wake(retry, Some(retry)), None);
+        let reconciles = env.reconciles;
+        worker.handle(Wake::Timeout, &mut env);
+        assert_eq!(
+            env.reconciles,
+            reconciles.saturating_add(1),
+            "the retry reconciles"
+        );
+        assert_eq!(env.enumerations, 1, "against the graph it already has");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_idle_worker_thread_stays_asleep() {
+        const COMM: &str = "tilo-audio-idle";
+        let ((events, worker), tid) = tilo_test_env::idle::spawned_thread(COMM, || {
+            let (events, rx) = mpsc::channel();
+            let worker = std::thread::Builder::new()
+                .name(COMM.into())
+                .spawn(move || {
+                    let mut env = FakeEnv::new([laptop(true)]);
+                    run(&mut env, &rx);
+                    env
+                })
+                .unwrap();
+            events.send(PolicyEvent::GraphChanged).unwrap();
+            (events, worker)
+        });
+        tilo_test_env::idle::assert_stays_asleep(&tid, "audio policy worker");
+        events.send(PolicyEvent::Stop).unwrap();
+        let env = worker.join().unwrap();
+        assert_eq!(env.enumerations, 1);
+        assert_eq!(env.preference_loads, 1);
     }
 
     #[test]

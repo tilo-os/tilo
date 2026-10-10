@@ -380,6 +380,10 @@ pub enum PersonalFabricAction {
         address: String,
         authorization: [u8; 16],
     },
+    /// Inline fast path of the one Nearby transfer protocol: a file up to
+    /// [`MAX_NEARBY_DROP_BYTES`] rides in this action instead of an offer and
+    /// a byte stream, saving a round trip. It shares the transfer's consent
+    /// queue and integrity check; it is not a second protocol.
     NearbyDrop {
         file_name: String,
         content_hash: [u8; 32],
@@ -391,7 +395,8 @@ pub enum PersonalFabricAction {
         accepted: bool,
     },
     /// Durable object offer. The source path never leaves its device; the ID
-    /// addresses an immutable private spool object.
+    /// addresses an immutable private spool object. A `MediaHandoff` offer is
+    /// admitted by the `ResumeMedia` that named its ID, never by Files.
     NearbyTransferOffer {
         transfer_id: [u8; 16],
         name: String,
@@ -711,6 +716,17 @@ pub enum PersonalFabricAction {
         expected: FabricStamp,
         rect: DisplayRect,
         expires_unix_ms: u64,
+    },
+    /// Probe/acknowledge sequencing only for an existing exact-route lease.
+    SpatialInputProtocol {
+        lease_nonce: [u8; 16],
+        acknowledgement: bool,
+    },
+    /// Appended optional action; the existing Input tag and bytes do not move.
+    SpatialInputSequenced {
+        lease_nonce: [u8; 16],
+        sequence: u64,
+        event: FabricInputEvent,
     },
 }
 
@@ -1303,6 +1319,20 @@ impl PersonalFabricActionEnvelope {
                     return Err(FabricError::InvalidAction);
                 }
             }
+            PersonalFabricAction::SpatialInputProtocol { lease_nonce, .. } => {
+                if lease_nonce == &[0; 16] {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::SpatialInputSequenced {
+                lease_nonce,
+                sequence,
+                event,
+            } => {
+                if lease_nonce == &[0; 16] || *sequence == 0 || !event.validate() {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
             PersonalFabricAction::Input { lease_nonce, event } => {
                 if lease_nonce == &[0; 16] || !event.validate() {
                     return Err(FabricError::InvalidAction);
@@ -1467,10 +1497,6 @@ impl ClipboardHistory {
         };
         self.entries.remove(index);
         true
-    }
-
-    pub fn clear_unpinned(&mut self) {
-        self.entries.retain(|entry| entry.pinned);
     }
 }
 
@@ -1736,7 +1762,7 @@ pub enum FabricInputEvent {
 }
 
 impl FabricInputEvent {
-    fn validate(self) -> bool {
+    pub(super) fn validate(self) -> bool {
         match self {
             Self::PointerMotion { x, y } => {
                 x.unsigned_abs() <= 1_000_000 && y.unsigned_abs() <= 1_000_000

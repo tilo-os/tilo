@@ -87,7 +87,8 @@ mod imp {
     }
 }
 
-#[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
+#[cfg(test)]
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 mod tests {
     use super::imp::non_empty;
     use super::*;

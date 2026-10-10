@@ -633,19 +633,6 @@ pub fn tag_image(source: &str, new_tag: &str) -> Result<(), String> {
     finish(cmd)
 }
 
-/// Full `podman image inspect` JSON (pretty) for an image reference. Empty
-/// on failure. Used by the image detail / inspect view.
-pub fn inspect_image(reference: &str) -> String {
-    if !engine_available() {
-        return String::new();
-    }
-    let out = run_probe("podman", &["image", "inspect", reference]);
-    match out {
-        Some(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
-        _ => String::new(),
-    }
-}
-
 // =====================================================================
 // Volume operations
 // =====================================================================
@@ -767,31 +754,9 @@ pub fn pull_args(reference: &str) -> Vec<String> {
     vec!["pull".to_string(), reference.to_string()]
 }
 
-/// The argument vector for following a container's logs. Pure for testing.
-pub fn log_follow_args(container_id: &str, tail: usize) -> Vec<String> {
-    vec![
-        "logs".to_string(),
-        "--follow".to_string(),
-        "--tail".to_string(),
-        tail.to_string(),
-        container_id.to_string(),
-    ]
-}
-
 // =====================================================================
 // Exec / terminal
 // =====================================================================
-
-/// Build the `podman exec -it <id> <shell>` argv used to attach an
-/// interactive shell. Pure so the terminal wiring is unit-testable.
-pub fn exec_args(container_id: &str, shell: &str) -> Vec<String> {
-    vec![
-        "exec".to_string(),
-        "-it".to_string(),
-        container_id.to_string(),
-        shell.to_string(),
-    ]
-}
 
 /// Run completion helper shared by the simple (non-streaming) ops.
 fn finish(cmd: Command) -> Result<(), String> {
@@ -829,10 +794,7 @@ mod tests {
         let absent = format!(
             "tilo-missing-container-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
+            ui::time::try_unix_now_ns().unwrap()
         );
         // This exercises the actual Podman command, including missing binary,
         // lost engine and nonexistent target refusals. None is a success.

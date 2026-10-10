@@ -112,14 +112,6 @@ impl RealtimeBridge {
     }
 }
 
-fn realtime_unix_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()
-        .and_then(|duration| u64::try_from(duration.as_millis()).ok())
-        .unwrap_or(0)
-}
-
 fn broker_realtime_controls(
     controls: ui::realtime_continuity::RealtimeControlIntent,
 ) -> crate::shell::realtime_session::RealtimeControlState {
@@ -464,7 +456,7 @@ impl RealtimeFabricAppBridge {
         if let Err(error) =
             realtime
                 .fabric
-                .offer_to(id, target, realtime_unix_ms().saturating_add(30_000))
+                .offer_to(id, target, tilo_clock::unix_now_ms().saturating_add(30_000))
         {
             let _ = realtime.broker.lock().map(|mut broker| {
                 let _ = broker.target_failed(&app, id, &source, target, std::time::Instant::now());

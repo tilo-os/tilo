@@ -324,3 +324,32 @@ transport and validation costs. CI layers are cached by image digest on the
 host. Source builds hash the assembled tree and check the device for matching
 component content before packaging or sending bytes. A cache hit skips both
 packaging and upload; changed content uses the full uncompressed archive.
+
+## Opt-in phase CPU records
+
+`tilo-vm swap shell --frame-cpu-trace --slot <slot>` enables the shell's
+phase CPU companion on an owned headful or headless stand-in slot. The flag is
+not supported for device logins, VM-wide components or applications. It is a
+typed generation setting, rather than an arbitrary environment override:
+swapping the same layer with a different setting creates a new generation;
+rollback restores that generation's setting. A subsequent shell swap without
+the flag disables it. Protocol 9 requires a matching CLI and daemon, so an old
+daemon cannot silently ignore the request. Update tooling through its normal
+lifecycle before using the option; this does not require rebooting the VM.
+
+Each compositor start, including a wrapper-requested desktop restart, allocates
+a new owner-private `frame-cpu.*` directory beside the normal session logs.
+`frame-cpu-path` (mode 0600) names the current CSV; the CSV is created exclusively
+by shell at mode 0600. Read the pointer through `tilo-vm slot exec`, then collect
+that file with the stock `frame-trace.csv`. Records are retained for evidence;
+remove unwanted records from the slot's own state directory after collection.
+The stock trace schema does not change, and disabled sessions allocate no CPU
+record. This records CPU phases, not GPU-exclusive time or hardware performance.
+
+`tilo-vm --json slot show` includes `installed_builds`, keyed by component, with
+the selected immutable layer's source commit, compiler/toolchain, target, build
+profile, Cargo.lock digest and builder provenance when recorded. Unavailable selected layers are explicit `null`; unrecorded provenance fields
+remain unavailable. `identity_scope` is
+`installed_layer_not_running_process`: this receipt describes installed build
+artifacts and never certifies the running process's executable bytes. An OS
+permission denial when reading a process image remains an observation gap.

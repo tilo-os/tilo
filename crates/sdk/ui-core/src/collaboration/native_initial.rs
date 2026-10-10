@@ -41,7 +41,8 @@ pub(crate) struct NativeConstruction {
     state: Rc<Construction>,
     previous: Option<Weak<Construction>>,
 }
-#[cfg(all(test, feature = "broker-transport"))]
+#[cfg(test)]
+#[cfg(feature = "broker-transport")]
 pub(crate) fn component_history_phase_for_test(
     binding: &crate::bound_dispatch::CallbackBinding,
 ) -> Option<(bool, bool, bool)> {
@@ -56,7 +57,8 @@ pub(crate) fn component_history_phase_for_test(
         })
         .map(|phase| (phase.required, phase.staged, phase.applied))
 }
-#[cfg(all(test, feature = "broker-transport"))]
+#[cfg(test)]
+#[cfg(feature = "broker-transport")]
 pub(crate) fn component_history_read_for_test(
     binding: &crate::bound_dispatch::CallbackBinding,
 ) -> Result<CommittedDocument, String> {
@@ -702,11 +704,13 @@ impl InitialReadBridge {
     }
 }
 
-#[cfg(all(test, feature = "broker-transport"))]
+#[cfg(test)]
+#[cfg(feature = "broker-transport")]
 #[path = "native_initial/named_creation_tests.rs"]
 mod named_creation_tests;
 
-#[cfg(all(test, feature = "broker-transport"))]
+#[cfg(test)]
+#[cfg(feature = "broker-transport")]
 mod tests {
     use super::{
         BridgeState, CollaborationManager, Construction, InitialReadBridge, NativeConstruction,

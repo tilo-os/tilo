@@ -15,9 +15,9 @@ homepage.workspace = true
 # catalogue. Installing, removing and collecting garbage additionally needs
 # the content store.
 default = []
-# Honour `TILO_APPS_SYSTEM_DIR` / `TILO_APPS_SYSTEM_PAYLOAD_DIR` in a release
-# build (see `layout::DEV_ENV_OVERRIDES`). Debug builds always honour them;
-# shipped images never enable this.
+# Honour the developer-only environment overrides (`package_store::dev_env`)
+# in a release build. Debug builds always honour them; shipped images never
+# enable this.
 dev-overrides = []
 store = [
     "dep:tilo-advisory-lock",
@@ -32,7 +32,7 @@ store = [
 ]
 
 [dependencies]
-tilo-xdg-paths = { version = "0.1.0", path = "../../system/xdg-paths" }
+tilo-paths.workspace = true
 tilo-app-package = { version = "0.1.0", path = "../tilo-app-package" }
 ed25519-dalek.workspace = true
 hex.workspace = true

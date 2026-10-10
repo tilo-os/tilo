@@ -38,7 +38,30 @@ impl From<String> for Refusal {
 }
 
 /// Tabs whose card's install button was pressed, drained by [`examine`].
+#[cfg(not(test))]
 static INSTALL_REQUESTS: std::sync::Mutex<Vec<TabId>> = std::sync::Mutex::new(Vec::new());
+
+#[cfg(test)]
+thread_local! {
+    // Each test owns its card requests, just like the retry queue below.
+    static TEST_INSTALL_REQUESTS: std::cell::RefCell<Vec<TabId>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn with_install_requests<R>(apply: impl FnOnce(&mut Vec<TabId>) -> R) -> R {
+    #[cfg(test)]
+    {
+        TEST_INSTALL_REQUESTS.with(|requests| apply(&mut requests.borrow_mut()))
+    }
+    #[cfg(not(test))]
+    {
+        apply(
+            &mut INSTALL_REQUESTS
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+    }
+}
+
 #[derive(PartialEq, Eq)]
 struct RetryRequest {
     tab: TabId,
@@ -176,10 +199,17 @@ static MISSING_READ_AT: std::sync::atomic::AtomicU64 = std::sync::atomic::Atomic
 /// The person pressed "Install" on `tab`'s card: install its app and open it
 /// in that tab, on the next [`examine`].
 pub(crate) fn request_install(tab: TabId) {
-    INSTALL_REQUESTS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .push(tab);
+    with_install_requests(|requests| {
+        if !requests.contains(&tab) {
+            requests.push(tab);
+        }
+    });
+}
+
+/// Whether a card's Install press waits for the next [`examine`]. Queued
+/// outside the tree, so no tree revision announces it.
+pub(crate) fn install_requested() -> bool {
+    with_install_requests(|requests| !requests.is_empty())
 }
 
 /// Whether `catalogue` offers `app_id` to this device.
@@ -318,11 +348,7 @@ fn reread_missing_apps(tree: &mut WorkspaceTree) -> bool {
 /// Install and open the app of every card whose install button was
 /// pressed. The click is the consent; nothing installs without one.
 fn start_requested_installs(tree: &mut WorkspaceTree) -> bool {
-    let requests = std::mem::take(
-        &mut *INSTALL_REQUESTS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner),
-    );
+    let requests = with_install_requests(std::mem::take);
     let mut changed = false;
     for tab in requests {
         changed |= install_for(tree, tab);
@@ -1510,7 +1536,7 @@ mod tests {
     #[serial_test::serial(process_env)]
     fn room_file_managers_alone_see_the_users_home() {
         fn a_file_manager_opened_for_the_room_can_see_the_users_home() {
-            let home = xdg_paths::home().expect("the test machine has a home directory");
+            let home = tilo_paths::home().expect("the test machine has a home directory");
             let (mut tree, _tab) = tree_with_peer_window_for(room_owned_by("quinten"), FILES);
 
             assert!(
@@ -1530,7 +1556,7 @@ mod tests {
         }
 
         fn opening_another_app_for_the_room_grants_it_no_home() {
-            let home = xdg_paths::home().expect("the test machine has a home directory");
+            let home = tilo_paths::home().expect("the test machine has a home directory");
             let (mut tree, _tab) = tree_with_peer_window_for(room_owned_by("quinten"), APP);
 
             let _ = examine(&mut tree);
@@ -1542,7 +1568,7 @@ mod tests {
         }
 
         fn a_refused_file_manager_is_granted_nothing() {
-            let home = xdg_paths::home().expect("the test machine has a home directory");
+            let home = tilo_paths::home().expect("the test machine has a home directory");
             let mut ws = room_owned_by("quinten");
             ws.owner = None;
             let (mut tree, _tab) = tree_with_peer_window_for(ws, FILES);
@@ -1807,11 +1833,7 @@ mod tests {
             "Word Processor",
         );
         card.press_for_test();
-        let queued = std::mem::take(
-            &mut *INSTALL_REQUESTS
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-        );
+        let queued = with_install_requests(std::mem::take);
         assert_eq!(queued, vec![tab]);
     }
 

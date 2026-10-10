@@ -654,7 +654,7 @@ fn capability_kind_and_scope(capability: &Capability) -> Option<(CapabilityKind,
 /// Both variables follow the XDG rule: an empty or relative value is ignored
 /// rather than resolved against the compositor's working directory.
 pub(crate) fn private_state_root() -> Option<PathBuf> {
-    xdg_paths::state_dir().or_else(xdg_paths::runtime_dir)
+    tilo_paths::state_dir().or_else(tilo_paths::runtime_dir)
 }
 
 fn default_portal_consent_path() -> Option<PathBuf> {
@@ -852,16 +852,6 @@ impl PromptQueueHandle {
     /// Number of queued prompts — for tests asserting queue length before the pump drains it.
     pub fn queued_len(&self) -> usize {
         self.state.lock().map_or(0, |state| state.pending.len())
-    }
-
-    /// Direct accessor (test only): peek at the front entry's caller + capability without removing it.
-    #[cfg(any(test, debug_assertions))]
-    pub fn front_for_tests(&self) -> Option<(PortalCaller, Capability)> {
-        let state = self.state.lock().ok()?;
-        state
-            .pending
-            .first()
-            .map(|p| (p.caller.clone(), p.capability.clone()))
     }
 }
 
@@ -1096,21 +1086,6 @@ pub mod flow {
             ctx.grants().insert_portal_consent_key(consent_key, scope);
         }
         outcome
-    }
-}
-
-/// Helper: rewrite a [`Capability`] template's `scope` field. Duplicated
-/// from `overlay_host::with_grant_scope` so the portal module doesn't take a hard dep on `shell::overlay_host` (pulls the whole UI stack).
-pub fn with_scope(cap: Capability, scope: GrantScope) -> Capability {
-    match cap {
-        Capability::Filesystem { path, mode, .. } => Capability::Filesystem { path, mode, scope },
-        Capability::Camera { .. } => Capability::Camera { scope },
-        Capability::Microphone { .. } => Capability::Microphone { scope },
-        Capability::Screencast { .. } => Capability::Screencast { scope },
-        Capability::RemoteDesktop { .. } => Capability::RemoteDesktop { scope },
-        Capability::Print { .. } => Capability::Print { scope },
-        Capability::Network { hosts, .. } => Capability::Network { hosts, scope },
-        Capability::HostShell { .. } => Capability::HostShell { scope },
     }
 }
 

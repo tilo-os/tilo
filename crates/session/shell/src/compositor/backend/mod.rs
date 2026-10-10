@@ -656,12 +656,6 @@ pub trait Backend {
         false
     }
 
-    /// Whether the presenter consumes empty workspace transition frames by
-    /// retaining/replaying its previous pixels, rather than rasterising them.
-    fn supports_workspace_clip(&self) -> bool {
-        false
-    }
-
     /// Submit a frame with optional retained-damage authority. Backends that cannot retain a
     /// previous native target keep the established dense scene path.
     fn submit_frame_with_damage(&mut self, frame: &FramePaint, output: OutputId) {

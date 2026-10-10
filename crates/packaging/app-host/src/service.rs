@@ -152,18 +152,23 @@ fn path_or_default(
     )
 }
 
-/// The launcher that builds every app's sandbox. `TILO_LAUNCHER_BIN`
+/// Names the `tilo-launcher` binary instead of `/usr/bin/tilo-launcher`.
+const LAUNCHER_BIN_ENV: &str = "TILO_LAUNCHER_BIN";
+/// Names the `app` binary instead of `/usr/bin/app`.
+const APP_BIN_ENV: &str = "TILO_APP_BIN";
+
+/// The launcher that builds every app's sandbox. [`LAUNCHER_BIN_ENV`]
 /// re-points it in developer builds only.
 fn launcher_bin() -> std::path::PathBuf {
     path_or_default(
-        crate::dev_env::dev_override(crate::dev_env::LAUNCHER_BIN_ENV),
+        package_store::dev_env::dev_override(LAUNCHER_BIN_ENV),
         "/usr/bin/tilo-launcher",
     )
 }
 
 fn app_bin() -> std::path::PathBuf {
     path_or_default(
-        crate::dev_env::dev_override(crate::dev_env::APP_BIN_ENV),
+        package_store::dev_env::dev_override(APP_BIN_ENV),
         "/usr/bin/app",
     )
 }
@@ -186,6 +191,30 @@ fn require_offer_identity(
         ));
     }
     Ok(())
+}
+
+/// The version a first open installs instead of `requested`: when
+/// `requested` names a runtime this device lacks, the newest offer of the
+/// same signed entry, no newer than `requested`, whose runtime is present.
+fn first_open_choice<'a>(
+    requested: &'a app_cli::CatalogueApp,
+    offers: &'a [app_cli::CatalogueApp],
+) -> &'a app_cli::CatalogueApp {
+    if requested
+        .runtime
+        .as_deref()
+        .is_none_or(app_cli::runtime_installed)
+    {
+        return requested;
+    }
+    let same_entry = offers.iter().filter(|offer| {
+        offer.package_id == requested.package_id
+            && offer
+                .publisher_pubkey_hex
+                .eq_ignore_ascii_case(&requested.publisher_pubkey_hex)
+    });
+    app_cli::prefer_installed_runtime(same_entry, &requested.version, app_cli::runtime_installed)
+        .unwrap_or(requested)
 }
 
 fn install_offer_from_catalogue(
@@ -214,12 +243,23 @@ fn install_offer_from_catalogue(
         .map_err(failed)?
         .iter()
         .any(|package| package.id == expected.app_id);
-    if installed {
+    let installed_root = if installed {
         app_cli::install::update_app_reporting(offer, &mut |_| {}).map_err(failed)?;
+        expected.package_root
     } else {
+        // A first open takes the newest signed version of this same entry
+        // that runs on a runtime the device already has, rather than
+        // downloading a whole runtime for a few-megabyte app. Updating moves
+        // it to the newest version later.
+        let offer = first_open_choice(offer, &offers);
         app_cli::install::install_app(offer).map_err(failed)?;
-    }
-    let package = find(catalog, expected.package_root)?;
+        format!("tapp:{}", offer.tapp_root_hash_hex)
+            .parse::<PackageId>()
+            .map_err(|_| {
+                Error::failed("the installed version has an invalid package root".into())
+            })?
+    };
+    let package = find(catalog, installed_root)?;
     package
         .package_id()
         .ok_or_else(|| Error::failed("installed app has no package identity".into()))
@@ -284,11 +324,61 @@ fn flatpak_catalogue_from(
     remote: &str,
     user_managed: bool,
 ) -> Result<String, Error> {
+    flatpak_catalogue_with_timeout(
+        binary,
+        remote,
+        user_managed,
+        std::time::Duration::from_secs(8),
+    )
+}
+
+fn flatpak_catalogue_with_timeout(
+    binary: &std::path::Path,
+    remote: &str,
+    user_managed: bool,
+    timeout: std::time::Duration,
+) -> Result<String, Error> {
     require_flatpak_selector(remote)?;
+    let started = std::time::Instant::now();
+    let cached = flatpak_catalogue_read(binary, remote, user_managed, true, timeout)?;
+    let missing = format!("No cached summary for remote '{remote}'");
+    let output =
+        if !cached.status.success() && String::from_utf8_lossy(&cached.stderr).contains(&missing) {
+            // A newly configured remote may not have a summary yet. Flatpak's normal
+            // fetch verifies it with the configured GPG policy; never install apps or
+            // change remote settings here. Both reads share the same bounded deadline.
+            let remaining = timeout.saturating_sub(started.elapsed());
+            if remaining.is_zero() {
+                return Err(Error::failed("Flatpak repository query timed out".into()));
+            }
+            flatpak_catalogue_read(binary, remote, user_managed, false, remaining)?
+        } else {
+            cached
+        };
+    if !output.status.success() {
+        return Err(Error::failed(format!(
+            "Flatpak repository query failed: {}",
+            safe_host_diagnostic(&output.stderr)
+        )));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+fn flatpak_catalogue_read(
+    binary: &std::path::Path,
+    remote: &str,
+    user_managed: bool,
+    cached: bool,
+    timeout: std::time::Duration,
+) -> Result<bounded_command::Output, Error> {
     let mut command = std::process::Command::new(binary);
+    // Classify only Flatpak's explicit cache absence, independently of the user's
+    // locale. No diagnostic text is used as catalogue or authority data.
+    command.env("LC_ALL", "C").arg("remote-ls");
+    if cached {
+        command.arg("--cached");
+    }
     command.args([
-        "remote-ls",
-        "--cached",
         if user_managed { "--user" } else { "--system" },
         "--app",
         "--arch",
@@ -297,20 +387,7 @@ fn flatpak_catalogue_from(
         "--",
         remote,
     ]);
-    let output = bounded_command::run_prepared(
-        command,
-        None,
-        4 * 1024 * 1024,
-        std::time::Duration::from_secs(8),
-    )
-    .map_err(failed)?;
-    if !output.status.success() {
-        return Err(Error::failed(format!(
-            "Flatpak repository query failed: {}",
-            safe_host_diagnostic(&output.stderr)
-        )));
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    bounded_command::run_prepared(command, None, 4 * 1024 * 1024, timeout).map_err(failed)
 }
 
 fn flatpak_remote_enabled_from(
@@ -327,6 +404,33 @@ fn flatpak_remote_enabled_from(
         "--",
         name,
     ]);
+    run_host_command(command)
+}
+
+/// Update or uninstall (`verb`) the account's `app_id`.
+fn flatpak_app_from(binary: &std::path::Path, verb: &str, app_id: &str) -> Result<String, Error> {
+    require_flatpak_selector(app_id)?;
+    let mut command = std::process::Command::new(binary);
+    command.args([verb, "--user", "--noninteractive", "--", app_id]);
+    run_host_command(command)
+}
+
+/// Add the account source `name` at `url`, unless one of that name exists.
+fn flatpak_remote_add_from(
+    binary: &std::path::Path,
+    name: &str,
+    url: &str,
+) -> Result<String, Error> {
+    require_flatpak_selector(name)?;
+    let mut command = std::process::Command::new(binary);
+    command.args(["remote-add", "--user", "--if-not-exists", "--", name, url]);
+    run_host_command(command)
+}
+
+fn flatpak_remote_delete_from(binary: &std::path::Path, name: &str) -> Result<String, Error> {
+    require_flatpak_selector(name)?;
+    let mut command = std::process::Command::new(binary);
+    command.args(["remote-delete", "--user", "--force", "--", name]);
     run_host_command(command)
 }
 
@@ -493,7 +597,7 @@ fn wayland_socket() -> Option<std::path::PathBuf> {
     if display.is_absolute() {
         Some(display)
     } else {
-        xdg_paths::xdg::runtime_dir().map(|root| root.join(display))
+        tilo_paths::xdg::runtime_dir().map(|root| root.join(display))
     }
 }
 
@@ -879,32 +983,25 @@ impl app_host::Server for AppHostServer {
                 return Err(Error::failed("Flatpak reference exceeds 64 KiB".into()));
             }
             let status = tokio::task::spawn_blocking(move || {
-                let mut command = std::process::Command::new("flatpak");
+                let flatpak = std::path::Path::new("/usr/bin/flatpak");
                 match action {
                     WireFlatpakAction::Install => {
-                        command.args(["install", "--user", "--noninteractive"]);
                         if reference.is_empty() {
-                            return flatpak_install_flathub_from(
-                                std::path::Path::new("/usr/bin/flatpak"),
-                                &app_id,
-                            );
+                            return flatpak_install_flathub_from(flatpak, &app_id);
                         }
                         let mut staged = tempfile::NamedTempFile::new()
                             .map_err(|e| Error::failed(format!("stage Flatpak reference: {e}")))?;
                         staged
                             .write_all(&reference)
                             .map_err(|e| Error::failed(format!("stage Flatpak reference: {e}")))?;
+                        let mut command = std::process::Command::new(flatpak);
+                        command.args(["install", "--user", "--noninteractive", "--"]);
                         command.arg(staged.path());
-                        return run_host_command(command);
+                        run_host_command(command)
                     }
-                    WireFlatpakAction::Update => {
-                        command.args(["update", "--user", "--noninteractive", &app_id]);
-                    }
-                    WireFlatpakAction::Remove => {
-                        command.args(["uninstall", "--user", "--noninteractive", &app_id]);
-                    }
+                    WireFlatpakAction::Update => flatpak_app_from(flatpak, "update", &app_id),
+                    WireFlatpakAction::Remove => flatpak_app_from(flatpak, "uninstall", &app_id),
                 }
-                run_host_command(command)
             })
             .await
             .map_err(|e| Error::failed(format!("join: {e}")))??;
@@ -936,23 +1033,18 @@ impl app_host::Server for AppHostServer {
                 .to_string()
                 .map_err(|e| Error::failed(e.to_string()))?;
             let status = tokio::task::spawn_blocking(move || {
-                let mut command = std::process::Command::new("flatpak");
+                let flatpak = std::path::Path::new("/usr/bin/flatpak");
                 match action {
-                    WireRemoteAction::Add => {
-                        command.args(["remote-add", "--user", "--if-not-exists", &name, &url]);
-                    }
-                    WireRemoteAction::Remove => {
-                        command.args(["remote-delete", "--user", "--force", &name]);
-                    }
+                    WireRemoteAction::Add => flatpak_remote_add_from(flatpak, &name, &url),
+                    WireRemoteAction::Remove => flatpak_remote_delete_from(flatpak, &name),
                     WireRemoteAction::Enable | WireRemoteAction::Disable => {
-                        return flatpak_remote_enabled_from(
-                            std::path::Path::new("/usr/bin/flatpak"),
+                        flatpak_remote_enabled_from(
+                            flatpak,
                             &name,
                             action == WireRemoteAction::Enable,
-                        );
+                        )
                     }
                 }
-                run_host_command(command)
             })
             .await
             .map_err(|e| Error::failed(format!("join: {e}")))??;
@@ -1244,6 +1336,39 @@ exit 1
     }
 
     #[test]
+    fn app_and_source_changes_end_options_before_caller_values() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let binary = dir.path().join("flatpak");
+        std::fs::write(&binary, "#!/bin/sh\nprintf '%s ' \"$@\"\n").unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(
+            super::flatpak_app_from(&binary, "uninstall", "org.example.App")
+                .unwrap()
+                .trim(),
+            "uninstall --user --noninteractive -- org.example.App"
+        );
+        assert_eq!(
+            super::flatpak_remote_add_from(&binary, "tools", "--no-gpg-verify")
+                .unwrap()
+                .trim(),
+            "remote-add --user --if-not-exists -- tools --no-gpg-verify"
+        );
+        assert_eq!(
+            super::flatpak_remote_delete_from(&binary, "tools")
+                .unwrap()
+                .trim(),
+            "remote-delete --user --force -- tools"
+        );
+        // `--all` would uninstall every app the account has.
+        for selector in ["--all", "--delete-data", "", "a b"] {
+            assert!(super::flatpak_app_from(&binary, "uninstall", selector).is_err());
+            assert!(super::flatpak_remote_add_from(&binary, selector, "https://x").is_err());
+            assert!(super::flatpak_remote_delete_from(&binary, selector).is_err());
+        }
+    }
+
+    #[test]
     fn catalogue_install_requires_the_exact_selected_signed_identity() {
         let expected = crate::install::InstallExpectation {
             package_root: tilo_app_package::PackageId::from_bytes([7; 32]),
@@ -1292,6 +1417,50 @@ exit 1
         for replacement in replacements {
             assert!(super::require_offer_identity(&replacement, &expected).is_err());
         }
+
+        // Phase `a_first_open_takes_a_version_on_a_runtime_this_device_has`.
+        let missing = format!("tilo-runtime/2026.07+native.{}", "f".repeat(32));
+        let mut newest = offer_template(&expected);
+        newest.version = "1.2.4".into();
+        newest.runtime = Some(missing);
+        // The older build needs no runtime at all, so it runs here.
+        let mut runnable = offer_template(&expected);
+        runnable.version = "1.2.2".into();
+        let mut foreign = runnable.clone();
+        foreign.version = "1.2.3".into();
+        foreign.publisher_pubkey_hex = "0b".repeat(32);
+        let mut later = runnable.clone();
+        later.version = "1.2.5".into();
+        let offers = vec![later, newest.clone(), foreign, runnable.clone()];
+        assert_eq!(super::first_open_choice(&newest, &offers), &runnable);
+        // Nothing runnable: the requested version, runtime and all.
+        let only = vec![newest.clone()];
+        assert_eq!(super::first_open_choice(&newest, &only), &newest);
+        // A requested version that runs here is never replaced.
+        assert_eq!(super::first_open_choice(&runnable, &offers), &runnable);
+    }
+
+    fn offer_template(expected: &crate::install::InstallExpectation) -> app_cli::CatalogueApp {
+        app_cli::CatalogueApp {
+            package_id: expected.app_id.clone(),
+            display_name: "Notes".into(),
+            description: String::new(),
+            tagline: String::new(),
+            images: Vec::new(),
+            supported_languages: Vec::new(),
+            category: None,
+            version: expected.version.clone(),
+            registry: "Tilo main".into(),
+            download_url: "https://apps.tilo.so/notes.tapp".into(),
+            tapp_root_hash_hex: expected.package_root.to_hex(),
+            tapp_size_bytes: expected.size_bytes,
+            tapp_blake3_hex: "09".repeat(32),
+            architecture: std::env::consts::ARCH.into(),
+            isa: std::env::consts::ARCH.into(),
+            runtime: None,
+            publisher_pubkey_hex: hex::encode(expected.publisher),
+            trust: "verified".into(),
+        }
     }
 
     #[test]
@@ -1338,6 +1507,120 @@ exit 1
                 .to_string()
                 .contains("repository is unavailable")
         );
+    }
+
+    #[test]
+    fn cold_configured_catalogue_fetches_summary_then_reuses_cached_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let binary = dir.path().join("flatpak");
+        std::fs::write(&binary, r#"#!/bin/sh
+root=$(dirname "$0")
+printf '%s\n' "$*" >> "$root/calls"
+case "$*" in
+  *--cached*)
+    if [ ! -f "$root/summary" ]; then
+      echo "error: Unable to load summary from remote tools: No cached summary for remote 'tools'" >&2
+      exit 1
+    fi;;
+  *) touch "$root/summary";;
+esac
+printf 'org.example.Editor\tEditor\tA signed editor\t1.0\tstable\ttools\n'
+"#).unwrap();
+        let mut permissions = std::fs::metadata(&binary).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o755);
+        std::fs::set_permissions(&binary, permissions).unwrap();
+        let first = super::flatpak_catalogue_from(&binary, "tools", true).unwrap();
+        assert!(first.starts_with("org.example.Editor\tEditor"));
+        assert_eq!(
+            super::flatpak_catalogue_from(&binary, "tools", true).unwrap(),
+            first
+        );
+        let calls = std::fs::read_to_string(dir.path().join("calls")).unwrap();
+        let calls: Vec<_> = calls.lines().collect();
+        assert_eq!(calls.len(), 3);
+        assert!(calls[0].contains("--cached --user"));
+        assert!(!calls[1].contains("--cached"));
+        assert!(calls[1].contains("--user --app --arch"));
+        assert!(calls[2].contains("--cached --user"));
+        assert!(calls.iter().all(|call| call.ends_with("-- tools")));
+    }
+
+    fn catalogue_fixture(dir: &std::path::Path, script: &str) -> std::path::PathBuf {
+        let binary = dir.join("flatpak");
+        std::fs::write(&binary, format!("#!/bin/sh\n{script}\n")).unwrap();
+        let mut permissions = std::fs::metadata(&binary).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o755);
+        std::fs::set_permissions(&binary, permissions).unwrap();
+        binary
+    }
+
+    #[test]
+    fn catalogue_does_not_retry_verification_disabled_or_foreign_cache_errors() {
+        for diagnostic in [
+            "GPG verification failed",
+            "Remote tools is disabled",
+            "No cached summary for remote 'other'",
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let script = format!(
+                r#"printf '%s\n' "$*" >> "$(dirname "$0")/calls"
+echo "{diagnostic}" >&2
+exit 1"#
+            );
+            let binary = catalogue_fixture(dir.path(), &script);
+            let error = super::flatpak_catalogue_from(&binary, "tools", false).unwrap_err();
+            assert!(error.to_string().contains(diagnostic));
+            let calls = std::fs::read_to_string(dir.path().join("calls")).unwrap();
+            assert_eq!(calls.lines().count(), 1);
+            assert!(calls.contains("--cached --system"));
+        }
+    }
+
+    #[test]
+    fn cold_catalogue_preserves_verified_fetch_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let binary = catalogue_fixture(
+            dir.path(),
+            r#"
+case "$*" in
+  *--cached*) echo "No cached summary for remote 'tools'" >&2;;
+  *) echo "GPG verification failed" >&2;;
+esac
+exit 1
+"#,
+        );
+        assert!(
+            super::flatpak_catalogue_from(&binary, "tools", true)
+                .unwrap_err()
+                .to_string()
+                .contains("GPG verification failed")
+        );
+    }
+
+    #[test]
+    fn cold_catalogue_fetch_is_killed_at_the_shared_deadline() {
+        let dir = tempfile::tempdir().unwrap();
+        let binary = catalogue_fixture(
+            dir.path(),
+            r#"
+case "$*" in
+  *--cached*) echo "No cached summary for remote 'tools'" >&2; exit 1;;
+  *) sleep 10; touch "$(dirname "$0")/late-write";;
+esac
+"#,
+        );
+        let started = std::time::Instant::now();
+        assert!(
+            super::flatpak_catalogue_with_timeout(
+                &binary,
+                "tools",
+                true,
+                std::time::Duration::from_millis(100)
+            )
+            .is_err()
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        assert!(!dir.path().join("late-write").exists());
     }
 
     #[test]
@@ -1478,8 +1761,8 @@ esac
 
 #[cfg(test)]
 mod dev_override_tests {
-    use super::path_or_default;
-    use crate::dev_env::{LAUNCHER_BIN_ENV, dev_override_from};
+    use super::{LAUNCHER_BIN_ENV, path_or_default};
+    use package_store::dev_env::dev_override_from;
     use std::path::PathBuf;
 
     #[test]

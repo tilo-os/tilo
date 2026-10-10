@@ -67,6 +67,10 @@ on:
         description: "Independently reviewed SHA-256 of the firmware manifest"
         required: false
         default: ""
+      board_series_seed:
+        description: "Reviewed immutable Lenovo generation-1 image digest; required only to initialize its signed update series"
+        required: false
+        default: ""
       allow_public_lenovo_firmware:
         description: "Explicitly permit this Lenovo dispatch to publish bundled firmware through the public tilo owner"
         type: boolean
@@ -109,7 +113,7 @@ concurrency:
   # Generic generations are a single dense security series. Generic tag,
   # manual main and nightly publications share its lock so concurrent runs
   # cannot allocate the same generation; a scheduled run also holds it for its
-  # freshness check. The one-off Lenovo image uses fixed generation 1 and an
+  # freshness check. Lenovo has a separate dense signed generation series and an
   # immutable source-specific tag, so it serializes only with Lenovo reruns of
   # the same source. Full validation proofs allocate nothing and share one queue across refs,
   # so branch dispatches cannot fill the large fleet with duplicate VM work.
@@ -118,7 +122,7 @@ concurrency:
   # Epoch 2 retires the lock held by cancelled run 36454. Forgejo left one
   # failed release's ARM worker active after cancellation and queued later
   # signed releases behind it. The old run cannot enter promotion.
-  group: ${{ github.event_name == 'workflow_call' && format('tilo-os-dev-{0}', github.ref == 'refs/heads/main' && github.sha || github.ref) || (github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true' && github.event.inputs.hardware_profile == 'lenovo-83ed') && format('tilo-os-image-lenovo-{0}', github.sha) || (github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true' && github.event.inputs.hardware_profile == 'orangepi-3b-v2-1') && format('tilo-os-image-orangepi-{0}', github.sha) || (startsWith(github.ref, 'refs/tags/v') || (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true')))) && 'tilo-os-image-series-2' || 'tilo-os-image-validate-2' }}
+  group: ${{ github.event_name == 'workflow_call' && format('tilo-os-dev-{0}', github.ref == 'refs/heads/main' && github.sha || github.ref) || (github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true' && github.event.inputs.hardware_profile == 'lenovo-83ed') && 'tilo-os-image-lenovo-series' || (github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true' && github.event.inputs.hardware_profile == 'orangepi-3b-v2-1') && format('tilo-os-image-orangepi-{0}', github.sha) || (startsWith(github.ref, 'refs/tags/v') || (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true')))) && 'tilo-os-image-series-2' || 'tilo-os-image-validate-2' }}
   # A pull request's dev build is superseded by its next commit. Every main
   # commit's dev build runs at once, side by side; its moving tags only move
   # forward (os/dev/move-tag-forward.sh). Board jobs wait on a small runner
@@ -663,20 +667,8 @@ jobs:
           esac
           printf '%s  %s\n' "$COLLECTION_SHA256" "$work/apps.tar.gz" \
             | sha256sum --check --strict
-          found=0
-          while IFS= read -r member; do
-            if [[ $member == tapp/ || $member == runtime/ || $member == index.json || $member == SHA256SUMS ]]; then
-              continue
-            elif [[ $member =~ ^tapp/[A-Za-z0-9][A-Za-z0-9._+-]*\.tapp$ ]]; then
-              found=1
-            elif [[ $member =~ ^runtime(/[A-Za-z0-9][A-Za-z0-9._+-]*)+/?$ ]]; then
-              continue
-            else
-              printf 'unexpected app collection member: %s\n' "$member" >&2
-              exit 1
-            fi
-          done < <(tar -tzf "$work/apps.tar.gz")
-          [[ $found == 1 ]]
+          tar -tzf "$work/apps.tar.gz" \
+            | tools/apps/check-collection-members.sh --require-tapp "app collection"
           source="$(tar -xzOf "$work/apps.tar.gz" index.json | jq -r '.source // empty')"
           if [[ $source != "$COLLECTION_SOURCE" ]]; then
             if [[ $DEV_BUILD == true ]]; then
@@ -1395,8 +1387,14 @@ jobs:
           # does too, and the variable no longer changes anything.
           SERIES_GENESIS_REVISION: ${{ vars.TILO_OS_SERIES_GENESIS_REVISION }}
           HARDWARE_PROFILE: ${{ needs.plan.outputs.hardware-profile }}
+          TILO_BOARD_SERIES_SEED: ${{ github.event.inputs.board_series_seed }}
         run: |
           set -euo pipefail
+          if [[ ${HARDWARE_PROFILE:-generic} == lenovo-83ed ]]; then
+            gen="$(./os/dev/board-generation.sh)"
+            echo "TILO_GENERATION=$gen" >> "$GITHUB_ENV"
+            exit 0
+          fi
           if [[ ${HARDWARE_PROFILE:-generic} != generic ]]; then
             # Board artifacts have an immutable update reference and no automatic
             # upgrade series. Do not allocate a generic genN.
@@ -3532,7 +3530,9 @@ jobs:
           printf '%s' "$freshness" | jq -e --arg digest "$index_digest" \
             --arg source "$GITHUB_SHA" --argjson generation "$generation" --argjson now "$now" '
               [(if type == "array" then .[] else . end) | .payload | @base64d | fromjson | .predicate]
-              | any(.digest == $digest and .sourceRevision == $source
+              | any(.repository == "code.tilo.so/tilo/tilo"
+                    and .schema == "https://tilo.sh/security/release-freshness/v1"
+                    and .digest == $digest and .sourceRevision == $source
                     and .generation == $generation and .issuedAt <= $now
                     and .expiresAt > $now and (.expiresAt - .issuedAt) <= 604800)
             ' >/dev/null
@@ -3884,7 +3884,8 @@ jobs:
 
   # Board images stay outside the generic multiarch latest/genN series. This
   # publishes one immutable, source-bound ARM64 reference for an initial board
-  # installation; it intentionally has no mutable upgrade channel yet.
+  # installation. Lenovo also promotes its verified board-specific generation
+  # series; Orange Pi remains an immutable one-off board installation.
   promote-board:
     needs: [plan, build-and-push]
     if: needs.plan.outputs.publish == 'true' && needs.plan.outputs.hardware-profile != 'generic'
@@ -3932,8 +3933,9 @@ jobs:
           esac
           child=release-child/aarch64.json
           digest="$(jq -er --arg source "$GITHUB_SHA" '
-            select(.architecture == "aarch64" and .sourceRevision == $source and .generation == 1)
+            select(.architecture == "aarch64" and .sourceRevision == $source and (.generation | type == "number" and floor == . and . >= 1))
             | .digest | select(test("^sha256:[0-9a-f]{64}$"))' "$child")"
+          generation="$(jq -er .generation "$child")"
           image="code.tilo.so/tilo/tilo@$digest"
           target="code.tilo.so/tilo/tilo:$HARDWARE_PROFILE-$GITHUB_SHA"
           cosign verify --key keys/cosign.pub "$image" >/dev/null
@@ -3942,24 +3944,27 @@ jobs:
             --type https://tilo.sh/security/release-freshness/v1 "$image")"
           now="$(date -u +%s)"
           printf '%s' "$freshness" | jq -e --arg digest "$digest" \
-            --arg source "$GITHUB_SHA" --argjson now "$now" '
+            --arg source "$GITHUB_SHA" --argjson generation "$generation" --argjson now "$now" '
               [(if type == "array" then .[] else . end) | .payload | @base64d | fromjson | .predicate]
-              | any(.digest == $digest and .sourceRevision == $source
-                    and .generation == 1 and .issuedAt <= $now
+              | any(.repository == "code.tilo.so/tilo/tilo"
+                    and .schema == "https://tilo.sh/security/release-freshness/v1"
+                    and .digest == $digest and .sourceRevision == $source
+                    and .generation == $generation and .issuedAt <= $now
                     and .expiresAt > $now and (.expiresAt - .issuedAt) <= 604800)' >/dev/null
           provenance="$(cosign verify-attestation --key keys/cosign.pub --type slsaprovenance1 "$image")"
           printf '%s' "$provenance" | jq -e \
             --arg source "git+ssh://code.tilo.so/tilo/tilo@$GITHUB_SHA" \
-            --arg digest "$digest" --arg profile "$HARDWARE_PROFILE" \
+            --arg digest "$digest" --argjson generation "$generation" --arg profile "$HARDWARE_PROFILE" \
             --arg definition "$(sha256sum "os/hardware/profiles/$HARDWARE_PROFILE.json" | cut -d' ' -f1)" \
             --arg firmware "$FIRMWARE_CANDIDATE" \
             --arg manifest "$FIRMWARE_MANIFEST_SHA256" \
             --arg fex "$FEX_PAYLOAD_CANDIDATE" --arg guest "$WINDOWS_GUEST_CANDIDATE" '
               [(if type == "array" then .[] else . end) | .payload | @base64d | fromjson | .predicate]
               | any(.buildDefinition.internalParameters.expectedReleaseDigest == $digest
-                    and .buildDefinition.externalParameters.generation == 1
+                    and .buildDefinition.externalParameters.generation == $generation
                     and .buildDefinition.externalParameters.hardwareProfile == $profile
                     and .buildDefinition.externalParameters.architecture == "aarch64"
+                    and .buildDefinition.externalParameters.hardwareDefinitionSha256 == $definition
                     and .buildDefinition.externalParameters.firmwareManifestSha256 == $manifest
                     and any(.buildDefinition.resolvedDependencies[]?; .uri == $source)
                     and (if $profile == "lenovo-83ed" then
@@ -3994,6 +3999,20 @@ jobs:
           fi
           actual="$(skopeo inspect --raw "docker://$target" | sha256sum | awk '{print "sha256:" $1}')"
           [[ $actual == "$digest" ]] || { echo '::error::board tag digest changed'; exit 1; }
+          if [[ $HARDWARE_PROFILE == lenovo-83ed ]]; then
+            # Tags are discovery hints; the resolver authenticates the exact
+            # image signature, profile-bound provenance and dense history.
+            series="code.tilo.so/tilo/tilo:lenovo-83ed-gen$generation"
+            if skopeo inspect --raw "docker://$series" > series-manifest.json 2> series-error.log; then
+              existing="sha256:$(sha256sum series-manifest.json | cut -d' ' -f1)"
+              [[ $existing == "$digest" ]] || { echo '::error::board generation already owns different bytes'; exit 1; }
+            elif grep -Eq 'manifest unknown|MANIFEST_UNKNOWN|name unknown|NAME_UNKNOWN' series-error.log; then
+              skopeo copy --preserve-digests "docker://$image" "docker://$series"
+            else
+              cat series-error.log >&2; exit 1
+            fi
+            skopeo copy --preserve-digests "docker://$image" docker://code.tilo.so/tilo/tilo:lenovo-83ed-latest
+          fi
           echo "::notice::CI-built and signed $HARDWARE_PROFILE ARM64 image: $image; immutable update reference: $target"
 
   # Integration images remain unsigned and outside the production tilo
@@ -4005,7 +4024,8 @@ jobs:
   promote-integration:
     needs: [plan, build-and-push]
     if: needs.plan.outputs.publish != 'true' && needs.plan.outputs.signed-development-board != 'true' && needs.plan.outputs.skip != 'true' && github.ref == 'refs/heads/main'
-    runs-on: runner
+    # Manifest-only promotion must not wait behind native compilation.
+    runs-on: runner-quality
     timeout-minutes: 60
     steps:
       - name: Install OCI index tooling

@@ -135,7 +135,7 @@ D2 = 2
 
 [apps.remote]
 D1 = 1
-D2 = 5
+D2 = 4
 
 [apps.settings]
 D1 = 4
@@ -159,10 +159,10 @@ D1 = 1
 D2 = 7
 
 [apps.terminal]
-D1 = 5
-D2 = 5
-R1 = 50
-R2 = 56
+D1 = 4
+D2 = 4
+R1 = 45
+R2 = 54
 R3 = 3
 
 [apps.totp]
@@ -213,7 +213,7 @@ R1 = 18
 W3 = 11
 
 [sdk.tilo-ui]
-R1 = 292
+R1 = 290
 W1 = 18
 W2 = 2
 W3 = 77

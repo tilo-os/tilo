@@ -1,0 +1,290 @@
+# Byte budgets for the signed .tapp of every app, per architecture, and the
+# fleet ceilings over them. tools/perf/tapp_size_ratchet.py reads this file.
+#
+# - Release / apps fails when a tapp it has just packaged is over its app's
+#   budget, which is the `bytes` below plus every raise under raises/.
+# - Perf / scheduled fails when a published app is over its budget, or when
+#   the median (p50), p90 or max of the apps in the registry is over its
+#   fleet ceiling.
+# - CI / fast quality fails when a budget grows without a raise file new in
+#   the same change, and when the apps below are not exactly the default
+#   collection (dist/apps/app-collections.toml).
+#
+# A budget is a measurement plus `headroom`, rounded up to 64 KiB. A commit
+# that adds a few bytes passes, and real growth fails. Budgets only decrease.
+# Intended growth adds raises/<change>.toml, one file per change, so
+# concurrent changes never edit the same line. When an app shrinks, both
+# gates print the lower budget to commit here. DEVELOPMENT.md ("App package
+# size") has the steps.
+#
+# The population is the default collection's apps. The runtime package
+# (so.tilo.runtime, measured as the runtime's own KPI, TIL-604) and the
+# runtime and provider stubs (so.tilo.runtime.chromium, so.tilo.runtime.signal,
+# so.tilo.signal-provider, 5-39 KB each) are not apps, and counting them would
+# pull the median down. so.tilo.image-editor is not counted: the registry still
+# lists it, but its source left the repository in 85b967601d. The nightly
+# names every package it leaves out.
+headroom = 0.01
+architectures = ["x86_64", "aarch64"]
+
+# The KPI targets: "Performance and cost KPIs" (Linear af384e878293), "App
+# package size", in decimal bytes. They may only be lowered.
+[fleet]
+p50 = 2000000
+p90 = 4000000
+max = 6000000
+
+# Where the fleet does not meet a target yet, the nightly holds it to today's
+# value plus headroom instead (registry sequence 805, 2026-10-09). An interim
+# ceiling only decreases, and it is removed once the target holds; the nightly
+# says when.
+[fleet.interim.x86_64]
+p50 = 2228224   # 2,150,400 (browser)
+p90 = 4784128   # 4,696,576 (imager)
+max = 6094848   # 6,015,488 (settings)
+
+[fleet.interim.aarch64]
+p90 = 4521984   # 4,447,232 (osk)
+
+# Seeded from registry sequence 805 (2026-10-09). That registry state includes
+# #3374 (OS dictation) and #3969 (TIL-632, the resource action cache), the two
+# intended growth steps TIL-703 found. The exception is so.tilo.code-editor:
+# the registry still served a tapp built at 0.1.76490, so its budget is the
+# current source packaged by Release / apps runs 90043 (x86_64, 2,963,456 B)
+# and 90066 (aarch64, 2,706,432 B).
+
+[apps."so.tilo.agent"]
+x86_64 = 5242880
+aarch64 = 4718592
+
+[apps."so.tilo.api-tester"]
+x86_64 = 2424832
+aarch64 = 2228224
+
+[apps."so.tilo.backups"]
+x86_64 = 1835008
+aarch64 = 1703936
+
+[apps."so.tilo.browser"]
+x86_64 = 2228224
+aarch64 = 2031616
+
+[apps."so.tilo.calculator"]
+x86_64 = 1245184
+aarch64 = 1114112
+
+[apps."so.tilo.calendar"]
+x86_64 = 3342336
+aarch64 = 2949120
+
+[apps."so.tilo.camera"]
+x86_64 = 2359296
+aarch64 = 2162688
+
+[apps."so.tilo.canvas"]
+x86_64 = 5505024
+aarch64 = 4849664
+
+[apps."so.tilo.chat"]
+x86_64 = 4587520
+aarch64 = 4128768
+
+[apps."so.tilo.chip-design"]
+x86_64 = 2359296
+aarch64 = 2162688
+
+[apps."so.tilo.clocks"]
+x86_64 = 2097152
+aarch64 = 1900544
+
+[apps."so.tilo.code-editor"]
+x86_64 = 3014656
+aarch64 = 2752512
+
+[apps."so.tilo.contacts"]
+x86_64 = 2752512
+aarch64 = 2555904
+
+[apps."so.tilo.containers"]
+x86_64 = 2228224
+aarch64 = 2031616
+
+[apps."so.tilo.db-client"]
+x86_64 = 5242880
+aarch64 = 4849664
+
+[apps."so.tilo.diffmerge"]
+x86_64 = 1507328
+aarch64 = 1376256
+
+[apps."so.tilo.disk-usage"]
+x86_64 = 1114112
+aarch64 = 1048576
+
+[apps."so.tilo.disks"]
+x86_64 = 1835008
+aarch64 = 1769472
+
+[apps."so.tilo.ebook"]
+x86_64 = 3473408
+aarch64 = 3080192
+
+[apps."so.tilo.feeds"]
+x86_64 = 2228224
+aarch64 = 2097152
+
+[apps."so.tilo.file-explorer"]
+x86_64 = 4718592
+aarch64 = 4390912
+
+[apps."so.tilo.firewall"]
+x86_64 = 1966080
+aarch64 = 1769472
+
+[apps."so.tilo.git-client"]
+x86_64 = 4456448
+aarch64 = 4063232
+
+[apps."so.tilo.hex-editor"]
+x86_64 = 1179648
+aarch64 = 1048576
+
+[apps."so.tilo.hot-reload-demo"]
+x86_64 = 1048576
+aarch64 = 983040
+
+[apps."so.tilo.imager"]
+x86_64 = 4784128
+aarch64 = 4325376
+
+[apps."so.tilo.logs"]
+x86_64 = 1507328
+aarch64 = 1376256
+
+[apps."so.tilo.mail"]
+x86_64 = 4521984
+aarch64 = 4128768
+
+[apps."so.tilo.maps"]
+x86_64 = 1900544
+aarch64 = 1703936
+
+[apps."so.tilo.messages"]
+x86_64 = 2031616
+aarch64 = 1835008
+
+[apps."so.tilo.monitor"]
+x86_64 = 1703936
+aarch64 = 1638400
+
+[apps."so.tilo.music"]
+x86_64 = 5046272
+aarch64 = 4587520
+
+[apps."so.tilo.notes"]
+x86_64 = 3932160
+aarch64 = 3538944
+
+[apps."so.tilo.osk"]
+x86_64 = 4653056
+aarch64 = 4521984
+
+[apps."so.tilo.passwords"]
+x86_64 = 1703936
+aarch64 = 1572864
+
+[apps."so.tilo.pdf-viewer"]
+x86_64 = 3080192
+aarch64 = 2752512
+
+[apps."so.tilo.photos"]
+x86_64 = 3080192
+aarch64 = 2752512
+
+[apps."so.tilo.print-centre"]
+x86_64 = 1835008
+aarch64 = 1703936
+
+[apps."so.tilo.publisher"]
+x86_64 = 1310720
+aarch64 = 1245184
+
+[apps."so.tilo.remote"]
+x86_64 = 3604480
+aarch64 = 3211264
+
+[apps."so.tilo.scratchpad"]
+x86_64 = 983040
+aarch64 = 917504
+
+[apps."so.tilo.settings"]
+x86_64 = 6094848
+aarch64 = 5439488
+
+[apps."so.tilo.sheets"]
+x86_64 = 1966080
+aarch64 = 1769472
+
+[apps."so.tilo.shortcuts"]
+x86_64 = 2752512
+aarch64 = 2490368
+
+[apps."so.tilo.slides"]
+x86_64 = 3801088
+aarch64 = 3407872
+
+[apps."so.tilo.snippets"]
+x86_64 = 1638400
+aarch64 = 1572864
+
+[apps."so.tilo.speed-test"]
+x86_64 = 1310720
+aarch64 = 1179648
+
+[apps."so.tilo.store"]
+x86_64 = 2686976
+aarch64 = 2490368
+
+[apps."so.tilo.terminal"]
+x86_64 = 1703936
+aarch64 = 1572864
+
+[apps."so.tilo.themes"]
+x86_64 = 1835008
+aarch64 = 1638400
+
+[apps."so.tilo.totp"]
+x86_64 = 2097152
+aarch64 = 1966080
+
+[apps."so.tilo.tube"]
+x86_64 = 4063232
+aarch64 = 3735552
+
+[apps."so.tilo.typst-editor"]
+x86_64 = 1441792
+aarch64 = 1376256
+
+[apps."so.tilo.video-editor"]
+x86_64 = 2818048
+aarch64 = 2555904
+
+[apps."so.tilo.video-player"]
+x86_64 = 1376256
+aarch64 = 1310720
+
+[apps."so.tilo.vpn"]
+x86_64 = 1572864
+aarch64 = 1441792
+
+[apps."so.tilo.weather"]
+x86_64 = 1572864
+aarch64 = 1441792
+
+[apps."so.tilo.windows"]
+x86_64 = 1835008
+aarch64 = 1703936
+
+[apps."so.tilo.word-processor"]
+x86_64 = 3801088
+aarch64 = 3407872

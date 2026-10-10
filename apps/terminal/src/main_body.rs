@@ -1,4 +1,5 @@
 use ui::ColorCompat;
+use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 use ui::{
     Theme,
@@ -278,7 +279,7 @@ fn set_terminal_disconnected(disconnected: &AtomicBool, message: &Mutex<String>,
 /// visible text, accessibility, and action availability. The wake handle
 /// coalesces wakes the host has not delivered yet; a host that gave the
 /// terminal none pumps it itself (`needs_animation_frame`).
-fn request_terminal_wake(waker: &Mutex<ui::WakeHandle>) {
+pub(crate) fn request_terminal_wake(waker: &Mutex<ui::WakeHandle>) {
     if let Ok(waker) = waker.lock() {
         waker.wake();
     }
@@ -509,10 +510,15 @@ pub struct TerminalWidget {
     /// Local input/output invalidates deferred speech even at the same caret.
     /// Exhaustion fails closed rather than reusing an epoch.
     input_epoch: std::cell::Cell<u64>,
+    native_editor: Option<crate::native_editor::Client>,
+    native_capture: Option<crate::native_editor::Capture>,
+    native_history: Option<(ui::tilo_actions::InvocationId, ui::text_input::Receipt)>,
+    native_ime: Option<ui::text_input::Receipt>,
+    native_ime_error: Option<ui::text_input::Failure>,
+    native_read_only: bool,
     pty_write: Arc<Mutex<Box<dyn Write + Send>>>,
     pty_master: Arc<Mutex<Box<dyn MasterPty + Send>>>,
-    #[cfg(unix)]
-    service_lifetime: Option<std::os::unix::net::UnixStream>,
+    service_lifetime: Option<runtime_portal::pending_connection::SessionLifetime>,
     output_rx: Receiver<Vec<u8>>,
     /// At most one reader chunk that did not fit the current bounded pump.
     /// Retaining it locally preserves byte ordering without an unbounded
@@ -752,6 +758,19 @@ pub struct TerminalWidget {
 }
 
 impl TerminalWidget {
+    pub(crate) fn native_editor_read_only_changed(&mut self, read_only: bool) {
+        if self.native_read_only != read_only {
+            self.native_read_only = read_only;
+            self.invalidate_deferred_input();
+            {
+                self.native_capture = None;
+                if let Some(editor) = &self.native_editor {
+                    editor.revoke();
+                }
+            }
+        }
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "terminal MainBody wires many host services at construction"
@@ -770,9 +789,14 @@ impl TerminalWidget {
         Self {
             rect: Rect::ZERO,
             input_epoch: std::cell::Cell::new(0),
+            native_editor: None,
+            native_capture: None,
+            native_history: None,
+            native_ime: None,
+            native_ime_error: None,
+            native_read_only: false,
             pty_write: writer,
             pty_master: master,
-            #[cfg(unix)]
             service_lifetime: None,
             output_rx,
             deferred_output: std::cell::Cell::new(None),
@@ -955,6 +979,70 @@ impl TerminalWidget {
         )
     }
 
+    fn status_banner_message(&self) -> Option<String> {
+        if self.is_disconnected() {
+            return Some(self.disconnected_message());
+        }
+        if let Some(failure) = self.native_ime_error {
+            use ui::text_input::Failure;
+            let key = match failure {
+                Failure::Busy => "terminal-editor-busy",
+                Failure::Rejected => "terminal-editor-rejected",
+                Failure::Unknown | Failure::Retired => "terminal-editor-unconfirmed",
+            };
+            return Some(crate::i18n::t(key));
+        }
+        None
+    }
+
+    fn poll_native_ime(&mut self) -> bool {
+        if let Some(result) = self
+            .native_ime
+            .as_ref()
+            .and_then(ui::text_input::Receipt::poll)
+        {
+            self.native_ime = None;
+            // A second refused commit is a different input; the first ACK
+            // must not erase its visible refusal. Fresh admission clears it.
+            self.native_ime_error = result.err().or(self.native_ime_error);
+            return true;
+        }
+        false
+    }
+
+    fn commit_ordinary_ime(&mut self, text: &str) {
+        self.poll_native_ime();
+        if self.native_ime.is_some() || self.native_read_only {
+            self.native_ime_error = Some(if self.native_read_only {
+                ui::text_input::Failure::Rejected
+            } else {
+                ui::text_input::Failure::Busy
+            });
+            return;
+        }
+        if self.native_read_only {
+            return;
+        }
+        if self.ime_requires_deferred_ack() {
+            let receipt = self
+                .native_editor
+                .as_ref()
+                .and_then(|editor| {
+                    editor
+                        .capture()
+                        .map(|(capture, _)| editor.commit(capture, text.into()))
+                })
+                .unwrap_or_else(|| {
+                    ui::text_input::Receipt::failed(ui::text_input::Failure::Rejected)
+                });
+            self.native_ime_error = None;
+            self.native_ime = Some(receipt);
+            self.poll_native_ime();
+            return;
+        }
+        self.write_input(text.as_bytes());
+    }
+
     /// A compact visual lifecycle state. The detailed transport cause stays in
     /// the accessible description/live region, where it is neither clipped at
     /// 200% text scale nor mistaken for a recoverable command prompt.
@@ -1048,6 +1136,13 @@ impl TerminalWidget {
         use crate::resource::TerminalEffect as E;
         use ui::framework::EffectStatus;
         let mut statuses = Vec::new();
+        if self.inspect_editor().get("available") != Some(&serde_json::Value::Bool(true)) {
+            statuses.push(EffectStatus::unavailable(
+                E::REPLACE_EDITOR_SELECTION,
+                "native_editor_unavailable",
+                "No public editable field is available in this session",
+            ));
+        }
         if let Some((code, reason)) = self.input_unavailable() {
             statuses.extend([
                 EffectStatus::unavailable(E::SEND, code, reason),
@@ -1095,6 +1190,7 @@ impl TerminalWidget {
         let (lifecycle, startup_reason) = match &self.sessions.state {
             OpenState::Fixed => ("fixed", None),
             OpenState::Unopened => ("unopened", None),
+            OpenState::Opening => ("opening", None),
             OpenState::Open => ("open", None),
             OpenState::AwaitingAllow => ("awaiting_allow", None),
             OpenState::Failed(reason) => ("failed", Some(reason.as_str())),
@@ -1720,6 +1816,8 @@ impl TerminalWidget {
     /// the compositor's tile host) and `Widget::sync`. Returns whether any
     /// bytes were processed this call.
     fn pump(&mut self) -> bool {
+        let open_activity = self.poll_session_open();
+        let native_activity = self.poll_native_ime() || open_activity;
         // Drain every queued read and coalesce them into one buffer, then feed
         // the parser once. The reader thread hands over one `Vec` per ~8 KB
         // `read`, and a burst (`cat` of a big file, a full-screen redraw)
@@ -1760,7 +1858,7 @@ impl TerminalWidget {
             // Fresh output snaps the viewport back to the live bottom.
             self.scroll_offset = 0;
         }
-        activity
+        activity || native_activity
     }
 
     /// The screen this terminal shows. Test accessor.
@@ -1782,6 +1880,8 @@ impl TerminalWidget {
     /// screen; the session record follows it at the next sync.
     pub fn feed(&mut self, bytes: &[u8]) {
         if !bytes.is_empty() {
+            // A native edit's own redisplay must preserve its acknowledged
+            // checkpoint. The producer fences actual Readline state changes.
             self.invalidate_deferred_input();
         }
         // Output with no process attached (a scenario, a test) starts the
@@ -1907,6 +2007,9 @@ impl TerminalWidget {
             return Err("terminal input is unavailable because its PTY writer stopped".to_string());
         };
         if !bytes.is_empty() {
+            if let Some(editor) = &self.native_editor {
+                editor.revoke();
+            }
             self.invalidate_deferred_input();
         }
         let failed = writer.write_all(bytes).is_err() || writer.flush().is_err();
@@ -2050,12 +2153,76 @@ impl TerminalWidget {
             && matches!(
                 effect,
                 E::Send { .. }
+                    | E::ReplaceEditorSelection { .. }
                     | E::Run { .. }
                     | E::Paste { .. }
                     | E::PastePrimary { .. }
                     | E::Interrupt
                     | E::Clear
             )
+    }
+
+    pub(crate) fn inspect_editor(&self) -> serde_json::Value {
+        if let Some(snapshot) = self
+            .native_editor
+            .as_ref()
+            .and_then(crate::native_editor::Client::snapshot)
+            && self.focused
+            && !self.context_menu.is_open()
+            && !self.native_read_only
+            && !self.alt_active
+            && self.input_unavailable().is_none()
+        {
+            return serde_json::json!({ "available": true, "session": self.local_session, "protocol": runtime_portal::editor::VERSION, "lease": serde_json::to_string(&snapshot.lease).ok(), "can_undo": snapshot.can_undo, "can_redo": snapshot.can_redo });
+        }
+        serde_json::json!({ "available": false })
+    }
+
+    pub(crate) fn replace_editor_selection(
+        &mut self,
+        session: &str,
+        lease: &str,
+        text: String,
+        reply: ui::framework::EffectReply,
+    ) -> Result<(), String> {
+        {
+            if self.native_read_only
+                || (self
+                    .sessions
+                    .target
+                    .as_ref()
+                    .is_some_and(crate::target::SessionTarget::is_host)
+                    && Requester::current() == Requester::Agent)
+                || !self.focused
+                || self.context_menu.is_open()
+                || self.alt_active
+                || self.input_unavailable().is_some()
+                || self.local_session.as_deref() != Some(session)
+                || lease.len() > 512
+                || text.len() > runtime_portal::editor::TEXT_BYTES
+            {
+                return Err("The original local editor is unavailable".into());
+            }
+            let lease = serde_json::from_str(lease).map_err(|_| "Invalid original editor lease")?;
+            let editor = self
+                .native_editor
+                .as_ref()
+                .ok_or("No qualified native editor is available")?;
+            if editor.snapshot().is_none() {
+                return Err("No public native editor is available".into());
+            }
+            self.native_capture = None;
+            editor.effect(
+                runtime_portal::editor::Request::Replace {
+                    lease,
+                    transaction: 1,
+                    text,
+                },
+                runtime_portal::editor::Status::Applied,
+                reply,
+            );
+            Ok(())
+        }
     }
 
     /// # Errors
@@ -2072,6 +2239,11 @@ impl TerminalWidget {
             E::InspectSession => {
                 return Err(
                     "Inspect session is answered by the resource's read-only handler".into(),
+                );
+            }
+            E::InspectEditor | E::ReplaceEditorSelection { .. } => {
+                return Err(
+                    "Native editor operations require their acknowledged resource handler".into(),
                 );
             }
             E::Send { text } => {
@@ -2171,7 +2343,9 @@ impl TerminalWidget {
                 .is_some_and(crate::target::SessionTarget::is_host)
                 && matches!(
                     self.sessions.state,
-                    crate::sessions::OpenState::Open | crate::sessions::OpenState::AwaitingAllow
+                    crate::sessions::OpenState::Open
+                        | crate::sessions::OpenState::Opening
+                        | crate::sessions::OpenState::AwaitingAllow
                 );
             if !(already_selected || self.request_device_shell()) {
                 return Err("The device shell could not open".into());
@@ -2452,7 +2626,8 @@ impl Widget for TerminalWidget {
     ui::provides!(
         dyn Findable,
         dyn ui::AppWidget,
-        dyn ui::presence::capability::PublishesPresence
+        dyn ui::presence::capability::PublishesPresence,
+        dyn ui::undo::LocalUndo
     );
 
     fn test_id(&self) -> Option<&str> {
@@ -2530,31 +2705,18 @@ impl Widget for TerminalWidget {
         // `TaffyTreeExt` doc comment in `ui::widget::mod`), and
         // `Widget::build_layout` returns a bare `NodeId` across every
         // implementor, so there is nowhere to surface a theoretical error.
-        #[allow(
-            clippy::unwrap_used,
-            reason = "taffy::TaffyTree::new_leaf cannot return Err; see ui::widget::TaffyTreeExt"
-        )]
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let style = Style {
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::percent(1.0),
+            },
+            ..Default::default()
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        let rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        let rect = ui::widget::layout_rect(taffy, node, origin);
         self.set_geometry(rect);
     }
 
@@ -2767,13 +2929,13 @@ impl Widget for TerminalWidget {
                     ctx.handled,
                 );
             }
-            // Preedit is owned by the platform IME and must not be sent to a
-            // terminal process. Once it commits, however, it is ordinary
-            // UTF-8 terminal input just like `KeyEvent::text`.
+            // Preedit stays with the platform. A qualified public editor uses
+            // the same literal, acknowledged replacement as dictation. Other
+            // ordinary IME input retains the terminal's normal PTY semantics.
             WindowEvent::Ime(winit::event::Ime::Commit(text))
                 if self.focused && !text.is_empty() =>
             {
-                self.write_input(text.as_bytes());
+                self.commit_ordinary_ime(text);
                 self.scroll_offset = 0;
                 *ctx.handled = true;
             }
@@ -2803,6 +2965,15 @@ impl Widget for TerminalWidget {
     }
 
     fn set_focus(&mut self, focused: bool) {
+        if self.focused != focused {
+            self.invalidate_deferred_input();
+            {
+                self.native_capture = None;
+                if let Some(editor) = &self.native_editor {
+                    editor.revoke();
+                }
+            }
+        }
         self.focused = focused;
     }
 
@@ -2829,12 +3000,75 @@ impl Widget for TerminalWidget {
     }
 
     fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
-        (self.focused && self.input_unavailable().is_none())
+        if self.focused
+            && !self.context_menu.is_open()
+            && !self.native_read_only
+            && !self.alt_active
+            && self.input_unavailable().is_none()
+            && self
+                .native_editor
+                .as_ref()
+                .and_then(crate::native_editor::Client::snapshot)
+                .is_some()
+        {
+            return Some(winit::window::ImePurpose::Normal);
+        }
+        (self.focused && !self.context_menu.is_open() && self.input_unavailable().is_none())
             .then_some(winit::window::ImePurpose::Terminal)
+    }
+
+    fn ime_requires_deferred_ack(&self) -> bool {
+        self.ime_purpose() == Some(winit::window::ImePurpose::Normal)
+    }
+
+    fn start_deferred_text(&mut self) -> Option<ui::text_input::Receipt> {
+        {
+            if !self.ime_requires_deferred_ack() {
+                return None;
+            }
+            let (capture, receipt) = self.native_editor.as_ref()?.capture()?;
+            self.native_capture = Some(capture);
+            Some(receipt)
+        }
+    }
+
+    fn commit_deferred_text(&mut self, text: &str) -> Option<ui::text_input::Receipt> {
+        {
+            use ui::text_input::{Failure, Receipt};
+            let editor = self.native_editor.as_ref()?;
+            let Some(capture) = self.native_capture.take() else {
+                return Some(Receipt::failed(Failure::Rejected));
+            };
+            if self.native_read_only
+                || !self.focused
+                || self.context_menu.is_open()
+                || self.alt_active
+                || self.input_unavailable().is_some()
+            {
+                return Some(Receipt::failed(Failure::Rejected));
+            }
+            Some(editor.commit(capture, text.into()))
+        }
     }
 
     fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
         self.ime_purpose()?;
+        if let Some(snapshot) = self
+            .native_editor
+            .as_ref()
+            .and_then(crate::native_editor::Client::snapshot)
+        {
+            let lease = snapshot.lease;
+            return Some(ui::ime::edit_fingerprint(
+                &format!(
+                    "{:?}:{}:{}",
+                    lease.incarnation, lease.generation, lease.revision
+                ),
+                lease.anchor as usize,
+                lease.focus as usize,
+                key,
+            ));
+        }
         // The transcript is read-only; the live process input is not. Bind
         // deferred input to its screen/position without copying output or
         // exposing shell contents to the recognizer.
@@ -2896,11 +3130,11 @@ impl Widget for TerminalWidget {
         if let Some(menu) = self.context_menu_accessibility() {
             transcript.children.push(menu);
         }
-        if self.is_disconnected() {
+        if let Some(message) = self.status_banner_message() {
             transcript.children.push(
                 AccessNode::new(Role::StaticText)
                     .with_hashed_key("terminal-lifecycle")
-                    .with_name(self.disconnected_message())
+                    .with_name(message)
                     .with_live(Politeness::Assertive),
             );
         }
@@ -3018,6 +3252,103 @@ impl Widget for TerminalWidget {
                     }
                 }
             }
+        }
+    }
+}
+
+impl ui::undo::LocalUndo for TerminalWidget {
+    fn local_undo_is_deferred(&self) -> bool {
+        self.native_editor.is_some()
+    }
+    fn local_undo_status(&self) -> Option<ui::undo::LocalUndoStatus> {
+        {
+            if !self.focused || self.native_read_only || self.native_editor.is_none() {
+                return None;
+            }
+            Some(
+                self.native_editor
+                    .as_ref()
+                    .and_then(crate::native_editor::Client::snapshot)
+                    .map_or(ui::undo::LocalUndoStatus::Pending, |snapshot| {
+                        ui::undo::LocalUndoStatus::Ready(ui::undo::UndoStatus {
+                            can_undo: snapshot.can_undo,
+                            can_redo: snapshot.can_redo,
+                            ..Default::default()
+                        })
+                    }),
+            )
+        }
+    }
+    fn handle_local_undo_request(&mut self, request: ui::undo::UndoRequest) -> bool {
+        if self.focused
+            && !self.native_read_only
+            && let Some(editor) = &self.native_editor
+        {
+            if editor.snapshot().is_none() {
+                return false;
+            }
+            self.native_capture = None;
+            let _ = editor.history(request);
+            return true;
+        }
+
+        false
+    }
+    fn start_local_undo_operation(
+        &mut self,
+        invocation: ui::tilo_actions::InvocationId,
+        request: ui::undo::UndoRequest,
+    ) -> Result<bool, String> {
+        {
+            if !self.focused || self.native_read_only {
+                return Ok(false);
+            }
+            let Some(editor) = &self.native_editor else {
+                return Ok(false);
+            };
+            if let Some((original, _)) = &self.native_history {
+                return if *original == invocation {
+                    Ok(true)
+                } else {
+                    Err("An original editor history operation is pending".into())
+                };
+            }
+            self.native_capture = None;
+            self.native_history = Some((invocation, editor.history(request)));
+            Ok(true)
+        }
+    }
+    fn poll_local_undo_operation(
+        &mut self,
+        invocation: ui::tilo_actions::InvocationId,
+        cancellation_requested: bool,
+    ) -> Option<ui::tilo_actions::InvocationUpdate> {
+        {
+            let (original, receipt) = self.native_history.as_ref()?;
+            if *original != invocation {
+                return None;
+            }
+            if cancellation_requested {
+                receipt.cancel();
+            }
+            let result = receipt.poll()?;
+            self.native_history = None;
+            Some(match result {
+                Ok(None) => ui::tilo_actions::InvocationUpdate::Succeeded {
+                    invocation,
+                    output: ui::tilo_actions::ActionOutput::default(),
+                },
+                _ => ui::tilo_actions::InvocationUpdate::Failed {
+                    invocation,
+                    error: ui::tilo_actions::ActionFailure {
+                        code: "native_history_unconfirmed".into(),
+                        message: "The original editor did not acknowledge history restoration"
+                            .into(),
+                        details: None,
+                        retryable: false,
+                    },
+                },
+            })
         }
     }
 }
@@ -3548,9 +3879,11 @@ impl TerminalWidget {
         // The header with the session's target comes first.
         let mut y = self.rect.y0 + self.header_h();
         self.banner_rect = Rect::ZERO;
-        if self.is_disconnected() && self.rect.width() > gutter * 2.0 {
+        if let Some(message) = self.status_banner_message()
+            && self.rect.width() > gutter * 2.0
+        {
             let width = self.rect.width() - gutter * 2.0;
-            let height = Self::banner_height(&self.disconnected_message(), width, theme, tr);
+            let height = Self::banner_height(&message, width, theme, tr);
             self.banner_rect = Rect::new(
                 self.rect.x0 + gutter,
                 y + gutter,
@@ -3581,13 +3914,11 @@ impl TerminalWidget {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        if self.banner_rect.width() > 0.0 {
-            // Persistent, not a toast: when a shell exits there is no live
-            // process to recover by retrying, so both sighted users and
-            // assistive technology need a stable explanation beside the
-            // preserved transcript. The accessibility tree carries the same
-            // message as a live region.
-            let message = self.disconnected_message();
+        if self.banner_rect.width() > 0.0
+            && let Some(message) = self.status_banner_message()
+        {
+            // Transport and unconfirmed edits remain visible beside the
+            // transcript and through the same accessible live region.
             let mut ctx = PaintCtx::new(scene, transform, tr, theme);
             Banner::paint(
                 &mut ctx,
@@ -3703,6 +4034,12 @@ impl TerminalWidget {
         visible_rows: usize,
     ) {
         let grid_rect = self.grid_rect;
+        let PaintCtx {
+            scene,
+            transform,
+            text,
+            theme,
+        } = ctx.reborrow();
         for (y, line_text) in self
             .grid
             .iter()
@@ -3715,49 +4052,75 @@ impl TerminalWidget {
             let Some(attrs) = self.grid_attrs.get(attrs_idx) else {
                 continue;
             };
+            // Each row on screen is a damage part: typing repaints its row.
+            // Glyphs may overhang their row by up to a row above and below,
+            // and the widget's width by up to two cells.
+            let band = Rect::new(
+                self.rect.x0 - 2.0 * self.char_w,
+                py - self.char_h,
+                self.rect.x1 + 2.0 * self.char_w,
+                py + 2.0 * self.char_h,
+            );
+            let key = ui::scene_parts::PartKey::new("terminal.row", y);
+            let bounds = vec![transform.transform_rect_bbox(band)];
+            ui::scene_parts::part(scene, key, bounds, |scene| {
+                let mut ctx = PaintCtx::new(scene, transform, text, theme);
+                self.draw_cell_row(&mut ctx, cell_style, line_text, attrs, py);
+            });
+        }
+    }
 
-            let mut current_run = String::new();
-            let mut current_attr: Option<Attr> = None;
-            let mut run_start_cell_idx = 0;
+    /// Paint one row of cells, run by run of shared attributes, with its top
+    /// at `py`.
+    fn draw_cell_row(
+        &self,
+        ctx: &mut PaintCtx<'_>,
+        cell_style: &TextStyle,
+        line_text: &str,
+        attrs: &[Attr],
+        py: f64,
+    ) {
+        let mut current_run = String::new();
+        let mut current_attr: Option<Attr> = None;
+        let mut run_start_cell_idx = 0;
 
-            let mut cell_idx = 0;
-            for c in line_text.chars() {
-                let c_w = c.width().unwrap_or(1);
-                if cell_idx >= self.width {
-                    break;
-                }
-                let attr = attrs.get(cell_idx).copied().unwrap_or_default();
-
-                if Some(attr) != current_attr {
-                    if !current_run.is_empty()
-                        && let Some(prev_attr) = current_attr
-                    {
-                        self.draw_run(
-                            ctx,
-                            cell_style,
-                            &current_run,
-                            prev_attr,
-                            Point::new(run_start_cell_idx as f64 * self.char_w, py),
-                        );
-                    }
-                    current_run.clear();
-                    current_attr = Some(attr);
-                    run_start_cell_idx = cell_idx;
-                }
-                current_run.push(c);
-                cell_idx += c_w;
+        let mut cell_idx = 0;
+        for c in line_text.chars() {
+            let c_w = c.width().unwrap_or(1);
+            if cell_idx >= self.width {
+                break;
             }
-            if !current_run.is_empty()
-                && let Some(prev_attr) = current_attr
-            {
-                self.draw_run(
-                    ctx,
-                    cell_style,
-                    &current_run,
-                    prev_attr,
-                    Point::new(run_start_cell_idx as f64 * self.char_w, py),
-                );
+            let attr = attrs.get(cell_idx).copied().unwrap_or_default();
+
+            if Some(attr) != current_attr {
+                if !current_run.is_empty()
+                    && let Some(prev_attr) = current_attr
+                {
+                    self.draw_run(
+                        ctx,
+                        cell_style,
+                        &current_run,
+                        prev_attr,
+                        Point::new(run_start_cell_idx as f64 * self.char_w, py),
+                    );
+                }
+                current_run.clear();
+                current_attr = Some(attr);
+                run_start_cell_idx = cell_idx;
             }
+            current_run.push(c);
+            cell_idx += c_w;
+        }
+        if !current_run.is_empty()
+            && let Some(prev_attr) = current_attr
+        {
+            self.draw_run(
+                ctx,
+                cell_style,
+                &current_run,
+                prev_attr,
+                Point::new(run_start_cell_idx as f64 * self.char_w, py),
+            );
         }
     }
 
@@ -3785,14 +4148,31 @@ impl TerminalWidget {
         // Absolute grid row of the cursor → visible row (may be scrolled off).
         let cursor_abs = self.grid.len().saturating_sub(self.height) + self.cursor_y;
         let scrolled_back = !self.alt_active && scroll > 0;
-        if self.modes.cursor_visible
+        let shown = self.modes.cursor_visible
             && !scrolled_back
             && cursor_abs >= start_y
-            && cursor_abs < start_y + visible_rows.max(1)
-        {
-            let cy_local = cursor_abs - start_y;
-            let cx = grid_rect.x0 + self.cursor_x as f64 * self.char_w;
-            let cy = (grid_rect.y0 + cy_local as f64 * self.char_h).floor();
+            && cursor_abs < start_y + visible_rows.max(1);
+        let cy_local = cursor_abs.saturating_sub(start_y);
+        let cx = grid_rect.x0 + self.cursor_x as f64 * self.char_w;
+        let cy = (grid_rect.y0 + cy_local as f64 * self.char_h).floor();
+        // The cursor is a damage part of its own: moving it repaints the
+        // cell it left and the cell it entered. Its glyph may overhang the
+        // cell by up to a cell on every side.
+        let bounds = if shown {
+            vec![transform.transform_rect_bbox(Rect::new(
+                cx - self.char_w,
+                cy - self.char_h,
+                cx + 2.0 * self.char_w,
+                cy + 2.0 * self.char_h,
+            ))]
+        } else {
+            Vec::new()
+        };
+        let key = ui::scene_parts::PartKey::new("terminal.cursor", ());
+        ui::scene_parts::part(scene, key, bounds, |scene| {
+            if !shown {
+                return;
+            }
             // An unmistakable, theme-coloured "inverted cell" cursor.
             let cursor_rect = snap_to_device_pixels(
                 transform,
@@ -3819,7 +4199,7 @@ impl TerminalWidget {
                     cell_style,
                 );
             }
-        }
+        });
     }
 
     /// Paint one run of cells sharing `attr`, starting `at.x` into the grid
@@ -4313,7 +4693,7 @@ impl TerminalWidget {
         );
         self.find_menu_index = Some(menu.items().len());
         menu.push(MenuItem::action(
-            ui::i18n::I18nManager::lookup("terminal-find-scrollback", None),
+            crate::i18n::t("terminal-find-scrollback"),
             || {},
         ));
         // This preference is useful secondary chrome, but never at the cost
@@ -6008,14 +6388,15 @@ pub struct TerminalBackend {
     /// For an environment on a relay: the session's id there, which
     /// re-attaches to it.
     pub relay_session: Option<String>,
-    #[cfg(unix)]
-    service_lifetime: Option<std::os::unix::net::UnixStream>,
+    native_editor: Option<crate::native_editor::Socket>,
+    service_lifetime: Option<runtime_portal::pending_connection::SessionLifetime>,
     #[cfg(windows)]
     pub child: Box<dyn portable_pty::Child + Send + Sync>,
 }
 impl TerminalBackend {
     /// A backend with no process behind it — for tests of what opens where.
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
+    #[cfg(unix)]
     pub(crate) fn for_test() -> Self {
         Self {
             writer: Box::new(std::io::sink()),
@@ -6023,6 +6404,7 @@ impl TerminalBackend {
             master: Box::new(NullMaster),
             shell_name: "test".into(),
             relay_session: None,
+            native_editor: None,
             service_lifetime: None,
         }
     }
@@ -6125,7 +6507,7 @@ impl TerminalBackend {
             master: pair.master,
             shell_name,
             relay_session: None,
-            #[cfg(unix)]
+            native_editor: None,
             service_lifetime: None,
             #[cfg(windows)]
             child,
@@ -6512,6 +6894,12 @@ pub(crate) fn ush_request(
         "requested_by": requested_by.wire(),
     });
     if let Some(fields) = request.as_object_mut() {
+        if tilo_process::editor::supported() && program.is_empty() && !target.is_host() {
+            fields.insert(
+                "editor_protocol".into(),
+                serde_json::json!(runtime_portal::editor::VERSION),
+            );
+        }
         if !program.is_empty() {
             fields.insert("command".to_string(), serde_json::json!(program));
         }
@@ -6525,6 +6913,18 @@ pub(crate) fn ush_request(
     Ok(request)
 }
 
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UshSessionReply {
+    result: String,
+    session: String,
+    environment: String,
+    #[serde(default)]
+    relay_session: Option<String>,
+    #[serde(default)]
+    editor_protocol: Option<u8>,
+}
+
 #[cfg(unix)]
 pub(crate) fn ush_backend_on(
     stream: &std::os::unix::net::UnixStream,
@@ -6534,6 +6934,12 @@ pub(crate) fn ush_backend_on(
     relay_session: Option<&str>,
 ) -> Result<TerminalBackend, OpenError> {
     use std::os::fd::AsRawFd;
+    // How long the answer may take. Before it answers, the supervisor checks
+    // that the environment can be built, which on a device's first open reads
+    // the system store's images: ~400 ms on the CI VM, past the 250 ms a
+    // hosted connection is given to connect (TIL-708). Never shorten a longer
+    // bound, nor add one where the connection has none.
+    const USH_OPEN_REPLY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
     let failed = |error: &dyn std::fmt::Display| OpenError::Failed(error.to_string());
     let request = ush_request(program, target, requested_by, relay_session, (80, 24))?;
     {
@@ -6541,16 +6947,63 @@ pub(crate) fn ush_backend_on(
         w.write_all(&request).map_err(|e| failed(&e))?;
         w.flush().map_err(|e| failed(&e))?;
     }
+    if stream
+        .read_timeout()
+        .map_err(|e| failed(&e))?
+        .is_some_and(|bound| bound < USH_OPEN_REPLY_TIMEOUT)
+    {
+        stream
+            .set_read_timeout(Some(USH_OPEN_REPLY_TIMEOUT))
+            .map_err(|e| failed(&e))?;
+    }
 
-    let (payload, fd) = runtime_portal::fd_transport::recv_with_owned_fd(stream.as_raw_fd())
-        .map_err(|e| failed(&e))?;
-    let Some(fd) = fd else {
+    let (payload, mut descriptors) =
+        runtime_portal::fd_transport::recv_with_owned_fds(stream.as_raw_fd())
+            .map_err(|e| failed(&e))?;
+    if descriptors.is_empty() {
         return Err(refusal(&payload));
+    }
+    let response: UshSessionReply = serde_json::from_slice(&payload)
+        .map_err(|_| OpenError::Failed("Malformed ush session descriptor declaration".into()))?;
+    if response.result != "session"
+        || response.session.len() != 32
+        || !response.session.bytes().all(|b| b.is_ascii_hexdigit())
+        || response.environment.is_empty()
+        || response.environment.len() > 1024
+        || response.relay_session.as_ref().is_some_and(|session| {
+            session.len() != 32 || !session.bytes().all(|b| b.is_ascii_hexdigit())
+        })
+        || response
+            .editor_protocol
+            .is_some_and(|version| version != runtime_portal::editor::VERSION)
+        || (response.editor_protocol.is_some() && (!program.is_empty() || target.is_host()))
+        || descriptors.len()
+            != if response.editor_protocol.is_some() {
+                2
+            } else {
+                1
+            }
+    {
+        return Err(OpenError::Failed(
+            "Invalid ush session descriptor roles".into(),
+        ));
+    }
+    let native_editor = if response.editor_protocol.is_some() {
+        let fd = descriptors
+            .pop()
+            .ok_or_else(|| OpenError::Failed("Missing editor descriptor".into()))?;
+        Some(crate::native_editor::Socket::adopt(fd).map_err(|e| failed(&e))?)
+    } else {
+        None
     };
+    let fd = descriptors
+        .pop()
+        .ok_or_else(|| OpenError::Failed("Missing PTY descriptor".into()))?;
 
     // `fd` arrived over `SCM_RIGHTS` and this process now owns it. The
-    // supervisor sends a pty master and nothing else.
+    // supervisor declares PTY first and, only after negotiation, editor second.
     let master = std::fs::File::from(fd);
+    tilo_process::editor::validate_master(&master).map_err(|e| failed(&e))?;
     let reader = Box::new(master.try_clone().map_err(|e| failed(&e))?) as Box<dyn Read + Send>;
     let writer = Box::new(master.try_clone().map_err(|e| failed(&e))?) as Box<dyn Write + Send>;
     Ok(TerminalBackend {
@@ -6558,22 +7011,12 @@ pub(crate) fn ush_backend_on(
         reader,
         master: Box::new(FdMaster { file: master }),
         shell_name: if target.is_host() { "host" } else { "ush" }.into(),
-        relay_session: granted_relay_session(&payload),
-        service_lifetime: Some(stream.try_clone().map_err(|e| failed(&e))?),
+        relay_session: response.relay_session,
+        native_editor,
+        service_lifetime: Some(runtime_portal::pending_connection::SessionLifetime::new(
+            stream.try_clone().map_err(|e| failed(&e))?,
+        )),
     })
-}
-
-/// The relay session a supervisor's answer names, if it is one.
-pub(crate) fn granted_relay_session(payload: &[u8]) -> Option<String> {
-    #[derive(serde::Deserialize)]
-    struct Reply {
-        #[serde(default)]
-        relay_session: Option<String>,
-    }
-    serde_json::from_slice::<Reply>(payload)
-        .ok()?
-        .relay_session
-        .filter(|session| session.len() == 32 && session.bytes().all(|b| b.is_ascii_hexdigit()))
 }
 
 /// What a supervisor reply without a descriptor means.
@@ -6699,6 +7142,16 @@ impl TerminalWidget {
     /// and lifetime replace the previous ones, a reader thread starts feeding
     /// the output channel, and the tab's screen is reset for the new process
     /// at the next sync.
+    fn attach_native_editor(&mut self, socket: Option<crate::native_editor::Socket>) {
+        self.native_capture = None;
+        self.native_history = None;
+        self.native_ime = None;
+        self.native_ime_error = None;
+        self.native_editor = socket.and_then(|socket| {
+            crate::native_editor::Client::new(socket, Arc::clone(&self.waker)).ok()
+        });
+    }
+
     fn attach_backend(&mut self, backend: TerminalBackend) {
         let (output_tx, output_rx) = sync_channel(PTY_QUEUE_CHUNKS);
         self.pty_write = std::sync::Arc::new(std::sync::Mutex::new(backend.writer));
@@ -6710,10 +7163,8 @@ impl TerminalWidget {
             Arc::new(Mutex::new("Session ended — input unavailable".into()));
         self.begin_local_session();
         let widget = self;
-        #[cfg(unix)]
-        {
-            widget.service_lifetime = backend.service_lifetime;
-        }
+        widget.attach_native_editor(backend.native_editor);
+        widget.service_lifetime = backend.service_lifetime;
         #[cfg(windows)]
         {
             // ConPTY keeps its output pipe open while the pseudoconsole exists.
@@ -6758,7 +7209,7 @@ impl TerminalWidget {
         let reader_lifetime = widget
             .service_lifetime
             .as_ref()
-            .and_then(|socket| socket.try_clone().ok());
+            .and_then(|socket| socket.clone_for_reader().ok());
         #[cfg(unix)]
         let session_open = move || reader_lifetime.as_ref().is_some_and(lifetime_socket_open);
         #[cfg(not(unix))]
@@ -6831,6 +7282,13 @@ impl TerminalWidget {
         let mut widget = Self::without_process(ContentStore::memory());
         widget.sessions = crate::sessions::Sessions::hosted(services);
         Ok(widget)
+    }
+
+    /// Construct a live hosted tab without doing socket IO on the host.
+    pub(crate) fn spawn_hosted_deferred() -> Self {
+        let mut widget = Self::without_process(ContentStore::memory());
+        widget.sessions = crate::sessions::Sessions::hosted_deferred();
+        widget
     }
 
     /// A live hosted tab whose required supervisor is unavailable. Keep the
@@ -6908,3 +7366,5 @@ impl Drop for TerminalWidget {
         }
     }
 }
+
+include!("native_editing_tests.rs");

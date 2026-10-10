@@ -103,3 +103,97 @@ fn the_standalone_catalog_carries_only_new_computer_modern_s_gust_cuts() {
     }
     assert!(!Scope::Fixture.os() && !Scope::Fixture.standalone());
 }
+
+/// The smallest pinned asset, and its pinned bytes from the checkout.
+fn smallest_asset() -> (&'static Asset, Vec<u8>) {
+    let asset = manifest()
+        .unwrap()
+        .font
+        .iter()
+        .min_by_key(|a| a.bytes)
+        .unwrap();
+    let bytes = std::fs::read(asset.path_in(&checkout_root()).unwrap()).unwrap();
+    (asset, bytes)
+}
+
+#[test]
+fn verify_trust_still_rejects_a_modified_font() {
+    let (asset, mut bytes) = smallest_asset();
+    let dir = tempfile::tempdir().unwrap();
+    *bytes.last_mut().unwrap() ^= 1;
+    std::fs::write(asset.path_in(dir.path()).unwrap(), &bytes).unwrap();
+    let error = asset.verify_with(dir.path(), Trust::Verify).unwrap_err();
+    assert!(error.problem.contains("SHA-256"), "{error}");
+}
+
+#[test]
+fn immutable_trust_still_hashes_a_file_that_is_not_immutable() {
+    // A caller that claims `Immutable` for a writable root gains nothing:
+    // the production probe refuses the file, so it is hashed and refused.
+    let (asset, mut bytes) = smallest_asset();
+    let dir = tempfile::tempdir().unwrap();
+    *bytes.last_mut().unwrap() ^= 1;
+    let path = asset.path_in(dir.path()).unwrap();
+    std::fs::write(&path, &bytes).unwrap();
+    assert!(!file_is_immutable(&path));
+    let error = asset.verify_with(dir.path(), Trust::Immutable).unwrap_err();
+    assert!(error.problem.contains("SHA-256"), "{error}");
+}
+
+#[test]
+fn immutable_trust_reads_no_font_bytes() {
+    // Same size, none of the pinned bytes: only a reader that never hashes
+    // the file accepts it, which is what an immutable file earns.
+    let (asset, bytes) = smallest_asset();
+    let dir = tempfile::tempdir().unwrap();
+    let path = asset.path_in(dir.path()).unwrap();
+    let zeros = vec![0_u8; bytes.len()];
+    std::fs::write(&path, &zeros).unwrap();
+    assert_eq!(
+        asset
+            .verify_probed(dir.path(), Trust::Immutable, |_| true)
+            .unwrap(),
+        path
+    );
+    // The size is still checked without reading.
+    std::fs::write(&path, &zeros[1..]).unwrap();
+    let error = asset
+        .verify_probed(dir.path(), Trust::Immutable, |_| true)
+        .unwrap_err();
+    assert!(error.problem.contains("bytes"), "{error}");
+    // The probe decides per file: one it refuses is hashed after all.
+    std::fs::write(&path, &zeros).unwrap();
+    assert!(
+        asset
+            .verify_probed(dir.path(), Trust::Immutable, |_| false)
+            .unwrap_err()
+            .problem
+            .contains("SHA-256")
+    );
+    assert!(
+        asset
+            .verify_probed(dir.path(), Trust::Verify, |_| true)
+            .unwrap_err()
+            .problem
+            .contains("SHA-256")
+    );
+}
+
+#[test]
+fn writable_and_checkout_roots_earn_no_trust() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("manifest.toml"), MANIFEST).unwrap();
+    assert_eq!(Trust::of_root(dir.path()), Trust::Verify);
+    assert!(!file_is_immutable(dir.path()));
+    assert_eq!(Trust::of_root(&checkout_root()), Trust::Verify);
+    assert_eq!(Trust::of_root(&dir.path().join("absent")), Trust::Verify);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_symlinked_file_is_not_immutable() {
+    let dir = tempfile::tempdir().unwrap();
+    let link = dir.path().join("link");
+    std::os::unix::fs::symlink("/", &link).unwrap();
+    assert!(!file_is_immutable(&link));
+}

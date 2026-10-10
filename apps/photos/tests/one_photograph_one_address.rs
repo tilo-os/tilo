@@ -148,9 +148,7 @@ impl Session {
     ) -> Result<(), door::DoorError> {
         let resources = PhotosResources.publish_resources(&self.doc);
         let encoded = door::encode(&resources, address, argument)?;
-        let mut registry = ActionRegistry::new();
-        register(&mut registry);
-        registry
+        ActionRegistry::with(register)
             .decode(&encoded)
             .expect("the app's own registry decodes what its own tree encoded")
             .apply(&mut self.doc)

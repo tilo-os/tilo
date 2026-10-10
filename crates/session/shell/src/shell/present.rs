@@ -5,9 +5,12 @@
 //! finished [`vello::Scene`], not the widget tree — `ui` widgets mutate the Automerge document
 //! directly, so sharing it across threads would need a frame-long lock and reintroduce the stall.
 //!
-//! [`PresentPipe`] admits [`QUEUE_DEPTH`] frames beyond the one presenting; when full, the logic
-//! thread refuses to build a frame rather than discard a queued one, which would decouple queue
-//! length from the display and grow latency without bound while looking busy.
+//! [`PresentPipe`] admits [`Presenter::queue_depth`] frames beyond the one presenting
+//! ([`QUEUE_DEPTH`] unless the presenter says otherwise); when full, the logic thread refuses to
+//! build a frame rather than discard a queued one, which would decouple queue length from the
+//! display and grow latency without bound while looking busy. A presenter that waits for every
+//! page flip admits none: a frame queued behind one that is still waiting for its vblank would
+//! start rendering only at that vblank and reach the screen an interval later.
 //!
 //! A presenter panic unwinds the render thread; the next [`PresentPipe::submit`] then sees a
 //! closed channel and drops to no presenter, so a lost display doesn't take the session (and
@@ -25,7 +28,8 @@ use vello::Scene;
 use super::frame::FramePaint;
 use super::render::OutputId;
 
-/// Frames accepted beyond the one currently being presented.
+/// Frames accepted beyond the one currently being presented, unless the
+/// presenter reports its own [`Presenter::queue_depth`].
 pub const QUEUE_DEPTH: usize = 1;
 
 /// Normal refresh-rate frames stay silent. Anomalous lifecycle records flow
@@ -43,6 +47,35 @@ pub struct PhysicalPresentation {
 
 /// Physical outcome associated with one exact producer-frame serial.
 pub type PhysicalOutcome = (u64, Option<PhysicalPresentation>);
+
+/// When the display took the frame just presented, for the frame clock.
+///
+/// Pacing evidence, not presentation proof: `wp_presentation` feedback keeps
+/// its stricter exact-serial [`PhysicalPresentation`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DisplayTiming {
+    /// Every powered output waits for its page flip in the presenter, so
+    /// retirements follow the vblank.
+    pub vblank_paced: bool,
+    /// The vblank the frame's flips retired on: the earliest among the
+    /// outputs that pace the loop, so the next frame is due before the first
+    /// of their next vblanks.
+    pub vblank: Option<Instant>,
+    /// When this frame's flip was queued, i.e. its rendering finished. `None`
+    /// when the frame queued no flip (an unchanged frame, a skipped output).
+    pub flip_queued_at: Option<Instant>,
+}
+
+/// The newest frame the render thread finished, as the logic thread reads it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Retirement {
+    pub serial: u64,
+    /// When the presenter returned.
+    pub at: Instant,
+    /// How long the frame waited behind earlier frames before its render began.
+    pub queue_wait: Duration,
+    pub display: DisplayTiming,
+}
 
 /// Opt-in sequential wall-clock phases for the exact frame just handled.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -82,6 +115,18 @@ pub trait Presenter: Send {
         None
     }
 
+    /// Frames this presenter accepts beyond the one presenting. Read on the
+    /// render thread after every frame, so it may change with the output
+    /// topology. A presenter that blocks until each flip retires returns 0.
+    fn queue_depth(&self) -> usize {
+        QUEUE_DEPTH
+    }
+
+    /// Display timing of the exact preceding observed frame.
+    fn display_timing(&self) -> DisplayTiming {
+        DisplayTiming::default()
+    }
+
     /// Build the renderer before the first frame arrives. Called once on the render thread as it
     /// starts, so device setup and shader compilation overlap the compositor's own startup
     /// instead of delaying the first frame.
@@ -117,6 +162,9 @@ enum PresentMsg {
         enqueued_at: Instant,
         input_age_at_enqueue: Option<Duration>,
         inflight_at_enqueue: usize,
+        /// The client frames `frame` draws, held until it was presented: their
+        /// buffers do not go back to their clients while it can be rendered.
+        pins: crate::shell::gpu_frames::FramePins,
     },
     Resize((u32, u32)),
     Dpms(bool),
@@ -140,10 +188,14 @@ pub struct PresentPipe {
     /// separately from `inflight`: the latter is a bounded queue depth, not
     /// an identity that survives a completed presentation.
     submitted: Arc<AtomicU64>,
-    /// Monotonic completion time of the newest frame the presenter returned
-    /// from. The timestamp and serial are read under one lock so metrics never
-    /// associate an old time with a newer frame.
-    last_retirement: Arc<Mutex<Option<(u64, Instant)>>>,
+    /// Monotonic completion time and display timing of the newest frame the
+    /// presenter returned from. Read under one lock so metrics never associate
+    /// an old time with a newer frame.
+    last_retirement: Arc<Mutex<Option<Retirement>>>,
+    /// The presenter's own [`Presenter::queue_depth`], as of its last frame.
+    queue_depth: Arc<AtomicUsize>,
+    /// The logic thread's floor on the queue depth ([`Self::set_min_queue_depth`]).
+    min_queue_depth: usize,
     physical_results: Arc<Mutex<VecDeque<PhysicalOutcome>>>,
     /// Ticks on which the paint gate declined because the pipe was full. Surfaced in the paint stats — a large number means the GPU is the bottleneck, a different diagnosis from a slow scene build.
     backpressured: u64,
@@ -160,6 +212,7 @@ struct FrameLifecycle {
     inflight_at_enqueue: usize,
     input_age_at_enqueue: Option<Duration>,
     phases: Option<FramePhaseTiming>,
+    display: DisplayTiming,
 }
 
 fn log_frame_lifecycle(serial: u64, revision: u64, timing: FrameLifecycle) {
@@ -170,6 +223,7 @@ fn log_frame_lifecycle(serial: u64, revision: u64, timing: FrameLifecycle) {
         inflight_at_enqueue,
         input_age_at_enqueue,
         phases,
+        display,
     } = timing;
     // Keep the first completed presentation observable even when
     // it is fast and the event loop then parks indefinitely.
@@ -180,7 +234,7 @@ fn log_frame_lifecycle(serial: u64, revision: u64, timing: FrameLifecycle) {
         || total >= SLOW_FRAME_LIFECYCLE
     {
         eprintln!(
-            "FRAME-LIFECYCLE serial={serial} event=render-retired queue_wait_us={} render_us={} total_us={} inflight_at_enqueue={inflight_at_enqueue} input_age_at_enqueue_us={} revision={} phase_timing={} encode_submit_us={} gpu_completion_wait_us={} bump_settle_us={} backdrop_us={} kms_retirement_us={}",
+            "FRAME-LIFECYCLE serial={serial} event=render-retired queue_wait_us={} render_us={} total_us={} inflight_at_enqueue={inflight_at_enqueue} input_age_at_enqueue_us={} revision={} phase_timing={} encode_submit_us={} gpu_completion_wait_us={} bump_settle_us={} backdrop_us={} kms_retirement_us={} vblank_paced={} flip_to_vblank_us={}",
             queue_wait.as_micros(),
             render.as_micros(),
             total.as_micros(),
@@ -193,8 +247,95 @@ fn log_frame_lifecycle(serial: u64, revision: u64, timing: FrameLifecycle) {
             phases.map_or(0, |value| value.paint.settle_us),
             phases.map_or(0, |value| value.paint.backdrop_us),
             phases.map_or(0, |value| value.kms_retirement_us),
+            display.vblank_paced,
+            display.flip_queued_at.zip(display.vblank).map_or_else(
+                || "none".to_owned(),
+                |(queued, vblank)| vblank
+                    .saturating_duration_since(queued)
+                    .as_micros()
+                    .to_string()
+            ),
         );
     }
+}
+
+/// The render thread's half of the state the logic thread reads after a frame.
+struct RetireBoard {
+    physical_results: Arc<Mutex<VecDeque<PhysicalOutcome>>>,
+    last_retirement: Arc<Mutex<Option<Retirement>>>,
+    presented: Arc<AtomicU64>,
+    queue_depth: Arc<AtomicUsize>,
+    inflight: Arc<AtomicUsize>,
+}
+
+impl RetireBoard {
+    fn push_physical(&self, outcome: PhysicalOutcome) {
+        self.physical_results
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push_back(outcome);
+    }
+
+    /// Publish one finished frame, ending with the in-flight decrement that
+    /// returns its capacity.
+    fn publish(&self, retirement: Retirement, queue_depth: usize) {
+        let serial = retirement.serial;
+        *self
+            .last_retirement
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(retirement);
+        self.presented.store(serial, Ordering::Release);
+        // Before the decrement: a loop that finds capacity already sees the
+        // depth that capacity was granted under.
+        self.queue_depth.store(queue_depth, Ordering::Release);
+        // Decrement *after* the present so the logic thread's capacity check reflects work actually finished, not work dequeued.
+        self.inflight.fetch_sub(1, Ordering::Release);
+    }
+}
+
+/// Log one presented frame: its lifecycle record and the presenter's own detail.
+fn report_frame(presenter: &mut dyn Presenter, serial: u64, revision: u64, timing: FrameLifecycle) {
+    log_frame_lifecycle(serial, revision, timing);
+    if let Some(detail) = presenter.frame_detail() {
+        eprintln!("CPU-FRAME serial={serial} revision={revision} {detail}");
+    }
+}
+
+/// The name of every thread a GPU driver starts while the render thread builds its renderer.
+///
+/// Linux names a new thread after the thread that started it, and drivers do not always rename
+/// theirs. Mesa's CPU rasteriser (lavapipe) names its rasteriser threads `llvmpipe-N` but leaves
+/// its compute-shader pool, which runs every Vello stage, unnamed. Built on the render thread,
+/// that pool was called `tilo-present` too, so the CPU a software-rendered VM spent rasterising
+/// one frame read as the present thread's (TIL-739: `tilo-present×14 1.51%` with the present
+/// thread itself at 0.07%).
+pub const DRIVER_THREAD_NAME: &std::ffi::CStr = c"tilo-gpu-driver";
+
+/// Run `build` (device and renderer setup) with the calling thread named
+/// [`DRIVER_THREAD_NAME`], so the threads the driver starts inside it carry that name rather
+/// than the caller's. The caller's own name is restored afterwards, also when `build` unwinds.
+pub fn with_driver_thread_name<R>(build: impl FnOnce() -> R) -> R {
+    #[cfg(target_os = "linux")]
+    {
+        /// The caller's name as `PR_GET_NAME` wrote it: at most 15 bytes and a NUL.
+        struct Restore([u8; 16]);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                // SAFETY: PR_SET_NAME reads a NUL-terminated string of at most 16 bytes, and
+                // the buffer is the 16 bytes PR_GET_NAME filled, NUL included.
+                unsafe { libc::prctl(libc::PR_SET_NAME, self.0.as_ptr(), 0, 0, 0) };
+            }
+        }
+        let mut own = [0u8; 16];
+        // SAFETY: PR_GET_NAME writes at most 16 bytes, NUL included, into a 16-byte buffer.
+        if unsafe { libc::prctl(libc::PR_GET_NAME, own.as_mut_ptr(), 0, 0, 0) } == 0 {
+            let _restore = Restore(own);
+            // SAFETY: a NUL-terminated string of 15 bytes and its NUL, the most PR_SET_NAME keeps.
+            unsafe { libc::prctl(libc::PR_SET_NAME, DRIVER_THREAD_NAME.as_ptr(), 0, 0, 0) };
+            return build();
+        }
+    }
+    build()
 }
 
 /// How long [`PresentPipe::shutdown`] waits for the render thread before giving up on it.
@@ -211,14 +352,18 @@ impl PresentPipe {
     pub fn spawn(mut presenter: Box<dyn Presenter>, on_retire: RetireSignal) -> Self {
         let (tx, rx): (Sender<PresentMsg>, Receiver<PresentMsg>) = channel();
         let inflight = Arc::new(AtomicUsize::new(0));
+        let queue_depth = Arc::new(AtomicUsize::new(QUEUE_DEPTH));
         let presented_frames = Arc::new(AtomicU64::new(0));
         let submitted_frames = Arc::new(AtomicU64::new(0));
         let last_retirement = Arc::new(Mutex::new(None));
         let physical_results = Arc::new(Mutex::new(VecDeque::new()));
-        let thread_physical_results = physical_results.clone();
-        let thread_inflight = inflight.clone();
-        let thread_presented = presented_frames.clone();
-        let thread_last_retirement = last_retirement.clone();
+        let board = RetireBoard {
+            physical_results: physical_results.clone(),
+            last_retirement: last_retirement.clone(),
+            presented: presented_frames.clone(),
+            queue_depth: queue_depth.clone(),
+            inflight: inflight.clone(),
+        };
         let finished = Arc::new(AtomicBool::new(false));
         let thread_finished = finished.clone();
         let spawned = std::thread::Builder::new()
@@ -236,19 +381,21 @@ impl PresentPipe {
                             enqueued_at,
                             input_age_at_enqueue,
                             inflight_at_enqueue,
+                            pins,
                         } => {
                             let render_started = Instant::now();
                             let queue_wait = render_started.saturating_duration_since(enqueued_at);
                             let physical = presenter.present_frame_observed(&frame, output);
-                            thread_physical_results
-                                .lock()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                                .push_back((serial, physical));
+                            // Rendered: its client buffers may go back.
+                            drop(pins);
+                            board.push_physical((serial, physical));
                             let phases = presenter.frame_phase_timing();
+                            let display = presenter.display_timing();
                             let render_done = Instant::now();
                             let render = render_done.saturating_duration_since(render_started);
                             let total = render_done.saturating_duration_since(enqueued_at);
-                            log_frame_lifecycle(
+                            report_frame(
+                                &mut *presenter,
                                 serial,
                                 frame.revision,
                                 FrameLifecycle {
@@ -258,21 +405,18 @@ impl PresentPipe {
                                     inflight_at_enqueue,
                                     input_age_at_enqueue,
                                     phases,
+                                    display,
                                 },
                             );
-                            if let Some(detail) = presenter.frame_detail() {
-                                eprintln!(
-                                    "CPU-FRAME serial={serial} revision={} {detail}",
-                                    frame.revision
-                                );
-                            }
-                            *thread_last_retirement
-                                .lock()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner) =
-                                Some((serial, render_done));
-                            thread_presented.store(serial, Ordering::Release);
-                            // Decrement *after* the present so the logic thread's capacity check reflects work actually finished, not work dequeued.
-                            thread_inflight.fetch_sub(1, Ordering::Release);
+                            board.publish(
+                                Retirement {
+                                    serial,
+                                    at: render_done,
+                                    queue_wait,
+                                    display,
+                                },
+                                presenter.queue_depth(),
+                            );
                             // Then wake the loop — strictly after the decrement, so a loop that wakes on this signal is guaranteed to see the capacity.
                             on_retire();
                         }
@@ -305,6 +449,8 @@ impl PresentPipe {
             presented: presented_frames,
             submitted: submitted_frames,
             last_retirement,
+            queue_depth,
+            min_queue_depth: 0,
             physical_results,
             backpressured: 0,
             finished,
@@ -323,7 +469,22 @@ impl PresentPipe {
 
     /// Whether another frame may be built and handed over.
     pub fn has_capacity(&self) -> bool {
-        self.inflight.load(Ordering::Acquire) <= QUEUE_DEPTH
+        self.inflight.load(Ordering::Acquire) <= self.queue_depth()
+    }
+
+    /// Frames admitted beyond the one presenting: the presenter's own depth,
+    /// raised to the logic thread's floor.
+    pub fn queue_depth(&self) -> usize {
+        self.queue_depth
+            .load(Ordering::Acquire)
+            .max(self.min_queue_depth)
+    }
+
+    /// Admit at least `depth` frames beyond the one presenting, whatever the
+    /// presenter reports. The loop raises it when a frame no longer fits one
+    /// refresh interval, so building overlaps the previous frame's present.
+    pub fn set_min_queue_depth(&mut self, depth: usize) {
+        self.min_queue_depth = depth;
     }
 
     /// Count a tick on which the paint gate declined for lack of capacity.
@@ -363,8 +524,9 @@ impl PresentPipe {
     ///
     /// This is deliberately called a retirement rather than a physical
     /// display time: each backend defines when `present_frame` returns. The
-    /// DRM direct path separately tightens that boundary to a page-flip event.
-    pub fn latest_retirement(&self) -> Option<(u64, Instant)> {
+    /// DRM direct path separately tightens that boundary to a page-flip event,
+    /// and reports that event's vblank in [`Retirement::display`].
+    pub fn latest_retirement(&self) -> Option<Retirement> {
         *self
             .last_retirement
             .lock()
@@ -416,6 +578,7 @@ impl PresentPipe {
             .fetch_add(1, Ordering::AcqRel)
             .saturating_add(1);
         let enqueued_at = Instant::now();
+        let pins = frame.client_frame_pins();
         if self
             .tx
             .send(PresentMsg::Frame {
@@ -425,6 +588,7 @@ impl PresentPipe {
                 enqueued_at,
                 input_age_at_enqueue,
                 inflight_at_enqueue,
+                pins,
             })
             .is_err()
         {
@@ -498,6 +662,42 @@ mod tests {
     use std::sync::Mutex;
     use std::time::Duration;
 
+    /// A thread a driver starts while the renderer is built reads [`DRIVER_THREAD_NAME`], not
+    /// the render thread's name, and the render thread gets its own name back, also when the
+    /// build unwinds.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn driver_thread_name_reaches_threads_started_inside_and_is_undone_after() {
+        fn comm() -> String {
+            std::fs::read_to_string("/proc/thread-self/comm")
+                .expect("read this thread's name")
+                .trim_end()
+                .to_owned()
+        }
+        fn started_thread_comm() -> String {
+            std::thread::spawn(comm)
+                .join()
+                .expect("join an unnamed thread")
+        }
+        std::thread::Builder::new()
+            .name("tilo-present".to_owned())
+            .spawn(|| {
+                assert_eq!(started_thread_comm(), "tilo-present");
+                let inside = with_driver_thread_name(started_thread_comm);
+                assert_eq!(inside, DRIVER_THREAD_NAME.to_str().expect("UTF-8 name"));
+                assert_eq!(comm(), "tilo-present");
+                assert_eq!(started_thread_comm(), "tilo-present");
+                let unwound = std::panic::catch_unwind(|| {
+                    with_driver_thread_name(|| panic!("intentional driver setup failure"))
+                });
+                assert!(unwound.is_err());
+                assert_eq!(comm(), "tilo-present");
+            })
+            .expect("spawn a render thread")
+            .join()
+            .expect("render thread assertions");
+    }
+
     /// A presenter that blocks until released, so a test can hold a frame "on the GPU" and observe the pipe's back-pressure.
     struct Blocking {
         gate: Arc<Mutex<()>>,
@@ -540,6 +740,64 @@ mod tests {
     /// `PresentPipe::spawn` with a retire signal that does nothing — what most of these tests want, since they assert on the counters rather than the wakeup.
     fn spawn_with_retire(p: Box<dyn Presenter>) -> PresentPipe {
         PresentPipe::spawn(p, Box::new(|| {}))
+    }
+
+    /// A client buffer drawn by a queued frame stays with the compositor until
+    /// that frame was presented, even after the store let go of its frame: the
+    /// presenter would otherwise draw a buffer its client is writing again.
+    #[test]
+    fn a_queued_frame_pins_the_client_frames_it_draws() {
+        let mut context = ui::gpu::RenderContext::new();
+        let Some(id) = pollster::block_on(context.device(None)) else {
+            eprintln!("no wgpu adapter; skipping");
+            return;
+        };
+        let handle = &context.devices[id];
+        let frame = crate::shell::gpu_frames::frame_for_test(
+            &handle.device,
+            &handle.queue,
+            u64::MAX,
+            (4, 4),
+            [1, 2, 3, 255],
+            31_337,
+        );
+        let (on_release, given_back) = std::sync::mpsc::channel::<()>();
+        frame.hold(crate::shell::gpu_frames::BufferLease::new(move || {
+            let _ = on_release.send(());
+        }));
+        let mut scene = Scene::new();
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            vello::kurbo::Affine::IDENTITY,
+            &vello::peniko::ImageBrush::new(frame.image((0, 0, 4, 4))),
+            None,
+            &vello::kurbo::Rect::new(0.0, 0.0, 4.0, 4.0),
+        );
+        let gate = Arc::new(Mutex::new(()));
+        let rendering = gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut pipe = spawn_with_retire(Box::new(Blocking {
+            gate: gate.clone(),
+            seen: Arc::new(AtomicU64::new(0)),
+            resizes: Arc::new(Mutex::new(Vec::new())),
+            dpms: Arc::new(Mutex::new(Vec::new())),
+        }));
+        assert!(pipe.submit(scene, OutputId(0)));
+        // The store replaced the frame while the queued one is still rendering.
+        frame.note_superseded();
+        drop(frame);
+        assert!(
+            given_back.recv_timeout(Duration::from_millis(200)).is_err(),
+            "the buffer stays held while the queued frame can still draw it"
+        );
+        drop(rendering);
+        tilo_test_env::wait_until("the frame to be presented", || pipe.presented() == 1);
+        assert!(
+            given_back.recv_timeout(Duration::from_secs(2)).is_ok(),
+            "presenting the frame gives the buffer back"
+        );
+        pipe.shutdown();
     }
 
     #[test]
@@ -868,6 +1126,74 @@ mod tests {
         the_pipe_refuses_more_than_queue_depth_frames_beyond_the_one_in_flight();
         resize_and_dpms_are_ordered_behind_queued_frames();
         the_loop_is_woken_after_the_capacity_is_restored_not_before();
+    }
+
+    #[test]
+    fn zero_depth_presenter_admits_one_frame() {
+        /// A presenter that waits for every flip: no frame queues behind one
+        /// presenting. Reports a vblank so the timing's route is pinned too.
+        struct VblankPaced {
+            gate: Arc<Mutex<()>>,
+            vblank: Instant,
+        }
+        impl Presenter for VblankPaced {
+            fn present(&mut self, _scene: &Scene, _output: OutputId) {
+                let _held = self
+                    .gate
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+            }
+            fn queue_depth(&self) -> usize {
+                0
+            }
+            fn display_timing(&self) -> DisplayTiming {
+                DisplayTiming {
+                    vblank_paced: true,
+                    vblank: Some(self.vblank),
+                    flip_queued_at: None,
+                }
+            }
+        }
+        let gate = Arc::new(Mutex::new(()));
+        let vblank = Instant::now();
+        let mut pipe = spawn_with_retire(Box::new(VblankPaced {
+            gate: gate.clone(),
+            vblank,
+        }));
+        // The depth is learned from the presenter as its first frame retires.
+        assert!(pipe.submit(Scene::new(), OutputId(0)));
+        tilo_test_env::wait_until("the first frame", || pipe.presented() == 1);
+        assert_eq!(pipe.queue_depth(), 0);
+        let retired = pipe.latest_retirement().expect("a retirement");
+        assert_eq!(retired.serial, 1);
+        assert_eq!(
+            retired.display,
+            DisplayTiming {
+                vblank_paced: true,
+                vblank: Some(vblank),
+                flip_queued_at: None,
+            },
+            "the presenter's vblank must reach the logic thread with its serial"
+        );
+
+        let held = gate.lock().expect("hold the presenter inside `present`");
+        assert!(pipe.has_capacity());
+        assert!(pipe.submit(Scene::new(), OutputId(0)));
+        assert!(
+            !pipe.has_capacity(),
+            "a vblank-paced presenter must not admit a frame behind the one presenting"
+        );
+        // A frame that no longer fits an interval raises the floor: building
+        // overlaps the present again, bounded at one queued frame.
+        pipe.set_min_queue_depth(1);
+        assert!(pipe.has_capacity());
+        assert!(pipe.submit(Scene::new(), OutputId(0)));
+        assert!(!pipe.has_capacity());
+        pipe.set_min_queue_depth(0);
+        drop(held);
+        tilo_test_env::wait_until("the held frames", || pipe.presented() == 3);
+        assert!(pipe.has_capacity());
+        pipe.shutdown();
     }
 
     #[test]

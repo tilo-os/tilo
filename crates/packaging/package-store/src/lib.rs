@@ -19,17 +19,14 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
 )]
 
 pub mod catalog;
+pub mod dev_env;
 pub mod integrity;
 pub mod interfaces;
 pub mod layout;
@@ -48,8 +45,9 @@ pub use catalog::{
 };
 #[cfg(feature = "store")]
 pub use image::{
-    FleetSource, ImageShelf, ImageTrust, MaterializeError, SYSTEM_IMAGE_PUBLISHERS_FILE, Store,
-    check_tool_runtime, local_materialized_tree, materialized_tree, tool_runtime,
+    FleetSource, HOST_SOURCES_FILE, ImageShelf, ImageTrust, MaterializeError,
+    SYSTEM_IMAGE_PUBLISHERS_FILE, Store, check_tool_runtime, local_materialized_tree,
+    materialized_tree, tool_runtime,
 };
 pub use layout::Layout;
 pub use registry::{InstalledPackage, Pinning, Registry, RegistryError};
@@ -80,6 +78,15 @@ pub enum StoreError {
     Payload(String),
     #[error("content store: {0}")]
     Content(String),
+    /// Installation selected the package, but the final content-store close
+    /// failed. The selected row remains committed; this is not a rollback.
+    #[error("selected {id} {version} ({root}), but closing the content store failed: {source}")]
+    CommittedSelection {
+        id: String,
+        version: String,
+        root: String,
+        source: Box<StoreError>,
+    },
     #[error("{0} is not installed")]
     NotInstalled(String),
     #[error("refusing to remove pinned package {0}")]

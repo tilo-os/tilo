@@ -1,6 +1,15 @@
 [
   {
     "resource": "canvas.artwork",
+    "action": "activate-window",
+    "resource_kind": "canvas.artwork",
+    "label": "Show this window",
+    "description": "Ask the platform to reveal the existing window, keeping its document owner.",
+    "operation": "View",
+    "params": []
+  },
+  {
+    "resource": "canvas.artwork",
     "action": "add-layer",
     "resource_kind": "canvas.artwork",
     "label": "Add layer",

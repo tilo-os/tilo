@@ -26,6 +26,8 @@ use std::path::{Path, PathBuf};
 
 use tilo_app_package::PackageId;
 
+use crate::dev_env::dev_override;
+
 pub const REGISTRY_FILE: &str = "registry.toml";
 pub const PACKAGES_DIR: &str = "pkgs";
 pub const CONTENT_DIR: &str = "content";
@@ -50,55 +52,6 @@ pub const SYSTEM_PAYLOAD_DIR: &str = "/usr/lib/tilo-apps";
 pub const SYSTEM_DIR_ENV: &str = "TILO_APPS_SYSTEM_DIR";
 /// Names the system payload root instead of [`SYSTEM_PAYLOAD_DIR`].
 pub const SYSTEM_PAYLOAD_DIR_ENV: &str = "TILO_APPS_SYSTEM_PAYLOAD_DIR";
-
-/// Whether this build lets [`SYSTEM_DIR_ENV`] and [`SYSTEM_PAYLOAD_DIR_ENV`]
-/// re-point the image's store: debug builds and builds with the non-default
-/// `dev-overrides` feature do, the `--release` binaries the image installs do
-/// not. The session environment is writable by the user (on systemd,
-/// `~/.config/environment.d/`), and the image's store is what the launcher
-/// trusts, so a shipped build ignores both variables with a one-time stderr
-/// warning naming the variable (never its value).
-pub const DEV_ENV_OVERRIDES: bool = cfg!(any(debug_assertions, feature = "dev-overrides"));
-
-/// The system-store override `name`, when this build honours it.
-fn system_override(name: &'static str) -> Option<std::ffi::OsString> {
-    system_override_from(DEV_ENV_OVERRIDES, name, std::env::var_os(name))
-}
-
-/// [`system_override`] as a function of the gate and the raw value.
-#[allow(
-    clippy::print_stderr,
-    reason = "a one-time operator warning; the reader may run before tracing is initialised"
-)]
-pub(crate) fn system_override_from(
-    enabled: bool,
-    name: &'static str,
-    value: Option<std::ffi::OsString>,
-) -> Option<std::ffi::OsString> {
-    if enabled {
-        return value;
-    }
-    if value.is_some() {
-        static WARNED: std::sync::Mutex<Vec<&'static str>> = std::sync::Mutex::new(Vec::new());
-        let first_warning = {
-            let mut warned = WARNED
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let first = !warned.contains(&name);
-            if first {
-                warned.push(name);
-            }
-            first
-        };
-        if first_warning {
-            eprintln!(
-                "package-store: ignoring {name}: developer environment overrides are disabled \
-                 in this release build"
-            );
-        }
-    }
-    None
-}
 
 /// Paths inside one store root.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -180,7 +133,7 @@ pub fn default_user_root() -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os("TILO_APPS_DATA_DIR") {
         return Some(PathBuf::from(dir));
     }
-    Some(xdg_paths::xdg::data_home()?.join("tilo-apps"))
+    Some(tilo_paths::xdg::data_home()?.join("tilo-apps"))
 }
 
 /// Whether this session was handed an app store of its own.
@@ -191,14 +144,14 @@ pub fn default_user_root() -> Option<PathBuf> {
 /// directory is the whole of it". A production desktop sets neither and
 /// gets `false`.
 pub fn store_is_scoped_to_this_session() -> bool {
-    system_override(SYSTEM_DIR_ENV).is_none() && std::env::var_os("TILO_APPS_DATA_DIR").is_some()
+    dev_override(SYSTEM_DIR_ENV).is_none() && std::env::var_os("TILO_APPS_DATA_DIR").is_some()
 }
 
 /// Root of the system store, or `None` when there is no system store to
 /// read.
 ///
 /// `TILO_APPS_SYSTEM_DIR` names it explicitly (developer builds only — see
-/// [`DEV_ENV_OVERRIDES`]); otherwise it's
+/// [`crate::dev_env::DEV_ENV_OVERRIDES`]); otherwise it's
 /// [`SYSTEM_DATA_DIR`] — *unless* `TILO_APPS_DATA_DIR` is set, which
 /// suppresses it entirely. That's what makes the override usable for
 /// tests: `TILO_APPS_DATA_DIR` means "the store is here", and a test
@@ -207,7 +160,7 @@ pub fn store_is_scoped_to_this_session() -> bool {
 /// preinstalled packages counted alongside fixtures.
 pub fn system_data_dir() -> Option<PathBuf> {
     system_data_dir_from(
-        system_override(SYSTEM_DIR_ENV),
+        dev_override(SYSTEM_DIR_ENV),
         std::env::var_os("TILO_APPS_DATA_DIR").is_some(),
     )
 }
@@ -231,13 +184,14 @@ fn system_data_dir_from(
 /// `TILO_APPS_SYSTEM_PAYLOAD_DIR` (developer builds only), else
 /// [`SYSTEM_PAYLOAD_DIR`].
 pub fn system_payload_dir() -> PathBuf {
-    system_override(SYSTEM_PAYLOAD_DIR_ENV)
+    dev_override(SYSTEM_PAYLOAD_DIR_ENV)
         .map_or_else(|| PathBuf::from(SYSTEM_PAYLOAD_DIR), PathBuf::from)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dev_env::dev_override_from;
 
     #[test]
     fn system_store_overrides_are_gated() {
@@ -245,17 +199,17 @@ mod tests {
         {
             for name in [SYSTEM_DIR_ENV, SYSTEM_PAYLOAD_DIR_ENV] {
                 assert_eq!(
-                    system_override_from(false, name, Some("/tmp/attacker-store".into())),
+                    dev_override_from(false, name, Some("/tmp/attacker-store".into())),
                     None,
                     "{name}"
                 );
                 assert_eq!(
-                    system_override_from(true, name, Some("/dev/store".into())),
+                    dev_override_from(true, name, Some("/dev/store".into())),
                     Some("/dev/store".into()),
                     "{name}"
                 );
             }
-            let gated = system_override_from(false, SYSTEM_DIR_ENV, Some("/tmp/attacker".into()));
+            let gated = dev_override_from(false, SYSTEM_DIR_ENV, Some("/tmp/attacker".into()));
             assert_eq!(
                 system_data_dir_from(gated, false),
                 Some(PathBuf::from(SYSTEM_DATA_DIR)),

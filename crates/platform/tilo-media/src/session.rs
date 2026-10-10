@@ -81,10 +81,6 @@ impl EngineSession {
         &mut self.engine
     }
 
-    pub fn engine_ref(&self) -> &MediaEngine {
-        &self.engine
-    }
-
     /// What the pipeline actually plugged.
     pub fn hw_report(&self) -> HwReport {
         self.engine.hw_report()

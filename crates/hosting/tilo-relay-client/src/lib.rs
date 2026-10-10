@@ -1,9 +1,7 @@
 //! `tilo-relay-client` — the device side of the Tilo host + relay that every
 //! peer shares, native or in a browser.
 //!
-//! - [`client`] — [`RelayClient`], a device's v1 session with a relay over
-//!   iroh (native peers and host agents); the relay's own v2 client, with
-//!   durable actions and interactive owners, is `tilo_relay_session::client`;
+//! - the session with a relay over iroh is `tilo_relay_session::RelayClient`;
 //! - [`frame`] — the length-prefixed frame codec every relay stream uses.
 //!   The daemon and the relay session client in `tilo-relay-session` read and write
 //!   through the same functions.
@@ -23,23 +21,9 @@
 
 #![deny(rust_2018_idioms)]
 #![warn(missing_docs)]
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        clippy::panic,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
 
 #[cfg(feature = "iroh")]
 pub mod certify;
-#[cfg(feature = "iroh")]
-pub mod client;
-#[cfg(feature = "iroh")]
-mod clock;
 pub mod coedit;
 #[cfg(feature = "iroh")]
 pub mod environment;
@@ -48,8 +32,6 @@ pub mod signer;
 
 #[cfg(feature = "iroh")]
 pub use certify::{Approver, CertificationOutcome, CertifyError, request_certification};
-#[cfg(feature = "iroh")]
-pub use client::{ClientError, RelayClient};
 pub use coedit::{AttributedPresence, CoeditError, CoeditPayload, Inbound};
 #[cfg(feature = "iroh")]
 pub use environment::{

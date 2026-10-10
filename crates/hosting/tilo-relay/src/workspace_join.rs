@@ -71,7 +71,7 @@ impl<S: WorkspaceJoinService> WorkspaceJoinProtocol<S> {
             .accept_bi()
             .await
             .map_err(|error| WorkspaceJoinError::Transport(error.to_string()))?;
-        let bytes = crate::framing::read_frame(&mut recv, MAX_WORKSPACE_JOIN_REQUEST_BYTES)
+        let bytes = crate::frame::read_frame(&mut recv, MAX_WORKSPACE_JOIN_REQUEST_BYTES)
             .await
             .map_err(|error| WorkspaceJoinError::Transport(error.to_string()))?;
         let request = postcard::from_bytes(&bytes)
@@ -84,7 +84,7 @@ impl<S: WorkspaceJoinService> WorkspaceJoinProtocol<S> {
                 "workspace join response exceeds the wire limit".into(),
             ));
         }
-        crate::framing::write_frame(&mut send, &bytes)
+        crate::frame::write_frame(&mut send, &bytes)
             .await
             .map_err(|error| WorkspaceJoinError::Transport(error.to_string()))?;
         send.finish()
@@ -94,7 +94,8 @@ impl<S: WorkspaceJoinService> WorkspaceJoinProtocol<S> {
     }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};

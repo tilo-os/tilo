@@ -108,14 +108,6 @@ fn focus_state(state: &crate::shell::chrome_state::ChromeState, clock: &dyn Cloc
 }
 
 impl ShellOverlayHost {
-    /// Replace the session's trigger sources — their clock and where
-    /// schedules persist. Tests and replays inject a manual clock here.
-    pub fn set_shortcut_triggers(&mut self, triggers: TriggerHost) {
-        self.shortcut_triggers.triggers = triggers;
-        self.shortcut_triggers.last_tick = None;
-        self.shortcut_triggers.apps_generation = None;
-    }
-
     /// Read the person's devices from `devices`, so each of their
     /// schedules runs on one of them.
     pub fn set_personal_devices(&mut self, devices: std::sync::Arc<dyn DeviceDirectory>) {
@@ -404,6 +396,7 @@ impl ShellOverlayHost {
             context: None,
             confirmation: None,
             revision: None,
+            wait_ms: None,
         };
         let outcome = BrokerActionHost::new(broker)
             .invoke_job(&caller, request)

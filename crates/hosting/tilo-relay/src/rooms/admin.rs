@@ -4,7 +4,8 @@
 //!
 //! One bounded postcard request and reply per bidirectional stream, as in the
 //! workspace-join protocol. The request names the caller's certificate; the
-//! relay accepts it only for the authenticated Iroh endpoint it arrived on.
+//! relay accepts it only for the authenticated Iroh endpoint it arrived on
+//! ([`auth::authenticate_endpoint_bound`]).
 //! The wire vocabulary and the device's `RoomAdminClient` live in
 //! `tilo_relay_session::rooms`.
 
@@ -15,6 +16,8 @@ use tilo_relay_session::rooms::{
     RoomCommand, RoomReply,
 };
 use tilo_user_identity::DeviceCert;
+
+use crate::auth::{self, AuthError, AuthenticatedPeer, HandshakeTrust};
 
 use super::Rooms;
 
@@ -46,15 +49,14 @@ impl RoomAdminProtocol {
             .accept_bi()
             .await
             .map_err(|error| RoomAdminError::Transport(error.to_string()))?;
-        let bytes = crate::framing::read_frame(&mut recv, MAX_REQUEST_BYTES)
+        let bytes = crate::frame::read_frame(&mut recv, MAX_REQUEST_BYTES)
             .await
             .map_err(|error| RoomAdminError::Transport(error.to_string()))?;
         let request: RoomAdminRequest = postcard::from_bytes(&bytes)
             .map_err(|error| RoomAdminError::Codec(error.to_string()))?;
-        let reply = if request.device_cert.device_public_key == remote {
-            self.execute(&request.device_cert, request.command).await
-        } else {
-            RoomReply::Refused("certificate does not match the authenticated endpoint".into())
+        let reply = match self.authenticate(&request.device_cert, &remote) {
+            Ok(_) => self.execute(&request.device_cert, request.command).await,
+            Err(error) => RoomReply::Refused(error.to_string()),
         };
         let bytes = postcard::to_stdvec(&reply)
             .map_err(|error| RoomAdminError::Codec(error.to_string()))?;
@@ -63,7 +65,7 @@ impl RoomAdminProtocol {
                 "room reply exceeds the wire limit".into(),
             ));
         }
-        crate::framing::write_frame(&mut send, &bytes)
+        crate::frame::write_frame(&mut send, &bytes)
             .await
             .map_err(|error| RoomAdminError::Transport(error.to_string()))?;
         send.finish()
@@ -72,11 +74,35 @@ impl RoomAdminProtocol {
         Ok(())
     }
 
+    /// The caller's certificate, bound to the Iroh endpoint `remote` that
+    /// QUIC already authenticated, valid and unrevoked. Who may run which
+    /// command is each command's own decision: the owner's devices
+    /// administer, and admitted members record their own receipts.
+    fn authenticate(
+        &self,
+        device: &DeviceCert,
+        remote: &[u8; 32],
+    ) -> Result<AuthenticatedPeer, AuthError> {
+        let host = &self.rooms.inner.host;
+        let revocations = host
+            .revocations
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        auth::authenticate_endpoint_bound(
+            device,
+            remote,
+            &host.cert.user_public_key,
+            HandshakeTrust::AnyCertifiedDevice,
+            &revocations,
+            tilo_clock::unix_now_ns(),
+        )
+    }
+
     async fn execute(&self, device: &DeviceCert, command: RoomCommand) -> RoomReply {
         let rooms = &self.rooms;
         let result = match command {
             RoomCommand::Create { name } => {
-                match rooms.authorize(device, super::now_ns(), "room.create") {
+                match rooms.authorize(device, tilo_clock::unix_now_ns(), "room.create") {
                     Ok(()) => rooms
                         .create(&name)
                         .await
@@ -85,10 +111,12 @@ impl RoomAdminProtocol {
                     Err(error) => Err(error),
                 }
             }
-            RoomCommand::List => match rooms.authorize(device, super::now_ns(), "room.list") {
-                Ok(()) => Ok(RoomReply::Rooms(rooms.list().await)),
-                Err(error) => Err(error),
-            },
+            RoomCommand::List => {
+                match rooms.authorize(device, tilo_clock::unix_now_ns(), "room.list") {
+                    Ok(()) => Ok(RoomReply::Rooms(rooms.list().await)),
+                    Err(error) => Err(error),
+                }
+            }
             RoomCommand::Enter { room } => rooms
                 .enter(&room, device)
                 .await

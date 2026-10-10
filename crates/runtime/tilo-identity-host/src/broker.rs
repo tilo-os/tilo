@@ -488,8 +488,19 @@ fn channel_keys(
         Ok(None) => return Response::Denied("no identity selected for this workspace".into()),
         Err(error) => return Response::Error(error.to_string()),
     };
-    if let Err(error) = require_trusted_current_device(&profile) {
-        return Response::Denied(error.to_string());
+    // The same trust check as signing, served from memory while none of the
+    // files it reads changed (`join_proof`): one `stat` of each instead of
+    // reading the device key and certificate. A changed, unreadable or
+    // just-written file, a revocation included, is checked again from disk;
+    // a refusal is never remembered. No key leaves the check.
+    match crate::join_proof::trusted_current_join_proof(route.workspace_id) {
+        Ok(trusted) if trusted.certificate.user_public_key == profile.user_public_key => {}
+        Ok(_) => {
+            return Response::Denied(
+                "this device certificate does not belong to the selected identity".into(),
+            );
+        }
+        Err(error) => return Response::Denied(error.to_string()),
     }
     let principal_id =
         Principal::person_from_key(Ed25519PublicKey::from_bytes(profile.user_public_key))
@@ -558,7 +569,9 @@ fn require_trusted_current_device(
             "this device certificate does not belong to the selected identity and device",
         ));
     }
-    let fleet = crate::device_fleet::DeviceFleetStore::from_env()?.load(&profile.id)?;
+    // Served from memory only while the fleet files are unchanged, so a
+    // revocation is seen by the very next call.
+    let fleet = crate::device_fleet::DeviceFleetStore::from_env()?.load_cached(&profile.id)?;
     if fleet.is_revoked(&device_key) {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
@@ -1160,22 +1173,89 @@ mod tests {
         assert_eq!(partial.read(&mut byte).unwrap(), 0);
     }
 
-    #[cfg(target_os = "linux")]
-    fn thread_ids() -> std::collections::BTreeSet<String> {
-        std::fs::read_dir("/proc/self/task")
-            .expect("tasks")
-            .map(|entry| entry.expect("task").file_name().into_string().expect("tid"))
-            .collect()
+    /// A channel service holding keys for every route.
+    struct ReadyChannels;
+    impl ChannelKeySource for ReadyChannels {
+        fn access(
+            &self,
+            _room: RoomId,
+            _channel: collab_types::ChannelId,
+            _known_generation: u64,
+        ) -> Option<Result<ChannelKeys, String>> {
+            Some(Ok((
+                runtime_identity::wire::ChannelAccess::Ready,
+                1,
+                vec![1, 2, 3],
+            )))
+        }
     }
 
-    #[cfg(target_os = "linux")]
-    fn context_switches(tid: &str) -> u64 {
-        std::fs::read_to_string(format!("/proc/self/task/{tid}/status"))
-            .expect("thread status")
-            .lines()
-            .filter(|line| line.contains("ctxt_switches"))
-            .filter_map(|line| line.split_whitespace().nth(1)?.parse::<u64>().ok())
-            .sum()
+    /// Answering an app's key request checks this device's trust from the
+    /// identity files while they are unchanged without reading them again,
+    /// and still refuses keys on the very next request after a revocation.
+    #[test]
+    fn channel_keys_trust_check_reads_identity_files_once_and_sees_revocation() {
+        let fixture = crate::join_proof::tests::Fixture::new();
+        let room = RoomId::parse(&fixture.room).expect("room");
+        let app_id = "so.tilo.notes";
+        let profile = crate::registry::selected_identity_profile(&fixture.room)
+            .expect("registry")
+            .expect("profile");
+        let mut workspace = Workspace::new(WorkspaceId(1), "Room");
+        workspace.room = room;
+        workspace.set_owner(profile.principal_id());
+        let mut tree = WorkspaceTree::default();
+        tree.desktop.workspaces.push(workspace);
+        let tree = tree.shared();
+        let ask = || {
+            channel_keys(
+                &tree,
+                &ReadyChannels,
+                &ChannelKeyRoute {
+                    bound_room: &room,
+                    bound_app_id: app_id,
+                    workspace_id: &fixture.room,
+                    app_id,
+                    record_id: "note",
+                },
+                0,
+            )
+        };
+        let fleet_loads = crate::device_fleet::loads_on_this_thread();
+        let derived = crate::join_proof::tests::mints(|| {
+            for _ in 0..3 {
+                assert!(matches!(ask(), Response::ChannelKeys { .. }));
+            }
+        });
+        assert_eq!(
+            derived, 1,
+            "the identity files are read for the first answer only"
+        );
+        assert!(
+            crate::device_fleet::loads_on_this_thread().saturating_sub(fleet_loads) <= 1,
+            "the fleet is read at most once"
+        );
+
+        let device = trusted_current_device(&fixture.room)
+            .expect("trusted device")
+            .0
+            .verifying_key()
+            .to_bytes();
+        fixture
+            .store()
+            .revoke(
+                &fixture.identity_id,
+                device,
+                tilo_user_identity::RevocationReason::Lost,
+                crate::join_proof::tests::proof_issued_at(&fixture).saturating_add(1),
+            )
+            .expect("revoke");
+        assert!(
+            matches!(ask(), Response::Denied(_)),
+            "a revoked device gets no keys on the next request"
+        );
+        fixture.settle();
+        assert!(matches!(ask(), Response::Denied(_)), "nor once it settles");
     }
 
     #[cfg(target_os = "linux")]
@@ -1183,37 +1263,15 @@ mod tests {
     fn an_idle_listener_sleeps_until_a_client_arrives() {
         let temp = tempfile::tempdir().expect("temp");
         let socket = temp.path().join("identity.sock");
-        let before = thread_ids();
-        let broker = spawn(
-            socket.clone(),
-            Arc::new(WorkspaceTree::default().shared()),
-            Arc::new(()),
-        )
-        .expect("broker");
-        // A thread names itself once it runs, so it may not be named yet.
-        let waiting = std::time::Instant::now();
-        let listener = loop {
-            let named = thread_ids()
-                .difference(&before)
-                .find(|tid| {
-                    std::fs::read_to_string(format!("/proc/self/task/{tid}/comm"))
-                        .is_ok_and(|comm| comm.trim() == "tilo-identity-b")
-                })
-                .cloned();
-            if let Some(tid) = named {
-                break tid;
-            }
-            assert!(
-                waiting.elapsed() < Duration::from_secs(5),
-                "the broker's listener thread"
-            );
-            thread::sleep(Duration::from_millis(5));
-        };
-        thread::sleep(Duration::from_millis(50));
-        let settled = context_switches(&listener);
-        thread::sleep(Duration::from_millis(400));
-        let woke = context_switches(&listener).saturating_sub(settled);
-        assert_eq!(woke, 0, "an idle listener woke {woke} times in 400 ms");
+        let (broker, listener) = tilo_test_env::idle::spawned_thread("tilo-identity-b", || {
+            spawn(
+                socket.clone(),
+                Arc::new(WorkspaceTree::default().shared()),
+                Arc::new(()),
+            )
+            .expect("broker")
+        });
+        tilo_test_env::idle::assert_stays_asleep(&listener, "identity broker listener");
 
         UnixStream::connect(&socket).expect("still accepts clients");
         let started = std::time::Instant::now();

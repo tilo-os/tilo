@@ -12,7 +12,7 @@ use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Arc, BezPath, Point, Rect, RoundedRect, Shape, Stroke};
 use vello::peniko::{Color, Fill};
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::event::WindowEvent;
 
 use crate::a11y::{AccessNode, AccessState, Role};
 use crate::color_compat::ColorCompat;
@@ -21,7 +21,7 @@ use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::chart_navigation::{
-    ChartNavAction, ChartTouchAction, ChartTouchTracker, chart_nav_action, moved_index,
+    ChartNavAction, ChartTouchTracker, InteractiveChart, handle_chart_event, moved_index,
 };
 use crate::widget::{TaffyTreeExt, Widget};
 
@@ -406,6 +406,52 @@ fn ribbon(center: Point, radius: f64, a0: f64, a1: f64, b0: f64, b1: f64) -> Bez
     p
 }
 
+impl InteractiveChart for ChordChart {
+    fn interaction(&mut self) -> (&mut Point, &mut bool, &mut ChartTouchTracker) {
+        (
+            &mut self.pointer,
+            &mut self.keyboard_inspection,
+            &mut self.touch,
+        )
+    }
+    fn update_hover(&mut self) {
+        self.hovered = self.hit(self.pointer);
+    }
+    fn clear_hover(&mut self) {
+        self.hovered = None;
+    }
+    fn activate_hovered(&mut self) -> bool {
+        let Some(selection) = self.hovered.clone() else {
+            return false;
+        };
+        self.activated = Some(selection);
+        true
+    }
+    fn move_keyboard_inspection(&mut self, action: ChartNavAction) -> bool {
+        let candidates = self
+            .nodes
+            .iter()
+            .map(|node| ChordSelection::Node(node.id.clone()))
+            .chain(
+                self.links
+                    .iter()
+                    .filter(|link| link.value.is_finite() && link.value > 0.0)
+                    .map(|link| ChordSelection::Link(link.id.clone())),
+            )
+            .collect::<Vec<_>>();
+        let current = self
+            .hovered
+            .as_ref()
+            .and_then(|selection| candidates.iter().position(|item| item == selection));
+        self.hovered = moved_index(current, candidates.len(), action)
+            .and_then(|index| candidates.get(index).cloned());
+        if let Some(selection) = self.hovered.as_ref() {
+            self.pointer = self.inspection_anchor(selection);
+        }
+        self.hovered.is_some()
+    }
+}
+
 impl Widget for ChordChart {
     fn build_layout(
         &mut self,
@@ -413,24 +459,18 @@ impl Widget for ChordChart {
         _theme: &Theme,
         map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: Dimension::percent(1.0),
                 height: Dimension::length(self.height),
             },
             ..Default::default()
-        });
-        map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, map, self)
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x + l.size.width),
-            origin.y + f64::from(l.location.y + l.size.height),
-        );
+        self.rect = crate::widget::placed(&l, origin);
     }
     #[allow(
         clippy::too_many_lines,
@@ -658,76 +698,7 @@ impl Widget for ChordChart {
         }
     }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        let node = ctx.node_id;
-        if let Some(action) = self.touch.handle(event, ctx.scale_factor) {
-            match action {
-                ChartTouchAction::Inspect(point) => {
-                    self.pointer = point;
-                    self.hovered = self.hit(point);
-                    self.keyboard_inspection = false;
-                }
-                ChartTouchAction::Activate(point) => {
-                    self.pointer = point;
-                    self.hovered = self.hit(point);
-                    if let Some(selection) = self.hovered.clone() {
-                        self.activated = Some(selection);
-                        *ctx.handled = true;
-                        *ctx.focus_target = Some(node);
-                    }
-                }
-                ChartTouchAction::Clear => self.hovered = None,
-            }
-            return;
-        }
-        if let WindowEvent::CursorMoved { position, .. } = event {
-            self.pointer = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
-            self.hovered = self.hit(self.pointer);
-            self.keyboard_inspection = false;
-        }
-        if matches!(event, WindowEvent::CursorLeft { .. }) && !self.keyboard_inspection {
-            self.hovered = None;
-        }
-        if matches!(
-            event,
-            WindowEvent::MouseInput {
-                state: ElementState::Released,
-                button: MouseButton::Left,
-                ..
-            }
-        ) && let Some(selection) = self.hit(self.pointer)
-        {
-            self.activated = Some(selection);
-            *ctx.handled = true;
-        }
-        if let Some(action) = chart_nav_action(event) {
-            if action == ChartNavAction::Activate {
-                self.activated.clone_from(&self.hovered);
-            } else {
-                let candidates = self
-                    .nodes
-                    .iter()
-                    .map(|node| ChordSelection::Node(node.id.clone()))
-                    .chain(
-                        self.links
-                            .iter()
-                            .filter(|link| link.value.is_finite() && link.value > 0.0)
-                            .map(|link| ChordSelection::Link(link.id.clone())),
-                    )
-                    .collect::<Vec<_>>();
-                let current = self
-                    .hovered
-                    .as_ref()
-                    .and_then(|selection| candidates.iter().position(|item| item == selection));
-                self.hovered = moved_index(current, candidates.len(), action)
-                    .and_then(|index| candidates.get(index).cloned());
-                self.keyboard_inspection = self.hovered.is_some();
-                if let Some(selection) = self.hovered.as_ref() {
-                    self.pointer = self.inspection_anchor(selection);
-                }
-            }
-            *ctx.handled = true;
-            *ctx.focus_target = Some(node);
-        }
+        handle_chart_event(self, event, ctx);
     }
     fn accessibility(&self) -> Option<AccessNode> {
         let mut root = AccessNode::new(Role::Group).with_name(if self.title.is_empty() {
@@ -777,20 +748,17 @@ impl Widget for ChordChart {
         _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
-        if !matches!(action, crate::a11y::Action::Activate) {
-            return false;
-        }
-        let Some(key) = keys.last() else {
+        let Some(key) = crate::widget::chart_navigation::activated_key(action, keys) else {
             return false;
         };
         for node in &self.nodes {
-            if crate::a11y::hash_key(&format!("node:{}", node.id)) == *key {
+            if crate::a11y::hash_key(&format!("node:{}", node.id)) == key {
                 self.activated = Some(ChordSelection::Node(node.id.clone()));
                 return true;
             }
         }
         for link in &self.links {
-            if crate::a11y::hash_key(&format!("link:{}", link.id)) == *key {
+            if crate::a11y::hash_key(&format!("link:{}", link.id)) == key {
                 self.activated = Some(ChordSelection::Link(link.id.clone()));
                 return true;
             }

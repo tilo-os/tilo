@@ -774,6 +774,13 @@ impl ShortcutRuns {
         }
     }
 
+    /// Whether a finished run is waiting to be taken.
+    pub fn has_finished(&self) -> bool {
+        self.finished
+            .lock()
+            .is_ok_and(|finished| !finished.is_empty())
+    }
+
     /// Every finished run not taken yet, oldest first.
     pub fn take(&self) -> Vec<FinishedShortcutRun> {
         self.finished

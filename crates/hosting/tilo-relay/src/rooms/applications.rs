@@ -1,8 +1,8 @@
 //! Canonical records created by the governing host's compiled application factory.
 //! This is a host-local operation; incoming member documents cannot mint ownership.
 
-use super::{CollaborationError, Rooms, now_ns, system_time};
-use tilo_agent_participant::{AppCatalogue, Replica, Seed};
+use super::{CollaborationError, Rooms, system_time};
+use tilo_agent_participant::{AppCatalogue, ConfinedReplica, Seed};
 use tilo_user_identity::DeviceCert;
 
 impl Rooms {
@@ -26,7 +26,7 @@ impl Rooms {
         app: &str,
         change: impl FnOnce(&mut automerge::AutoCommit) -> Result<R, String>,
     ) -> Result<R, CollaborationError> {
-        let now = now_ns();
+        let now = tilo_clock::unix_now_ns();
         self.authorize(governor, now, "application.author")?;
         if governor != &self.inner.host.cert {
             return Err(CollaborationError::new(
@@ -104,7 +104,7 @@ impl Rooms {
         catalogue: &AppCatalogue,
         app: &str,
     ) -> Result<bool, CollaborationError> {
-        let now = now_ns();
+        let now = tilo_clock::unix_now_ns();
         self.authorize(governor, now, "application.prepare")?;
         if governor != &self.inner.host.cert {
             return Err(CollaborationError::new(
@@ -132,7 +132,9 @@ impl Rooms {
         if governed.peer().document(app, "").is_some() {
             return Ok(false);
         }
-        let mut source = Replica::open(
+        // The factory is the app's own code: it runs in a confined app
+        // worker, and its genesis is admitted here before it is signed.
+        let source = ConfinedReplica::open(
             catalogue,
             app,
             room,
@@ -146,7 +148,8 @@ impl Rooms {
                 "factory primary route differs from its declaration",
             ));
         }
-        let Some(collab_types::DocumentMutation::Snapshot(genesis)) = source.take_mutation() else {
+        let Ok(Some(collab_types::DocumentMutation::Snapshot(genesis))) = source.take_mutation()
+        else {
             return Err(CollaborationError::new(
                 "factory did not produce a genesis snapshot",
             ));

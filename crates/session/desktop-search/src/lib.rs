@@ -12,16 +12,6 @@
 //! - [`palette`]: the toolkit's command palette over those sources.
 //! - [`availability`]: the manifest registry's apps a desktop cannot run,
 //!   with the reason shown for each.
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        clippy::panic,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
 
 pub mod availability;
 pub mod kind;

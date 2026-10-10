@@ -219,12 +219,12 @@ fn type_text(controller: &mut PortalDialogController, text: &str) {
         } else {
             Key::Character(ch.to_string().into())
         };
-        assert!(edit(controller, key));
+        assert!(edit(controller, &key));
     }
 }
 
-fn edit(controller: &mut PortalDialogController, key: Key) -> bool {
-    let event = crate::shell::test_support::typed_key_event(key);
+fn edit(controller: &mut PortalDialogController, key: &Key) -> bool {
+    let event = ui::synthetic_input::key_input(key, winit::event::ElementState::Pressed);
     crate::shell::test_support::with_scratch_event_ctx(|ctx| controller.edit_secret(&event, ctx))
 }
 
@@ -414,7 +414,7 @@ async fn an_8021x_sign_in_returns_identity_and_password_in_the_8021x_setting() {
     type_text(&mut controller, "tr0ub4dor&3");
     // Untick "Remember": Tab to its row, Space.
     assert!(controller.select_next(false));
-    assert!(edit(&mut controller, Key::Named(NamedKey::Space)));
+    assert!(edit(&mut controller, &Key::Named(NamedKey::Space)));
     assert_eq!(controller.state_json()["remember"], false);
     assert!(controller.confirm());
 

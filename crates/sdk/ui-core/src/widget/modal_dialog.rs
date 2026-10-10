@@ -1042,11 +1042,6 @@ impl ModalSheet {
     pub fn focused_action(&self) -> Option<usize> {
         self.focus
     }
-
-    /// Put keyboard focus on an action (`None` clears it).
-    pub fn set_focused_action(&mut self, action: Option<usize>) {
-        self.focus = action;
-    }
 }
 
 /// One footer action of a [`ModalDialog`]. The dialog runs it from its own
@@ -1152,12 +1147,11 @@ impl Widget for FooterKey {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         // Out of flow and empty: the dialog places the action itself.
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             position: taffy::Position::Absolute,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
@@ -2127,15 +2121,8 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         // centred where the first paint will put it, so the content is
         // placed where it is drawn and hit from the first frame.
         if !self.presented {
-            self.window = tree_window(taffy, node).unwrap_or_else(|| {
-                Rect::from_origin_size(
-                    (
-                        origin.x + f64::from(l.location.x),
-                        origin.y + f64::from(l.location.y),
-                    ),
-                    (f64::from(l.size.width), f64::from(l.size.height)),
-                )
-            });
+            self.window =
+                tree_window(taffy, node).unwrap_or_else(|| crate::widget::placed(&l, origin));
         }
         let Some(content_node) = taffy
             .children(node)

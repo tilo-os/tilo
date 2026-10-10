@@ -11,11 +11,12 @@ use std::collections::HashMap as StdHashMap;
 use std::rc::Rc;
 use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
 use tilo_desktop::i18n::t as desktop_text;
+use ui::widget::TaffyTreeExt;
 use vello::Scene;
 use vello::kurbo::Affine;
 use winit::dpi::PhysicalPosition;
-use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
-use winit::keyboard::{Key, KeyLocation, NamedKey, PhysicalKey};
+use winit::event::{ElementState, MouseScrollDelta, WindowEvent};
+use winit::keyboard::{Key, NamedKey};
 
 /// Mock content widget recording every [`Widget::handle_event`] call by
 /// event-variant name, so tests can assert which events reached it —
@@ -48,19 +49,12 @@ impl Widget for RecordingContent {
             },
             ..Default::default()
         };
-        let node = taffy.new_leaf(style).unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = ui::widget::placed(l, origin);
     }
 
     fn draw(
@@ -412,14 +406,14 @@ fn directory_action_rows_paint_label_and_subtitle_at_normal_and_narrow_sizes() {
 
 fn cursor_moved_at(p: Point) -> WindowEvent {
     WindowEvent::CursorMoved {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         position: PhysicalPosition::new(p.x, p.y),
     }
 }
 
 fn touch_at(id: u64, phase: winit::event::TouchPhase, x: f64, y: f64) -> WindowEvent {
     WindowEvent::Touch(winit::event::Touch {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         phase,
         location: PhysicalPosition::new(x, y),
         force: None,
@@ -427,13 +421,9 @@ fn touch_at(id: u64, phase: winit::event::TouchPhase, x: f64, y: f64) -> WindowE
     })
 }
 
-fn left_button_released() -> WindowEvent {
-    WindowEvent::MouseInput {
-        device_id: unsafe { std::mem::zeroed() },
-        state: ElementState::Released,
-        button: MouseButton::Left,
-    }
-}
+use ui::synthetic_input::{
+    mouse_press as left_button_pressed, mouse_release, mouse_release as left_button_released,
+};
 
 fn pump(h: &mut AbsorbHarness, event: &WindowEvent) -> bool {
     pump_with_modifiers(h, event, winit::event::Modifiers::default())
@@ -444,24 +434,11 @@ fn pump_with_modifiers(
     event: &WindowEvent,
     modifiers: winit::event::Modifiers,
 ) -> bool {
-    let mut doc = AutoCommit::new();
-    let root = automerge::ROOT.clone();
-    let mut focus: Option<NodeId> = None;
-    let mut handled = false;
-    h.host.handle_event(
-        event,
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &modifiers,
-            state: ui::widget::Edits::lend(&mut doc),
-            path: &root,
-            handled: &mut handled,
-            focus_target: &mut focus,
-            node_id: h.root_node,
-            taffy: &h.taffy,
-        },
-    );
-    handled
+    ui::testing::Dispatch::new()
+        .modifiers(modifiers)
+        .layout(&h.taffy, h.root_node)
+        .send(&mut h.host, event)
+        .handled
 }
 
 #[test]
@@ -695,39 +672,21 @@ fn keys_and_touch_gestures_cancel_cleanly_without_terminal_actions() {
     touchscreen_swipes_take_strips_with_three_fingers_and_workspaces_with_four();
 }
 
-fn left_button_pressed() -> WindowEvent {
-    WindowEvent::MouseInput {
-        device_id: unsafe { std::mem::zeroed() },
-        state: ElementState::Pressed,
-        button: MouseButton::Left,
-    }
-}
+use ui::synthetic_input::mouse_press;
 
 fn key_pressed(key: Key) -> WindowEvent {
-    let mut event: KeyEvent = unsafe { std::mem::zeroed() };
-    event.logical_key = key;
-    event.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-    event.location = KeyLocation::Standard;
-    event.state = ElementState::Pressed;
-    event.repeat = false;
-    event.text = None;
+    let event = ui::synthetic_input::key_event(key, None, ElementState::Pressed);
     WindowEvent::KeyboardInput {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         event,
         is_synthetic: false,
     }
 }
 
 fn key_released(key: Key) -> WindowEvent {
-    let mut event: KeyEvent = unsafe { std::mem::zeroed() };
-    event.logical_key = key;
-    event.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-    event.location = KeyLocation::Standard;
-    event.state = ElementState::Released;
-    event.repeat = false;
-    event.text = None;
+    let event = ui::synthetic_input::key_event(key, None, ElementState::Released);
     WindowEvent::KeyboardInput {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         event,
         is_synthetic: false,
     }
@@ -753,7 +712,7 @@ fn paint_then_click(h: &mut AbsorbHarness, point_of: impl Fn(&ShellOverlayHost) 
     paint(h);
     let p = point_of(&h.host);
     pump(h, &cursor_moved_at(p));
-    pump(h, &left_button_pressed());
+    pump(h, &mouse_press());
 }
 
 /// Paint, re-lay-out, paint again — the two-frame settle the shell
@@ -1441,7 +1400,7 @@ fn launcher_chips_fit_and_stay_reachable_at_every_width_and_text_size() {
             let more = h.host.search_filters.search_more_rect;
             assert!(more.area() > 0.0, "the last kind is reached through More");
             pump(&mut h, &cursor_moved_at(more.center()));
-            pump(&mut h, &left_button_pressed());
+            pump(&mut h, &mouse_press());
             h.host.search_filters.more_open = true;
             settle(&mut h, vw, vh);
         }
@@ -1456,7 +1415,7 @@ fn launcher_chips_fit_and_stay_reachable_at_every_width_and_text_size() {
             "opening More must give the last kind a clickable rect"
         );
         pump(&mut h, &cursor_moved_at(target.center()));
-        pump(&mut h, &left_button_pressed());
+        pump(&mut h, &mouse_press());
 
         assert_eq!(
             h.host.active_kind_filter,
@@ -1778,7 +1737,7 @@ fn open_overlays_absorb_their_input_and_leave_the_rest_to_content() {
         pump(&mut h, &cursor_moved_at(p));
         h.log.borrow_mut().clear();
 
-        let released = left_button_released();
+        let released = mouse_release();
         let handled = pump(&mut h, &released);
 
         assert!(
@@ -1860,7 +1819,7 @@ fn open_overlays_absorb_their_input_and_leave_the_rest_to_content() {
         let _ = pump(&mut h, &cursor_moved_at(p));
         h.log.borrow_mut().clear();
         assert!(
-            !pump(&mut h, &left_button_pressed()),
+            !pump(&mut h, &mouse_press()),
             "a click in the old Help-pill corner must not be claimed by shell chrome"
         );
         assert!(
@@ -1903,7 +1862,7 @@ fn quick_settings_power_tile_and_drill_ins_own_their_pointer_input() {
             .expect("the visible Power tile has semantic geometry");
 
         let _ = pump(&mut h, &cursor_moved_at(power.center()));
-        assert!(pump(&mut h, &left_button_pressed()));
+        assert!(pump(&mut h, &mouse_press()));
         assert!(h.host.layers.power_menu.is_open());
         assert!(!h.chrome.borrow().overlays.quick_settings);
     }
@@ -1924,7 +1883,7 @@ fn quick_settings_power_tile_and_drill_ins_own_their_pointer_input() {
             .transform_quick_settings_point_for_test(stable_power.center(), Instant::now());
 
         let _ = pump(&mut h, &cursor_moved_at(painted_power));
-        assert!(pump(&mut h, &left_button_pressed()));
+        assert!(pump(&mut h, &mouse_press()));
         assert!(
             h.host.layers.power_menu.is_open(),
             "clicking the visibly transformed Power tile must open its menu"
@@ -1948,6 +1907,7 @@ fn quick_settings_power_tile_and_drill_ins_own_their_pointer_input() {
                     ssid: format!("Network {index}"),
                     signal: 3,
                     secure: false,
+                    security: os_actions::WifiSecurity::Open,
                     connected: false,
                 })
                 .collect();
@@ -2099,7 +2059,7 @@ fn notification_history_is_labelled_navigable_paged_and_recoverably_cleared() {
 
             assert!(pump(&mut h, &cursor_moved_at(panel.center())));
             let wheel = WindowEvent::MouseWheel {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 delta: MouseScrollDelta::LineDelta(0.0, -2.0),
                 phase: winit::event::TouchPhase::Moved,
             };
@@ -2452,6 +2412,11 @@ fn s1_review_fixtures_are_written_in_dark_and_light() {
             ssid: ssid.into(),
             signal,
             secure,
+            security: if secure {
+                os_actions::WifiSecurity::Wpa2
+            } else {
+                os_actions::WifiSecurity::Open
+            },
             connected,
         }
     }
@@ -2680,7 +2645,7 @@ fn workspace_lens_and_shortcut_help_adapt_between_wide_and_compact_outputs() {
         assert!(!lens.contains(workspace_point));
         pump(&mut h, &cursor_moved_at(workspace_point));
         h.log.borrow_mut().clear();
-        assert!(!pump(&mut h, &left_button_pressed()));
+        assert!(!pump(&mut h, &mouse_press()));
         assert!(
             h.log
                 .borrow()
@@ -2843,7 +2808,7 @@ fn notification_reader_native_keys_scroll_back_cancel_and_pointer_are_modal() {
             position: PhysicalPosition::new(read.center().x, read.center().y),
         }
     ));
-    assert!(pump(&mut h, &left_button_pressed()));
+    assert!(pump(&mut h, &mouse_press()));
     assert!(h.host.notification_center.is_reading());
     settle(&mut h, width, height);
     let back = h.host.qs_notification_back_rect();
@@ -2854,7 +2819,7 @@ fn notification_reader_native_keys_scroll_back_cancel_and_pointer_are_modal() {
             position: PhysicalPosition::new(back.center().x, back.center().y),
         }
     ));
-    assert!(pump(&mut h, &left_button_pressed()));
+    assert!(pump(&mut h, &mouse_press()));
     assert!(!h.host.notification_center.is_reading());
     assert_eq!(h.chrome.borrow().notification_history().len(), original);
     assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::Escape))));
@@ -3007,8 +2972,8 @@ fn workspace_name_pointer_keys_cancel_reopen_resize_and_commit() {
         .clone();
     let point = h.host.workspace_settings_overlay.name_rect().center();
     assert!(pump(&mut h, &cursor_moved_at(point)));
-    assert!(pump(&mut h, &left_button_pressed()));
-    assert!(pump(&mut h, &left_button_released()));
+    assert!(pump(&mut h, &mouse_press()));
+    assert!(pump(&mut h, &mouse_release()));
     assert_eq!(
         h.chrome.borrow().editing_workspace_name.as_deref(),
         Some(original.as_str())
@@ -3042,8 +3007,8 @@ fn workspace_name_pointer_keys_cancel_reopen_resize_and_commit() {
     );
     let point = h.host.workspace_settings_overlay.name_rect().center();
     assert!(pump(&mut h, &cursor_moved_at(point)));
-    assert!(pump(&mut h, &left_button_pressed()));
-    assert!(pump(&mut h, &left_button_released()));
+    assert!(pump(&mut h, &mouse_press()));
+    assert!(pump(&mut h, &mouse_release()));
     assert!(pump_with_modifiers(
         &mut h,
         &key_pressed(Key::Character("a".into())),
@@ -3135,8 +3100,8 @@ fn workspace_name_native_render_and_resize_matrix() {
         settle_with_theme(&mut h, f64::from(width), f64::from(height), &theme);
         let point = h.host.workspace_settings_overlay.name_rect().center();
         assert!(pump(&mut h, &cursor_moved_at(point)));
-        assert!(pump(&mut h, &left_button_pressed()));
-        assert!(pump(&mut h, &left_button_released()));
+        assert!(pump(&mut h, &mouse_press()));
+        assert!(pump(&mut h, &mouse_release()));
         assert!(h.chrome.borrow().editing_workspace_name.is_some());
         assert!(pump_with_modifiers(
             &mut h,
@@ -3218,8 +3183,8 @@ fn workspace_name_submit_ownership_ends_on_release_focus_loss_and_fresh_press() 
         settle(&mut h, 1280.0, 800.0);
         let point = h.host.workspace_settings_overlay.name_rect().center();
         assert!(pump(&mut h, &cursor_moved_at(point)));
-        assert!(pump(&mut h, &left_button_pressed()));
-        assert!(pump(&mut h, &left_button_released()));
+        assert!(pump(&mut h, &mouse_press()));
+        assert!(pump(&mut h, &mouse_release()));
         assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::Enter))));
         let mut held = key_pressed(Key::Named(NamedKey::Enter));
         if let WindowEvent::KeyboardInput { event, .. } = &mut held {
@@ -3244,5 +3209,233 @@ fn workspace_name_submit_ownership_ends_on_release_focus_loss_and_fresh_press() 
             "a fresh key still reaches app content beside the contextual lens"
         );
         assert!(h.chrome.borrow().overlays.ws_settings);
+    }
+}
+
+#[test]
+fn notification_banner_completed_click_and_interrupted_gestures() {
+    for interruption in ["outside", "escape", "focus", "resize", "retired"] {
+        let mut h = build_harness_sized(960.0, 540.0);
+        let id = h.chrome.borrow_mut().push_notification_full(
+            tilo_desktop::notifications::Notification::new(
+                "Backup failed",
+                "Try again from Search.",
+            ),
+        );
+        let theme = Theme::dark().with_reduce_motion(true);
+        settle_with_theme(&mut h, 960.0, 540.0, &theme);
+        let point = h.host.notification_stack.rect().center();
+        pump(&mut h, &cursor_moved_at(point));
+        assert!(pump(&mut h, &left_button_pressed()));
+        assert_eq!(
+            h.chrome.borrow().notifications().len(),
+            1,
+            "a press must not activate or retire the banner: {interruption}"
+        );
+        match interruption {
+            "outside" => {
+                pump(&mut h, &cursor_moved_at(Point::new(80.0, 400.0)));
+            }
+            "escape" => {
+                assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::Escape))));
+            }
+            "focus" => {
+                pump(&mut h, &WindowEvent::Focused(false));
+            }
+            "resize" => {
+                settle_with_theme(&mut h, 780.0, 540.0, &theme);
+            }
+            "retired" => {
+                h.chrome.borrow_mut().dismiss_notification(id);
+            }
+            _ => unreachable!(),
+        }
+        assert!(
+            pump(&mut h, &left_button_released()),
+            "the banner owns its release"
+        );
+        assert_eq!(
+            h.chrome.borrow().notifications().len(),
+            usize::from(interruption != "retired")
+        );
+        assert!(
+            !h.log
+                .borrow()
+                .iter()
+                .any(|event| event == "MouseInput::Released"),
+            "an interrupted banner release must not reach content"
+        );
+        pump(&mut h, &cursor_moved_at(Point::new(80.0, 400.0)));
+        h.log.borrow_mut().clear();
+        pump(&mut h, &left_button_pressed());
+        pump(&mut h, &left_button_released());
+        assert!(
+            h.log
+                .borrow()
+                .iter()
+                .any(|event| event == "MouseInput::Released"),
+            "the next ordinary desktop click is not captured"
+        );
+        if interruption != "retired" {
+            settle_with_theme(&mut h, 780.0, 540.0, &theme);
+            let point = h.host.notification_stack.rect().center();
+            pump(&mut h, &cursor_moved_at(point));
+            assert!(pump(&mut h, &left_button_pressed()));
+            assert!(pump(&mut h, &left_button_released()));
+            assert!(h.chrome.borrow().notifications().is_empty());
+            assert_eq!(h.chrome.borrow().notification_history().len(), 1);
+        }
+    }
+}
+
+fn capture_banner_pointer_state(
+    h: &mut AbsorbHarness,
+    theme: &Theme,
+    width: u32,
+    path: &std::path::Path,
+) {
+    let bounds = h.host.notification_stack.rect();
+    let mut scene = Scene::new();
+    h.host.notification_stack.draw(
+        &ChromeNotifications::new(&h.chrome),
+        &mut scene,
+        Affine::translate((24.0 - bounds.x0, 24.0 - bounds.y0)),
+        &mut TextRenderer::new(),
+        theme,
+    );
+    offscreen::OffscreenRenderer::new(width, 300).render_png(
+        &scene,
+        theme.tokens.colors.surfaces.base,
+        path,
+    );
+    assert!(path.is_file(), "the banner capture must exist");
+}
+
+fn banner_pointer_capture_variants() -> [(&'static str, Theme, f64, u32); 6] {
+    [
+        ("dark", Theme::dark(), 640.0, 440),
+        ("light", Theme::light(), 640.0, 440),
+        ("large-text", Theme::dark().with_text_scale(2.0), 640.0, 440),
+        (
+            "contrast",
+            Theme::high_contrast().with_text_scale(2.0),
+            640.0,
+            440,
+        ),
+        (
+            "combined",
+            Theme::dark().with_ui_scale(1.5).with_text_scale(1.3),
+            800.0,
+            440,
+        ),
+        ("narrow", Theme::light().with_text_scale(2.0), 320.0, 320),
+    ]
+}
+
+#[test]
+fn notification_banner_pointer_feedback_matches_shared_close_face() {
+    let out = std::env::var_os("TILO_BANNER_POINTER_EVIDENCE").map_or_else(
+        || std::path::PathBuf::from("target/banner-pointer-review"),
+        std::path::PathBuf::from,
+    );
+    std::fs::create_dir_all(&out).unwrap();
+    let mut missing_feedback = Vec::new();
+    for (name, theme, viewport, width) in banner_pointer_capture_variants() {
+        let theme = theme.with_reduce_motion(true);
+        let mut h = build_harness_sized(viewport, 540.0);
+        h.chrome.borrow_mut().push_notification_full(
+            tilo_desktop::notifications::Notification::new(
+                "Backup failed",
+                "Try again from Search.",
+            )
+            .with_app_name("Files")
+            .with_severity(tilo_desktop::notifications::NotificationSeverity::Error),
+        );
+        settle_with_theme(&mut h, viewport, 540.0, &theme);
+        let card = h.host.notification_stack.rect();
+        assert!(card.area() > 0.0);
+        let hit = ui::widget::toast::paint_card(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &theme,
+            card,
+            &ui::widget::toast::ToastCard::new(
+                "Backup failed",
+                ui::widget::toast::ToastKind::Error,
+            )
+            .body("Try again from Search.")
+            .caption("Files")
+            .closable(true),
+        );
+        let idle = out.join(format!("{name}-idle.png"));
+        capture_banner_pointer_state(&mut h, &theme, width, &idle);
+        pump(&mut h, &cursor_moved_at(hit.close_rect.center()));
+        let hover = out.join(format!("{name}-hover.png"));
+        capture_banner_pointer_state(&mut h, &theme, width, &hover);
+        if std::fs::read(&idle).unwrap() == std::fs::read(&hover).unwrap() {
+            missing_feedback.push(name);
+        }
+        assert!(pump(&mut h, &left_button_pressed()));
+        assert_eq!(h.chrome.borrow().notifications().len(), 1);
+        capture_banner_pointer_state(
+            &mut h,
+            &theme,
+            width,
+            &out.join(format!("{name}-pressed.png")),
+        );
+        assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::Escape))));
+        assert!(pump(&mut h, &left_button_released()));
+        assert_eq!(
+            h.chrome.borrow().notifications().len(),
+            1,
+            "cancelled close gestures retain the error"
+        );
+    }
+    assert!(
+        missing_feedback.is_empty(),
+        "the actual banner pointer path must feed shared close hover: {missing_feedback:?}"
+    );
+}
+
+#[test]
+fn notification_banner_lost_release_does_not_capture_a_fresh_content_click() {
+    for lost_focus in [true, false] {
+        let mut h = build_harness_sized(960.0, 540.0);
+        h.chrome.borrow_mut().push_notification_full(
+            tilo_desktop::notifications::Notification::new(
+                "Backup failed",
+                "Try again from Search.",
+            ),
+        );
+        let theme = Theme::dark().with_reduce_motion(true);
+        settle_with_theme(&mut h, 960.0, 540.0, &theme);
+        let point = h.host.notification_stack.rect().center();
+        pump(&mut h, &cursor_moved_at(point));
+        assert!(pump(&mut h, &left_button_pressed()));
+        if lost_focus {
+            pump(&mut h, &WindowEvent::Focused(false));
+            pump(&mut h, &WindowEvent::Focused(true));
+        }
+        // The old release is absent. A fresh click belongs to content.
+        pump(&mut h, &cursor_moved_at(Point::new(8.0, 400.0)));
+        h.log.borrow_mut().clear();
+        pump(&mut h, &left_button_pressed());
+        assert!(
+            h.log
+                .borrow()
+                .iter()
+                .any(|event| event == "MouseInput::Pressed")
+        );
+        pump(&mut h, &left_button_released());
+        assert!(
+            h.log
+                .borrow()
+                .iter()
+                .any(|event| event == "MouseInput::Released"),
+            "a lost banner release cannot steal a fresh click: lost_focus={lost_focus}"
+        );
+        assert_eq!(h.chrome.borrow().notifications().len(), 1);
+        assert!(h.chrome.borrow().notification_history().is_empty());
     }
 }

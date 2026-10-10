@@ -511,15 +511,6 @@ impl RegistryIndex {
             .map_err(|_| IndexError::IndexSignatureMismatch(self.signer_identity.clone()))
     }
 
-    /// The embedded signer key (self-reported; use only after [`Self::verify_signature`] for trust decisions).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `signer_identity` isn't `ed25519:<hex32>`.
-    pub fn signer_key(&self) -> Result<[u8; 32], IndexError> {
-        parse_ed25519(&self.signer_identity)
-    }
-
     /// Pick the best entry for `app_id` on `host`: highest semver matching
     /// `req` (or all versions), tie-broken by the most-optimised ISA the
     /// host can run. Each candidate's publisher signature is verified;

@@ -243,6 +243,42 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     site_clear_=new tilo::SiteClear(browser,[this](int request,const std::string& origin,uint64_t generation,bool success,const std::string& message){SiteResult(request,origin,generation,"clear",success,message);});site_clear_->Attach();
     document_scripts_=new tilo::DocumentScripts(browser,[this] { CefPostTask(TID_UI,base::BindOnce([](CefRefPtr<Client> self){ self->FlushNavigation(); },CefRefPtr<Client>(this))); },[this] { StringEvent("error","message","Document-start script registration failed");CloseHost(); });
     document_scripts_->Attach();
+    // Register before releasing navigation. A late private context must not
+    // infer idle composition from the absence of an event it could not observe.
+    composition_scripts_=new tilo::DocumentScripts(browser,[this] { ScheduleNavigation(); },
+        [this] { StringEvent("error","message","Private composition observer registration failed");CloseHost(); },
+        "tilo-private-text-input");
+    composition_scripts_->Attach();
+    composition_scripts_->Configure(R"JS(globalThis.__tiloTextComposition = (() => {
+      let trusted = false, synthetic = false, unknown = false;
+      let root = null;
+      // An initial about:blank iframe can retain its Window when it navigates.
+      // Observe the native load on that Window, then bind its current Document.
+      // A late context or a document.open-removed listener remains unknown.
+      const observer = new MutationObserver(records => {
+        for (const record of records) {
+          for (const node of record.removedNodes) if (node === root) unknown = true;
+        }
+        if (root !== document.documentElement) unknown = true;
+        if (unknown) { root = null; observer.disconnect(); }
+      });
+      const loaded = event => {
+        if (!event.isTrusted || unknown || !['http:', 'https:'].includes(location.protocol)) return;
+        root = document.documentElement;
+        if (!root) return;
+        observer.observe(document, {childList: true});
+        removeEventListener('DOMContentLoaded', loaded);
+      };
+      addEventListener('DOMContentLoaded', loaded);
+      addEventListener('compositionstart', event => {
+        if (event.isTrusted) trusted = true; else synthetic = true;
+      }, true);
+      addEventListener('compositionend', event => {
+        // Page-generated end events cannot clear actual native composition.
+        if (event.isTrusted) trusted = false; else synthetic = false;
+      }, true);
+      return Object.freeze({active: () => unknown || !root || root !== document.documentElement || trusted || synthetic});
+    })())JS");
     navigation_history_=new tilo::NavigationHistory(browser,[this](const std::string& name,CefRefPtr<CefDictionaryValue> fields){Event(name,fields);});navigation_history_->Attach();
     page_automation_=new tilo::PageAutomation(browser,[this](const std::string& name,CefRefPtr<CefDictionaryValue> fields){Event(name,fields);},
         [this](double x,double y){PageClick(x,y);},[this](CefRefPtr<CefDictionaryValue> key){PageKey(key);});
@@ -251,7 +287,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     agent_log_->Attach();
     paint_snapshot_=new tilo::PaintSnapshot(browser,[this](const std::string& name,CefRefPtr<CefDictionaryValue> fields){Event(name,fields);});
     paint_snapshot_->Attach();
-    auto d=CefDictionaryValue::Create();d->SetInt("frame_rate",kOffscreenFrameRate);d->SetString("cef_version",CEF_VERSION);d->SetString("chromium_version",std::to_string(CHROME_VERSION_MAJOR)+"."+std::to_string(CHROME_VERSION_MINOR)+"."+std::to_string(CHROME_VERSION_BUILD)+"."+std::to_string(CHROME_VERSION_PATCH));Event(id_==1?"ready":"tab_ready",d);
+    auto d=CefDictionaryValue::Create();d->SetBool("native_edit_history",true);d->SetBool("guarded_edit_history",true);d->SetBool("native_caret_text_input",true);d->SetInt("frame_rate",kOffscreenFrameRate);d->SetString("cef_version",CEF_VERSION);d->SetString("chromium_version",std::to_string(CHROME_VERSION_MAJOR)+"."+std::to_string(CHROME_VERSION_MINOR)+"."+std::to_string(CHROME_VERSION_BUILD)+"."+std::to_string(CHROME_VERSION_PATCH));Event(id_==1?"ready":"tab_ready",d);
     TraceGeometry("ready",id_);
     browser_->GetHost()->WasHidden(!visible_);
     if(closing) browser_->GetHost()->CloseBrowser(true);
@@ -277,6 +313,8 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     startup_diagnostics_=nullptr;
     if(document_scripts_)document_scripts_->Detach();
     document_scripts_=nullptr;
+    if(composition_scripts_)composition_scripts_->Detach();
+    composition_scripts_=nullptr;
     browser_=nullptr;
     download_owners.Destroy(id_);
     Event("closed");clients.erase(id_);PublishDownloadRuntime();
@@ -489,7 +527,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   }
   void FlushNavigation() {
     TraceGeometry("navigation-flush",id_);
-    if(!browser_ || closing || !document_scripts_ || document_scripts_->Busy() || !bootstrap_settled_ || navigation_busy_ || pending_navigation_.empty()) return;
+    if(!browser_ || closing || !document_scripts_ || document_scripts_->Busy() || !composition_scripts_ || composition_scripts_->Busy() || !bootstrap_settled_ || navigation_busy_ || pending_navigation_.empty()) return;
     auto command=pending_navigation_.front();pending_navigation_.erase(pending_navigation_.begin());
     navigation_dispatched_=true;navigation_started_=false;navigation_busy_=true;navigation_urls_.clear();navigation_error_.reset();
     const bool scoped=command->GetString("op")=="scoped_navigation";
@@ -569,6 +607,13 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       }
     }
     else if(op=="credential_action") {CredentialCommand(d);}
+    else if(op=="text_input") {
+      if(!visible_ && d->GetString("action")!="cancel_text_input") {
+        auto fields=CefDictionaryValue::Create();fields->SetInt("request_id",d->GetInt("request_id"));
+        fields->SetBool("ok",false);fields->SetString("code","unavailable");
+        fields->SetString("message","The browser view is hidden");Event("text_input_result",fields);
+      } else page_automation_->Request(d);
+    }
     else if(op=="page") {
       // Whatever an agent reads or does next, its logs start here.
       const auto action=d->GetString("action").ToString();
@@ -622,6 +667,10 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
         int flag=type==MBT_RIGHT?EVENTFLAG_RIGHT_MOUSE_BUTTON:type==MBT_MIDDLE?EVENTFLAG_MIDDLE_MOUSE_BUTTON:EVENTFLAG_LEFT_MOUSE_BUTTON;
         if(down) mouse_modifiers_|=flag;else mouse_modifiers_&=~flag; event.modifiers=mouse_modifiers_|key_modifiers_;host->SendMouseClickEvent(event,type,!down,1); }
     } else if(op=="modifiers") key_modifiers_=(d->GetBool("ctrl")?EVENTFLAG_CONTROL_DOWN:0)|(d->GetBool("shift")?EVENTFLAG_SHIFT_DOWN:0)|(d->GetBool("alt")?EVENTFLAG_ALT_DOWN:0)|(d->GetBool("meta")?EVENTFLAG_COMMAND_DOWN:0);
+    else if(op=="edit_history") {
+      auto frame=browser_->GetFocusedFrame();
+      if(frame) { if(d->GetString("direction")=="undo") frame->Undo();else frame->Redo(); }
+    }
     else if(op=="key") Key(d);
     else if(op=="scripts" || op=="blocking_scripts") {auto& scripts=op=="scripts"?scripts_:blocking_scripts_;scripts.clear();auto list=d->GetList("scripts");if(list) for(size_t i=0;i<list->GetSize();++i) scripts.push_back(list->GetString(i));UpdateScriptPolicy();}
     else if(op=="permission_decision") capabilities_->PermissionDecision(d->GetInt("id"),d->GetBool("allow"));
@@ -1007,7 +1056,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   CefRefPtr<tilo::PaintSnapshot> paint_snapshot_;
   CefRefPtr<tilo::Capabilities> capabilities_;
   CefRefPtr<tilo::StartupDiagnostics> startup_diagnostics_;
-  CefRefPtr<tilo::DocumentScripts> document_scripts_;std::vector<CefRefPtr<CefDictionaryValue>> pending_navigation_;
+  CefRefPtr<tilo::DocumentScripts> document_scripts_,composition_scripts_;std::vector<CefRefPtr<CefDictionaryValue>> pending_navigation_;
   CefRefPtr<tilo::SiteClear> site_clear_;
   int pixel_width_=0,pixel_height_=0,popup_width_=0,popup_height_=0,mouse_modifiers_=0;
   CefRefPtr<CefRunContextMenuCallback> context_callback_;int context_id_=0;std::set<int> context_commands_;
@@ -1171,6 +1220,12 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
     if(op=="mouse_button") { auto b=d->GetString("button");return type("down",VTYPE_BOOL) && (b=="left" || b=="middle" || b=="right"); }
     return true;
   }
+  if(op=="edit_history") {
+    CefDictionaryValue::KeyList keys;d->GetKeys(keys);
+    for(const auto& key:keys)if(key!="op" && key!="tab" && key!="direction")return false;
+    return type("direction",VTYPE_STRING) &&
+      (d->GetString("direction")=="undo" || d->GetString("direction")=="redo");
+  }
   if(op=="key") return type("key",VTYPE_STRING) && type("down",VTYPE_BOOL);
   if(op=="scripts" || op=="blocking_scripts") {
     if(!type("scripts",VTYPE_LIST)) return false;
@@ -1205,6 +1260,22 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
     if(!type("request_id",VTYPE_INT) || d->GetInt("request_id")<=0 || !type("origin",VTYPE_STRING) || d->GetString("origin").length()>8192)return false;
     if(op=="site_status")return true;
     const auto action=d->GetString("action");return number("generation") && tilo::ValidDocumentGeneration(Number(d,"generation")) && (action=="clear" || action=="revoke" || action=="enable" || action=="disable" || action=="reload");
+  }
+  if(op=="text_input") {
+    if(!type("request_id",VTYPE_INT) || d->GetInt("request_id")<=0 || !type("action",VTYPE_STRING))return false;
+    const auto action=d->GetString("action").ToString();
+    if(action!="prepare_text_input" && action!="start_text_input" && action!="check_text_input" && action!="commit_text_input" && action!="cancel_text_input" && action!="undo_text_input" && action!="redo_text_input")return false;
+    CefDictionaryValue::KeyList keys;d->GetKeys(keys);
+    for(const auto& key:keys)if(key!="op" && key!="tab" && key!="request_id" && key!="action" && key!="lease" && key!="text" && key!="expires_ms" && key!="history_scope" && key!="native_caret")return false;
+    if(d->HasKey("native_caret") && (!type("native_caret",VTYPE_BOOL) || action!="prepare_text_input"))return false;
+    if(action!="prepare_text_input") {
+      if(!type("lease",VTYPE_STRING))return false;
+      const auto lease=d->GetString("lease").ToString();
+      if(lease.size()!=32 || !std::all_of(lease.begin(),lease.end(),[](char c){return (c>='0' && c<='9') || (c>='a' && c<='f');}))return false;
+    }
+    if(d->HasKey("history_scope") && (!type("history_scope",VTYPE_STRING) || (action!="undo_text_input" && action!="redo_text_input") || d->GetString("history_scope")!="page"))return false;
+    if(d->HasKey("expires_ms") && (!number("expires_ms") || Number(d,"expires_ms")<=0 || !std::isfinite(Number(d,"expires_ms"))))return false;
+    return action!="commit_text_input" || (type("text",VTYPE_STRING) && !d->GetString("text").empty() && d->GetString("text").ToString().size()<=4096);
   }
   if(op=="page") {
     if(!type("request_id",VTYPE_INT) || d->GetInt("request_id")<=0 || !type("action",VTYPE_STRING))return false;

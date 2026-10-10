@@ -21,13 +21,13 @@ use tilo_user_identity::{
 };
 use tokio::sync::watch;
 
-use crate::auth::{self, HelloAck2};
+use crate::auth::{self, HandshakeTrust};
 use crate::certify::{
     ApproverDecision, ApproverReply, ApproverRequest, CertifyOpen, CertifyReply,
     MAX_CERTIFY_FRAME_BYTES, MAX_PENDING_CERTIFICATIONS, PendingAgent, PendingCertification,
 };
 use crate::frame::{read_frame, read_frame_or_eof, write_frame};
-use crate::policy::TrustPolicy;
+use crate::handshake::{EndpointTrust, ServerAuth};
 use tilo_relay_protocol::agents::{AgentDelegation, AgentProposal};
 
 /// How long a final answer may wait for the requester to read it.
@@ -280,32 +280,23 @@ impl CertificationProtocol {
         mut recv: iroh::endpoint::RecvStream,
         hello: auth::Hello,
     ) -> Result<(), AcceptError> {
-        let peer = auth::accept_hello(
-            &hello,
-            &self.own_user_pk,
-            &TrustPolicy::AllowMatchingUser,
-            &self.revocations(),
-            unix_now_ns(),
-        )
-        .map_err(|error| io(&error))?;
-        if !peer.cert.capabilities.can_admit_devices {
-            return Err(io(&"device may not approve certifications"));
-        }
-        let mut nonce = [0; 32];
-        rand::Rng::fill_bytes(&mut rand::rng(), &mut nonce);
-        let ack = auth::build_hello_ack(
-            self.own_cert.clone(),
-            &self.own_sk,
-            nonce,
-            &hello.client_nonce,
-        );
-        write_frame(&mut send, &encode(&ack)?)
+        // Only the owner's devices that may admit devices approve, checked
+        // before the relay signs anything for the approver.
+        let server = ServerAuth {
+            own_user: &self.own_user_pk,
+            cert: &self.own_cert,
+            key: &self.own_sk,
+            revocations: &self.revocations,
+        };
+        server
+            .authenticate_hello(
+                EndpointTrust::Fixed(HandshakeTrust::OwnerDeviceAdmitters),
+                &hello,
+                &mut recv,
+                &mut send,
+                MAX_CERTIFY_FRAME_BYTES,
+            )
             .await
-            .map_err(|error| io(&error))?;
-        let ack2: HelloAck2 =
-            postcard::from_bytes(&read_frame(&mut recv, MAX_CERTIFY_FRAME_BYTES).await?)
-                .map_err(|error| io(&error))?;
-        auth::verify_hello_ack2(&ack2, &peer.device_public_key, &nonce)
             .map_err(|error| io(&error))?;
         while let Some(frame) = read_frame_or_eof(&mut recv, MAX_CERTIFY_FRAME_BYTES)
             .await

@@ -306,40 +306,6 @@ impl VideoDoc {
         doc.put(&effect, "amount", amount).is_ok()
     }
 
-    pub fn remove_clip_effect(doc: &mut AutoCommit, clip_id: Uuid, effect_id: Uuid) -> bool {
-        let Some(clip) = Self::existing_clip(doc, clip_id) else {
-            return false;
-        };
-        let Ok(Some((Value::Object(ObjType::Map), effects))) = doc.get(&clip, "effects") else {
-            return false;
-        };
-        if doc.delete(&effects, effect_id.to_string()).is_err() {
-            return false;
-        }
-        Self::tombstone(doc, &clip, "effect_tombstones", effect_id);
-        true
-    }
-
-    pub fn set_clip_effect_ordinal(
-        doc: &mut AutoCommit,
-        clip_id: Uuid,
-        effect_id: Uuid,
-        ordinal: usize,
-    ) -> bool {
-        let Some(clip) = Self::existing_clip(doc, clip_id) else {
-            return false;
-        };
-        let Ok(Some((Value::Object(ObjType::Map), effects))) = doc.get(&clip, "effects") else {
-            return false;
-        };
-        let Ok(Some((Value::Object(ObjType::Map), effect))) =
-            doc.get(&effects, effect_id.to_string())
-        else {
-            return false;
-        };
-        doc.put(&effect, "ordinal", ordinal as i64).is_ok()
-    }
-
     fn existing_clip(doc: &AutoCommit, id: Uuid) -> Option<ObjId> {
         let Ok(Some((Value::Object(ObjType::Map), clips))) = doc.get(&ROOT, "clips") else {
             return None;

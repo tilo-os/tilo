@@ -87,7 +87,8 @@ xdg_toplevel maps → app-id present
 ### CRDT replication
 ```
 Local mutation → WorkspaceTree write (cache + automerge AutoCommit)
-  → SyncReq heartbeat (every 2 s) or immediate Publish
+  → immediate Publish (SyncResp); SyncReq repair pull 2 s after activity settles,
+    on a peer joining, and every 5 min while idle
   → Iroh gossip workspace topic and optional persistent workspace host
   → remote peer: NeighbourMsg::SyncResp { changes }
   → WorkspaceTree::apply_changes → rebuild_cache_from_doc → re-render
@@ -101,6 +102,14 @@ Owner: surface commit → damage hint → media real-time encode (cap; a held fr
   on the tab's room topic → direct per-window fanout
   → peer: decoder → peer_view widget draws decoded frames into that tab
 ```
+
+Raw captures may be coalesced before encoding. Encoded video units preserve
+reference order within the existing 64 MiB pending storage budget, including
+payload and queue allocations. A fresh keyframe replaces the older pending
+chain. After overflow or a failed direct send, dependent units wait for the
+next codec-specific keyframe; share encoders already emit periodic keyframes.
+Independent pictures keep newest-picture coalescing. Fanout completion carries
+a generation, so an old send cannot change a restarted stream's task or queue.
 
 ### Remote input replay
 ```
@@ -132,7 +141,7 @@ WorkspaceTree
 ├── active_strip: HashMap<WorkspaceId, StripId>
 ├── active_group: HashMap<StripId, GroupId>
 ├── collaborators: Vec<Collaborator>
-└── doc: automerge::AutoCommit          # backing CRDT; not in state.json, saved beside it as state.automerge
+└── doc: automerge::AutoCommit          # backing CRDT; not in state.json, saved beside it as state.automerge + a .log of later changes
 ```
 
 `TileContent` variants with payload encode the discriminant as a string scalar plus a serde-JSON blob in a sibling `Bytes` field — payload merges are last-write-wins for v1.

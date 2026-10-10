@@ -11,7 +11,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::rc::Rc;
 
-use parking_lot::{RwLockReadGuard, RwLockWriteGuard};
+use parking_lot::RwLockReadGuard;
 use ui::record::RecordStore;
 
 use crate::notifications::{CloseReason, NotificationBridge};
@@ -550,7 +550,7 @@ pub struct ChromeState {
     pub(crate) hosted_inputs: super::hosted_inputs::HostedTileInputs,
     pub(crate) native_app_opening: Option<super::launcher::NativeAppOpening>,
     /// Shared with the portal (grants) and peer-sync (replica), all
-    /// holding clones of the same `Arc<RwLock<_>>`. Named `tree_handle`
+    /// holding clones of the same [`WorkspaceTreeHandle`]. Named `tree_handle`
     /// (not `tree`) so unmigrated call-sites get a type-mismatch error
     /// instead of silently borrowing the wrong thing; use
     /// [`Self::tree`] / [`Self::tree_mut`].
@@ -614,8 +614,11 @@ pub struct ChromeState {
     /// caller is blocked — see [`PendingPrompt`].
     pub pending_grants: VecDeque<PendingPrompt>,
     /// Test-only override for `is_active_workspace_owner`. `None` is
-    /// production behaviour (always owner, no logged-in-user identity
-    /// yet); `Some(false)` exercises the disabled-Revoke path.
+    /// production behaviour: ownership is computed from the active
+    /// workspace's capabilities. `Some(false)` exercises the disabled-Revoke
+    /// path. It only decides which controls are offered; member role changes
+    /// and removals are authorized by `crate::shell::membership` whatever it
+    /// says.
     pub test_only_owner_override: Option<bool>,
     /// Seeded at boot from the device identity.
     pub local_user_id: crate::shell::state::UserId,
@@ -710,14 +713,14 @@ pub struct ChromeState {
     /// "Send…" requests for the last screenshot from the action door,
     /// drained into the capture studio by the overlay host.
     screenshot_sends: Vec<ui::widget::ScreenshotSendTarget>,
-    /// Compatibility queue for callers of the original active-room API.
-    legacy_record_requests: Vec<(String, String)>,
     /// Tracked record actions retain the exact authorized destination until
     /// the overlay-owned room index consumes them on a later frame.
     tracked_record_requests: Vec<RecordRequest>,
     record_request_results: BTreeMap<u64, Result<(), String>>,
     next_record_request_id: u64,
-    peer_sync_request_results: BTreeMap<u64, Result<(), String>>,
+    /// Terminal results of tracked peer-sync requests: `Null` for one that
+    /// only presented something, the action output for a network request.
+    peer_sync_request_results: BTreeMap<u64, Result<serde_json::Value, String>>,
     next_peer_sync_request_id: u64,
     /// Foreign surfaces whose tab close affordance was activated. The native
     /// compositor drains this edge and sends `xdg_toplevel.close`; keeping it
@@ -887,7 +890,6 @@ impl ChromeState {
             presence_requests: Vec::new(),
             screenshot_sends: Vec::new(),
             wheel_summon: None,
-            legacy_record_requests: Vec::new(),
             tracked_record_requests: Vec::new(),
             record_request_results: BTreeMap::new(),
             next_record_request_id: 1,
@@ -984,7 +986,7 @@ impl ChromeState {
     pub(crate) fn complete_peer_sync_request(
         &mut self,
         request_id: u64,
-        result: Result<(), String>,
+        result: Result<serde_json::Value, String>,
     ) {
         self.peer_sync_request_results.insert(request_id, result);
     }
@@ -1008,15 +1010,8 @@ impl ChromeState {
     pub(crate) fn take_peer_sync_request_result(
         &mut self,
         request_id: u64,
-    ) -> Option<Result<(), String>> {
+    ) -> Option<Result<serde_json::Value, String>> {
         self.peer_sync_request_results.remove(&request_id)
-    }
-
-    /// Same effect as activating that record's row in search — a
-    /// reference is added to this room's index, no bytes move.
-    #[deprecated(note = "use push_tracked_record_request to retain authorization context")]
-    pub fn push_record_request(&mut self, id: impl Into<String>, kind: impl Into<String>) {
-        self.legacy_record_requests.push((id.into(), kind.into()));
     }
 
     /// Queue an authorized record import against its exact workspace target.
@@ -1039,11 +1034,6 @@ impl ChromeState {
             actor,
         });
         request_id
-    }
-
-    #[deprecated(note = "use take_tracked_record_requests for authorization-aware requests")]
-    pub fn take_record_requests(&mut self) -> Vec<(String, String)> {
-        std::mem::take(&mut self.legacy_record_requests)
     }
 
     pub(crate) fn take_tracked_record_requests(&mut self) -> Vec<RecordRequest> {
@@ -1369,7 +1359,7 @@ impl ChromeState {
     /// The guard drops at the end of the borrow scope, so concurrent
     /// readers (paint, portal lookup, peer-sync export) unblock as soon
     /// as the mutation lands.
-    pub fn tree_mut(&self) -> RwLockWriteGuard<'_, WorkspaceTree> {
+    pub fn tree_mut(&self) -> crate::shell::state::WorkspaceTreeWriteGuard<'_> {
         self.tree_handle.write()
     }
 
@@ -2635,11 +2625,6 @@ impl ChromeState {
         self.notification_log.history()
     }
 
-    /// Number of entries in the history log.
-    pub fn notification_history_count(&self) -> usize {
-        self.notification_log.history().len()
-    }
-
     pub fn notification_badge_total(&self) -> u32 {
         self.notification_badges
             .iter()
@@ -3524,9 +3509,7 @@ mod active_tab_tests {
         AppKind, GroupId, Strip, StripId, Tab, TileContent, WindowGroup as StateGroup,
         WindowWidth as StateWidth, Workspace, WorkspaceId, WorkspaceTree,
     };
-    use parking_lot::RwLock;
     use std::collections::HashMap as StdMap;
-    use std::sync::Arc;
 
     fn tree_with(active_tab_id: u64) -> WorkspaceTree {
         let ws_id = WorkspaceId::new();
@@ -3581,21 +3564,21 @@ mod active_tab_tests {
     #[test]
     fn active_tab_and_strip_lookups_follow_the_live_pointers_or_return_none() {
         fn active_app_title_follows_group_active_tab() {
-            let handle = Arc::new(RwLock::new(tree_with(200)));
+            let handle = crate::shell::state::WorkspaceTreeHandle::new(tree_with(200));
             let chrome = ChromeState::new_with_handle(handle);
             let st = chrome.borrow();
             assert_eq!(st.active_app_title().as_deref(), Some("Second"));
         }
 
         fn active_tab_id_matches_the_active_tab_pointer() {
-            let handle = Arc::new(RwLock::new(tree_with(100)));
+            let handle = crate::shell::state::WorkspaceTreeHandle::new(tree_with(100));
             let chrome = ChromeState::new_with_handle(handle);
             let st = chrome.borrow();
             assert_eq!(st.active_tab_id(), Some(100));
         }
 
         fn no_active_returns_none_instead_of_first_group() {
-            let handle = Arc::new(RwLock::new(WorkspaceTree::default()));
+            let handle = crate::shell::state::WorkspaceTreeHandle::new(WorkspaceTree::default());
             let chrome = ChromeState::new_with_handle(handle);
             let st = chrome.borrow();
             assert_eq!(st.active_tab_id(), None);
@@ -3605,7 +3588,7 @@ mod active_tab_tests {
         fn without_active_strip_returns_none_not_first_strip() {
             let mut tree = tree_with(100);
             tree.desktop.active_strip.clear();
-            let handle = Arc::new(RwLock::new(tree));
+            let handle = crate::shell::state::WorkspaceTreeHandle::new(tree);
             let chrome = ChromeState::new_with_handle(handle);
             let st = chrome.borrow();
             assert_eq!(st.active_tab_id(), None);
@@ -3896,7 +3879,7 @@ mod active_tab_tests {
                 surface_id: 77,
             });
             let ws_id = tree.desktop.active;
-            let handle = Arc::new(RwLock::new(tree));
+            let handle = crate::shell::state::WorkspaceTreeHandle::new(tree);
             let chrome = ChromeState::new_with_handle(handle);
             let st = chrome.borrow();
 
@@ -3940,7 +3923,7 @@ mod active_tab_tests {
                     label: "notes.ts".into(),
                 });
             let ws_id = tree.desktop.active;
-            let handle = Arc::new(RwLock::new(tree));
+            let handle = crate::shell::state::WorkspaceTreeHandle::new(tree);
             let chrome = ChromeState::new_with_handle(handle);
             let st = chrome.borrow();
 

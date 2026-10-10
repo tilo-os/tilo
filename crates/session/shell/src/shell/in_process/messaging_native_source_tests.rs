@@ -158,7 +158,21 @@ fn probe(reader: &mut BufReader<UnixStream>, peer: &mut UnixStream) {
     reader.read_line(&mut line).unwrap();
     let request: serde_json::Value = serde_json::from_str(&line).unwrap();
     assert_eq!(request["method"], "listAccounts");
-    writeln!(peer, "{}", serde_json::json!({"jsonrpc":"2.0","id":request["id"],"result":[{"aci":OWN_ACI,"number":"+15555550101"}]})).unwrap();
+    writeln!(
+        peer,
+        "{}",
+        serde_json::json!({"jsonrpc":"2.0","id":request["id"],"result":[{"number":"+15555550101"}]})
+    )
+    .unwrap();
+    let mut own_line = String::new();
+    reader.read_line(&mut own_line).unwrap();
+    let own_probe: serde_json::Value = serde_json::from_str(&own_line).unwrap();
+    assert_eq!(own_probe["method"], "listIdentities");
+    assert_eq!(
+        own_probe["params"]["number"],
+        own_probe["params"]["account"]
+    );
+    writeln!(peer, "{}", serde_json::json!({"jsonrpc":"2.0","id":own_probe["id"],"result":serde_json::json!([{"uuid":OWN_ACI,"number":"+15555550101","trustLevel":"TRUSTED_VERIFIED","fingerprint":format!("05 {}", vec!["aa"; 32].join(" "))}])})).unwrap();
 }
 fn source(
     rig: &Rig,
@@ -1293,7 +1307,7 @@ fn exercise_verified_enrollment_profile(include_ram: bool) {
     // Existing host fixture APIs isolate both paths and secret backend. This
     // exercises the production custody contract, never the user's OS keyring.
     let rig = Rig::new();
-    let _paths = xdg_paths::scope_profile(rig.root.path().join("isolated-profile-owner"));
+    let _paths = tilo_paths::scope_profile(rig.root.path().join("isolated-profile-owner"));
     let _secrets = tilo_secrets::scope_thread(tilo_secrets::memory_backend());
     let lifecycle = LocalSessionAuthority::new();
     lifecycle.lifecycle().publish_native_state(false, false);
@@ -1847,3 +1861,5 @@ mod sms_first_journey;
 
 #[path = "messaging_native_first_tests.rs"]
 mod native_first_journey;
+#[path = "messaging_whatsapp_first_tests.rs"]
+mod whatsapp_first_tests;

@@ -1,12 +1,10 @@
 //! Tilo-device session route adapter.
 //!
 //! Discovery remains owned by the device-mesh runtime. Remote accepts a
-//! verified snapshot and delegates route selection to the relay's shared
-//! mesh placement (`tilo-relay-protocol`). Only an
-//! exact-target route is accepted for control; a workspace-wide relay is
-//! reported as unavailable rather than leaking input through fan-out.
-
-use tilo_relay_protocol::{RemoteControlRoute, ServerAdvertisement, route_remote_control};
+//! verified snapshot and accepts only an exact-target route for control: a
+//! direct path. Relayed exact-target control does not exist yet, so a
+//! workspace-wide relay is reported as unavailable rather than leaking input
+//! through fan-out.
 
 /// Certified-device routing key.
 pub type DeviceKey = [u8; 32];
@@ -58,8 +56,9 @@ pub struct MeshRouteSnapshot {
     pub workspace_id: u64,
     /// Whether authenticated discovery currently has a direct target path.
     pub direct_reachable: bool,
-    /// Verified same-workspace server advertisements.
-    pub servers: Vec<ServerAdvertisement>,
+    /// Verified, online same-workspace relays offering the remote-control
+    /// relay service. They can only explain a refusal; none carries input.
+    pub relays: Vec<DeviceKey>,
 }
 
 /// Provider backed by one fresh, authenticated mesh snapshot.
@@ -81,72 +80,56 @@ impl TiloRouteProvider for MeshTiloRouteProvider {
                 "Saved device does not match the authenticated discovery record".to_string(),
             );
         }
-        match route_remote_control(
-            self.snapshot.client,
-            self.snapshot.target,
-            self.snapshot.workspace_id,
-            self.snapshot.direct_reachable,
-            &self.snapshot.servers,
-        ) {
-            RemoteControlRoute::Direct { .. } => Ok(TiloRouteDecision::Direct),
-            RemoteControlRoute::Relayed { .. } => Err(
-                "Workspace control needs an exact-target route; the available relay is workspace-wide"
-                    .to_string(),
-            ),
-            RemoteControlRoute::Unavailable => Err(
+        let MeshRouteSnapshot {
+            client,
+            target,
+            direct_reachable,
+            ref relays,
+            ..
+        } = self.snapshot;
+        // A device cannot remote-control itself, and a relay that is the
+        // client or the target is no intermediate.
+        let unavailable = || {
+            Err(
                 "No direct path or eligible online server is available for this workspace"
                     .to_string(),
-            ),
+            )
+        };
+        if client == target {
+            return unavailable();
         }
+        if direct_reachable {
+            return Ok(TiloRouteDecision::Direct);
+        }
+        if relays
+            .iter()
+            .any(|relay| *relay != client && *relay != target)
+        {
+            return Err(
+                "Workspace control needs an exact-target route; the available relay is workspace-wide"
+                    .to_string(),
+            );
+        }
+        unavailable()
     }
-}
-
-/// Short non-authoritative device fingerprint for status/error copy.
-pub fn short_device_id(device: &DeviceKey) -> String {
-    let mut bytes = device.iter().copied();
-    format!(
-        "{:02x}{:02x}{:02x}{:02x}",
-        bytes.next().unwrap_or_default(),
-        bytes.next().unwrap_or_default(),
-        bytes.next().unwrap_or_default(),
-        bytes.next().unwrap_or_default()
-    )
 }
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
-
-    use tilo_relay_protocol::{DeviceRole, ServiceCapabilities};
-
     use super::*;
 
-    fn server(id: u8) -> ServerAdvertisement {
-        ServerAdvertisement {
-            device: [id; 32],
-            role: DeviceRole::AlwaysOnServer,
-            services: ServiceCapabilities::personal_server(),
-            workspaces: BTreeSet::from([7]),
-            apps: BTreeSet::new(),
-            accelerators: BTreeSet::new(),
-            priority: 0,
-            latency_ms: 12,
-            power: tilo_relay_protocol::PowerAvailability::External,
-            energy_saver: false,
-            active_assignments: 0,
-            assignment_capacity: 8,
-            online: true,
-        }
+    fn server(id: u8) -> DeviceKey {
+        [id; 32]
     }
 
-    fn provider(direct: bool, servers: Vec<ServerAdvertisement>) -> MeshTiloRouteProvider {
+    fn provider(direct: bool, relays: Vec<DeviceKey>) -> MeshTiloRouteProvider {
         MeshTiloRouteProvider::new(MeshRouteSnapshot {
             target_hint: "studio-node".to_string(),
             client: [1; 32],
             target: [2; 32],
             workspace_id: 7,
             direct_reachable: direct,
-            servers,
+            relays,
         })
     }
 
@@ -167,11 +150,30 @@ mod tests {
                     .route("studio-node")
                     .is_err()
             );
+            assert_eq!(
+                provider(false, vec![server(3)]).route("studio-node"),
+                Err("Workspace control needs an exact-target route; the available relay is workspace-wide".to_string())
+            );
+            // The client or the target is never its own intermediate.
+            assert_eq!(
+                provider(false, vec![server(1), server(2)]).route("studio-node"),
+                Err(
+                    "No direct path or eligible online server is available for this workspace"
+                        .to_string()
+                )
+            );
         }
 
         eprintln!("phase stale_or_missing_discovery_never_becomes_success");
         {
             assert!(provider(false, Vec::new()).route("studio-node").is_err());
+            assert_eq!(
+                provider(false, Vec::new()).route("studio-node"),
+                Err(
+                    "No direct path or eligible online server is available for this workspace"
+                        .to_string()
+                )
+            );
             assert!(provider(true, Vec::new()).route("different-node").is_err());
             assert!(UnavailableTiloRouteProvider.route("studio-node").is_err());
         }

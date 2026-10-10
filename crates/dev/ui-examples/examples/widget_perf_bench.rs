@@ -345,7 +345,7 @@ pub fn run(_args: &[String]) {
     let click_x = 240.0;
     let click_y = 280.0;
     let modifiers = Modifiers::default();
-    let device_id: DeviceId = unsafe { std::mem::zeroed() };
+    let device_id = winit::event::DeviceId::dummy();
 
     let mut hist: Vec<Phases> = Vec::with_capacity(iters);
     for _ in 0..iters {

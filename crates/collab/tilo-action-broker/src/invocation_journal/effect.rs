@@ -91,7 +91,8 @@ impl PreparedEffect {
             | InvocationOwner::AuthenticatedLocal {
                 root, agent: None, ..
             } => Some(super::super::principal_id_for_root(*root)),
-            InvocationOwner::AuthenticatedLocal {
+            InvocationOwner::NativeTask { agent, .. }
+            | InvocationOwner::AuthenticatedLocal {
                 agent: Some(agent), ..
             } => Some(format!("agent:{agent}")),
             // Its exact current task/source admission is checked by the observing caller.
@@ -143,12 +144,9 @@ impl InvocationJournal {
     ) -> Result<PreparedEffect, String> {
         self.check()?;
         let prepared = PreparedEffect::new(update, request)?;
-        let record = self
-            .snapshot
-            .records
-            .iter_mut()
-            .find(|record| &record.key == key)
-            .ok_or("unknown prepared invocation")?;
+        let (at, record) = self
+            .record_mut(key)
+            .map_err(|_| "unknown prepared invocation")?;
         prepared.validate(record)?;
         if let Some(previous) = &record.prepared_effect {
             if previous != &prepared {
@@ -161,7 +159,7 @@ impl InvocationJournal {
         }
         record.prepared_effect = Some(prepared.clone());
         self.snapshot.version = 5;
-        self.persist()?;
+        self.commit(at)?;
         Ok(prepared)
     }
 
@@ -171,12 +169,9 @@ impl InvocationJournal {
         prepared: &PreparedEffect,
     ) -> Result<DurableInvocation, String> {
         self.check()?;
-        let record = self
-            .snapshot
-            .records
-            .iter_mut()
-            .find(|record| &record.key == key)
-            .ok_or("unknown prepared invocation")?;
+        let (at, record) = self
+            .record_mut(key)
+            .map_err(|_| "unknown prepared invocation")?;
         if record.prepared_effect.as_ref() != Some(prepared) {
             return Err("prepared effect reconciliation changed".into());
         }
@@ -187,7 +182,7 @@ impl InvocationJournal {
         record.update = prepared.update.clone();
         record.uncertain = false;
         let record = record.clone();
-        self.persist()?;
+        self.commit(at)?;
         Ok(record)
     }
 }

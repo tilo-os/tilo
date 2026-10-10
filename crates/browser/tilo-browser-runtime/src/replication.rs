@@ -196,6 +196,7 @@ pub(crate) fn desktop_history_heads(id: u32) -> Option<Vec<ui::automerge::Change
 }
 
 pub(crate) fn close(id: u32) {
+    crate::browser::forget_feedback_startup(id);
     ROOMS.with_borrow_mut(|rooms| rooms.remove(&id));
 }
 
@@ -635,7 +636,7 @@ impl Room {
             doc,
             &value,
             &author,
-            crate::history::now_seconds(),
+            ui::time::unix_now_i64(),
         ) && doc.put(ROOT, DESKTOP_KEY, value.to_string()).is_ok()
         {
             doc.commit();

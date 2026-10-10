@@ -22,6 +22,13 @@
 //! ```json
 //! {
 //!   "origin_epoch_ms": 1783250000000,
+//!   "origin_epoch_us": 1783250000000123,
+//!   "launcher": [
+//!     { "name": "launcher-start",     "epoch_us": 1783249999880000 },
+//!     { "name": "sandbox-argv-ready", "epoch_us": 1783249999930000 },
+//!     { "name": "sandbox-entered",    "epoch_us": 1783249999950000 },
+//!     { "name": "sandbox-exec",       "epoch_us": 1783249999955000 }
+//!   ],
 //!   "events": [
 //!     { "name": "main-start",           "ns": 0 },
 //!     { "name": "compositor-run-start", "ns": 42100000 },
@@ -30,15 +37,22 @@
 //!   ]
 //! }
 //! ```
+//!
+//! `origin_epoch_us` is `origin_epoch_ms` at microsecond precision. `launcher` covers
+//! the time before `main`, which the process's own clock cannot see: the phase marks of
+//! the `tilo-launcher` process that set up this app's sandbox, in Unix-epoch
+//! microseconds ([`handoff_mark`], handed over in [`LAUNCHER_MARKS_ENV`]). The launcher's
+//! last own mark, `sandbox-argv-ready`, is taken just before it spawns bubblewrap; the
+//! sandbox shim adds `sandbox-entered` when it starts inside the sandbox and
+//! `sandbox-exec` just before it executes the app ([`handoff_entry`]), so
+//! `origin_epoch_us` minus `sandbox-exec` is the dynamic loader and library
+//! constructors. (The app cannot read `/proc` under Landlock, so it cannot time its own
+//! exec.)
 
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -46,7 +60,7 @@
 
 use serde::Serialize;
 use std::sync::{Mutex, OnceLock, PoisonError};
-use web_time::{Instant, SystemTime};
+use web_time::Instant;
 
 /// One launch's process/surface timing. Placement remains the compositor's
 /// responsibility; this small crate owns only FIFO timing correlation so
@@ -62,6 +76,24 @@ struct PendingLaunch {
 }
 
 static LAUNCHES: Mutex<Vec<PendingLaunch>> = Mutex::new(Vec::new());
+
+/// The `tracing` target of the compositor's per-launch timing lines.
+pub const LAUNCH_LATENCY_TARGET: &str = "tilo::launch_latency";
+
+/// The compositor's log filter directives for a `RUST_LOG` of `rust_log`: that
+/// filter (errors only when unset, as `tracing_subscriber::fmt::init` has it),
+/// with the launch-latency lines always on. They are three lines per app open,
+/// and the only record of how long the compositor and the launcher took before
+/// the app's own clock starts; a filter that names the target keeps its choice.
+#[must_use]
+pub fn log_directives(rust_log: Option<&str>) -> String {
+    let base = rust_log.map(str::trim).filter(|value| !value.is_empty());
+    match base {
+        Some(value) if value.contains(LAUNCH_LATENCY_TARGET) => value.to_owned(),
+        Some(value) => format!("{value},{LAUNCH_LATENCY_TARGET}=info"),
+        None => format!("error,{LAUNCH_LATENCY_TARGET}=info"),
+    }
+}
 
 /// The pending-launch table. A panic while holding it leaves plain data, so a
 /// poisoned lock is recovered rather than disabling timing for the session.
@@ -100,7 +132,7 @@ pub fn launch_spawned(id: u64, pid: u32) {
     // critical section every launch path contends on.
     drop(launches);
     tracing::info!(
-        target: "tilo::launch_latency",
+        target: LAUNCH_LATENCY_TARGET,
         package_id = %key,
         pid,
         request_to_spawn_us = now.duration_since(requested_at).as_micros(),
@@ -124,7 +156,7 @@ pub fn launch_mapped(id: u64, surface_id: u64) {
         (launch.key.clone(), launch.requested_at, launch.spawned_at);
     drop(launches);
     tracing::info!(
-        target: "tilo::launch_latency",
+        target: LAUNCH_LATENCY_TARGET,
         package_id = %key,
         surface_id,
         request_to_map_us = now.duration_since(requested_at).as_micros(),
@@ -152,7 +184,7 @@ pub fn launch_first_present(surface_id: u64, frame_seq: u64) {
     };
     let now = Instant::now();
     tracing::info!(
-        target: "tilo::launch_latency",
+        target: LAUNCH_LATENCY_TARGET,
         package_id = %launch.key,
         surface_id,
         frame_seq,
@@ -202,14 +234,154 @@ static METRICS: OnceLock<Option<Metrics>> = OnceLock::new();
 struct Metrics {
     origin: Instant,
     origin_epoch_ms: u128,
+    origin_epoch_us: u128,
+    launcher: Vec<HandoffEvent>,
     events: Mutex<Vec<Event>>,
     output_path: std::path::PathBuf,
+}
+
+impl Metrics {
+    /// Start capturing into `output_path` now. `launcher_marks` is the value of
+    /// [`LAUNCHER_MARKS_ENV`], when the process that started this one set it.
+    fn start(output_path: std::path::PathBuf, launcher_marks: Option<&str>) -> Self {
+        let origin = Instant::now();
+        let origin_epoch_us = u128::from(tilo_clock::unix_now_ns()) / 1_000;
+        Self {
+            origin,
+            origin_epoch_ms: origin_epoch_us / 1_000,
+            origin_epoch_us,
+            launcher: launcher_marks.map(parse_handoff).unwrap_or_default(),
+            events: Mutex::new(Vec::with_capacity(16)),
+            output_path,
+        }
+    }
+
+    fn payload(&self, events: &[Event]) -> serde_json::Value {
+        serde_json::json!({
+            "origin_epoch_ms": self.origin_epoch_ms,
+            "origin_epoch_us": self.origin_epoch_us,
+            "launcher": self.launcher,
+            "events": events,
+        })
+    }
 }
 
 #[derive(Serialize, Clone)]
 struct Event {
     name: String,
     ns: u128,
+}
+
+/// The variable `tilo-launcher` sets in the sandbox it starts, holding its own
+/// phase marks for the app's startup file: `name@epoch_us` entries joined by `,`.
+pub const LAUNCHER_MARKS_ENV: &str = "TILO_STARTUP_LAUNCHER_MARKS";
+
+/// At most this many handed-over marks are kept; the rest are dropped.
+const HANDOFF_MAX_MARKS: usize = 32;
+const HANDOFF_MAX_NAME: usize = 48;
+
+/// One phase mark of the process that started this one, on the shared wall clock.
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+struct HandoffEvent {
+    name: String,
+    epoch_us: u128,
+}
+
+fn handoff_name_ok(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= HANDOFF_MAX_NAME
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+}
+
+/// The marks in a [`LAUNCHER_MARKS_ENV`] value. Malformed entries are dropped:
+/// these are diagnostics, never a reason to fail or alter a launch.
+fn parse_handoff(value: &str) -> Vec<HandoffEvent> {
+    value
+        .split(',')
+        .filter_map(|entry| {
+            let (name, epoch_us) = entry.split_once('@')?;
+            let epoch_us = epoch_us.parse().ok()?;
+            handoff_name_ok(name).then(|| HandoffEvent {
+                name: name.to_owned(),
+                epoch_us,
+            })
+        })
+        .take(HANDOFF_MAX_MARKS)
+        .collect()
+}
+
+fn encode_handoff(marks: &[HandoffEvent]) -> String {
+    marks
+        .iter()
+        .map(|mark| format!("{}@{}", mark.name, mark.epoch_us))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// Marks of a process that starts the measured one. `None` when the shell did
+/// not ask for startup metrics.
+static HANDOFF: OnceLock<Option<Mutex<Vec<HandoffEvent>>>> = OnceLock::new();
+
+/// Record `name` now in a process that launches an app (`tilo-launcher`); the
+/// marks reach the app through [`handoff_env_value`] and land in its startup
+/// file. A no-op unless `TILO_STARTUP_METRICS_PATH` is set, as the shell sets
+/// it for every app it launches.
+pub fn handoff_mark(name: &'static str) {
+    let enabled = HANDOFF.get_or_init(|| {
+        std::env::var_os("TILO_STARTUP_METRICS_PATH").map(|_| Mutex::new(Vec::new()))
+    });
+    let Some(marks) = enabled else { return };
+    if !handoff_name_ok(name) {
+        return;
+    }
+    let epoch_us = u128::from(tilo_clock::unix_now_ns()) / 1_000;
+    let mut marks = marks.lock().unwrap_or_else(PoisonError::into_inner);
+    if marks.len() < HANDOFF_MAX_MARKS {
+        marks.push(HandoffEvent {
+            name: name.to_owned(),
+            epoch_us,
+        });
+    }
+}
+
+/// The [`LAUNCHER_MARKS_ENV`] value holding every [`handoff_mark`] so far;
+/// `None` when there is none.
+#[must_use]
+pub fn handoff_env_value() -> Option<String> {
+    let marks = HANDOFF.get()?.as_ref()?;
+    let marks = marks.lock().unwrap_or_else(PoisonError::into_inner);
+    (!marks.is_empty()).then(|| encode_handoff(&marks))
+}
+
+/// One [`LAUNCHER_MARKS_ENV`] entry for `name` at now, for a process between
+/// the launcher and the app (the sandbox shim) to append to the value it
+/// passes on. `None` for a name the app would drop.
+#[must_use]
+pub fn handoff_entry(name: &str) -> Option<String> {
+    handoff_name_ok(name).then(|| {
+        let epoch_us = u128::from(tilo_clock::unix_now_ns()) / 1_000;
+        format!("{name}@{epoch_us}")
+    })
+}
+
+/// Whether the startup is still being captured: until [`close_startup`].
+static STARTUP_OPEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// [`mark`], only until the first frame is presented ([`close_startup`]): for
+/// code that also runs on every later rebuild, which must not rewrite the
+/// startup file each time.
+#[inline]
+pub fn startup_mark(name: &str) {
+    if STARTUP_OPEN.load(std::sync::atomic::Ordering::Relaxed) {
+        mark(name);
+    }
+}
+
+/// End the startup: later [`startup_mark`]s record nothing.
+pub fn close_startup() {
+    STARTUP_OPEN.store(false, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// Enable capture. Idempotent — subsequent calls are no-ops. Reads
@@ -220,17 +392,8 @@ struct Event {
 pub fn init() {
     METRICS.get_or_init(|| {
         let path = std::env::var_os("TILO_STARTUP_METRICS_PATH")?;
-        let origin = Instant::now();
-        let origin_epoch_ms = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis();
-        Some(Metrics {
-            origin,
-            origin_epoch_ms,
-            events: Mutex::new(Vec::with_capacity(16)),
-            output_path: path.into(),
-        })
+        let launcher = std::env::var(LAUNCHER_MARKS_ENV).ok();
+        Some(Metrics::start(path.into(), launcher.as_deref()))
     });
 }
 
@@ -251,10 +414,7 @@ pub fn mark(name: &str) {
     // mark phases, not frames, so this never enters a hot render path. The
     // lock is held across the write so concurrent marks cannot interleave
     // their temporary files.
-    let payload = serde_json::json!({
-        "origin_epoch_ms": m.origin_epoch_ms,
-        "events": *events,
-    });
+    let payload = m.payload(&events);
     let _ = tilo_files::native::atomic::write_regenerable(
         &m.output_path,
         &serde_json::to_vec_pretty(&payload).unwrap_or_default(),
@@ -271,10 +431,7 @@ pub fn dump() {
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .clone();
-    let payload = serde_json::json!({
-        "origin_epoch_ms": m.origin_epoch_ms,
-        "events": events,
-    });
+    let payload = m.payload(&events);
     let _ = std::fs::write(
         &m.output_path,
         serde_json::to_vec_pretty(&payload).unwrap_or_default(),
@@ -389,5 +546,81 @@ mod tests {
             assert_eq!(launch_table().len(), 1);
             launch_failed(second);
         }
+    }
+
+    #[test]
+    fn launcher_marks_cross_into_the_app_file_and_reject_garbage() {
+        let marks = [
+            HandoffEvent {
+                name: "launcher-start".into(),
+                epoch_us: 1_783_250_000_000_000,
+            },
+            HandoffEvent {
+                name: "sandbox-argv-ready".into(),
+                epoch_us: 1_783_250_000_070_000,
+            },
+        ];
+        let value = encode_handoff(&marks);
+        assert_eq!(
+            value,
+            "launcher-start@1783250000000000,sandbox-argv-ready@1783250000070000"
+        );
+        assert_eq!(parse_handoff(&value), marks);
+        // An app must never be able to smuggle structure into its own file.
+        let parsed = parse_handoff("ok@1,Upper@2,bad name@3,no-time@,quote\"@4,,@5,x@-1,y@7");
+        let names: Vec<_> = parsed.iter().map(|mark| mark.name.as_str()).collect();
+        assert_eq!(names, ["ok", "y"]);
+        let many = (0..100)
+            .map(|i| format!("m@{i}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        assert_eq!(parse_handoff(&many).len(), HANDOFF_MAX_MARKS);
+
+        // Starting capture writes nothing yet; the path is never touched.
+        let metrics = Metrics::start(std::env::temp_dir().join("unused.json"), Some(&value));
+        let payload = metrics.payload(&[]);
+        assert_eq!(payload["launcher"][1]["name"], "sandbox-argv-ready");
+        assert_eq!(
+            payload["launcher"][1]["epoch_us"].as_u64(),
+            Some(1_783_250_000_070_000)
+        );
+        let origin_us = payload["origin_epoch_us"].as_u64().unwrap();
+        assert_eq!(
+            payload["origin_epoch_ms"].as_u64().unwrap(),
+            origin_us / 1_000
+        );
+    }
+
+    #[test]
+    fn launch_latency_lines_survive_the_default_session_filter() {
+        assert_eq!(log_directives(None), "error,tilo::launch_latency=info");
+        assert_eq!(
+            log_directives(Some("  ")),
+            "error,tilo::launch_latency=info"
+        );
+        assert_eq!(
+            log_directives(Some("warn")),
+            "warn,tilo::launch_latency=info"
+        );
+        assert_eq!(
+            log_directives(Some("info,tilo::launch_latency=off")),
+            "info,tilo::launch_latency=off"
+        );
+    }
+
+    /// The shim's exec mark, appended to the launcher's value, precedes the
+    /// app's own origin, so origin minus it is the loader's time.
+    #[test]
+    fn exec_origin_precedes_init() {
+        let launcher = encode_handoff(&[HandoffEvent {
+            name: "sandbox-argv-ready".into(),
+            epoch_us: 1,
+        }]);
+        let value = format!("{launcher},{}", handoff_entry("sandbox-exec").unwrap());
+        let metrics = Metrics::start(std::env::temp_dir().join("unused.json"), Some(&value));
+        let exec = metrics.launcher.last().unwrap();
+        assert_eq!(exec.name, "sandbox-exec");
+        assert!(exec.epoch_us <= metrics.origin_epoch_us);
+        assert_eq!(handoff_entry("Not A Mark"), None);
     }
 }

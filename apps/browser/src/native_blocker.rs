@@ -112,10 +112,7 @@ fn fetch_rules(
             tilo_files::native::atomic::write(path, text.as_bytes())
                 .map_err(|_| "Cannot save filter cache")?;
         }
-        let updated = ui::time::wall()
-            .duration_since(ui::time::UNIX_EPOCH)
-            .ok()
-            .map(|duration| duration.as_secs());
+        let updated = ui::time::try_unix_now();
         let _ = tilo_files::native::atomic::write(
             &directory.join("native-filter-updated.json"),
             &serde_json::to_vec(&updated).unwrap_or_default(),
@@ -196,10 +193,7 @@ pub(crate) fn refresh(engine: &SharedEngine, force: bool) {
                         });
                     }
                     if downloaded {
-                        status.updated = ui::time::wall()
-                            .duration_since(ui::time::UNIX_EPOCH)
-                            .ok()
-                            .map(|d| d.as_secs());
+                        status.updated = ui::time::try_unix_now();
                     }
                     status.message = if downloaded {
                         "Filter lists updated"

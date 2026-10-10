@@ -44,7 +44,7 @@ impl MusicApp {
         };
         for (key, effect) in choices {
             self.push_menu(
-                ui::i18n::I18nManager::format(key, &[]),
+                crate::i18n::t_args(key, &[]),
                 super::Action::SpotifyEffect(effect),
             );
         }
@@ -54,7 +54,7 @@ impl MusicApp {
             && self.spotify_library_offset <= 1950
         {
             self.push_menu(
-                ui::i18n!("music-spotify-library-more"),
+                crate::i18n::t("music-spotify-library-more"),
                 super::Action::SpotifyEffect(MusicEffect::SpotifyLibraryMore),
             );
         }
@@ -135,7 +135,7 @@ impl MusicApp {
                     "music.spotify-remote-item",
                     format!(
                         "{}\n{}",
-                        ui::i18n!("music-spotify-remote-queue"),
+                        crate::i18n::t("music-spotify-remote-queue"),
                         remote_item_label(item)
                     ),
                 )
@@ -206,10 +206,8 @@ impl MusicApp {
             self.menu_actions.push(super::Action::Back);
         }
         for (playlist, (name, _)) in playlists {
-            let label = ui::i18n::I18nManager::format(
-                "music-spotify-playlist-choice",
-                &[("name", name.into())],
-            );
+            let label =
+                crate::i18n::t_args("music-spotify-playlist-choice", &[("name", name.into())]);
             self.push_menu(
                 label,
                 super::Action::SpotifyEffect(MusicEffect::SpotifyPlaylistAdd {
@@ -224,21 +222,21 @@ impl MusicApp {
         self.context = ui::widget::context_menu::ContextMenu::new();
         self.menu_actions.clear();
         self.push_menu(
-            ui::i18n!("music-spotify-create-playlist"),
+            crate::i18n::t("music-spotify-create-playlist"),
             super::Action::BeginNewSpotifyPlaylist,
         );
         self.push_menu(
-            ui::i18n!("music-spotify-rename-playlist"),
+            crate::i18n::t("music-spotify-rename-playlist"),
             super::Action::BeginRenamePlaylist(playlist.into()),
         );
         self.push_menu(
-            ui::i18n!("music-spotify-save-playlist"),
+            crate::i18n::t("music-spotify-save-playlist"),
             super::Action::SpotifyEffect(MusicEffect::SpotifySave {
                 uri: playlist.into(),
             }),
         );
         self.push_menu(
-            ui::i18n!("music-spotify-unsave-playlist"),
+            crate::i18n::t("music-spotify-unsave-playlist"),
             super::Action::SpotifyEffect(MusicEffect::SpotifyUnsave {
                 uri: playlist.into(),
             }),
@@ -279,7 +277,7 @@ impl MusicApp {
         self.home_requested = true;
         self.home = Some(HomeContent {
             sections: vec![HomeSection {
-                title: ui::i18n!("music-spotify-library"),
+                title: crate::i18n::t("music-spotify-library"),
                 items: [
                     (
                         "spotify:collection:liked",
@@ -339,7 +337,7 @@ impl MusicApp {
             self.rebuild_spotify_device_buttons();
         }
         if scenario == "spotify-error" {
-            self.source_error = Some(ui::i18n!("music-spotify-signin-expired"));
+            self.source_error = Some(crate::i18n::t("music-spotify-signin-expired"));
         }
         if scenario == "spotify-queue" {
             self.view = super::View::Queue;
@@ -403,7 +401,7 @@ impl MusicApp {
                     .values()
                     .any(|job| job.library_page.is_some())
             {
-                return Err(ui::i18n!("music-spotify-library-page-unavailable"));
+                return Err(crate::i18n::t("music-spotify-library-page-unavailable"));
             }
             SpotifyOperation::LibraryPage {
                 offset: self.spotify_library_offset,
@@ -553,20 +551,20 @@ impl MusicApp {
         if offset != self.spotify_library_offset
             || state["library_page"].as_u64() != Some(u64::from(offset))
         {
-            return Err(ui::i18n!("music-spotify-library-page-unavailable"));
+            return Err(crate::i18n::t("music-spotify-library-page-unavailable"));
         }
         let page: crate::backend::HomeContent = serde_json::from_value(state["home_page"].clone())
-            .map_err(|_| ui::i18n!("music-spotify-library-page-invalid"))?;
+            .map_err(|_| crate::i18n::t("music-spotify-library-page-invalid"))?;
         let more = state["has_more"]
             .as_bool()
-            .ok_or_else(|| ui::i18n!("music-spotify-library-page-invalid"))?;
+            .ok_or_else(|| crate::i18n::t("music-spotify-library-page-invalid"))?;
         if page.sections.len() > 4 || page.sections.iter().any(|section| section.items.len() > 50) {
-            return Err(ui::i18n!("music-spotify-library-page-invalid"));
+            return Err(crate::i18n::t("music-spotify-library-page-invalid"));
         }
         let mut home = self
             .home
             .clone()
-            .ok_or_else(|| ui::i18n!("music-spotify-library-page-unavailable"))?;
+            .ok_or_else(|| crate::i18n::t("music-spotify-library-page-unavailable"))?;
         for section in page.sections {
             if let Some(existing) = home
                 .sections
@@ -599,7 +597,7 @@ impl MusicApp {
             .collect();
         for id in expired {
             if let Some(job) = self.spotify_jobs.remove(&id) {
-                let message = ui::i18n!("music-spotify-request-timeout");
+                let message = crate::i18n::t("music-spotify-request-timeout");
                 self.source_error = Some(message.clone());
                 self.resource_stream_results
                     .push(tilo_actions::InvocationUpdate::Failed {
@@ -650,8 +648,7 @@ impl MusicApp {
                         MusicEffect::SpotifyRemotePlay { .. } => "music-spotify-play-device",
                         _ => "music-spotify-select-device",
                     };
-                    let label =
-                        ui::i18n::I18nManager::format(key, &[("device", (&device.name).into())]);
+                    let label = crate::i18n::t_args(key, &[("device", (&device.name).into())]);
                     let resource =
                         tilo_actions::Resource::new(&address, "music.spotify-device", &device.name)
                             .with_action(effect.bound());
@@ -660,7 +657,7 @@ impl MusicApp {
                     Some(
                         ui::widget::Button::new(&id, &label)
                             .with_enabled(!device.restricted)
-                            .tooltip(ui::i18n!("music-spotify-device-help"))
+                            .tooltip(crate::i18n::t("music-spotify-device-help"))
                             .on_action(binding),
                     )
                 })
@@ -745,11 +742,11 @@ impl MusicApp {
                     row = if kind == "music.artist" {
                         row.operation(crate::actions::bound(
                             &MusicEffect::SpotifySave { uri: id.clone() },
-                            &ui::i18n!("music-spotify-follow-artist"),
+                            &crate::i18n::t("music-spotify-follow-artist"),
                         ))
                         .operation(crate::actions::bound(
                             &MusicEffect::SpotifyUnsave { uri: id },
-                            &ui::i18n!("music-spotify-unfollow-artist"),
+                            &crate::i18n::t("music-spotify-unfollow-artist"),
                         ))
                     } else {
                         row.effect(&MusicEffect::SpotifySave { uri: id.clone() })
@@ -773,7 +770,11 @@ impl MusicApp {
                     format!("music.spotify-device:{}", device.id),
                     "music.spotify-device",
                     if device.active {
-                        format!("{} • {}", device.name, ui::i18n!("music-spotify-active"))
+                        format!(
+                            "{} • {}",
+                            device.name,
+                            crate::i18n::t("music-spotify-active")
+                        )
                     } else {
                         device.name.clone()
                     },

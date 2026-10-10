@@ -128,7 +128,7 @@ pub const PROXY_BIN_ENV: &str = crate::dev_env::DBUS_PROXY_BIN_ENV;
 /// `/usr/libexec/flatpak-xdg-utils/xdg-dbus-proxy` (Fedora), then
 /// `/usr/lib/flatpak-xdg-utils/xdg-dbus-proxy` (some Debian derivatives).
 pub fn find_proxy_binary() -> Option<PathBuf> {
-    if let Some(bin) = crate::dev_env::dev_override(PROXY_BIN_ENV) {
+    if let Some(bin) = package_store::dev_env::dev_override(PROXY_BIN_ENV) {
         let p = PathBuf::from(bin);
         return p.is_file().then_some(p);
     }

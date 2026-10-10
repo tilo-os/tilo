@@ -112,7 +112,7 @@ async fn an_outside_publisher_applies_is_approved_and_publishes() {
         )
         .unwrap();
         assert_eq!(status["status"], "pending");
-        applications::approve(&storage, &pubkey, "owner", unix_now(), &proofs).unwrap();
+        applications::approve(&storage, &pubkey, "owner", tilo_clock::unix_now(), &proofs).unwrap();
         assert_eq!(
             client.application(&pubkey).unwrap().unwrap()["status"],
             "approved"
@@ -214,13 +214,6 @@ fn a_release_before_review_extends_the_waiting_request(
             ("1.1.0", "x86_64")
         ]
     );
-}
-
-fn unix_now() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs()
 }
 
 fn publish(

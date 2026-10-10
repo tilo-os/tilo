@@ -81,3 +81,63 @@ fn the_published_body_offers_the_rich_text_views() {
     let views: Vec<&str> = body.views.iter().map(|view| view.id.as_str()).collect();
     assert_eq!(views, ["editor", "compact"], "{views:?}");
 }
+
+#[test]
+fn importing_a_long_note_keeps_actions_usable_before_the_next_frame() {
+    use std::fmt::Write as _;
+
+    use notes::actions::{import_markdown_action, page_resource_id};
+    use ui::bound_dispatch::BoundActionAddress;
+
+    let mut app = crate::framework_support::notes();
+    let page = PageId::new_v4();
+    let paragraph = "collaborative notes ".repeat(14);
+    let mut markdown = String::new();
+    for index in 0..180 {
+        writeln!(markdown, "Paragraph {index}: {paragraph}\n").unwrap();
+    }
+    let invoke = Invoke::<notes::Notebook>::apply(&import_markdown_action(
+        page,
+        "Long note",
+        &markdown,
+        Vec::new(),
+    ))
+    .unwrap();
+    let address = BoundActionAddress {
+        instance_id: app.harness().component_instance_id().unwrap(),
+        address: tilo_actions::ActionAddress::new("notes.notebook", invoke.id),
+    };
+    // The control socket may request publication between applying an action
+    // and drawing the next frame. Deliberately do not relayout here.
+    app.harness()
+        .invoke_bound_action_confirmed(&address, &invoke.arguments)
+        .unwrap();
+    let violations = app.harness().component_contract_violations();
+    assert!(violations.is_empty(), "{violations:?}");
+    assert_eq!(body(&app, page).len(), 180);
+
+    app.call_on(&page_resource_id(page), "open", serde_json::json!({}))
+        .unwrap();
+    app.harness().relayout_at((1000, 300)).unwrap();
+    crate::framework_support::send(
+        &mut app,
+        &winit::event::WindowEvent::MouseWheel {
+            device_id: winit::event::DeviceId::dummy(),
+            delta: winit::event::MouseScrollDelta::LineDelta(0.0, -3.0),
+            phase: winit::event::TouchPhase::Moved,
+        },
+    );
+    app.harness().relayout_at((1000, 300)).unwrap();
+    let scrolled = crate::framework_support::surface(&mut app, |notes| {
+        notes.main_panel_mut().scroll_y_for_test()
+    });
+    assert!(
+        scrolled > 0.0,
+        "the published open action exposes a scrollable note"
+    );
+    let rect = app.harness().targets()["block_editor"];
+    app.harness().click_at(rect.x0 + 20.0, rect.y0 + 10.0);
+    app.harness().type_text("qualified input");
+    assert!(body(&app, page).concat().contains("qualified input"));
+    assert!(app.harness().component_contract_violations().is_empty());
+}

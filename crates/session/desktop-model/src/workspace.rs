@@ -48,11 +48,11 @@ pub struct Workspace {
     /// Completed transfers retaining the outgoing owner's signed authorization
     /// and the exact recipient's signed acceptance. This is append-only audit
     /// evidence, not a second source of current ownership.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "crate::history::omitted")]
     pub ownership_transfer_audit: Vec<collab_types::OwnershipTransferAuditV1>,
     /// Owner-signed cancellations retained so a cancelled proposal cannot be
     /// replayed after restart.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "crate::history::omitted")]
     pub ownership_transfer_cancellations: Vec<collab_types::OwnershipTransferCancellationV1>,
     /// **Every** permission in this room, as capabilities — one list, one
     /// vocabulary (room membership, file shares, portal grants), so it
@@ -75,7 +75,7 @@ pub struct Workspace {
     pub tasks: Vec<WorkspaceTask>,
     /// Consequential effects are activity, but never pretend to be edits to
     /// an app's collaborative document.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "crate::history::omitted")]
     pub effect_receipts: Vec<WorkspaceEffectReceipt>,
     /// Shortcuts saved in this workspace: a person's own in their personal
     /// workspace, shared ones in a collaborative one. Projected as a CRDT
@@ -344,6 +344,22 @@ impl Workspace {
         now: u64,
     ) -> CapDecision {
         decide_capability(actor, resource, verb, &self.capabilities, Some(now))
+    }
+
+    /// The first instant after `now` (Unix seconds) at which one of this
+    /// workspace's capabilities stops being live: until then every `_at`
+    /// question answers the same as at `now` unless the workspace is written.
+    /// `None` while no capability expires later. Every permission of the room
+    /// is a capability (members, agents, service members, shares, grants),
+    /// so this is the room's whole time dependence.
+    pub fn next_capability_expiry_after(&self, now: u64) -> Option<u64> {
+        self.capabilities
+            .iter()
+            .filter_map(|capability| match capability.expiry {
+                Expiry::AtUnix(deadline) if deadline > now => Some(deadline),
+                _ => None,
+            })
+            .min()
     }
 
     /// [`Self::decide_at`] reduced to a bool, for call sites that only
@@ -941,6 +957,55 @@ impl Workspace {
             shortcuts: Vec::new(),
             schedule_claims: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
+        }
+    }
+
+    /// A copy holding what authority decisions read — identity, owner,
+    /// membership, capabilities, profiles, defaults — and none of the
+    /// layout or history: no strips, tasks, effect receipts, shortcuts,
+    /// schedule claims or ownership-transfer records. For a caller that
+    /// must not hold the tree while it asks [`Self::decide_at`] and its
+    /// kin, so the copy costs the policy, not the workspace's past.
+    #[must_use]
+    pub fn policy_view(&self) -> Self {
+        // Destructured, so a new field has to be sorted into one side.
+        let Self {
+            id,
+            room,
+            name,
+            strips: _,
+            collaborators,
+            owner,
+            pending_ownership_transfer,
+            ownership_transfer_audit: _,
+            ownership_transfer_cancellations: _,
+            capabilities,
+            permission_profiles,
+            default_apps,
+            tasks: _,
+            effect_receipts: _,
+            shortcuts: _,
+            schedule_claims: _,
+            shared_surfaces,
+        } = self;
+        Self {
+            id: *id,
+            room: *room,
+            name: name.clone(),
+            strips: Vec::new(),
+            collaborators: collaborators.clone(),
+            owner: owner.clone(),
+            pending_ownership_transfer: pending_ownership_transfer.clone(),
+            ownership_transfer_audit: Vec::new(),
+            ownership_transfer_cancellations: Vec::new(),
+            capabilities: capabilities.clone(),
+            permission_profiles: permission_profiles.clone(),
+            default_apps: default_apps.clone(),
+            tasks: Vec::new(),
+            effect_receipts: Vec::new(),
+            shortcuts: Vec::new(),
+            schedule_claims: Vec::new(),
+            shared_surfaces: shared_surfaces.clone(),
         }
     }
 

@@ -226,7 +226,7 @@ impl StatePeer {
             .ok_or("missing identities")?
             .1;
         let mut rows = room::governance_of(Some(&doc))
-            .3
+            .identities
             .into_iter()
             .map(|(id, bytes)| {
                 serde_json::from_slice::<GovernedIdentity>(&bytes)
@@ -281,7 +281,7 @@ impl StatePeer {
         let (role, caps, person) = self.permissions(self.core.authority.device_public_key, now)?;
         if role != Role::Owner
             || room::governance_of(self.core.room_doc.as_deref())
-                .0
+                .owner
                 .as_deref()
                 != Some(&hex::encode(self.core.authority.user_public_key))
         {
@@ -410,7 +410,7 @@ impl StatePeer {
             return Err("certificate conflict".into());
         }
         if room::governance_of(self.core.room_doc.as_deref())
-            .0
+            .owner
             .as_deref()
             != Some(&hex::encode(self.core.authority.user_public_key))
         {
@@ -437,7 +437,7 @@ impl StatePeer {
             .map_err(err)?
             .ok_or("missing peers")?
             .1;
-        let rows = room::governance_of(Some(&doc)).3;
+        let rows = room::governance_of(Some(&doc)).identities;
         let authority_id = hex::encode(self.core.authority.device_public_key);
         let mut authority: GovernedIdentity =
             serde_json::from_slice(rows.get(&authority_id).ok_or("missing authority")?)

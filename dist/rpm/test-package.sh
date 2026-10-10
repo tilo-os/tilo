@@ -26,6 +26,8 @@ rpm -q --requires tilo-session | grep -Fxq xwayland-satellite
 rpm -q --requires tilo-session | grep -Fxq xdg-desktop-portal
 rpm -q --requires tilo-session | grep -Fxq xdg-dbus-proxy
 rpm -q --requires tilo-session | grep -Fxq dbus-tools
+rpm -q --requires tilo-session | grep -Fxq fuse3
+rpm -q --requires tilo-session | grep -Fxq python3
 rpm -q --requires tilo-session | grep -Fxq upower
 rpm -q --recommends tilo-session | grep -Fxq mesa-vulkan-drivers
 rpm -q --requires tilo-session | grep -Eq '^tilo-session-apps(\([^)]*\))? = '
@@ -33,6 +35,13 @@ rpm -q --requires tilo-session | grep -Eq '^tilo-session-apps(\([^)]*\))? = '
     '^(ld-linux|libc\.so|libstd-|libruntime_dylib\.so)'
 ! rpm -q --provides tilo-session-apps | grep -Eq \
     '^(ld-linux|libc\.so|libstd-|libruntime_dylib\.so)'
+# Inspect installed, package-owned tools and parse help only. This must never
+# enroll, initialize, start a Files service or create credentials during QA.
+for program in fs tilo-relay-admin tilo-enroll; do
+    test -x "/usr/bin/$program"
+    test "$(rpm -qf "/usr/bin/$program")" = "$(rpm -q tilo-session)"
+    "/usr/bin/$program" --help >/dev/null
+done
 test -x /usr/bin/app
 /usr/bin/app --help >/dev/null
 owner=/usr/share/tilo/trust/tilo-main-registry-owner.pub

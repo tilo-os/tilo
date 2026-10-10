@@ -11,7 +11,7 @@ use automerge::{AutoCommit, ChangeHash};
 use tokio::sync::{Mutex as AsyncMutex, mpsc};
 
 use crate::auth::PeerRole;
-use crate::store::{CommitRecord, LogEntry, WorkspaceStore};
+use crate::store::{CommitRecord, WorkspaceStore};
 use crate::transport::Envelope;
 
 /// Membership set for a workspace on this relay. Populated by the
@@ -31,9 +31,14 @@ impl Membership {
         self.devices.contains(device)
     }
 
-    /// Replace the membership with a new set.
+    /// Replace the membership with a new set. A different set wakes the
+    /// sessions admitted under the old one to re-check
+    /// ([`crate::authority_epoch`]).
     pub fn set(&mut self, devices: Vec<[u8; 32]>) {
-        self.devices = devices;
+        if self.devices != devices {
+            self.devices = devices;
+            crate::authority_epoch::bump();
+        }
     }
 }
 
@@ -88,10 +93,10 @@ pub struct WorkspaceRuntime {
     /// The watched generation `membership` was last loaded at. `None` until a
     /// live watch vouched for a load, so every read goes to the disk.
     pub(crate) loaded_generation: Option<u64>,
-    /// Whether any connection already admitted by the relay's trust policy may
-    /// join this workspace. Enabled automatically for matching-user home hosts;
-    /// shared/multi-tenant hosts use an explicit membership list.
-    pub admit_authenticated: bool,
+    /// How the room admits devices beyond its exact membership: explicitly,
+    /// the relay owner's devices on a same-owner home host, or under native
+    /// governance. Read only through [`crate::room_access::decide`].
+    pub(crate) admission: crate::room_access::AdmissionMode,
     /// Cross-user roots admitted by the signed authority for this exact room.
     pub admitted_users: HashSet<[u8; 32]>,
     /// User roots needed only to pass the relay-wide handshake for devices in
@@ -99,9 +104,6 @@ pub struct WorkspaceRuntime {
     /// `membership`; keeping this separate from `admitted_users` prevents an
     /// ungoverned sibling device under the same root from joining.
     pub governed_user_roots: HashSet<[u8; 32]>,
-    /// Whether native governance owns this room's admission. Once set, the
-    /// same-owner autobind path must not auto-enrol handshake-admitted devices.
-    pub governed_access: bool,
     pub(crate) checkpoint_prefix_recovery: crate::config::CheckpointPrefixRecovery,
     /// Current live subscribers keyed by device pubkey.
     pub subscribers: HashMap<[u8; 32], Subscriber>,
@@ -126,6 +128,11 @@ pub struct WorkspaceRuntime {
     /// once, and the next idle set, on the same channels, is withheld from a
     /// device that already holds every delta — see `fanout_delta`.
     checkpoint_served: HashMap<[u8; 32], HashSet<[u8; 32]>>,
+    /// The presence mailbox of each subscriber whose connection takes its
+    /// presence coalesced and batched ([`crate::presence_mailbox`]). Set
+    /// right after the subscription it belongs to and dropped with it; a
+    /// subscriber without one gets each presence on its frame queue.
+    presence_mailboxes: HashMap<[u8; 32], Arc<crate::presence_mailbox::PresenceMailbox>>,
     /// Subscribers that joined the live plane, with their rate budgets.
     live_members: HashMap<[u8; 32], LiveBudget>,
     /// Host order of the last admitted delta.
@@ -282,7 +289,11 @@ impl WorkspaceRuntime {
     ) -> Result<Self, crate::store::StoreError> {
         let store = WorkspaceStore::open(state_root, workspace_id, pinned)?;
         let governed_access_record = store.load_governed_access()?;
-        let governed_access = governed_access_record.is_some();
+        let admission = if governed_access_record.is_some() {
+            crate::room_access::AdmissionMode::Governed
+        } else {
+            crate::room_access::AdmissionMode::Explicit
+        };
         let governed_user_roots = governed_access_record.map_or_else(HashSet::new, |access| {
             access.member_user_roots.into_iter().collect()
         });
@@ -324,10 +335,9 @@ impl WorkspaceRuntime {
             membership_revision: 0,
             disk_generation: None,
             loaded_generation: None,
-            admit_authenticated: false,
+            admission,
             admitted_users: HashSet::new(),
             governed_user_roots,
-            governed_access,
             checkpoint_prefix_recovery: crate::config::CheckpointPrefixRecovery::Disabled,
             subscribers: HashMap::new(),
             known_peer_relays: HashSet::new(),
@@ -336,6 +346,7 @@ impl WorkspaceRuntime {
             state_sessions: HashMap::new(),
             outbound_federation: HashMap::new(),
             checkpoint_served: HashMap::new(),
+            presence_mailboxes: HashMap::new(),
             sync_refresh: None,
             governor_tap: None,
             room_authority: None,
@@ -496,15 +507,35 @@ impl WorkspaceRuntime {
             .is_some_and(|current| current.tx.same_channel(&sub.tx))
         {
             self.action_targets.remove(&sub.device_public_key);
+            self.presence_mailboxes.remove(&sub.device_public_key);
             if let Some(session) = self.state_sessions.remove(&sub.device_public_key) {
                 session
                     .live
                     .store(false, std::sync::atomic::Ordering::SeqCst);
             }
+            if self.subscribers.contains_key(&sub.device_public_key) {
+                // The displaced connection is no longer the device's current
+                // session; its next access audit ends it.
+                crate::authority_epoch::bump();
+            }
         }
         self.checkpoint_served
             .insert(sub.device_public_key, HashSet::new());
         self.subscribers.insert(sub.device_public_key, sub);
+    }
+
+    /// Hand the presence fanned out to subscriber `device` to its
+    /// connection's `mailbox` rather than its frame queue. Call right after
+    /// [`Self::add_subscriber`] registered that connection; replacing or
+    /// removing the subscription drops the route.
+    pub fn route_presence(
+        &mut self,
+        device: [u8; 32],
+        mailbox: Arc<crate::presence_mailbox::PresenceMailbox>,
+    ) {
+        if self.subscribers.contains_key(&device) {
+            self.presence_mailboxes.insert(device, mailbox);
+        }
     }
 
     /// A device asked for a baseline (its hello, a `SyncReq`, or a rejected
@@ -562,8 +593,13 @@ impl WorkspaceRuntime {
 
     /// Drop a subscription for `device`, and its live membership. Idempotent.
     pub fn remove_subscriber(&mut self, device: &[u8; 32]) {
-        self.subscribers.remove(device);
+        if self.subscribers.remove(device).is_some() {
+            // A connection whose subscription went is ended by its next
+            // access audit.
+            crate::authority_epoch::bump();
+        }
         self.action_targets.remove(device);
+        self.presence_mailboxes.remove(device);
         if let Some(session) = self.state_sessions.remove(device) {
             session
                 .live
@@ -636,10 +672,6 @@ impl WorkspaceRuntime {
     /// Returns an error if `envelope` can't be re-encoded for the
     /// durable queue, or if persisting it (pending, checkpoint, or
     /// retained tail) fails.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one ordered protocol state machine; splitting it would scatter the invariants each step relies on"
-    )]
     pub fn fanout_delta(
         &mut self,
         author: &[u8; 32],
@@ -671,15 +703,15 @@ impl WorkspaceRuntime {
                     "delta workspace or authenticated author mismatch",
                 )));
             }
-            crate::coedit::CoeditPayload::decode(delta)
+            crate::coedit::retention_metadata(delta)
         } else {
             None
         };
         match &retained {
-            Some(crate::coedit::CoeditPayload::Checkpoint { channel, .. }) => {
+            Some((channel, crate::coedit::RetentionKind::Checkpoint)) => {
                 self.store.retain_checkpoint(channel, &raw)?;
             }
-            Some(crate::coedit::CoeditPayload::RetainedDelta { channel, .. }) => {
+            Some((channel, crate::coedit::RetentionKind::Delta)) => {
                 self.store.retain_delta(channel, seq, &raw)?;
             }
             None => {}
@@ -700,7 +732,7 @@ impl WorkspaceRuntime {
         // (hello / SyncReq / rejected checkpoint). Peer relays always receive
         // it so they can federate; retention and offline queues are unchanged.
         let checkpoint_channel = match &retained {
-            Some(crate::coedit::CoeditPayload::Checkpoint { channel, .. }) => Some(*channel),
+            Some((channel, crate::coedit::RetentionKind::Checkpoint)) => Some(*channel),
             _ => None,
         };
         let mut delivered = 0usize;
@@ -778,14 +810,6 @@ impl WorkspaceRuntime {
                 self.store.enqueue_pending(pr, seq, &raw)?;
             }
         }
-        // 3. Audit log — best-effort; failure does not block routing.
-        let _ = self.store.append_log(&LogEntry {
-            workspace_id: self.store.workspace_id(),
-            received_at_ns: seq,
-            author_device_hex: hex::encode(author),
-            authored_at_ns: seq,
-            delta_len: raw_delta_bytes.len() as u64,
-        });
         // 4. Materialize into the pinned doc so the host holds
         //    authoritative current state (the source for anti-entropy
         //    resync), not just per-peer queues. Runs AFTER fan-out +
@@ -897,20 +921,42 @@ impl WorkspaceRuntime {
     }
 
     /// Route a presence envelope (no persistence, drop-on-empty).
-    /// Same echo-suppression rule as `fanout_delta`.
+    /// Same echo-suppression rule as `fanout_delta`. A subscriber whose
+    /// connection has a presence mailbox gets it there, coalesced under
+    /// `slot` with the author's later presence; the payload is shared by every
+    /// such subscriber, not copied.
     pub fn fanout_presence(
         &mut self,
         author: &[u8; 32],
         from_role: PeerRole,
         envelope: &Envelope,
+        slot: Option<tilo_peer_state::PresenceSlot>,
     ) -> usize {
         let mut delivered = 0usize;
         let mut dead: Vec<[u8; 32]> = Vec::new();
+        let mut shared: Option<Arc<[u8]>> = None;
+        let now = tokio::time::Instant::now();
         for (peer, sub) in &self.subscribers {
             if peer == author {
                 continue;
             }
             if from_role == PeerRole::PeerRelay && sub.role == PeerRole::PeerRelay {
+                continue;
+            }
+            if let (
+                Some(mailbox),
+                Envelope::Presence {
+                    workspace_id,
+                    payload,
+                },
+            ) = (self.presence_mailboxes.get(peer), envelope)
+            {
+                let payload = shared
+                    .get_or_insert_with(|| Arc::from(payload.as_slice()))
+                    .clone();
+                if mailbox.post(*workspace_id, *author, slot, payload, now) {
+                    delivered = delivered.saturating_add(1);
+                }
                 continue;
             }
             match sub.tx.try_send(envelope.clone()) {
@@ -940,6 +986,7 @@ impl WorkspaceRuntime {
         }
         let _ = sub.disconnect.try_send(());
         self.subscribers.remove(target);
+        crate::authority_epoch::bump();
         false
     }
 

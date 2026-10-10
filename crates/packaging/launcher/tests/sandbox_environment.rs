@@ -29,7 +29,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use launcher::manifest::{Entrypoint, Fs, MinimalManifest, Net, Sandbox};
+use launcher::manifest::{Entrypoint, Fs, ManifestView, Net, Sandbox};
 use launcher::run::{RunOptions, run_with_captured};
 use tilo_test_env::ScopedEnv;
 
@@ -53,8 +53,8 @@ const SESSION_PRIVATE: &[(&str, &str)] = &[
     ("TILO_IDENTITY_BROKER_FD", "42"),
 ];
 
-fn manifest() -> MinimalManifest {
-    MinimalManifest {
+fn manifest() -> ManifestView {
+    ManifestView {
         package_id: PACKAGE.to_string(),
         name: None,
         localized_names: BTreeMap::default(),
@@ -357,4 +357,81 @@ fn chosen_session_preferences_are_carried_across_explicitly() {
         );
         assert_eq!(run(&["env", "TILO_TEXT_SCALE"]), "ENV TILO_TEXT_SCALE=2");
     }
+}
+
+/// The real native library relocates its lookup beside the signed runtime.
+/// Exercise signature verification, loader preflight, bwrap, Landlock and
+/// seccomp through the production launch path, not just an argv assertion.
+#[test]
+fn relocated_gstreamer_discovers_playbin_in_the_confined_process() {
+    use std::collections::BTreeSet;
+    use std::path::Path;
+    use std::process::Command;
+
+    let mut env = ScopedEnv::new();
+    env.set("LC_ALL", "C");
+    env.set("GST_PLUGIN_SYSTEM_PATH_1_0", "/home/private/plugins");
+    let executable = Path::new("/usr/bin/gst-inspect-1.0");
+    assert!(executable.is_file(), "native GStreamer probe is required");
+    let report = Command::new("ldd").arg(executable).output().unwrap();
+    assert!(report.status.success());
+    let report = String::from_utf8(report.stdout).unwrap();
+    assert!(!report.contains("not found"), "{report}");
+    let libraries: BTreeSet<PathBuf> = report
+        .split_whitespace()
+        .filter(|word| word.starts_with('/') && !word.ends_with(':'))
+        .map(PathBuf::from)
+        .collect();
+    assert!(
+        libraries.iter().any(|path| path
+            .file_name()
+            .is_some_and(|name| name == "libgstreamer-1.0.so.0")),
+        "{report}"
+    );
+    let libraries: Vec<_> = libraries.into_iter().collect();
+    let root = tempfile::tempdir().unwrap();
+    let runtime = root.path().join("runtime");
+    let identity = runtime_bundle::Identity::generate();
+    let key = root.path().join("fixture-identity.json");
+    std::fs::write(&key, identity.to_json_bytes()).unwrap();
+    runtime_bundle::build_bundle_with(
+        &runtime,
+        "gst-relocation-fixture",
+        &runtime_bundle::BuildOptions {
+            identity: Some(&key),
+            extra_libs: &libraries,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(!runtime.join("lib/gstreamer-1.0").exists());
+    let payload = root.path().join("payload");
+    std::fs::create_dir_all(payload.join("bin")).unwrap();
+    std::fs::copy(executable, payload.join("bin/gst-inspect")).unwrap();
+    let mut manifest = manifest();
+    manifest.runtime = Some("tilo-runtime/gst-relocation-fixture".into());
+    manifest.entrypoint.bin = "bin/gst-inspect".into();
+    let opts = RunOptions {
+        no_services: true,
+        bwrap_bin: Some(bwrap()),
+        sandbox_shim_bin: Some(PathBuf::from(env!("CARGO_BIN_EXE_tilo-launcher"))),
+        runtime_root: Some(runtime),
+        require_runtime_publisher: Some(identity.public_key_hex()),
+        mode: launcher::run::LaunchMode::Cli {
+            command: "gst-inspect".into(),
+            passthrough_argv: vec!["playbin".into()],
+        },
+        ..isolated_options(&root.path().join("data"))
+    };
+    assert!(opts.landlock_enforce);
+    assert!(!opts.allow_missing_runtime && !opts.allow_unsigned_runtime);
+    let (status, output) = run_with_captured(&manifest, &payload, &opts)
+        .expect("launch the native probe with the verified relocated runtime");
+    let output = String::from_utf8_lossy(&output);
+    assert!(
+        status.success(),
+        "native plugin discovery failed: {status:?} {output}"
+    );
+    assert!(output.contains("Player Bin 2"), "{output}");
+    assert!(output.contains("libgstplayback.so"), "{output}");
 }

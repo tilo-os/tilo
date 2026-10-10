@@ -13,10 +13,6 @@ use serde::{Deserialize, Serialize};
 use crate::apps::canonical_app_id;
 use crate::ids::{MintIds, StripId};
 use crate::layout::{Strip, Tab, TileContent, WindowGroup};
-use crate::projection::{
-    ROOM_CONTENTS_KEY, ROOM_CONTENTS_OWNERS_KEY, ROOM_DESKTOP_COUNTER_KEY, ROOM_ID_KEY,
-    ROOM_NAME_KEY, ROOM_OWNER_KEY,
-};
 use crate::topology::DropTarget;
 use crate::tree::DesktopTree;
 use crate::width::WindowWidth;
@@ -234,40 +230,6 @@ impl DesktopCommand {
                 | Self::RevokeAppAction { .. }
         )
     }
-}
-
-/// The profile a [`DesktopCommand::SavePermissionProfile`] carries.
-///
-/// # Errors
-///
-/// Why the JSON is not a valid permission profile.
-pub fn decode_permission_profile(json: &str) -> Result<collab_types::PermissionProfile, String> {
-    let profile: collab_types::PermissionProfile =
-        serde_json::from_str(json).map_err(|error| format!("not a permission profile: {error}"))?;
-    profile.validate().map_err(|error| error.to_string())?;
-    Ok(profile)
-}
-
-/// The subject and expiry a [`DesktopCommand::AssignPermissionProfile`] names.
-///
-/// # Errors
-///
-/// When `kind` is not `person`, `app` or `agent`.
-pub fn permission_assignment(
-    kind: &str,
-    subject: &str,
-    expires_unix: u64,
-) -> Result<(collab_types::Subject, collab_types::Expiry), String> {
-    let subject = match kind.trim().to_ascii_lowercase().as_str() {
-        "person" => collab_types::Subject::person(subject.trim()),
-        "app" => collab_types::Subject::app(subject.trim()),
-        "agent" => collab_types::Subject::agent(subject.trim()),
-        _ => return Err("subject_kind must be person, app, or agent".into()),
-    };
-    let expiry = (expires_unix > 0)
-        .then_some(expires_unix)
-        .map_or(collab_types::Expiry::Never, collab_types::Expiry::AtUnix);
-    Ok((subject, expiry))
 }
 
 /// The shortcut a [`DesktopCommand::SaveShortcut`] carries.
@@ -494,63 +456,6 @@ impl DesktopRefusal {
     pub fn details(self, id: &DesktopCommandId) -> serde_json::Value {
         serde_json::json!({"command": id.to_string(), "reason": self.as_str()})
     }
-}
-
-/// Room heads also advance for receipts, enrollment and document durability.
-/// Those changes must not invalidate a gesture against an unchanged desktop.
-/// Compare the original admitted desktop with the current one, without
-/// rebinding the command or weakening the current caller/target checks.
-///
-/// # Errors
-///
-/// Returns a description when the document cannot be read at `heads`.
-pub fn desktop_source_matches(
-    doc: &automerge::AutoCommit,
-    heads: &[[u8; 32]],
-) -> Result<bool, String> {
-    use automerge::ReadDoc;
-    let heads = heads
-        .iter()
-        .copied()
-        .map(automerge::ChangeHash)
-        .collect::<Vec<_>>();
-    if heads.is_empty()
-        || heads
-            .iter()
-            .any(|head| doc.get_change_by_hash(head).is_none())
-    {
-        return Ok(false);
-    }
-    for key in [
-        ROOM_ID_KEY,
-        ROOM_OWNER_KEY,
-        ROOM_NAME_KEY,
-        ROOM_CONTENTS_KEY,
-        ROOM_CONTENTS_OWNERS_KEY,
-        // Also prevents an old launch from being reused after its tab closes.
-        ROOM_DESKTOP_COUNTER_KEY,
-    ] {
-        let previous = doc
-            .get_all_at(automerge::ROOT, key, &heads)
-            .map_err(|e| e.to_string())?;
-        let current = doc
-            .get_all(automerge::ROOT, key)
-            .map_err(|e| e.to_string())?;
-        if previous != current {
-            return Ok(false);
-        }
-        for (value, object) in current {
-            if matches!(value, automerge::Value::Object(_))
-                && doc
-                    .hydrate(&object, Some(&heads))
-                    .map_err(|e| e.to_string())?
-                    != doc.hydrate(&object, None).map_err(|e| e.to_string())?
-            {
-                return Ok(false);
-            }
-        }
-    }
-    Ok(true)
 }
 
 /// Strip, group and tab indices of one located tab.
@@ -1056,27 +961,6 @@ fn move_group(
         .unwrap_or(groups.len());
     groups.insert(index, moved);
     Ok(())
-}
-
-/// [`apply_command`] on the workspace of `room` in `tree`: the reduction a
-/// host runs against the desktop it renders.
-///
-/// # Errors
-///
-/// Returns a description when `room` is not in `tree`, or as [`apply_command`].
-pub fn apply_in_room(
-    tree: &mut DesktopTree,
-    room: &str,
-    command: &DesktopCommand,
-    mint: &mut impl FnMut() -> Result<u64, String>,
-    create: &mut impl FnMut(&str, u64) -> Result<(String, TileContent), String>,
-) -> Result<(), String> {
-    let workspace = tree
-        .workspaces
-        .iter_mut()
-        .find(|workspace| workspace.room.to_string() == room)
-        .ok_or("command room is not in this desktop")?;
-    apply_command(workspace, command, mint, create)
 }
 
 /// An identity the owner already reserved in its own namespace, handed to a

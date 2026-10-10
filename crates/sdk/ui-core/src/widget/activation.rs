@@ -496,10 +496,15 @@ impl PaintedTargets {
         }
     }
 
-    fn handle_mouse(&mut self, state: ElementState, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_mouse(&mut self, state: ElementState, handled: &mut bool) {
         let under = self.hit(self.cursor).map(str::to_string);
         match state {
             ElementState::Pressed => {
+                // A fresh press starts a new gesture even outside our targets:
+                // an absent old release must not capture the new click.
+                self.pressed = None;
+                self.armed_rect = None;
+                self.cancelled_release_pending = false;
                 if let Some(id) = under.filter(|id| !self.interaction(id).disabled) {
                     self.focused = Some(id.clone());
                     self.armed_rect = self
@@ -509,16 +514,15 @@ impl PaintedTargets {
                         .map(|target| target.rect);
                     self.cancelled_release_pending = false;
                     self.pressed = Some(id);
-                    *ctx.focus_target = Some(ctx.node_id);
-                    *ctx.handled = true;
+                    *handled = true;
                 }
             }
             ElementState::Released => {
                 self.armed_rect = None;
                 if std::mem::take(&mut self.cancelled_release_pending) {
-                    *ctx.handled = true;
+                    *handled = true;
                 } else if let Some(pressed) = self.pressed.take() {
-                    *ctx.handled = true;
+                    *handled = true;
                     if under.as_deref() == Some(pressed.as_str()) {
                         self.activate(&pressed);
                     }
@@ -527,16 +531,15 @@ impl PaintedTargets {
         }
     }
 
-    /// Track the pointer and keys against the registered targets. A press
-    /// and release on the same target activates it; Enter or Space
-    /// activates the focused one; Tab and Shift+Tab move focus between
-    /// targets. Marks the event handled when a target took it, and asks the
-    /// host for keyboard focus when one is pressed. Returns whether
-    /// anything visible changed.
-    pub fn handle_event(
+    /// Pointer routing for canvas hosts without a widget focus context.
+    /// Uses the same completed-click and cancellation rules as `handle_event`,
+    /// without requesting keyboard focus. Returns whether feedback changed;
+    /// handled includes a cancelled gesture's matching release.
+    pub fn handle_pointer_event(
         &mut self,
         event: &WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
+        scale_factor: f64,
+        handled: &mut bool,
     ) -> bool {
         let before = (
             self.hovered.clone(),
@@ -545,12 +548,8 @@ impl PaintedTargets {
             self.host_focused,
         );
         match event {
-            WindowEvent::ModifiersChanged(modifiers) => {
-                self.shift = modifiers.state().shift_key();
-            }
             WindowEvent::CursorMoved { position, .. } => {
-                self.cursor =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
                 self.hovered = self.hit(self.cursor).map(str::to_string);
             }
             WindowEvent::CursorLeft { .. } => {
@@ -568,14 +567,56 @@ impl PaintedTargets {
                     && self.wants_pointer_capture() =>
             {
                 self.cancel_pointer_press();
-                *ctx.handled = true;
+                *handled = true;
             }
             WindowEvent::MouseInput {
                 state,
                 button: MouseButton::Left,
                 ..
             } => {
-                self.handle_mouse(*state, ctx);
+                self.handle_mouse(*state, handled);
+            }
+            _ => {}
+        }
+        before
+            != (
+                self.hovered.clone(),
+                self.pressed.clone(),
+                self.focused.clone(),
+                self.host_focused,
+            )
+    }
+
+    /// Track the pointer and keys against the registered targets. A press
+    /// and release on the same target activates it; Enter or Space
+    /// activates the focused one; Tab and Shift+Tab move focus between
+    /// targets. Marks the event handled when a target took it, and asks the
+    /// host for keyboard focus when one is pressed. Returns whether
+    /// anything visible changed.
+    pub fn handle_event(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut crate::widget::EventCtx<'_>,
+    ) -> bool {
+        let mut pointer_handled = false;
+        let changed = self.handle_pointer_event(event, ctx.scale_factor, &mut pointer_handled);
+        if pointer_handled {
+            *ctx.handled = true;
+            if matches!(
+                event,
+                WindowEvent::MouseInput {
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                    ..
+                }
+            ) {
+                *ctx.focus_target = Some(ctx.node_id);
+            }
+        }
+        let before = (self.focused.clone(), self.host_focused);
+        match event {
+            WindowEvent::ModifiersChanged(modifiers) => {
+                self.shift = modifiers.state().shift_key();
             }
             WindowEvent::KeyboardInput { event, .. }
                 if self.host_focused && event.state == ElementState::Pressed =>
@@ -607,13 +648,7 @@ impl PaintedTargets {
             }
             _ => {}
         }
-        before
-            != (
-                self.hovered.clone(),
-                self.pressed.clone(),
-                self.focused.clone(),
-                self.host_focused,
-            )
+        changed || before != (self.focused.clone(), self.host_focused)
     }
 
     /// The focus ring around the focused target, while the host holds
@@ -766,16 +801,11 @@ mod tests {
         handled
     }
 
-    fn moved(x: f64, y: f64) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: winit::dpi::PhysicalPosition::new(x, y),
-        }
-    }
+    use crate::synthetic_input::cursor_moved;
 
     fn button(state: ElementState) -> WindowEvent {
         WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             state,
             button: MouseButton::Left,
         }
@@ -795,7 +825,7 @@ mod tests {
         let mut targets = keys();
         targets.set_host_focus(true);
         let mut enter =
-            crate::synthetic_input::key_event(&Key::Named(NamedKey::Enter), ElementState::Pressed);
+            crate::synthetic_input::key_input(&Key::Named(NamedKey::Enter), ElementState::Pressed);
         assert!(send(&mut targets, &enter));
         assert_eq!(targets.take_activated(), vec!["seven"]);
         if let WindowEvent::KeyboardInput { event, .. } = &mut enter {
@@ -814,11 +844,11 @@ mod tests {
     #[test]
     fn painted_targets_cancel_a_press_when_its_registered_geometry_moves() {
         let mut targets = keys();
-        send(&mut targets, &moved(10.0, 10.0));
+        send(&mut targets, &cursor_moved(10.0, 10.0));
         assert!(send(&mut targets, &button(ElementState::Pressed)));
         targets.begin_frame();
         targets.target("seven", Rect::new(100.0, 100.0, 140.0, 140.0), "7");
-        send(&mut targets, &moved(110.0, 110.0));
+        send(&mut targets, &cursor_moved(110.0, 110.0));
         assert!(
             send(&mut targets, &button(ElementState::Released)),
             "the old press owns its cancelled release"
@@ -833,7 +863,7 @@ mod tests {
     fn painted_targets_cancel_pointer_activation_on_focus_loss() {
         let mut targets = keys();
         targets.set_host_focus(true);
-        send(&mut targets, &moved(10.0, 10.0));
+        send(&mut targets, &cursor_moved(10.0, 10.0));
         send(&mut targets, &button(ElementState::Pressed));
         targets.set_host_focus(false);
         assert!(send(&mut targets, &button(ElementState::Released)));
@@ -846,10 +876,10 @@ mod tests {
     #[test]
     fn painted_targets_escape_cancels_and_consumes_the_pointer_release() {
         let mut targets = keys();
-        send(&mut targets, &moved(10.0, 10.0));
+        send(&mut targets, &cursor_moved(10.0, 10.0));
         send(&mut targets, &button(ElementState::Pressed));
         let escape =
-            crate::synthetic_input::key_event(&Key::Named(NamedKey::Escape), ElementState::Pressed);
+            crate::synthetic_input::key_input(&Key::Named(NamedKey::Escape), ElementState::Pressed);
         assert!(send(&mut targets, &escape));
         assert!(send(&mut targets, &button(ElementState::Released)));
         assert!(targets.take_activated().is_empty());
@@ -858,7 +888,7 @@ mod tests {
     #[test]
     fn a_click_on_a_painted_target_hovers_presses_and_activates_it() {
         let mut targets = keys();
-        send(&mut targets, &moved(10.0, 10.0));
+        send(&mut targets, &cursor_moved(10.0, 10.0));
         assert!(targets.interaction("seven").hovered);
         assert!(send(&mut targets, &button(ElementState::Pressed)));
         assert!(targets.interaction("seven").pressed);
@@ -868,12 +898,12 @@ mod tests {
 
         // Pressed on one target, released on another: nothing fires.
         send(&mut targets, &button(ElementState::Pressed));
-        send(&mut targets, &moved(60.0, 10.0));
+        send(&mut targets, &cursor_moved(60.0, 10.0));
         send(&mut targets, &button(ElementState::Released));
         assert!(targets.take_activated().is_empty());
 
         // A disabled target shows but takes nothing.
-        send(&mut targets, &moved(110.0, 10.0));
+        send(&mut targets, &cursor_moved(110.0, 10.0));
         assert!(!send(&mut targets, &button(ElementState::Pressed)));
         assert!(targets.interaction("nine").disabled);
     }
@@ -889,7 +919,7 @@ mod tests {
             "Tab stays inside before the last target"
         );
         let tab =
-            crate::synthetic_input::key_event(&Key::Named(NamedKey::Tab), ElementState::Pressed);
+            crate::synthetic_input::key_input(&Key::Named(NamedKey::Tab), ElementState::Pressed);
         assert!(send(&mut targets, &tab));
         assert_eq!(targets.focused(), Some("eight"));
         assert!(
@@ -897,7 +927,7 @@ mod tests {
             "the disabled target is skipped; Tab leaves"
         );
         let enter =
-            crate::synthetic_input::key_event(&Key::Named(NamedKey::Enter), ElementState::Pressed);
+            crate::synthetic_input::key_input(&Key::Named(NamedKey::Enter), ElementState::Pressed);
         assert!(send(&mut targets, &enter));
         assert_eq!(targets.take_activated(), vec!["eight".to_string()]);
     }

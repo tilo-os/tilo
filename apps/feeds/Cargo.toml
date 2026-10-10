@@ -21,6 +21,7 @@ quick-xml.workspace = true
 fnv.workspace = true
 tilo-files = { path = "../../crates/platform/tilo-files" }
 hex.workspace = true
+blake3.workspace = true
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 tilo-actions = { path = "../../crates/collab/actions" }
