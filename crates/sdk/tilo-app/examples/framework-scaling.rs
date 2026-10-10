@@ -16,12 +16,17 @@
 //! followed by the host's frame, [`tilo_app::App::surface_frame`], and its
 //! accessibility walk), and prints the time from key press to the end of
 //! the frame that shows the key, with how many publications one keystroke
-//! runs (TIL-751).
+//! runs (TIL-751), and the time from the key's release to the end of the
+//! frame after it, a frame that changes nothing (TIL-761).
 //!
 //! ```text
 //! cargo run --release -p tilo-app --features test-support \
-//!     --example framework-scaling -- 10,250,1000
+//!     --example framework-scaling -- 10,250,1000,10000
 //! ```
+//!
+//! `TILO_SCALING_KEYSTROKES=400` times that many keystrokes per size and
+//! skips every other measurement, for a sampling profiler (`sample <pid>` on
+//! macOS) to see typing alone.
 //!
 //! With `TILO_PROFILE_RESOURCES=1` each move's resource work is printed to
 //! stderr as `input_carry` stages (see `docs/app-performance.md`).
@@ -209,6 +214,17 @@ fn median(mut samples: Vec<f64>) -> f64 {
     samples.get(samples.len() / 2).copied().unwrap_or(0.0)
 }
 
+/// The `percent`th percentile of `samples` (nearest rank).
+fn percentile(mut samples: Vec<f64>, percent: usize) -> f64 {
+    samples.sort_by(f64::total_cmp);
+    let rank = samples
+        .len()
+        .saturating_mul(percent)
+        .div_ceil(100)
+        .saturating_sub(1);
+    samples.get(rank).copied().unwrap_or(0.0)
+}
+
 fn millis(start: Instant) -> f64 {
     start.elapsed().as_secs_f64() * 1e3
 }
@@ -385,10 +401,25 @@ fn draft_value(app: &tilo_app::App) -> Option<String> {
 struct Keystrokes {
     /// p50 from a key's press to the end of the host frame that shows it.
     to_frame_ms: f64,
+    /// p99 of the same.
+    to_frame_p99_ms: f64,
+    /// p50 from the key's release to the end of the host frame after it: a
+    /// frame that changes nothing.
+    release_ms: f64,
     /// The most publications one keystroke ran.
     publications: usize,
     /// p50 of the time one keystroke spent publishing.
     publication_ms: f64,
+}
+
+/// How many keystrokes [`keystrokes`] times: [`KEYS`], or
+/// `TILO_SCALING_KEYSTROKES`, which also skips every other measurement so a
+/// sampling profiler attached to the process sees typing alone.
+fn keys_to_time() -> u32 {
+    std::env::var("TILO_SCALING_KEYSTROKES")
+        .ok()
+        .and_then(|keys| keys.parse().ok())
+        .unwrap_or(KEYS)
 }
 
 /// Type into the draft of the live window. A frame runs between press and
@@ -406,16 +437,20 @@ fn keystrokes(app: &mut tilo_app::App) -> Result<Keystrokes, String> {
     let mut counts = Vec::new();
     let mut work = Vec::new();
     let mut samples = Vec::new();
+    let mut releases = Vec::new();
     // The first keystroke is a warm-up, neither timed nor counted: it moves
     // the window from pointer to keyboard modality, which republishes once.
-    for _ in 0..=KEYS {
+    let keys = keys_to_time();
+    for _ in 0..=keys {
         let ((), phases) = observe(|| {
             let start = Instant::now();
             app.surface_input(&Surface, key_input(&key, ElementState::Pressed), false);
             host_frame(app);
             samples.push(millis(start));
+            let start = Instant::now();
             app.surface_input(&Surface, key_input(&key, ElementState::Released), false);
             host_frame(app);
+            releases.push(millis(start));
         });
         let publications = phases
             .iter()
@@ -434,16 +469,19 @@ fn keystrokes(app: &mut tilo_app::App) -> Result<Keystrokes, String> {
         );
     }
     samples.remove(0);
+    releases.remove(0);
     counts.remove(0);
     work.remove(0);
     let publications = counts.into_iter().max().unwrap_or(0);
     let typed = draft_value(app).unwrap_or_default();
-    let expected = KEYS.saturating_add(1);
+    let expected = keys.saturating_add(1);
     if typed.chars().count() != usize::try_from(expected).map_err(|error| error.to_string())? {
         return Err(format!("{expected} keystrokes left the draft at {typed:?}"));
     }
     Ok(Keystrokes {
+        to_frame_p99_ms: percentile(samples.clone(), 99),
         to_frame_ms: median(samples),
+        release_ms: median(releases),
         publications,
         publication_ms: median(work),
     })
@@ -453,15 +491,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let open_only = std::env::args().nth(2).is_some_and(|mode| mode == "open");
     let sizes = std::env::args()
         .nth(1)
-        .unwrap_or_else(|| "10,250,1000".into())
+        .unwrap_or_else(|| "10,250,1000,10000".into())
         .split(',')
         .map(|size| size.trim().parse::<u32>())
         .collect::<Result<Vec<_>, _>>()?;
+    if std::env::var_os("TILO_SCALING_KEYSTROKES").is_some() {
+        println!(
+            "tasks  keystroke→frame p50  p99  release→frame p50  \
+             publications per keystroke  publishing/keystroke p50"
+        );
+        for &tasks in &sizes {
+            TASKS.store(tasks, Ordering::Relaxed);
+            let keys = drive_live_window::<Scaling, _>(keystrokes)??;
+            println!(
+                "{tasks:>5}  {:>16.3} ms  {:>8.3} ms  {:>14.3} ms  {:>26}  {:>21.3} ms",
+                keys.to_frame_ms,
+                keys.to_frame_p99_ms,
+                keys.release_ms,
+                keys.publications,
+                keys.publication_ms
+            );
+        }
+        return Ok(());
+    }
     if !open_only {
         println!(
             "tasks  resources  publication p50  pointer move p50  publications in {MOVES} moves  \
              typing p50: sync / frame  scrolling p50: sync / frame  keystroke→frame p50  \
-             publications per keystroke  publishing/keystroke p50"
+             release→frame p50  publications per keystroke  publishing/keystroke p50"
         );
     }
     // The heap a window over an empty list holds; the rest is per task.
@@ -481,8 +538,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "{tasks:>5}  {published:>9}  {publish_ms:>12.3} ms  {move_ms:>13.3} ms  \
              {publications:>27}  {typing_sync:>8.3} / {typing:>8.3} ms  \
              {scrolling_sync:>11.3} / {scrolling:>8.3} ms  \
-             {:>16.3} ms  {:>26}  {:>25.3} ms",
-            keys.to_frame_ms, keys.publications, keys.publication_ms
+             {:>16.3} ms  {:>14.3} ms  {:>26}  {:>25.3} ms",
+            keys.to_frame_ms, keys.release_ms, keys.publications, keys.publication_ms
         );
         opens.push((tasks, open(tasks)?));
     }
