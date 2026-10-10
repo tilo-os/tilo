@@ -2489,6 +2489,11 @@ mod tests {
             }),
             "the fresh share notice must reach accessibility after an old frame stalls"
         );
+        assert_eq!(
+            app.toasts.len(),
+            1,
+            "creating a new share notice must not renew the expired previous notice"
+        );
     }
 
     #[test]
