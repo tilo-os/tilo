@@ -400,7 +400,7 @@ impl CapnpBrokerState {
             delivery_marker!("source_output", "complete");
             return Ok(Some((*token, spec)));
         }
-        if sources.tokens.len() >= crate::host_documents::LIMIT {
+        if sources.tokens.len() >= super::MAX_MESSAGE_SOURCES {
             delivery_marker!("source_output", "definitive_refusal");
             return Err("native Message source registry is full".into());
         }

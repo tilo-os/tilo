@@ -126,7 +126,7 @@ async fn native_message_source_repeated_delivery_deduplicates_and_replacement_re
                     Some(serde_json::from_str(&delivered.context_json).unwrap())
                 },
             };
-            for _ in 0..crate::host_documents::LIMIT + 2 {
+            for _ in 0..crate::collab_broker_capnp::workspace_messages::MAX_MESSAGE_SOURCES + 2 {
                 room.state
                     .invocation_subscribers
                     .lock()

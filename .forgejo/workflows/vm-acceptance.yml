@@ -103,12 +103,14 @@ jobs:
         run: |
           set -euo pipefail
           # libvirt's QEMU driver without the system daemon: tilo-vm uses the
-          # per-user session (qemu:///session), started on demand.
+          # per-user session (qemu:///session), started on demand. bash-devel
+          # and readline-devel are the headers a `ush` swap builds Terminal's
+          # Bash editor against (crates/runtime/ush/native/build.py).
           dnf --setopt=retries=3 install -y \
             libvirt-daemon-driver-qemu libvirt-client passt qemu-kvm qemu-img edk2-ovmf \
             ipxe-roms-qemu openssh-clients rsync python3-pillow binutils btrfs-progs dosfstools \
             e2fsprogs fuse-overlayfs podman jq skopeo slirp4netns socat sudo systemd \
-            shadow-utils util-linux
+            shadow-utils util-linux bash-devel readline-devel
           command -v virsh qemu-system-x86_64 qemu-img passt ssh podman skopeo systemd-repart sudo >/dev/null
           python3 -c 'import PIL'  # the checks read pixels from shots
 

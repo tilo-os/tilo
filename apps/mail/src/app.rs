@@ -737,15 +737,6 @@ impl MailApp {
         self.dirty = true;
     }
 
-    /// Open a blank "Add account" sheet with an email typed + servers
-    /// autofilled, so the shot shows the add flow with single-border fields.
-    pub fn prime_setup_add_shot(&mut self) {
-        self.open_setup_edit(None);
-        self.set_setup_input(0, "Alex Morgan");
-        self.set_setup_input(1, "alex@fastmail.com");
-        self.maybe_autofill();
-    }
-
     /// Queue one worker request and account for it exactly once.  Every engine
     /// backend emits a matching `EngineEvent::Completed` after handling the
     /// request, including successful flag/move/purge writes.

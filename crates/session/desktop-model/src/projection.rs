@@ -351,49 +351,6 @@ pub fn project_workspace_shortcuts(
     Ok(())
 }
 
-/// Project a workspace's permission profiles as one map value per lowercase
-/// profile name. The capabilities an assignment expands to are governance and
-/// travel separately; a profile itself grants nothing.
-///
-/// # Errors
-///
-/// The document's error when the profiles map cannot be created.
-pub fn project_workspace_permission_profiles(
-    doc: &mut AutoCommit,
-    profiles: &[collab_types::PermissionProfile],
-) -> Result<(), automerge::AutomergeError> {
-    use automerge::{ObjType, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
-
-    let map = match doc.get(&ROOT, ROOM_PERMISSION_PROFILES_KEY).ok().flatten() {
-        Some((_, id)) => id,
-        None if profiles.is_empty() => return Ok(()),
-        None => doc.put_object(&ROOT, ROOM_PERMISSION_PROFILES_KEY, ObjType::Map)?,
-    };
-    let key = |profile: &collab_types::PermissionProfile| profile.name.trim().to_lowercase();
-    let stale: Vec<String> = doc
-        .keys(&map)
-        .filter(|name| !profiles.iter().any(|profile| key(profile) == *name))
-        .collect();
-    for name in stale {
-        doc.delete(&map, name.as_str())?;
-    }
-    for profile in profiles {
-        let Ok(blob) = serde_json::to_vec(profile) else {
-            continue;
-        };
-        let name = key(profile);
-        let unchanged = matches!(
-            doc.get(&map, name.as_str()).ok().flatten(),
-            Some((Value::Scalar(value), _))
-                if matches!(value.as_ref(), ScalarValue::Bytes(current) if current == &blob)
-        );
-        if !unchanged {
-            doc.put(&map, name.as_str(), ScalarValue::Bytes(blob))?;
-        }
-    }
-    Ok(())
-}
-
 /// The permission profiles a room document carries, by name. A value that
 /// does not decode is skipped.
 pub fn workspace_permission_profiles_of(doc: &AutoCommit) -> Vec<collab_types::PermissionProfile> {
@@ -414,6 +371,44 @@ pub fn workspace_permission_profiles_of(doc: &AutoCommit) -> Vec<collab_types::P
         .collect();
     profiles.sort_by_key(|profile| profile.name.to_lowercase());
     profiles
+}
+
+/// Insert or replace one permission profile by its case-insensitive name.
+/// Other profiles remain untouched, so independently saved profiles merge as
+/// separate map keys rather than one writer projecting a whole local list.
+///
+/// # Errors
+///
+/// The profile cannot be encoded or the document map cannot be updated.
+pub fn upsert_workspace_permission_profile(
+    doc: &mut AutoCommit,
+    profile: &collab_types::PermissionProfile,
+) -> Result<(), String> {
+    use automerge::{ObjType, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
+
+    let blob = serde_json::to_vec(profile)
+        .map_err(|error| format!("permission profile encoding failed: {error}"))?;
+    let map = match doc
+        .get(&ROOT, ROOM_PERMISSION_PROFILES_KEY)
+        .map_err(|error| error.to_string())?
+    {
+        Some((_, id)) => id,
+        None => doc
+            .put_object(&ROOT, ROOM_PERMISSION_PROFILES_KEY, ObjType::Map)
+            .map_err(|error| error.to_string())?,
+    };
+    let name = profile.name.trim().to_lowercase();
+    let unchanged = matches!(
+        doc.get(&map, name.as_str())
+            .map_err(|error| error.to_string())?,
+        Some((Value::Scalar(value), _))
+            if matches!(value.as_ref(), ScalarValue::Bytes(current) if current == &blob)
+    );
+    if !unchanged {
+        doc.put(&map, name, ScalarValue::Bytes(blob))
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
 }
 
 /// The shortcuts a room document carries, by id. A value that does not
@@ -1475,19 +1470,32 @@ pub fn contents_owners_of(doc: &AutoCommit) -> std::collections::BTreeMap<u16, S
         .collect()
 }
 
-/// The next counter a durable topology owner mints from, when the room
-/// records one.
-pub fn desktop_counter_of(doc: &AutoCommit) -> Option<u64> {
-    doc.get(&automerge::ROOT, ROOM_DESKTOP_COUNTER_KEY)
-        .ok()
-        .flatten()
-        .and_then(|(value, _)| value.as_u64())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use tilo_automerge::ApplyIncoming;
+
+    #[test]
+    fn one_permission_profile_update_preserves_other_profile_keys() {
+        let profile = |name: &str, description: &str| collab_types::PermissionProfile {
+            name: name.into(),
+            description: description.into(),
+            rules: Vec::new(),
+        };
+        let mut doc = AutoCommit::new();
+        upsert_workspace_permission_profile(&mut doc, &profile("Review", "Read only")).unwrap();
+        upsert_workspace_permission_profile(&mut doc, &profile("Publish", "Can publish")).unwrap();
+        upsert_workspace_permission_profile(&mut doc, &profile("Review", "Read and comment"))
+            .unwrap();
+
+        assert_eq!(
+            workspace_permission_profiles_of(&doc),
+            [
+                profile("Publish", "Can publish"),
+                profile("Review", "Read and comment")
+            ]
+        );
+    }
 
     #[test]
     fn a_bound_instance_survives_the_owner_re_sending_its_placeholder() {

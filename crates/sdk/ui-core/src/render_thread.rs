@@ -51,39 +51,6 @@ use vello::peniko::Color;
 use vello::util::RenderSurface;
 use vello::{FineDamageRect, RenderParams, Renderer, Scene};
 
-/// A hook run on the render thread *after* vello encodes the frame into its
-/// intermediate texture and *before* that texture is blit to the surface.
-/// It may composite extra GPU content into `target` — used by the browser
-/// to draw its zero-copy `WebView` texture (which vello cannot sample) over
-/// the transparent region the chrome leaves for it.
-pub trait FramePostProcess: Send {
-    fn post_render(
-        &mut self,
-        device: &vello::wgpu::Device,
-        queue: &vello::wgpu::Queue,
-        target: &vello::wgpu::TextureView,
-        width: u32,
-        height: u32,
-    );
-}
-
-static POST_PROCESSOR: std::sync::Mutex<Option<Box<dyn FramePostProcess>>> =
-    std::sync::Mutex::new(None);
-static POST_PROCESSOR_ACTIVE: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
-
-/// Called by an app before its window comes up. A no-op for apps that
-/// don't set one, so the shared render path is unchanged for everyone else.
-pub fn set_frame_post_processor(p: Box<dyn FramePostProcess>) {
-    // A poisoned lock means some other caller already panicked while
-    // holding it; there's nothing safe left to do but skip installing the
-    // processor rather than taking this caller down too.
-    if let Ok(mut guard) = POST_PROCESSOR.lock() {
-        *guard = Some(p);
-        POST_PROCESSOR_ACTIVE.store(true, std::sync::atomic::Ordering::Release);
-    }
-}
-
 /// Compile-time `Send` check: a vello/wgpu regression fails to compile rather
 /// than at thread spawn.
 const _: fn() = || {
@@ -1336,8 +1303,7 @@ fn render_one_frame(
     });
     let raster_frame = FrameContent {
         backdrop: &crate::backdrop::BackdropFrame::default(),
-        full_redraw: frame.full_redraw
-            || POST_PROCESSOR_ACTIVE.load(std::sync::atomic::Ordering::Acquire),
+        full_redraw: frame.full_redraw,
         ..frame
     };
     let rasterized = if let Some(canvas) = cpu.as_mut().filter(|_| frame.backdrop.is_empty()) {
@@ -1383,21 +1349,6 @@ fn render_one_frame(
     };
     if frame_ix == 0 {
         tilo_startup_metrics::mark("render-worker-first-raster-done");
-    }
-
-    // Composite any post-processor content (the browser's zero-copy WebView
-    // texture) into the intermediate texture before it goes to the surface.
-    if POST_PROCESSOR_ACTIVE.load(std::sync::atomic::Ordering::Acquire)
-        && let Ok(mut guard) = POST_PROCESSOR.lock()
-        && let Some(p) = guard.as_mut()
-    {
-        p.post_render(
-            &device_handle.device,
-            &device_handle.queue,
-            &surface.target_view,
-            width,
-            height,
-        );
     }
 
     let encode_us = t_encode.map(|t| t.elapsed().as_secs_f64() * 1e6);
@@ -1466,11 +1417,8 @@ fn render_one_frame(
     let submit_us = t_submit.map(|t| t.elapsed().as_secs_f64() * 1e6);
 
     let t_present = present_dbg.then(crate::time::now);
-    let damage = bounded_present_damage(width, height, frame.damage_regions).filter(|_| {
-        !frame.full_redraw
-            && !POST_PROCESSOR_ACTIVE.load(std::sync::atomic::Ordering::Acquire)
-            && frame.backdrop.is_empty()
-    });
+    let damage = bounded_present_damage(width, height, frame.damage_regions)
+        .filter(|_| !frame.full_redraw && frame.backdrop.is_empty());
     tilo_presentation::set_next_present_damage(
         &surface.surface,
         damage.as_deref().unwrap_or_default(),

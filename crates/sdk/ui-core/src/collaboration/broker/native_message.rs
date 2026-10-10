@@ -455,9 +455,7 @@ async fn sign_complete_native_document(
             identity.signing_public_key()
         }
         LocalSdkDocumentSigner::Host(identity) => identity.signing_public_key(),
-        LocalSdkDocumentSigner::Inherited(
-            SdkDocumentSigner::Host(_) | SdkDocumentSigner::Harness(_),
-        ) => {
+        LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Harness(_)) => {
             return Err(refused(
                 "native Message requires a certified native document signer",
             ));
@@ -483,9 +481,7 @@ async fn sign_complete_native_document(
             .sign_collaboration_op(&workspace, &route.spec.app_id, record, &unsigned)
             .await
             .map_err(|_| uncertain("native Message host signing outcome is uncertain"))?,
-        LocalSdkDocumentSigner::Inherited(
-            SdkDocumentSigner::Host(_) | SdkDocumentSigner::Harness(_),
-        ) => {
+        LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Harness(_)) => {
             return Err(refused(
                 "native Message requires a certified native document signer",
             ));

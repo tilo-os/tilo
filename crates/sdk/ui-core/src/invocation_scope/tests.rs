@@ -323,25 +323,8 @@ fn actual_typed_dispatch_keeps_identical_actions_separate_from_untyped_changes()
     assert_eq!(actions.len(), 2);
     assert_ne!(actions[0].0, actions[1].0);
     assert_eq!(actions[0].1, actions[1].1);
-    let weak = Arc::downgrade(
-        authorization
-            .0
-            .contributions
-            .iter()
-            .find_map(|group| group.action.as_ref())
-            .unwrap(),
-    );
-    authorization.acknowledge_committed();
-    drop(authorization);
-    // Beginning the next actual owner turn releases acknowledged cold payloads.
-    fixture
-        .store
-        .with_checked(&fixture.checkout.id, |doc| {
-            caller.with_document_mutation(doc, |_| Ok(()))
-        })
-        .unwrap()
-        .unwrap();
-    assert_eq!(weak.strong_count(), 0);
+    // Owner-send custody is exercised through the live SDK queue in
+    // native_custody_queue_tests, not the retired host-committer interface.
 }
 
 #[test]
@@ -595,60 +578,6 @@ fn causal_scope_worker_effect_rechecks_original_caller_and_retires_same_job() {
     time.store(99, Ordering::Release);
     assert!(a.check().is_err());
     assert!(b.check().is_ok());
-}
-
-// Internal SDK queue fixture built from the same real record loan/scope path.
-// This is not exposed by the library or used to qualify a native final owner.
-pub(crate) fn queued_document_fixture() -> (
-    RouteSpec,
-    collab_types::DocumentMutation,
-    DocumentAuthorization,
-    Arc<AtomicU64>,
-    crate::bound_dispatch::legacy_document_tests::Fixture,
-) {
-    let fixture = fixture(958);
-    let now = Arc::new(AtomicU64::new(99));
-    let caller = scope(&fixture, 8, "original-queue-caller", 100, &now);
-    let before = fixture
-        .store
-        .read(&fixture.checkout.id, |doc| doc.base_heads())
-        .unwrap();
-    fixture
-        .store
-        .with_checked(&fixture.checkout.id, |doc| {
-            caller.with_document_mutation(doc, |doc| {
-                doc.put(ROOT, "queued", true).unwrap();
-                Ok(())
-            })
-        })
-        .unwrap()
-        .unwrap();
-    let (mutation, authorization, _) = publication(&fixture, &before).unwrap();
-    (
-        caller.lease.route.clone(),
-        mutation,
-        authorization,
-        now,
-        fixture,
-    )
-}
-pub(crate) fn queued_next_edit(
-    fixture: &crate::bound_dispatch::legacy_document_tests::Fixture,
-    time: &Arc<AtomicU64>,
-) -> bool {
-    let next = scope(fixture, 9, "next-caller", 200, time);
-    fixture
-        .store
-        .with_checked(&fixture.checkout.id, |doc| {
-            next.with_document_mutation(doc, |doc| {
-                doc.put(ROOT, "next", true).unwrap();
-                Ok(())
-            })
-        })
-        .unwrap()
-        .unwrap();
-    let (mutation, authorization, _) = publication(fixture, &[]).unwrap();
-    authorization.check(&next.lease.route, &mutation).is_ok()
 }
 
 #[test]

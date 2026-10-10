@@ -16253,6 +16253,7 @@ dependencies = [
  "tilo-relay",
  "tilo-relay-client",
  "tilo-relay-protocol",
+ "tilo-relay-session",
  "tilo-test-env",
  "tilo-ui",
  "tilo-user-identity",
@@ -17705,7 +17706,6 @@ dependencies = [
  "ed25519-dalek 3.0.0",
  "iroh",
  "iroh-base",
- "n0-future",
  "postcard",
  "rand 0.10.1",
  "serde",
@@ -17770,7 +17770,6 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
- "wire-frame",
  "workspace-hack",
 ]
 

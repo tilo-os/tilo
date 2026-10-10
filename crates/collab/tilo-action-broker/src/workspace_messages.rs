@@ -9,6 +9,9 @@ mod upload;
 pub use publication::{NativeMessageHostAttestations, NativeMessagePublication};
 pub(super) use source::MessageSources;
 
+/// Bound retained native Message originals independently of retired host signers.
+pub(crate) const MAX_MESSAGE_SOURCES: usize = 32;
+
 pub(super) struct OriginalMessageFacts {
     pub(super) agent: String,
     pub(super) request: ui::invocation_scope::PublishedInvocationRequest,

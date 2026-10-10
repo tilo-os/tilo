@@ -645,17 +645,17 @@ impl RawSession {
             cert,
             client_nonce: [seed; 32],
         };
-        tilo_relay::framing::write_frame(&mut send, &postcard::to_allocvec(&hello).unwrap())
+        tilo_relay::frame::write_frame(&mut send, &postcard::to_allocvec(&hello).unwrap())
             .await
             .unwrap();
         let ack: tilo_relay::auth::HelloAck = postcard::from_bytes(
-            &tilo_relay::framing::read_frame(&mut recv, tilo_relay::transport::MAX_FRAME_BYTES)
+            &tilo_relay::frame::read_frame(&mut recv, tilo_relay::transport::MAX_FRAME_BYTES)
                 .await
                 .unwrap(),
         )
         .unwrap();
         let ack2 = tilo_relay::auth::build_hello_ack2(&key, &ack.server_nonce);
-        tilo_relay::framing::write_frame(&mut send, &postcard::to_allocvec(&ack2).unwrap())
+        tilo_relay::frame::write_frame(&mut send, &postcard::to_allocvec(&ack2).unwrap())
             .await
             .unwrap();
         let mut session = Self {

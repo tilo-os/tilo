@@ -1893,19 +1893,6 @@ pub fn gui_apps() -> Vec<InstalledApp> {
     apps
 }
 
-/// Resolve an extension through the shared personal/workspace policy engine.
-/// The returned id is looked up in the same installed-app snapshot used to
-/// build candidates, so policy can never launch an uninstalled or non-claiming
-/// package.
-pub fn app_for_extension_with_policy(
-    ext: &str,
-    user_id: &str,
-    workspace: Option<&desktop_policy::WorkspaceDefaults>,
-) -> Option<InstalledApp> {
-    let resource = desktop_policy::ResourceKind::extension(ext).ok()?;
-    app_for_resource_with_policy(&resource, user_id, workspace)
-}
-
 /// Who opens a resource: a Tilo package, or a host desktop entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResourceHandler {

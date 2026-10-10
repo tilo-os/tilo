@@ -118,7 +118,7 @@ impl StatePeer {
             .clone()
             .ok_or("permission profile room absent")?;
         let before = doc.get_heads();
-        let mut profiles = tilo_desktop_model::projection::workspace_permission_profiles_of(&doc);
+        let profiles = tilo_desktop_model::projection::workspace_permission_profiles_of(&doc);
         // Profile lookup is case-insensitive but assignment IDs bind the canonical
         // stored name. A spelling-only edit must not orphan older grants.
         let name = profiles
@@ -132,12 +132,10 @@ impl StatePeer {
             name,
             ..profile.clone()
         };
-        profiles.retain(|current| !current.name.eq_ignore_ascii_case(profile.name.trim()));
-        profiles.push(profile);
         doc.set_actor(automerge::ActorId::from(
             key.verifying_key().to_bytes().to_vec(),
         ));
-        tilo_desktop_model::projection::project_workspace_permission_profiles(&mut doc, &profiles)
+        tilo_desktop_model::projection::upsert_workspace_permission_profile(&mut doc, &profile)
             .map_err(|_| "permission profile encoding failed")?;
         doc.commit();
         self.apply_governance_doc(doc, &before, key, now)?;
