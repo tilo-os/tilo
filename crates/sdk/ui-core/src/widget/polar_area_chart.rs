@@ -601,22 +601,15 @@ impl Widget for PolarAreaChart {
         _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
-        if !matches!(action, crate::a11y::Action::Activate) {
-            return false;
-        }
-        let Some(key) = keys.last() else {
+        let Some(id) = crate::widget::chart_navigation::activated_id(
+            action,
+            keys,
+            self.data.iter().map(|d| &d.id),
+        ) else {
             return false;
         };
-        if let Some(datum) = self
-            .data
-            .iter()
-            .find(|d| crate::a11y::hash_key(&d.id) == *key)
-        {
-            self.activated = Some(datum.id.clone());
-            true
-        } else {
-            false
-        }
+        self.activated = Some(id.clone());
+        true
     }
     fn name(&self) -> &'static str {
         "PolarAreaChart"

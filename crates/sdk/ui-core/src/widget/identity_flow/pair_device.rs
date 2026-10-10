@@ -27,7 +27,7 @@ use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
 use getrandom::{SysRng, rand_core::UnwrapErr};
-use taffy::{Dimension, Display, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, TaffyTree};
 use threshold_identity::{DkgSession, EnrolmentRound1, ThresholdIdentity};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -42,8 +42,8 @@ use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::identity_flow::sheet::{
     Align, BodyScroll, FORM_SHEET_WIDTH, Resolved, Role, Rows, SheetSpec, code_cell_side, edited,
-    line_height, paint_cell, paint_text, paragraph_height, place_code_cell, place_field, resolve,
-    with_layout_renderer,
+    field_leaf, line_height, paint_cell, paint_text, paragraph_height, place_code_cell,
+    place_field, resolve, screen_style, with_layout_renderer,
 };
 use crate::widget::identity_flow::{
     IdentityFlowError, PairingHandshake, PairingPayload, ScreenOutcome, derive_pairing_code,
@@ -817,10 +817,7 @@ impl Widget for PairDeviceScreen {
         // present so focus and accessibility walks line up with `children()`.
         let mut leaves = Vec::with_capacity(CODE_LEN.saturating_add(1));
         for i in 0..CODE_LEN {
-            let leaf = taffy.leaf_node(Style {
-                display: Display::None,
-                ..Default::default()
-            });
+            let leaf = field_leaf(taffy);
             if let Some(cell) = self.cells.get_mut(i) {
                 node_map.insert(leaf, std::ptr::from_mut::<dyn Widget>(cell));
             }
@@ -829,23 +826,11 @@ impl Widget for PairDeviceScreen {
             }
             leaves.push(leaf);
         }
-        let payload = taffy.leaf_node(Style {
-            display: Display::None,
-            ..Default::default()
-        });
+        let payload = field_leaf(taffy);
         node_map.insert(payload, std::ptr::from_mut::<dyn Widget>(&mut self.payload));
         self.payload_node = Some(payload);
         leaves.push(payload);
-        // The screen owns the viewport, so the sheet centres on the window
-        // rather than inside a fixed box at the origin.
-        let style = Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
-            ..Default::default()
-        };
-        taffy.widget_node(style, &leaves, node_map, self)
+        taffy.widget_node(screen_style(), &leaves, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {

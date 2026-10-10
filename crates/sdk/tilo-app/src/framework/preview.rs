@@ -228,7 +228,7 @@ impl<R: Resource> PastVersion<R> {
     /// Every name and value the drawn view exposes to assistive technology,
     /// depth first: what a reader of the past version would hear.
     pub fn texts(&self) -> Vec<String> {
-        view_texts(&self.preview.root)
+        ui_core::a11y::texts(&self.preview.root)
     }
 
     /// The state the view was presented.
@@ -240,27 +240,6 @@ impl<R: Resource> PastVersion<R> {
     pub fn size(&self) -> Rect {
         self.preview.root.get_rect()
     }
-}
-
-/// Every name and value a drawn view exposes to assistive technology, depth
-/// first.
-fn view_texts(root: &dyn Widget) -> Vec<String> {
-    fn node(access: &ui_core::a11y::AccessNode, out: &mut Vec<String>) {
-        out.extend(access.name.clone());
-        out.extend(access.value.clone());
-        for child in &access.children {
-            node(child, out);
-        }
-    }
-    fn visit(widget: &dyn Widget, out: &mut Vec<String>) {
-        if let Some(access) = widget.accessibility() {
-            node(&access, out);
-        }
-        widget.for_each_child(&mut |child| visit(child, out));
-    }
-    let mut out = Vec::new();
-    visit(root, &mut out);
-    out
 }
 
 /// Lay out and draw `A`'s view over `doc`, a frozen past version, in a
@@ -398,7 +377,7 @@ impl<R: Resource> HistoryPreview for ViewPreview<R> {
             &[("resource", R::LABEL.into())],
         );
         let description = std::iter::once(heading)
-            .chain(view_texts(&self.root))
+            .chain(ui_core::a11y::texts(&self.root))
             .collect::<Vec<_>>()
             .join("\n");
         PreviewAccessibility {
