@@ -125,17 +125,19 @@ const RESELECTIONS: usize = 3;
 pub fn find_installed_held(
     package: &str,
 ) -> Result<Option<(package_store::InstalledPackage, Option<FileLock>)>, String> {
-    let mut attempt = 0;
-    loop {
+    let mut found = None;
+    for _ in 0..=RESELECTIONS {
         let Some(row) = package_store::find_installed(package).map_err(|e| e.to_string())? else {
             return Ok(None);
         };
         let lease = hold_payload(&row.payload_root).map_err(|e| e.to_string())?;
-        attempt += 1;
-        if attempt > RESELECTIONS || (row.payload_root.is_dir() && row.manifest_path.is_file()) {
+        if row.payload_root.is_dir() && row.manifest_path.is_file() {
             return Ok(Some((row, lease)));
         }
+        found = Some((row, lease));
     }
+    // Still changing: the launch reports the build gone.
+    Ok(found)
 }
 
 /// The per-user runtime root, when it exists: builds elsewhere (the
@@ -199,8 +201,8 @@ mod tests {
     use crate::manifest::read_manifest;
 
     const APP: &str = "so.tilo.race";
-    const OLD_RUNTIME: &str = "2026.10+r1";
-    const NEW_RUNTIME: &str = "2026.10+r2";
+    const OLD_RUNTIME: &str = "2026.10.1";
+    const NEW_RUNTIME: &str = "2026.10.2";
 
     /// Where the update lands in the launch.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]

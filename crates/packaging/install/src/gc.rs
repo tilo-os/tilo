@@ -176,7 +176,8 @@ pub fn retained_runtimes(packages: &Path) -> io::Result<BTreeSet<String>> {
         let name = entry.file_name();
         // Only record directories directly under `pkgs/`; a link is never
         // followed.
-        if !entry.file_type()?.is_dir() || !name.to_str().is_some_and(|n| n.ends_with(".pkg")) {
+        let record = Path::new(&name).extension().is_some_and(|ext| ext == "pkg");
+        if !entry.file_type()?.is_dir() || !record {
             continue;
         }
         let path = entry.path().join(package_store::layout::MANIFEST_FILE);

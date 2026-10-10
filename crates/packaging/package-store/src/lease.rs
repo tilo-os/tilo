@@ -20,7 +20,9 @@
 use std::io;
 use std::path::Path;
 
-use advisory_lock::{FileLock, LockMode, TryLockError};
+#[cfg(feature = "store")]
+use advisory_lock::TryLockError;
+use advisory_lock::{FileLock, LockMode};
 use tilo_app_package::PackageId;
 
 use crate::layout::{Layout, default_user_root};
@@ -54,6 +56,7 @@ pub fn hold_payload_in(layout: &Layout, payload_root: &Path) -> io::Result<Optio
 }
 
 /// `id`'s lease, exclusively, when no launch holds it.
+#[cfg(feature = "store")]
 pub(crate) fn take(layout: &Layout, id: PackageId) -> io::Result<Option<FileLock>> {
     match FileLock::try_open_current(&lease_file(layout, id)?, LockMode::Exclusive) {
         Ok(lock) => Ok(Some(lock)),
@@ -63,6 +66,7 @@ pub(crate) fn take(layout: &Layout, id: PackageId) -> io::Result<Option<FileLock
 }
 
 /// Whether a launch holds `id`, creating nothing.
+#[cfg(feature = "store")]
 pub(crate) fn busy(layout: &Layout, id: PackageId) -> io::Result<bool> {
     let path = layout.lease(id);
     if !std::fs::symlink_metadata(&path).is_ok_and(|meta| meta.is_file()) {
@@ -77,6 +81,7 @@ pub(crate) fn busy(layout: &Layout, id: PackageId) -> io::Result<bool> {
 
 /// Remove `id`'s lease file, which `taken` holds exclusively; a launch
 /// waiting on it takes the next file at the name.
+#[cfg(feature = "store")]
 pub(crate) fn forget(layout: &Layout, id: PackageId, taken: FileLock) -> io::Result<()> {
     match std::fs::remove_file(layout.lease(id)) {
         Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
