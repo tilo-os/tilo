@@ -6925,6 +6925,27 @@ struct UshSessionReply {
     editor_protocol: Option<u8>,
 }
 
+/// How long an open waits for the supervisor's answer. Before it answers, the
+/// supervisor checks that the environment can be built, which on a device's
+/// first open reads the system store's images: on the CI VM that took ~400 ms,
+/// past the 250 ms a hosted connection is given to connect (TIL-708).
+#[cfg(unix)]
+pub(crate) const USH_OPEN_REPLY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Give `stream`'s answer to an open at least [`USH_OPEN_REPLY_TIMEOUT`],
+/// never shortening a longer bound or adding one where there is none.
+#[cfg(unix)]
+pub(crate) fn allow_open_reply_time(
+    stream: &std::os::unix::net::UnixStream,
+) -> std::io::Result<()> {
+    match stream.read_timeout()? {
+        Some(bound) if bound < USH_OPEN_REPLY_TIMEOUT => {
+            stream.set_read_timeout(Some(USH_OPEN_REPLY_TIMEOUT))
+        }
+        _ => Ok(()),
+    }
+}
+
 #[cfg(unix)]
 pub(crate) fn ush_backend_on(
     stream: &std::os::unix::net::UnixStream,
@@ -6941,6 +6962,7 @@ pub(crate) fn ush_backend_on(
         w.write_all(&request).map_err(|e| failed(&e))?;
         w.flush().map_err(|e| failed(&e))?;
     }
+    allow_open_reply_time(stream).map_err(|e| failed(&e))?;
 
     let (payload, mut descriptors) =
         runtime_portal::fd_transport::recv_with_owned_fds(stream.as_raw_fd())

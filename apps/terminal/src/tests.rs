@@ -253,6 +253,52 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
         assert!(!lifetime_socket_open(&terminal_end));
     }
 
+    // Case `an_open_waits_for_a_supervisor_answer_slower_than_the_connect_bound`.
+    {
+        use std::io::BufRead as _;
+
+        // A hosted connection carries the 250 ms connect bound; a supervisor
+        // checking a first open's environment answers later than that.
+        let (terminal_end, supervisor_end) =
+            std::os::unix::net::UnixStream::pair().expect("socket pair");
+        terminal_end
+            .set_read_timeout(Some(std::time::Duration::from_millis(250)))
+            .unwrap();
+        let supervisor = std::thread::spawn(move || {
+            let mut request = String::new();
+            std::io::BufReader::new(&supervisor_end)
+                .read_line(&mut request)
+                .unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(700));
+            (&supervisor_end)
+                .write_all(b"{\"result\":\"no-runtime\",\"reason\":\"checked late\"}\n")
+                .unwrap();
+            request
+        });
+        let opened = crate::inner::ush_backend_on(
+            &terminal_end,
+            &[],
+            &crate::target::SessionTarget::default_environment(),
+            crate::Requester::Person,
+            None,
+        );
+        assert!(
+            matches!(&opened, Err(crate::OpenError::NoRuntime(reason)) if reason == "checked late"),
+            "the late answer was not read: {:?}",
+            opened.err()
+        );
+        assert!(supervisor.join().unwrap().contains("open-session"));
+
+        // A connection with no bound, or a longer one, keeps it.
+        let (unbounded, _peer) = std::os::unix::net::UnixStream::pair().unwrap();
+        crate::inner::allow_open_reply_time(&unbounded).unwrap();
+        assert_eq!(unbounded.read_timeout().unwrap(), None);
+        let long = std::time::Duration::from_secs(60);
+        unbounded.set_read_timeout(Some(long)).unwrap();
+        crate::inner::allow_open_reply_time(&unbounded).unwrap();
+        assert_eq!(unbounded.read_timeout().unwrap(), Some(long));
+    }
+
     // Case `service_fd_is_detected_only_when_the_descriptor_is_actually_open`.
     {
         // The service path is selected on a *live* descriptor, not on the mere
