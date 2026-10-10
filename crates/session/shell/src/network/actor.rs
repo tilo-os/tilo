@@ -27,6 +27,7 @@ use tilo_user_identity::{DeviceCert, RevocationList};
 use tokio::sync::mpsc;
 
 use crate::network::protocol::{MAX_PERSONAL_CONTINUITY_CHECKPOINT_BYTES, NeighbourMsg, SurfaceId};
+use crate::network::reachability::Reachability;
 use neighbour_wire::{Retention, retention};
 
 #[cfg(test)]
@@ -941,6 +942,43 @@ impl ProtocolHandler for PersonalFabricProtocol {
     }
 }
 
+/// Why `command` means a remote party is involved, so this device must be
+/// reachable from now on (`crate::network::reachability`): it dials a peer
+/// or host, enrols a device, administers a relay room, joins a call or
+/// sends to a named one of the person's devices. `None` for everything a
+/// lone desktop does by itself: joining and publishing to a topic nobody
+/// else is on (its rooms, its fabric broadcast) sends nothing, and a lone
+/// desktop does that on every local change.
+fn remote_party_command(command: &NetCmd) -> Option<&'static str> {
+    Some(match command {
+        NetCmd::Connect { .. } => "dialling a peer",
+        NetCmd::ConnectHost { .. } | NetCmd::NativeConnect(_) => "dialling a host",
+        NetCmd::GovernorAction { .. } | NetCmd::RoomAdmin { .. } => "talking to a room's host",
+        NetCmd::NativeEnrollment(_) => "enrolling a device",
+        NetCmd::NativeMedia(_) => "a call",
+        NetCmd::PublishPersonalFabricTarget { .. } | NetCmd::PublishNearbyTransfer { .. } => {
+            "sending to one of the person's devices"
+        }
+        NetCmd::PublishSurfaceTo { .. } => "streaming a window to a peer",
+        _ => return None,
+    })
+}
+
+/// Why `event` means a remote party reached this device (on a path that
+/// needed no relay, such as the local network), so it should be reachable
+/// through its relays too.
+fn remote_party_event(event: &InternalEvent) -> Option<&'static str> {
+    match event {
+        InternalEvent::Topic {
+            event: GossipEvent::NeighborUp(_),
+            ..
+        } => Some("a peer joined a topic"),
+        InternalEvent::PersonalFabric { .. } => Some("one of the person's devices connected"),
+        InternalEvent::SurfaceFrame { .. } => Some("a peer streamed a window"),
+        _ => None,
+    }
+}
+
 pub struct Actor;
 
 impl Actor {
@@ -957,12 +995,33 @@ impl Actor {
         host_identity: Option<HostIdentity>,
         listen_addrs: Arc<Mutex<Vec<EndpointAddr>>>,
     ) -> (mpsc::Sender<NetCmd>, tokio::task::JoinHandle<()>) {
+        Self::spawn_deferring_relays(
+            endpoint,
+            lookup,
+            host_identity,
+            listen_addrs,
+            Reachability::default(),
+        )
+    }
+
+    /// [`Self::spawn_reporting_addrs`] for an endpoint whose relays wait in
+    /// `reachability` until something needs this device reachable: the
+    /// actor wakes them when it dials a remote party or one reaches it
+    /// ([`remote_party_command`], [`remote_party_event`]).
+    pub fn spawn_deferring_relays(
+        endpoint: Endpoint,
+        lookup: MemoryLookup,
+        host_identity: Option<HostIdentity>,
+        listen_addrs: Arc<Mutex<Vec<EndpointAddr>>>,
+        reachability: Reachability,
+    ) -> (mpsc::Sender<NetCmd>, tokio::task::JoinHandle<()>) {
         Self::spawn_with_heartbeat(
             endpoint,
             lookup,
             host_identity,
             listen_addrs,
             HEARTBEAT_INTERVAL,
+            reachability,
         )
     }
 
@@ -975,6 +1034,7 @@ impl Actor {
         host_identity: Option<HostIdentity>,
         listen_addrs: Arc<Mutex<Vec<EndpointAddr>>>,
         heartbeat: Duration,
+        reachability: Reachability,
     ) -> (mpsc::Sender<NetCmd>, tokio::task::JoinHandle<()>) {
         if let Ok(mut out) = listen_addrs.lock() {
             out.push(endpoint.addr());
@@ -987,6 +1047,7 @@ impl Actor {
             listen_addrs,
             cmd_rx,
             heartbeat,
+            reachability,
         ));
         (cmd_tx, task)
     }
@@ -1008,6 +1069,8 @@ struct ActorState {
     native_enrollment: super::invite::enrollment_driver::Registry,
     native_routes: native_ingress::Routes,
     listen_addrs: Arc<Mutex<Vec<EndpointAddr>>>,
+    /// The endpoint's relays, held back until a remote party appears.
+    reachability: Reachability,
     gossip: Gossip,
     internal_tx: mpsc::Sender<InternalEvent>,
     topics: HashMap<WorkspaceId, TopicRuntime>,
@@ -1368,6 +1431,9 @@ impl ActorState {
         reason = "the actor command match is the single auditable transport mutation boundary"
     )]
     async fn handle_command(&mut self, command: Option<NetCmd>) -> bool {
+        if let Some(why) = command.as_ref().and_then(remote_party_command) {
+            self.reachability.wake(why);
+        }
         match command {
             Some(NetCmd::PrivateMessages(reply)) => {
                 let _ = reply.send(self.private_messages.clone());
@@ -2453,6 +2519,9 @@ impl ActorState {
         reason = "one exhaustive dispatcher over every internal actor event"
     )]
     async fn handle_internal(&mut self, internal: Option<InternalEvent>) -> bool {
+        if let Some(why) = internal.as_ref().and_then(remote_party_event) {
+            self.reachability.wake(why);
+        }
         match internal {
             Some(InternalEvent::ActionClosed { ws, peer, session }) => {
                 if self.host_sessions.get(&(ws, peer)).is_some_and(|runtime| {
@@ -3698,6 +3767,7 @@ async fn run(
     listen_addrs: Arc<Mutex<Vec<EndpointAddr>>>,
     mut cmd_rx: mpsc::Receiver<NetCmd>,
     heartbeat_interval: Duration,
+    reachability: Reachability,
 ) {
     let (internal_tx, mut internal_rx) = mpsc::channel(256);
     let (input_tx, mut input_rx) = mpsc::channel(64);
@@ -3729,7 +3799,9 @@ async fn run(
         private_messages: super::private_messages::Transport::new(
             endpoint.clone(),
             private_messages,
+            reachability.clone(),
         ),
+        reachability,
         endpoint,
         lookup,
         host_identity,
@@ -4685,6 +4757,24 @@ mod tests {
         );
     }
 
+    /// A dial wakes the relays; what a lone desktop does on every local
+    /// change (join its own topic, publish to it) does not (TIL-740).
+    #[test]
+    fn only_a_remote_party_needs_this_device_reachable() {
+        let addr = EndpointAddr::new(iroh::SecretKey::generate().public());
+        assert!(remote_party_command(&NetCmd::Connect { addr: addr.clone() }).is_some());
+        assert!(
+            remote_party_command(&NetCmd::ConnectHost {
+                addr,
+                expectation: None,
+            })
+            .is_some()
+        );
+        let (on_event, _events) = mpsc::channel(1);
+        assert!(remote_party_command(&NetCmd::JoinWorkspace { ws: 7, on_event }).is_none());
+        assert!(remote_party_command(&NetCmd::LeaveWorkspace { ws: 7 }).is_none());
+    }
+
     #[test]
     fn a_remote_action_with_no_route_waits_for_that_peer_and_expires() {
         let mut pending = PendingRemoteActions::default();
@@ -5260,6 +5350,7 @@ mod tests {
             Some(identity),
             Arc::new(Mutex::new(Vec::new())),
             tick,
+            Reachability::default(),
         );
         let (events, rx) = mpsc::channel(64);
         cmd.send(NetCmd::JoinWorkspace {
@@ -6488,6 +6579,7 @@ mod tests {
             Some(identity_a),
             Arc::new(Mutex::new(Vec::new())),
             heartbeat,
+            Reachability::default(),
         );
         let (cmd_b, _task_b) = Actor::spawn_with_heartbeat(
             b,
@@ -6495,6 +6587,7 @@ mod tests {
             Some(identity_b),
             Arc::new(Mutex::new(Vec::new())),
             heartbeat,
+            Reachability::default(),
         );
         let (event_a, mut rx_a) = mpsc::channel(16);
         let (event_b, mut rx_b) = mpsc::channel(16);
