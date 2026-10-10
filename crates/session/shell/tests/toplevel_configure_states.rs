@@ -398,17 +398,11 @@ fn a_page_fullscreen_request_takes_the_output_and_exit_gives_it_back() {
 
     toplevel.set_fullscreen(None);
     h.pump();
-    let entered = (
-        h.state.fullscreen_group,
-        h.last_states("org.tilo.Browser"),
-    );
+    let entered = (h.state.fullscreen_group, h.last_states("org.tilo.Browser"));
 
     toplevel.unset_fullscreen();
     h.pump();
-    let left = (
-        h.state.fullscreen_group,
-        h.last_states("org.tilo.Browser"),
-    );
+    let left = (h.state.fullscreen_group, h.last_states("org.tilo.Browser"));
     drop(h);
     store.forget(id);
 
