@@ -57,15 +57,26 @@ const IDLE_WAKEUP_BUDGET: f64 = 15.0;
 /// its endpoint and its room's topic are up, and how long it is measured.
 const LONE_SETTLE: Duration = Duration::from_secs(15);
 const LONE_IDLE: Duration = Duration::from_secs(20);
-/// Most context switches per second a lone desktop's own threads may make
-/// while idle: one room of its own, no peer, and no frame loop driving it,
-/// as on a desktop nobody touches, whose compositor never ticks the network
+/// Most times per second a lone desktop's own threads may wake while idle:
+/// one room of its own, no peer, and no frame loop driving it, as on a
+/// desktop nobody touches, whose compositor never ticks the network
 /// (TIL-702's target, under 2/s).
 ///
 /// Measured on CI (focused, loopback): 2.79/s while gossip swept the room's
 /// topic every second (run 91402), 0.95/s and 1.05/s once it sweeps every
 /// 10 s (runs 91459, 91528). The rest is the 5 s upkeep tick and the sweep.
+///
+/// Counted as voluntary switches, one per wakeup, because preemptions
+/// measure the runner: a loaded pull-request shard (run 92351, its cgroup at
+/// `memory.max` 2832 times) preempted the same two `tilo-net-rt` workers
+/// 1.35 times a second on top of the 0.95 times they blocked, and failed the
+/// gate at 2.30/s with nothing in the session changed (TIL-749).
 const LONE_WAKEUP_BUDGET: f64 = 2.0;
+/// Most CPU a lone idle desktop's threads may use, in percent of one core:
+/// 100 ms over [`LONE_IDLE`]. The wakeup count leaves out preemptions, so
+/// this is what still catches a thread that spins without blocking. Measured
+/// 0.0 % (under one 10 ms tick in the window).
+const LONE_CPU_BUDGET: f64 = 0.5;
 
 /// Every thread of this process except the one driving the desktops'
 /// frame loops, whose 10 Hz is the simulation's and not the session's.
@@ -447,10 +458,19 @@ fn a_lone_idle_desktop_keeps_its_network_runtime_asleep() {
     let measured = started.elapsed();
     let wakeups = tilo_test_env::idle::Wakeups::between(before, session_threads(None), measured);
     eprintln!("a lone idle desktop's threads, {wakeups}");
+    eprintln!(
+        "a lone idle desktop's threads blocked {:.2} times a second",
+        wakeups.blocking_per_second()
+    );
     assert!(
-        wakeups.per_second() <= LONE_WAKEUP_BUDGET,
+        wakeups.blocking_per_second() <= LONE_WAKEUP_BUDGET,
         "a lone idle desktop woke {:.2} times a second, over {LONE_WAKEUP_BUDGET}/s:\n{wakeups}",
-        wakeups.per_second(),
+        wakeups.blocking_per_second(),
+    );
+    assert!(
+        wakeups.total_cpu_percent() <= LONE_CPU_BUDGET,
+        "a lone idle desktop used {:.2} % of a core, over {LONE_CPU_BUDGET} %:\n{wakeups}",
+        wakeups.total_cpu_percent(),
     );
     assert!(
         net.reachability.is_dormant(),
