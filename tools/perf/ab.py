@@ -398,13 +398,6 @@ def run_agent(ctx: RunContext) -> list[record.Record]:
           "--transport", "test-control socket, headless, release + dev-overrides, thin LTO",
           "--env-json", ctx.env_json, "--out", records, "--log", ctx.dir / "compositor.log"],
          ctx.dir / "bench.log", ctx.repo)
-    # The whole task (TIL-759): a scripted model drives Notes on a seeded
-    # desktop, with the side's own compositor and seeder.
-    call(["bash", "tools/with-test-environment.sh", sys.executable, "scripts/perf/agent_task.py",
-          "--spawn", ctx.bins["shell"], "--seeder", ctx.bins["agent_task_desktop"],
-          "--transport", "test-control socket, headless, release + dev-overrides, thin LTO",
-          "--env-json", ctx.env_json, "--out", records, "--log", ctx.dir / "task-compositor.log"],
-         ctx.dir / "task.log", ctx.repo)
     return record.read(records)
 
 
@@ -438,10 +431,8 @@ def run_fs(ctx: RunContext) -> list[record.Record]:
     return adapters.fs_gate([log.read_text(encoding="utf-8", errors="replace")], ctx.env)
 
 
-# The compositor, and the example that seeds agent_task.py's Notes desktop,
-# in one build so the example costs only its link.
 RELEASE_SHELL = ("cargo", "build", "--locked", "--release", "-p", "shell", "--bin", "shell",
-                 "--example", "agent_task_desktop", "--features", "dev-overrides")
+                 "--features", "dev-overrides")
 
 # The groups of perf-scheduled.yml that measure a build of the repository.
 # `footprint` measures published artifacts, so it has no A/B.
@@ -453,8 +444,7 @@ GROUPS: dict[str, Group] = {group.name: group for group in (
           (("cargo", "build", "--locked", "-p", "shell", "--bin", "shell"),),
           {"shell": "target/debug/shell"}, {}, {}, run_latency),
     Group("agent", "release", "lavapipe", (RELEASE_SHELL,),
-          {"shell": "target/release/shell",
-           "agent_task_desktop": "target/release/examples/agent_task_desktop"}, {}, {}, run_agent),
+          {"shell": "target/release/shell"}, {}, {}, run_agent),
     Group("render", "release", "lavapipe",
           (("cargo", "build", "--locked", "--release", "-p", "ui-examples", "--example", "ui-perf"),
            ("cargo", "build", "--locked", "--release", "-p", "shell", "--example", "redraw_bench"),

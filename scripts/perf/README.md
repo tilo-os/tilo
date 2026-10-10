@@ -70,9 +70,10 @@ executable stand-alone; the higher-level flow is described below.
   Records the task's wall time, the time in Tilo, in the (fake) model and in
   the agent loop, the turns and each step; `--split-repetitions` also times
   each invoke's accept and apply apart. `--think-ms` and `--tokens-per-s`
-  model a real provider; the lane runs both at 0. `--spawn` seeds a
+  model a real provider; both default to 0. `--spawn` seeds a
   signed-in Notes desktop with the `agent_task_desktop` example of `shell`.
-  Part of the `agent` group.
+  It joins the `agent` group once a whole task settles: today a listing
+  stops settling after the first new note (TIL-759).
 
 ## Optimise (three-step PGO + optional BOLT)
 
