@@ -674,16 +674,20 @@ pub struct Route {
     pub record_id: String,
 }
 
+/// What one round decided: the route of a sealed tail to ask a member for,
+/// and the fold with its signed frames.
+type Plan = (Option<Route>, Option<(Folded, Vec<Vec<u8>>)>);
+
 /// One round over a channel's `entries`: check each once, then find a
 /// sealed tail to ask a member for and, when due, fold the readable part
-/// and frame it with `frames`.
+/// and sign it with `sign`.
 fn plan(
     entries: &[ChannelEntry],
     signatures: &mut Signatures,
     known: &HashSet<[u8; 32]>,
     min_tail: usize,
-    frames: impl FnOnce(&Route, &[u8]) -> Option<Vec<Vec<u8>>>,
-) -> (Option<Route>, Option<(Folded, Vec<Vec<u8>>)>) {
+    sign: impl FnOnce(&Route, &[u8]) -> Option<Vec<Vec<u8>>>,
+) -> Plan {
     let checked: Vec<Checked<'_>> = entries
         .iter()
         .map(|entry| signatures.check(entry))
@@ -695,8 +699,8 @@ fn plan(
         .then(|| fold(entries, &readable))
         .flatten()
         .and_then(|folded| {
-            let framed = frames(&folded.route, &folded.snapshot)?;
-            Some((folded, framed))
+            let signed = sign(&folded.route, &folded.snapshot)?;
+            Some((folded, signed))
         });
     (sealed, folded)
 }
