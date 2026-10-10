@@ -1086,14 +1086,24 @@ def stale_editor_transport(error):
         and "org.a11y.atspi.Text" in text)
 
 
-def chat_editor_contract(access):
+def chat_editor_contract(access, observation=None):
     client = atspi.AtspiClient(access.get("address") or atspi.atspi_address(), access["bus"])
     name = atspi.property_text(client.property(access["composer"], "Name"))
     interfaces = client.interfaces(access["composer"])
     expected = access.get("composer_name", "Message composer")
-    return expected in ("Message composer", "Task instruction composer", "Task direction composer") \
-        and name == expected and all(interface in interfaces for interface in (
-        "org.a11y.atspi.Text", "org.a11y.atspi.EditableText"))
+    expected_supported = expected in (
+        "Message composer", "Task instruction composer", "Task direction composer"
+    )
+    expected_name_matches = expected_supported and name == expected
+    text_present = "org.a11y.atspi.Text" in interfaces
+    editable_text_present = "org.a11y.atspi.EditableText" in interfaces
+    if observation is not None:
+        observation.update({
+            "editor_expected_name_matches": expected_name_matches,
+            "editor_text_interface_present": text_present,
+            "editor_editable_text_interface_present": editable_text_present,
+        })
+    return expected_name_matches and text_present and editable_text_present
 
 
 def owned_editor_read(access, read, deadline=None):
@@ -6691,13 +6701,17 @@ def owned_agent_identity(shell_pid):
 
 
 def wait_for_owned_physical_send_control(socket, output, owner, draft, primary, process):
-    """Retry only known stale AT transport while observing the exact live Send route."""
+    """Retry retired semantic descriptors or known stale AT transport on the exact Send route."""
     evidence = {"observation_count": 0, "initial": None, "last": None}
+    previous_composer = [None]
 
     def observe():
         sample = dict.fromkeys(("exact_primary_present", "primary_keyboard_focused",
                                 "ordinary_native_route", "descriptor_observed", "same_owner_route",
-                                "editor_contract_valid", "draft_matches", "complete_tree",
+                                "editor_contract_valid", "editor_expected_name_matches",
+                                "editor_text_interface_present",
+                                "editor_editable_text_interface_present",
+                                "same_composer_as_previous", "draft_matches", "complete_tree",
                                 "unique_send_control", "send_enabled", "unknown_object",
                                 "unknown_interface", "known_stale_transport", "other_transport_failure",
                                 "accepted"), False)
@@ -6723,9 +6737,16 @@ def wait_for_owned_physical_send_control(socket, output, owner, draft, primary, 
                 and access.get("detached") is False
             if not sample["same_owner_route"]:
                 raise RuntimeError("physical Send discovered a foreign private editor route")
-            sample["editor_contract_valid"] = chat_editor_contract(access) is True
+            sample["same_composer_as_previous"] = previous_composer[0] is not None \
+                and access.get("composer") == previous_composer[0]
+            previous_composer[0] = access.get("composer")
+            sample["editor_contract_valid"] = chat_editor_contract(access, sample) is True
             if not sample["editor_contract_valid"]:
-                raise RuntimeError("physical Send's fresh descriptor names another editor")
+                # The complete tree can retire before these separate Name and
+                # interface queries. Discard that descriptor before reading
+                # any private payload; the bounded outer observation performs
+                # a fresh exact-owner discovery.
+                return None
             observed = _private_editor_observation(access, draft)
             sample["draft_matches"] = observed.get("draft_matches") is True
             if not sample["draft_matches"]:

@@ -4227,8 +4227,24 @@ class PresentedEditorTargetTests(unittest.TestCase):
             owner["composer_name"] = "Unrelated editor"
             client.property.return_value = "(<'Unrelated editor'>,)"
             with patch.object(PROOF.atspi, "atspi_address", return_value="private-address"), \
-                    patch.object(PROOF.atspi, "AtspiClient", return_value=client):
+                patch.object(PROOF.atspi, "AtspiClient", return_value=client):
                 self.assertFalse(PROOF.chat_editor_contract(owner))
+
+    def test_editor_contract_diagnostic_is_closed_boolean_only(self):
+        owner = {"bus": "private-bus", "composer": "/editor"}
+        client = unittest.mock.Mock()
+        client.property.return_value = "(<'Message composer'>,)"
+        client.interfaces.return_value = "org.a11y.atspi.EditableText"
+        observed = {}
+        with patch.object(PROOF.atspi, "atspi_address", return_value="private-address"), \
+                patch.object(PROOF.atspi, "AtspiClient", return_value=client):
+            self.assertFalse(PROOF.chat_editor_contract(owner, observed))
+        self.assertEqual(observed, {
+            "editor_expected_name_matches": True,
+            "editor_text_interface_present": False,
+            "editor_editable_text_interface_present": True,
+        })
+        self.assertTrue(all(type(value) is bool for value in observed.values()))
 
     def test_detached_task_target_uses_exact_native_seat_owner_and_control_role(self):
         owner = {"bus": "private-bus", "process": 9975, "agent": "Tide", "detached": True,
@@ -5802,6 +5818,46 @@ class PresentedEditorTargetTests(unittest.TestCase):
             with self.assertRaises(PROOF.ProofTimeout):
                 PROOF.wait_for_owned_physical_send_control(
                     "socket", pathlib.Path(directory), access, "draft-secret", primary, None)
+
+    def test_physical_send_control_discards_retired_contract_before_private_read(self):
+        primary, access, before = self.physical_send_control_subjects()
+        fresh = {**access, "composer": "fresh-private-composer",
+                 "send_controls": ["fresh-private-send"]}
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(PROOF, "call", return_value={"answer": {"frames": [primary]}}), \
+                patch.object(PROOF, "agent_conversation_accessibility",
+                             side_effect=[access, fresh]) as discover, \
+                patch.object(PROOF, "chat_editor_contract", side_effect=[False, True]), \
+                patch.object(PROOF, "_private_editor_observation",
+                             return_value=before) as read_private, \
+                patch.object(PROOF, "accessibility_control_enabled", return_value=True), \
+                patch.object(PROOF.time, "sleep"):
+            result = PROOF.wait_for_owned_physical_send_control(
+                "socket", pathlib.Path(directory), access, "draft-secret", primary, None)
+            self.assertEqual(result, (fresh, "fresh-private-send", primary))
+            self.assertEqual(discover.call_count, 2)
+            read_private.assert_called_once_with(fresh, "draft-secret")
+            receipt = json.loads((pathlib.Path(directory) /
+                                  "physical-send-control-observations.json").read_text())
+            self.assertFalse(receipt["initial"]["editor_contract_valid"])
+            self.assertFalse(receipt["initial"]["draft_matches"])
+            self.assertTrue(receipt["last"]["accepted"])
+
+    def test_physical_send_control_persistent_contract_mismatch_times_out_unread(self):
+        primary, access, _ = self.physical_send_control_subjects()
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(PROOF, "call", return_value={"answer": {"frames": [primary]}}), \
+                patch.object(PROOF, "agent_conversation_accessibility", return_value=access), \
+                patch.object(PROOF, "chat_editor_contract", return_value=False), \
+                patch.object(PROOF, "_private_editor_observation") as read_private, \
+                patch.object(PROOF, "accessibility_control_enabled") as enabled, \
+                patch.object(PROOF.time, "sleep"), \
+                patch.object(PROOF.time, "monotonic", side_effect=[0, 0, 31]):
+            with self.assertRaises(PROOF.ProofTimeout):
+                PROOF.wait_for_owned_physical_send_control(
+                    "socket", pathlib.Path(directory), access, "draft-secret", primary, None)
+            read_private.assert_not_called()
+            enabled.assert_not_called()
 
     def test_physical_send_control_nonstale_transport_fails_immediately(self):
         primary, access, before = self.physical_send_control_subjects()
