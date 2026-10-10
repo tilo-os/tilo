@@ -361,37 +361,33 @@ mod transaction_core {
 }
 
 #[cfg(any(target_os = "linux", all(test, unix)))]
-#[cfg_attr(
-    not(target_os = "linux"),
-    allow(
-        dead_code,
-        reason = "Linux installer adapters are compiled for Unix tests even when their production entry points are unavailable"
-    )
-)]
 mod native {
     use super::super::desktop_catalog::DesktopRelease;
-    use super::super::desktop_probe::{
-        DesktopHost, InstalledPackage, PackageManager, probe_desktop_host,
-    };
+    use super::super::desktop_probe::PackageManager;
+    #[cfg(target_os = "linux")]
+    use super::super::desktop_probe::{DesktopHost, InstalledPackage, probe_desktop_host};
+    #[cfg(target_os = "linux")]
     use super::{Backend, InstalledDesktop, SESSION_ENTRY};
+    #[cfg(target_os = "linux")]
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
     use std::{
         ffi::OsString,
         fs::OpenOptions,
         io::Read,
-        os::{
-            fd::AsRawFd,
-            unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
-        },
+        os::{fd::AsRawFd, unix::fs::OpenOptionsExt},
         path::Path,
         process::{Command, Stdio},
         time::Duration,
     };
 
     const WRAPPER: &str = "/usr/libexec/tilo-session";
+    #[cfg(target_os = "linux")]
     const RUNNER: &str = "/usr/libexec/tilo-session-runner";
     const OUTPUT_LIMIT: usize = 64 * 1024;
+    #[cfg(target_os = "linux")]
     pub(super) struct NativeBackend;
 
+    #[cfg(target_os = "linux")]
     impl Backend for NativeBackend {
         fn probe(&mut self) -> Result<DesktopHost, String> {
             probe_desktop_host()
@@ -663,6 +659,7 @@ mod native {
         Ok(())
     }
 
+    #[cfg(target_os = "linux")]
     fn read_installed(path: &str, executable: bool) -> Result<String, String> {
         let file = OpenOptions::new()
             .read(true)

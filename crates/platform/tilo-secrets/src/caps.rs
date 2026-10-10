@@ -46,10 +46,7 @@ pub fn availability(feature: Feature) -> Availability {
 }
 
 /// The error for `feature` on this target.
-#[cfg_attr(
-    not(all(target_arch = "wasm32", target_os = "unknown")),
-    allow(dead_code, reason = "only the web lacks a feature")
-)]
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) fn unsupported(feature: Feature) -> Unsupported {
     Unsupported::of(CAPABILITIES, feature)
 }

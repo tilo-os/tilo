@@ -425,21 +425,18 @@ fn sandbox_environment_marker_present(mut present: impl FnMut(&str) -> bool) -> 
 
 // Also compile the read-only primitives on Unix test hosts for bounded IO tests.
 #[cfg(any(target_os = "linux", all(test, unix)))]
-#[cfg_attr(
-    not(target_os = "linux"),
-    allow(
-        dead_code,
-        reason = "non-Linux Unix tests compile these bounded IO primitives without using every Linux desktop probe"
-    )
-)]
 mod native {
+    use super::HashMap;
+    #[cfg(target_os = "linux")]
     use super::{
-        DesktopHost, HashMap, InstalledPackage, OsRelease, PackageManager, SessionSupport, adapter,
+        DesktopHost, InstalledPackage, OsRelease, PackageManager, SessionSupport, adapter,
         catalog_architecture, parse_os_release, parse_package_status,
     };
     use std::fs::{self, OpenOptions};
     use std::io::Read;
-    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    use std::os::unix::fs::OpenOptionsExt;
+    #[cfg(target_os = "linux")]
+    use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
     use std::process::Command;
     use std::time::Duration;
@@ -489,10 +486,12 @@ mod native {
         })
     }
 
+    #[cfg(target_os = "linux")]
     fn run(program: &str, args: &[&str]) -> Result<QueryOutput, String> {
         query(program, args, Duration::from_secs(5), 64 * 1024)
     }
 
+    #[cfg(target_os = "linux")]
     fn successful(program: &str, args: &[&str]) -> Result<String, String> {
         let output = run(program, args)?;
         if output.code != 0 || !output.stderr.is_empty() {
@@ -524,12 +523,14 @@ mod native {
         Ok(text)
     }
 
+    #[cfg(target_os = "linux")]
     fn marker(path: &str) -> Result<bool, String> {
         Path::new(path)
             .try_exists()
             .map_err(|_| format!("Cannot inspect {path}."))
     }
 
+    #[cfg(target_os = "linux")]
     fn manager(os: &Result<OsRelease, String>) -> Result<PackageManager, String> {
         let os = os.as_ref().map_err(Clone::clone)?;
         let manager = adapter(&os.id).ok_or("No reviewed native package-manager adapter.")?;
@@ -550,6 +551,7 @@ mod native {
         Ok(manager)
     }
 
+    #[cfg(target_os = "linux")]
     fn installed(manager: &Result<PackageManager, String>) -> Result<InstalledPackage, String> {
         let manager = *manager.as_ref().map_err(Clone::clone)?;
         let result = match manager {
@@ -571,6 +573,7 @@ mod native {
         parse_package_status(manager, result.code, &result.stdout, &result.stderr)
     }
 
+    #[cfg(target_os = "linux")]
     fn immutable() -> Result<bool, String> {
         for path in [
             "/run/ostree-booted",
@@ -688,6 +691,7 @@ mod native {
         root.ok_or_else(|| "No visible root mount establishes the native host.".into())
     }
 
+    #[cfg(target_os = "linux")]
     fn sandboxed() -> Result<bool, String> {
         if super::sandbox_environment_marker_present(|variable| {
             std::env::var_os(variable).is_some()
@@ -800,6 +804,7 @@ mod native {
         Ok(sessions)
     }
 
+    #[cfg(target_os = "linux")]
     pub(super) fn probe() -> DesktopHost {
         let os_release = (|| {
             let path = if marker("/etc/os-release")? {
@@ -944,7 +949,9 @@ mod tests {
             use std::time::Duration;
             let bound = tilo_test_env::hang_bound();
             let result = native::query("/usr/bin/printf", &["hello"], bound, 32).unwrap();
+            assert_eq!(result.code, 0);
             assert_eq!(result.stdout, "hello");
+            assert!(result.stderr.is_empty());
             assert!(native::query("/usr/bin/printf", &["123456789"], bound, 4).is_err());
             let start = ui::time::now();
             let sleep = (bound.as_secs() * 2).to_string();
