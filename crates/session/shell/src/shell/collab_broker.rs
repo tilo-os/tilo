@@ -396,6 +396,9 @@ struct DrainQueues {
     /// application broker is up; its invocation ledger lives as long as
     /// the drainer so retries stay idempotent.
     action_host: std::sync::OnceLock<crate::shell::remote_actions::BrokerActionHost>,
+    /// Set while remote requests wait for the application broker. The drain
+    /// thread polls instead of parking until the next inbound message.
+    awaiting_action_host: std::sync::atomic::AtomicBool,
     table: Arc<FanoutState>,
     channels: Arc<Mutex<BrokerChannels>>,
     net: Arc<ShellNetwork>,
@@ -490,6 +493,28 @@ impl DrainQueues {
                 ))
             }))
         });
+        let drained = if host.is_some() {
+            self.awaiting_action_host.store(false, Ordering::Relaxed);
+            drained
+        } else {
+            // The drain thread starts before the broker attaches. A request
+            // that arrives first waits for it instead of being refused; a
+            // device that has just started otherwise loses the first open
+            // sent to it. Records need no broker.
+            let (records, waiting): (Vec<_>, Vec<_>) = drained.into_iter().partition(|request| {
+                matches!(
+                    request.message,
+                    tilo_actions::remote::RemoteActionMessage::RecordRequest { .. }
+                )
+            });
+            let any_waiting = !waiting.is_empty();
+            let Some(overflow) = wait_for_action_host(&self.remote_actions, waiting) else {
+                return false;
+            };
+            self.awaiting_action_host
+                .store(any_waiting, Ordering::Relaxed);
+            records.into_iter().chain(overflow).collect()
+        };
         answer_remote_actions(&self.net, host, drained);
         true
     }
@@ -714,6 +739,7 @@ fn spawn_inner(
             record_content_inbound: net.inbound_record_content_handle(),
             record_content: record_content.clone(),
             action_host: std::sync::OnceLock::new(),
+            awaiting_action_host: std::sync::atomic::AtomicBool::new(false),
             table: Arc::clone(&table),
             channels: Arc::clone(&channels),
             net: Arc::clone(net),
@@ -738,7 +764,15 @@ fn spawn_inner(
                     if !queues.drain_once(&mut labels, &mut announced) {
                         break;
                     }
-                    wake.wait(governance_due);
+                    let timeout = if queues.awaiting_action_host.load(Ordering::Relaxed) {
+                        Some(
+                            governance_due
+                                .map_or(ACTION_HOST_POLL, |due| due.min(ACTION_HOST_POLL)),
+                        )
+                    } else {
+                        governance_due
+                    };
+                    wake.wait(timeout);
                 }
             })
             .ok()
@@ -980,6 +1014,26 @@ fn open_channel_encryption(
     }
 }
 
+/// Requests kept while the application broker is not attached yet.
+const MAX_REQUESTS_AWAITING_ACTION_HOST: usize = 32;
+/// How often the drain thread looks for the broker while requests wait.
+const ACTION_HOST_POLL: Duration = Duration::from_millis(250);
+
+/// Put `waiting` back ahead of anything that arrived while they were out of
+/// the queue. Returns the oldest requests past the bound, to be refused, or
+/// `None` when the queue lock is poisoned.
+fn wait_for_action_host(
+    queue: &Mutex<Vec<crate::shell::remote_action_link::InboundRemoteAction>>,
+    waiting: Vec<crate::shell::remote_action_link::InboundRemoteAction>,
+) -> Option<Vec<crate::shell::remote_action_link::InboundRemoteAction>> {
+    let mut buf = queue.lock().ok()?;
+    let arrived_since = std::mem::take(&mut *buf);
+    buf.extend(waiting);
+    buf.extend(arrived_since);
+    let excess = buf.len().saturating_sub(MAX_REQUESTS_AWAITING_ACTION_HOST);
+    Some(buf.drain(..excess).collect())
+}
+
 /// Answer each request through `host` and send the answer back to the
 /// device that asked, on the topic it asked on.
 pub(crate) fn answer_remote_actions(
@@ -1140,6 +1194,50 @@ fn roster_announcement(said: Option<&str>, known: Option<&str>, id: &str) -> Opt
 )]
 mod tests {
     use super::*;
+
+    fn inbound_for_test(topic: u64) -> crate::shell::remote_action_link::InboundRemoteAction {
+        crate::shell::remote_action_link::InboundRemoteAction {
+            workspace_topic: topic,
+            from: iroh::SecretKey::generate().public(),
+            caller: tilo_actions::remote::Caller::authenticated([1; 32], [2; 32]),
+            message: tilo_actions::remote::RemoteActionMessage::Observe {
+                invocation: tilo_actions::InvocationId::new(),
+                wait_ms: None,
+                seen: None,
+            },
+        }
+    }
+
+    #[test]
+    fn requests_wait_in_order_for_the_action_host_up_to_a_bound() {
+        let queue = Mutex::new(vec![inbound_for_test(2)]);
+        let overflow = wait_for_action_host(&queue, vec![inbound_for_test(1)]).expect("queue");
+        assert!(overflow.is_empty());
+        let topics: Vec<u64> = queue
+            .lock()
+            .expect("queue")
+            .iter()
+            .map(|action| action.workspace_topic)
+            .collect();
+        assert_eq!(topics, vec![1, 2], "a waiting request keeps its place");
+
+        let waiting = (3..=u64::try_from(MAX_REQUESTS_AWAITING_ACTION_HOST).unwrap() + 2)
+            .map(inbound_for_test)
+            .collect();
+        let overflow = wait_for_action_host(&queue, waiting).expect("queue");
+        assert_eq!(
+            overflow
+                .iter()
+                .map(|action| action.workspace_topic)
+                .collect::<Vec<_>>(),
+            vec![3, 4],
+            "the oldest requests past the bound are refused"
+        );
+        assert_eq!(
+            queue.lock().expect("queue").len(),
+            MAX_REQUESTS_AWAITING_ACTION_HOST
+        );
+    }
 
     #[test]
     fn application_peer_ids_skip_reserved_values_and_never_wrap() {
