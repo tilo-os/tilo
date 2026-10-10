@@ -1659,9 +1659,9 @@ mod tests {
     fn assert_pending_controls_in_accessibility(pane: &RoomActivityPane, disabled: bool) {
         let access = pane.accessibility_snapshot();
         for key in [
-            "activity-pending-task-save",
-            "activity-pending-task-cancel-edit",
-            "activity-pending-task-cancel",
+            "activity-task-save-pending",
+            "activity-task-cancel-edit",
+            "activity-task-cancel-pending",
         ] {
             let node = access
                 .children
@@ -1673,7 +1673,7 @@ mod tests {
         let editor = access
             .children
             .iter()
-            .find(|node| node.semantic_key.as_deref() == Some("activity-pending-task-instruction"))
+            .find(|node| node.semantic_key.as_deref() == Some("activity-task-pending-instruction"))
             .expect("the shared instruction editor is published by the pane");
         assert_eq!(editor.value.as_deref(), Some("Unsaved exact replacement"));
     }

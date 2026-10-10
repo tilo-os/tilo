@@ -1084,7 +1084,7 @@ impl RoomActivityPane {
             pending_task_amend_confirmation: None,
             pending_task_editor: Embedded::new(
                 TextInput::local()
-                    .with_id("activity-pending-task-instruction")
+                    .with_id("activity-task-pending-instruction")
                     .with_accessible_name(t("activity-task-pending-instruction"))
                     .with_placeholder(&t("activity-task-pending-instruction-placeholder"))
                     .multiline(true)
@@ -1093,7 +1093,7 @@ impl RoomActivityPane {
             .filling(),
             pending_task_save_button: Embedded::new(
                 Button::new(
-                    "activity-pending-task-save",
+                    "activity-task-save-pending",
                     &t("activity-task-save-pending"),
                 )
                 .role(ButtonRole::Primary)
@@ -1101,16 +1101,13 @@ impl RoomActivityPane {
             ),
             pending_task_save_signal,
             pending_task_cancel_edit_button: Embedded::new(
-                Button::new(
-                    "activity-pending-task-cancel-edit",
-                    &t("activity-task-cancel-edit"),
-                )
-                .on_click(move || pending_cancel_edit.set(true)),
+                Button::new("activity-task-cancel-edit", &t("activity-task-cancel-edit"))
+                    .on_click(move || pending_cancel_edit.set(true)),
             ),
             pending_task_cancel_edit_signal,
             pending_task_cancel_button: Embedded::new(
                 Button::new(
-                    "activity-pending-task-cancel",
+                    "activity-task-cancel-pending",
                     &t("activity-task-cancel-pending"),
                 )
                 .on_click(move || pending_cancel.set(true)),
