@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use ui::collaboration::{
-    CertifiedEndpointIdentity, CollabEvent, CollabRequest, CollaborationManager,
+    CertifiedEndpointIdentity, CollabEvent, CollabRequest, CollabSendError, CollaborationManager,
     DocumentPublicationError, DocumentPublicationReceipt, RouteSpec,
 };
 
@@ -214,7 +214,7 @@ impl Link {
     ///
     /// Returns an error if the request or its document completion marker cannot enqueue.
     pub fn send(&mut self, req: &CollabRequest) -> Result<()> {
-        let queued = self.manager.send(req.clone());
+        let queued = self.manager.try_send(req.clone());
         self.record_enqueue(req, queued)
     }
 
@@ -247,22 +247,33 @@ impl Link {
     ///
     /// Returns an error if the request or its document completion marker cannot enqueue.
     pub fn send_to_route(&mut self, route: RouteSpec, req: &CollabRequest) -> Result<()> {
-        let queued = self.manager.try_send_to_route(route, req.clone()).is_ok();
+        let queued = self.manager.try_send_to_route(route, req.clone());
         self.record_enqueue(req, queued)
     }
 
-    fn record_enqueue(&mut self, req: &CollabRequest, queued: bool) -> Result<()> {
+    fn record_enqueue(
+        &mut self,
+        req: &CollabRequest,
+        queued: Result<(), CollabSendError>,
+    ) -> Result<()> {
         let document = matches!(
             req,
             CollabRequest::Document { .. } | CollabRequest::SignedOperation { .. }
         );
-        if !queued {
+        if let Err(reason) = queued {
             // Healthy presence shedding is an explicit transport contract.
             if matches!(req, CollabRequest::Presence { .. }) && self.manager.is_connected() {
                 return Ok(());
             }
-            let error =
-                DocumentPublicationError::Failed("collaboration request enqueue rejected".into());
+            let reason = match reason {
+                CollabSendError::Unavailable => "unavailable",
+                CollabSendError::NotReady => "not_ready",
+                CollabSendError::Busy => "busy",
+                CollabSendError::TooLarge { .. } => "too_large",
+            };
+            let error = DocumentPublicationError::Failed(format!(
+                "collaboration request enqueue rejected: {reason}"
+            ));
             if document {
                 self.last_publication = LastPublication::Failed(error.clone());
             }
@@ -698,6 +709,34 @@ mod tests {
         );
         assert!(link.complete_publications(None).is_err());
         assert!(link.complete_publications(None).is_err());
+    }
+
+    #[test]
+    fn enqueue_refusal_preserves_only_its_closed_class() {
+        for (refusal, expected) in [
+            (CollabSendError::Unavailable, "unavailable"),
+            (CollabSendError::NotReady, "not_ready"),
+            (CollabSendError::Busy, "busy"),
+            (
+                CollabSendError::TooLarge {
+                    actual: 12_345,
+                    max: 100,
+                },
+                "too_large",
+            ),
+        ] {
+            let error = peer_link()
+                .record_enqueue(&CollabRequest::document_incremental(vec![1]), Err(refusal))
+                .unwrap_err()
+                .to_string();
+            assert_eq!(
+                error,
+                format!(
+                    "document publication failed: collaboration request enqueue rejected: {expected}"
+                )
+            );
+            assert!(!error.contains("12345"));
+        }
     }
 
     #[test]

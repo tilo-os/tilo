@@ -2563,6 +2563,11 @@ impl Session {
         if let Err(error) = tilo_actions::ActionArgs::bind_json(&descriptor.params, arguments) {
             return Ok(Err(format!("I couldn't do that - {error}")));
         }
+        let argument = if descriptor.params.is_empty() {
+            tilo_actions::remote::InvokeArgument::None
+        } else {
+            tilo_actions::remote::InvokeArgument::Json(arguments.clone())
+        };
         let peer_id = offer.broker_peer_id;
         if self.chat_run.is_some() && descriptor.kind != tilo_actions::OperationKind::Document {
             return Ok(Err("This Chat runner cannot admit external effects with durable delegated identity yet".into()));
@@ -2604,7 +2609,7 @@ impl Session {
                     provider,
                     address: descriptor.address,
                 },
-                argument: tilo_actions::remote::InvokeArgument::Json(arguments.clone()),
+                argument,
                 context: self.task_context(),
                 confirmation: match confirmation {
                     ConfirmationEvidence::None => None,
@@ -3775,6 +3780,7 @@ mod tests {
         struct Host {
             events: Vec<CollabEvent>,
             observed: Rc<RefCell<usize>>,
+            arguments: Rc<RefCell<Vec<tilo_actions::remote::InvokeArgument>>>,
         }
 
         impl ui::collaboration::PeerTransport for Host {
@@ -3788,10 +3794,13 @@ mod tests {
                 let message = match request {
                     CollabRequest::RemoteAction {
                         message: RemoteActionMessage::Invoke(invoke),
-                    } => RemoteActionMessage::Receipt(tilo_actions::remote::InvocationReceipt {
-                        invocation: invoke.invocation,
-                        status: tilo_actions::remote::ReceiptStatus::Accepted,
-                    }),
+                    } => {
+                        self.arguments.borrow_mut().push(invoke.argument);
+                        RemoteActionMessage::Receipt(tilo_actions::remote::InvocationReceipt {
+                            invocation: invoke.invocation,
+                            status: tilo_actions::remote::ReceiptStatus::Accepted,
+                        })
+                    }
                     CollabRequest::RemoteAction {
                         message: RemoteActionMessage::Observe { invocation, .. },
                     } => {
@@ -3913,6 +3922,7 @@ mod tests {
             let link = crate::wire::test_link(Host {
                 events: Vec::new(),
                 observed: observed.clone(),
+                arguments: Rc::new(RefCell::new(Vec::new())),
             });
             let surfaces = surfaces();
             let offer = surface::broker_offers(&surfaces).remove(0);
@@ -3939,6 +3949,57 @@ mod tests {
                 took < Duration::from_millis(250),
                 "{ACTIONS} plan actions must not sleep or pause: {took:?}"
             );
+        }
+
+        #[test]
+        fn broker_arguments_follow_the_exact_published_parameter_contract() {
+            use tilo_actions::{ActionParam, ParamType, remote::InvokeArgument};
+            let empty = serde_json::Map::new();
+            let supplied =
+                serde_json::Map::from_iter([("text".into(), serde_json::json!("A heading"))]);
+            for (params, input, expected) in [
+                (Vec::new(), empty.clone(), Some(InvokeArgument::None)),
+                (
+                    vec![ActionParam::optional("text", ParamType::Text, "Heading")],
+                    empty.clone(),
+                    Some(InvokeArgument::Json(empty.clone())),
+                ),
+                (
+                    vec![ActionParam::required("text", ParamType::Text, "Heading")],
+                    supplied.clone(),
+                    Some(InvokeArgument::Json(supplied.clone())),
+                ),
+                (
+                    vec![ActionParam::required("text", ParamType::Text, "Heading")],
+                    empty,
+                    None,
+                ),
+                (Vec::new(), supplied, None),
+            ] {
+                let mut surfaces = surfaces();
+                surfaces[0].actions[0].params = params;
+                let offer = surface::broker_offers(&surfaces).remove(0);
+                let intercepted = Rc::new(RefCell::new(Vec::new()));
+                let observed = Rc::new(RefCell::new(0));
+                let link = crate::wire::test_link(Host {
+                    events: Vec::new(),
+                    observed: observed.clone(),
+                    arguments: intercepted.clone(),
+                });
+                let mut session = session(link, surfaces);
+                let result = session
+                    .perform_broker(&offer.id(), &offer, &input, &ConfirmationEvidence::None)
+                    .unwrap();
+                if let Some(expected) = expected {
+                    assert!(result.is_ok(), "{result:?}");
+                    assert_eq!(*intercepted.borrow(), vec![expected]);
+                    assert_eq!(*observed.borrow(), 1);
+                } else {
+                    assert!(result.is_err());
+                    assert!(intercepted.borrow().is_empty());
+                    assert_eq!(*observed.borrow(), 0);
+                }
+            }
         }
     }
 
