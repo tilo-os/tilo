@@ -1,7 +1,7 @@
 {
   "component": "Actual mounted Terminal selected-range native editing",
   "source_fix_head": "93fd86fa67f6da456327c4603a2238438750901b",
-  "overall_result": "NATIVE EDITING AND RECORDED MOUNTED TERMINAL JOURNEY PASS; PRIOR FOCUS-RETIREMENT FAILURE RETAINED; INSTALLED/HARDWARE/UNIVERSAL SUPPORT NOT QUALIFIED",
+  "overall_result": "NATIVE EDITING AND REBUILT RECORDED MOUNTED TERMINAL JOURNEY PASS; CAUSAL WRONG-OWNER FOCUS REGRESSION REPAIRED; HISTORICAL R29 FAILURE RETAINED; INSTALLED/HARDWARE/UNIVERSAL SUPPORT NOT QUALIFIED",
   "control_space_regression": "Actual widget Dispatch emits NUL for Named Space/Character Space/physical fallback under Control; red and green retained in validation logs. Plain space and keyboard regression tests PASS.",
   "mounted_r7": "FAIL selection remained 0..0 because Control-Space emitted byte32. Replacement and Undo not run.",
   "mounted_r8": "Original Unicode selection 0..6 observed; native acknowledged replacement cafe->salut visible with suffix preserved; editor can_undo=true. FAIL immediate semantic host Undo was unavailable. Undo/Redo and speech not qualified.",
@@ -506,6 +506,136 @@
       "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r31-build-receipt.json",
       "original_sha256": "c056b69f86d0065d5d7a3a61be312fce6b77627c93ef10ec5c5f034ff18db165",
       "portable_file_sha256": "955cebacce2509ab76c18ba76028744b26ae8046dc70240cb4b156a1827a2567"
+    },
+    "recorded-r32-managed-outer.py": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r27-managed-outer.py",
+      "original_sha256": "1f42d34aa65cb84b62ca3f2a8f1e28285eb44298dce3a032bbebaf600434ec13",
+      "portable_file_sha256": "fb9b4475ef3e652287f1c76ee9bc92c5c0ee059ed83cde0d4ae4d68c00a5e291"
+    },
+    "recorded-r32-managed-inner.py": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r32-managed-inner.py",
+      "original_sha256": "03c9ae75e91a32e906b4cff55a59626ddaf79099a313236a8528fddfb3c50820",
+      "portable_file_sha256": "03c9ae75e91a32e906b4cff55a59626ddaf79099a313236a8528fddfb3c50820"
+    },
+    "recorded-r32-receipt.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r32-receipt.json",
+      "original_sha256": "39b7be87bbb0cfd814a0c69eafddbf02faf15d5ff71a20ae22f6fec57efe4a90",
+      "portable_file_sha256": "39b7be87bbb0cfd814a0c69eafddbf02faf15d5ff71a20ae22f6fec57efe4a90"
+    },
+    "recorded-r32-managed.log.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r32-managed.log.json",
+      "original_sha256": "83a6f00afd5c4145656e4118b52db0b62c0b6e3f2690004c59274798d3ba78f8",
+      "portable_file_sha256": "bd303fde7e6ea265fc89c3f0147819056c835bf7f0522433b368a395fe7b80c9"
+    },
+    "recorded-r32-recorded-manifest.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r29-recorded-manifest.json",
+      "original_sha256": "7abcb21728ecffa4deb06cba4dc85c64e740c0efc1177c646a87a481d2a9ba0d",
+      "portable_file_sha256": "be50374dce8981ec04ce151d54e7acae12498f0cf48a2beccc0d497ad1e761d7"
+    },
+    "recorded-r32-build-receipt.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r32-build-receipt.json",
+      "original_sha256": "2de1505ac095052e53ab37ebee38e829e37c74bff983745ad1381b867d79004d",
+      "portable_file_sha256": "536828a4182a57546e8ad91db89983539bc6ff588de8102273e007a90a637cc8"
+    },
+    "terminal-owner-focus-red.log.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/terminal-owner-focus-red.log.json",
+      "original_sha256": "8198edb9dec36216cf443e0128f06e17b42f37357e18e22162ce2d0177a41a84",
+      "portable_file_sha256": "29c504246134224247dab9ba58633c2f1533eef3b1c593b31e55819842c5c7cd"
+    },
+    "terminal-owner-focus-green.log.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/terminal-owner-focus-green.log.json",
+      "original_sha256": "77c5d4858c1414f3b13596a5dfc7722a8d0ecd1d54f017a2cf485b6f4fdcaf4c",
+      "portable_file_sha256": "abf1939789cfe9e8a3502c513a7f49eb6b4a02baf179447c434bc0f4ede4c95d"
+    },
+    "recorded-r33-managed-outer.py": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r27-managed-outer.py",
+      "original_sha256": "1f42d34aa65cb84b62ca3f2a8f1e28285eb44298dce3a032bbebaf600434ec13",
+      "portable_file_sha256": "fb9b4475ef3e652287f1c76ee9bc92c5c0ee059ed83cde0d4ae4d68c00a5e291"
+    },
+    "recorded-r33-managed-inner.py": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r32-managed-inner.py",
+      "original_sha256": "03c9ae75e91a32e906b4cff55a59626ddaf79099a313236a8528fddfb3c50820",
+      "portable_file_sha256": "03c9ae75e91a32e906b4cff55a59626ddaf79099a313236a8528fddfb3c50820"
+    },
+    "recorded-r33-receipt.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r33-receipt.json",
+      "original_sha256": "20d40f320ade465b863ad1489f9b3a5e2680a5e8e7441b85534d2d9a1ee88b6a",
+      "portable_file_sha256": "20d40f320ade465b863ad1489f9b3a5e2680a5e8e7441b85534d2d9a1ee88b6a"
+    },
+    "recorded-r33-managed.log.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r33-managed.log.json",
+      "original_sha256": "7cd4708c037fc52b75c0a941be31c8994efd74d68f9a02ee85b27ccaee22be73",
+      "portable_file_sha256": "00deb3c6b79ed980dba354d40fe53498e8894dacd0c1de3552a06c068becf77b"
+    },
+    "recorded-r33-recorded-manifest.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r33-recorded-manifest.json",
+      "original_sha256": "1ae99310dbe330747e09b1a541572ff21468cb8f108261591384368d505e8db6",
+      "portable_file_sha256": "ea86e743c8c809f141cef7c1a0c55709c871c58e499b517253f9932a32a9206b"
+    },
+    "recorded-r33-build-receipt.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r33-build-receipt.json",
+      "original_sha256": "c963a4c8390f939683636a869c01987ba4e070891fa5ef795e64b595dbd43e9b",
+      "portable_file_sha256": "33ee2e5fdad6a043d79c5aab5ea7330b71fbfa5b12201f2e70b9d09e49c891c4"
+    },
+    "recorded-r34-build-receipt.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r34-build-receipt.json",
+      "original_sha256": "bcd85b10b97ffb873c3131607108fafea7479a2647f7b3282904e0a24af24071",
+      "portable_file_sha256": "d38d547e5064b6dcf451fc1733fce65dfbe11fb7c4194acfce1ded0dedc68f0a"
+    },
+    "recorded-r34-managed-inner.py": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r32-managed-inner.py",
+      "original_sha256": "03c9ae75e91a32e906b4cff55a59626ddaf79099a313236a8528fddfb3c50820",
+      "portable_file_sha256": "03c9ae75e91a32e906b4cff55a59626ddaf79099a313236a8528fddfb3c50820"
+    },
+    "recorded-r34-managed-outer.py": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r27-managed-outer.py",
+      "original_sha256": "1f42d34aa65cb84b62ca3f2a8f1e28285eb44298dce3a032bbebaf600434ec13",
+      "portable_file_sha256": "fb9b4475ef3e652287f1c76ee9bc92c5c0ee059ed83cde0d4ae4d68c00a5e291"
+    },
+    "recorded-r34-managed.log.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r34-managed.log.json",
+      "original_sha256": "e326dc9e79b88972b815b0d1ed5f07f559a130246000a1ae9a54d025376f3fb8",
+      "portable_file_sha256": "1dcd5fbf479db7c5155649487241997ed07c18de30591f001d8742e48e2a8f58"
+    },
+    "recorded-r34-receipt.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r34-receipt.json",
+      "original_sha256": "dd9fcb6511726240042ec5fa9f76f8c7ca30aa8c2b5bc501bb0badf644a3d99d",
+      "portable_file_sha256": "dd9fcb6511726240042ec5fa9f76f8c7ca30aa8c2b5bc501bb0badf644a3d99d"
+    },
+    "recorded-r34-recorded-manifest.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/recorded-r34-recorded-manifest.json",
+      "original_sha256": "ea44a23e52ecdcdf7bbbbd7f588e47885cb787826324c6015c347fd3cc21e16e",
+      "portable_file_sha256": "342f0556cbe43ccfa31924df60676ea27c598b6628ecfbbb23854cdee4d1fd76"
+    },
+    "terminal-owner-final-strict-clippy.log.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/terminal-owner-final-strict-clippy.log.json",
+      "original_sha256": "08f92ec3fdf1e2beebe82751133c8efeeff15793692aa18f8d734b83bef51695",
+      "portable_file_sha256": "c077b9921fb7d4487d20df6ae91223d25b93781a08006acd16e9763de50cff1b"
+    },
+    "terminal-owner-final-deferred-guards.log.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/terminal-owner-final-deferred-guards.log.json",
+      "original_sha256": "a6118e3cb02260fbac2b4eb709bb0c69edfa70cf7c9292c0680e929f28c77cc6",
+      "portable_file_sha256": "6170b59c8fe7b0275783f0451a682ae81ab30efe667e289f71c8c2a85b2ed8e3"
+    },
+    "terminal-owner-final-owner-focus.log.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/terminal-owner-final-owner-focus.log.json",
+      "original_sha256": "37e30611913a62f79294bb6ef6e448253a109f52587f194a784b5338069c7fc1",
+      "portable_file_sha256": "c923c65b0881dc8a41ec1ba352775f61bfe8b94bc8d3b03310a8f9f34b163b54"
+    },
+    "terminal-owner-final-ui-targets.log.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/terminal-owner-final-ui-targets.log.json",
+      "original_sha256": "05e27fe1ea26f4dfe852a23fafe6502037d64945e8c599a902c48f2ec620e856",
+      "portable_file_sha256": "6f61dcb2f0ae8f650a62146c95b7162f9628f2daec695ad56add7672356fe661"
+    },
+    "terminal-owner-final-shell-tests.log.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/terminal-owner-final-shell-tests.log.json",
+      "original_sha256": "1887f98f8b57d57104b87c1fd9e77bda216e0862a48d4124aa920e362c46e342",
+      "portable_file_sha256": "0ffe8aa86585958bc6245ebedf11211c0fa87e4f3ac9e67c2f31183f212a257c"
+    },
+    "terminal-owner-final-production-build.log.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/terminal-owner-final-production-build.log.json",
+      "original_sha256": "5dbbaf755102fa3b59247b5d1b4b2f26e16e250b20f0a733033ed0c83ad72a2b",
+      "portable_file_sha256": "37d5aba983652859d1f3388d0565d29315fb6da4770885159a3741aef1fcd94d"
     }
   },
   "mounted_r10": "FAIL after waiting 25 seconds for actual mounted Terminal tilo.host:edit Undo availability. Same exact selected Unicode replacement and native can_undo=true observed, but shared semantic host history never advertised undo. No Undo/Redo or full speech claim. Owned container dictation-mounted-r10-da46cfa5b389 verified absent.",
@@ -525,7 +655,7 @@
       "focused_regression": "Old production path FAIL 0/1; repaired path PASS1/1.",
       "directory_module": "PASS23/23. Three fixtures now register publishers before loading current pages; every assertion retained.",
       "production_build": "PASS shell and Terminal.",
-      "shell_tests_compile": "PASS rcargo --no-fallback --no-fetch check --locked -j2 -p shell --tests; 2m16s."
+      "shell_tests_compile": "PASS ${CARGO_DROP_IN} --no-fallback --no-fetch check --locked -j2 -p shell --tests; 2m16s."
     }
   },
   "recorded_r13": "SETUP FAIL: private tool/library overlay prevented managed Bash startup inside the original nested sandbox. No speech assertions ran. Container verified absent; ephemeral model witness and namespace keeper removed.",
@@ -545,8 +675,8 @@
       "chrome_focus_typing": "PASS1/1 chrome_focus_does_not_steal_terminal_space_and_enter",
       "repository_hooks": "PASS changed formatting, exact staged allow reasons, all contracts and secret check.",
       "initial_compatibility_admission": "NOT RUN: remote builder refused at95.2% volume. Later independent status showed73%; identical scoped sequence resubmitted without cleanup or scheduler changes.",
-      "production_build": "PASS rcargo --no-fallback --no-fetch build --locked -j2 -p shell -p terminal --bin shell --bin terminal; 2m09s.",
-      "shell_tests_compile": "PASS rcargo --no-fallback --no-fetch check --locked -j2 -p shell --tests; 55.52s.",
+      "production_build": "PASS ${CARGO_DROP_IN} --no-fallback --no-fetch build --locked -j2 -p shell -p terminal --bin shell --bin terminal; 2m09s.",
+      "shell_tests_compile": "PASS ${CARGO_DROP_IN} --no-fallback --no-fetch check --locked -j2 -p shell --tests; 55.52s.",
       "recorded_r18": "FAIL after native editing baseline PASS: synthetic recorder never starts. Actual rebuilt candidate shell SHA cdfa8cd2cf8b4f5566c7a7d90f12c20b2ccbc24b490b15cc9dbe1c604eee2cc5. Owned container dictation-recorded-r18-791e83ed766c verified absent. No microphone or persistent grant.",
       "recorded_r19": "FAIL: post-consent public headless frame shows field-changed cancellation and submitted original Terminal line. No worker/recorder started; native editing baseline PASS. Owned container dictation-recorded-r19-f6cbd19af2d0 verified absent. Original hashed receipt/log retained privately.",
       "recorded_r20": "Diagnostic only: consent already retired before Enter, original selection changed from anchor0/focus6 to anchor0/focus5 after ArrowLeft. Diagnostic target export itself failed on set JSON serialization, so no full qualification claim. Owned container dictation-recorded-r20-1d2417d8f0a2 verified absent."
@@ -579,8 +709,8 @@
       "runtime_seconds": 0.279,
       "production_build": "PASS shell + Terminal, 2m57s",
       "full_terminal_speech": "PASS r31 unchanged strict private recorded-audio journey; r29 reliability observation retained",
-      "shell_tests_compile": "PASS rcargo check --locked -j2 -p shell --tests, 2m07s",
-      "ui_all_targets_compile": "PASS rcargo check --locked -j2 -p tilo-ui --all-targets, 56.25s",
+      "shell_tests_compile": "PASS ${CARGO_DROP_IN} check --locked -j2 -p shell --tests, 2m07s",
+      "ui_all_targets_compile": "PASS ${CARGO_DROP_IN} check --locked -j2 -p tilo-ui --all-targets, 56.25s",
       "clean_green_log": {
         "file": "tools/release/fixtures/terminal_dictation_20261010/idle-stamp-green.log.json",
         "sha256": "9578e1f29abb86503355213db7ff78b28a96b310aff12d063effe03a2d9dab90",
@@ -635,5 +765,112 @@
       "persistent_grants": false,
       "owned_container_verified_absent": "dictation-recorded-r31-e28baa7677a3"
     }
+  },
+  "recorded_r32": {
+    "result": "PASS diagnostic unchanged strict journey; not a causal repair of r29",
+    "focus_action_seconds": 0.017518931010272354,
+    "focus_cleanup_seconds": 0.03836215499904938,
+    "diagnostics": "exact original retirement bounds; state/PipeWire/process snapshots only if failure; this run did not fail",
+    "source_identity": "same exact production binaries and native module as r29; dedup changes evidence only"
+  },
+  "terminal_owner_focus_followup": {
+    "status": "causal wrong-owner regression repaired RED0/1 -> GREEN1/1; strengthened intended-tab check GREEN1/1; exact rebuilt strict r34 PASS",
+    "observed_source_bug": "initial_focus_target searches the entire unordered live node map for any Terminal, rather than the active tab owner. Multiple visible Terminal owners can leave keyboard/text focus in the old window after durable active-group changes.",
+    "r29_relation": "r29 actual recorder-retirement FAIL retained. Deterministic wrong-owner focus on the prior production path is reproduced and repaired; fits r29, but archived r29 lacks a focus snapshot proving exact attribution. Do not relabel r29 success.",
+    "required_next": "exact-head CI; measured preview latency and broader eligible-field coverage",
+    "regression": "shell::frame::tests::native_terminal_focus_follows_the_active_owner_with_two_windows",
+    "red": {
+      "passed": 0,
+      "failed": 1,
+      "assertion": "native focus must belong to the active tab, never another Terminal",
+      "runtime_seconds": 0.19
+    },
+    "green": {
+      "passed": 1,
+      "failed": 0,
+      "runtime_seconds": 0.16
+    },
+    "first_green_compile": "E0308 mutable-versus-const raw pointer comparison; explicit cast_const corrected before successful GREEN; assertions unchanged",
+    "repair": "Resolve active strip/group/tab and require matching live active tab; choose native Terminal target only inside that owned host. Missing/stale ownership refuses, with no global fallback.",
+    "read_only_review": "No concrete custody/lifetime/refusal issue; no reviewer builds/tests",
+    "compatibility": {
+      "dictation_consent_keys_do_not_reach_the_hosted_terminal_pty": "PASS1/1",
+      "control_socket_typing_reaches_the_hosted_terminal_pty": "PASS1/1",
+      "chrome_focus_does_not_steal_terminal_space_and_enter": "PASS1/1"
+    },
+    "production_build": "PASS ${CARGO_DROP_IN} build shell+Terminal, 1m53s",
+    "shell_tests_compile": "PASS ${CARGO_DROP_IN} check shell --tests, 55.20s",
+    "recorded_postfix": "PASS r33; action15.3ms, cleanup91.5ms; original15-second deadline unchanged",
+    "remaining": "broader stress/protected editor coverage; hardware/installed image and latency remain unqualified",
+    "final_validation": {
+      "strict_clippy": "PASS3m05s; missing/exhausted stamp refusals unchanged",
+      "deferred_input_guards": "PASS7/7, 0.514s",
+      "strengthened_owner_focus": "PASS1/1, 0.226s; intended active tab asserted before owner containment",
+      "ui_all_targets": "PASS48.70s",
+      "shell_tests_compile": "PASS1m54s",
+      "production_build": "PASS3m17s",
+      "recorded_r34": "PASS37.460s; action34.9ms, cleanup67.5ms, preview9.025s, final27.487s, WER0/18"
+    },
+    "exact_ci_failure_repair": {
+      "head": "ba5e09cf4b656ef438187dce75d01091944eb27c",
+      "run": 92283,
+      "cause": "setup-neutral policy rejected machine-specific command name in architecture ledger",
+      "fix": "neutral command marker; setup-neutral and repository layout PASS locally",
+      "publication_status": "fix included in next candidate; exact new-head CI required"
+    }
+  },
+  "recorded_r33": {
+    "result": "PASS exact rebuilt owner-specific focus candidate; unchanged strict assertions/deadlines",
+    "shell_sha256": "027c61916c2f752b299652240d17e828faf5acc56719c869eacfd7b2debbbf4d",
+    "source_base_head": "ba5e09cf4b656ef438187dce75d01091944eb27c",
+    "source_worktree_modified": true,
+    "source_identity": "source and binary digests in exact archived receipt, including new overlay owner accessor",
+    "elapsed_seconds": 36.74301300398656,
+    "focus_action_seconds": 0.01531485197483562,
+    "focus_cleanup_seconds": 0.09152448599343188,
+    "first_preview_seconds": 8.89699914099765,
+    "capture_to_final_seconds": 27.66486313097994,
+    "wer": 0,
+    "reference_words": 18,
+    "qualified": [
+      "native selected Unicode editing",
+      "actual recorded German insertion",
+      "ONE semantic native Undo/Redo with original selection",
+      "repeat cancellation and recorder/worker retirement",
+      "focus away/back and fresh repeated cancellation"
+    ],
+    "privacy": {
+      "physical_microphone": false,
+      "installed": false,
+      "persistent_grants": false
+    },
+    "owned_container_verified_absent": "dictation-recorded-r33-dc1662feb544"
+  },
+  "recorded_r34": {
+    "result": "PASS exact rebuilt owner-specific focus candidate; unchanged strict assertions/deadlines",
+    "shell_sha256": "0349331518adb58b64fffd1ee2702fb9827263260e363b83e59690b0ad168640",
+    "source_base_head": "ba5e09cf4b656ef438187dce75d01091944eb27c",
+    "source_worktree_modified": true,
+    "source_identity": "source and binary digests in exact archived receipt, including new overlay owner accessor",
+    "elapsed_seconds": 37.45998641400365,
+    "focus_action_seconds": 0.03487406700151041,
+    "focus_cleanup_seconds": 0.06748547102324665,
+    "first_preview_seconds": 9.024774365010671,
+    "capture_to_final_seconds": 27.486661950009875,
+    "wer": 0,
+    "reference_words": 18,
+    "qualified": [
+      "native selected Unicode editing",
+      "actual recorded German insertion",
+      "ONE semantic native Undo/Redo with original selection",
+      "repeat cancellation and recorder/worker retirement",
+      "focus away/back and fresh repeated cancellation"
+    ],
+    "privacy": {
+      "physical_microphone": false,
+      "installed": false,
+      "persistent_grants": false
+    },
+    "owned_container_verified_absent": "dictation-recorded-r34-0442a1ce2723"
   }
 }

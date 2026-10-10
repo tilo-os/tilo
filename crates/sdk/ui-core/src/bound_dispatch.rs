@@ -3487,7 +3487,7 @@ impl CallbackBinding {
                 let frame = owned
                     .as_ref()
                     .ok_or(BoundDispatchError::Record(RecordOpenError::Busy))?;
-                if !frame.state.generation.is_some_and(|value| value < u64::MAX)
+                if frame.state.generation.is_none_or(|value| value == u64::MAX)
                     || frame.history.revision() == u64::MAX
                 {
                     return Err(BoundDispatchError::Record(RecordOpenError::Busy));

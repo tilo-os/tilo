@@ -1396,23 +1396,21 @@ impl FrameBuilder {
         // Chrome controls come first in DFS and used to steal initial focus;
         // Activate then opened workspace settings instead of sending CR.
         if self.active_tile_is_terminal() {
-            // TileHost children are `dyn AppWidget`; chrome focus order
-            // compares `dyn Widget` fat pointers and used to miss the
-            // Terminal even though it is in the live node map.
-            if let Some((&id, _)) = self.node_map.iter().find(|(_, mapped)| {
-                let widget = unsafe { &***mapped };
-                is_terminal(widget) && widget.is_focusable() && widget.is_enabled()
-            }) {
-                return Some(id);
+            fn terminal_pointer(widget: &dyn Widget) -> Option<*const ()> {
+                if is_terminal(widget) && widget.is_focusable() && widget.is_enabled() {
+                    return Some(std::ptr::from_ref(widget).cast::<()>());
+                }
+                widget.children().into_iter().find_map(terminal_pointer)
             }
-            if let Some(terminal) = order.iter().copied().find(|id| {
-                self.node_map
-                    .get(id)
-                    // SAFETY: this map belongs to the current, live layout tree.
-                    .is_some_and(|&widget| is_terminal(unsafe { &*widget }))
-            }) {
-                return Some(terminal);
-            }
+            // Multiple visible Terminals have independent field custody. The
+            // unordered node map must never pick another window's editor.
+            let owner = self.host.active_app_host()?;
+            let pointer = terminal_pointer(owner)?;
+            // AppWidget and Widget may have different vtables for the same
+            // owned object. Match its data address, as focusable_order does.
+            return self.node_map.iter().find_map(|(&id, &widget)| {
+                (widget.cast::<()>().cast_const() == pointer).then_some(id)
+            });
         }
         // Overflowing scroll regions are keyboard targets too, but an
         // unnamed container must not take the initial focus from the setup
@@ -6716,6 +6714,53 @@ mod tests {
         native_oobe_tab_and_shift_tab_follow_dfs_order();
         native_oobe_focus_order_excludes_disabled_controls();
         focused_terminal_gets_plain_tab_before_focus_traversal();
+    }
+
+    #[test]
+    fn native_terminal_focus_follows_the_active_owner_with_two_windows() {
+        fn contains_pointer(widget: &dyn Widget, pointer: *const ()) -> bool {
+            std::ptr::from_ref(widget).cast::<()>() == pointer
+                || widget
+                    .children()
+                    .into_iter()
+                    .any(|child| contains_pointer(child, pointer))
+        }
+        let (mut tree, strip, groups, tabs) = axis_a11y_tree();
+        let workspace = tree.desktop.active_workspace_mut().expect("test workspace");
+        workspace.strips[0].window_groups.truncate(2);
+        for group in &mut workspace.strips[0].window_groups {
+            group.tabs.truncate(1);
+            group.tabs[0].tile = crate::shell::state::TileContent::AppPlaceholder {
+                kind: crate::shell::state::AppKind::Terminal,
+                label: "Terminal".into(),
+            };
+        }
+        let mut frame = FrameBuilder::with_tree(tree, (3200, 900));
+        frame.relayout();
+        // Both real mounted owners remain in the live widget map. Visit both
+        // through the production window focus door: choosing an arbitrary
+        // HashMap Terminal cannot satisfy both owner assertions.
+        for index in 0..2 {
+            frame
+                .host_mut()
+                .focus_window_on_strip(strip, groups[index], tabs[index][0]);
+            assert_eq!(frame.chrome().active_tab_id(), Some(tabs[index][0]));
+            let owner = frame
+                .host()
+                .active_app_host()
+                .expect("active mounted app owner");
+            let target = frame
+                .initial_focus_target(&frame.focusable_order())
+                .expect("the active Terminal must have a native keyboard target");
+            let pointer = *frame.node_map.get(&target).expect("live focus node");
+            // SAFETY: no rebuild or mutation occurs while the live owner and
+            // its node-map pointer are inspected.
+            assert!(is_terminal(unsafe { &*pointer }));
+            assert!(
+                contains_pointer(owner, pointer.cast::<()>()),
+                "native focus must belong to the active tab, never another Terminal"
+            );
+        }
     }
 
     #[test]

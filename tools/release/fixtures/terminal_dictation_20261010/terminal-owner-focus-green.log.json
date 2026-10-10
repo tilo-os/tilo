@@ -1,0 +1,22 @@
+{
+  "original_stdout_sha256": "77c5d4858c1414f3b13596a5dfc7722a8d0ecd1d54f017a2cf485b6f4fdcaf4c",
+  "lines": [
+    "warning: ignoring --test-threads because --no-capture is specified\n",
+    "   Compiling shell v0.1.0 (${SOURCE_ROOT}/crates/session/shell)\n",
+    "    Finished `test` profile [unoptimized + debuginfo] target(s) in 48.02s\n",
+    "info: using target runner `${SOURCE_ROOT}/tools/cargo-runner.sh` defined by `target.cfg(all(target_arch = \"x86_64\", target_os = \"linux\")).runner` within `${SOURCE_ROOT}/.cargo/config.toml`\n",
+    "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n",
+    " Nextest run ID bfb31c35-fdba-4499-89ba-92631552bf89 with nextest profile: ci\n",
+    "    Starting 1 test across 1 binary (2496 tests skipped)\n",
+    "       START [         ] (1/1) shell shell::frame::tests::native_terminal_focus_follows_the_active_owner_with_two_windows\n",
+    "\n",
+    "running 1 test\n",
+    "test shell::frame::tests::native_terminal_focus_follows_the_active_owner_with_two_windows ... ok\n",
+    "\n",
+    "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2496 filtered out; finished in 0.16s\n",
+    "\n",
+    "        PASS [   0.188s] (1/1) shell shell::frame::tests::native_terminal_focus_follows_the_active_owner_with_two_windows\n",
+    "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n",
+    "     Summary [   0.213s] 1 test run: 1 passed, 2496 skipped\n"
+  ]
+}

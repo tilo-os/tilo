@@ -1,0 +1,18 @@
+{
+  "original_stdout_sha256": "a6118e3cb02260fbac2b4eb709bb0c69edfa70cf7c9292c0680e929f28c77cc6",
+  "lines": [
+    "    Blocking waiting for file lock on package cache\n",
+    "    Blocking waiting for file lock on package cache\n",
+    "    Blocking waiting for file lock on package cache\n",
+    "    Blocking waiting for file lock on package cache\n",
+    "    Blocking waiting for file lock on package cache\n",
+    "   Compiling tilo-ui v0.1.0 (${SOURCE_ROOT}/crates/sdk/ui-core)\n",
+    "    Finished `test` profile [unoptimized + debuginfo] target(s) in 2m 53s\n",
+    "info: using target runner `${SOURCE_ROOT}/tools/cargo-runner.sh` defined by `target.cfg(all(target_arch = \"x86_64\", target_os = \"linux\")).runner` within `${SOURCE_ROOT}/.cargo/config.toml`\n",
+    "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n",
+    " Nextest run ID e98e2520-7ddc-414e-9453-f741af704ee4 with nextest profile: ci\n",
+    "    Starting 7 tests across 1 binary (3004 tests skipped)\n",
+    "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n",
+    "     Summary [   0.514s] 7 tests run: 7 passed, 3004 skipped\n"
+  ]
+}

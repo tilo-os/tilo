@@ -1,0 +1,33 @@
+{
+  "original_stdout_sha256": "08f92ec3fdf1e2beebe82751133c8efeeff15793692aa18f8d734b83bef51695",
+  "lines": [
+    "    Checking tilo-ui v0.1.0 (${SOURCE_ROOT}/crates/sdk/ui-core)\n",
+    "    Checking tilo-projector v0.1.0 (${SOURCE_ROOT}/crates/system/projector)\n",
+    "    Checking tilo-cpu-raster v0.1.0 (${SOURCE_ROOT}/crates/sdk/tilo-cpu-raster)\n",
+    "    Checking tilo-callstream v0.1.0 (${SOURCE_ROOT}/crates/collab/tilo-callstream)\n",
+    "    Checking agent-provider-config v0.1.0 (${SOURCE_ROOT}/crates/agent/provider-config)\n",
+    "    Checking console-control v0.1.0 (${SOURCE_ROOT}/crates/session/console-control)\n",
+    "    Checking tilo-lockdown-policy v0.1.0 (${SOURCE_ROOT}/crates/session/tilo-lockdown-policy)\n",
+    "    Checking tilo-control v0.1.0 (${SOURCE_ROOT}/crates/session/control-cli)\n",
+    "    Checking tilo-runner-native v0.1.0 (${SOURCE_ROOT}/crates/sdk/runner-native)\n",
+    "    Checking tilo-identity-host v0.1.0 (${SOURCE_ROOT}/crates/runtime/tilo-identity-host)\n",
+    "    Checking tilo-app v0.1.0 (${SOURCE_ROOT}/crates/sdk/tilo-app)\n",
+    "    Checking tilo-desktop-search v0.1.0 (${SOURCE_ROOT}/crates/session/desktop-search)\n",
+    "    Checking tilo-desktop-surface v0.1.0 (${SOURCE_ROOT}/crates/session/desktop-surface)\n",
+    "    Checking tilo-rich-text v0.1.0 (${SOURCE_ROOT}/crates/sdk/tilo-rich-text)\n",
+    "    Checking terminal v0.2.1 (${SOURCE_ROOT}/apps/terminal)\n",
+    "    Checking tilo-joined-room v0.1.0 (${SOURCE_ROOT}/crates/collab/tilo-joined-room)\n",
+    "    Checking tilo-action-broker v0.1.0 (${SOURCE_ROOT}/crates/collab/tilo-action-broker)\n",
+    "    Checking code-editor v0.1.0 (${SOURCE_ROOT}/apps/code-editor)\n",
+    "    Checking tilo-desktop v0.1.0 (${SOURCE_ROOT}/crates/session/desktop)\n",
+    "    Checking tilo-runtime v0.1.0 (${SOURCE_ROOT}/crates/runtime/tilo-runtime)\n",
+    "    Checking notes v0.1.0 (${SOURCE_ROOT}/apps/notes)\n",
+    "    Checking word-processor v0.1.0 (${SOURCE_ROOT}/apps/word-processor)\n",
+    "    Checking file-explorer v0.2.0 (${SOURCE_ROOT}/apps/file-explorer)\n",
+    "    Checking passwords v0.1.0 (${SOURCE_ROOT}/apps/passwords)\n",
+    "    Checking messages v0.1.0 (${SOURCE_ROOT}/apps/messages)\n",
+    "    Checking browser v0.1.0 (${SOURCE_ROOT}/apps/browser)\n",
+    "    Checking shell v0.1.0 (${SOURCE_ROOT}/crates/session/shell)\n",
+    "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3m 05s\n"
+  ]
+}

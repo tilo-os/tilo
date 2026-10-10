@@ -1,0 +1,7 @@
+{
+  "original_stdout_sha256": "05e27fe1ea26f4dfe852a23fafe6502037d64945e8c599a902c48f2ec620e856",
+  "lines": [
+    "    Checking tilo-ui v0.1.0 (${SOURCE_ROOT}/crates/sdk/ui-core)\n",
+    "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 48.70s\n"
+  ]
+}

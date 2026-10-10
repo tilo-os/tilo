@@ -1,0 +1,28 @@
+{
+  "original_stdout_sha256": "5dbbaf755102fa3b59247b5d1b4b2f26e16e250b20f0a733033ed0c83ad72a2b",
+  "lines": [
+    "   Compiling tilo-ui v0.1.0 (${SOURCE_ROOT}/crates/sdk/ui-core)\n",
+    "   Compiling tilo-runner-native v0.1.0 (${SOURCE_ROOT}/crates/sdk/runner-native)\n",
+    "   Compiling tilo-app v0.1.0 (${SOURCE_ROOT}/crates/sdk/tilo-app)\n",
+    "   Compiling tilo-identity-host v0.1.0 (${SOURCE_ROOT}/crates/runtime/tilo-identity-host)\n",
+    "   Compiling terminal v0.2.1 (${SOURCE_ROOT}/apps/terminal)\n",
+    "   Compiling tilo-rich-text v0.1.0 (${SOURCE_ROOT}/crates/sdk/tilo-rich-text)\n",
+    "   Compiling tilo-desktop-search v0.1.0 (${SOURCE_ROOT}/crates/session/desktop-search)\n",
+    "   Compiling tilo-action-broker v0.1.0 (${SOURCE_ROOT}/crates/collab/tilo-action-broker)\n",
+    "   Compiling tilo-desktop-surface v0.1.0 (${SOURCE_ROOT}/crates/session/desktop-surface)\n",
+    "   Compiling tilo-joined-room v0.1.0 (${SOURCE_ROOT}/crates/collab/tilo-joined-room)\n",
+    "   Compiling tilo-runtime v0.1.0 (${SOURCE_ROOT}/crates/runtime/tilo-runtime)\n",
+    "   Compiling tilo-desktop v0.1.0 (${SOURCE_ROOT}/crates/session/desktop)\n",
+    "   Compiling notes v0.1.0 (${SOURCE_ROOT}/apps/notes)\n",
+    "   Compiling word-processor v0.1.0 (${SOURCE_ROOT}/apps/word-processor)\n",
+    "   Compiling code-editor v0.1.0 (${SOURCE_ROOT}/apps/code-editor)\n",
+    "   Compiling browser v0.1.0 (${SOURCE_ROOT}/apps/browser)\n",
+    "   Compiling passwords v0.1.0 (${SOURCE_ROOT}/apps/passwords)\n",
+    "   Compiling file-explorer v0.2.0 (${SOURCE_ROOT}/apps/file-explorer)\n",
+    "   Compiling messages v0.1.0 (${SOURCE_ROOT}/apps/messages)\n",
+    "   Compiling shell v0.1.0 (${SOURCE_ROOT}/crates/session/shell)\n",
+    "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3m 17s\n",
+    "${CARGO_DROP_IN}: conflict: tools/release/__pycache__/prepare_speech_benchmark.cpython-314.pyc changed both locally and on the builder; keeping the local version\n"
+  ],
+  "normalization": "owned roots and machine-specific command marker normalized; original stdout hash retains raw identity"
+}
