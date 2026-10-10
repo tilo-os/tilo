@@ -94,3 +94,13 @@ A guest OS library change does not cover Flatpak-owned GTK runtimes. Deliver onl
 inside an exactly matched app/runtime closure after qualification. The existing
 legacy guest workflow signs/pins guest images, but this candidate adds no workflow,
 publication, global environment, new trust root or OS rootfs toolkit exception.
+
+The private native build driver is `private_build.py`. It requires a fresh
+preparation receipt including a whole-source snapshot, and an extracted,
+signed development closure with an exact file/symlink snapshot and no unresolved
+requirements. Its default is preflight only; `--execute` explicitly performs the
+bounded build. It uses the existing pinned compatibility image with no pull,
+network or package installation, two CPUs, 3 GiB and no swap. The source and
+extracted dependencies are read-only; only the fresh private output is writable.
+A successful compile is not the single-line speech/Undo or accessibility gate.
+Neither runtime installation nor activation is part of this driver.
