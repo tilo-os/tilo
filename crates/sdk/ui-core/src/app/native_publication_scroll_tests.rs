@@ -592,3 +592,28 @@ fn view_only_native_scroll_keeps_modified_input_and_model_work_on_full_path() {
         assert!(fixture.declarations.get() > declarations);
     }
 }
+
+#[test]
+fn native_long_document_frame_phase_probe() {
+    let mut fixture = ViewScrollFixture::new(true, false);
+    fixture.app.profiler = Some(crate::profiling::FrameProfiler::for_capture());
+    for sample in 0..3 {
+        fixture.wheel();
+        crate::profiling::frame_probe::enable();
+        let elapsed = fixture.frame();
+        let draw_phases = crate::profiling::frame_probe::take();
+        let profiler = fixture.app.profiler.as_mut().unwrap();
+        profiler.commit_frame(u64::try_from(elapsed / 1000).unwrap());
+        let timings = profiler.take_capture();
+        assert_eq!(timings.len(), 1);
+        eprintln!(
+            "native-frame-phase {}",
+            serde_json::json!({
+                "sample":sample,"paragraphs":fixture.paragraphs,
+                "viewport":[fixture.region.size.0,fixture.region.size.1],
+                "profile":"test-debug","gpu_or_scanout":false,
+                "timings":timings[0], "draw_phases_ns_calls":draw_phases,
+            })
+        );
+    }
+}
