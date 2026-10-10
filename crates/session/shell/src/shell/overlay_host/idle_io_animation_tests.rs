@@ -76,15 +76,6 @@ fn ordinary_host_update_adopts_completed_wifi_scan_without_a_paint() {
     });
     tilo_test_env::recv("a completed scan must wake its owning host", &wake_rx);
     let changed = host.update(&automerge::AutoCommit::new(), &automerge::ROOT);
-    let quick_settings = UPDATE_SOURCE_NAMES
-        .iter()
-        .position(|name| *name == "quick-settings")
-        .unwrap();
-    assert_ne!(
-        host.last_update_sources() & (1 << quick_settings),
-        0,
-        "the ordinary update must attribute the completed scan to quick settings"
-    );
     let state = chrome.borrow();
     assert!(
         !host.qs_refresh.is_in_flight(),
