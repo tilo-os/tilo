@@ -17,7 +17,6 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use ui::framework::{Dispatcher, Jobs};
 use ui::tilo_resource::Invoke;
-use ui::time::{Duration, Instant};
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::ObjId;
@@ -32,7 +31,7 @@ use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
+use ui::widget::toast::ToastKind;
 use ui::widget::{
     Button, ButtonRole, ContextMenu, ControlSize, Dropdown, Element, MenuItem, NavItem, NavList,
     NavPane, NavSection, NavShell, TaffyTreeExt, Widget,
@@ -51,12 +50,6 @@ use dialogs::{DialogKey, ExportDraft};
 
 /// Private presentation token; it is never written to the shared document.
 const FAVORITES_FILTER: &str = "\u{0}contacts:favorites";
-
-/// How long an action toast ("Saved", "Contact created", …) stays on screen
-/// before it fades away on its own. The host loop is kept awake (via
-/// [`Widget::needs_animation_frame`]) only while a toast is up, so the frame
-/// where this elapses clears it and the loop returns to idle.
-const TOAST_LIFETIME: Duration = Duration::from_millis(2600);
 
 /// The sidebar destinations that are not groups.
 const ALL_DESTINATION: &str = "all";
@@ -170,7 +163,6 @@ pub struct ContactsApp {
     form_epoch: u64,
     sort: SortKey,
     group_filter: Option<String>,
-    toast: Option<(String, Instant)>,
     duplicate_review: Option<DuplicateReview>,
     duplicate_candidate: Option<crate::actions::DuplicateCandidate>,
     /// The export whose format is being chosen.
@@ -532,7 +524,6 @@ impl ContactsApp {
             form_epoch: 0,
             sort: SortKey::Name,
             group_filter: None,
-            toast: None,
             duplicate_review: None,
             duplicate_candidate: None,
             export: None,
@@ -717,15 +708,7 @@ impl ContactsApp {
     }
 
     fn show_toast(&mut self, msg: impl Into<String>) {
-        self.toast = Some((msg.into(), ui::time::now()));
-        self.dirty = true;
-    }
-
-    /// `true` when a toast is showing and has outlived [`TOAST_LIFETIME`].
-    fn toast_expired(&self) -> bool {
-        self.toast
-            .as_ref()
-            .is_some_and(|(_, shown)| shown.elapsed() >= TOAST_LIFETIME)
+        self.shell.toast(msg, ToastKind::Info);
     }
 
     fn set_group_filter(&mut self, group: Option<String>) {
@@ -1845,20 +1828,6 @@ impl Widget for ContactsApp {
         if let Some((_, dialog)) = &mut self.dialog {
             dialog.draw_overlay(scene, transform, tr, theme, presence);
         }
-        if self.toast_expired() {
-            self.toast = None;
-        }
-        if let Some((msg, _)) = &self.toast {
-            paint_transient(
-                scene,
-                transform,
-                tr,
-                theme,
-                self.rect,
-                ToastAnchor::BottomCenter,
-                &ToastCard::new(msg, ToastKind::Info),
-            );
-        }
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
@@ -2013,19 +1982,8 @@ impl Widget for ContactsApp {
             .and_then(|(_, dialog)| dialog.modal_capture())
     }
 
-    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
-        let (message, _) = self.toast.as_ref()?;
-        Some(
-            ui::a11y::AccessNode::new(ui::a11y::Role::StaticText)
-                .with_name(message.clone())
-                .with_hashed_key("contacts.status")
-                .with_live(ui::a11y::Politeness::Assertive),
-        )
-    }
-
     fn needs_redraw(&self) -> bool {
         self.dirty
-            || self.toast.is_some()
             || self.portal_in_flight()
             || self.shell.needs_redraw()
             || self.dialog.as_ref().is_some_and(|(_, d)| d.needs_redraw())
@@ -2040,8 +1998,7 @@ impl Widget for ContactsApp {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.toast.is_some()
-            || self.portal_in_flight()
+        self.portal_in_flight()
             || self.pending_menu.is_some()
             || self.shell.needs_animation_frame()
             || self

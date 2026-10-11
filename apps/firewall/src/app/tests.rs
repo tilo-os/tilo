@@ -3,6 +3,7 @@ use automerge::AutoCommit;
 use ui::headless::Framed;
 use ui::prelude::TestApp;
 use ui::widget::SidebarPlacement;
+use vello::kurbo::Rect;
 
 use crate::resource::FirewallShell;
 

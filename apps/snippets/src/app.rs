@@ -25,7 +25,7 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tilo_resource::Resource;
 use ui::widget::code_editor::CodeEditor;
-use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
+use ui::widget::toast::ToastKind;
 use ui::widget::{
     AppModel, Button, ContextMenu, Element, MenuItem, ModelPath, NavItem, NavList, NavPane,
     NavSection, NavShell, SidebarPlacement, Widget,
@@ -127,14 +127,6 @@ pub(crate) fn stable_key(value: &str) -> String {
     hex::encode(value)
 }
 
-/// A short confirmation shown after an action; it goes after the toolkit's
-/// toast lifetime, read from the clock (pinned in captures).
-#[derive(Clone)]
-struct Toast {
-    message: String,
-    shown_at: ui::time::Instant,
-}
-
 /// An open menu of the snippet: its language picker or its overflow menu.
 pub(crate) struct OpenMenu {
     pub(crate) menu: ContextMenu,
@@ -163,7 +155,9 @@ pub(crate) struct Core {
     /// The fill-in-variables dialog, when open.
     pub(crate) expand: Option<ExpandModal>,
     pub(crate) menu: Option<OpenMenu>,
-    toast: Option<Toast>,
+    /// A short confirmation of the last action, for the shell to show
+    /// next.
+    notice: Option<String>,
     /// The resource's dispatcher, once the framework attaches the view.
     /// Each on-screen control submits a field edit or a verb through it.
     dispatch: Option<Dispatcher<Snippets>>,
@@ -195,7 +189,7 @@ impl Core {
             visible: Vec::new(),
             expand: None,
             menu: None,
-            toast: None,
+            notice: None,
             dispatch: None,
             pointer: Point::ZERO,
             window: Rect::ZERO,
@@ -606,10 +600,7 @@ impl Core {
     }
 
     fn toast(&mut self, message: &str) {
-        self.toast = Some(Toast {
-            message: message.to_string(),
-            shown_at: ui::time::now(),
-        });
+        self.notice = Some(message.to_string());
     }
 
     pub(crate) fn apply(&mut self, action: Action) {
@@ -729,15 +720,6 @@ impl Core {
                 true
             }
             _ => false,
-        }
-    }
-
-    fn update_toast(&mut self) {
-        if self.toast.as_ref().is_some_and(|toast| {
-            ui::time::now().saturating_duration_since(toast.shown_at)
-                >= ui::widget::toast::DEFAULT_TTL
-        }) {
-            self.toast = None;
         }
     }
 }
@@ -1027,15 +1009,19 @@ impl SnippetsApp {
             self.core.borrow_mut().apply(action);
         }
         self.core.borrow_mut().open_landed();
-        let (pane, titles) = {
+        let (pane, notice, titles) = {
             let mut core = self.core.borrow_mut();
             (
                 core.show_pane.take(),
+                core.notice.take(),
                 (core.selection_title(), core.open_title()),
             )
         };
         if let Some(pane) = pane {
             self.shell.show(pane);
+        }
+        if let Some(notice) = notice {
+            self.shell.toast(notice, ToastKind::Info);
         }
         if titles.0 != self.titles.0 {
             self.shell.set_overview_title(titles.0.clone());
@@ -1184,7 +1170,6 @@ impl ui::widget::Decorator for SnippetsApp {
         self.settle();
         self.refresh_columns();
         self.stage_pending_scenario();
-        self.core.borrow_mut().update_toast();
         Widget::update(&mut self.shell, state, path)
     }
 
@@ -1234,7 +1219,6 @@ impl ui::widget::Decorator for SnippetsApp {
             .control_mut()
             .set_rect(Rect::ZERO);
         Widget::draw(&mut self.shell, scene, transform, text, theme, presence);
-        self.paint_toast(scene, transform, text, theme);
     }
 
     fn draw_overlay(
@@ -1315,9 +1299,7 @@ impl ui::widget::Decorator for SnippetsApp {
 
     fn needs_animation_frame(&self) -> bool {
         // A capture keeps frames coming until its scenario is staged.
-        self.pending_scenario.is_some()
-            || self.core.borrow().toast.is_some()
-            || Widget::needs_animation_frame(&self.shell)
+        self.pending_scenario.is_some() || Widget::needs_animation_frame(&self.shell)
     }
 
     fn ime_cursor_rect(&self) -> Option<Rect> {
@@ -1491,29 +1473,6 @@ impl ui::widget::Decorator for SnippetsApp {
 
     fn name(&self) -> &'static str {
         "SnippetsApp"
-    }
-}
-
-impl SnippetsApp {
-    fn paint_toast(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let core = self.core.borrow();
-        if let Some(toast) = &core.toast {
-            paint_transient(
-                scene,
-                transform,
-                text,
-                theme,
-                core.window,
-                ToastAnchor::BottomRight,
-                &ToastCard::new(&toast.message, ToastKind::Info),
-            );
-        }
     }
 }
 

@@ -4,7 +4,7 @@
 //! selected zone is the content (see [`crate::view`]). This module owns what
 //! the shell cannot: the configuration and where it came from, the zone and
 //! rule the person is looking at, the add-rule draft, the delete
-//! confirmation, the result toast, and the effects that push the
+//! confirmation, the last result, and the effects that push the
 //! configuration to firewalld.
 //!
 //! The configuration lives in the shared Automerge document (`doc.rs`): every
@@ -19,19 +19,15 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use taffy::{NodeId, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::Point;
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::LocalState;
 use ui::a11y::{AccessNode, Politeness, Role};
-use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::time::{Duration, Instant};
 use ui::widget::data_table::TableSort;
-use ui::widget::toast::{ToastKind, ToastStack};
+use ui::widget::toast::ToastKind;
 use ui::widget::{AppModel, ModelPath, NavShell, Widget};
 
 use ui::framework::{Dispatcher, Setting};
@@ -48,8 +44,6 @@ use ui::tilo_resource::Json;
 
 /// The job that applies the stored configuration to this device.
 const APPLY_JOB: &str = "apply";
-/// How long a result toast stays before it hides itself.
-const TOAST_TTL: Duration = Duration::from_secs(5);
 
 /// How a reported result reads: it decides the toast's tone.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -123,8 +117,6 @@ pub struct FirewallApp {
     tab: Tab,
     draft: Draft,
     notice: Option<Notice>,
-    /// The result toast, and when it was last advanced.
-    toasts: ToastStack,
     /// The content column is wide enough for the services' descriptions:
     /// at least `wide_from`, the width of a compact window.
     wide: bool,
@@ -217,7 +209,6 @@ impl FirewallApp {
             tab: Tab::Rules,
             draft: Draft::new(),
             notice: None,
-            toasts: ToastStack::new().with_max(1).with_default_ttl(TOAST_TTL),
             wide: true,
             wide_from: 0.0,
             available,
@@ -265,7 +256,7 @@ impl FirewallApp {
                     Tone::Error,
                 );
                 // The empty state carries the reason; no toast repeats it.
-                self.toasts.dismiss(0);
+                self.shell.dismiss_toast();
             }
             "services" => self.tab = Tab::Services,
             "selected" => {
@@ -314,7 +305,7 @@ impl FirewallApp {
             text: text.into(),
             tone,
         };
-        self.toasts.push(notice.text.clone(), notice.tone.kind());
+        self.shell.toast(notice.text.clone(), notice.tone.kind());
         self.notice = Some(notice);
         self.changed = true;
     }
@@ -761,20 +752,6 @@ impl FirewallApp {
             self.report(notice.text, notice.tone);
         }
     }
-
-    /// Advance the result toast and place it in the window's bottom
-    /// trailing corner; the stack expires, paints and dismisses it.
-    fn place_toast(&mut self, window: Rect, theme: &Theme) {
-        self.toasts.advance(ui::time::now());
-        self.toasts
-            .place_bottom_right(window, f64::from(theme.tokens.spacing.s6));
-    }
-
-    /// When the showing toast expires, so the window wakes to hide it. The
-    /// stack waits while the pointer is over it and under the capture clock.
-    fn toast_deadline(&self) -> Option<Instant> {
-        Widget::next_wake_deadline(&self.toasts)
-    }
 }
 
 impl ui::widget::Decorator for FirewallApp {
@@ -822,11 +799,6 @@ impl ui::widget::Decorator for FirewallApp {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        // The result toast: hovering holds it, a click dismisses it.
-        self.toasts.handle_event(event, ctx);
-        if *ctx.handled {
-            return;
-        }
         self.shell.handle_event(event, ctx);
         self.drain();
         if !*ctx.handled
@@ -847,36 +819,10 @@ impl ui::widget::Decorator for FirewallApp {
         }
     }
 
-    fn draw_overlay(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        self.shell
-            .draw_overlay(scene, transform, text, theme, presence);
-        let window = presence
-            .viewport
-            .get()
-            .unwrap_or_else(|| self.shell.get_rect());
-        self.place_toast(window, theme);
-        self.toasts.draw(scene, transform, text, theme, presence);
-    }
-
     fn needs_animation_frame(&self) -> bool {
         // A width that crossed the services' breakpoint rebuilds the page.
         let relayout = self.built.as_ref().is_some_and(|key| key.wide != self.wide);
         relayout || self.shell.needs_animation_frame()
-    }
-
-    fn next_wake_deadline(&self) -> Option<Instant> {
-        let shell = self.shell.next_wake_deadline();
-        match (shell, self.toast_deadline()) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        }
     }
 
     fn name(&self) -> &'static str {
