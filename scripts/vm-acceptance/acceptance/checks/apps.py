@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass
 
@@ -133,10 +134,18 @@ def _notifications(st) -> list:
 
 
 def _is_undo_close(toast: dict, title: str) -> bool:
-    """The transient "Closed X — select to undo" toast a close is meant to raise."""
-    return (toast.get("severity") == "Info" and not toast.get("persistent")
-            and (bool(title) and title in (toast.get("title") or "")
-                 or "Super+Shift+T" in (toast.get("body") or "")))
+    """A transient undo toast for a captured title, with any reopen binding.
+
+    Match the English/German shell messages, including the unbound hint. A
+    title substring or a shortcut alone cannot identify the close's toast.
+    """
+    if (not title or not title.strip() or toast.get("severity") != "Info"
+            or toast.get("persistent")):
+        return False
+    messages = ((f"Closed {title}", r"Select to undo(?:, or press .+ later)?"),
+                (f"{title} geschlossen", r"Zum Rückgängigmachen auswählen(?: oder später .+ drücken)?"))
+    return any(toast.get("title") == heading and re.fullmatch(hint, toast.get("body") or "")
+               is not None for heading, hint in messages)
 
 
 def _lifecycle(ctx, res, app_id: str, provider: str, label: str, expect_foreign: bool,
@@ -236,10 +245,13 @@ def close_group(ctx, gid) -> None:
 
 
 def _close(ctx, res, label, gid, app_procs, toasts0):
-    title = (core.group_by_id(ctx.state(), gid) or {"tabs": [{}]})["tabs"][0].get("title") or ""
     # Windows the app raised on its own (a first-run dialog) are closed with it.
+    # Capture every title before closing: the main close may also end its dialogs.
     before = ctx.facts.get(f"groups_before:{label}", set())
-    extra = [g["id"] for g in core.all_groups(ctx.state()) if g["id"] not in before and g["id"] != gid]
+    groups = core.all_groups(ctx.state())
+    extra = [g["id"] for g in groups if g["id"] not in before and g["id"] != gid]
+    titles = [g["tabs"][0].get("title") or "" for g in groups if g["id"] in [gid, *extra]]
+    res.metrics["closed_titles"] = titles
     res.metrics["extra_windows"] = len(extra)
     for other in [gid, *extra]:
         close_group(ctx, other)
@@ -250,8 +262,8 @@ def _close(ctx, res, label, gid, app_procs, toasts0):
     res.metrics["lingering_after_close"] = [c.cmd for c in still.values()]
     st = ctx.state()
     toasts = _notifications(st)[toasts0:]
-    res.metrics["undo_toasts"] = [t for t in toasts if _is_undo_close(t, title)]
-    false = [t for t in toasts if not _is_undo_close(t, title)]
+    res.metrics["undo_toasts"] = [t for t in toasts if any(_is_undo_close(t, title) for title in titles)]
+    false = [t for t in toasts if not any(_is_undo_close(t, title) for title in titles)]
     res.metrics["toasts"] = false
     expect(not still,
            f"{label}'s processes still running {CLOSE_GRACE_S} s after close: "
