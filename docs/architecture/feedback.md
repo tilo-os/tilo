@@ -303,6 +303,37 @@ still cannot attest OPFS commit: browser media custody needs fresh persisted
 readback and a per-address witness, not mirror presence or a cleared global
 write-failure indicator.
 
+The asynchronous content path now awaits that exact write's closed stream,
+then reads committed OPFS directly under the existing profile writer lock and
+checks the requested hash. Readback bounds allocation before loading a file.
+Missing bytes, corruption, oversized content and read failures cannot attest
+custody, even when the synchronous mirror still holds the approved bytes.
+`ReviewedAttachments::persist_async` and `verify_async` use this owner path;
+the synchronous browser witness remains unsupported. The composer's existing
+submit action now retains an immutable approval while the exact image write
+is pending. Existing private-storage wakes poll this owned future without
+holding a UI borrow across an await. Failed custody permits retry of the same
+image, identity and payload; it cannot queue a report. Successful custody
+rechecks current host admission before the ordinary outbox write. Transport
+still waits for that separate outbox write's durable acknowledgment. Closing
+the presentation discards its raw review without changing an already approved
+pending payload. Masked PNG clones share immutable bytes.
+
+`FocusedCapture` implements the existing capture interface over a host-supplied
+focused renderer source. Construction starts no readback. An explicit request
+checks complete classified geometry and protection before reading exactly one
+app frame, then rechecks focus, revision and classification before masking.
+Unclassified text is sensitive. Missing cached geometry, secret/protected
+frames and changed inspections fail closed. Context also checks protection and
+frame identity around its classified semantic read. This contract does not
+provide the renderer's inspection/readback producer: live startup retains
+`NoCapture` until the existing native/browser renderer can supply that complete
+presented-frame contract. No synthetic provider is installed on the live path.
+Classification and masking work are bounded before readback: at most 8,192
+regions and eight million masked pixel visits, including overlaps. A producer
+may conservatively merge regions; the consumer refuses excessive work rather
+than acquiring pixels and blocking on repeated overlapping masks.
+
 These are source hooks, not an enabled public guest endpoint. The current
 `RoomRecordsLink::view_document`/`RelayRecordsLink` interface carries verified
 source bytes and a revision, not a canonical Saved witness or signed feedback

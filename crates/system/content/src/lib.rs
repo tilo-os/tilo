@@ -185,6 +185,15 @@ pub enum ContentDurability {
     Durable,
 }
 
+/// Browser storage completes asynchronously; no cached synchronous witness
+/// substitutes for a fresh per-address persistence readback.
+pub type DurabilityFuture<'a> = std::pin::Pin<
+    Box<dyn std::future::Future<Output = Result<ContentDurability, ContentError>> + 'a>,
+>;
+
+pub type ContentWriteFuture<'a> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<Stored, ContentError>> + 'a>>;
+
 /// What a [`ContentStore`] runs on. Implementations treat the address as authoritative and verify
 /// content against it; a store that trusts the key would let one peer poison every replica that
 /// later reads that address.
@@ -197,12 +206,30 @@ pub trait ContentBackend: Send + Sync {
     fn durability(&self, _hash: &str) -> Result<ContentDurability, ContentError> {
         Ok(ContentDurability::Unsupported)
     }
+    /// Fresh asynchronous custody, using the synchronous owner on native
+    /// backends and actual persisted readback on browser backends.
+    /// # Errors
+    /// Integrity or storage failures prevent acknowledgment.
+    fn durability_async<'a>(&'a self, hash: &'a str) -> DurabilityFuture<'a> {
+        Box::pin(async move { self.durability(hash) })
+    }
     /// Store everything `reader` yields, returning its address. Storing content already present
-    /// is a no-op that succeeds. `mime` is advisory (a backend may index or serve by it).
+    /// may reissue a failed persistence write. `mime` is advisory (a backend may index or serve by it).
     ///
     /// # Errors
     /// Quota, integrity or I/O failures. Nothing is stored on error.
     fn put(&self, reader: &mut dyn Read, mime: &str) -> Result<Stored, ContentError>;
+
+    /// Await the existing owner's exact content write. Browser implementations
+    /// resolve only after this write's stream closes, or return its failure.
+    /// # Errors
+    /// Quota, integrity and storage failures.
+    fn put_async<'a>(&'a self, bytes: &'a [u8]) -> ContentWriteFuture<'a> {
+        Box::pin(async move {
+            let mime = sniff(bytes).mime;
+            self.put(&mut std::io::Cursor::new(bytes), &mime)
+        })
+    }
 
     /// A streaming, verifying read of the content at `hash`, or `None` when it is not here.
     ///
@@ -265,6 +292,24 @@ impl ContentStore {
             return Err(ContentError::InvalidHash(hash.to_owned()));
         }
         self.backend.durability(hash)
+    }
+
+    /// Ask the existing owner for this address's fresh persistence witness.
+    /// # Errors
+    /// Refuses invalid addresses, corrupt content and failed storage readback.
+    pub fn durability_async<'a>(&'a self, hash: &'a str) -> DurabilityFuture<'a> {
+        if !valid_hash(hash) {
+            return Box::pin(async move { Err(ContentError::InvalidHash(hash.to_owned())) });
+        }
+        self.backend.durability_async(hash)
+    }
+
+    /// Await an exact content write; no mirror presence or cleared error can
+    /// complete it. Call `durability_async` for current custody afterward.
+    /// # Errors
+    /// Refuses quota, integrity and storage failures.
+    pub fn put_async<'a>(&'a self, bytes: &'a [u8]) -> ContentWriteFuture<'a> {
+        self.backend.put_async(bytes)
     }
     /// A store over `backend`.
     pub fn new(backend: impl ContentBackend + 'static) -> Self {

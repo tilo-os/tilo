@@ -540,6 +540,157 @@ mod tests {
         );
     }
 
+    struct PendingImageHost {
+        transport: Rc<RefCell<Transport>>,
+        ready: Rc<Cell<bool>>,
+    }
+
+    impl FeedbackHost for PendingImageHost {
+        fn context(&mut self) -> Result<Vec<ReviewText>, Error> {
+            Ok(Vec::new())
+        }
+        fn capture(&mut self) -> Result<MaskedScreenshot, Error> {
+            crate::feedback::CapturePermit::requested("synthetic:focused-app".into(), 1)?.mask(
+                crate::feedback::SurfaceCapture {
+                    surface: "synthetic:focused-app".into(),
+                    revision: 1,
+                    width: 1,
+                    height: 1,
+                    rgba: vec![70, 80, 90, 255],
+                    capture_protected: false,
+                    sensitive_regions: Some(vec![crate::feedback::PixelRect {
+                        x: 0,
+                        y: 0,
+                        width: 1,
+                        height: 1,
+                    }]),
+                },
+            )
+        }
+        fn persist_screenshot(&mut self, _: &MaskedScreenshot) -> Result<(), Error> {
+            Err(Error::NotDurable)
+        }
+        fn persist_screenshot_async(
+            &mut self,
+            image: MaskedScreenshot,
+        ) -> crate::feedback::AttachmentFuture<'static> {
+            let ready = Rc::clone(&self.ready);
+            Box::pin(async move {
+                std::future::poll_fn(move |_| {
+                    if ready.get() {
+                        std::task::Poll::Ready(())
+                    } else {
+                        std::task::Poll::Pending
+                    }
+                })
+                .await;
+                drop(image);
+                Ok(())
+            })
+        }
+        fn send(&mut self, submission: &Submission) -> Result<(), Error> {
+            self.transport
+                .borrow_mut()
+                .submissions
+                .push(submission.clone());
+            Ok(())
+        }
+        fn receipt(&mut self, _: &Submission) -> Result<Option<Receipt>, Error> {
+            Ok(None)
+        }
+    }
+
+    #[test]
+    fn semantic_image_approval_survives_closed_presentation_and_waits_for_both_writes() {
+        let transport = Rc::new(RefCell::new(Transport::default()));
+        let ready = Rc::new(Cell::new(false));
+        let storage = Rc::new(MemoryStore::queued());
+        let controller = Rc::new(RefCell::new(
+            Composer::new(
+                Destination {
+                    room: "private-fixture".into(),
+                    provider: "record:chat:feedback".into(),
+                    channel: "feedback".into(),
+                },
+                Outbox::open(
+                    storage.clone(),
+                    StorageKey::package("feedback-image-outbox"),
+                )
+                .expect("outbox"),
+                Box::new(PendingImageHost {
+                    transport: Rc::clone(&transport),
+                    ready: Rc::clone(&ready),
+                }),
+            )
+            .expect("controller"),
+        ));
+        let services = FeedbackServices::new(Rc::clone(&controller));
+        let component = prepare(Some(services.clone()), "device", "guest", 42).expect("composer");
+        let mut frame = FrameHarness::from_component(
+            component,
+            (720, 720),
+            ComponentRunnerInputs::from_native_process(),
+        )
+        .expect("production component");
+        call(
+            &mut frame,
+            "describe",
+            &json!({"issue":"Approved image report"}),
+        )
+        .expect("describe");
+        call(&mut frame, "screenshot", &json!({"include":true})).expect("explicit image consent");
+        call(&mut frame, "review", &json!({})).expect("review masked image");
+        let reference = controller
+            .borrow()
+            .preview()
+            .expect("review")
+            .screenshot()
+            .expect("image")
+            .reference()
+            .clone();
+        call(&mut frame, "submit", &json!({})).expect("approve through resource action");
+        assert!(services.next_wake_deadline().is_some());
+        assert!(storage.drain().is_empty());
+        assert!(transport.borrow().submissions.is_empty());
+        frame.relayout();
+        assert!(
+            frame
+                .inspection_json()
+                .expect("inspection")
+                .contains("Saving on this device")
+        );
+        frame.close_components();
+        assert!(controller.borrow().preview().is_none());
+        assert!(
+            services.next_wake_deadline().is_some(),
+            "image storage is owned independently of the closed presentation"
+        );
+        ready.set(true);
+        services.pump().expect("image custody completed");
+        assert!(
+            transport.borrow().submissions.is_empty(),
+            "outbox commit is still pending"
+        );
+        let pending = storage.drain();
+        assert_eq!(pending.len(), 1);
+        storage
+            .acknowledge(pending[0].revision, Ok(()))
+            .expect("outbox committed");
+        services.pump().expect("both writes completed");
+        let submissions = &transport.borrow().submissions;
+        assert_eq!(submissions.len(), 1);
+        assert_eq!(submissions[0].feedback.text, "Approved image report");
+        assert_eq!(
+            submissions[0].feedback.screenshot.as_ref(),
+            Some(&reference)
+        );
+        assert_eq!(
+            controller.borrow().state().expect("state"),
+            Some(DeliveryState::AwaitingReceipt)
+        );
+        assert!(services.next_wake_deadline().is_none());
+    }
+
     #[test]
     fn semantic_composer_reviews_queues_and_waits_for_destination_receipt() {
         let transport = Rc::new(RefCell::new(Transport::default()));

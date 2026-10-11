@@ -248,6 +248,28 @@ impl Dir {
         }
     }
 
+    /// Read this address from committed OPFS, bypassing the page mirror.
+    /// Holds the existing profile writer lock and bounds allocation before
+    /// reading. It neither clears failure indicators nor trusts queue counts.
+    /// This is a current readback, not a promise about subsequent writes.
+    ///
+    /// # Errors
+    /// Refuses non-OPFS storage, absent content, oversized files and read failures.
+    pub async fn read_committed(&self, path: &VPath, max_bytes: usize) -> Result<Vec<u8>, FsError> {
+        below_root(path)?;
+        match &self.root {
+            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+            Root::Opfs(scope) => scope.read_committed(path, max_bytes).await,
+            Root::Local(_) => {
+                let _ = max_bytes;
+                Err(FsError::Unsupported {
+                    feature: Feature::Files,
+                    reason: "Committed OPFS readback requires browser persistent storage.",
+                })
+            }
+        }
+    }
+
     /// Replaces the file's contents with `bytes` so that a crash leaves
     /// either the old contents or the new ones, creating missing parents.
     ///

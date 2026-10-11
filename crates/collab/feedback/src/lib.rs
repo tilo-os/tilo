@@ -10,15 +10,19 @@
 mod attachments;
 mod capture;
 mod composer;
+mod focused_capture;
 mod outbox;
 mod review;
 #[cfg(test)]
 mod test_store;
 
-pub use attachments::ReviewedAttachments;
+pub use attachments::{AttachmentFuture, ReviewedAttachments};
 pub use capture::{CapturePermit, MaskedScreenshot, PixelRect, SurfaceCapture};
 pub use composer::{Composer, Consent, FeedbackHost};
 pub use durable_store::{DurableStore, MemoryStore, StorageKey};
+pub use focused_capture::{
+    CaptureInspection, FocusedSurface, PaintClass, PaintRegion, capture_focused,
+};
 pub use outbox::{DeliveryState, Outbox};
 pub use review::{Draft, Preview};
 pub use tilo_feedback_review::{DeclaredSensitivity, RedactionCategory, ReviewText, TextOrigin};

@@ -9,6 +9,7 @@ pub use tilo_app::feedback::{Destination, FeedbackHost};
 use tilo_app::feedback_composer::{self, FeedbackServices};
 use ui::{application::AppComponent, launch::LaunchError};
 
+pub mod capture;
 pub mod transport;
 
 pub const PACKAGE: &str = "so.tilo.feedback-composer";

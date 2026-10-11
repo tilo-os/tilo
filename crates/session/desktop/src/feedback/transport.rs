@@ -324,6 +324,12 @@ pub trait Capture {
     /// # Errors
     /// Refuses masked content that has not durably committed locally.
     fn persist(&mut self, image: &MaskedScreenshot) -> Result<(), Error>;
+    fn persist_async(
+        &mut self,
+        image: MaskedScreenshot,
+    ) -> tilo_app::feedback::AttachmentFuture<'static> {
+        Box::pin(std::future::ready(self.persist(&image)))
+    }
 }
 
 /// Explicit description-only binding until a qualified capture adapter exists.
@@ -637,6 +643,19 @@ impl FeedbackHost for Host {
         self.current(None, false)?;
         self.capture.persist(image)?;
         self.current(None, false)
+    }
+    fn persist_screenshot_async(
+        &mut self,
+        image: MaskedScreenshot,
+    ) -> tilo_app::feedback::AttachmentFuture<'static> {
+        if let Err(error) = self.current(None, false) {
+            return Box::pin(std::future::ready(Err(error)));
+        }
+        self.capture.persist_async(image)
+    }
+    fn validate_submission(&mut self, submission: &Submission) -> Result<(), Error> {
+        submission.validate()?;
+        self.current(Some(submission), false)
     }
     fn send(&mut self, submission: &Submission) -> Result<(), Error> {
         submission.validate()?;

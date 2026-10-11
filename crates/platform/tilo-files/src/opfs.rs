@@ -146,6 +146,34 @@ impl Scope {
         read_file(&file).await
     }
 
+    pub(crate) async fn read_committed(
+        &self,
+        path: &VPath,
+        max_bytes: usize,
+    ) -> Result<Vec<u8>, FsError> {
+        let limit = u32::try_from(max_bytes)
+            .map_err(|_| FsError::Io("readback limit exceeds supported size".into()))?;
+        let _names = self.names().await?;
+        let full = self.full(path);
+        let parts: Vec<&str> = full.components().collect();
+        let Some((name, parents)) = parts.split_last() else {
+            return Err(FsError::IsADirectory);
+        };
+        let handle = file_handle(&self.dir(parents, false).await?, name, false).await?;
+        let file: File = await_js(handle.get_file(), FsError::IsADirectory)
+            .await?
+            .unchecked_into();
+        if !file.size().is_finite() || file.size() < 0.0 || file.size() > f64::from(limit) {
+            return Err(FsError::Io("committed file exceeds readback limit".into()));
+        }
+        let buffer = await_js(file.array_buffer(), FsError::IsADirectory).await?;
+        let bytes = Uint8Array::new(&buffer).to_vec();
+        if bytes.len() > max_bytes {
+            return Err(FsError::Io("committed file exceeds readback limit".into()));
+        }
+        Ok(bytes)
+    }
+
     pub(crate) async fn write_atomic(&self, path: &VPath, bytes: &[u8]) -> Result<(), FsError> {
         let full = self.full(path);
         let parts: Vec<&str> = full.components().collect();

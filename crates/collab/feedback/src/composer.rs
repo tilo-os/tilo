@@ -1,8 +1,8 @@
 //! The system-owned feedback journey shared by native and browser hosts.
 
 use crate::{
-    DeliveryState, Destination, Draft, Error, MaskedScreenshot, Outbox, Preview, Receipt,
-    ReviewText, Submission,
+    AttachmentFuture, DeliveryState, Destination, Draft, Error, MaskedScreenshot, Outbox, Preview,
+    Receipt, ReviewText, Submission,
 };
 
 /// Both attachments start off. Opening the composer collects neither.
@@ -32,6 +32,18 @@ pub trait FeedbackHost {
     /// # Errors
     /// Reports local storage that has not durably committed the masked bytes.
     fn persist_screenshot(&mut self, image: &MaskedScreenshot) -> Result<(), Error>;
+    /// Own the approved masked image while its exact storage write completes.
+    /// The default retains synchronous hosts; browser hosts supply a future
+    /// that awaits both this write and fresh per-address custody.
+    fn persist_screenshot_async(&mut self, image: MaskedScreenshot) -> AttachmentFuture<'static> {
+        Box::pin(std::future::ready(self.persist_screenshot(&image)))
+    }
+    /// Recheck current admission after asynchronous custody and before queueing.
+    /// # Errors
+    /// Refuses a changed destination, revoked authority or invalid submission.
+    fn validate_submission(&mut self, submission: &Submission) -> Result<(), Error> {
+        submission.validate()
+    }
     /// Enqueue on the existing authenticated transport with submission.id as
     /// its business retry identity. Acceptance is never a delivery receipt.
     ///
@@ -54,6 +66,15 @@ pub struct Composer {
     host: Box<dyn FeedbackHost>,
     reviewed: Option<(String, Consent, Preview)>,
     active: Option<String>,
+    pending_attachment: Option<PendingAttachment>,
+}
+
+/// Approval is immutable while storage completes. Only masked bytes are held;
+/// no transport sees this payload until the existing outbox is durable.
+struct PendingAttachment {
+    submission: Submission,
+    image: MaskedScreenshot,
+    future: Option<AttachmentFuture<'static>>,
 }
 
 impl Composer {
@@ -82,6 +103,7 @@ impl Composer {
             host,
             reviewed: None,
             active,
+            pending_attachment: None,
         })
     }
 
@@ -91,6 +113,9 @@ impl Composer {
     /// # Errors
     /// Refuses a queued report, invalid review or unavailable attachment.
     pub fn review(&mut self, text: &str, consent: Consent) -> Result<(), Error> {
+        if self.pending_attachment.is_some() {
+            return Err(Error::Conflict);
+        }
         self.reviewed = None;
         if self.active.is_some() {
             if !matches!(self.state()?, Some(DeliveryState::Sent { .. })) {
@@ -132,6 +157,9 @@ impl Composer {
     /// # Errors
     /// Refuses a missing preview or invalid field/span.
     pub fn hide(&mut self, key: &str, start: usize, end: usize) -> Result<(), Error> {
+        if self.pending_attachment.is_some() {
+            return Err(Error::Conflict);
+        }
         self.reviewed
             .as_mut()
             .ok_or(Error::NotApproved)?
@@ -144,6 +172,9 @@ impl Composer {
     /// # Errors
     /// Refuses a missing preview.
     pub fn remove_screenshot(&mut self) -> Result<(), Error> {
+        if self.pending_attachment.is_some() {
+            return Err(Error::Conflict);
+        }
         self.reviewed
             .as_mut()
             .ok_or(Error::NotApproved)?
@@ -158,7 +189,7 @@ impl Composer {
     /// # Errors
     /// Refuses changed drafts, invalid reports, storage or transport failures.
     pub fn submit(&mut self, id: String, text: &str, consent: Consent) -> Result<(), Error> {
-        if self.active.is_some() {
+        if self.active.is_some() || self.pending_attachment.is_some() {
             return Err(Error::Conflict);
         }
         let (reviewed_text, reviewed_consent, preview) =
@@ -167,10 +198,23 @@ impl Composer {
             return Err(Error::NotApproved);
         }
         preview.approve();
-        let submission = preview.submission(id.clone(), self.destination.clone())?;
+        let submission = preview.submission(id, self.destination.clone())?;
         if let Some(image) = preview.screenshot() {
-            self.host.persist_screenshot(image)?;
+            let image = image.clone();
+            let future = self.host.persist_screenshot_async(image.clone());
+            self.pending_attachment = Some(PendingAttachment {
+                submission,
+                image,
+                future: Some(future),
+            });
+            return self.pump();
         }
+        self.queue_approved(submission)
+    }
+
+    fn queue_approved(&mut self, submission: Submission) -> Result<(), Error> {
+        self.host.validate_submission(&submission)?;
+        let id = submission.id.clone();
         if let Err(error) = self.outbox.queue(submission) {
             if matches!(error, Error::Store(_)) {
                 self.active = Some(id);
@@ -187,6 +231,9 @@ impl Composer {
     /// # Errors
     /// Refuses an unknown id.
     pub fn resume(&mut self, id: &str) -> Result<(), Error> {
+        if self.pending_attachment.is_some() {
+            return Err(Error::Conflict);
+        }
         self.outbox.state(id)?;
         self.active = Some(id.to_owned());
         self.reviewed = None;
@@ -202,6 +249,13 @@ impl Composer {
     /// # Errors
     /// Reports an invalid active id.
     pub fn state(&self) -> Result<Option<DeliveryState>, Error> {
+        if let Some(pending) = &self.pending_attachment {
+            return Ok(Some(if pending.future.is_some() {
+                DeliveryState::Saving
+            } else {
+                DeliveryState::StorageFailed
+            }));
+        }
         self.active
             .as_deref()
             .map(|id| self.outbox.state(id))
@@ -214,6 +268,31 @@ impl Composer {
     /// # Errors
     /// Reports storage, transport or mismatched receipt failures.
     pub fn pump(&mut self) -> Result<(), Error> {
+        if let Some(mut pending) = self.pending_attachment.take() {
+            let future = pending
+                .future
+                .get_or_insert_with(|| self.host.persist_screenshot_async(pending.image.clone()));
+            let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+            match future.as_mut().poll(&mut context) {
+                std::task::Poll::Pending => {
+                    self.pending_attachment = Some(pending);
+                    return Ok(());
+                }
+                std::task::Poll::Ready(Err(error)) => {
+                    pending.future = None;
+                    self.pending_attachment = Some(pending);
+                    return Err(error);
+                }
+                std::task::Poll::Ready(Ok(())) => {
+                    let result = self.queue_approved(pending.submission.clone());
+                    if result.is_err() && self.active.is_none() {
+                        pending.future = None;
+                        self.pending_attachment = Some(pending);
+                    }
+                    return result;
+                }
+            }
+        }
         let Some(id) = self.active.as_deref() else {
             return Ok(());
         };
@@ -237,6 +316,9 @@ impl Composer {
         }
     }
 }
+
+#[cfg(test)]
+mod attachment_tests;
 
 #[cfg(test)]
 mod tests {

@@ -2,6 +2,21 @@ use image::ImageEncoder as _;
 
 use crate::{Error, ScreenshotRef};
 
+pub(crate) const MAX_CAPTURE_REGIONS: usize = 8192;
+const MAX_MASKING_WORK: u64 = 8_000_000;
+
+pub(crate) fn check_masking_budget(regions: &[PixelRect]) -> Result<(), Error> {
+    if regions.len() > MAX_CAPTURE_REGIONS {
+        return Err(Error::CaptureProtected);
+    }
+    regions.iter().try_fold(0_u64, |work, rect| {
+        work.checked_add(u64::from(rect.width).saturating_mul(u64::from(rect.height)))
+            .filter(|total| *total <= MAX_MASKING_WORK)
+            .ok_or(Error::CaptureProtected)
+    })?;
+    Ok(())
+}
+
 /// One explicit user request, bound to the focused app and its inspected frame.
 /// A permit is consumed once; no ambient buffer or periodic capture is enabled.
 pub struct CapturePermit {
@@ -10,7 +25,7 @@ pub struct CapturePermit {
 }
 
 /// Sensitive bounds in the captured surface's physical pixel coordinates.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PixelRect {
     pub x: u32,
     pub y: u32,
@@ -32,9 +47,10 @@ pub struct SurfaceCapture {
 }
 
 /// Only masked PNG bytes are offered to the preview and content store.
+#[derive(Clone)]
 pub struct MaskedScreenshot {
     reference: ScreenshotRef,
-    png: Vec<u8>,
+    png: std::sync::Arc<[u8]>,
 }
 
 impl CapturePermit {
@@ -73,6 +89,7 @@ impl CapturePermit {
         {
             return Err(Error::Invalid("capture pixels"));
         }
+        check_masking_budget(&regions)?;
         for rect in regions {
             let right = rect
                 .x
@@ -117,7 +134,7 @@ impl CapturePermit {
                 width: capture.width,
                 height: capture.height,
             },
-            png,
+            png: png.into(),
         })
     }
 }

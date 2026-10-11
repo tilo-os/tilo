@@ -16436,6 +16436,7 @@ name = "tilo-content"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "js-sys",
  "runtime-fs",
  "tempfile",
  "thiserror 2.0.21",
@@ -16444,6 +16445,8 @@ dependencies = [
  "tilo-files",
  "tilo-paths",
  "tracing",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
  "workspace-hack",
 ]
 

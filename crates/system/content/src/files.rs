@@ -44,6 +44,24 @@ impl FilesBackend {
         VPath::new(&hash.to_ascii_lowercase()).map_err(|_| ContentError::InvalidHash(hash.into()))
     }
 
+    fn prepare_write(&self, bytes: &[u8]) -> Result<(Dir, VPath, Stored), ContentError> {
+        let hash = hash_bytes(bytes);
+        let len = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+        let dir = self.dir()?;
+        let path = Self::path(&hash)?;
+        let entries = self.entries(&dir)?;
+        let replacing = entries.iter().any(|(address, _)| address == &hash);
+        let held = entries
+            .iter()
+            .filter(|(address, _)| address != &hash)
+            .fold(0_usize, |sum, (_, len)| {
+                sum.saturating_add(usize::try_from(*len).unwrap_or(usize::MAX))
+            });
+        let count = entries.len().saturating_sub(usize::from(replacing));
+        check_new_item(&self.limits, held, count, bytes.len())?;
+        Ok((dir, path, Stored { hash, len }))
+    }
+
     /// Every stored address and its size.
     fn entries(&self, dir: &Dir) -> Result<Vec<(String, u64)>, ContentError> {
         let listed = match blocking::list(dir, &VPath::root()) {
@@ -70,31 +88,47 @@ impl FilesBackend {
 }
 
 impl ContentBackend for FilesBackend {
+    fn durability_async<'a>(&'a self, hash: &'a str) -> crate::DurabilityFuture<'a> {
+        Box::pin(async move {
+            let path = Self::path(hash)?;
+            match self
+                .dir()?
+                .read_committed(&path, self.limits.max_item_bytes)
+                .await
+            {
+                Ok(bytes) if hash_bytes(&bytes).eq_ignore_ascii_case(hash) => {
+                    Ok(crate::ContentDurability::Durable)
+                }
+                Ok(_) => Err(ContentError::HashMismatch),
+                Err(FsError::NotFound) => Ok(crate::ContentDurability::Absent),
+                Err(FsError::Unsupported { .. }) => Ok(crate::ContentDurability::Unsupported),
+                Err(error) => Err(io(&error)),
+            }
+        })
+    }
+
+    fn put_async<'a>(&'a self, bytes: &'a [u8]) -> crate::ContentWriteFuture<'a> {
+        Box::pin(async move {
+            let (dir, path, stored) = self.prepare_write(bytes)?;
+            dir.write_atomic(&path, bytes)
+                .await
+                .map_err(|error| io(&error))?;
+            Ok(stored)
+        })
+    }
+
     fn put(&self, reader: &mut dyn Read, _mime: &str) -> Result<Stored, ContentError> {
         let mut bytes = Vec::new();
         let sentinel = u64::try_from(self.limits.max_item_bytes)
             .unwrap_or(u64::MAX)
             .saturating_add(1);
         reader.take(sentinel).read_to_end(&mut bytes)?;
-        let hash = hash_bytes(&bytes);
-        let len = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-        let dir = self.dir()?;
-        let path = Self::path(&hash)?;
-        let entries = self.entries(&dir)?;
-        let replacing = entries.iter().any(|(address, _)| address == &hash);
-        let held = entries
-            .iter()
-            .filter(|(address, _)| address != &hash)
-            .fold(0_usize, |sum, (_, len)| {
-                sum.saturating_add(usize::try_from(*len).unwrap_or(usize::MAX))
-            });
-        let count = entries.len().saturating_sub(usize::from(replacing));
-        check_new_item(&self.limits, held, count, bytes.len())?;
+        let (dir, path, stored) = self.prepare_write(&bytes)?;
         // The browser mirror retains bytes even when their OPFS write failed.
         // Presence cannot suppress a retry: queue this exact write again, and
         // replace corrupt bytes at the address without double-counting quota.
         blocking::write_atomic(&dir, &path, &bytes).map_err(|error| io(&error))?;
-        Ok(Stored { hash, len })
+        Ok(stored)
     }
 
     fn open(&self, hash: &str) -> Result<Option<ContentReader>, ContentError> {

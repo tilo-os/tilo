@@ -37,6 +37,16 @@ runtime-fs = { version = "0.1.0", path = "../../runtime/runtime-fs", optional = 
 [dev-dependencies]
 tempfile.workspace = true
 
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dev-dependencies]
+wasm-bindgen = "=0.2.108"
+wasm-bindgen-futures = "=0.4.58"
+js-sys = "=0.3.85"
+
+[[example]]
+name = "web_custody"
+crate-type = ["cdylib"]
+required-features = ["dir"]
+
 [lints]
 workspace = true
 
