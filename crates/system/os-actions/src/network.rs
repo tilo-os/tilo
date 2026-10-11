@@ -2393,6 +2393,11 @@ mod wifi_deadline_tests {
             "a connection without a supplied secret still needs the normal activation deadline",
         );
     }
+}
+
+#[cfg(test)]
+mod radio_presence_tests {
+    use super::{has_wifi_radio_in, has_wwan_modem_in};
 
     /// A Wi-Fi PHY or WLAN interface is a Wi-Fi radio and a WWAN device or
     /// interface is a modem; a wired interface and an empty class are
