@@ -519,7 +519,7 @@ mod wire {
         )]
         app: Option<App>,
         #[serde(rename = "r", skip_serializing_if = "Option::is_none")]
-        resource: Option<(String, String, String)>,
+        resource: Option<Resource>,
         #[serde(rename = "i", skip_serializing_if = "Option::is_none")]
         item: Option<(String, String)>,
         #[serde(rename = "w", skip_serializing_if = "Option::is_none")]
@@ -585,6 +585,40 @@ mod wire {
         }
     }
 
+    /// The resource: id, kind and label, or kind and label for a resource
+    /// whose id is its kind (a record's own root).
+    #[derive(Serialize, Deserialize)]
+    #[serde(untagged)]
+    enum Resource {
+        Full(String, String, String),
+        Root(String, String),
+    }
+
+    impl Resource {
+        fn of(resource: &ActionResource) -> Self {
+            if resource.id == resource.kind {
+                Self::Root(resource.kind.clone(), resource.label.clone())
+            } else {
+                Self::Full(
+                    resource.id.clone(),
+                    resource.kind.clone(),
+                    resource.label.clone(),
+                )
+            }
+        }
+
+        fn into_resource(self) -> ActionResource {
+            match self {
+                Self::Full(id, kind, label) => ActionResource { id, kind, label },
+                Self::Root(kind, label) => ActionResource {
+                    id: kind.clone(),
+                    kind,
+                    label,
+                },
+            }
+        }
+    }
+
     /// An app named in the entry, or `null` for none.
     #[derive(Serialize, Deserialize)]
     #[serde(untagged)]
@@ -615,24 +649,59 @@ mod wire {
         T::deserialize(deserializer).map(Some)
     }
 
-    /// A field edit's path that is just its field, left out.
+    /// What a reader derives again, left out: a field edit's path that is
+    /// just its field, and a group's distinct actions when the group kept
+    /// every member (they are its members without their values).
     fn trimmed(what: &Did) -> Did {
         let mut what = what.clone();
-        if let Did::Edit(edit) = &mut what
-            && matches!(edit.path.as_slice(), [PathStep::Field(field)] if *field == edit.field)
-        {
-            edit.path.clear();
-        }
+        trim(&mut what);
         what
     }
 
-    fn filled(mut what: Did) -> Did {
-        if let Did::Edit(edit) = &mut what
-            && edit.path.is_empty()
-        {
-            edit.path.push(PathStep::Field(edit.field.clone()));
+    fn trim(what: &mut Did) {
+        match what {
+            Did::Edit(edit) if matches!(edit.path.as_slice(), [PathStep::Field(field)] if *field == edit.field) =>
+            {
+                edit.path.clear();
+            }
+            Did::Group(group) => {
+                if group.count as usize == group.members.len()
+                    && distinct_of(&group.members) == group.distinct
+                {
+                    group.distinct.clear();
+                }
+                group.members.iter_mut().for_each(trim);
+            }
+            _ => {}
         }
+    }
+
+    fn filled(mut what: Did) -> Did {
+        fill(&mut what);
         what
+    }
+
+    fn fill(what: &mut Did) {
+        match what {
+            Did::Edit(edit) if edit.path.is_empty() => {
+                edit.path.push(PathStep::Field(edit.field.clone()));
+            }
+            Did::Group(group) => {
+                group.members.iter_mut().for_each(fill);
+                if group.distinct.is_empty() && group.count as usize == group.members.len() {
+                    group.distinct = distinct_of(&group.members);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// A group's distinct actions, as [`Did::group`] keeps them.
+    fn distinct_of(members: &[Did]) -> Vec<Did> {
+        match Did::group(members.iter().cloned()) {
+            Did::Group(group) => group.distinct,
+            _ => Vec::new(),
+        }
     }
 
     /// The app a reader infers from the action's type.
@@ -648,13 +717,7 @@ mod wire {
             Self {
                 app: (context.app != inferred(context.action.as_ref()))
                     .then(|| App::of(context.app.clone())),
-                resource: context.resource.as_ref().map(|resource| {
-                    (
-                        resource.id.clone(),
-                        resource.kind.clone(),
-                        resource.label.clone(),
-                    )
-                }),
+                resource: context.resource.as_ref().map(Resource::of),
                 item: context
                     .item
                     .as_ref()
@@ -681,9 +744,7 @@ mod wire {
                 app: self
                     .app
                     .map_or_else(|| inferred(action.as_ref()), App::into_app),
-                resource: self
-                    .resource
-                    .map(|(id, kind, label)| ActionResource { id, kind, label }),
+                resource: self.resource.map(Resource::into_resource),
                 item: self.item.map(|(id, label)| ActionItem { id, label }),
                 what: self.what.map(filled),
                 kind: self
