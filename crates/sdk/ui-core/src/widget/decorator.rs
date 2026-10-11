@@ -657,6 +657,10 @@ pub trait Decorator: Sized + 'static {
         self.inner().collect_damage(regions);
     }
 
+    fn damage_covers_own_box(&self) -> bool {
+        self.inner().damage_covers_own_box()
+    }
+
     fn mark_drawn(&mut self) {
         self.inner_mut().mark_drawn();
     }
@@ -1278,6 +1282,10 @@ impl<T: Decorator> Widget for T {
 
     fn collect_damage(&self, regions: &mut Vec<vello::kurbo::Rect>) {
         Decorator::collect_damage(self, regions);
+    }
+
+    fn damage_covers_own_box(&self) -> bool {
+        Decorator::damage_covers_own_box(self)
     }
 
     fn mark_drawn(&mut self) {

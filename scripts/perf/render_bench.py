@@ -26,8 +26,9 @@ Subcommands:
 - `timing UI_PERF REDRAW_BENCH [--strip-pan-bench STRIP_PAN_BENCH]`: the
   scheduled lane. Frame-time samples from both harnesses become
   `render.ui.frame_us.4k` and `render.shell.redraw_us.4k` records
-  (`tools/perf/record.py`); the pan harness adds `render.shell.pan_us.*` and
-  `render.shell.pan_pixels.*` (4K at 100 %, 150 % and 200 %, and on two
+  (`tools/perf/record.py`); the pan harness adds `render.shell.pan_us.*`,
+  `render.shell.pan_pixels.*` and `render.shell.pan_scene_us.*` (the CPU
+  building a pan frame's scene; 4K at 100 %, 150 % and 200 %, and on two
   strips at 100 % and 200 %), and `render.shell.strip_move_us.*` and
   `render.shell.strip_move_pixels.*` (4K at 100 %, 150 % and 200 %).
 
@@ -95,7 +96,9 @@ STRIP_MOVE_CASES = (("4k", "strip-move.4k.w6", "4k, 6 windows, layered presenter
                     ("4k_s200", "strip-move.4k.s200.w6", "4k at 200 %, 6 windows, layered presenter"))
 PAN_RECORDS = tuple(record for suffix, stem, case in PAN_CASES
                     for record in ((f"render.shell.pan_us.{suffix}", "us", f"{stem}.layered.frame-us", case),
-                                   (f"render.shell.pan_pixels.{suffix}", "pixels", f"{stem}.layered.pixels", case))) + tuple(
+                                   (f"render.shell.pan_pixels.{suffix}", "pixels", f"{stem}.layered.pixels", case),
+                                   (f"render.shell.pan_scene_us.{suffix}", "us", f"{stem}.layered.scene-us",
+                                    case))) + tuple(
     record for suffix, stem, case in STRIP_MOVE_CASES
     for record in ((f"render.shell.strip_move_us.{suffix}", "us", f"{stem}.layered.frame-us", case),
                    (f"render.shell.strip_move_pixels.{suffix}", "pixels", f"{stem}.layered.pixels", case)))
