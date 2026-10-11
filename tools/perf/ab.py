@@ -381,8 +381,10 @@ def call(command: list[str], log: Path, cwd: Path, env: dict[str, str] | None = 
 
 
 def run_hosting(ctx: RunContext) -> list[record.Record]:
+    # Both sides need a bench that knows --relay-cpus; an older one refuses it.
+    cpus = ["--relay-cpus", str(ctx.options.hosting_relay_cpus)] if ctx.options.hosting_relay_cpus else []
     call([ctx.bins["relay_load"], "--collaborators", "100", "--minutes", str(ctx.options.hosting_minutes),
-          "--out", ctx.dir], ctx.dir / "bench.log", ctx.repo)
+          *cpus, "--out", ctx.dir], ctx.dir / "bench.log", ctx.repo)
     report = json.loads((ctx.dir / "hosting-load.json").read_text(encoding="utf-8"))
     prices = tomllib.loads(adapters.PRICES.read_text(encoding="utf-8"))
     return adapters.hosting_load(report, prices, ctx.env, require_all=False)
@@ -620,6 +622,8 @@ def main(argv: list[str] | None = None) -> int:
     go.add_argument("--virtualization", default="none", choices=sorted(record.VIRTUALIZATIONS))
     go.add_argument("--runner", default="local", help="the runner class, as record.py env takes it")
     go.add_argument("--hosting-minutes", type=int, default=3, help="measured minutes per hosting run")
+    go.add_argument("--hosting-relay-cpus", type=int, default=0,
+                    help="confine the relay to this many CPUs, as on a VM with that many vCPUs (0: all)")
     go.add_argument("--wakeups-window", type=int, default=30, help="idle window per wakeups run, seconds")
     again = commands.add_parser("analyse", help="analyse the records of an earlier run again")
     again.add_argument("records", type=Path)
