@@ -1933,7 +1933,7 @@ fn delete_confirmation_dispatches_the_palette_action() {
     }
 }
 
-/// Favourite toggles dispatch the palette action, palette actions reconcile on sync and the detail star toggles store and doc.
+/// Favourite toggles dispatch the palette action, palette actions reconcile on sync, the detail star toggles store and doc and a toast expires after a real action.
 #[allow(
     clippy::too_many_lines,
     reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
@@ -2016,6 +2016,57 @@ fn favorite_toggles_dispatch_and_reconcile_with_feedback() {
             !before,
             "and persists to the doc"
         );
+    }
+    // --- phase: toast_auto_dismisses_after_a_real_action ---
+    {
+        let shown = ui::time::now();
+        ui::time::testing::with_monotonic_time(shown, || {
+            let mut app = Live::sample(1280, 800);
+            let id = app.selected.unwrap();
+            app.selected = Some(id);
+            app.request(Request::DeleteSelected);
+            app.request(Request::Dialog(DialogChoice::Primary));
+            assert!(toast(&app).is_some(), "deleting a contact raises a toast");
+
+            let deadline = app
+                .harness_mut()
+                .frame_schedule()
+                .next_wake_deadline
+                .expect("the real host schedules the notice's dismissal without input");
+            assert!(deadline > shown, "a fresh notice has its full lifetime");
+            app.harness_mut().relayout();
+            assert!(
+                toast(&app).is_some(),
+                "a fresh toast survives an immediate frame"
+            );
+
+            let expired = deadline + Duration::from_millis(50);
+            ui::time::testing::with_monotonic_time(expired, || {
+                assert!(
+                    app.harness_mut().poll_frame().unwrap(),
+                    "the due deadline drives the production frame without further input"
+                );
+                assert!(
+                    toast(&app).is_none(),
+                    "the toast auto-dismisses once its lifetime elapses"
+                );
+            });
+            // Allow the real host to finish any action animation; never force
+            // a draw or mutate the notice to manufacture an idle result.
+            for frame in 1..=100 {
+                ui::time::testing::with_monotonic_time(
+                    expired + Duration::from_millis(frame * 16),
+                    || {
+                        app.harness_mut().poll_frame().unwrap();
+                    },
+                );
+            }
+            let idle = app.harness_mut().frame_schedule();
+            assert!(
+                !idle.needs_animation_frame && idle.next_wake_deadline.is_none(),
+                "with the toast gone the loop can settle back to idle"
+            );
+        });
     }
 }
 
