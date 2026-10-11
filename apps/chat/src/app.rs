@@ -3710,8 +3710,13 @@ impl Widget for ChatApp {
                         if self.rename.is_none() {
                             return false;
                         }
-                        if !ui::Widget::perform_action(&mut self.rename_input, action, state, path)
-                        {
+                        if !ui::Widget::perform_action(
+                            &mut self.rename_input,
+                            action,
+                            &[],
+                            state,
+                            path,
+                        ) {
                             return false;
                         }
                     }

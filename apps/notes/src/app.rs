@@ -3865,6 +3865,7 @@ mod tests {
             );
             assert!(app.main.perform_action(
                 &ui::a11y::Action::Activate,
+                &[],
                 &mut Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));

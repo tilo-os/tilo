@@ -2759,6 +2759,7 @@ fn ime_and_accessibility_expose_terminal_semantics() {
         assert!(!Widget::perform_action(
             &mut w,
             &Action::SetValue("printf semantic".to_string()),
+            &[],
             &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
@@ -2783,6 +2784,7 @@ fn ime_and_accessibility_expose_terminal_semantics() {
                 anchor: 1,
                 focus: 3,
             },
+            &[],
             &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
@@ -2808,6 +2810,7 @@ fn ime_and_accessibility_expose_terminal_semantics() {
                 anchor: 1,
                 focus: 6,
             },
+            &[],
             &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));

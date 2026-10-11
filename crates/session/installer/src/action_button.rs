@@ -255,6 +255,7 @@ mod tests {
             let mut doc = AutoCommit::new();
             assert!(button.perform_action(
                 &ui::a11y::Action::Activate,
+                &[],
                 &mut ui::widget::Edits::lend(&mut doc),
                 &ROOT
             ));
@@ -268,6 +269,7 @@ mod tests {
             let mut disabled = button.disabled(true);
             assert!(!disabled.perform_action(
                 &ui::a11y::Action::Activate,
+                &[],
                 &mut ui::widget::Edits::lend(&mut doc),
                 &ROOT
             ));
@@ -520,6 +522,7 @@ impl Widget for ActionButton {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
+        _key_path: &[u64],
         _state: &mut ui::widget::Edits<'_>,
         _root: &ModelPath,
     ) -> bool {

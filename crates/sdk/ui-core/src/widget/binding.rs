@@ -93,6 +93,7 @@ mod tests {
             control.sync(&doc, &ROOT);
             assert!(control.perform_action(
                 action,
+                &[],
                 &mut crate::widget::Edits::lend(&mut doc),
                 &ROOT
             ));

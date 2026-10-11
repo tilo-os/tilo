@@ -1343,6 +1343,7 @@ fn the_styles_panel_picks_edits_and_commits_styles() {
         assert!(Widget::perform_action(
             &mut slot.input,
             &ui::a11y::Action::SetValue((before + 5.0).to_string()),
+            &[],
             &mut edits(&mut state.doc),
             &state.root
         ));
@@ -1381,6 +1382,7 @@ fn the_styles_panel_picks_edits_and_commits_styles() {
         assert!(Widget::perform_action(
             &mut slot.input,
             &ui::a11y::Action::SetValue("40".into()),
+            &[],
             &mut edits(&mut state.doc),
             &state.root
         ));
@@ -1715,7 +1717,7 @@ fn the_toolbar_keeps_character_formatting_and_every_colour_action() {
             ToolAction::TextColor(Some(STYLE_PALETTE[4])),
         );
         wp.open_compact_swatch_palette(PaletteKind::Text);
-        assert!(Widget::perform_action_at(
+        assert!(Widget::perform_action(
             wp,
             &ui::a11y::Action::Focus,
             &[ui::a11y::hash_key(&"compact-swatch:clear")],
@@ -1728,7 +1730,7 @@ fn the_toolbar_keeps_character_formatting_and_every_colour_action() {
             wp.compact_swatch_palette.clear_rect(),
             true,
         );
-        assert!(Widget::perform_action_at(
+        assert!(Widget::perform_action(
             wp,
             &ui::a11y::Action::Activate,
             &[ui::a11y::hash_key(&"compact-swatch:clear")],
@@ -1762,7 +1764,7 @@ fn the_toolbar_keeps_character_formatting_and_every_colour_action() {
             ToolAction::Highlight(Some(HIGHLIGHT_PALETTE[4])),
         );
         wp.open_compact_swatch_palette(PaletteKind::Highlight);
-        assert!(Widget::perform_action_at(
+        assert!(Widget::perform_action(
             wp,
             &ui::a11y::Action::Activate,
             &[ui::a11y::hash_key(&"compact-swatch:clear")],
@@ -4081,6 +4083,7 @@ fn the_zoom_field_drives_zoom_and_the_scroll_range() {
         assert!(Widget::perform_action(
             &mut wp.zoom_input,
             &ui::a11y::Action::Increment,
+            &[],
             &mut edits(&mut state.doc),
             &state.root
         ));
@@ -4089,6 +4092,7 @@ fn the_zoom_field_drives_zoom_and_the_scroll_range() {
         assert!(Widget::perform_action(
             &mut wp.zoom_input,
             &ui::a11y::Action::SetValue("100".into()),
+            &[],
             &mut edits(&mut state.doc),
             &state.root
         ));
@@ -5819,7 +5823,7 @@ fn review_markup_registers_card_hits_and_toggles_off() {
 
         let resolve_target = review_action_target(&ReviewAction::ResolveComment(cid.clone()));
         let root = state.root.clone();
-        assert!(Widget::perform_action_at(
+        assert!(Widget::perform_action(
             wp,
             &ui::a11y::Action::Activate,
             &[ui::a11y::hash_key(&resolve_target)],
@@ -7122,7 +7126,7 @@ fn accessibility_exposes_and_activates_real_toolbar_buttons() {
         let (wp, state) = Framed::split(&mut framed);
         assert!(!wp.view.styles_panel_visible);
         let target = "word-processor.toolbar:toggle-styles".to_string();
-        assert!(Widget::perform_action_at(
+        assert!(Widget::perform_action(
             wp,
             &ui::a11y::Action::Activate,
             &[ui::a11y::hash_key(&target)],
@@ -8128,7 +8132,7 @@ fn image_controls_are_named_and_resize_and_flip() {
         }));
 
         let target = "word-processor.image-placement:left".to_string();
-        assert!(Widget::perform_action_at(
+        assert!(Widget::perform_action(
             wp,
             &ui::a11y::Action::Activate,
             &[ui::a11y::hash_key(&target)],

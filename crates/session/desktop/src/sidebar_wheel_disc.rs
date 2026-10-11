@@ -1313,7 +1313,7 @@ impl Widget for SidebarWheelDisc {
 
     /// Key-path route for hosts that address nodes by ordinal; the same
     /// nodes, the same effect as [`Widget::perform_semantic_action`].
-    fn perform_action_at(
+    fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
         key_path: &[u64],
@@ -4258,7 +4258,7 @@ mod tests {
             "a stale address is refused, never guessed"
         );
         assert!(
-            !d.perform_action_at(
+            !d.perform_action(
                 &Action::Activate,
                 &[9],
                 &mut ui::widget::Edits::lend(&mut doc),
@@ -4266,7 +4266,7 @@ mod tests {
             ),
             "a stale key is refused, never guessed"
         );
-        assert!(d.perform_action_at(
+        assert!(d.perform_action(
             &Action::Activate,
             &[1],
             &mut ui::widget::Edits::lend(&mut doc),
