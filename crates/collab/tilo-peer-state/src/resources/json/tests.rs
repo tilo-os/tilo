@@ -144,7 +144,7 @@ fn guarded_json_small_allocation_limit_refuses() {
 }
 
 #[test]
-fn guarded_json_dynamic_signature_sequence_accepts_exact_end_probe() {
+fn guarded_json_signature_is_exactly_64_entries() {
     let wire = identity_wire("");
     let exact = JsonLimits {
         collection_entries: 64,
@@ -162,8 +162,8 @@ fn guarded_json_dynamic_signature_sequence_accepts_exact_end_probe() {
         PeerResourceError::Capacity
     );
 
-    // A real ByteBuf Vec asks for the next element after its 64-byte signature.
-    // At the quota boundary the seed must refuse BEFORE decoding malformed null.
+    // The signature is a fixed array: it reads its 64 entries and stops, so
+    // an extra element is malformed at any quota.
     let mut extra: serde_json::Value = serde_json::from_slice(&wire).unwrap();
     extra["device_cert"]["signature"]
         .as_array_mut()
@@ -172,7 +172,7 @@ fn guarded_json_dynamic_signature_sequence_accepts_exact_end_probe() {
     let extra = serde_json::to_vec(&extra).unwrap();
     assert_eq!(
         error(decode::<GovernedIdentity>(&extra, exact)),
-        PeerResourceError::Capacity
+        PeerResourceError::Malformed
     );
     assert_eq!(
         error(decode::<GovernedIdentity>(&extra, limits())),

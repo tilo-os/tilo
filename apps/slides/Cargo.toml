@@ -58,7 +58,6 @@ quick-xml.workspace = true
 workspace = true
 
 [dev-dependencies]
-tilo-history = { path = "../../crates/sdk/tilo-history" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tilo-test-env = { path = "../../crates/dev/test-env" }
 tempfile.workspace = true

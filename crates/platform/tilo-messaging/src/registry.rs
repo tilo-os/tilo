@@ -102,6 +102,9 @@ impl MessagingRegistry for Registry {
     }
 }
 impl MessagingHost for Registry {
+    fn groups(&self, account: &ServiceAccount) -> Option<crate::GroupClient> {
+        self.snapshot()?.groups(account)
+    }
     fn setup(&self, account: &ServiceAccount) -> Option<crate::SetupClient> {
         self.snapshot()?.setup(account)
     }

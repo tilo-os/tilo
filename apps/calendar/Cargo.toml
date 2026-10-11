@@ -63,7 +63,6 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["ch
 tempfile.workspace = true
 mail = { path = "../mail" }
 test-http = { path = "../../crates/dev/test-http" }
-tilo-history = { path = "../../crates/sdk/tilo-history" }
 
 [lints]
 workspace = true

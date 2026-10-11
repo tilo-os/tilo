@@ -275,14 +275,7 @@ fn two_sessions_are_searchable_together() {
         .unwrap();
     settle_until(&mut app, |state| state.runs.len() == 1);
     let first = app.record().uri();
-    let catalogue = tilo_history::Catalogue::new("en-US", &[crate::resource::LOCALES[0].1]);
-    let reader = tilo_history::Reader::new("en-US").with_app(&catalogue);
-    let sentences: Vec<String> = app
-        .versions()
-        .into_iter()
-        .filter_map(|version| version.context)
-        .map(|entry| reader.sentence(&entry))
-        .collect();
+    let sentences = app.sentences(&app.history());
     assert!(
         sentences
             .iter()
