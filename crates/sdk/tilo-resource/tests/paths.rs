@@ -308,30 +308,72 @@ fn an_edit_outside_what_a_check_reads_does_not_read_the_record_to_check_it() {
             .map(drop)
             .map_err(|error| error.to_string())
     };
-    let checks = || SHELF_CHECKS.with(std::cell::Cell::get);
-    let before = checks();
+    // What the declaration says an edit at each path can change. (Builds
+    // with debug assertions still check the record after the skipped ones,
+    // to catch a wrong declaration, so this reads the decision itself.)
+    let reads = tilo_resource::table::CheckReads {
+        fields: &["name"],
+        items: &["books"],
+    };
+    let books = Shelf::paths().books;
+    assert!(!reads.touched_by(Shelf::paths().note.segments()));
+    assert!(!reads.touched_by(books.item(&id).title.segments()));
+    assert!(reads.touched_by(Shelf::paths().name.segments()));
+    assert!(reads.touched_by(books.item(&id).path().segments()));
+    assert!(reads.touched_by(books.segments()));
+    assert!(reads.touched_by(&[]));
     apply(&mut shelf, &Shelf::paths().note.set("by the door".into())).unwrap();
     apply(
         &mut shelf,
-        &Shelf::paths()
-            .books
-            .item(&id)
-            .title
-            .set("Dune Messiah".into()),
+        &books.item(&id).title.set("Dune Messiah".into()),
     )
     .unwrap();
-    assert_eq!(
-        checks(),
-        before,
-        "neither edit touches what the check reads"
-    );
+    #[cfg(not(debug_assertions))]
+    let before = SHELF_CHECKS.with(std::cell::Cell::get);
     let refused = apply(&mut shelf, &Shelf::paths().name.set("bad".into())).unwrap_err();
     assert!(refused.contains("called bad"), "{refused}");
-    assert!(checks() > before);
+    #[cfg(not(debug_assertions))]
+    assert!(SHELF_CHECKS.with(std::cell::Cell::get) > before);
     let state = shelf.state().unwrap();
     assert_eq!(state.note, "by the door");
     assert_eq!(state.books[&id].title, "Dune Messiah");
     assert_eq!(state.name, "");
+}
+
+/// A record whose check reads its note but declares it reads only its
+/// name: a mistake the framework catches where debug assertions are on.
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+#[model(check = Misdeclared::valid, check_reads = "name")]
+pub struct Misdeclared {
+    pub name: String,
+    pub note: String,
+}
+
+impl Misdeclared {
+    fn valid(&self) -> Result<(), Refusal> {
+        if self.note == "bad" {
+            return Err(Refusal::new("no note says bad"));
+        }
+        Ok(())
+    }
+}
+
+#[resource(kind = "test.misdeclared", label = "Misdeclared")]
+impl Misdeclared {
+    /// Rename it.
+    #[action]
+    pub fn rename(&mut self, name: String) {
+        self.name = name;
+    }
+}
+
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "say that edit cannot change what it reads")]
+fn a_check_that_reads_an_undeclared_field_is_caught() {
+    let mut record = Replica::<Misdeclared>::new();
+    let edit = Misdeclared::paths().note.set("bad".into());
+    let _ = record.apply(Invoke::edit(&edit).unwrap());
 }
 
 #[test]

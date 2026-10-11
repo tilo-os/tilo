@@ -1397,6 +1397,11 @@ pub fn edit_fields(
     op: &EditOp,
     cx: &mut ActionCx,
 ) -> Result<(), ModelError> {
+    // Builds with debug assertions (tests, dev runs) check the record
+    // whole after an edit its declared reads say cannot break it, so a
+    // declaration that leaves out a field the check reads is caught.
+    #[cfg(debug_assertions)]
+    let unchecked_was_valid = skips_check(record, path).then(|| valid_at(record, doc, obj));
     match path.split_first() {
         Some((Segment::Field(key), rest)) => {
             let Some(field) = record.fields.iter().find(|field| field.key == key) else {
@@ -1451,7 +1456,74 @@ pub fn edit_fields(
         })
         .map_err(ModelError::refused)?;
     }
+    #[cfg(debug_assertions)]
+    if unchecked_was_valid == Some(true) {
+        guard_declared_reads(record, doc, obj, path)?;
+    }
     Ok(())
+}
+
+/// Whether an edit at `path` skips `record`'s own check, by what the check
+/// declares it reads.
+#[cfg(debug_assertions)]
+fn skips_check(record: &RecordDesc, path: &[Segment]) -> bool {
+    record
+        .own_check
+        .as_ref()
+        .and_then(|own| own.reads.as_ref())
+        .is_some_and(|reads| !reads.touched_by(path))
+}
+
+/// Whether the record at `obj` passes its own check.
+#[cfg(debug_assertions)]
+fn valid_at(record: &RecordDesc, doc: &Doc, obj: &ObjId) -> bool {
+    record.own_check.as_ref().is_none_or(|own| {
+        (own.read)(doc, obj).is_ok_and(|current| (own.check)(current.as_ref()).is_ok())
+    })
+}
+
+/// Check the record at `obj`, valid before an edit at `path` its declared
+/// reads skip, once the edit (or its group) is done; a refusal means the
+/// declaration leaves out a field the check reads.
+#[cfg(debug_assertions)]
+fn guard_declared_reads(
+    record: &RecordDesc,
+    doc: &Doc,
+    obj: &ObjId,
+    path: &[Segment],
+) -> Result<(), ModelError> {
+    let Some(own) = &record.own_check else {
+        return Ok(());
+    };
+    let (read, own_check, name) = (own.read, own.check, record.name);
+    let at = path
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("/");
+    let checked = obj.clone();
+    crate::group::check_or_defer(format!("{}@{:?}#reads", name(), obj), doc, move |doc| {
+        if let Ok(current) = read(doc, &checked)
+            && let Err(refusal) = own_check(current.as_ref())
+        {
+            undeclared_read(name(), &at, &refusal);
+        }
+        Ok(())
+    })
+    .map_err(ModelError::refused)
+}
+
+#[cfg(debug_assertions)]
+#[allow(
+    clippy::panic,
+    reason = "a check that reads what it does not declare is a bug in the record's declaration, \
+              which only builds with debug assertions look for"
+)]
+fn undeclared_read(name: &str, at: &str, refusal: &Refusal) -> ! {
+    panic!(
+        "`{name}`'s check refuses an edit at `{at}` ({refusal}), but its `check_reads` / \
+         `check_items` say that edit cannot change what it reads: add the field it reads"
+    )
 }
 
 /// [`Model::check`] of a record: its own invariant, then its fields'.
