@@ -232,6 +232,84 @@ fn range_set(ranges: &[(u64, u64)]) -> RangeSet {
 }
 
 impl FileArea {
+    /// Read a complete retained entry through a newly opened file, never the
+    /// area's open-handle cache. Memory and evictable entries cannot attest
+    /// persistence. The caller must verify the returned bytes' content hash.
+    ///
+    /// # Errors
+    /// Refuses missing, partial, oversized, replaced or nonregular files.
+    #[cfg(feature = "document-media")]
+    pub fn persisted_bytes(&self, key: &AreaKey, limit: u64) -> io::Result<Option<Vec<u8>>> {
+        use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
+
+        if !self.durable {
+            return Ok(None);
+        }
+        let _create = self
+            .create
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _commit = self
+            .commit
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let database = self.database()?;
+        let txn = database.begin_read().map_err(db_error)?;
+        let table = txn.open_table(ENTRIES).map_err(db_error)?;
+        let Some(row) = table.get(*key).map_err(db_error)? else {
+            return Ok(None);
+        };
+        let stored: Stored = postcard::from_bytes(row.value()).map_err(db_error)?;
+        if stored.retention == Retention::Cached
+            || stored.size > limit
+            || !range_set(&stored.resident).contains(&(0..stored.size))
+        {
+            return Ok(None);
+        }
+        let path = self.path_of(key);
+        let before = std::fs::symlink_metadata(&path)?;
+        if !before.is_file() || before.len() != stored.size {
+            return Err(io::Error::other(
+                "persisted entry is not an exact regular file",
+            ));
+        }
+        let mut file = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(&path)?;
+        let opened = file.metadata()?;
+        if !opened.is_file()
+            || opened.len() != stored.size
+            || opened.dev() != before.dev()
+            || opened.ino() != before.ino()
+        {
+            return Err(io::Error::other("persisted entry changed while opening"));
+        }
+        file.sync_all()?;
+        File::open(&self.data)?.sync_all()?;
+        if let Some(parent) = self.data.parent() {
+            File::open(parent)?.sync_all()?;
+        }
+        let mut bytes = Vec::new();
+        (&mut file)
+            .take(limit.saturating_add(1))
+            .read_to_end(&mut bytes)?;
+        let after = std::fs::symlink_metadata(&path)?;
+        if bytes.len() as u64 != stored.size
+            || !after.is_file()
+            || after.dev() != opened.dev()
+            || after.ino() != opened.ino()
+            || after.len() != opened.len()
+            || after.mtime() != opened.mtime()
+            || after.mtime_nsec() != opened.mtime_nsec()
+            || after.ctime() != opened.ctime()
+            || after.ctime_nsec() != opened.ctime_nsec()
+        {
+            return Err(io::Error::other("persisted entry changed during readback"));
+        }
+        Ok(Some(bytes))
+    }
+
     /// Makes `file`'s data durable, in a durable area.
     fn sync(&self, file: &File) -> io::Result<()> {
         if self.durable {
@@ -269,7 +347,12 @@ impl FileArea {
     pub fn open(dir: &Path, budget: u64) -> io::Result<Self> {
         std::fs::create_dir_all(dir)?;
         let db = Database::create(dir.join("area.redb")).map_err(db_error)?;
-        Self::open_with(dir, db, budget, true)
+        let area = Self::open_with(dir, db, budget, true)?;
+        File::open(dir)?.sync_all()?;
+        if let Some(parent) = dir.parent().filter(|parent| !parent.as_os_str().is_empty()) {
+            File::open(parent)?.sync_all()?;
+        }
+        Ok(area)
     }
 
     /// An area whose files live under `dir` but whose index is in memory
@@ -923,6 +1006,9 @@ impl FileArea {
             self.remove(key)?;
         }
         std::fs::rename(staging, self.path_of(key))?;
+        if self.durable {
+            File::open(&self.data)?.sync_all()?;
+        }
         {
             let mut state = self.lock();
             let now = state.tick();

@@ -133,9 +133,26 @@ pub struct ViewDocument {
     pub revision: String,
 }
 
+/// Canonical image custody, supplied by the owner's shared content capability.
+pub type FeedbackAttachments = ui::feedback::ReviewedAttachments;
+
 /// What the service needs of its host. Methods block; they are called from
 /// the service's own thread, never from the host's runtime.
 pub trait RoomRecordsLink: Send + Sync {
+    /// Bind existing owner media custody for this exact governed record.
+    /// Absence must refuse images; it never falls back to a private cache.
+    ///
+    /// # Errors
+    /// Refuses retired admission or unavailable existing content capability.
+    fn feedback_attachments(
+        &self,
+        _workspace: u64,
+        _caller: &Caller,
+        _room: &str,
+    ) -> Result<Option<FeedbackAttachments>, String> {
+        Ok(None)
+    }
+
     /// The user root the host chains to: the only person served.
     fn user_public_key(&self) -> [u8; 32];
     /// How the service joins the host's rooms.

@@ -104,6 +104,7 @@ pub(super) fn answer(
             Box::new(signer),
         )
         .map_err(|error| unavailable(&error))?;
+        service = bind_attachments(service, link, workspace, &caller, &submission)?;
         Some(
             serde_json::to_value(
                 service
@@ -128,6 +129,23 @@ pub(super) fn answer(
         admission: admission(query, &enrollment, fresh)?,
         receipt,
     })
+}
+
+fn bind_attachments(
+    service: CanonicalDestination,
+    link: &Arc<dyn RoomRecordsLink>,
+    workspace: u64,
+    caller: &Caller,
+    submission: &Submission,
+) -> Result<CanonicalDestination, ActionHostError> {
+    if submission.feedback.screenshot.is_none() {
+        return Ok(service);
+    }
+    let attachments = link
+        .feedback_attachments(workspace, caller, &submission.destination.room)
+        .map_err(|error| unavailable(&error))?
+        .ok_or_else(|| unavailable("canonical image custody unavailable"))?;
+    Ok(service.with_attachments(attachments))
 }
 
 fn admission(

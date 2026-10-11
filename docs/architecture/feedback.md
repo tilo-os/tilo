@@ -133,16 +133,16 @@ Live configuration must name the already-authorized room UUID, exact provider
 reporter's root/device. These values are not present in the public demo's verified
 configuration. No destination, enrollment or grant is created by this feature.
 
-The remaining image path is missing implementation, independently of that live
-configuration. The native SDK's `RecordContent` wrapper preserves its backing
-store's current durability result, but a served content lane is not a destination
-witness. `DeviceBackend` and the browser `FilesBackend` still lack an attestation
-from their storage owner; `DocumentBlobs` exposes presence and reads, not a
-durability barrier. The relay's `RoomRecordsLink` exposes retained documents and
-current Read policy, but no owner-scoped document-media binding. Complete the
-image path through the existing record-content broker and scoped content store,
-including owner persistence and current authorization before receipt signing;
-do not substitute the reporter's cache or a new upload endpoint. The production
+The native SDK's `RecordContent` wrapper preserves its backing store's current
+durability result, but a served content lane is not a destination witness.
+`DocumentBlobs` now carries the daemon's scoped persisted-media witness;
+`DeviceBackend` delegates without consulting its cache. The relay binds that
+same existing session capability to Chat's room under current certified Read
+policy and installs the canonical attachment verifier before requesting a
+receipt. An inaccessible socket, absent owner bytes or retired policy refuses
+the receipt; this does not grant the relay additional filesystem access. Image
+transfer must still reach that owner's shared store through the existing
+record-content broker, never a reporter cache or new upload endpoint. The production
 native/browser `NoCapture` bindings also require an explicit focused-surface
 producer with inspected privacy bounds and frame identity. The pure masking
 permit and private preview are already present; they are not that producer.
@@ -290,10 +290,27 @@ owner-scoped media reader is bound; Saved report metadata alone cannot confirm
 an attachment. The append-only `DocumentBlobs.durability`
 query carries a backend's current scoped witness over the existing launch
 capability. `DeviceBackend` delegates it without consulting its read cache or
-`has()`. Older servers and unqualified backends answer `Unsupported`; neither
-that query nor metadata transaction completion qualifies the filesystem daemon
-or relay as a durable image owner. Their persistence barriers and receipt
-binding remain implementation work coordinated with the document-media owner.
+`has()`. Older servers and unqualified backends answer `Unsupported`.
+
+Document-media imports now retain one canonical payload in the daemon's existing
+shared `FileArea`, with `LocalOnly` retention and a domain-separated key so a
+media hash cannot alias a file-version manifest's area key. This includes small
+payloads that Iroh otherwise inlines: the loose Iroh copy serves transport and
+range reads, while the retained area file supplies custody. There is no second
+upload store. A witness requires the exact room reference, database barrier,
+complete retained area index, bounded newly opened regular file, data/directory
+barriers, exact length/hash and unchanged file identity. It bypasses Moka,
+Iroh entity bytes and the area's cached file descriptors. Memory and evictable
+entries cannot attest custody; legacy media without a canonical area payload
+must be reimported before it can attest. References still have no automatic
+reclamation, as documented by the document-media index.
+
+The relay's `RoomRecordsLink::feedback_attachments` supplies this scoped owner
+capability only after current certified record policy is checked, then checked
+again after binding. The canonical receipt service verifies PNG content and
+fresh owner custody both before and after signing. Metadata Saved status,
+successful record-content forwarding and a reporter's persisted copy are never
+substitutes for these checks. The adapter creates no socket or permission grant.
 
 The page's `FilesBackend` reissues an atomic write when reviewed content is
 stored again, even if its address already exists in the synchronous mirror.

@@ -155,6 +155,13 @@ enum Backend {
     Fs(FsStore),
 }
 
+/// Domain separation prevents a media hash aliasing a file-version manifest
+/// key whose area payload is the version's file rather than the manifest.
+#[cfg(feature = "document-media")]
+pub(crate) fn media_area_key(hash: Hash) -> [u8; 32] {
+    blake3::derive_key("tilo shared content document media v1", hash.as_bytes())
+}
+
 pub struct ContentStore {
     backend: Backend,
     cache: Cache<Hash, Bytes>,
@@ -302,6 +309,12 @@ impl ContentStore {
             .spawn(async move { FsStore::load_with_opts(root.join("blobs.db"), options).await })
             .await
             .map_err(|error| anyhow::anyhow!("opening the content store failed: {error}"))??;
+        // The database's file sync is not a publication barrier for a newly
+        // created store directory. Persist its namespace before serving media.
+        std::fs::File::open(dir)?.sync_all()?;
+        if let Some(parent) = dir.parent().filter(|parent| !parent.as_os_str().is_empty()) {
+            std::fs::File::open(parent)?.sync_all()?;
+        }
         gc_ready.store(true, Ordering::Release);
         Ok(Self {
             backend: Backend::Fs(store),
@@ -472,6 +485,42 @@ impl ContentStore {
         let _mutation = self.mutation.lock().await;
         let data = data.into();
         self.persist_owned(data).await
+    }
+
+    /// Document media has one canonical retained representation in the
+    /// existing file area, including payloads the loose backend inlines.
+    /// Iroh remains the transport representation; it is not the custody witness.
+    #[cfg(feature = "document-media")]
+    pub(crate) async fn ingest_media(&self, data: Bytes) -> Result<Hash> {
+        let _mutation = self.mutation.lock().await;
+        let hash = Hash::new(&data);
+        let key = media_area_key(hash);
+        let len = u32::try_from(data.len())?;
+        self.files.adopt_bytes(
+            &key,
+            &data,
+            Retention::LocalOnly,
+            &[(*hash.as_bytes(), 0, len)],
+        )?;
+        self.persist_owned(data).await
+    }
+
+    #[cfg(feature = "document-media")]
+    pub(crate) fn persisted_media(&self, hash: Hash, limit: u64) -> Result<Option<Bytes>> {
+        if matches!(self.backend, Backend::Mem(_)) {
+            return Ok(None);
+        }
+        let bytes = self.files.persisted_bytes(&media_area_key(hash), limit)?;
+        match bytes {
+            Some(bytes) if Hash::new(&bytes) == hash => Ok(Some(Bytes::from(bytes))),
+            Some(_) => anyhow::bail!("persisted media hash mismatch"),
+            None => Ok(None),
+        }
+    }
+
+    #[cfg(feature = "document-media")]
+    pub(crate) fn persistent(&self) -> bool {
+        matches!(self.backend, Backend::Fs(_))
     }
 
     /// Locally available bytes of blob `hash` (cache, loose store, or a

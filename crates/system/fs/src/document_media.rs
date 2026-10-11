@@ -42,12 +42,31 @@ use bytes::Bytes;
 use iroh_blobs::api::blobs::BlobStatus;
 use iroh_blobs::{BlobFormat, Hash, HashAndFormat};
 use runtime_fs::blobs::{
-    BlobBackend, BlobError, BlobFuture, BlobRef, BlobScope, MAX_BLOB_BYTES, ReadOutcome,
+    BlobBackend, BlobDurability, BlobError, BlobFuture, BlobRef, MAX_BLOB_BYTES, ReadOutcome,
 };
+pub use runtime_fs::blobs::{BlobScope, DEFAULT_BLOB_SOCKET, serve_connection};
 
 use crate::store::ContentStore;
 
 const TAG_PREFIX: &str = "tilo/media/v1/";
+
+/// Bind an already permitted host to the daemon's existing session socket,
+/// confined to one app/room. This creates no directory, transport or grant;
+/// the caller must check its current certified record authority around use.
+///
+/// # Errors
+/// Refuses inaccessible sockets and unavailable scoped capabilities.
+#[cfg(feature = "filesystem")]
+pub fn owner_content(
+    socket: &Path,
+    scope: &BlobScope,
+) -> Result<tilo_content::ContentStore, BlobError> {
+    let session = runtime_fs::blobs::BlobClient::connect_session(socket)?;
+    let client = session.scope(scope.room(), scope.app())?;
+    Ok(tilo_content::ContentStore::new(
+        tilo_content::DeviceBackend::new(client),
+    ))
+}
 
 fn reference_tag(scope: &BlobScope, hash: Hash) -> String {
     format!("{TAG_PREFIX}{}/{}", scope.room(), hash.to_hex())
@@ -98,13 +117,45 @@ impl DocumentMedia {
         }
         let hash = self
             .store
-            .ingest(Bytes::from(bytes))
+            .ingest_media(Bytes::from(bytes))
             .await
             .map_err(|error| BlobError::Refused(error.to_string()))?;
         record_reference(&self.store, scope, hash)
             .await
             .map_err(|error| BlobError::Refused(error.to_string()))?;
         Ok(hash)
+    }
+
+    /// Fresh exact bytes from the shared store's canonical media file. Never
+    /// promotes a loose inline entity, Moka entry, range read or metadata hit.
+    ///
+    /// # Errors
+    /// Refuses failed barriers, replaced/missing files and changed hashes.
+    pub async fn durability_of(
+        &self,
+        scope: &BlobScope,
+        hash: Hash,
+    ) -> Result<BlobDurability, BlobError> {
+        if !references(&self.store, scope, hash).await {
+            return Ok(BlobDurability::Unavailable);
+        }
+        if !self.store.persistent() {
+            return Ok(BlobDurability::Unsupported);
+        }
+        self.store
+            .store()
+            .sync_db()
+            .await
+            .map_err(|error| BlobError::Refused(error.to_string()))?;
+        let bytes = self
+            .store
+            .persisted_media(hash, MAX_BLOB_BYTES)
+            .map_err(|error| BlobError::Refused(error.to_string()))?;
+        if bytes.is_some() && references(&self.store, scope, hash).await {
+            Ok(BlobDurability::Durable)
+        } else {
+            Ok(BlobDurability::Unavailable)
+        }
     }
 
     /// Whole content of a readable, resident blob.
@@ -164,6 +215,19 @@ fn parse_hash(hex: &str) -> Option<Hash> {
 }
 
 impl BlobBackend for DocumentMedia {
+    fn durability(
+        self: Arc<Self>,
+        scope: BlobScope,
+        hash: String,
+    ) -> BlobFuture<Result<BlobDurability, BlobError>> {
+        Box::pin(async move {
+            match parse_hash(&hash) {
+                Some(hash) => self.durability_of(&scope, hash).await,
+                None => Err(BlobError::InvalidHash),
+            }
+        })
+    }
+
     fn put(
         self: Arc<Self>,
         scope: BlobScope,

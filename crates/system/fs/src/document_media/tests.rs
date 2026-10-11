@@ -6,6 +6,166 @@ fn scope(room: &str, app: &str) -> BlobScope {
     BlobScope::new(room, app).unwrap()
 }
 
+#[test]
+fn owner_capability_never_promotes_a_device_cache_after_persisted_bytes_are_lost() {
+    use tilo_content::ContentDurability;
+
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let root = tempfile::tempdir().unwrap();
+    let store = Arc::new(runtime.block_on(ContentStore::open(root.path())).unwrap());
+    let media = DocumentMedia::new(store.clone());
+    let socket = root.path().join("owner-content.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    let handle = runtime.handle().clone();
+    // Serve exactly the production session connection and finish it on drop;
+    // no immortal listener or alternate handoff/transport is introduced.
+    let server = std::thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        stream.set_nonblocking(true).unwrap();
+        let local_runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        tokio::task::LocalSet::new().block_on(&local_runtime, async move {
+            tokio::time::timeout(
+                std::time::Duration::from_secs(15),
+                runtime_fs::blobs::serve_connection(
+                    tokio::net::UnixStream::from_std(stream).unwrap(),
+                    media,
+                    handle,
+                ),
+            )
+            .await
+        })
+    });
+    let owner = owner_content(&socket, &scope("owner-room", "so.tilo.chat")).unwrap();
+    let bytes = vec![29; 32 * 1024];
+    let hash = owner.put(&bytes).unwrap();
+    assert_eq!(owner.read(&hash).unwrap(), bytes);
+    assert_eq!(owner.durability(&hash).unwrap(), ContentDurability::Durable);
+    let digest = hash.parse::<Hash>().unwrap();
+    let path = store.files().path_of(&crate::store::media_area_key(digest));
+    std::fs::remove_file(path).unwrap();
+    assert_eq!(
+        owner.read(&hash).unwrap(),
+        bytes,
+        "the DeviceBackend cache is deliberately warm"
+    );
+    assert!(
+        owner.durability(&hash).is_err(),
+        "cached bytes cannot attest daemon custody"
+    );
+    drop(owner);
+    assert!(
+        server.join().unwrap().is_ok(),
+        "the one-connection server must terminate"
+    );
+    runtime.block_on(store.store().shutdown()).unwrap();
+}
+
+#[tokio::test]
+async fn custody_survives_restart_but_never_promotes_warm_caches_after_corruption() {
+    // Both loose inline and loose file-backed payloads use the same canonical
+    // shared file area. Neither iroh's entity cache nor Moka can attest it.
+    for len in [17, 32 * 1024] {
+        let dir = tempfile::tempdir().unwrap();
+        let owner = scope("custody-room", "so.tilo.chat");
+        let bytes = vec![42; len];
+        let hash = {
+            let store = Arc::new(ContentStore::open(dir.path()).await.unwrap());
+            let media = DocumentMedia::new(store.clone());
+            let hash = media.store(&owner, bytes.clone()).await.unwrap();
+            assert_eq!(
+                media.durability_of(&owner, hash).await.unwrap(),
+                BlobDurability::Durable
+            );
+            store.store().shutdown().await.unwrap();
+            hash
+        };
+        let store = Arc::new(ContentStore::open(dir.path()).await.unwrap());
+        let media = DocumentMedia::new(store.clone());
+        assert_eq!(
+            media.durability_of(&owner, hash).await.unwrap(),
+            BlobDurability::Durable
+        );
+        assert_eq!(
+            media
+                .clone()
+                .durability(owner.clone(), hash.to_hex())
+                .await
+                .unwrap(),
+            BlobDurability::Durable,
+        );
+        assert_eq!(
+            media
+                .durability_of(&scope("other-room", "so.tilo.chat"), hash)
+                .await
+                .unwrap(),
+            BlobDurability::Unavailable,
+        );
+        assert_eq!(store.local(hash).await.unwrap().as_ref(), bytes);
+        assert_eq!(
+            store
+                .store()
+                .blobs()
+                .get_bytes(hash)
+                .await
+                .unwrap()
+                .as_ref(),
+            bytes
+        );
+        let path = store.files().path_of(&crate::store::media_area_key(hash));
+        let mut corrupt = bytes.clone();
+        corrupt[0] = 7;
+        std::fs::write(&path, corrupt).unwrap();
+        assert!(media.durability_of(&owner, hash).await.is_err());
+        assert_eq!(store.local(hash).await.unwrap().as_ref(), bytes);
+        // An own awaited retry repairs the canonical representation even when
+        // the loose store and hot cache already contain the address.
+        assert_eq!(media.store(&owner, bytes.clone()).await.unwrap(), hash);
+        assert_eq!(
+            media.durability_of(&owner, hash).await.unwrap(),
+            BlobDurability::Durable
+        );
+        std::fs::remove_file(&path).unwrap();
+        assert!(media.durability_of(&owner, hash).await.is_err());
+        assert_eq!(store.local(hash).await.unwrap().as_ref(), bytes);
+        std::os::unix::fs::symlink(dir.path().join("blobs.db"), &path).unwrap();
+        assert!(media.durability_of(&owner, hash).await.is_err());
+        store
+            .store()
+            .tags()
+            .delete(reference_tag(&owner, hash))
+            .await
+            .unwrap();
+        store.store().sync_db().await.unwrap();
+        assert_eq!(
+            media.durability_of(&owner, hash).await.unwrap(),
+            BlobDurability::Unavailable
+        );
+        let legacy = store
+            .ingest(Bytes::from_static(b"loose content only"))
+            .await
+            .unwrap();
+        record_reference(&store, &owner, legacy).await.unwrap();
+        assert_eq!(
+            media.durability_of(&owner, legacy).await.unwrap(),
+            BlobDurability::Unavailable
+        );
+        store.store().shutdown().await.unwrap();
+    }
+    let media = DocumentMedia::new(Arc::new(ContentStore::memory()));
+    let owner = scope("memory-room", "so.tilo.chat");
+    let hash = media
+        .store(&owner, b"present is not persistent".to_vec())
+        .await
+        .unwrap();
+    assert_eq!(
+        media.durability_of(&owner, hash).await.unwrap(),
+        BlobDurability::Unsupported
+    );
+}
+
 #[tokio::test]
 async fn stored_media_is_readable_only_by_reference_bounded_and_durable() {
     // Phase `bytes_in_the_store_are_not_readable_without_a_reference`.

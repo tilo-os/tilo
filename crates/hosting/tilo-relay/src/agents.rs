@@ -156,7 +156,53 @@ struct RelayRecordsLink {
     browser_page: Option<String>,
 }
 
+impl RelayRecordsLink {
+    fn feedback_attachments_at(
+        &self,
+        workspace: u64,
+        caller: &tilo_actions::remote::Caller,
+        room: &str,
+        socket: &std::path::Path,
+    ) -> Result<Option<tilo_agent_participant::room_actions::FeedbackAttachments>, String> {
+        let current = self
+            .view_read_policy(workspace, caller, "so.tilo.chat", "")
+            .filter(|policy| policy.room == room)
+            .ok_or("current canonical image admission unavailable")?;
+        let scope = fs::document_media::BlobScope::new(room, "so.tilo.chat")
+            .map_err(|error| error.to_string())?;
+        let content =
+            fs::document_media::owner_content(socket, &scope).map_err(|error| error.to_string())?;
+        let fresh = self
+            .view_read_policy(workspace, caller, "so.tilo.chat", "")
+            .ok_or("canonical image admission retired")?;
+        if current.room != fresh.room
+            || current.person != fresh.person
+            || current.role != fresh.role
+            || current.caps != fresh.caps
+        {
+            return Err("canonical image admission changed".into());
+        }
+        Ok(Some(
+            tilo_agent_participant::room_actions::FeedbackAttachments::new(content),
+        ))
+    }
+}
+
 impl RoomRecordsLink for RelayRecordsLink {
+    fn feedback_attachments(
+        &self,
+        workspace: u64,
+        caller: &tilo_actions::remote::Caller,
+        room: &str,
+    ) -> Result<Option<tilo_agent_participant::room_actions::FeedbackAttachments>, String> {
+        self.feedback_attachments_at(
+            workspace,
+            caller,
+            room,
+            std::path::Path::new(fs::document_media::DEFAULT_BLOB_SOCKET),
+        )
+    }
+
     fn user_public_key(&self) -> [u8; 32] {
         self.user_public_key
     }
@@ -218,6 +264,10 @@ impl RoomRecordsLink for RelayRecordsLink {
         })
     }
 }
+
+#[cfg(test)]
+#[path = "agents/feedback_tests.rs"]
+mod feedback_tests;
 
 /// Start `cfg`'s relay with an agent supervisor as its app-serving plane,
 /// then start the supervisor's agents: those the state directory says were
