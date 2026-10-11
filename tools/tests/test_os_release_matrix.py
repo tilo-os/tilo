@@ -263,17 +263,54 @@ class OsDevLaneTests(unittest.TestCase):
         self.assertLess(workflow.index("echo 'TILO_PREBUILT_APPS=0' >> \"$GITHUB_ENV\""),
                         workflow.index("      - name: Materialize the pinned app collection\n"))
 
-    def test_dev_builds_keep_a_cacheable_epoch(self):
+    def test_every_lane_builds_with_the_image_epoch(self):
         workflow = WORKFLOW.read_text()
-        step = workflow.split("      - name: Compute SOURCE_DATE_EPOCH (HEAD commit time)\n", 1)[1]
+        step = workflow.split("      - name: Compute SOURCE_DATE_EPOCH (base and package images)\n", 1)[1]
         step = step.split("\n      - name:", 1)[0]
-        self.assertIn("DEV_BUILD: ${{ github.event_name == 'workflow_call' }}", step)
-        self.assertIn('for ref in "$BASE_REF" "$RPMS_REF"; do', step)
+        # One epoch for dev, validation and publication: the commit time put
+        # itself into the UKI's initramfs, the rpmdb and the fontconfig caches
+        # and renewed those layers in every release.
+        self.assertNotIn("        if:", step)
+        self.assertNotIn("DEV_BUILD", step)
+        self.assertIn('epoch="$(./os/dev/image-epoch.sh "$BASE_REF" "$RPMS_REF")"', step)
+        self.assertIn('echo "SOURCE_DATE_EPOCH=$epoch" >> "$GITHUB_ENV"', step)
         # The kernel snapshot changes several times a day; in the epoch it
         # invalidated every rootfs layer.
-        self.assertNotIn("KERNEL_RPMS_REF", step.split("if [[ $DEV_BUILD == true ]]", 1)[1])
-        # image.created keeps the commit time either way.
-        self.assertLess(step.index("SOURCE_DATE_ISO="), step.index("if [[ $DEV_BUILD == true ]]"))
+        self.assertNotIn("KERNEL_RPMS_REF", step)
+        # image.created keeps the commit time.
+        self.assertIn('committed="$(git log -1 --format=%ct)"', step)
+        self.assertIn('echo "SOURCE_DATE_ISO=$(date -u -d "@$committed"', step)
+        self.assertNotIn("SOURCE_DATE_EPOCH=$committed", step)
+        # chunkah's clamp and the index provenance take the same value.
+        rechunk = workflow.split("      - name: Rechunk the image\n", 1)[1].split("\n      - ", 1)[0]
+        self.assertIn('epoch="$SOURCE_DATE_EPOCH"', rechunk)
+        self.assertIn('[[ $epoch == "$(./os/dev/image-epoch.sh "$BASE_REF" "$RPMS_REF")" ]]', rechunk)
+        provenance = workflow.split("./os/dev/release-provenance.sh index-provenance.json", 1)[0]
+        provenance = provenance.rsplit("cosign sign --yes", 1)[1]
+        self.assertIn('SOURCE_DATE_EPOCH="$(./os/dev/image-epoch.sh "$BASE_REF" "$RPMS_REF")"', provenance)
+        self.assertNotIn("--format=%ct", provenance)
+
+    def test_the_image_epoch_is_the_newest_input_creation_time(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            fake = Path(temporary)
+            (fake / "skopeo").write_text(
+                "#!/bin/sh\n"
+                'case "$2" in\n'
+                '  docker://base) echo \'{"Created": "2026-10-01T00:00:00Z"}\' ;;\n'
+                '  docker://rpms) echo \'{"Created": "2026-10-09T12:00:00.5Z"}\' ;;\n'
+                "  *) exit 1 ;;\n"
+                "esac\n")
+            (fake / "skopeo").chmod(0o755)
+            env = {**os.environ, "PATH": f"{fake}:{os.environ['PATH']}"}
+            script = str(ROOT / "os/dev/image-epoch.sh")
+            for order in (["base", "rpms"], ["rpms", "base"]):
+                epoch = subprocess.run(["bash", script, *order], env=env, check=True,
+                                       capture_output=True, text=True).stdout
+                # 2026-10-09T12:00:00Z, the newer of the two, in whole seconds.
+                self.assertEqual(epoch, "1791547200\n", order)
+            for missing in (["base", "nothing"], [""], []):
+                failed = subprocess.run(["bash", script, *missing], env=env, capture_output=True, text=True)
+                self.assertNotEqual(failed.returncode, 0, missing)
 
     def test_dev_series_names_the_ref_and_commit(self):
         workflow = WORKFLOW.read_text()

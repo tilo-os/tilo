@@ -26,7 +26,7 @@ set -euo pipefail
 
 source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 
-builder=""; source_ref=""; name=""; epoch=""; push=0; archive=""; report=""; max_layers=128
+builder=""; source_ref=""; name=""; epoch=""; push=0; archive=""; report=""; max_layers=96
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --push) push=1; shift; continue ;;

@@ -323,7 +323,8 @@ jobs:
   # architecture, the tilo-ci base that tilo-vm:main-ci names, streamed from
   # the registry and replayed layer by layer through tools/perf/image_size.py.
   # Compressed layer bytes (a full pull), unique content (what composefs holds
-  # after install) and redundant payload (bytes the layers ship twice). Byte
+  # after install), redundant payload (bytes the layers ship twice) and the
+  # update from main's previous build (the layers it lacks). Byte
   # counts: runner-independent, so `runner` is none. The ceilings and the 5 %
   # growth rule are in tools/perf/kpi-budgets.toml (DEVELOPMENT.md, "OS image
   # size"). The full breakdown is the job's summary and the image-size
@@ -340,9 +341,13 @@ jobs:
     container:
       image: registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c
     steps:
+      # History, for the update from main's previous build: the image of the
+      # newest earlier first-parent commit that has one (Build / OS dev builds
+      # main a few times a day, when OS inputs change).
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+          fetch-depth: 500
           sparse-checkout: tools/perf
           sparse-checkout-cone-mode: false
 
@@ -354,6 +359,7 @@ jobs:
           mkdir -p perf
           python3 tools/perf/image_size.py --dev-base registry.tilo.so/tilo/tilo-vm:main-ci \
             --arch "$ARCH" --records perf/image-$ARCH.jsonl --runner none \
+            --update-from-previous 'main-{sha7}-{arch}' \
             --json perf/image-size-$ARCH.json --markdown perf/image-size-$ARCH.md > /dev/null
           cat "perf/image-size-$ARCH.md" >> "$GITHUB_STEP_SUMMARY"
           cat "perf/image-$ARCH.jsonl"
