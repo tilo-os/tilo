@@ -1849,6 +1849,59 @@ fn two_strip_tree() -> crate::shell::state::WorkspaceTree {
     tree
 }
 
+/// `shown`, the composited output of `painted`, shows what the desktop drawn
+/// without layers shows: nothing the layers leave out or misplace (a strip's
+/// shadow in its neighbour's row, the wheel over the strip below, chrome a
+/// fraction of a pixel off) is lost. That desktop draws every edge at its
+/// screen coordinates, the layers at canvas coordinates moved by whole
+/// pixels, so vello's offset variance shows along edges all over the output,
+/// never more than it does between two whole renders ([`OFFSET_STEPS`]);
+/// anything misplaced or missing is far more.
+#[cfg(target_os = "linux")]
+fn assert_nothing_lost(
+    frame: &mut FrameBuilder,
+    dense: &mut crate::shell::render::paint::RetainedGpuTarget,
+    (shown, painted): (&[u8], &FramePaint),
+    size: (u32, u32),
+    label: &str,
+) {
+    let screen = frame.paint();
+    let unlayered = render_whole(dense, &screen, 0, label);
+    let lost = pixels_apart(shown, &unlayered, size.0);
+    let lost_max = lost.iter().map(|&(_, _, step)| step).max().unwrap_or(0);
+    eprintln!(
+        "strip layers {label}: {} pixels more than one step from the desktop drawn without \
+         layers (max {lost_max})",
+        lost.len()
+    );
+    let output = size.0 as usize * size.1 as usize;
+    let edge_noise = lost_max <= OFFSET_STEPS && lost.len() <= output / 100;
+    if !edge_noise {
+        eprintln!(
+            "strip layers {label}: strips {:?}, wheel {:?}, pans {:?}\n{}",
+            painted.cache.as_ref().map(|cache| &cache.strips),
+            painted
+                .cache
+                .as_ref()
+                .and_then(|cache| cache.layers.wheel.as_ref().map(|wheel| (
+                    wheel.x,
+                    wheel.y,
+                    wheel.width,
+                    wheel.height
+                ))),
+            frame.host().strip_scroll_offsets(),
+            apart_map(&lost, size)
+        );
+    }
+    assert!(
+        edge_noise,
+        "{label}: {} pixels differ from the desktop drawn without layers by more than one \
+         step, up to {lost_max} steps: more than vello's offset variance (first {:?})",
+        lost.len(),
+        &lost[..lost.len().min(16)]
+    );
+}
+
 /// A strip pan presented from retained layers, frame by frame, shows what a
 /// full render of each frame shows, and what the desktop drawn without
 /// layers shows, in every theme; and once the layers are up, a pan frame
@@ -1898,47 +1951,9 @@ fn assert_pan_composites_like_full_renders(desktop: PanDesktop) {
             let full = render_whole(&mut dense, &painted.scene, painted.revision, &label);
             let apart = pixels_apart(&shown, &full, size.0);
             let max = apart.iter().map(|&(_, _, step)| step).max().unwrap_or(0);
-            // Every fourth frame, the desktop as a producer without layers
-            // draws it: nothing the layers leave out or misplace (a strip's
-            // shadow in its neighbour's row, the wheel over the strip below,
-            // chrome a fraction of a pixel off) is lost. That desktop draws
-            // every edge at its screen coordinates, the layers at canvas
-            // coordinates moved by whole pixels, so vello's offset variance
-            // shows along edges all over the output, never more than it
-            // does between two whole renders ([`OFFSET_PIXELS`]: up to 15
-            // steps); anything misplaced or missing is far more.
+            // Every fourth frame, against the desktop drawn without layers.
             if step % 4 == 3 {
-                let screen = frame.paint();
-                let unlayered = render_whole(&mut dense, &screen, 0, &label);
-                let lost = pixels_apart(&shown, &unlayered, size.0);
-                let lost_max = lost.iter().map(|&(_, _, step)| step).max().unwrap_or(0);
-                eprintln!(
-                    "strip layers {label}: {} pixels more than one step from the desktop drawn \
-                     without layers (max {lost_max})",
-                    lost.len()
-                );
-                let edge_noise = lost_max <= OFFSET_STEPS && lost.len() <= output as usize / 100;
-                if !edge_noise {
-                    eprintln!(
-                        "strip layers {label}: strips {:?}, wheel {:?}, pans {:?}\n{}",
-                        painted.cache.as_ref().map(|cache| &cache.strips),
-                        painted.cache.as_ref().and_then(|cache| cache
-                            .layers
-                            .wheel
-                            .as_ref()
-                            .map(|wheel| (wheel.x, wheel.y, wheel.width, wheel.height))),
-                        frame.host().strip_scroll_offsets(),
-                        apart_map(&lost, size)
-                    );
-                }
-                assert!(
-                    edge_noise,
-                    "{label}: {} pixels differ from the desktop drawn without layers by more \
-                     than one step, up to {lost_max} steps: more than vello's offset variance \
-                     (first {:?})",
-                    lost.len(),
-                    &lost[..lost.len().min(16)]
-                );
+                assert_nothing_lost(&mut frame, &mut dense, (&shown, &painted), size, &label);
             }
             let strips = painted.cache.as_ref().map(|cache| {
                 let mut scene = Scene::new();
