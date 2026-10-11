@@ -514,9 +514,13 @@ impl Pan {
         if gr.width() <= 0.0 {
             return None;
         }
-        // Groups must clear the leading wheel-disc gutter on the left and
-        // the viewport's right edge on the right.
-        let left_bound = self.viewport.x0 + self.inset;
+        // A group needs to be on screen, flush with the viewport's edges.
+        // The wheel-disc gutter is canvas the strip pans *with*: every
+        // group already starts past it, so a group revealed at the left
+        // edge never overlaps the disc. Bounding at the gutter instead
+        // panned the leftmost group's reveal all the way home to scroll 0,
+        // dragging the workspace switcher back into view.
+        let left_bound = self.viewport.x0;
         let right_bound = self.viewport.x1;
         let mut sx = self.scroll_x;
         // An oversized group cannot fit; reveal its start consistently.
@@ -6868,6 +6872,39 @@ mod tests {
         direct_pan_keeps_a_fifth_viewport_after_the_last_app();
         direct_pan_tracks_reversals_and_only_settles_elastic_overpull();
         direct_pan_overpull_has_diminishing_gain_and_returns_to_resting_end();
+    }
+
+    #[test]
+    fn revealing_a_half_visible_leftmost_group_pans_only_far_enough() {
+        // Viewport 0..1000 with the 96 px wheel-disc gutter, so the first
+        // group lies at canvas 96..696 and the second at 704..1304.
+        let pan = Pan {
+            viewport: Rect::new(0.0, 0.0, 1000.0, 600.0),
+            inset: 96.0,
+            scroll_x: 400.0,
+            content_w: 2400.0,
+            ..Pan::default()
+        };
+        // Scrolled 400, the first group sits at -304..296: half visible.
+        let leftmost = Rect::new(-304.0, 0.0, 296.0, 600.0);
+        let target = pan
+            .scroll_target_for(leftmost)
+            .expect("a cut group is revealed");
+        assert!(
+            (target - 96.0).abs() < 0.01,
+            "flush with the screen edge (scroll 96), not home (0) with the \
+             wheel disc back on screen: {target}"
+        );
+        // Fully visible already: nothing to do.
+        assert_eq!(
+            pan.scroll_target_for(Rect::new(10.0, 0.0, 610.0, 600.0)),
+            None
+        );
+        // The right edge is unchanged.
+        let target = pan
+            .scroll_target_for(Rect::new(704.0 - 400.0 + 500.0, 0.0, 1404.0 - 400.0 + 500.0, 600.0))
+            .expect("a group cut on the right is revealed");
+        assert!((target - 904.0).abs() < 0.01, "{target}");
     }
 
     #[test]
