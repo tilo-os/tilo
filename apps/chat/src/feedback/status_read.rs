@@ -21,7 +21,10 @@ pub(super) fn spec(id: &str) -> ActionSpec {
         move |_| {
             EncodedAction::encode_operation(
                 OPERATION,
-                &super::receipt_read::Request { id: id.clone() },
+                &super::receipt_read::Request {
+                    id: id.clone(),
+                    expected_author: None,
+                },
             )
             .unwrap_or_else(|_| EncodedAction {
                 type_id: OPERATION.into(),

@@ -223,6 +223,17 @@ pub fn configured_font_system() -> FontSystem {
     FontSystem::new_with_locale_and_db(locale.clone(), database.clone())
 }
 
+/// Build the font database [`configured_font_system`] copies into every
+/// renderer now, and throw the font system away: a native launch runs this
+/// in the background from process start, so the main thread's first
+/// renderer finds the catalog verified and every font file read instead of
+/// doing both itself (TIL-775). The database is a process-wide `OnceLock`, so
+/// a renderer asked for meanwhile waits for this one: nothing is loaded
+/// twice, and it is the database the main thread would have built.
+pub fn prepare_font_database() {
+    drop(configured_font_system());
+}
+
 /// The system's fonts, scanned once per process. A scan parses every
 /// installed font file, and each renderer would otherwise repeat it.
 #[cfg(not(test))]

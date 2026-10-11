@@ -21,6 +21,8 @@ mod native_ingress;
 #[cfg(test)]
 mod paired_continuity_tests;
 mod personal_device_peers;
+#[cfg(test)]
+mod reachability_tests;
 mod record_content;
 pub use record_content::InboundRecordContent;
 #[cfg(test)]
@@ -53,7 +55,6 @@ use crate::network::identity::PeerIdentityStore;
 use crate::network::invite::accept_invite_into;
 use crate::network::protocol::{MAX_PERSONAL_CONTINUITY_CHECKPOINT_BYTES, NeighbourMsg};
 use crate::network::replica::WorkspaceTreeReplica;
-#[cfg(test)]
 use crate::shell::state::WorkspaceTree;
 use crate::shell::state::{RoomId, WorkspaceTreeHandle};
 
@@ -514,14 +515,63 @@ fn parse_host_addr(value: &str) -> Option<iroh::EndpointAddr> {
 /// Which peers a session's endpoint can reach.
 #[derive(Clone, Copy)]
 enum Reach {
-    /// Any, through the public relays and discovery.
+    /// Any, through the public relays and discovery. The relays wait until
+    /// something needs this device reachable
+    /// ([`crate::network::reachability`]).
     Internet,
     /// Only this machine's (tests).
-    #[cfg_attr(
-        not(test),
-        allow(dead_code, reason = "tests reach only loopback peers")
-    )]
+    #[cfg(test)]
     Loopback,
+    /// Only this machine's, holding relays nobody listens on back the way
+    /// [`Self::Internet`] holds back the public ones (tests of the
+    /// deferral).
+    #[cfg(test)]
+    LoopbackHoldingRelays,
+}
+
+/// Why someone could need to dial this device as its session starts, from
+/// what is already recorded: a room it shares (one it joined, a peer it
+/// named or admitted, a relay-governed or continuation room), an invite
+/// still open, or another of the person's devices in its fabric (they
+/// continue, sync and disk-unlock through it). Hosts, enrolled home peers
+/// and the person's paired devices are dialled at start, which wakes the
+/// relays in the actor, as does every relationship that begins later.
+fn needs_reachability(
+    tree: &WorkspaceTree,
+    local_endpoint: &str,
+    open_invitations: bool,
+    other_devices: bool,
+) -> Option<&'static str> {
+    // The inviter names and certifies itself in its own rooms, so only an
+    // endpoint other than this one is a peer.
+    let someone_else = |peer: &String| peer != local_endpoint;
+    if tree
+        .room_authority
+        .values()
+        .any(|authority| *authority != crate::shell::state::RoomAuthority::Local)
+    {
+        Some("a room this device joined")
+    } else if tree
+        .room_peer_names
+        .values()
+        .any(|peers| peers.keys().any(someone_else))
+        || tree
+            .room_peer_identities
+            .values()
+            .any(|peers| peers.keys().any(someone_else))
+    {
+        Some("a room shared with a peer")
+    } else if !tree.native_authority.is_empty() {
+        Some("a relay-governed room")
+    } else if !tree.continuation_rooms.is_empty() {
+        Some("a room continued from another device")
+    } else if open_invitations {
+        Some("an open invitation")
+    } else if other_devices {
+        Some("another of the person's devices")
+    } else {
+        None
+    }
 }
 
 fn configured_host_addrs() -> Vec<iroh::EndpointAddr> {
@@ -1124,6 +1174,9 @@ pub struct ShellNetwork {
     local_peer_id: iroh::EndpointId,
     /// Current direct/relay dialing addresses reported by iroh.
     listen_addrs: Arc<Mutex<Vec<iroh::EndpointAddr>>>,
+    /// The endpoint's relays, held back until something needs this device
+    /// reachable ([`crate::network::reachability`]).
+    reachability: crate::network::Reachability,
     /// Always-on hosts included in newly issued invites.
     host_addrs: Mutex<Vec<iroh::EndpointAddr>>,
     /// Home-peer ids sourced specifically from the mutable enrollment
@@ -1524,12 +1577,32 @@ impl ShellNetwork {
         // both sides of the wire.
         let local_peer_hash = crate::network::behaviour::peer_liveness_handle(&keypair.public());
         let lookup = MemoryLookup::new();
-        let builder = match reach {
-            Reach::Internet => iroh::Endpoint::builder(presets::N0),
-            Reach::Loopback => iroh::Endpoint::builder(presets::Minimal)
-                .relay_mode(iroh::RelayMode::Disabled)
-                .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
-                .map_err(|e| std::io::Error::other(format!("iroh bind: {e}")))?,
+        // The relay transport binds with an empty map: no home relay, net
+        // report or port mapping until something needs this device
+        // reachable, when `reachability` adds the held-back relays.
+        let held_back = iroh::RelayMode::Custom(iroh::RelayMap::empty());
+        let internet = matches!(reach, Reach::Internet);
+        let (builder, deferred_relays) = match reach {
+            Reach::Internet => (
+                iroh::Endpoint::builder(presets::N0).relay_mode(held_back),
+                iroh::endpoint::default_relay_mode().relay_map(),
+            ),
+            #[cfg(test)]
+            Reach::Loopback => (
+                iroh::Endpoint::builder(presets::Minimal)
+                    .relay_mode(iroh::RelayMode::Disabled)
+                    .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
+                    .map_err(|e| std::io::Error::other(format!("iroh bind: {e}")))?,
+                iroh::RelayMap::empty(),
+            ),
+            #[cfg(test)]
+            Reach::LoopbackHoldingRelays => (
+                iroh::Endpoint::builder(presets::Minimal)
+                    .relay_mode(held_back)
+                    .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
+                    .map_err(|e| std::io::Error::other(format!("iroh bind: {e}")))?,
+                reachability_tests::unused_relays(),
+            ),
         };
         let endpoint = runtime
             .block_on(
@@ -1540,9 +1613,15 @@ impl ShellNetwork {
                     .bind(),
             )
             .map_err(|e| std::io::Error::other(format!("iroh bind: {e}")))?;
-        let mdns = match reach {
-            Reach::Internet => init_lan_discovery(&endpoint),
-            Reach::Loopback => None,
+        let reachability = crate::network::Reachability::defer(
+            &endpoint,
+            &deferred_relays,
+            runtime.handle().clone(),
+        );
+        let mdns = if internet {
+            init_lan_discovery(&endpoint)
+        } else {
+            None
         };
         tracing::info!(
             local_peer_id = %local_peer_id,
@@ -1575,11 +1654,12 @@ impl ShellNetwork {
                 .with_label(identity.device_cert.device_label.clone()),
             )
         });
-        let (cmd_tx, _join) = Actor::spawn_reporting_addrs(
+        let (cmd_tx, _join) = Actor::spawn_deferring_relays(
             endpoint,
             lookup,
             host_identity.clone(),
             Arc::clone(&listen_addrs),
+            reachability.clone(),
         );
         if let Some(mdns) = mdns {
             spawn_lan_discovery_forwarding(&runtime, mdns, &cmd_tx);
@@ -1632,6 +1712,7 @@ impl ShellNetwork {
         // Peer id `1` is the replica-side identity for
         // `WorkspaceTreeReplica::handle`'s `_sender` arg; the actor's
         // Iroh `EndpointId` is transport-level and hashed separately.
+        let tree_for_reachability = tree.clone();
         let replica = Arc::new(Mutex::new(WorkspaceTreeReplica::new(1, tree)));
 
         // Capacity matches `Actor::spawn`'s command-channel default.
@@ -1674,6 +1755,18 @@ impl ShellNetwork {
                 .map(|invite| (invite.id, invite))
                 .collect();
         persist_pending_invitations(&pending_invitations_path, &pending_identity_admissions);
+        let other_devices = device_fabric
+            .snapshots()
+            .keys()
+            .any(|device| Some(device) != personal_continuity_device.as_ref());
+        if let Some(why) = needs_reachability(
+            &tree_for_reachability.read(),
+            &local_peer_id.to_string(),
+            !pending_identity_admissions.is_empty(),
+            other_devices,
+        ) {
+            reachability.wake(why);
+        }
 
         let network = Self {
             cmd_tx,
@@ -1690,6 +1783,7 @@ impl ShellNetwork {
             host_identity,
             local_peer_id,
             listen_addrs,
+            reachability,
             host_addrs: Mutex::new(host_addrs),
             registered_home_peer_ids: Mutex::new(home_peer_ids),
             dialed_direct_peers: Mutex::new(dialed_direct_peers),
@@ -3963,6 +4057,9 @@ impl ShellNetwork {
                 expiry_seconds_from_now,
             );
         }
+        // The invitee will dial this device. Until its address names a home
+        // relay, the invitee's dial finds the relay through address lookup.
+        self.reachability.wake("an invitation was issued");
         let addr = self
             .dial_addr()
             .ok_or_else(|| "peer-sync is not listening yet; try again in a moment".to_string())?;
@@ -7545,6 +7642,7 @@ pub(crate) fn shell_network_for_test(
         host_identity: None,
         local_peer_id,
         listen_addrs: Arc::new(Mutex::new(Vec::new())),
+        reachability: crate::network::Reachability::default(),
         host_addrs: Mutex::new(Vec::new()),
         registered_home_peer_ids: Mutex::new(std::collections::HashSet::new()),
         dialed_direct_peers: Mutex::new(std::collections::HashSet::new()),
@@ -7637,6 +7735,26 @@ pub(crate) fn native_read_network_for_test(
     network.local_peer_id = network.keypair.public();
     network.host_identity = Some(identity);
     (network, commands)
+}
+
+/// Deliver a fixture response through production peer authentication and RPC matching.
+#[cfg(test)]
+pub(crate) fn native_remote_answer_for_test(
+    network: &ShellNetwork,
+    workspace: u64,
+    from: iroh::EndpointId,
+    message: tilo_actions::remote::RemoteActionMessage,
+) {
+    let frame = tilo_actions::remote::RemoteActionFrame::new(message)
+        .encode()
+        .unwrap();
+    network.dispatch_neighbour_msg(
+        workspace,
+        from,
+        None,
+        false,
+        NeighbourMsg::RemoteAction { frame },
+    );
 }
 
 /// Give a fixture network the worker runtime a spawned one owns, so governor

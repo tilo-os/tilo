@@ -96,10 +96,7 @@ impl NowPlayingSession {
 }
 
 impl NowPlayingAction {
-    #[cfg_attr(
-        not(web_page),
-        allow(dead_code, reason = "only a page answers media-session actions")
-    )]
+    #[cfg(any(web_page, test))]
     pub(crate) fn from_page(name: &str) -> Option<Self> {
         Some(match name {
             "play" => Self::Play,

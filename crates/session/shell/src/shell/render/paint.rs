@@ -29,6 +29,7 @@ use wgpu::util::TextureBlitter;
 
 use super::hdr_composite::{HdrCompositor, HdrPass};
 use super::hdr_encode::HdrEncodePipeline;
+use super::icc_lut::IccLut;
 use super::orientation::OrientedCopy;
 use super::xrgb_history::XrgbWritePlan;
 pub use super::xrgb_history::{
@@ -584,6 +585,11 @@ pub struct RetainedGpuTarget {
     /// available when that submission overflows and is followed by a dense recovery, so
     /// diagnostics describe the submitted sparse work rather than guessing from capability.
     last_sparse_render_stats: Option<vello::SparseRenderStats>,
+    /// The layers strip pans are composited from, allocated by the first
+    /// frame that comes as layers ([`Self::render_layers_until`]).
+    strip_layers: Option<super::strip_layers::StripLayers>,
+    /// The work the latest layered frame did.
+    last_layer_work: Option<super::strip_layers::LayerWork>,
 }
 
 /// Whether this process has published its pipelines for apps (see [`ui::pipeline_seed`]).
@@ -719,6 +725,8 @@ impl RetainedGpuTarget {
             last_clip_single_group_full_attempts: 0,
             last_clip_single_group_sparse_attempts: 0,
             last_sparse_render_stats: None,
+            strip_layers: None,
+            last_layer_work: None,
         };
         if gpu.adapter.get_info().device_type == wgpu::DeviceType::Cpu {
             // Lavapipe compiles each pipeline on its first dispatch: on a cold shader cache,
@@ -812,6 +820,10 @@ impl RetainedGpuTarget {
         if self.base_color != color {
             self.base_color = color;
             self.invalidate();
+            // The backdrop layer is rendered over the base colour.
+            if let Some(layers) = self.strip_layers.as_mut() {
+                layers.shown = None;
+            }
         }
     }
 
@@ -969,6 +981,290 @@ impl RetainedGpuTarget {
             framebuffer_copy_bytes: 0,
             framebuffer_staging_bytes: 0,
         })
+    }
+
+    /// Whether [`Self::render_layers_until`] can present `cache`: a target
+    /// rendered whole, in one piece, of the size the layers are drawn at.
+    pub fn layers_eligible(&self, cache: &crate::shell::frame::FrameCache) -> bool {
+        !cache.strips.is_empty()
+            && Self::band_rows(self.size).is_none()
+            && cache.width >= self.size.0
+            && self.hdr_pass.is_none()
+            && self.backdrop.is_none()
+    }
+
+    /// Render a frame that came as layers ([`crate::shell::frame::FramePaint::cache`])
+    /// by compositing retained layer textures: a strip pan copies what stays
+    /// on screen and rasterises only what it uncovered (see
+    /// [`super::strip_layers`]). `post_render` then reads the composited
+    /// target, as after [`Self::render_until`]. Waits for completion.
+    ///
+    /// # Errors
+    /// As [`Self::render_until`]; [`BridgeError::InvalidSize`] when the
+    /// layers are not [`Self::layers_eligible`]. A failure forgets the
+    /// layers, so the next layered frame rasterises them whole.
+    pub fn render_layers_until(
+        &mut self,
+        cache: &crate::shell::frame::FrameCache,
+        revision: u64,
+        deadline: Instant,
+        post_render: impl Fn(&wgpu::Device, &mut wgpu::CommandEncoder, &wgpu::TextureView),
+    ) -> Result<GpuFrameStats, BridgeError> {
+        if !self.layers_eligible(cache) {
+            return Err(BridgeError::InvalidSize(format!(
+                "layers {} wide with {} strips cannot be composited into a {}x{} target",
+                cache.width,
+                cache.strips.len(),
+                self.size.0,
+                self.size.1
+            )));
+        }
+        let policy = CompletionPolicy::Absolute(deadline);
+        crate::shell::gpu_frames::apply(
+            &mut self.renderer,
+            self.present_generation,
+            &mut self.client_frames,
+        );
+        self.reset_attempts();
+        self.check_live(policy)?;
+        if self
+            .strip_layers
+            .as_ref()
+            .is_none_or(|layers| layers.size != self.size)
+        {
+            self.strip_layers = Some(super::strip_layers::StripLayers::new(
+                &self.device,
+                self.size,
+            ));
+        }
+        let shown = self.strip_layers.as_ref().and_then(|layers| {
+            layers.shown.as_ref().map(|shown| {
+                let current = self.retained_target_valid
+                    && self.last_successful_revision == Some(shown.revision);
+                (shown, current)
+            })
+        });
+        let work = match shown {
+            Some((shown, current)) => {
+                super::strip_layers::plan(Some(shown), cache, self.size, current)
+            }
+            None => super::strip_layers::plan(None, cache, self.size, false),
+        };
+        // The target holds this frame only once the composite lands.
+        self.invalidate();
+        let result = self.run_layer_work(cache, &work, policy, post_render);
+        match &result {
+            Ok(()) => {
+                self.retained_target_valid = true;
+                self.last_successful_revision = Some(revision);
+                if let Some(layers) = self.strip_layers.as_mut() {
+                    layers.shown = Some(super::strip_layers::Shown::of(cache, revision));
+                }
+            }
+            Err(error) => {
+                if let Some(layers) = self.strip_layers.as_mut() {
+                    layers.shown = None;
+                }
+                if !matches!(error, BridgeError::RecoveryExhausted { .. }) {
+                    self.poisoned = true;
+                }
+            }
+        }
+        self.last_layer_work = Some(work);
+        result?;
+        Ok(GpuFrameStats {
+            revision,
+            damage_admitted: true,
+            render_attempts: self.last_render_attempts,
+            sparse_attempts: self.last_sparse_render_attempts,
+            full_attempts: self.last_full_render_attempts,
+            completion_markers: self.completion_markers,
+            framebuffer_copy_bytes: 0,
+            framebuffer_staging_bytes: 0,
+        })
+    }
+
+    /// The target's pixels, RGBA, row by row: what the final pass reads.
+    #[cfg(test)]
+    pub(crate) fn read_rgba_for_test(&self) -> Vec<u8> {
+        let (width, height) = self.size;
+        let row = width.saturating_mul(4);
+        let padded = row
+            .div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
+            .saturating_mul(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+        let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("tilo-target-readback-for-test"),
+            size: u64::from(padded).saturating_mul(u64::from(height)),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        encoder.copy_texture_to_buffer(
+            self.texture.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded),
+                    rows_per_image: Some(height),
+                },
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        self.queue.submit([encoder.finish()]);
+        let slice = buffer.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            tx.send(result).ok();
+        });
+        self.device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: Some(tilo_test_env::hang_bound()),
+            })
+            .expect("the readback copy completes");
+        rx.recv().expect("map callback").expect("map succeeds");
+        let mapped = slice.get_mapped_range();
+        let (padded, row) = (
+            usize::try_from(padded).expect("row pitch fits usize"),
+            usize::try_from(row).expect("row bytes fit usize"),
+        );
+        mapped
+            .chunks_exact(padded)
+            .flat_map(|line| &line[..row])
+            .copied()
+            .collect()
+    }
+
+    /// The work the latest [`Self::render_layers_until`] planned.
+    #[cfg(test)]
+    pub(crate) fn last_layer_work_for_test(&self) -> Option<&super::strip_layers::LayerWork> {
+        self.last_layer_work.as_ref()
+    }
+
+    /// The work the latest [`Self::render_layers_until`] did, for counters.
+    pub fn last_layer_raster_pixels(&self) -> Option<(u64, u64)> {
+        self.last_layer_work
+            .as_ref()
+            .map(|work| (work.raster_pixels(self.size), work.composite_pixels()))
+    }
+
+    fn run_layer_work(
+        &mut self,
+        cache: &crate::shell::frame::FrameCache,
+        work: &super::strip_layers::LayerWork,
+        policy: CompletionPolicy,
+        post_render: impl Fn(&wgpu::Device, &mut wgpu::CommandEncoder, &wgpu::TextureView),
+    ) -> Result<(), BridgeError> {
+        use super::strip_layers::{Layer, WorkspaceWork};
+        let transparent = Color::TRANSPARENT;
+        if work.backdrop {
+            let base = self.base_color;
+            self.render_layer(Layer::Backdrop, &cache.layers.backdrop, None, base, policy)?;
+        }
+        if work.chrome {
+            self.render_layer(
+                Layer::Chrome,
+                &cache.layers.chrome,
+                None,
+                transparent,
+                policy,
+            )?;
+        }
+        let size = (f64::from(self.size.0), f64::from(self.size.1));
+        let panned = || {
+            let mut scene = Scene::new();
+            super::strip_layers::append_panned(
+                &mut scene,
+                &cache.layers.workspace,
+                &cache.strips,
+                size,
+            );
+            scene
+        };
+        match &work.workspace {
+            WorkspaceWork::Unchanged => {}
+            WorkspaceWork::Whole => {
+                let scene = panned();
+                self.render_layer(Layer::Workspace, &scene, None, transparent, policy)?;
+            }
+            WorkspaceWork::Pan { copies, uncovered } => {
+                if !copies.is_empty() {
+                    let mut encoder =
+                        self.device
+                            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                                label: Some("tilo-strip-layer-pan"),
+                            });
+                    if let Some(layers) = self.strip_layers.as_mut() {
+                        layers.encode_copies(&self.device, &mut encoder, copies);
+                    }
+                    self.queue.submit([encoder.finish()]);
+                }
+                if !uncovered.is_empty() {
+                    let scene = panned();
+                    let regions = self
+                        .renderer
+                        .sparse_fine_supported()
+                        .then(|| uncovered.clone());
+                    self.render_layer(Layer::Workspace, &scene, regions, transparent, policy)?;
+                }
+            }
+        }
+        self.check_live(policy)?;
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("tilo-strip-layer-composite"),
+            });
+        if let (Some(layers), Some(rect)) = (self.strip_layers.as_ref(), work.composite) {
+            layers.encode_composite(&self.device, &self.queue, &mut encoder, &self.view, rect);
+        }
+        post_render(&self.device, &mut encoder, &self.view);
+        let submission = self.queue.submit([encoder.finish()]);
+        self.wait_submission(submission, policy)
+    }
+
+    /// Render `scene` into one layer's texture, through the target's own
+    /// render path (its recovery from vello's budget overflow included):
+    /// the layer's texture stands in for the target's for the render.
+    fn render_layer(
+        &mut self,
+        layer: super::strip_layers::Layer,
+        scene: &Scene,
+        regions: Option<Vec<vello::FineDamageRect>>,
+        base_color: Color,
+        policy: CompletionPolicy,
+    ) -> Result<(), BridgeError> {
+        self.swap_layer(layer);
+        let base_color = std::mem::replace(&mut self.base_color, base_color);
+        // Each layer has the recovery attempts a frame has.
+        let earlier_attempts = std::mem::take(&mut self.last_render_attempts);
+        let rendered = self.render_attempts(
+            scene,
+            regions,
+            FrameOutput::GpuOnly,
+            policy,
+            None,
+            |_, _, _| {},
+        );
+        self.last_render_attempts = self.last_render_attempts.saturating_add(earlier_attempts);
+        self.base_color = base_color;
+        self.swap_layer(layer);
+        rendered.map(|_| ())
+    }
+
+    fn swap_layer(&mut self, layer: super::strip_layers::Layer) {
+        if let Some(layers) = self.strip_layers.as_mut() {
+            let slot = layers.texture_mut(layer);
+            std::mem::swap(&mut self.texture, &mut slot.texture);
+            std::mem::swap(&mut self.view, &mut slot.view);
+        }
     }
 
     /// Completed output for read-only sampling, never a display presentation claim.
@@ -1973,6 +2269,55 @@ impl DispatchStageObserver {
     }
 }
 
+/// The presenting renderer's wgpu context and the index of its device.
+///
+/// Every backend but OpenGL first: a hardware adapter there needs no OpenGL, whose EGL
+/// driver otherwise stays loaded and initialised for the whole session — on a machine
+/// without a GPU, Mesa's llvmpipe beside lavapipe with a second rasteriser thread pool
+/// (`ui::gpu`'s own choice keeps OpenGL for a process that sees a render node and has no
+/// pinned Vulkan driver, which the compositor is). Only when those backends offer no
+/// hardware adapter and OpenGL does is the context's own instance used, for a GPU only
+/// OpenGL drives, exactly as before. `WGPU_BACKEND` still decides alone.
+fn open_render_context() -> Option<(RenderContext, usize)> {
+    let mut context = RenderContext::new();
+    if wgpu::Backends::from_env().is_some() {
+        let id = context.device(None).block_on()?;
+        return Some((context, id));
+    }
+    let hardware =
+        |adapter: &wgpu::Adapter| adapter.get_info().device_type != wgpu::DeviceType::Cpu;
+    let own = std::mem::replace(
+        &mut context.instance,
+        wgpu::Instance::new(wgpu::InstanceDescriptor {
+            display: None,
+            backends: wgpu::Backends::all().difference(wgpu::Backends::GL),
+            flags: wgpu::InstanceFlags::from_build_config().with_env(),
+            memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
+            backend_options: wgpu::BackendOptions::from_env_or_default(),
+        }),
+    );
+    let found = context.device(None).block_on();
+    let found_hardware = found
+        .and_then(|id| context.devices.get(id))
+        .is_some_and(|handle| hardware(&handle.adapter));
+    if let Some(id) = found
+        && (found_hardware
+            || !own
+                .enumerate_adapters(wgpu::Backends::all())
+                .block_on()
+                .iter()
+                .any(hardware))
+    {
+        return Some((context, id));
+    }
+    // No adapter without OpenGL, or a GPU only the context's own backends drive: open it
+    // there instead, as before.
+    context.devices.clear();
+    context.instance = own;
+    let id = context.device(None).block_on()?;
+    Some((context, id))
+}
+
 /// CPU-fallback bridge between a vello `Scene` and an RGBA byte buffer. Owns its wgpu device +
 /// offscreen texture + readback buffer so callers can reuse it across frames. Single-output by design — multi-output is one bridge per output.
 #[cfg_attr(
@@ -1990,7 +2335,7 @@ pub struct VelloDrmBridge {
     dispatch_stage_observer: Option<DispatchStageObserver>,
     /// SDR → PQ encode passes, one per HDR scanout format in use.
     hdr_encoders: Vec<HdrEncodePipeline>,
-    /// The SDR final pass of rotated outputs; built with the first one.
+    /// The SDR final pass of rotated or calibrated outputs; built with the first one.
     oriented_copy: Option<OrientedCopy>,
     /// Composites HDR layers; built with the first frame that has any.
     hdr_compositor: Option<HdrCompositor>,
@@ -2009,6 +2354,8 @@ pub struct VelloDrmBridge {
 
     retained_staging_valid: bool,
     staging_content: Option<(u64, Option<u64>)>,
+    /// No frame has been painted through this bridge yet ([`Self::take_first_frame`]).
+    first_frame_pending: bool,
 
     /// Process-unique identity and monotonic content epoch for opt-in destination histories.
     xrgb_history_generation: Option<u64>,
@@ -2021,6 +2368,13 @@ pub struct VelloDrmBridge {
     /// One retained surface per output that is not the whole scene, for
     /// [`Self::paint_output_until`]. They share `target`'s renderer and device.
     output_surfaces: Vec<(super::OutputId, OutputSurface)>,
+    /// On a software rasteriser, has each heap trim return the device memory
+    /// closed windows freed (TIL-731) for as long as this bridge lives.
+    _device_memory: Option<crate::shell::heap_trim::DeviceRegistration>,
+    /// Atlas side and renderer allocations at the last `RENDERER-MEMORY` line.
+    logged_memory: Option<[u64; 6]>,
+    /// [`crate::shell::heap_trim::windows_closed`] at the last frame.
+    windows_closed_seen: u64,
     /// Narrow fault injection for the tracked-swizzle cleanup test. It is absent from ordinary
     /// binaries and shortens only the test's mapped source view after GPU completion.
     #[cfg(test)]
@@ -2046,8 +2400,7 @@ impl VelloDrmBridge {
         }
 
         let xrgb_history_generation = Self::next_xrgb_history_generation();
-        let mut context = RenderContext::new();
-        let dev_id = context.device(None).block_on().ok_or_else(|| {
+        let (context, dev_id) = open_render_context().ok_or_else(|| {
             BridgeError::NoAdapter(
                 "no wgpu adapter (install vulkan/llvmpipe drivers in the runtime)".to_owned(),
             )
@@ -2078,6 +2431,7 @@ impl VelloDrmBridge {
         ));
         let bgra_blitter = TextureBlitter::new(device, wgpu::TextureFormat::Bgra8Unorm);
         let (readback_buf, padded_bytes_per_row) = Self::allocate_staging(device, width, height);
+        let device_memory = crate::shell::heap_trim::register_device(&adapter_info, device);
 
         Ok(Self {
             context,
@@ -2101,12 +2455,16 @@ impl VelloDrmBridge {
 
             retained_staging_valid: false,
             staging_content: None,
+            first_frame_pending: true,
 
             xrgb_history_generation,
             xrgb_history_epoch: Some(1),
             recovery_not_before: None,
             recovery_backoff: RECOVERY_BACKOFF_INITIAL,
             output_surfaces: Vec::new(),
+            _device_memory: device_memory,
+            logged_memory: None,
+            windows_closed_seen: crate::shell::heap_trim::windows_closed(),
             #[cfg(test)]
             fail_next_tracked_swizzle: false,
         })
@@ -2117,6 +2475,13 @@ impl VelloDrmBridge {
     /// `None` draws them opaque.
     pub fn set_backdrop(&mut self, backdrop: Option<Arc<ui::backdrop::BackdropFrame>>) {
         self.target.backdrop = backdrop;
+    }
+
+    /// `true` exactly once: on the first call after this bridge was built, which its owner
+    /// makes once the bridge's first frame was painted. The pipelines' compile scratch is
+    /// free by then.
+    pub fn take_first_frame(&mut self) -> bool {
+        std::mem::take(&mut self.first_frame_pending)
     }
 
     /// Whether [`Self::paint`] has stored a complete tight RGBA frame.
@@ -2388,6 +2753,8 @@ impl VelloDrmBridge {
             OutputSignal {
                 sdr_white_nits,
                 hdr_layers,
+                color_lut: None,
+                layers: None,
             },
         )
     }
@@ -2417,26 +2784,29 @@ impl VelloDrmBridge {
         }
     }
 
-    /// The final pass `output` needs exists and writes its orientation with the next
-    /// submission: the PQ encode for an HDR target, the oriented copy for a rotated SDR one.
-    fn prepare_final_pass(&mut self, output: OutputTarget<'_>, hdr: bool, sdr_white_nits: f32) {
+    /// The final pass `output` needs exists and is set up for the next submission: the PQ
+    /// encode for an HDR target, the oriented copy for an SDR one that is rotated or
+    /// calibrated (`color_lut`). Returns whether the oriented copy runs; an unrotated,
+    /// uncalibrated SDR target keeps the plain blit.
+    fn prepare_final_pass(
+        &mut self,
+        output: OutputTarget<'_>,
+        hdr: bool,
+        sdr_white_nits: f32,
+        color_lut: Option<&IccLut>,
+    ) -> bool {
         if hdr {
             self.prepare_hdr_encoder(output.format, sdr_white_nits, output.orientation);
-        } else {
-            self.prepare_oriented_copy(output.orientation);
+            return false;
         }
-    }
-
-    /// The SDR final pass of a rotated output exists and writes `orientation` with the next
-    /// submission. An unrotated output keeps the plain blit.
-    fn prepare_oriented_copy(&mut self, orientation: OutputTransform) {
-        if orientation == OutputTransform::Normal {
-            return;
+        if output.orientation == OutputTransform::Normal && color_lut.is_none() {
+            return false;
         }
-        let device = &self.target.device;
+        let (device, queue) = (&self.target.device, &self.target.queue);
         self.oriented_copy
             .get_or_insert_with(|| OrientedCopy::new(device))
-            .set_orientation(&self.target.queue, orientation);
+            .prepare(device, queue, output.orientation, color_lut);
+        true
     }
 
     /// Render `scene` into the target currently swapped into `self.target`, then run the
@@ -2451,9 +2821,65 @@ impl VelloDrmBridge {
         deadline: Instant,
         signal: OutputSignal<'_>,
     ) -> Result<GpuFrameStats, BridgeError> {
+        // A strip pan of a plain SDR output is composited from the retained
+        // layers; the layers hold SDR pixels only, unturned and uncalibrated.
+        let plain = output.format == wgpu::TextureFormat::Bgra8Unorm
+            && output.orientation == OutputTransform::Normal
+            && signal.color_lut.is_none();
+        if let Some(cache) = signal
+            .layers
+            .filter(|cache| plain && self.target.layers_eligible(cache))
+        {
+            return self.paint_layers_final_pass(cache, damage.revision, output, deadline);
+        }
+        self.paint_scene_final_pass(scene, damage, output, deadline, signal)
+    }
+
+    /// [`Self::paint_final_pass`] for a frame that came as layers: the
+    /// target composites it ([`RetainedGpuTarget::render_layers_until`]),
+    /// then the plain copy writes `output`.
+    fn paint_layers_final_pass(
+        &mut self,
+        cache: &crate::shell::frame::FrameCache,
+        revision: u64,
+        output: OutputTarget<'_>,
+        deadline: Instant,
+    ) -> Result<GpuFrameStats, BridgeError> {
+        self.last_phase_timing = None;
+        if let Some(error) = self.take_device_error() {
+            return Err(error);
+        }
+        if self.target.poisoned {
+            let (width, height) = self.target.size;
+            self.reconstruct_target(width, height)?;
+        }
+        output.check_shows(self.target.size)?;
+        let blitter = &self.bgra_blitter;
+        let view = output.view;
+        let rendered = self.target.render_layers_until(
+            cache,
+            revision,
+            deadline,
+            |device, encoder, source| {
+                blitter.copy(device, encoder, source, view);
+            },
+        );
+        rendered.and_then(|stats| self.take_device_error().map_or(Ok(stats), Err))
+    }
+
+    /// [`Self::paint_final_pass`] for a frame rendered from its scene.
+    fn paint_scene_final_pass(
+        &mut self,
+        scene: &Scene,
+        damage: SceneDamage<'_>,
+        output: OutputTarget<'_>,
+        deadline: Instant,
+        signal: OutputSignal<'_>,
+    ) -> Result<GpuFrameStats, BridgeError> {
         let OutputSignal {
             sdr_white_nits,
             hdr_layers,
+            ..
         } = signal;
         self.last_phase_timing = None;
         if let Some(error) = self.take_device_error() {
@@ -2495,15 +2921,14 @@ impl VelloDrmBridge {
         } else {
             damage
         };
-        self.prepare_final_pass(output, hdr, sdr_white_nits);
+        // The profile describes the panel's SDR response; the PQ encode replaces it.
+        let color_lut = signal.color_lut.filter(|_| !hdr);
+        let copies = self.prepare_final_pass(output, hdr, sdr_white_nits, color_lut);
         let encode = self
             .hdr_encoders
             .iter()
             .find(|pipeline| hdr && pipeline.format() == output.format);
-        let oriented = self
-            .oriented_copy
-            .as_ref()
-            .filter(|_| !hdr && output.orientation != OutputTransform::Normal);
+        let oriented = self.oriented_copy.as_ref().filter(|_| copies);
         let blitter = &self.bgra_blitter;
         let view = output.view;
         let format = output.format;
@@ -2523,7 +2948,7 @@ impl VelloDrmBridge {
             |device, encoder, source| match (compositor, encode, oriented) {
                 (Some(compositor), _, _) => compositor.encode(encoder, source, view, format),
                 (None, Some(pipeline), _) => pipeline.encode(device, encoder, source, view),
-                (None, None, Some(copy)) => copy.copy(device, encoder, source, view),
+                (None, None, Some(copy)) => copy.copy(device, encoder, source, view, color_lut),
                 (None, None, None) => blitter.copy(device, encoder, source, view),
             },
         );
@@ -4533,6 +4958,71 @@ impl VelloDrmBridge {
         self.target.memory_stats()
     }
 
+    /// After each frame (TIL-731). When a window closed since the last
+    /// frame, the image atlas comes down within the next few frames rather
+    /// than after sixty: a desktop that goes idle after a close draws too
+    /// few to bring it down the slow way, and kept up to 256 MiB of atlas.
+    /// When the atlas did come down, so did the scene: the buffers pooled for
+    /// the larger one go too (the next frame pools what it needs), and a trim
+    /// gives the memory back to the kernel. Cheap enough for every frame.
+    pub fn after_paint(&mut self) {
+        let closed = crate::shell::heap_trim::windows_closed();
+        if closed != self.windows_closed_seen {
+            self.windows_closed_seen = closed;
+            self.target.renderer.shrink_image_atlas_soon();
+        }
+        let atlas_before = self.logged_memory.map(|mark| mark[0]);
+        let atlas_now = u64::from(self.target.image_cache_stats().atlas_side);
+        if atlas_before.is_some_and(|was| atlas_now < was) {
+            self.target.renderer.trim_pooled_buffers();
+            crate::shell::heap_trim::request();
+        }
+        self.log_memory_changes();
+    }
+
+    /// Log one `RENDERER-MEMORY` line when the image atlas changes size or
+    /// the renderer's GPU allocations move by 8 MiB or more since the last
+    /// line, so the session log tells which of them a desktop with no window
+    /// left still holds.
+    fn log_memory_changes(&mut self) {
+        const STEP: u64 = 8 << 20;
+        let memory = self.target.memory_stats();
+        let images = self.target.image_cache_stats();
+        let mark = [
+            u64::from(images.atlas_side),
+            memory.image_bytes,
+            memory.pooled_buffer_bytes,
+            memory.live_buffer_bytes,
+            memory.bump_budget_bytes,
+            memory.sparse_upload_bytes,
+        ];
+        let moved = self.logged_memory.is_none_or(|last| {
+            last[0] != mark[0]
+                || last
+                    .iter()
+                    .zip(mark)
+                    .skip(1)
+                    .any(|(was, now)| was.abs_diff(now) >= STEP)
+        });
+        if !moved {
+            return;
+        }
+        self.logged_memory = Some(mark);
+        let mib = |bytes: u64| bytes / (1 << 20);
+        // A measurement line for the session log, like WORKSPACE-SWITCH.
+        eprintln!(
+            "RENDERER-MEMORY atlas_side={} image_mib={} pooled_mib={} live_mib={} bump_mib={} \
+             sparse_upload_mib={} resident_images={}",
+            images.atlas_side,
+            mib(memory.image_bytes),
+            mib(memory.pooled_buffer_bytes),
+            mib(memory.live_buffer_bytes),
+            mib(memory.bump_budget_bytes),
+            mib(memory.sparse_upload_bytes),
+            images.resident,
+        );
+    }
+
     /// Dense Vello submissions used by the latest paint, including bump-budget retries.
     pub fn last_full_render_attempts(&self) -> usize {
         self.target.last_full_render_attempts
@@ -5373,17 +5863,24 @@ mod tests {
         view: &OutputView,
         damage: SceneDamage<'_>,
     ) -> (wgpu::Texture, GpuFrameStats) {
-        paint_output_offscreen_as(bridge, scene, view, damage, wgpu::TextureFormat::Bgra8Unorm)
+        paint_output_offscreen_as(
+            bridge,
+            scene,
+            view,
+            damage,
+            (wgpu::TextureFormat::Bgra8Unorm, None),
+        )
     }
 
     /// [`paint_output_offscreen`] into a stand-in of `format`: `Bgra8Unorm` for an SDR
-    /// scanout, `Rgb10a2Unorm` for an `XBGR2101010` HDR one.
+    /// scanout, `Rgb10a2Unorm` for an `XBGR2101010` HDR one; through `color_lut` when the
+    /// output has an ICC profile.
     fn paint_output_offscreen_as(
         bridge: &mut VelloDrmBridge,
         scene: &Scene,
         view: &OutputView,
         damage: SceneDamage<'_>,
-        format: wgpu::TextureFormat,
+        (format, color_lut): (wgpu::TextureFormat, Option<&IccLut>),
     ) -> (wgpu::Texture, GpuFrameStats) {
         let (width, height) = view.target_size();
         let (device, _) = bridge.gpu();
@@ -5420,6 +5917,8 @@ mod tests {
                 OutputSignal {
                     sdr_white_nits: crate::shell::color_pipeline::SDR_REFERENCE_WHITE_NITS,
                     hdr_layers: &[],
+                    color_lut,
+                    layers: None,
                 },
             )
             .expect("the output's frame renders");
@@ -5670,7 +6169,7 @@ mod tests {
                 &scene,
                 &view,
                 full_frame(revision),
-                wgpu::TextureFormat::Rgb10a2Unorm,
+                (wgpu::TextureFormat::Rgb10a2Unorm, None),
             );
             let gpu = read_target(&bridge, &texture);
             let (pw, ph) = view.target_size();
@@ -5707,6 +6206,119 @@ mod tests {
                 "{transform:?}: the GPU PQ encode differs from the readback's by {max_delta} code values"
             );
         }
+    }
+
+    #[test]
+    fn a_calibrated_output_matches_the_readback_qcms_pass() {
+        // The readback calibrates on the CPU: the output's sub-rect copied out, qcms applied,
+        // then turned and swizzled (`paint_one_scanout`). The direct path does the same in
+        // its final GPU pass through the profile's `IccLut`, with no readback, and stays
+        // within the LUT's stated tolerance of qcms (`icc_lut` module docs).
+        let size = (90, 52);
+        let panel = super::super::icc_lut::tests::adobe_rgb();
+        let transform_icc = panel.transform();
+        let lut = IccLut::from_transform(&transform_icc);
+        let mut bridge = required_bridge(size.0, size.1);
+        let scene = asymmetric_scene(size);
+        let rgba = bridge.paint(&scene).expect("the dense render").to_vec();
+        let mut calibrated = Vec::new();
+        copy_rgba_subrect(
+            SubrectSource {
+                src_rgba: &rgba,
+                src_w: size.0 as usize,
+                src_h: size.1 as usize,
+                src_x: 0,
+                src_y: 0,
+            },
+            size.0 as usize,
+            size.1 as usize,
+            &mut calibrated,
+        );
+        transform_icc.apply(&mut calibrated);
+        bridge.set_phase_timing_enabled(true);
+        for (revision, transform) in (1..).zip(ORIENTATIONS) {
+            let view =
+                OutputView::at(crate::shell::render::OutputId(0), (0, 0), size).oriented(transform);
+            let (texture, _) = paint_output_offscreen_as(
+                &mut bridge,
+                &scene,
+                &view,
+                full_frame(revision),
+                (wgpu::TextureFormat::Bgra8Unorm, Some(&lut)),
+            );
+            assert_eq!(
+                bridge
+                    .last_phase_timing()
+                    .expect("phase timing")
+                    .readback_bytes,
+                0,
+                "{transform:?}: a calibrated output reads nothing back"
+            );
+            let gpu = read_target(&bridge, &texture);
+            let (pw, ph) = view.target_size();
+            let mut cpu = vec![0_u8; (pw * ph * 4) as usize];
+            swizzle_subrect_rgba_to_xrgb8888_composited(
+                SubrectSource {
+                    src_rgba: &calibrated,
+                    src_w: size.0 as usize,
+                    src_h: size.1 as usize,
+                    src_x: 0,
+                    src_y: 0,
+                },
+                &mut cpu,
+                (pw * 4) as usize,
+                (pw as usize, ph as usize),
+                transform,
+                None,
+            );
+            let max_delta = gpu
+                .chunks_exact(4)
+                .zip(cpu.chunks_exact(4))
+                .flat_map(|(g, c)| [0, 1, 2].map(|i| i32::from(g[i].abs_diff(c[i]))))
+                .max()
+                .unwrap_or(0);
+            assert!(
+                max_delta <= panel.max_code_delta,
+                "{transform:?}: the GPU calibration differs from the readback's qcms pass by {max_delta} code values"
+            );
+            // Without the profile the same output is further from the readback than that.
+            let uncalibrated = paint_output_pixels(&mut bridge, &scene, &view, revision + 100);
+            let uncalibrated_delta = uncalibrated
+                .chunks_exact(4)
+                .zip(cpu.chunks_exact(4))
+                .flat_map(|(g, c)| [0, 1, 2].map(|i| i32::from(g[i].abs_diff(c[i]))))
+                .max()
+                .unwrap_or(0);
+            assert!(
+                uncalibrated_delta > panel.max_code_delta,
+                "{transform:?}: the profile is visible ({uncalibrated_delta} code values)"
+            );
+        }
+    }
+
+    #[test]
+    fn an_hdr_output_ignores_its_icc_profile() {
+        // The profile describes the panel's SDR response; in HDR the PQ encode replaces it,
+        // on the GPU as on the readback.
+        let size = (90, 52);
+        let lut = IccLut::from_transform(&super::super::icc_lut::tests::adobe_rgb().transform());
+        let mut bridge = required_bridge(size.0, size.1);
+        let scene = asymmetric_scene(size);
+        let view = OutputView::at(crate::shell::render::OutputId(0), (0, 0), size)
+            .oriented(OutputTransform::Rotate90);
+        let pq = |bridge: &mut VelloDrmBridge, revision, color_lut| {
+            let (texture, _) = paint_output_offscreen_as(
+                bridge,
+                &scene,
+                &view,
+                full_frame(revision),
+                (wgpu::TextureFormat::Rgb10a2Unorm, color_lut),
+            );
+            read_target(bridge, &texture)
+        };
+        let plain = pq(&mut bridge, 1, None);
+        let profiled = pq(&mut bridge, 2, Some(&lut));
+        assert_eq!(plain, profiled);
     }
 
     #[test]

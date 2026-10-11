@@ -12,10 +12,10 @@ fn collect_submitted_widget_damage(widget: &dyn Widget, regions: &mut Vec<KurboR
 /// Draws the root widget, its overlay, the action palette, and any visible
 /// tooltip into `scene`. Returns the transform and logical window rect the
 /// rest of the frame (legacy cursors, remote presence, debug outlines, HUD)
-/// draws with, the draw-pass duration for the perf log line, and whether
-/// anything was painted outside the widgets' layout boxes (an overlay,
-/// history chrome, a dialog, the palette or a tooltip), which their damage
-/// does not cover.
+/// draws with, the draw-pass duration for the perf log line, and what was
+/// painted outside the widgets' layout boxes (an overlay, history chrome, a
+/// dialog, the palette; the tooltip's bounds), which their damage does not
+/// cover.
 #[allow(
     clippy::too_many_lines,
     reason = "frame drawing is one ordered composition pass whose sequencing must remain explicit"
@@ -28,7 +28,7 @@ fn draw_frame_content(
     height: u32,
     scale_factor: f32,
     t_draw_start: Option<crate::time::Instant>,
-) -> (Affine, KurboRect, u128, bool) {
+) -> DrawnFrame {
     app.restore_physical_configuration();
     let __prof_resources = app.profiler.as_ref().map(|_| crate::time::now());
     app.refresh_control_action_availability();
@@ -49,6 +49,16 @@ fn draw_frame_content(
     // instead of preserving the last frame.
     let __prof_draw = app.profiler.as_ref().map(|_| crate::time::now());
     let secrets = crate::secret_paint::SecretPaint::begin();
+    // A host that splits this scene into damage parts (an app in a tile)
+    // compares what is painted around the widgets itself: the window's
+    // chrome and layers are parts the size of the window, which repaint it
+    // only when they change.
+    let tracked = crate::scene_parts::is_tracked(scene);
+    let window_bounds = vec![transform.transform_rect_bbox(window_rect)];
+    let before_history = scene.encoding().draw_tags.len();
+    if tracked {
+        crate::scene_parts::begin(scene, crate::scene_parts::PartKey::new("ui.history", ()));
+    }
     if let Some(history) = &mut app.history {
         history.draw(
             scene,
@@ -58,12 +68,20 @@ fn draw_frame_content(
             &app.presence_ctx,
         );
     }
-    if app
+    if tracked {
+        crate::scene_parts::end(scene, window_bounds.clone());
+    }
+    let app_live = app
         .history
         .as_ref()
         .is_none_or(|history| history.live_visible())
-        && app.history_layout.is_none_or(|layout| layout.app_visible)
-    {
+        && app.history_layout.is_none_or(|layout| layout.app_visible);
+    // History mode that hides the live app is a layer over all of it; one
+    // that shows it and paints nothing of its own (or paints in a part)
+    // leaves the widgets' damage the whole change.
+    let history_shown = (!tracked && scene.encoding().draw_tags.len() != before_history)
+        || (app.history.is_some() && !app_live);
+    if app_live {
         crate::widget::native_view_frame_start(app.root_widget.as_mut());
         app.root_widget.draw_with_presence(
             scene,
@@ -80,6 +98,19 @@ fn draw_frame_content(
     // The overlay pass sees the whole window too: what escapes a scrolled
     // list's box (a menu opened in it) may go anywhere in the window.
     app.presence_ctx.pop_viewport(prev_vp);
+    // The first of the layers below that painted anything.
+    let mut top_layer = history_shown.then_some("history mode");
+    let mut painted = |scene: &Scene, layer: &'static str, before: &mut usize| {
+        let now = scene.encoding().draw_tags.len();
+        if now != *before && !tracked {
+            top_layer = top_layer.or(Some(layer));
+        }
+        *before = now;
+    };
+    let mut drawn = layer_start;
+    if tracked {
+        crate::scene_parts::begin(scene, crate::scene_parts::PartKey::new("ui.layers", ()));
+    }
     if app.history_chrome_enabled {
         let context = crate::standalone_history::HistoryReadContext {
             document: &app.state.doc,
@@ -104,6 +135,7 @@ fn draw_frame_content(
             app.layout.layout_dirty = true;
         }
     }
+    painted(scene, "the document history bar", &mut drawn);
     // The window's top layer, after the app and the window's own chrome:
     // open menus, popovers and modals composite above everything drawn so
     // far, so a modal's scrim covers the History bar and every region. The
@@ -122,6 +154,7 @@ fn draw_frame_content(
             &app.presence_ctx,
         );
     }
+    painted(scene, "an overlay of the app's widgets", &mut drawn);
     if let Some(history) = &mut app.history {
         history.draw_overlay(
             scene,
@@ -140,6 +173,7 @@ fn draw_frame_content(
             &app.presence_ctx,
         );
     }
+    painted(scene, "a history overlay", &mut drawn);
     if let Some(dialog) = app.close_admission.dialog.as_mut() {
         dialog.draw_overlay(
             scene,
@@ -149,6 +183,7 @@ fn draw_frame_content(
             &app.presence_ctx,
         );
     }
+    painted(scene, "the close dialog", &mut drawn);
     app.presence_ctx.pop_viewport(prev_vp);
     if let Some(ap) = app
         .actions
@@ -177,22 +212,46 @@ fn draw_frame_content(
             &app.presence_ctx,
         );
     }
-    draw_visible_tooltip(app, scene, transform, width, height, scale_factor);
-    let top_layer = scene.encoding().draw_tags.len() != layer_start;
+    painted(scene, "the action palette", &mut drawn);
+    if tracked {
+        crate::scene_parts::end(scene, window_bounds);
+    }
+    let tooltip = draw_visible_tooltip(app, scene, transform, width, height, scale_factor);
     app.set_secret_on_screen(secrets.finish());
 
     if let Some(p) = app.profiler.as_mut() {
         p.record_since(crate::profiling::Pass::Draw, __prof_draw);
     }
     let t_draw_us = t_draw_start.map_or(0, |t| t.elapsed().as_micros());
-    (
+    DrawnFrame {
         transform,
         window_rect,
-        t_draw_us,
-        top_layer || app.history.is_some(),
-    )
+        draw_us: t_draw_us,
+        top_layer,
+        tooltip,
+    }
 }
 
+/// What [`draw_frame_content`] drew a frame with, and what it painted over
+/// the widgets, where their damage cannot describe it.
+#[cfg(feature = "native")]
+struct DrawnFrame {
+    /// The transform the rest of the frame draws with.
+    transform: Affine,
+    /// The window, in logical pixels.
+    window_rect: KurboRect,
+    /// How long the draw pass took, for the perf log line.
+    draw_us: u128,
+    /// What was painted over the widgets (an overlay, history chrome, a
+    /// dialog, the palette), the first of them if several.
+    top_layer: Option<&'static str>,
+    /// Every pixel the tooltip painted over everything else, shadow
+    /// included, in scene (physical) coordinates.
+    tooltip: Option<KurboRect>,
+}
+
+/// Paint the tooltip on screen, if any, and return every pixel it painted
+/// in scene coordinates.
 #[cfg(feature = "native")]
 fn draw_visible_tooltip(
     app: &mut App,
@@ -201,7 +260,7 @@ fn draw_visible_tooltip(
     width: u32,
     height: u32,
     scale_factor: f32,
-) {
+) -> Option<KurboRect> {
     app.input.tooltip_host.tick(crate::time::now());
     // The widget under a shown tooltip may have been rebuilt since the
     // pointer settled (a toggle that now reads "Show" instead of "Hide"):
@@ -216,29 +275,33 @@ fn draw_visible_tooltip(
             .tooltip_host
             .refresh(current.map(|(rect, label, _)| (rect, label)));
     }
-    let Some((text, anchor)) = app
+    let (text, anchor) = app
         .input
         .tooltip_host
         .visible()
-        .map(|(label, anchor)| (crate::i18n::I18nManager::lookup(label, None), anchor))
-    else {
-        return;
-    };
+        .map(|(label, anchor)| (crate::i18n::I18nManager::lookup(label, None), anchor))?;
     let viewport = KurboRect::new(
         0.0,
         0.0,
         f64::from(width) / f64::from(scale_factor),
         f64::from(height) / f64::from(scale_factor),
     );
-    crate::widget::tooltip::draw_hover_tooltip_on(
-        scene,
-        transform,
+    let chip = crate::widget::tooltip::hover_chip_rect_on(
         &mut app.text_renderer,
         &app.theme,
         (anchor, side),
         &text,
         viewport,
     );
+    crate::widget::tooltip::draw_chip(
+        scene,
+        transform,
+        &mut app.text_renderer,
+        &app.theme,
+        chip,
+        &text,
+    );
+    Some(transform.transform_rect_bbox(crate::widget::tooltip::chip_paint_bounds(chip, &app.theme)))
 }
 
 /// Paint the presence a window shows over its widgets (legacy cursors, peer

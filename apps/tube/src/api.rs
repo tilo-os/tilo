@@ -1226,7 +1226,7 @@ async fn invidious_json(
     query: &[(&str, &str)],
 ) -> anyhow::Result<serde_json::Value> {
     let mut last = anyhow::anyhow!("no Invidious instance answered");
-    for instance in crate::backend::proxy::instances() {
+    for instance in tilo_invidious::instances() {
         let url = format!("{}{path}", instance.trim_end_matches('/'));
         match get_json(client, &url, query).await {
             Ok(Some(value)) if value.get("error").is_none() => return Ok(value),

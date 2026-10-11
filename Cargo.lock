@@ -553,8 +553,10 @@ dependencies = [
  "futures-util",
  "getrandom 0.4.3",
  "hex",
+ "install",
  "libc",
  "package-store",
+ "runtime-bundle",
  "runtime-portal",
  "sd-notify",
  "serde",
@@ -962,6 +964,30 @@ name = "autocfg"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
+
+[[package]]
+name = "automerge"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2fb849130973a7808a167887f56b1e8bdc36b9b541542602dcb337f34aecf47b"
+dependencies = [
+ "cfg-if",
+ "flate2",
+ "getrandom 0.4.3",
+ "hex",
+ "hexane",
+ "itertools 0.15.0",
+ "leb128",
+ "rand 0.10.1",
+ "rustc-hash 2.1.3",
+ "serde",
+ "sha2 0.11.0",
+ "smol_str 0.3.6",
+ "thiserror 2.0.21",
+ "tinyvec",
+ "tracing",
+ "unicode-segmentation",
+]
 
 [[package]]
 name = "az"
@@ -2521,6 +2547,7 @@ dependencies = [
  "tilo-actions",
  "tilo-paths",
  "tilo-test-env",
+ "tracing",
  "workspace-hack",
 ]
 
@@ -4350,7 +4377,6 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
- "trash",
  "unic-langid",
  "uuid",
  "wire-frame",
@@ -7079,7 +7105,6 @@ dependencies = [
  "tilo-ui",
  "tilo-vello",
  "tilo-winit",
- "tracing",
  "tracing-subscriber",
  "uuid",
  "workspace-hack",
@@ -7909,6 +7934,7 @@ dependencies = [
  "fs-protocol",
  "getrandom 0.4.3",
  "hex",
+ "install",
  "landlock",
  "libc",
  "libloading",
@@ -9188,6 +9214,7 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-clock",
  "tilo-files",
+ "tilo-invidious",
  "tilo-media",
  "tilo-net",
  "tilo-oauth",
@@ -12983,6 +13010,7 @@ dependencies = [
  "sha2 0.11.0",
  "tempfile",
  "thiserror 2.0.21",
+ "tilo-advisory-lock",
  "tilo-clock",
  "tilo-paths",
  "tilo-test-env",
@@ -14037,6 +14065,7 @@ dependencies = [
  "tilo-files",
  "tilo-fs",
  "tilo-keyboard-map",
+ "tilo-locale",
  "tilo-media",
  "tilo-model-gateway",
  "tilo-net",
@@ -14225,6 +14254,7 @@ dependencies = [
  "tilo-doc",
  "tilo-doc-codecs",
  "tilo-files",
+ "tilo-locale",
  "tilo-vello",
  "tilo-winit",
  "uuid",
@@ -14239,6 +14269,7 @@ dependencies = [
  "accesskit_unix",
  "accounts",
  "agent-provider-config",
+ "ash",
  "base64",
  "blake3",
  "bounded-command",
@@ -14348,6 +14379,7 @@ dependencies = [
  "tilo-doc",
  "tilo-doc-codecs",
  "tilo-files",
+ "tilo-identity-ceremony",
  "tilo-identity-host",
  "tilo-installed-apps",
  "tilo-joined-room",
@@ -15955,6 +15987,7 @@ dependencies = [
  "tilo-browser-peer",
  "tilo-clock",
  "tilo-crypto",
+ "tilo-desktop",
  "tilo-document",
  "tilo-model-gateway",
  "tilo-moq",
@@ -16090,6 +16123,7 @@ dependencies = [
 name = "tilo-app-state"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "durable-store",
  "hex",
  "same-file",
@@ -16146,6 +16180,7 @@ dependencies = [
 name = "tilo-automerge"
 version = "0.1.0"
 dependencies = [
+ "automerge",
  "tilo-automerge",
  "tilo-automerge-fork",
 ]
@@ -16280,6 +16315,7 @@ dependencies = [
  "serde_json",
  "settings-store",
  "tilo-actions",
+ "tilo-app",
  "tilo-automerge",
  "tilo-browser-peer",
  "tilo-desktop",
@@ -16705,7 +16741,6 @@ dependencies = [
  "tilo-actions",
  "tilo-automerge",
  "tilo-automerge-fork",
- "tilo-clock",
  "tilo-content",
  "tilo-resource",
  "tracing",
@@ -16911,6 +16946,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
+ "tilo-advisory-lock",
  "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-automerge-isolate",
@@ -16984,6 +17020,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-identity-ceremony"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "collab-types",
+ "data-encoding",
+ "ed25519-dalek 3.0.0",
+ "getrandom 0.4.3",
+ "hex",
+ "hmac 0.13.0",
+ "postcard",
+ "private-fs",
+ "rand_core 0.10.0",
+ "rustls",
+ "serde",
+ "serde_bytes",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "thiserror 2.0.21",
+ "threshold-identity",
+ "tilo-advisory-lock",
+ "tilo-clock",
+ "tilo-net",
+ "tilo-seal",
+ "tilo-test-env",
+ "wire-frame",
+ "workspace-hack",
+ "zeroize",
+]
+
+[[package]]
 name = "tilo-identity-host"
 version = "0.1.0"
 dependencies = [
@@ -17003,10 +17071,10 @@ dependencies = [
  "tilo-clock",
  "tilo-desktop-model",
  "tilo-files",
+ "tilo-identity-ceremony",
  "tilo-relay-protocol",
  "tilo-seal",
  "tilo-test-env",
- "tilo-ui",
  "tilo-unlock-protocol",
  "tilo-user-identity",
  "tracing",
@@ -17045,6 +17113,18 @@ dependencies = [
  "package-store",
  "tempfile",
  "tilo-app-package",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-invidious"
+version = "0.1.0"
+dependencies = [
+ "tilo-clock",
+ "tilo-net",
+ "tilo-test-env",
+ "tokio",
+ "tracing",
  "workspace-hack",
 ]
 
@@ -17104,6 +17184,17 @@ name = "tilo-libvirt-domain"
 version = "0.1.0"
 dependencies = [
  "quick-xml 0.41.0",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-locale"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tilo-app",
  "workspace-hack",
 ]
 
@@ -17857,6 +17948,7 @@ dependencies = [
  "serde_json",
  "tilo-clock",
  "tilo-moq",
+ "tilo-net",
  "tilo-relay-protocol",
  "tokio",
  "tokio-rustls",
@@ -18206,7 +18298,6 @@ dependencies = [
  "chrono",
  "collab-types",
  "cosmic-text",
- "data-encoding",
  "durable-store",
  "ed25519-dalek 3.0.0",
  "fluent",
@@ -18216,7 +18307,6 @@ dependencies = [
  "getrandom 0.2.17",
  "getrandom 0.4.3",
  "hex",
- "hmac 0.13.0",
  "hypher",
  "icu_segmenter",
  "image",
@@ -18239,7 +18329,6 @@ dependencies = [
  "runtime-identity",
  "runtime-portal",
  "rustc-hash 2.1.3",
- "rustls",
  "serde",
  "serde_bytes",
  "serde_json",
@@ -18268,6 +18357,7 @@ dependencies = [
  "tilo-headless-schema",
  "tilo-host",
  "tilo-host-search",
+ "tilo-identity-ceremony",
  "tilo-image-codec",
  "tilo-media",
  "tilo-paint-stream",
@@ -18276,7 +18366,6 @@ dependencies = [
  "tilo-process",
  "tilo-resource",
  "tilo-rt",
- "tilo-seal",
  "tilo-search",
  "tilo-spellcheck",
  "tilo-startup-metrics",
@@ -19231,6 +19320,7 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-clock",
  "tilo-files",
+ "tilo-invidious",
  "tilo-media",
  "tilo-net",
  "tilo-secrets",
@@ -19716,6 +19806,7 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-doc",
  "tilo-files",
+ "tilo-identity-ceremony",
  "tilo-resource",
  "tilo-ui",
  "tilo-vello",
@@ -20838,6 +20929,7 @@ dependencies = [
  "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-clock",
+ "tilo-locale",
  "tilo-net",
  "tilo-test-env",
  "tilo-vello",

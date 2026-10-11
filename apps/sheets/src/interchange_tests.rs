@@ -6,8 +6,9 @@
 use std::io::{Cursor, Write};
 use std::path::PathBuf;
 
-use crate::model::{CellFormat, Currency, DateStyle, a1_to_addr};
+use crate::model::{CellFormat, a1_to_addr};
 use crate::xlsx::{ImportedCell, SheetTable};
+use tilo_locale::{Currency, DateStyle};
 
 fn zip_of(entries: &[(&str, &str)]) -> Vec<u8> {
     let mut zw = zip::ZipWriter::new(Cursor::new(Vec::new()));

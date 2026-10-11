@@ -330,13 +330,32 @@ if grep -Eq 'systemctl enable (NetworkManager|firewalld|chronyd)\.service' "$rep
   exit 1
 fi
 grep -Fq 'systemctl disable NetworkManager.service firewalld.service chronyd.service' "$repo/os/Containerfile"
-grep -Fq 'systemctl enable tilo-network-start.timer' "$repo/os/Containerfile"
-network_timer="$repo/os/usr/lib/systemd/system/tilo-network-start.timer"
-grep -Fqx 'OnBootSec=0' "$network_timer"
-grep -Fqx 'AccuracySec=1ms' "$network_timer"
-grep -Fqx 'Unit=tilo-network-start.target' "$network_timer"
-if grep -Eq '^(Before|After|Wants|Requires)=.*(greetd|graphical)' "$network_timer"; then
+# The greeter waits for systemd-user-sessions.service, which upstream orders
+# After=network.target: a NetworkManager start job queued any earlier (a timer
+# at OnBootSec=0 did) holds the greeter for NetworkManager's whole start. The
+# network is queued from a unit that runs once logins are allowed, and is not
+# waited for (TIL-767).
+grep -Fq 'systemctl enable tilo-network-start.service' "$repo/os/Containerfile"
+if [ -e "$repo/os/usr/lib/systemd/system/tilo-network-start.timer" ] \
+   || grep -Fq 'tilo-network-start.timer' "$repo/os/Containerfile"; then
+  echo 'a boot timer queues the network before logins are allowed, ahead of the greeter' >&2
+  exit 1
+fi
+network_start="$repo/os/usr/lib/systemd/system/tilo-network-start.service"
+grep -Fqx 'After=systemd-user-sessions.service' "$network_start"
+grep -Fqx 'Type=oneshot' "$network_start"
+grep -Fqx 'ExecStart=/usr/bin/systemctl --no-block start tilo-network-start.target' "$network_start"
+grep -Fqx 'WantedBy=multi-user.target' "$network_start"
+if grep -Eq '^(Before|Wants|Requires)=.*(greetd|graphical|display-manager|systemd-user-sessions)' "$network_start"; then
   echo 'asynchronous network start gained login-path ordering' >&2
+  exit 1
+fi
+# Nothing enabled at boot may pull the network units in directly either.
+if grep -Erq '^(Wants|Requires)=.*(NetworkManager|firewalld|tilo-network-start)\.(service|target)' \
+    "$repo/os/usr/lib/systemd/system" --include='*.service' --include='*.target' \
+    --exclude='tilo-network-start.target' --exclude='tilo-repair.target' \
+    --exclude='tilo-board-headless-session@.service'; then
+  echo 'a boot unit pulls the network in before logins are allowed' >&2
   exit 1
 fi
 network_target="$repo/os/usr/lib/systemd/system/tilo-network-start.target"

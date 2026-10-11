@@ -1215,7 +1215,7 @@ impl ActionPalette {
                 .find(|snapshot| snapshot.binding.same_component(binding))
                 .and_then(|snapshot| {
                     snapshot
-                        .resources
+                        .resources()
                         .iter()
                         .find(|resource| {
                             tilo_actions::door::resolve(std::slice::from_ref(resource), address)
@@ -1668,7 +1668,7 @@ impl ActionPalette {
                 .iter()
                 .find(|snapshot| snapshot.binding.same_component(&target.binding))?;
             let resources = snapshot
-                .resources
+                .resources()
                 .iter()
                 .cloned()
                 .filter_map(|resource| {
@@ -1955,7 +1955,7 @@ impl ActionPalette {
             let Ok(_entry) = snapshot.binding.enter() else {
                 continue;
             };
-            for resource in snapshot.resources.iter().cloned().filter_map(|resource| {
+            for resource in snapshot.resources().iter().cloned().filter_map(|resource| {
                 crate::bound_dispatch::filter_resource(&snapshot.binding, resource)
             }) {
                 for fa in flatten(&[resource]) {

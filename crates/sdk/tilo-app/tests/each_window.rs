@@ -69,6 +69,16 @@ struct Window;
 thread_local! {
     /// How many times this thread's rows read whether their task is done.
     static READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// How many rows this thread's lists built.
+    static BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+fn builds() -> usize {
+    BUILDS.with(std::cell::Cell::get)
+}
+
+fn count_build() {
+    BUILDS.with(|builds| builds.set(builds.get().saturating_add(1)));
 }
 
 impl ResourceApp for Window {
@@ -87,24 +97,70 @@ impl ResourceApp for Window {
         let rows = cx.each(
             |list| &list.tasks,
             |row| {
-                let Some(id) = row.item().cloned() else {
-                    return Box::new(Column::new()) as Element;
-                };
-                Box::new(tilo_app::row![
-                    row.text(|task| task.title.clone()),
-                    row.checkbox(
-                        "window-done",
-                        |task| {
-                            READS.with(|reads| reads.set(reads.get().saturating_add(1)));
-                            task.done
-                        },
-                        Checklist::SET_DONE.map(move |done| (id.clone(), done))
-                    ),
-                ]) as Element
+                count_build();
+                task_row(row)
             },
         );
         let list = Scrollable::new_vertical().with_child(Box::new(rows));
         Box::new(tilo_app::column![draft, list])
+    }
+}
+
+fn task_row(row: &ViewCx<Checklist, Task>) -> Element {
+    let Some(id) = row.item().cloned() else {
+        return Box::new(Column::new());
+    };
+    Box::new(tilo_app::row![
+        row.text(|task| task.title.clone()),
+        row.checkbox(
+            "window-done",
+            |task| {
+                READS.with(|reads| reads.set(reads.get().saturating_add(1)));
+                task.done
+            },
+            Checklist::SET_DONE.map(move |done| (id.clone(), done))
+        ),
+    ])
+}
+
+/// The same list, whose rows each bind an edit into the published tree:
+/// the last task's row offers `finish-last`.
+struct BindingWindow;
+
+impl ResourceApp for BindingWindow {
+    type Resource = Checklist;
+    const ID: &'static str = "so.tilo.test-window-binding-checklist";
+    const TITLE: &'static str = "Checklist";
+
+    fn catalog() -> Option<&'static EmbeddedCatalog> {
+        Some(&CATALOG)
+    }
+
+    fn view(cx: &mut ViewCx<Checklist>) -> Element {
+        let rows = cx.each(
+            |list| &list.tasks,
+            |row| {
+                count_build();
+                let item = row.item().cloned();
+                row.bind_declarations(move |list| {
+                    if list.tasks.ids().last() != item.as_ref() {
+                        return Vec::new();
+                    }
+                    Checklist::declarations()
+                        .iter()
+                        .find(|decl| decl.id == "draft")
+                        .cloned()
+                        .map(|mut decl| {
+                            decl.id = "finish-last";
+                            decl
+                        })
+                        .into_iter()
+                        .collect()
+                });
+                task_row(row)
+            },
+        );
+        Box::new(Scrollable::new_vertical().with_child(Box::new(rows)))
     }
 }
 
@@ -119,7 +175,7 @@ fn seeded() -> TestApp<Window> {
 }
 
 /// The list's items as assistive technology sees them: `(position, set size)`.
-fn list_items(app: &mut TestApp<Window>) -> Vec<(usize, usize)> {
+fn list_items<A: ResourceApp>(app: &mut TestApp<A>) -> Vec<(usize, usize)> {
     app.harness()
         .a11y_nodes()
         .into_iter()
@@ -377,4 +433,68 @@ fn tab_walks_rows_past_the_mounted_window() {
         .map(|(index, _)| index)
         .collect();
     assert_eq!(done, [steps], "Tab reached row {steps} one row at a time");
+}
+
+/// `A`'s window opened again over a record that already holds every task,
+/// as a person opening the app finds it, with the rows built since.
+fn reopened<A: ResourceApp<Resource = Checklist>>() -> (TestApp<A>, usize) {
+    let mut app = TestApp::<A>::for_person("ada").unwrap();
+    app.call("seed", serde_json::json!({ "count": TASKS }))
+        .unwrap();
+    app.flush().unwrap();
+    let before = builds();
+    let mut app = app.reopen().unwrap();
+    app.harness().relayout();
+    let built = builds().saturating_sub(before);
+    (app, built)
+}
+
+#[test]
+fn opening_a_long_list_builds_only_the_rows_it_mounts() {
+    let (mut app, built) = reopened::<Window>();
+    let total = usize::try_from(TASKS).unwrap();
+    let mounted = list_items(&mut app).len();
+    assert!(mounted > 0, "the shown rows are mounted");
+    assert!(
+        built >= mounted && built < 120,
+        "{built} of {total} rows built to open the list, {mounted} mounted"
+    );
+
+    // A change to the items away from the view builds no row.
+    let before = builds();
+    app.call("seed", serde_json::json!({ "count": 10 }))
+        .unwrap();
+    app.call("draft", serde_json::json!({ "title": "Next" }))
+        .unwrap();
+    app.harness().relayout();
+    assert_eq!(builds(), before, "rows added below the view are not built");
+
+    // Every item is still published with its actions, built or not.
+    let resources = app.harness().resources();
+    let root = resources
+        .iter()
+        .find(|resource| resource.kind == Checklist::KIND)
+        .unwrap();
+    assert_eq!(root.children.len(), total.saturating_add(10));
+}
+
+#[test]
+fn rows_that_bind_into_the_published_tree_are_all_built() {
+    let (mut app, built) = reopened::<BindingWindow>();
+    let total = usize::try_from(TASKS).unwrap();
+    assert_eq!(
+        built, total,
+        "each row's binding is published, so each is built"
+    );
+    let mounted = list_items(&mut app).len();
+    assert!(mounted < 120, "{mounted} of {total} rows mounted");
+    let resources = app.harness().resources();
+    let root = resources
+        .iter()
+        .find(|resource| resource.kind == Checklist::KIND)
+        .unwrap();
+    assert!(
+        root.actions.iter().any(|spec| spec.id == "finish-last"),
+        "the last row's bound edit is published while the row is not mounted"
+    );
 }

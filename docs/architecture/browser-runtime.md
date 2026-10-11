@@ -884,7 +884,11 @@ process. Each agent's participant runs on its own thread with the host's
 model, pumping its session until it stops or the host shuts down. Between
 pumps the thread sleeps until its session or steering changes or its
 presence keep-alive is due, never on an interval; a pump runs a plan's local
-steps back to back for up to 5 ms and at most one model call. Records the
+steps back to back for up to 5 ms. Model calls run on the agent's planner
+thread, so a plan that takes seconds holds back no pump: remote actions,
+presence, pause and stop are taken in meanwhile, and the planner wakes the
+loop the moment the plan is ready. Steps written out in the task (JSON) are
+taken at once, without the planner. Records the
 agent has not opened are held as their documents, history kept and each
 change once, so opening one seeds its replica with exactly what its changes
 made: the shared desktop live, its changes merged once per pump, its tabs
@@ -894,9 +898,11 @@ from room members, so every merge goes through `tilo-automerge-isolate`
 first and none decodes in the host process; a change the isolate refuses is
 dropped, and with no isolate the record does not open. Grants
 (agent key, certificate, delegation) and agents (status, room, task log,
-conversation) are kept in `<state>/agents/agents.json` (owner-only). A
-ticker settles expired grants: the agent stops and the relay refuses its
-device. On start the file is restored: approved grants are registered again,
+conversation) are kept in `<state>/agents/agents.json` (owner-only), written
+when they change (at most every 500 ms). The thread that writes it also
+settles expired grants: the agent stops and the relay refuses its device. It
+sleeps until something changes or the next grant expires, never on an
+interval. On start the file is restored: approved grants are registered again,
 agents that were neither stopped nor failed start again with their queued
 tasks, a task that was running at shutdown is marked failed, paused agents
 come back paused, a grant still waiting for its approver is denied.

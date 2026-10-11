@@ -63,6 +63,74 @@ fn published(app: &mut TestApp<SettingsShell>) -> (serde_json::Value, serde_json
     (resources, app.agent_surface())
 }
 
+/// Print leaf differences before the full assertion, whose large resource
+/// forest can exceed the CI log's per-line limit.
+fn report_resource_difference(deferred_tree: &serde_json::Value, eager_tree: &serde_json::Value) {
+    fn flatten(
+        value: &serde_json::Value,
+        rows: &mut std::collections::BTreeMap<String, serde_json::Value>,
+    ) {
+        if let Some(id) = value.get("id").and_then(serde_json::Value::as_str) {
+            let mut row = value.clone();
+            row.as_object_mut()
+                .expect("resource outline is an object")
+                .remove("children");
+            rows.insert(id.to_owned(), row);
+        }
+        if let Some(children) = value.get("children").and_then(serde_json::Value::as_array) {
+            for child in children {
+                flatten(child, rows);
+            }
+        }
+    }
+    fn compare(left: &serde_json::Value, right: &serde_json::Value, path: &str) {
+        match (left, right) {
+            (serde_json::Value::Object(a), serde_json::Value::Object(b)) => {
+                for key in a.keys().chain(b.keys().filter(|key| !a.contains_key(*key))) {
+                    compare(
+                        a.get(key).unwrap_or(&serde_json::Value::Null),
+                        b.get(key).unwrap_or(&serde_json::Value::Null),
+                        &format!("{path}/{key}"),
+                    );
+                }
+            }
+            (serde_json::Value::Array(a), serde_json::Value::Array(b)) => {
+                if a.len() != b.len() {
+                    eprintln!("SETTINGS_AREA_DIFF {path}/length {} {}", a.len(), b.len());
+                }
+                for (i, (left, right)) in a.iter().zip(b).enumerate() {
+                    compare(left, right, &format!("{path}/{i}"));
+                }
+            }
+            _ if left != right => eprintln!("SETTINGS_AREA_DIFF {path} {left} {right}"),
+            _ => {}
+        }
+    }
+
+    let mut deferred = std::collections::BTreeMap::new();
+    let mut eager = std::collections::BTreeMap::new();
+    for row in deferred_tree.as_array().expect("resource forest") {
+        flatten(row, &mut deferred);
+    }
+    for row in eager_tree.as_array().expect("resource forest") {
+        flatten(row, &mut eager);
+    }
+    let changes = deferred
+        .keys()
+        .chain(eager.keys())
+        .collect::<std::collections::BTreeSet<_>>();
+    for id in changes {
+        match (deferred.get(id), eager.get(id)) {
+            (Some(left), Some(right)) => compare(left, right, id),
+            (left, right) => eprintln!(
+                "SETTINGS_AREA_ROW_PRESENCE {id} {} {}",
+                left.is_some(),
+                right.is_some()
+            ),
+        }
+    }
+}
+
 /// Every node a screen reader is told about: its role, its name and
 /// whether it accepts input.
 fn controls(app: &mut TestApp<SettingsShell>) -> Vec<(String, Option<String>, bool)> {
@@ -150,7 +218,7 @@ fn the_pane_shown_accepts_what_it_accepts_when_every_area_read_first() {
 }
 
 #[test]
-fn a_window_publishes_every_area_a_few_frames_after_its_first() {
+fn a_window_publishes_every_area_a_little_after_its_first_frame() {
     let mut first = reading_first();
     first.settle();
     let whole = published(&mut first);
@@ -160,22 +228,32 @@ fn a_window_publishes_every_area_a_few_frames_after_its_first() {
         whole.0,
         "the first frame publishes only the areas that have read"
     );
-    let mut frames = 0;
+    // The areas whose reads block read on the background executor and
+    // wake the window when they end (TIL-760); the others read a sync at a
+    // time. `wait_until` drives frames and parks on the executor between
+    // them, as the host's event loop sleeps until a wake.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     while read(&mut window).len() < LIVE_AREAS.len() {
         assert!(
-            window.harness().poll_frame().expect("a frame lays out"),
-            "a drawn window asks for its next area's read: {:?}",
+            std::time::Instant::now() < deadline,
+            "every area reads after the first frame: {:?}",
             read(&mut window)
         );
-        frames += 1;
-        assert!(
-            frames <= 2 * LIVE_AREAS.len(),
-            "an area reads with every frame: {:?}",
-            read(&mut window)
-        );
+        window
+            .harness()
+            .wait_until(ui::time::Duration::from_millis(50), |_| false);
     }
     window.settle();
     let settled = published(&mut window);
+    // Compare with a window that reads first now, beside the one that has
+    // just read: the device's account file both take in is shared with
+    // the tests running beside this one.
+    let mut first = reading_first();
+    first.settle();
+    let whole = published(&mut first);
+    if settled.0 != whole.0 {
+        report_resource_difference(&settled.0, &whole.0);
+    }
     assert_eq!(
         settled.0, whole.0,
         "the resource tree is the one reading first published"
@@ -183,6 +261,27 @@ fn a_window_publishes_every_area_a_few_frames_after_its_first() {
     assert_eq!(
         settled.1, whole.1,
         "every published action is the one reading first published"
+    );
+}
+
+/// The host asks for a pending host intent on every turn of its event
+/// loop, the first before the first frame (TIL-760). Asking reads no
+/// display: a display move is only pending in a model an effect has read.
+#[test]
+fn asking_for_a_host_intent_reads_no_display() {
+    let mut window = reading_after();
+    let intent = window
+        .surface::<SettingsApp, _>(|settings| {
+            <SettingsApp as ui::framework::ResourceSurface<
+                crate::resource::Settings,
+                crate::effects::SettingsEffect,
+            >>::take_host_intent(settings)
+        })
+        .expect("the settings surface is mounted");
+    assert!(intent.is_none(), "nothing was asked of the host");
+    assert!(
+        !read(&mut window).contains(&"settings.rows.displays"),
+        "asking for a host intent leaves Displays unread"
     );
 }
 

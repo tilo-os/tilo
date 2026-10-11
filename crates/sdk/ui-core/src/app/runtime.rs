@@ -20,7 +20,7 @@ use winit::window::CursorIcon;
 /// Retained layout and widget lookup state.
 #[cfg_attr(
     not(feature = "native"),
-    allow(
+    expect(
         dead_code,
         reason = "the safe area and content origin are read only by the native event-loop runner"
     )
@@ -43,6 +43,9 @@ pub(super) struct LayoutRuntime {
     pub(super) safe_area: crate::scale::SafeArea,
     /// Where the root is placed: the safe area's top-left corner.
     pub(super) content_origin: vello::kurbo::Point,
+    /// How many times the taffy tree was rebuilt: a host comparing two
+    /// frames' widgets needs to know they are still the same ones.
+    pub(super) rebuilds: u64,
 }
 
 impl LayoutRuntime {
@@ -57,6 +60,7 @@ impl LayoutRuntime {
             last_layout_logical: None,
             safe_area: crate::scale::SafeArea::default(),
             content_origin: vello::kurbo::Point::ORIGIN,
+            rebuilds: 0,
         }
     }
 }
@@ -64,9 +68,9 @@ impl LayoutRuntime {
 /// Input modality, gesture, cursor, and tooltip state.
 #[cfg_attr(
     not(feature = "native"),
-    allow(
+    expect(
         dead_code,
-        reason = "some fields are read only by the native event-loop runner"
+        reason = "keyboard layout, gestures, cursor, tooltip, pen and pointer state are read only by the native event-loop runner"
     )
 )]
 pub(super) struct InputRuntime {
@@ -364,9 +368,9 @@ impl CollaborationRuntime {
 /// Presence publication, follow, and frame-pump state.
 #[cfg_attr(
     not(feature = "native"),
-    allow(
+    expect(
         dead_code,
-        reason = "some fields are read only by the native event-loop runner"
+        reason = "the last published presence is read only by the native event-loop runner"
     )
 )]
 pub(super) struct PresenceRuntime {
@@ -415,9 +419,9 @@ impl HistoryRuntime {
 /// Host window identity and fullscreen reconciliation state.
 #[cfg_attr(
     not(feature = "native"),
-    allow(
+    expect(
         dead_code,
-        reason = "some fields are read only by the native event-loop runner"
+        reason = "fullscreen state is read only by the native event-loop runner"
     )
 )]
 pub(super) struct WindowRuntime {

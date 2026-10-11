@@ -5802,7 +5802,7 @@ fn mounted_component_bridge_first_emits_after_return_and_discards_suspended_outp
             .iter()
             .any(|snapshot| snapshot.binding.same_component(&binding)
                 && tilo_actions::door::resolve(
-                    &snapshot.resources,
+                    snapshot.resources(),
                     &tilo_actions::ActionAddress::new("actual-bridge", COMPONENT_CONTROL_ACTION)
                 )
                 .is_some()),
