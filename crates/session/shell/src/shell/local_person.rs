@@ -247,11 +247,25 @@ mod tests {
                 .certificate(&RoomId::new().to_string(), &person)
                 .is_err()
         );
+        // A released policy change queues the save that publishes it. Park the
+        // state writer so this change stays unpublished while it is judged.
+        let (release, parked) = std::sync::mpsc::channel::<()>();
+        let (started, running) = std::sync::mpsc::channel::<()>();
+        crate::shell::durable_writer::global().submit(
+            std::env::temp_dir().join("local-person-parked-writer"),
+            move || {
+                started.send(()).unwrap();
+                let _ = parked.recv();
+            },
+        );
+        running.recv().unwrap();
         tree.write().desktop.workspaces[0].owner = None;
         assert!(
             service.certificate(&room.to_string(), &person).is_err(),
             "unpublished policy changes revoke the captured native origin"
         );
+        release.send(()).unwrap();
+        crate::shell::persist::wait_for_saves();
         tree.write().desktop.workspaces[0].owner = Some(person.clone());
         super::super::launcher::action_authority::Export::of(&tree.read()).publish();
         assert!(service.certificate(&room.to_string(), &person).is_ok());
