@@ -385,11 +385,12 @@ fn note_idle_turn(state: &Mutex<State>) {
         .store
         .root()
         .to_path_buf();
-    let mut turns = idle_turns()
+    idle_turns()
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let count = turns.entry(root).or_default();
-    *count = count.saturating_add(1);
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .entry(root)
+        .and_modify(|turns| *turns = turns.saturating_add(1))
+        .or_insert(1);
 }
 
 #[expect(
