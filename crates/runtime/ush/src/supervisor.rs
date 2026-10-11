@@ -1978,9 +1978,7 @@ mod tests {
             assert_eq!(response["environment"], environment);
             assert_eq!(response["protocol"], SERVICE_PROTOCOL);
             assert_eq!(rights.len(), 2);
-            let lease = runtime_portal::service_socket::SessionLease::from(UnixStream::from(
-                rights.pop().unwrap(),
-            ));
+            let lease = UnixStream::from(rights.pop().unwrap());
             let reader_clone = lease.try_clone().unwrap();
             let terminal = std::fs::File::from(rights.pop().unwrap());
             // SAFETY: terminal is an owned live PTY descriptor. isatty reads no user memory.
