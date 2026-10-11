@@ -384,7 +384,10 @@ def hosting_load(report: dict[str, Any], prices: dict[str, Any], env: dict[str, 
     meta = {**env.get("meta", {}), "collaborators": str(collaborators), "rooms": str(report["rooms"]),
             "room_size": str(report["room_size"]), "window_s": str(report["window_s"]),
             "edits": str(report["edits"]), "presence": str(report["presence"]),
-            "undelivered_edits": str(report["undelivered_edits"]), "prices_checked": str(prices["checked"])}
+            "undelivered_edits": str(report["undelivered_edits"]), "prices_checked": str(prices["checked"]),
+            # The CPUs the relay was confined to (`relay_load --relay-cpus`), which sizes its
+            # runtime: "all" is the runner's, four workers; the priced VM has two vCPUs.
+            "relay_cpus": str(report.get("relay_cpus") or "all")}
     base = {name: value for name, value in env.items() if name != "meta"}
     records = [record.from_samples(f"{kpi}.{variant}", unit, kpis[kpi]["samples"], meta=meta, **base)
                for kpi, unit in present.items()]
