@@ -804,6 +804,29 @@ impl PermissionContext {
             .flatten()
     }
 
+    /// Answers whether each of many actions of `app_id` is permitted, as
+    /// [`Self::permits_action`] does.
+    pub fn action_decider<'a>(&'a self, app_id: &'a str) -> ActionDecider<'a> {
+        let answers = match (&self.action_authority, self.usable(&self.standing, false)) {
+            (None, std::borrow::Cow::Borrowed(standing)) => {
+                self.policy_now().ok().map(|now| PublishedAnswers {
+                    authority: standing.authority(),
+                    room: standing.policy.node(),
+                    cx: policy::Context::at_secs(now.unwrap_or(0)),
+                })
+            }
+            // A host action authority, a standing to filter, or no clock:
+            // asked action by action.
+            _ => None,
+        };
+        ActionDecider {
+            permissions: self,
+            app_id,
+            answers,
+            resource: std::cell::RefCell::new(None),
+        }
+    }
+
     /// `decide` with one authority for the standing as it is, for answers
     /// about published actions (no host action authority, no `Once` grant
     /// spent). An unavailable clock is an error.
@@ -819,6 +842,48 @@ impl PermissionContext {
             cx: policy::Context::at_secs(now.unwrap_or(0)),
         };
         Ok(decide(&answers))
+    }
+}
+
+/// Answers [`PermissionContext::permits_action`] for many actions of one app:
+/// one authority for all of them, and the node of the resource last asked
+/// about kept for the next action on it.
+pub struct ActionDecider<'a> {
+    permissions: &'a PermissionContext,
+    app_id: &'a str,
+    answers: Option<PublishedAnswers<'a>>,
+    resource: std::cell::RefCell<Option<(String, String, TreePath)>>,
+}
+
+impl ActionDecider<'_> {
+    /// [`PermissionContext::permits_action`] for `action` on the resource
+    /// `resource_id` of kind `resource_kind`.
+    pub fn permits(
+        &self,
+        resource_kind: &str,
+        resource_id: &str,
+        action: &tilo_actions::ActionSpec,
+    ) -> bool {
+        let Some(answers) = &self.answers else {
+            return self.permissions.permits_action(
+                self.app_id,
+                resource_kind,
+                resource_id,
+                action,
+            );
+        };
+        let mut held = self.resource.borrow_mut();
+        let node = match &mut *held {
+            Some((kind, id, node)) if kind == resource_kind && id == resource_id => node,
+            slot => {
+                let node = answers.resource(self.app_id, resource_kind, resource_id);
+                &mut slot
+                    .insert((resource_kind.to_owned(), resource_id.to_owned(), node))
+                    .2
+            }
+        };
+        let need = action.contract.need();
+        answers.action(node, need.field.as_deref(), &action.id, &need) != Answer::Deny
     }
 }
 

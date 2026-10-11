@@ -385,8 +385,11 @@ fn count_addresses(
     doors: &std::collections::HashSet<tilo_actions::ActionAddress>,
 ) {
     let head = node.head();
+    let permissions = binding.permissions.borrow();
+    let decider = permissions.action_decider(&binding.app_id);
     for action in &head.actions {
-        if !(action.contract.availability.is_available() && binding_permits(binding, head, action))
+        if !(action.contract.availability.is_available()
+            && decider.permits(&head.kind, head.id.as_str(), action))
         {
             continue;
         }
@@ -1513,10 +1516,12 @@ fn filter_shared_node(
 ) -> crate::published::Filtered<SharedResource> {
     use crate::published::{Filtered, SharedChildren};
     let head = resource.head();
+    let permissions = binding.permissions.borrow();
+    let decider = permissions.action_decider(&binding.app_id);
     let every_action = head
         .actions
         .iter()
-        .all(|action| binding_permits(binding, head, action));
+        .all(|action| decider.permits(&head.kind, head.id.as_str(), action));
     let children = filter_shared_children(binding, token, resource.children());
     if every_action
         && matches!(children, Filtered::Same)
@@ -1530,8 +1535,9 @@ fn filter_shared_node(
         Filtered::Pruned => SharedChildren::default(),
     };
     let mut head = head.clone();
-    head.actions
-        .retain(|action| binding_permits(binding, resource.head(), action));
+    head.actions.retain(|action| {
+        decider.permits(&resource.head().kind, resource.head().id.as_str(), action)
+    });
     if head.actions.is_empty() && children.is_empty() {
         Filtered::Pruned
     } else {
@@ -1575,22 +1581,6 @@ fn filter_shared_children(
     filtered
 }
 
-/// Whether `binding`'s permissions admit `action` on `resource` (its own
-/// actions, not its children's): the check [`filter_resource`] keeps an
-/// action by.
-fn binding_permits(
-    binding: &CallbackBinding,
-    resource: &tilo_actions::Resource,
-    action: &tilo_actions::ActionSpec,
-) -> bool {
-    binding.permissions.borrow().permits_action(
-        &binding.app_id,
-        &resource.kind,
-        resource.id.as_str(),
-        action,
-    )
-}
-
 /// Add to `allowed` the address of every available action in `resources`
 /// that `binding` permits: what [`tilo_actions::door::survey`] lists as
 /// available in the trees [`filter_resource`] keeps, read in place rather
@@ -1600,10 +1590,20 @@ fn insert_available_permitted(
     resources: &[tilo_actions::Resource],
     allowed: &mut std::collections::HashSet<tilo_actions::ActionAddress>,
 ) {
+    let permissions = binding.permissions.borrow();
+    let decider = permissions.action_decider(&binding.app_id);
+    insert_available(&decider, resources, allowed);
+}
+
+fn insert_available(
+    decider: &crate::permissions::ActionDecider<'_>,
+    resources: &[tilo_actions::Resource],
+    allowed: &mut std::collections::HashSet<tilo_actions::ActionAddress>,
+) {
     for resource in resources {
         for action in &resource.actions {
             if action.contract.availability.is_available()
-                && binding_permits(binding, resource, action)
+                && decider.permits(&resource.kind, resource.id.as_str(), action)
             {
                 allowed.insert(tilo_actions::ActionAddress::new(
                     resource.id.as_str(),
@@ -1611,7 +1611,7 @@ fn insert_available_permitted(
                 ));
             }
         }
-        insert_available_permitted(binding, &resource.children, allowed);
+        insert_available(decider, &resource.children, allowed);
     }
 }
 
@@ -2876,10 +2876,12 @@ fn resolve_document_action(
     /// Whether [`filter_resource`] keeps `node`: it or a node beneath it
     /// has a permitted action.
     fn kept(binding: &CallbackBinding, node: &SharedResource) -> bool {
-        node.head()
-            .actions
+        let permissions = binding.permissions.borrow();
+        let decider = permissions.action_decider(&binding.app_id);
+        let head = node.head();
+        head.actions
             .iter()
-            .any(|action| binding_permits(binding, node.head(), action))
+            .any(|action| decider.permits(&head.kind, head.id.as_str(), action))
             || node.children().iter().any(|child| kept(binding, child))
     }
     /// The first node with resource id `id` that filtering keeps. A node
@@ -2905,9 +2907,11 @@ fn resolve_document_action(
         .iter()
         .find_map(|node| first_kept(binding, node, &address.resource))?;
     let mut resource = node.head().clone();
+    let permissions = binding.permissions.borrow();
+    let decider = permissions.action_decider(&binding.app_id);
     resource
         .actions
-        .retain(|action| binding_permits(binding, node.head(), action));
+        .retain(|action| decider.permits(&node.head().kind, node.head().id.as_str(), action));
     resource
         .actions
         .iter()
