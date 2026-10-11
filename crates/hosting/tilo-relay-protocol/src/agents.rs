@@ -113,7 +113,7 @@ pub struct AgentDelegation {
     /// Expiry, ns since the epoch. Delegations always expire.
     pub expires_at_ns: u64,
     /// Root signature over everything above.
-    #[serde(with = "crate::sig64")]
+    #[serde(with = "serde_bytes")]
     pub signature: [u8; 64],
 }
 

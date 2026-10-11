@@ -156,7 +156,7 @@ pub enum Envelope {
         /// Author's signature over the delta — the same
         /// `DirectoryUpdate.signature` shape the identity crate
         /// produces.
-        #[serde(with = "crate::sig64")]
+        #[serde(with = "serde_bytes")]
         signature: [u8; 64],
     },
 
@@ -424,7 +424,7 @@ pub enum Envelope {
         statement: Vec<u8>,
         /// The member's device signature over
         /// [`crate::compaction::signing_bytes`] of `statement`.
-        #[serde(with = "crate::sig64")]
+        #[serde(with = "serde_bytes")]
         signature: [u8; 64],
     },
 
