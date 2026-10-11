@@ -31,22 +31,24 @@ use crate::resource::Place;
     reason = "each field is one Model function, with the same parameters"
 )]
 pub struct ModelOps {
-    to_json: fn(&ModelTable, &dyn Any) -> serde_json::Value,
-    from_json: fn(&ModelTable, &serde_json::Value, &mut dyn Any) -> Result<(), ModelError>,
-    load: fn(&ModelTable, &Doc, &Value<'_>, &ObjId, &mut dyn Any) -> Result<(), ModelError>,
-    missing: fn(&ModelTable, &mut dyn Any) -> Result<(), ModelError>,
+    pub(crate) to_json: fn(&ModelTable, &dyn Any) -> serde_json::Value,
+    pub(crate) from_json:
+        fn(&ModelTable, &serde_json::Value, &mut dyn Any) -> Result<(), ModelError>,
+    pub(crate) load:
+        fn(&ModelTable, &Doc, &Value<'_>, &ObjId, &mut dyn Any) -> Result<(), ModelError>,
+    pub(crate) missing: fn(&ModelTable, &mut dyn Any) -> Result<(), ModelError>,
     /// Read the value anew in place: from what a slot holds, or its missing
     /// value when the slot holds nothing.
-    reload:
+    pub(crate) reload:
         fn(&ModelTable, &mut dyn Any, &Doc, Option<(&Value<'_>, &ObjId)>) -> Result<(), ModelError>,
-    store: fn(&ModelTable, &dyn Any, &mut Doc, Slot<'_>) -> Result<(), ModelError>,
-    stores_as: fn(&ModelTable, &dyn Any, &dyn Any) -> bool,
-    store_changed:
+    pub(crate) store: fn(&ModelTable, &dyn Any, &mut Doc, Slot<'_>) -> Result<(), ModelError>,
+    pub(crate) stores_as: fn(&ModelTable, &dyn Any, &dyn Any) -> bool,
+    pub(crate) store_changed:
         fn(&ModelTable, &dyn Any, &dyn Any, &mut Doc, Slot<'_>, &Delta) -> Result<(), ModelError>,
-    refresh:
+    pub(crate) refresh:
         fn(&ModelTable, &mut dyn Any, &Doc, &Value<'_>, &ObjId, &Delta) -> Result<(), ModelError>,
-    read_whole: fn(&ModelTable, &mut dyn Any, &Doc) -> Result<(), ModelError>,
-    edit: fn(
+    pub(crate) read_whole: fn(&ModelTable, &mut dyn Any, &Doc) -> Result<(), ModelError>,
+    pub(crate) edit: fn(
         &ModelTable,
         &mut Doc,
         Slot<'_>,
@@ -54,22 +56,23 @@ pub struct ModelOps {
         &EditOp,
         &mut ActionCx,
     ) -> Result<(), ModelError>,
-    diff: fn(&ModelTable, &dyn Any, &dyn Any, &[Segment], &mut Vec<Edit<()>>),
-    collect_text: fn(&ModelTable, &dyn Any, &mut Vec<String>),
-    check: fn(&ModelTable, &dyn Any) -> Result<(), Refusal>,
-    get_at: for<'a> fn(&ModelTable, &'a dyn Any, &[Segment]) -> Option<&'a dyn Any>,
-    op_coalesces:
+    pub(crate) diff: fn(&ModelTable, &dyn Any, &dyn Any, &[Segment], &mut Vec<Edit<()>>),
+    pub(crate) collect_text: fn(&ModelTable, &dyn Any, &mut Vec<String>),
+    pub(crate) check: fn(&ModelTable, &dyn Any) -> Result<(), Refusal>,
+    pub(crate) get_at: for<'a> fn(&ModelTable, &'a dyn Any, &[Segment]) -> Option<&'a dyn Any>,
+    pub(crate) op_coalesces:
         fn(&ModelTable, &[Segment], &serde_json::Value, &serde_json::Value) -> Option<bool>,
-    op_continuable: fn(&ModelTable, &[Segment], &serde_json::Value) -> Option<bool>,
-    op_describe: fn(&ModelTable, &[Segment], &serde_json::Value) -> Option<OpDescription>,
-    op_lands: fn(&ModelTable, &dyn Any, &[Segment], &serde_json::Value) -> Option<Place>,
-    op_schemas: fn(&ModelTable, &str, &mut Vec<(String, serde_json::Value)>),
+    pub(crate) op_continuable: fn(&ModelTable, &[Segment], &serde_json::Value) -> Option<bool>,
+    pub(crate) op_describe:
+        fn(&ModelTable, &[Segment], &serde_json::Value) -> Option<OpDescription>,
+    pub(crate) op_lands: fn(&ModelTable, &dyn Any, &[Segment], &serde_json::Value) -> Option<Place>,
+    pub(crate) op_schemas: fn(&ModelTable, &str, &mut Vec<(String, serde_json::Value)>),
 }
 
 /// A model type as data: its erased [`Model`] functions, what it is (a
 /// record's fields), and what it holds (a collection's items).
 pub struct ModelTable {
-    ops: &'static ModelOps,
+    pub(crate) ops: &'static ModelOps,
     desc: Desc,
     /// Its [`Model::CHECKS`].
     pub checks: bool,
@@ -86,6 +89,8 @@ enum Desc {
     Record(&'static RecordDesc),
     /// An `Option` of a value.
     Option(&'static OptionDesc),
+    /// A collection of items.
+    Collection(&'static crate::collection::CollectionDesc),
 }
 
 impl ModelTable {
@@ -93,6 +98,28 @@ impl ModelTable {
         match self.desc {
             Desc::Record(record) => Some(record),
             _ => None,
+        }
+    }
+
+    pub(crate) const fn collection(&self) -> Option<&'static crate::collection::CollectionDesc> {
+        match self.desc {
+            Desc::Collection(collection) => Some(collection),
+            _ => None,
+        }
+    }
+
+    /// The table of a collection.
+    #[must_use]
+    pub const fn of_collection(
+        collection: &'static crate::collection::CollectionDesc,
+        checks: bool,
+        has_ops: bool,
+    ) -> Self {
+        Self {
+            ops: &crate::collection::COLLECTION_OPS,
+            desc: Desc::Collection(collection),
+            checks,
+            has_ops,
         }
     }
 
@@ -251,7 +278,7 @@ pub fn replace_of<T: 'static>(
 
 /// A value handed to a table of another type: a bug in the caller.
 #[inline(never)]
-fn mismatch() -> ModelError {
+pub(crate) fn mismatch() -> ModelError {
     ModelError::invalid("a value of another type")
 }
 
@@ -1086,19 +1113,32 @@ pub fn write_changed_fields(
     for (index, field) in record.fields.iter().enumerate() {
         let now = field_of(record, value, index)?;
         let was = field_of(record, before, index)?;
-        let ops = field.table.ops;
-        match dirty.key(obj, field.key) {
-            Touch::Written => {
-                (ops.store)(field.table, now, doc, Slot::Key(obj, field.key)).located(field.key)?;
-            }
-            Touch::Untouched if (ops.stores_as)(field.table, now, was) => {}
-            Touch::Untouched | Touch::Below => {
-                (ops.store_changed)(field.table, now, was, doc, Slot::Key(obj, field.key), dirty)
-                    .located(field.key)?;
-            }
-        }
+        write_key_changed(field.table, (now, was), doc, obj, field.key, dirty)?;
     }
     Ok(())
+}
+
+/// Write `now` under `key` of the map `obj`, which holds `was`: what
+/// [`crate::model::write_key_changed`] writes, through `table`.
+///
+/// # Errors
+/// The document's write error, located at `key`.
+pub(crate) fn write_key_changed(
+    table: &ModelTable,
+    (now, was): (&dyn Any, &dyn Any),
+    doc: &mut Doc,
+    obj: &ObjId,
+    key: &str,
+    dirty: &Delta,
+) -> Result<(), ModelError> {
+    let ops = table.ops;
+    match dirty.key(obj, key) {
+        Touch::Written => (ops.store)(table, now, doc, Slot::Key(obj, key)).located(key),
+        Touch::Untouched if (ops.stores_as)(table, now, was) => Ok(()),
+        Touch::Untouched | Touch::Below => {
+            (ops.store_changed)(table, now, was, doc, Slot::Key(obj, key), dirty).located(key)
+        }
+    }
 }
 
 /// [`Model::store_changed`] of a record.
@@ -1169,30 +1209,61 @@ fn refresh_key(
     obj: &ObjId,
     delta: &Delta,
 ) -> Result<(), ModelError> {
-    let ops = field.table.ops;
-    match delta.key(obj, field.key) {
-        Touch::Untouched => {}
+    refresh_slot(field.table, target, doc, obj, field.key, delta)?;
+    if field.whole {
+        (field.table.ops.read_whole)(field.table, target, doc).located(field.key)?;
+    }
+    Ok(())
+}
+
+/// Bring `target`, read earlier from `key` of the map `obj`, up to date
+/// after `delta`, through `table`: what [`crate::model::refresh_key`] does.
+///
+/// # Errors
+/// Why it does not read, located at `key`.
+pub(crate) fn refresh_slot(
+    table: &ModelTable,
+    target: &mut dyn Any,
+    doc: &Doc,
+    obj: &ObjId,
+    key: &str,
+    delta: &Delta,
+) -> Result<(), ModelError> {
+    let ops = table.ops;
+    match delta.key(obj, key) {
+        Touch::Untouched => Ok(()),
         Touch::Written => {
-            let slot = crate::model::get_slot(doc, obj, field.key).located(field.key)?;
+            let slot = crate::model::get_slot(doc, obj, key).located(key)?;
             (ops.reload)(
-                field.table,
+                table,
                 target,
                 doc,
                 slot.as_ref().map(|(value, id)| (value, id)),
             )
-            .located(field.key)?;
+            .located(key)
         }
-        Touch::Below => match crate::model::get_slot(doc, obj, field.key).located(field.key)? {
-            Some((value, id)) => {
-                (ops.refresh)(field.table, target, doc, &value, &id, delta).located(field.key)?;
-            }
-            None => (ops.reload)(field.table, target, doc, None).located(field.key)?,
+        Touch::Below => match crate::model::get_slot(doc, obj, key).located(key)? {
+            Some((value, id)) => (ops.refresh)(table, target, doc, &value, &id, delta).located(key),
+            None => (ops.reload)(table, target, doc, None).located(key),
         },
     }
-    if field.whole {
-        (ops.read_whole)(field.table, target, doc).located(field.key)?;
+}
+
+/// Put what `slot` holds into `out`, an `Option` of `table`'s type: its
+/// value, or its missing value when it holds nothing.
+///
+/// # Errors
+/// Why it does not read.
+pub(crate) fn load_slot(
+    table: &ModelTable,
+    doc: &Doc,
+    slot: Option<(&Value<'_>, &ObjId)>,
+    out: &mut dyn Any,
+) -> Result<(), ModelError> {
+    match slot {
+        Some((value, id)) => (table.ops.load)(table, doc, value, id, out),
+        None => (table.ops.missing)(table, out),
     }
-    Ok(())
 }
 
 /// [`Model::edit`] of a record.
@@ -1552,12 +1623,12 @@ pub fn filled<T>(out: Option<T>) -> Result<T, ModelError> {
 // --- Edits of a value as a whole -------------------------------------------
 
 /// The value in a filled `Option` of its type.
-type Unstage = for<'a> fn(&'a dyn Any) -> Option<&'a dyn Any>;
+pub(crate) type Unstage = for<'a> fn(&'a dyn Any) -> Option<&'a dyn Any>;
 
 /// [`Model::edit`] of a value edited only as a whole, through its table:
 /// `set` at its own path, checked before it is written. `staged` is an empty
 /// `Option` of the type, which `unstage` reads the value back out of.
-fn edit_whole(
+pub(crate) fn edit_whole(
     table: &ModelTable,
     (staged, unstage): (Box<dyn Any>, Unstage),
     nullable: bool,
