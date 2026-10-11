@@ -3997,13 +3997,13 @@ mod tests {
         let mut host =
             ui::prelude::TestApp::<crate::NotesShell>::open_data_dir(profile.path()).unwrap();
         host.flush().unwrap();
+        // Notes keeps one record per room: the room's own document.
+        assert!(host.record().is_package_primary());
         let directory = profile
             .path()
             .join("so.tilo.notes")
             .join("rooms")
-            .join("personal")
-            .join("records")
-            .join(host.record().storage_key());
+            .join("personal");
         assert!(directory.is_dir(), "observe the real record directory");
         let backup = profile.path().join("held-record");
         std::fs::rename(&directory, &backup).unwrap();
