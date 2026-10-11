@@ -68,6 +68,10 @@ pub enum NativeDocumentRead {
         revision: [u8; 32],
         body: Box<dyn DocumentBytes>,
     },
+    /// The owner holds no complete capture right now (a checkpoint it is
+    /// admitting has not fully arrived). Answered as [`Reply::Unavailable`]:
+    /// the reader withholds readiness and asks again, it is not refused.
+    Pending,
 }
 pub trait NativeDocumentReads: Send + Sync {
     /// Durable native installation obligation, independent of runtime health.
@@ -443,6 +447,10 @@ impl CapnpChannelHandle {
         service.authorize(&context)?;
         match read {
             NativeDocumentRead::Unchanged(revision) => Ok(Reply::Unchanged { revision }),
+            // A record created by this Open is answered with its capture or
+            // not at all; only an existing record may be read again later.
+            NativeDocumentRead::Pending if created.is_none() => Ok(Reply::Unavailable),
+            NativeDocumentRead::Pending => Err("created record capture unavailable".into()),
             NativeDocumentRead::Captured { revision, body } => {
                 let id = self
                     .state
