@@ -445,6 +445,11 @@ pub struct TextInput {
     content_sized: bool,
     /// Colours spans of a single-line field's text ([`Self::with_span_highlighter`]).
     span_highlighter: Option<SpanHighlighter>,
+    /// The text can be selected and copied but not changed ([`Self::with_read_only`]).
+    read_only: bool,
+    /// Link targets over byte ranges of a read-only text
+    /// ([`Self::with_links`]); addresses in the prose are linked besides.
+    links: Vec<(std::ops::Range<usize>, String)>,
 }
 
 struct PendingPaste {
@@ -459,6 +464,30 @@ struct PendingPaste {
 /// formula, in the colour of the cells it outlines).
 pub type SpanHighlighter =
     Box<dyn Fn(&str, &Theme) -> Vec<(std::ops::Range<usize>, vello::peniko::Color)>>;
+
+/// Where a detected address opens: a web link as it is (a bare host gets
+/// `https://`), an email address as `mailto:`; mentions and room aliases are
+/// not links.
+fn link_target(what: crate::text_detect::Detected, text: &str) -> Option<String> {
+    use crate::text_detect::Detected;
+    match what {
+        Detected::Url => {
+            let text = text.trim_end_matches(['.', ',', ';', ':', '!', '?', ')', ']', '>']);
+            let has_scheme = text
+                .split_once("://")
+                .is_some_and(|(scheme, _)| !scheme.is_empty());
+            let target = if has_scheme {
+                text.to_owned()
+            } else {
+                format!("https://{text}")
+            };
+            // Only the web: a `javascript:` or `file:` look-alike never opens.
+            (target.starts_with("https://") || target.starts_with("http://")).then_some(target)
+        }
+        Detected::Email => Some(format!("mailto:{text}")),
+        Detected::Mention | Detected::RoomAlias => None,
+    }
+}
 
 /// What a field's trailing accessory does when pressed.
 pub enum AccessoryAction {
@@ -658,6 +687,8 @@ impl TextInput {
             accessory: None,
             content_sized: false,
             span_highlighter: None,
+            read_only: false,
+            links: Vec::new(),
         }
     }
 
@@ -2128,6 +2159,7 @@ impl TextInput {
             let start = self.core.caret().min(self.text.len());
             layout.add_underline(start..start.saturating_add(self.core.preedit().len()));
         }
+        self.underline_links(&mut layout);
         self.single_layout = Some(layout);
         self.shaped_layout_signature = signature;
         self.shaped_preparation = Preparation::capture(self, style, available_width, Some(syntax));
@@ -3327,6 +3359,128 @@ impl TextInput {
     ) -> Self {
         self.span_highlighter = Some(Box::new(highlighter));
         self
+    }
+
+    /// Show text the person can select and copy but not change: a message
+    /// body, a log. The field keeps the keyboard (arrows, Home, End, select
+    /// all, copy) and the pointer (drag, double click), but typing, pasting
+    /// and cutting do nothing, and keys it does not use reach the app.
+    /// Addresses in the text are links, underlined, that open on a click.
+    #[must_use]
+    pub fn with_read_only(mut self, read_only: bool) -> Self {
+        self.set_read_only(read_only);
+        self
+    }
+
+    pub fn set_read_only(&mut self, read_only: bool) {
+        if self.read_only != read_only {
+            self.read_only = read_only;
+            self.drop_shaped_layouts();
+            self.model_layout_dirty = true;
+        }
+    }
+
+    #[must_use]
+    pub fn is_read_only(&self) -> bool {
+        self.read_only
+    }
+
+    /// Show `runs` as the text, each in its own weight, slant, size and ink:
+    /// a message body, a help page. A caller that edits the text afterwards
+    /// loses the styling; use it with [`Self::with_read_only`].
+    #[must_use]
+    pub fn with_runs(mut self, runs: Vec<RichSpan>) -> Self {
+        self.set_runs(runs);
+        self
+    }
+
+    pub fn set_runs(&mut self, runs: Vec<RichSpan>) {
+        let text: String = runs.iter().map(|run| run.text.as_str()).collect();
+        let changed = self.text != text;
+        self.set_text(&text);
+        if changed {
+            self.core.collapse();
+            self.core.set_caret(0);
+        }
+        self.set_rich_spans(Some(runs));
+    }
+
+    /// Lay a wrapping field out in `rect`'s width at `rect`'s top-left
+    /// without a layout tree, for a host that paints it itself; the rect it
+    /// takes is as tall as its text, and that height is returned.
+    pub fn place_wrapped(&mut self, rect: Rect, tr: &mut TextRenderer, theme: &Theme) -> f64 {
+        #[allow(clippy::cast_possible_truncation, reason = "bounded widget width")]
+        let height = self.measure_wrapped_content(rect.width() as f32, tr, theme);
+        let height = f64::from(height);
+        self.apply_layout_external(Rect::new(rect.x0, rect.y0, rect.x1, rect.y0 + height));
+        self.prepare_wrapped_layout(tr, theme);
+        height
+    }
+
+    /// Targets for byte ranges of a read-only text whose words are not their
+    /// own address (an HTML mail's "click here"). These win over the
+    /// addresses found in the prose.
+    #[must_use]
+    pub fn with_links(mut self, links: Vec<(std::ops::Range<usize>, String)>) -> Self {
+        self.set_links(links);
+        self
+    }
+
+    pub fn set_links(&mut self, links: Vec<(std::ops::Range<usize>, String)>) {
+        if self.links != links {
+            self.links = links;
+            self.drop_shaped_layouts();
+            self.model_layout_dirty = true;
+        }
+    }
+
+    /// Every link of a read-only text: the given ones, then the addresses in
+    /// the prose they do not cover, each with where it opens.
+    fn link_targets(&self) -> Vec<(std::ops::Range<usize>, String)> {
+        if !self.read_only {
+            return Vec::new();
+        }
+        let mut found: Vec<(std::ops::Range<usize>, String)> = self
+            .links
+            .iter()
+            .filter(|(range, _)| {
+                range.start < range.end
+                    && self.text.is_char_boundary(range.start)
+                    && self.text.is_char_boundary(range.end)
+                    && range.end <= self.text.len()
+            })
+            .cloned()
+            .collect();
+        for span in crate::text_detect::identifier_spans(&self.text) {
+            let covered = found
+                .iter()
+                .any(|(range, _)| range.start < span.range.end && span.range.start < range.end);
+            if covered {
+                continue;
+            }
+            let Some(text) = self.text.get(span.range.clone()) else {
+                continue;
+            };
+            if let Some(target) = link_target(span.what, text) {
+                found.push((span.range, target));
+            }
+        }
+        found.sort_by_key(|(range, _)| range.start);
+        found
+    }
+
+    /// Where the link under byte `byte` opens, if there is one.
+    fn link_at(&self, byte: usize) -> Option<String> {
+        self.link_targets()
+            .into_iter()
+            .find(|(range, _)| range.contains(&byte))
+            .map(|(_, target)| target)
+    }
+
+    fn underline_links(&self, layout: &mut RichTextLayout) {
+        for (range, _) in self.link_targets() {
+            layout.add_underline(range);
+        }
     }
 
     /// Keep the document's text inset on a plain field inside a toolkit
@@ -4973,6 +5127,7 @@ impl Widget for TextInput {
                     let start = self.core.caret().min(self.text.len());
                     layout.add_underline(start..start.saturating_add(self.core.preedit().len()));
                 }
+                self.underline_links(&mut layout);
                 self.single_layout = Some(layout);
                 self.shaped_layout_signature = signature;
                 self.shaped_preparation = Preparation::capture(self, &style, available_width, None);
@@ -5221,7 +5376,7 @@ impl Widget for TextInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Right,
                 ..
-            } if self.is_hovered && !self.effectively_disabled() => {
+            } if self.is_hovered && !self.effectively_disabled() && !self.read_only => {
                 self.handle_right_click(ctx.focus_target, ctx.node_id, ctx.handled);
             }
             WindowEvent::MouseInput {
@@ -5241,7 +5396,7 @@ impl Widget for TextInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Middle,
                 ..
-            } if self.is_hovered && !self.effectively_disabled() => {
+            } if self.is_hovered && !self.effectively_disabled() && !self.read_only => {
                 self.handle_middle_click(ctx.focus_target, ctx.node_id, ctx.handled);
             }
             WindowEvent::Touch(touch) => {
@@ -5327,6 +5482,12 @@ impl Widget for TextInput {
                 .is_some_and(|rect| rect.contains(point))
         {
             Some(winit::window::CursorIcon::Default)
+        } else if !self.effectively_disabled()
+            && self.read_only
+            && self.rect.contains(point)
+            && self.link_at(self.resolve_position(point).byte).is_some()
+        {
+            Some(winit::window::CursorIcon::Pointer)
         } else if !self.effectively_disabled() && self.rect.contains(point) {
             Some(winit::window::CursorIcon::Text)
         } else {
@@ -6389,6 +6550,13 @@ impl TextInput {
                 self.drag_select.release();
                 self.publish_primary_selection();
                 *handled = true;
+                // A click, not a drag, on a link of read-only text opens it.
+                if self.read_only && !self.has_selection() {
+                    let byte = self.resolve_position(self.last_mouse_pos).byte;
+                    if let Some(target) = self.link_at(byte) {
+                        crate::widget::open_external_url(&target);
+                    }
+                }
             }
             _ => {}
         }
@@ -6651,6 +6819,9 @@ impl TextInput {
         }
         let shift = modifiers.state().shift_key();
         let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
+        if self.read_only && !Self::read_only_key(logical_key, ctrl) {
+            return;
+        }
 
         match logical_key {
             Key::Named(NamedKey::ArrowLeft) => self.handle_arrow(false, shift, ctrl, handled),
@@ -6695,7 +6866,27 @@ impl TextInput {
         }
     }
 
+    /// The keys a read-only field takes: moving and selecting, select all and
+    /// copy. The rest are the app's.
+    fn read_only_key(key: &Key, ctrl: bool) -> bool {
+        match key {
+            Key::Named(
+                NamedKey::ArrowLeft
+                | NamedKey::ArrowRight
+                | NamedKey::ArrowUp
+                | NamedKey::ArrowDown
+                | NamedKey::Home
+                | NamedKey::End,
+            ) => true,
+            Key::Character(c) if ctrl => matches!(c.to_lowercase().as_str(), "a" | "c"),
+            _ => false,
+        }
+    }
+
     fn handle_ime_commit(&mut self, t: &str, handled: &mut bool) {
+        if self.read_only {
+            return;
+        }
         if !self.is_focused {
             return;
         }
@@ -6728,6 +6919,9 @@ impl TextInput {
     }
 
     fn handle_ime_preedit(&mut self, t: &str, cursor: Option<(usize, usize)>, handled: &mut bool) {
+        if self.read_only {
+            return;
+        }
         if !self.is_focused {
             return;
         }
