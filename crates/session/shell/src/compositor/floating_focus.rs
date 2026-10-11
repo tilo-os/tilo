@@ -16,27 +16,67 @@ pub(super) struct SourceFocus {
 }
 
 impl State {
-    pub(crate) fn arm_floating_focus(
+    /// Resume validated retained geometry before changing focus intent, while
+    /// preserving whether this request actually began a new detached lifetime.
+    /// A rejected resume cannot arm focus; a duplicate live request cannot
+    /// resurrect a transfer cancelled by a real intervening seat transition.
+    pub(crate) fn resume_floating_request_with_focus(
+        &mut self,
+        connection: u64,
+        public_id: &str,
+        geometry: (vello::kurbo::Rect, vello::kurbo::Rect),
+        transfer: (
+            Option<super::FloatingTransferFrame>,
+            Option<super::FloatingTransferSource>,
+        ),
+        focus: Option<(u64, Arc<FloatingToplevelOwner>)>,
+    ) -> Result<Option<String>, &'static str> {
+        let already_detached = self.floating_request_is_detached(connection, public_id);
+        let resumed =
+            self.resume_floating_request(connection, public_id, geometry, transfer.0, transfer.1)?;
+        if let Some((source, owner)) = focus {
+            self.arm_floating_focus_transition(
+                connection,
+                public_id,
+                source,
+                owner,
+                already_detached,
+            );
+        }
+        Ok(resumed)
+    }
+
+    fn floating_request_is_detached(&self, connection: u64, public_id: &str) -> bool {
+        self.floating_toplevels.iter().any(|surface| {
+            surface.connection == connection && surface.public_id == public_id && !surface.suspended
+        }) || self.pending_floating_toplevels.iter().any(|surface| {
+            surface.connection == connection && surface.public_id == public_id && !surface.suspended
+        })
+    }
+
+    fn arm_floating_focus_transition(
         &mut self,
         connection: u64,
         public_id: &str,
         source: u64,
         owner: Arc<FloatingToplevelOwner>,
+        already_detached: bool,
     ) {
         let key = (connection, public_id.to_owned());
         let preserve_preedit = self.input_method_preedit.is_active();
         let transfer =
             (self.client_input.keyboard_focus() == Some(source)).then_some(Transfer::Float);
-        let already_detached = self.floating_toplevels.iter().any(|surface| {
-            surface.connection == connection && surface.public_id == public_id && !surface.suspended
-        }) || self.pending_floating_toplevels.iter().any(|surface| {
-            surface.connection == connection && surface.public_id == public_id && !surface.suspended
-        });
         if let Some(previous) = self.floating_focus_handoffs.get_mut(&key) {
             if !already_detached && previous.source == source && previous.owner == owner {
                 previous.transfer = transfer;
                 previous.preserve_preedit = preserve_preedit;
             }
+            return;
+        }
+        if already_detached {
+            // Retiring the original source removes its handoff, not the live
+            // child. A replacement source must not acquire autofocus merely
+            // by repeating Present for that already-detached capability.
             return;
         }
         self.floating_focus_handoffs.insert(

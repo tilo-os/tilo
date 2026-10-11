@@ -129,8 +129,17 @@ impl Fixture {
             .state
             .floating_owner_for_surface(source)
             .expect("source owner");
-        self.state
-            .arm_floating_focus(7, "conversation", source, owner.clone());
+        let rect = Rect::new(0.0, 0.0, 400.0, 300.0);
+        assert_eq!(
+            self.state.resume_floating_request_with_focus(
+                7,
+                "conversation",
+                (rect, rect),
+                (None, None),
+                Some((source, owner.clone())),
+            ),
+            Ok(None)
+        );
         let token = uuid::Uuid::new_v4().simple().to_string();
         self.state
             .authorize_floating_toplevel(PendingFloatingToplevel {
@@ -553,9 +562,20 @@ fn floating_focus_never_rearms_after_intervening_focus_or_steals_unfocused_sourc
                 .state
                 .floating_owner_for_surface(source)
                 .expect("source owner");
-            fixture
-                .state
-                .arm_floating_focus(7, "conversation", source, owner);
+            let rect = Rect::new(0.0, 0.0, 400.0, 300.0);
+            assert!(
+                fixture
+                    .state
+                    .resume_floating_request_with_focus(
+                        7,
+                        "conversation",
+                        (rect, rect),
+                        (None, None),
+                        Some((source, owner)),
+                    )
+                    .expect("valid live geometry")
+                    .is_some()
+            );
         }
         fixture.ready(&mut fb);
         let _ = fixture.state.apply_floating_focus_handoffs(&fb);
@@ -564,6 +584,170 @@ fn floating_focus_never_rearms_after_intervening_focus_or_steals_unfocused_sourc
             Some(if initially_focused { source } else { other })
         );
     }
+}
+
+#[test]
+fn validated_resume_rearms_focus_after_return_on_the_same_child() {
+    let mut fixture = Fixture::new();
+    let [source, child, _] = fixture.ids;
+    fixture.state.set_client_keyboard_focus(Some(source));
+    let mut fb = fixture.float();
+    fixture.ready(&mut fb);
+    let _ = fixture.state.apply_floating_focus_handoffs(&fb);
+    assert_eq!(fixture.state.client_input.keyboard_focus(), Some(child));
+    fixture
+        .state
+        .suspend_floating_toplevel(7, "conversation", None);
+    fixture
+        .state
+        .mark_floating_destination_presented(7, "conversation");
+    let _ = fixture.state.apply_floating_focus_handoffs(&fb);
+    assert_eq!(fixture.state.client_input.keyboard_focus(), Some(source));
+    let token = fixture.state.floating_toplevels[0].token.clone();
+    let owner = fixture
+        .state
+        .floating_owner_for_surface(source)
+        .expect("source owner");
+    let rect = Rect::new(0.0, 0.0, 400.0, 300.0);
+    assert_eq!(
+        fixture.state.resume_floating_request_with_focus(
+            7,
+            "conversation",
+            (rect, rect),
+            (None, None),
+            Some((source, owner)),
+        ),
+        Ok(Some(token)),
+    );
+    assert_eq!(fixture.state.client_input.keyboard_focus(), Some(source));
+    let _ = fixture.state.apply_floating_focus_handoffs(&fb);
+    assert_eq!(fixture.state.client_input.keyboard_focus(), Some(source));
+    fixture.ready(&mut fb);
+    let _ = fixture.state.apply_floating_focus_handoffs(&fb);
+    drop(fb);
+    assert_eq!(fixture.state.client_input.keyboard_focus(), Some(child));
+    assert_eq!(fixture.state.floating_toplevels.len(), 1);
+    assert_eq!(fixture.state.floating_toplevels[0].surface_id, child);
+}
+
+#[test]
+fn rejected_resume_preserves_the_existing_return_focus_intent() {
+    let mut fixture = Fixture::new();
+    let [source, child, _] = fixture.ids;
+    fixture.state.set_client_keyboard_focus(Some(source));
+    let body = Rect::new(40.0, 40.0, 360.0, 260.0);
+    let mut fb = fixture.float_with_input(Some(body));
+    fixture.ready(&mut fb);
+    let _ = fixture.state.apply_floating_focus_handoffs(&fb);
+    fixture
+        .state
+        .suspend_floating_toplevel(7, "conversation", None);
+    assert_eq!(fixture.state.floating_return_focus(), Some(child));
+    let owner = fixture
+        .state
+        .floating_owner_for_surface(source)
+        .expect("source owner");
+    let tiny = Rect::new(0.0, 0.0, 8.0, 8.0);
+    assert!(
+        fixture
+            .state
+            .resume_floating_request_with_focus(
+                7,
+                "conversation",
+                (tiny, tiny),
+                (None, None),
+                Some((source, owner)),
+            )
+            .is_err()
+    );
+    assert_eq!(fixture.state.client_input.keyboard_focus(), Some(child));
+    assert_eq!(fixture.state.floating_return_focus(), Some(child));
+    assert!(fixture.state.floating_toplevels[0].suspended);
+    assert_eq!(fixture.state.floating_toplevels[0].input_rect, Some(body));
+    fixture
+        .state
+        .mark_floating_destination_presented(7, "conversation");
+    let _ = fixture.state.apply_floating_focus_handoffs(&fb);
+    drop(fb);
+    assert_eq!(fixture.state.client_input.keyboard_focus(), Some(source));
+}
+
+#[test]
+fn duplicate_live_resume_cannot_resurrect_cancelled_float_focus() {
+    let mut fixture = Fixture::new();
+    let [source, _, other] = fixture.ids;
+    fixture.state.set_client_keyboard_focus(Some(source));
+    let mut fb = fixture.float();
+    fixture.state.set_client_keyboard_focus(Some(other));
+    fixture.state.set_client_keyboard_focus(Some(source));
+    let owner = fixture
+        .state
+        .floating_owner_for_surface(source)
+        .expect("source owner");
+    let rect = Rect::new(0.0, 0.0, 400.0, 300.0);
+    assert!(
+        fixture
+            .state
+            .resume_floating_request_with_focus(
+                7,
+                "conversation",
+                (rect, rect),
+                (None, None),
+                Some((source, owner)),
+            )
+            .expect("valid live geometry")
+            .is_some()
+    );
+    fixture.ready(&mut fb);
+    let _ = fixture.state.apply_floating_focus_handoffs(&fb);
+    drop(fb);
+    assert_eq!(fixture.state.client_input.keyboard_focus(), Some(source));
+}
+
+#[test]
+fn duplicate_live_resume_from_replacement_source_cannot_create_focus_intent() {
+    let mut fixture = Fixture::new();
+    let [source, child, replacement] = fixture.ids;
+    fixture.state.set_client_keyboard_focus(Some(source));
+    let mut fb = fixture.float();
+    fixture.ready(&mut fb);
+    let _ = fixture.state.apply_floating_focus_handoffs(&fb);
+    assert_eq!(fixture.state.client_input.keyboard_focus(), Some(child));
+    fixture.state.retire_floating_focus_source(source);
+    assert!(fixture.state.floating_focus_handoffs.is_empty());
+    fixture.state.set_client_keyboard_focus(Some(replacement));
+    let owner = fixture
+        .state
+        .floating_owner_for_surface(replacement)
+        .expect("authenticated replacement source owner");
+    assert_eq!(
+        fixture.state.floating_toplevels[0].owner.as_deref(),
+        Some(owner.as_ref()),
+        "replacement source has the same authenticated app and room owner"
+    );
+    let rect = Rect::new(0.0, 0.0, 400.0, 300.0);
+    assert!(
+        fixture
+            .state
+            .resume_floating_request_with_focus(
+                7,
+                "conversation",
+                (rect, rect),
+                (None, None),
+                Some((replacement, owner)),
+            )
+            .expect("valid live geometry")
+            .is_some()
+    );
+    assert!(fixture.state.floating_focus_handoffs.is_empty());
+    fixture.ready(&mut fb);
+    let _ = fixture.state.apply_floating_focus_handoffs(&fb);
+    drop(fb);
+    assert_eq!(
+        fixture.state.client_input.keyboard_focus(),
+        Some(replacement)
+    );
+    assert_eq!(fixture.state.floating_toplevels[0].surface_id, child);
 }
 
 #[test]

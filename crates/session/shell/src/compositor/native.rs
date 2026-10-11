@@ -1882,12 +1882,12 @@ fn pump_floating_surface_service(
                                     );
                                 let transfer_covered = transfer_frame.is_some();
                                 let Ok(resumed) = state
-                                    .resume_floating_request(
+                                    .resume_floating_request_with_focus(
                                         connection,
                                         &public_id,
                                         (rect, content_rect),
-                                        transfer_frame.clone(),
-                                        transfer_source,
+                                        (transfer_frame.clone(), transfer_source),
+                                        owner.as_ref().map(|owner| (source_surface_id, owner.clone())),
                                     ) else {
                                         tracing::warn!("floating resume rejected incompatible input geometry");
                                         continue;
@@ -1911,9 +1911,6 @@ fn pump_floating_surface_service(
                                         );
                                         token
                                     });
-                                if let Some(owner) = owner.as_ref() {
-                                    state.arm_floating_focus(connection, &public_id, source_surface_id, owner.clone());
-                                }
                                 service.send(
                                     connection,
                                     &ui::floating_surface::FloatingSurfaceHostMessage::PrepareSurface {

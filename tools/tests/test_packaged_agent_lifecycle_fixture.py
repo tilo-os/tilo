@@ -7876,6 +7876,67 @@ class PresentedEditorTargetTests(unittest.TestCase):
         scaled_after["frame_seq"] = 12
         self.assertTrue(PROOF.stable_floating_commit_geometry(scaled_before, scaled_after))
 
+    def test_framed_ime_commit_keeps_full_native_extent_and_inset_body(self):
+        window = {"x": 100, "y": 80, "w": 552, "h": 416}
+        extent = {"w": 552, "h": 416}
+        before = {
+            "rect": window, "target_rect": window,
+            "content_rect": {"x": 120, "y": 100, "w": 512, "h": 360},
+            "frame_seq": 10, "device_scale": 1,
+            "frame_geometry": {
+                "raw_buffer": extent,
+                "content_crop": {"x": 0, "y": 0, **extent},
+                "configured_extent": extent, "min_size": extent, "max_size": extent,
+                "window_geometry": {"x": 0, "y": 0, **extent,
+                                    "viewport_destination": extent, "buffer_scale": 1},
+            },
+        }
+        after = json.loads(json.dumps(before))
+        after["frame_seq"] = 11
+        self.assertTrue(PROOF.stable_floating_commit_geometry(before, after))
+        scaled = json.loads(json.dumps(before))
+        scaled["device_scale"] = 1.25
+        for field in ("raw_buffer", "content_crop"):
+            scaled["frame_geometry"][field].update({"w": 690, "h": 520})
+        self.assertTrue(PROOF.stable_floating_commit_geometry(scaled, scaled))
+
+        # Stale transfer hints must fail even when identical on both sides of
+        # commit: stability alone cannot prove the native allocation is current.
+        mutations = [
+            (("rect", "h"), 772),
+            (("target_rect", "h"), 772),
+            (("frame_geometry", "raw_buffer", "h"), 772),
+            (("frame_geometry", "content_crop", "h"), 360),
+            (("frame_geometry", "content_crop", "x"), 20),
+            (("frame_geometry", "configured_extent", "h"), 772),
+            (("frame_geometry", "min_size", "h"), 772),
+            (("frame_geometry", "max_size", "h"), 772),
+            (("frame_geometry", "window_geometry", "h"), 360),
+            (("frame_geometry", "window_geometry", "x"), 20),
+            (("frame_geometry", "window_geometry", "viewport_destination", "h"), 360),
+            (("content_rect", "x"), 99),
+            (("content_rect", "y"), 79),
+            (("content_rect", "w"), 533),
+            (("content_rect", "h"), 397),
+            (("content_rect", "w"), 0),
+        ]
+        for path, value in mutations:
+            wrong = json.loads(json.dumps(after))
+            node = wrong
+            for field in path[:-1]:
+                node = node[field]
+            node[path[-1]] = value
+            with self.subTest(path=path, value=value):
+                self.assertFalse(PROOF.stable_floating_commit_geometry(before, wrong))
+                self.assertFalse(PROOF.stable_floating_commit_geometry(wrong, wrong))
+
+        moved_body = json.loads(json.dumps(after))
+        moved_body["content_rect"]["x"] += 1
+        smaller_body = json.loads(json.dumps(after))
+        smaller_body["content_rect"]["h"] -= 1
+        self.assertFalse(PROOF.stable_floating_commit_geometry(before, moved_body))
+        self.assertFalse(PROOF.stable_floating_commit_geometry(before, smaller_body))
+
     def test_editor_window_extent_is_translated_through_exact_presented_frame(self):
         sent = []
 

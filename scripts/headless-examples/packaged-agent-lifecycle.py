@@ -1409,7 +1409,7 @@ def floating_numeric_geometry(frame):
 
 
 def stable_floating_commit_geometry(before, after):
-    """A fixed-size authenticated child must not rebound to stale transfer hints."""
+    """Keep the full native allocation and its inset body stable across commit."""
     before = floating_numeric_geometry(before)
     after = floating_numeric_geometry(after)
     if any(before[name] != after[name]
@@ -1420,10 +1420,24 @@ def stable_floating_commit_geometry(before, after):
         if geometry is None or geometry["configured_extent"] is None:
             return False
         target = observed["target_rect"]
+        body = observed["content_rect"]
+        # The SDK allocates a transparent rim/shadow gutter around the opaque
+        # body. That body is an input silhouette, not the native buffer extent.
+        # It must remain a real contained region, with the exact same placement
+        # before and after commit (checked above).
+        for position, axis in (("x", "w"), ("y", "h")):
+            if body[axis] <= 0 or body[position] < target[position] \
+                    or body[position] + body[axis] > target[position] + target[axis] \
+                    or abs(observed["rect"][position] - target[position]) > 1:
+                return False
+        window = geometry["window_geometry"]
+        if geometry["content_crop"]["x"] != 0 or geometry["content_crop"]["y"] != 0:
+            return False
+        if window is not None and (window["x"] != 0 or window["y"] != 0):
+            return False
         for axis in ("w", "h"):
             logical = target[axis]
-            if logical <= 0 or abs(observed["rect"][axis] - logical) > 1 \
-                    or abs(observed["content_rect"][axis] - logical) > 1:
+            if logical <= 0 or abs(observed["rect"][axis] - logical) > 1:
                 return False
             # Physical buffers may round fractional logical sizes once to pixels.
             physical = logical * observed["device_scale"]
@@ -1432,6 +1446,10 @@ def stable_floating_commit_geometry(before, after):
                 return False
             if any(abs(geometry[name][axis] - logical) > 1
                    for name in ("configured_extent", "min_size", "max_size")):
+                return False
+            if window is not None and (abs(window[axis] - logical) > 1
+                    or (window["viewport_destination"] is not None
+                        and abs(window["viewport_destination"][axis] - logical) > 1)):
                 return False
     return True
 
