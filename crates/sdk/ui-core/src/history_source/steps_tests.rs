@@ -212,3 +212,103 @@ fn restore_checkpoint_and_diff_address_versions_by_name_or_change() {
     assert!(unknown.contains("before rework"), "{unknown}");
     assert!(verb(&mut doc, ALICE, |doc| checkpoint(doc, "  ")).is_err());
 }
+
+/// Every change of `doc`, as the step index reads it.
+fn every_version(doc: &AutoCommit) -> Vec<Version> {
+    let document = doc.committed_document();
+    document
+        .get_changes_meta(&[])
+        .iter()
+        .map(|meta| tilo_resource::history::version_of(document, meta))
+        .collect()
+}
+
+#[test]
+fn a_change_is_classified_from_its_own_operations_as_its_diff_reads_it() {
+    let mut doc = document();
+    add(&mut doc, ALICE, "a1", "red");
+    add(&mut doc, ALICE, "a2", "green");
+    add(&mut doc, BOB, "b1", "blue");
+    verb(&mut doc, ALICE, |doc| undo(doc, &scope(ALICE), 2, plain)).unwrap();
+    verb(&mut doc, ALICE, |doc| redo(doc, &scope(ALICE), 1, plain)).unwrap();
+    verb(&mut doc, ALICE, |doc| checkpoint(doc, "kept")).unwrap();
+    recolour(&mut doc, BOB, "b1", "black");
+    let before = resolve(&doc, "kept").unwrap();
+    verb(&mut doc, ALICE, |doc| restore(doc, &before, &[])).unwrap();
+    // Bookkeeping beneath a root key of its own, a counter on the root,
+    // changes that take back what they wrote, and an outside compensation
+    // still pending.
+    doc.set_actor(ActorId::from(BOB));
+    let ledger = doc.put_object(ROOT, "tilo:ledger", ObjType::Map).unwrap();
+    doc.put(&ledger, "entry", "kept").unwrap();
+    doc.commit();
+    doc.put(ROOT, "count", ScalarValue::counter(0)).unwrap();
+    doc.commit();
+    doc.increment(ROOT, "count", 2).unwrap();
+    doc.commit();
+    // A key written and taken back in one change, and a value written
+    // twice in one.
+    doc.put(ROOT, "scratch", 1_i64).unwrap();
+    doc.delete(ROOT, "scratch").unwrap();
+    doc.commit();
+    doc.put(ROOT, "value", "first").unwrap();
+    doc.put(ROOT, "value", "second").unwrap();
+    doc.commit();
+    let target = doc.get_heads()[0];
+    doc.put(ROOT, format!("{UNDONE_KEY}{target}"), 1_i64)
+        .unwrap();
+    doc.commit();
+    let document = doc.committed_document();
+    let versions = every_version(&doc);
+    assert!(versions.len() > 10, "{} changes", versions.len());
+    let mut seen = HashSet::new();
+    for version in &versions {
+        let read = format!("{:?}", kind_in(document, version));
+        assert_eq!(
+            read,
+            format!("{:?}", kind_by_diff(document, version)),
+            "change {}",
+            version.hash
+        );
+        seen.insert(read.split('(').next().unwrap_or_default().to_owned());
+    }
+    for kind in ["Undo", "Redo", "Edit", "Bookkeeping"] {
+        assert!(seen.contains(kind), "no {kind} among {seen:?}");
+    }
+}
+
+/// How long classifying the newest change of a document holding `count`
+/// marks takes, at best of several reads.
+fn classify_newest(count: usize) -> std::time::Duration {
+    let mut doc = document();
+    doc.set_actor(ActorId::from(ALICE));
+    let map = marks(&mut doc);
+    for index in 0..count {
+        let mark = doc
+            .put_object(&map, format!("m{index}"), ObjType::Map)
+            .unwrap();
+        doc.put(&mark, "colour", "red").unwrap();
+    }
+    doc.commit();
+    recolour(&mut doc, ALICE, "m0", "blue");
+    let newest = every_version(&doc).pop().unwrap();
+    let document = doc.committed_document();
+    (0..5)
+        .map(|_| {
+            let start = std::time::Instant::now();
+            assert!(matches!(kind_in(document, &newest), Kind::Edit));
+            start.elapsed()
+        })
+        .min()
+        .unwrap()
+}
+
+#[test]
+fn classifying_a_change_costs_the_same_however_large_the_document() {
+    let small = classify_newest(50);
+    let large = classify_newest(20_000);
+    assert!(
+        large <= small * 4 + std::time::Duration::from_micros(200),
+        "classifying one recolour took {large:?} beside 20,000 marks and {small:?} beside 50"
+    );
+}
