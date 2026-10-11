@@ -28,7 +28,6 @@ pub enum PeerSyncRequest {
     /// The invite composer opened: an invite is likely, so the network
     /// starts this device's relays now and the invite can name one.
     PrepareInvitation,
-    IssueInvite,
     ExportIdentity,
     IssueInviteFor {
         name: String,
@@ -333,10 +332,6 @@ impl PeerSyncOverlay {
         self.state.status = Some(t("peer-sync-paste-token"));
     }
 
-    pub fn issue_invite_request(&self) -> PeerSyncRequest {
-        PeerSyncRequest::IssueInvite
-    }
-
     /// Apply the host's transport result. Failed named invites retain the
     /// typed name so they can be retried; successful connects close the input.
     pub fn finish_request(
@@ -392,9 +387,6 @@ impl PeerSyncOverlay {
                 _,
             ) => {}
 
-            (PeerSyncRequest::IssueInvite, Ok(PeerSyncResponse::Message(token))) => {
-                self.finish_invite(token, None, copy_result);
-            }
             (PeerSyncRequest::ExportIdentity, Ok(PeerSyncResponse::Message(card))) => {
                 ui::text_selection::clipboard_copy(&card);
                 self.state.status = Some(t("peer-sync-identity-copied"));
@@ -405,7 +397,7 @@ impl PeerSyncOverlay {
             ) => {
                 self.finish_invite(token, Some(name.clone()), copy_result);
             }
-            (PeerSyncRequest::IssueInvite | PeerSyncRequest::IssueInviteFor { .. }, Err(error)) => {
+            (PeerSyncRequest::IssueInviteFor { .. }, Err(error)) => {
                 self.state.invite_token = None;
                 self.state.invite_for = None;
                 self.state.status = Some(t_args(

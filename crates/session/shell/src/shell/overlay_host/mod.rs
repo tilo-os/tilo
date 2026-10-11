@@ -1068,9 +1068,6 @@ pub enum PeerSyncAction {
         request_id: u64,
         action: Box<PeerSyncAction>,
     },
-    /// User invoked `/invite`. The compositor calls
-    /// `ShellNetwork::issue_invite` and puts the token on the clipboard.
-    IssueInvite,
     /// Mint an invite for `name`, copying it to the clipboard when
     /// `copy`. The name is written into the room document once the
     /// invitee turns up — it never rides inside the token itself.
@@ -3818,11 +3815,6 @@ impl ShellOverlayHost {
                 action => (None, action),
             };
             let result = match action {
-                PeerSyncAction::IssueInvite => {
-                    let request = self.peer_sync_overlay.issue_invite_request();
-                    self.run_peer_sync_request(&request, false);
-                    Ok(serde_json::Value::Null)
-                }
                 PeerSyncAction::IssueInviteFor { name, copy } => {
                     let _ = copy;
                     self.open_invite_manager();
@@ -3902,9 +3894,7 @@ impl ShellOverlayHost {
             .finish_typed_request(request, outcome, copy_result);
         if matches!(
             request,
-            PeerSyncRequest::IssueInvite
-                | PeerSyncRequest::IssueInviteFor { .. }
-                | PeerSyncRequest::CancelInvitation(_)
+            PeerSyncRequest::IssueInviteFor { .. } | PeerSyncRequest::CancelInvitation(_)
         ) {
             self.refresh_pending_invitations();
         }
@@ -9019,30 +9009,6 @@ impl ShellOverlayHost {
                     self.palette_visible = true;
                     return;
                 }
-            }
-            self.palette_visible = false;
-            self.palette.close();
-            return;
-        }
-        // Legacy id-based dispatch for peer-sync rows, which enqueue an
-        // action drained by `take_peer_sync_actions`.
-        if id.starts_with("peer:") {
-            match id.as_str() {
-                "peer:invite" => {
-                    if let Some(chrome) = &self.chrome {
-                        chrome
-                            .borrow_mut()
-                            .push_peer_sync_request(PeerSyncAction::IssueInvite);
-                    }
-                }
-                "peer:connect" => {
-                    if let Some(chrome) = &self.chrome {
-                        chrome
-                            .borrow_mut()
-                            .push_peer_sync_request(PeerSyncAction::PromptConnect);
-                    }
-                }
-                _ => {}
             }
             self.palette_visible = false;
             self.palette.close();
