@@ -4859,18 +4859,6 @@ mod tests {
     use crate::testing::Dispatch;
     use crate::widget::{TabDescriptor, TileContent, WindowWidth, min_group_px};
 
-    /// Narrows a fixture viewport width to the `f32` taffy layout expects.
-    /// Test fixtures only ever pass small literal pixel constants (hundreds
-    /// to low thousands), far inside `f32`'s exact-integer range, so this
-    /// cannot lose precision.
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "test fixture viewport widths are small literal pixel constants, always exactly representable in f32"
-    )]
-    fn px32(v: f64) -> f32 {
-        v as f32
-    }
-
     /// `t` minus `ms` milliseconds, saturating rather than panicking in
     /// the astronomically unlikely case the subtraction would underflow
     /// `Instant`'s valid range.
@@ -5400,7 +5388,7 @@ mod tests {
         let viewport = taffy.parent_node(
             Style {
                 size: Size {
-                    width: Dimension::length(px32(viewport_w)),
+                    width: Dimension::length(crate::num::f32_of_f64(viewport_w)),
                     height: Dimension::length(600.0),
                 },
                 ..Default::default()
@@ -5411,7 +5399,7 @@ mod tests {
             .compute_layout_with_measure(
                 viewport,
                 TSize {
-                    width: AvailableSpace::Definite(px32(viewport_w)),
+                    width: AvailableSpace::Definite(crate::num::f32_of_f64(viewport_w)),
                     height: AvailableSpace::Definite(600.0),
                 },
                 |_, _, _, _, _| taffy::Size::ZERO,
@@ -5446,7 +5434,7 @@ mod tests {
         let viewport = taffy.parent_node(
             Style {
                 size: Size {
-                    width: Dimension::length(px32(viewport_w)),
+                    width: Dimension::length(crate::num::f32_of_f64(viewport_w)),
                     height: Dimension::length(600.0),
                 },
                 ..Default::default()
@@ -5457,7 +5445,7 @@ mod tests {
             .compute_layout_with_measure(
                 viewport,
                 TSize {
-                    width: AvailableSpace::Definite(px32(viewport_w)),
+                    width: AvailableSpace::Definite(crate::num::f32_of_f64(viewport_w)),
                     height: AvailableSpace::Definite(600.0),
                 },
                 |_, _, _, _, _| taffy::Size::ZERO,
@@ -6667,7 +6655,7 @@ mod tests {
         let viewport = taffy.parent_node(
             Style {
                 size: Size {
-                    width: Dimension::length(px32(viewport_w)),
+                    width: Dimension::length(crate::num::f32_of_f64(viewport_w)),
                     height: Dimension::length(600.0),
                 },
                 ..Default::default()
@@ -6678,7 +6666,7 @@ mod tests {
             .compute_layout_with_measure(
                 viewport,
                 TSize {
-                    width: AvailableSpace::Definite(px32(viewport_w)),
+                    width: AvailableSpace::Definite(crate::num::f32_of_f64(viewport_w)),
                     height: AvailableSpace::Definite(600.0),
                 },
                 |_, _, _, _, _| taffy::Size::ZERO,
@@ -6719,7 +6707,7 @@ mod tests {
             let viewport = taffy.parent_node(
                 Style {
                     size: Size {
-                        width: Dimension::length(px32(viewport_w)),
+                        width: Dimension::length(crate::num::f32_of_f64(viewport_w)),
                         height: Dimension::length(600.0),
                     },
                     ..Default::default()
@@ -6730,7 +6718,7 @@ mod tests {
                 .compute_layout_with_measure(
                     viewport,
                     TSize {
-                        width: AvailableSpace::Definite(px32(viewport_w)),
+                        width: AvailableSpace::Definite(crate::num::f32_of_f64(viewport_w)),
                         height: AvailableSpace::Definite(600.0),
                     },
                     |_, _, _, _, _| taffy::Size::ZERO,
@@ -6981,7 +6969,7 @@ mod tests {
         let viewport = taffy.parent_node(
             Style {
                 size: Size {
-                    width: Dimension::length(px32(viewport_w)),
+                    width: Dimension::length(crate::num::f32_of_f64(viewport_w)),
                     height: Dimension::length(1080.0),
                 },
                 ..Default::default()
@@ -6992,7 +6980,7 @@ mod tests {
             .compute_layout_with_measure(
                 viewport,
                 TSize {
-                    width: AvailableSpace::Definite(px32(viewport_w)),
+                    width: AvailableSpace::Definite(crate::num::f32_of_f64(viewport_w)),
                     height: AvailableSpace::Definite(1080.0),
                 },
                 |_, _, _, _, _| taffy::Size::ZERO,

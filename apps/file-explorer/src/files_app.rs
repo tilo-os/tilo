@@ -8,6 +8,7 @@
 //! tree structurally dirty so the App rebuilds the composition on the next
 //! frame. See [`crate::command`].
 
+use ui::num::i64_of_usize;
 use ui::tilo_resource::Effect as _;
 use ui::widget::TaffyTreeExt;
 
@@ -433,10 +434,6 @@ fn certified_device_detail(device: &crate::identity_directory::TrustedDevice) ->
             arg("expiry", expiry),
         ],
     )
-}
-
-fn fluent_count(value: usize) -> i64 {
-    i64::try_from(value).unwrap_or(i64::MAX)
 }
 
 fn transfer_phase_label(phase: crate::model::TransferPhase) -> String {
@@ -1026,7 +1023,7 @@ impl FileExplorerWidget {
                     self.last_trash_undo = undoable.then(|| id.to_owned());
                     self.status = Some(t_args(
                         "files-moved-to-trash",
-                        &[arg("count", fluent_count(count))],
+                        &[arg("count", i64_of_usize(count))],
                     ));
                 }
                 Some(error) => {
@@ -1043,16 +1040,16 @@ impl FileExplorerWidget {
                     None => t_args(
                         "files-moved-to-folder",
                         &[
-                            arg("count", fluent_count(moved)),
+                            arg("count", i64_of_usize(moved)),
                             arg("destination", destination),
                         ],
                     ),
                     Some(_) => t_args(
                         "files-moved-with-failures",
                         &[
-                            arg("moved", fluent_count(moved)),
+                            arg("moved", i64_of_usize(moved)),
                             arg("destination", destination),
-                            arg("failed", fluent_count(1)),
+                            arg("failed", i64_of_usize(1)),
                         ],
                     ),
                 });
@@ -1073,13 +1070,13 @@ impl FileExplorerWidget {
                         .retain(|path| !done.iter().any(|from| path.as_path() == Path::new(from)));
                 }
                 self.status = Some(if error.is_none() {
-                    t_args("files-pasted", &[arg("count", fluent_count(count))])
+                    t_args("files-pasted", &[arg("count", i64_of_usize(count))])
                 } else {
                     t_args(
                         "files-pasted-with-failures",
                         &[
-                            arg("count", fluent_count(done.len())),
-                            arg("failed", fluent_count(count - done.len())),
+                            arg("count", i64_of_usize(done.len())),
+                            arg("failed", i64_of_usize(count - done.len())),
                         ],
                     )
                 });
@@ -1088,7 +1085,7 @@ impl FileExplorerWidget {
                 self.status = Some(match error {
                     None => t_args(
                         "files-undo-trash-restored",
-                        &[arg("count", fluent_count(outcome.changes().len()))],
+                        &[arg("count", i64_of_usize(outcome.changes().len()))],
                     ),
                     Some(error) => t_args("files-undo-trash-failed", &[arg("error", error)]),
                 });
@@ -1105,11 +1102,11 @@ impl FileExplorerWidget {
                         } else {
                             "files-pasted"
                         },
-                        &[arg("count", fluent_count(completed))],
+                        &[arg("count", i64_of_usize(completed))],
                     ),
                     Some(error) => t_args(
                         "files-clipboard-partial",
-                        &[arg("count", fluent_count(completed)), arg("error", error)],
+                        &[arg("count", i64_of_usize(completed)), arg("error", error)],
                     ),
                 });
             }
@@ -2744,12 +2741,12 @@ impl FileExplorerWidget {
         let left = self
             .status
             .clone()
-            .unwrap_or_else(|| t_args("files-item-count", &[arg("count", fluent_count(count))]));
+            .unwrap_or_else(|| t_args("files-item-count", &[arg("count", i64_of_usize(count))]));
         let sel = self.selection.selected().len();
         if sel > 0 {
             t_args(
                 "files-selected-count",
-                &[arg("base", left), arg("count", fluent_count(sel))],
+                &[arg("base", left), arg("count", i64_of_usize(sel))],
             )
         } else {
             left
@@ -3753,12 +3750,12 @@ impl FileExplorerWidget {
                     self.status = Some(if value == b"pinned" {
                         t_args(
                             "files-keeping-offline",
-                            &[arg("count", fluent_count(paths.len()))],
+                            &[arg("count", i64_of_usize(paths.len()))],
                         )
                     } else {
                         t_args(
                             "files-using-automatic",
-                            &[arg("count", fluent_count(paths.len()))],
+                            &[arg("count", i64_of_usize(paths.len()))],
                         )
                     });
                 } else {
@@ -3811,7 +3808,7 @@ impl FileExplorerWidget {
                 } else if failures.is_empty() && safety_refusals.is_empty() {
                     t_args(
                         "files-freeing-local-space",
-                        &[arg("count", fluent_count(paths.len()))],
+                        &[arg("count", i64_of_usize(paths.len()))],
                     )
                 } else if failures.is_empty() {
                     t("files-eviction-needs-confirmation")
@@ -3827,7 +3824,7 @@ impl FileExplorerWidget {
                         title: t("files-destructive-eviction-title"),
                         summary: t_args(
                             "files-destructive-eviction-summary",
-                            &[arg("count", fluent_count(safety_refusals.len()))],
+                            &[arg("count", i64_of_usize(safety_refusals.len()))],
                         ),
                         lines: vec![
                             t("files-destructive-eviction-no-replica"),
@@ -3854,7 +3851,7 @@ impl FileExplorerWidget {
                 self.status = Some(if failures.is_empty() {
                     t_args(
                         "files-destructive-eviction-started",
-                        &[arg("count", fluent_count(paths.len()))],
+                        &[arg("count", i64_of_usize(paths.len()))],
                     )
                 } else {
                     t_args(
@@ -3897,7 +3894,7 @@ impl FileExplorerWidget {
                 } else if failures.is_empty() {
                     t_args(
                         "files-retrying-transfers",
-                        &[arg("count", fluent_count(paths.len()))],
+                        &[arg("count", i64_of_usize(paths.len()))],
                     )
                 } else {
                     t_args("files-retry-failed", &[arg("errors", failures.join("; "))])
@@ -4023,7 +4020,7 @@ impl FileExplorerWidget {
                     if let Some(share) = &entry.share {
                         lines.push(t_args(
                             "files-property-sharing",
-                            &[arg("count", fluent_count(share.active_grants()))],
+                            &[arg("count", i64_of_usize(share.active_grants()))],
                         ));
                     }
                     if let Some(history) = &entry.history {
@@ -4034,7 +4031,7 @@ impl FileExplorerWidget {
                                     "versions",
                                     i64::try_from(history.total_versions).unwrap_or(i64::MAX),
                                 ),
-                                arg("conflicts", fluent_count(history.open_conflicts().count())),
+                                arg("conflicts", i64_of_usize(history.open_conflicts().count())),
                             ],
                         ));
                     }
@@ -4344,7 +4341,7 @@ impl FileExplorerWidget {
                         title: t_args("files-sharing-title", &[arg("name", entry.name)]),
                         summary: t_args(
                             "files-sharing-summary",
-                            &[arg("count", fluent_count(active))],
+                            &[arg("count", i64_of_usize(active))],
                         ),
                         lines,
                         action: None,
@@ -4776,11 +4773,11 @@ impl FileExplorerWidget {
                     history: None,
                     title: t_args(
                         "files-permanent-delete-title",
-                        &[arg("count", fluent_count(paths.len()))],
+                        &[arg("count", i64_of_usize(paths.len()))],
                     ),
                     summary: t_args(
                         "files-permanent-delete-summary",
-                        &[arg("count", fluent_count(paths.len()))],
+                        &[arg("count", i64_of_usize(paths.len()))],
                     ),
                     lines: vec![t("files-permanent-delete-loss")],
                     action: Some(CollabPanelAction::PermanentDelete(paths)),
@@ -4829,7 +4826,7 @@ impl FileExplorerWidget {
                 self.refresh();
                 self.status = Some(t_args(
                     "files-permanently-deleted",
-                    &[arg("count", fluent_count(n))],
+                    &[arg("count", i64_of_usize(n))],
                 ));
             }
             Err(e) => {
@@ -4869,7 +4866,7 @@ impl FileExplorerWidget {
             match fileops::restore_entries(&paths) {
                 Ok(n) => {
                     self.refresh();
-                    self.status = Some(t_args("files-restored", &[arg("count", fluent_count(n))]));
+                    self.status = Some(t_args("files-restored", &[arg("count", i64_of_usize(n))]));
                 }
                 Err(e) => {
                     self.status = Some(t_args("files-restore-failed", &[arg("error", e)]));
@@ -4896,7 +4893,7 @@ impl FileExplorerWidget {
             title: t("files-empty-trash-title"),
             summary: t_args(
                 "files-empty-trash-summary",
-                &[arg("count", fluent_count(self.entries.len()))],
+                &[arg("count", i64_of_usize(self.entries.len()))],
             ),
             lines: vec![t("files-permanent-delete-loss")],
             action: Some(CollabPanelAction::EmptyTrash),
@@ -4917,7 +4914,7 @@ impl FileExplorerWidget {
                 self.status = Some(if n == 0 {
                     t("files-trash-already-empty")
                 } else {
-                    t_args("files-emptied-trash", &[arg("count", fluent_count(n))])
+                    t_args("files-emptied-trash", &[arg("count", i64_of_usize(n))])
                 });
             }
             Err(e) => {
@@ -5115,7 +5112,7 @@ impl FileExplorerWidget {
         self.clipboard_cut = false;
         self.status = Some(t_args(
             "files-copied",
-            &[arg("count", fluent_count(self.clipboard.len()))],
+            &[arg("count", i64_of_usize(self.clipboard.len()))],
         ));
         true
     }
@@ -5130,7 +5127,7 @@ impl FileExplorerWidget {
         self.clipboard_cut = true;
         self.status = Some(t_args(
             "files-cut",
-            &[arg("count", fluent_count(self.clipboard.len()))],
+            &[arg("count", i64_of_usize(self.clipboard.len()))],
         ));
         true
     }
@@ -5171,13 +5168,13 @@ impl FileExplorerWidget {
         self.status = Some(if failures.is_empty() {
             t_args(
                 "files-archive-extracted",
-                &[arg("count", fluent_count(count))],
+                &[arg("count", i64_of_usize(count))],
             )
         } else {
             t_args(
                 "files-archive-extracted-partial",
                 &[
-                    arg("count", fluent_count(count)),
+                    arg("count", i64_of_usize(count)),
                     arg("failures", failures.join("; ")),
                 ],
             )
@@ -5213,7 +5210,7 @@ impl FileExplorerWidget {
         self.status = Some(match crate::archive::extract(&archive, &destination) {
             Ok(entries) => t_args(
                 "files-archive-extracted",
-                &[arg("count", fluent_count(entries.len()))],
+                &[arg("count", i64_of_usize(entries.len()))],
             ),
             Err(error) => t_args(
                 "files-archive-extract-failed",
@@ -6353,7 +6350,7 @@ impl FileExplorerWidget {
         let count = self.drag_paths.len().max(1);
         let glyph = ui::icons::icon_for_path(path, path.is_dir());
         let label = if count > 1 {
-            t_args("files-drag-items", &[arg("count", fluent_count(count))])
+            t_args("files-drag-items", &[arg("count", i64_of_usize(count))])
         } else {
             path.file_name().map_or_else(
                 || path.display().to_string(),
