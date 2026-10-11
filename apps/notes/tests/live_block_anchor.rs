@@ -2,7 +2,7 @@
 //! both peers read from the shared notebook, so a remote caret keeps naming
 //! the same block after blocks are inserted above it on the receiver.
 
-use crate::component_support::{NotebookFixture, driver, invoke, notebook};
+use crate::component_support::{NotebookFixture, driver, notebook, open_note};
 use notes::{NotesApp, NotesShell};
 use ui::collaboration::PresencePayload;
 use ui::framework::testing::with_surface;
@@ -17,13 +17,7 @@ fn remote_notes_caret_names_the_same_block_on_both_peers_across_inserted_blocks(
     let mut a = driver(&f, 11, &checkout);
     let mut b = driver(&f, 12, &checkout);
     for (window, instance) in [(&mut a, 11), (&mut b, 12)] {
-        invoke(
-            window,
-            instance,
-            notes::actions::page_resource_id(f.child),
-            "open",
-            None,
-        );
+        open_note(window, instance, f.child, None);
     }
 
     let (key, target, text) = with_surface::<NotesShell, NotesApp, _>(&mut a, |notes| {

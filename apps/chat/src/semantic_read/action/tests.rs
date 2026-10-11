@@ -3,28 +3,29 @@ use automerge::transaction::Transactable;
 
 #[test]
 fn semantic_read_action_continuation_stays_with_its_real_channel() {
-    let mut doc = automerge::AutoCommit::new();
+    let mut chat = crate::record::Chat::default();
     for channel in ["one", "two"] {
-        crate::doc::ChatDoc::insert_channel(
-            &mut doc,
-            channel,
-            "ws",
-            "cat",
-            channel,
-            crate::model::ChannelKind::Text,
-        );
-    }
-    for id in ["m1", "m2"] {
-        crate::doc::ChatDoc::push_message_with_id(
-            &mut doc,
-            "one",
-            id,
-            crate::doc::NewMessage {
-                text: id.into(),
-                ..Default::default()
+        chat.channels.push(
+            ui::tilo_resource::Id::from_raw(channel),
+            crate::record::Channel {
+                workspace: ui::tilo_resource::Id::from_raw("ws"),
+                name: channel.into(),
+                ..crate::record::Channel::default()
             },
         );
     }
+    for id in ["m1", "m2"] {
+        chat.messages.push(
+            ui::tilo_resource::Id::from_raw(id),
+            crate::record::Message {
+                channel: ui::tilo_resource::Id::from_raw("one"),
+                text: id.into(),
+                ..crate::record::Message::default()
+            },
+        );
+    }
+    let mut doc = automerge::AutoCommit::new();
+    crate::demo::write(&mut doc, &chat).unwrap();
     doc.commit();
     let page = super::super::read_messages(
         &doc,
@@ -44,7 +45,12 @@ fn semantic_read_action_continuation_stays_with_its_real_channel() {
         .build_json(args.as_object().unwrap())
         .unwrap();
     validate_request(&actual, &encoded.payload).unwrap();
-    let other = Resource::new("chat.channel:two", "chat.channel", "Other").with_action(spec("two"));
+    let other = Resource::new(
+        crate::testing::item("channels", "two"),
+        "chat.workspace.channels",
+        "Other",
+    )
+    .with_action(spec("two"));
     let encoded = other.actions[0]
         .build_json(args.as_object().unwrap())
         .unwrap();
@@ -54,7 +60,12 @@ fn semantic_read_action_continuation_stays_with_its_real_channel() {
     );
 }
 fn resource() -> Resource {
-    Resource::new("chat.channel:one", "chat.channel", "Document").with_action(spec("one"))
+    Resource::new(
+        crate::testing::item("channels", "one"),
+        "chat.workspace.channels",
+        "Document",
+    )
+    .with_action(spec("one"))
 }
 
 #[test]
@@ -72,7 +83,7 @@ fn semantic_read_action_encodes_requested_capacity_and_closed_resource() {
         assert!(decoded.get("heads").is_none());
     }
     let mut wrong = resource;
-    wrong.id = tilo_actions::ResourceId::new("chat.channel:two");
+    wrong.id = tilo_actions::ResourceId::new(crate::testing::item("channels", "two"));
     assert_eq!(
         validate_request(&wrong, br#"{"channel":"one","pageSize":1,"cursor":null}"#).unwrap_err(),
         SemanticReadError::InvalidRequest
@@ -127,7 +138,8 @@ fn semantic_read_action_encodes_and_json_contract_decodes() {
             .validate_declaration()
             .is_empty()
     );
-    let address = tilo_actions::ActionAddress::new("chat.channel:one", "read-messages");
+    let address =
+        tilo_actions::ActionAddress::new(crate::testing::item("channels", "one"), "read-messages");
     let encoded = tilo_actions::door::encode_json(
         std::slice::from_ref(&resource),
         &address,
@@ -136,7 +148,7 @@ fn semantic_read_action_encodes_and_json_contract_decodes() {
     .unwrap();
     assert_eq!(encoded.type_id, OPERATION_TYPE);
     let wire = serde_json::to_value(&resource.actions[0].contract).unwrap();
-    assert_eq!(wire["permission"], "read");
+    assert_eq!(wire["kind"], "read");
     assert_eq!(wire["execution"]["mode"], "immediate");
     assert_eq!(wire["result"]["type"], "json");
     let decoded: ActionContract = serde_json::from_value(wire).unwrap();

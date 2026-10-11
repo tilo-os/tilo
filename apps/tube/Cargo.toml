@@ -27,10 +27,6 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # same `media::MediaEngine` as the local player and editor preview.
 media = { package = "tilo-media", path = "../../crates/platform/tilo-media" }
 automerge.workspace = true
-# The Tilo ACTION model: Tube's `actions` module exports its collaborative
-# operations (likes, queue, comment replies) as replayable actions the host's
-# Ctrl+K palette dispatches.
-tilo-actions = { path = "../../crates/collab/actions" }
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
@@ -75,6 +71,7 @@ vello_encoding.workspace = true
 # Encode a valid PNG for the offline image-store test fixture.
 tempfile.workspace = true
 tilo-test-env = { path = "../../crates/dev/test-env" }
+tilo-history = { path = "../../crates/sdk/tilo-history" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 
 [features]

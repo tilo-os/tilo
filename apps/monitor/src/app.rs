@@ -27,7 +27,7 @@ use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::tilo_actions::ActionAddress;
+use ui::tilo_resource::{self, Model};
 use ui::time::{Duration, Instant};
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::toast::ToastKind;
@@ -39,7 +39,7 @@ use ui::widget::{
 
 use crate::model::{MonitorModel, ProcessDataStatus, ProcessInfo};
 use crate::prefs::{MonitorPreferences, Prefs};
-use crate::resource::{Monitor, MonitorAction, MonitorEffect, MonitorState};
+use crate::resource::{Monitor, MonitorEffect};
 use crate::sampler::{Sampler, StopKind};
 use crate::tree::{FlattenOpts, Forest, Row, SumMode};
 use crate::view::{
@@ -81,11 +81,13 @@ impl Tab {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+/// The column the process table sorts by.
+#[derive(Model, Default, Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SortKey {
     Pid,
     Name,
     User,
+    #[default]
     Cpu,
     Mem,
     Threads,
@@ -96,28 +98,6 @@ impl SortKey {
     /// columns default to ascending.
     fn default_desc(self) -> bool {
         !matches!(self, SortKey::Name | SortKey::User)
-    }
-
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Self::Pid => "pid",
-            Self::Name => "name",
-            Self::User => "user",
-            Self::Cpu => "cpu",
-            Self::Mem => "mem",
-            Self::Threads => "threads",
-        }
-    }
-
-    pub(crate) fn parse(s: &str) -> Self {
-        match s {
-            "pid" => Self::Pid,
-            "name" => Self::Name,
-            "user" => Self::User,
-            "mem" => Self::Mem,
-            "threads" => Self::Threads,
-            _ => Self::Cpu,
-        }
     }
 }
 
@@ -202,7 +182,7 @@ fn process_search_entry(process: &ProcessInfo) -> ui::tilo_resource::SearchEntry
             process.pid
         ),
     )
-    .invoking(ActionAddress::new(id, "inspect"))
+    .anchored(id)
     .grouped("Processes")
     .subtitled(format!(
         "PID {} owned by {}",
@@ -725,22 +705,34 @@ impl MonitorApp {
     }
 
     /// Adopt the shared table layout; never touch the process catalogue.
-    pub(crate) fn adopt_resource_state(&mut self, state: &MonitorState) {
-        let (sort_key, sort_desc) = (SortKey::parse(&state.sort_key), state.sort_desc);
-        if (self.sort_key, self.sort_desc, self.tree_mode) == (sort_key, sort_desc, state.tree_mode)
-        {
+    pub(crate) fn adopt_resource_state(&mut self, state: &Monitor) {
+        let layout = (state.sort, !state.ascending, !state.flat);
+        if (self.sort_key, self.sort_desc, self.tree_mode) == layout {
             return;
         }
-        self.sort_key = sort_key;
-        self.sort_desc = sort_desc;
-        self.tree_mode = state.tree_mode;
+        (self.sort_key, self.sort_desc, self.tree_mode) = layout;
         self.clear_selection_if_filtered_out();
     }
 
-    /// Submit an edit of the shared table layout.
-    fn commit_layout(&self, action: &MonitorAction) {
+    /// Submit edits of the shared table layout, as one step.
+    fn commit_layout(&self, edits: Vec<ui::tilo_resource::Edit<Monitor>>) {
         if let Some(dispatcher) = &self.dispatcher {
-            dispatcher.apply(action);
+            dispatcher.group(|| {
+                for edit in edits {
+                    dispatcher.submit(edit);
+                }
+            });
+        }
+    }
+
+    /// What a search hit or an agent's `open` runs: inspect the process
+    /// row its anchor names.
+    pub(crate) fn opener(&self) -> impl FnMut(&str) -> Result<(), &'static str> + 'static {
+        let shared = Rc::clone(&self.shared);
+        move |anchor| {
+            parse_process_resource_id(anchor).ok_or("not a process of this machine")?;
+            shared.borrow_mut().push(Request::Open(anchor.to_owned()));
+            Ok(())
         }
     }
 
@@ -809,7 +801,7 @@ impl MonitorApp {
         }
         self.tree_mode = tree;
         self.stale = true;
-        self.commit_layout(&MonitorAction::SetTreeMode { tree });
+        self.commit_layout(vec![Monitor::paths().flat.set(!tree)]);
     }
 
     fn commit_selected(&mut self, pid: Option<u32>) {
@@ -829,17 +821,18 @@ impl MonitorApp {
     }
 
     fn set_sort(&mut self, key: SortKey) {
+        let paths = Monitor::paths();
+        let mut edits = Vec::new();
         if self.sort_key == key {
             self.sort_desc = !self.sort_desc;
         } else {
             self.sort_key = key;
             self.sort_desc = key.default_desc();
+            edits.push(paths.sort.set(key));
         }
+        edits.push(paths.ascending.set(!self.sort_desc));
         self.stale = true;
-        self.commit_layout(&MonitorAction::SetSort {
-            key: key.as_str().into(),
-            desc: self.sort_desc,
-        });
+        self.commit_layout(edits);
     }
 
     fn set_cadence(&mut self, cadence: Cadence) {
@@ -1309,6 +1302,11 @@ impl MonitorApp {
                 Request::Select(pid) => {
                     self.commit_selected(Some(pid));
                     self.reveal_inspector();
+                }
+                Request::Open(process) => {
+                    if let Err(error) = self.answer(MonitorEffect::Inspect { process }) {
+                        tracing::debug!(%error, "nothing to open");
+                    }
                 }
                 Request::Activate(pid) => {
                     if self.tree_mode && self.row_has_children(pid) {
@@ -2017,14 +2015,13 @@ mod tests {
             let hit = ui::search::SearchProvider::search_limited(&provider, "tail-worker", 1)
                 .pop()
                 .expect("the omitted catalogue tail remains globally searchable");
-            let address = hit.action_address().expect("search result has an action");
             assert_eq!(
-                address.resource,
-                process_resource_id(tail.pid, tail.started_at)
+                hit.action_id,
+                process_resource_id(tail.pid, tail.started_at),
+                "a hit is anchored at the process row"
             );
-            assert_eq!(address.action, "inspect");
             assert!(
-                a.live_process_row(&address.resource).is_some(),
+                a.live_process_row(&hit.action_id).is_some(),
                 "the search address materializes the exact resource, not a PID-only fallback"
             );
         }

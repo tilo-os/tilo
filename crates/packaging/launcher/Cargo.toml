@@ -106,6 +106,7 @@ tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "sync"
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+tilo-action-policy = { path = "../../collab/action-policy" }
 # Tests whose subject is the environment itself (session variables, service
 # and store lookups) scope their changes through it and restore them.
 tilo-test-env = { path = "../../dev/test-env" }

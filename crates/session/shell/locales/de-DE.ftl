@@ -384,6 +384,8 @@ portal-grant-once = Einmal erlauben
 portal-grant-session = Für diese Sitzung erlauben
 portal-grant-always = In diesem Arbeitsbereich immer erlauben
 portal-grant-deny = Ablehnen
+portal-confirm-title = { $who } möchte für dich handeln
+portal-confirm-detail = { $risk } · nur dieses eine Mal; nichts wird gespeichert
 portal-risk-none = Zeigt nur Informationen an
 portal-risk-low = Geringes Risiko: eine gewöhnliche, umkehrbare Änderung
 portal-risk-destructive = Destruktiv: kann löschen oder überschreiben
@@ -2055,9 +2057,14 @@ window-transfer-failed-timeout = Die App hat im anderen Arbeitsbereich nicht rec
 window-transfer-failed-closed = Das neue Fenster wurde geschlossen, bevor es sich geöffnet hat.
 window-transfer-reopen-failed = Das Dokument ist hier, aber die App hat kein Fenster geöffnet. Öffne es erneut, um weiterzumachen.
 window-transfer-bringing-edits = Deine letzten Änderungen werden übernommen …
-window-transfer-receipt-copied = „{ $window }“ aus { $from } hierher kopiert
-window-transfer-receipt-moved-out = „{ $window }“ nach { $to } verschoben
-window-transfer-receipt-moved-in = „{ $window }“ aus { $from } hierher verschoben
+workspace-allow-app-action = { $lifetime ->
+    [once] { $app } darf { $target } nutzen: { $action }, einmal
+    [session] { $app } darf { $target } nutzen: { $action }, für diese Sitzung
+   *[workspace] { $app } darf { $target } nutzen: { $action }, in diesem Arbeitsbereich
+}
+shell-copy-window-in = „{ $window }“ aus { $from } hierher kopiert
+shell-move-window-out = „{ $window }“ nach { $to } verschoben
+shell-move-window-in = „{ $window }“ aus { $from } hierher verschoben
 window-transfer-lost-title = „{ $window }“ wurde während des Verschiebens geschlossen
 window-transfer-lost-detail = Die App wurde unerwartet beendet, daher fehlen eventuell Änderungen aus ihren letzten Sekunden. Alles, was sie gespeichert hatte, ist jetzt in { $to }.
 window-transfer-late-edits-title = Deine letzten Änderungen in „{ $window }“ sind mitgekommen

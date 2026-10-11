@@ -25,13 +25,16 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, WindowEvent};
 use winit::keyboard::Key;
 
-use ui::framework::{Dispatcher, EffectCx, EffectStatus, Effected, LiveRow, RunMode, SurfaceCx};
+use ui::framework::{
+    Dispatcher, EffectCx, EffectStatus, Effected, LiveRow, RunMode, Submit, SurfaceCx,
+};
 use ui::icons::Icon;
 use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tilo_actions::ControlInvocation;
+use ui::tilo_resource::Atom;
 use ui::tokens::Spacing;
 use ui::widget::{
     Button, Element, FilterCount, InspectorPlacement, NavShell, SearchField, TaffyTreeExt, Widget,
@@ -454,10 +457,12 @@ impl LogsApp {
         let requests = self.shared.borrow_mut().take_requests();
         for request in requests {
             match request {
-                Request::Search(value) => self.edit(Logs::SET_SEARCH.with(Some(value))),
-                Request::Unit(value) => self.edit(Logs::SET_UNIT.with(Some(value))),
-                Request::Boot(value) => self.edit(Logs::SET_BOOT.with(Some(value))),
-                Request::Priority(value) => self.edit(Logs::SET_SEVERITY.with(value)),
+                Request::Search(value) => self.edit(Logs::paths().search.replace(value)),
+                Request::Unit(value) => self.edit(Logs::paths().unit.set(Atom(value))),
+                Request::Boot(value) => self.edit(Logs::paths().boot.set(Atom(value))),
+                Request::Priority(value) => {
+                    self.edit(Logs::paths().severity.set(Priority::from_level(value)));
+                }
                 Request::ClearFilters => self.edit(Logs::CLEAR_FILTERS.with(())),
                 Request::Select(entry_id) => self.request(&JournalEffect::SelectEntry { entry_id }),
             }
@@ -511,9 +516,9 @@ impl LogsApp {
     }
 
     /// Submit a filter edit; the document presents its result.
-    fn edit(&self, edit: ui::tilo_resource::Invoke<Logs>) {
+    fn edit(&self, edit: impl Submit<Logs>) {
         if let Some(dispatcher) = &self.dispatcher {
-            dispatcher.invoke(edit);
+            dispatcher.submit(edit);
         }
     }
 
@@ -900,7 +905,7 @@ mod tests {
     use super::*;
     use crate::journal::sample_entries;
     use crate::resource::LogsShell;
-    use ui::prelude::TestApp;
+    use ui::prelude::{Invoke, TestApp};
 
     fn captured(viewport: (u32, u32)) -> TestApp<LogsShell> {
         let mut app = TestApp::new().unwrap();
@@ -980,7 +985,7 @@ mod tests {
             assert_eq!(boots, ["Current boot", "Previous boot"]);
         });
         let total = surface(&mut app, |viewer| viewer.filtered.len());
-        app.invoke(Logs::SET_SEVERITY.with(Priority::Err.level()))
+        app.invoke(Invoke::edit(&Logs::paths().severity.set(Priority::Err)).unwrap())
             .unwrap();
         surface(&mut app, |viewer| {
             let errs = viewer.filtered.len();
@@ -1028,6 +1033,34 @@ mod tests {
             app.read_document(|doc| doc.clone().get_heads()),
             initial_heads,
             "document filter actions must write shared state"
+        );
+    }
+
+    #[test]
+    fn history_says_how_the_filter_changed() {
+        let mut app = captured((1280, 800));
+        request(&mut app, Request::Priority(Priority::Err.level()));
+        request(&mut app, Request::Unit("kernel".to_owned()));
+        request(&mut app, Request::Search("iroh".to_owned()));
+        app.invoke(Logs::CLEAR_FILTERS.with(())).unwrap();
+        let catalogue =
+            tilo_history::Catalogue::new("en-US", &[include_str!("../locales/en-US.ftl")]);
+        let reader = tilo_history::Reader::new("en-US").with_app(&catalogue);
+        let sentences: Vec<String> = app
+            .versions()
+            .into_iter()
+            .filter_map(|version| version.context)
+            .filter(|entry| entry.what.is_some())
+            .map(|entry| reader.sentence(&entry))
+            .collect();
+        assert_eq!(
+            sentences,
+            [
+                "Showed errors and more severe entries",
+                "Showed the entries of unit kernel",
+                "Searched the journal",
+                "Cleared the journal filters",
+            ]
         );
     }
 

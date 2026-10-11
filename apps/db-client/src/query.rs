@@ -20,9 +20,9 @@ use ui::widget::{
 };
 use winit::event::WindowEvent;
 
-use crate::doc::EditorDoc;
 use crate::link::{Intent, Link};
 use crate::model::QueryResult;
+use crate::record::Workspace as Record;
 use crate::results::{CaptionLine, ResultsTable, fill_remaining_height};
 use crate::sample;
 use crate::session::RunStatus;
@@ -32,7 +32,7 @@ use crate::session::RunStatus;
 /// dispatcher ([`TextControl`]). Until that dispatcher is attached it only
 /// shows the text.
 pub struct EditorPane {
-    text: TextControl<CodeEditor>,
+    text: TextControl<CodeEditor, Record>,
     /// Whether `text` edits through the dispatcher yet.
     attached: bool,
     link: Link,
@@ -48,7 +48,7 @@ impl EditorPane {
         // The client opens ready to type a query.
         editor.set_focused(true);
         Self {
-            text: TextControl::view_only(editor, EditorDoc::sql_object),
+            text: TextControl::view_only_at(editor, Record::paths().sql),
             attached: false,
             link: link.clone(),
         }
@@ -61,13 +61,13 @@ impl EditorPane {
 }
 
 impl ui::widget::Decorator for EditorPane {
-    type Inner = TextControl<CodeEditor>;
+    type Inner = TextControl<CodeEditor, Record>;
 
-    fn inner(&self) -> &TextControl<CodeEditor> {
+    fn inner(&self) -> &TextControl<CodeEditor, Record> {
         &self.text
     }
 
-    fn inner_mut(&mut self) -> &mut TextControl<CodeEditor> {
+    fn inner_mut(&mut self) -> &mut TextControl<CodeEditor, Record> {
         &mut self.text
     }
 

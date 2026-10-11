@@ -30,6 +30,16 @@ pub enum MemberRole {
     Editor,
 }
 
+impl From<MemberRole> for collab_types::Role {
+    fn from(role: MemberRole) -> Self {
+        match role {
+            MemberRole::Viewer => Self::Viewer,
+            MemberRole::Commenter => Self::Commenter,
+            MemberRole::Editor => Self::Editor,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TransportHint {
     pub kind: String,

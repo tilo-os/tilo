@@ -552,9 +552,7 @@ fn palette_confirmations_cannot_forge_identity_or_admin_and_wait_for_the_overlay
                 .find(|result| result.id == "identity.select")
                 .expect("identity action")
         };
-        let before = chrome.borrow().tree().desktop.workspaces[0]
-            .capabilities
-            .clone();
+        let before = chrome.borrow().tree().desktop.workspaces[0].sandbox.clone();
         host.pending_palette_action = Some(action);
         host.palette
             .set_query(r#"{"id":"does-not-exist","confirm":false}"#);
@@ -568,7 +566,7 @@ fn palette_confirmations_cannot_forge_identity_or_admin_and_wait_for_the_overlay
             "refused palette action remains editable"
         );
         assert_eq!(
-            chrome.borrow().tree().desktop.workspaces[0].capabilities,
+            chrome.borrow().tree().desktop.workspaces[0].sandbox,
             before,
             "false confirmation cannot create an Admin grant"
         );
@@ -1633,7 +1631,7 @@ fn peer_sync_and_invite_manager_enable_idempotently_and_fail_closed() {
 #[test]
 fn delegated_inviter_follows_the_capability_policy() {
     use crate::shell::invite_policy::{InviteRefusal, InviteRoute, active_invite_route};
-    use crate::shell::state::{CapOverride, PeerOrigin, RoomAuthority, Scope, Subject, Verb};
+    use crate::shell::state::{PeerOrigin, RoomAuthority};
 
     let mut tree = WorkspaceTree::default();
     let local = tree.append_empty_workspace("Joined room");
@@ -1674,19 +1672,16 @@ fn delegated_inviter_follows_the_capability_policy() {
         refused.refusal().expect("a refusal has a reason"),
     );
 
-    handle
-        .write()
-        .desktop
-        .workspaces
-        .iter_mut()
-        .find(|workspace| workspace.id == local)
-        .expect("workspace")
-        .capabilities
-        .push(CapOverride::grant(
-            Subject::person(carol),
-            Scope::Workspace,
-            Verb::Invite,
-        ));
+    crate::shell::invite_policy::tests::grant_invite(
+        handle
+            .write()
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|workspace| workspace.id == local)
+            .expect("workspace"),
+        &carol,
+    );
 
     assert_eq!(
         route(),

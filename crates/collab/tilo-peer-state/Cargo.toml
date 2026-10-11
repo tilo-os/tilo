@@ -25,6 +25,7 @@ base64.workspace = true
 web-time = { version = "1", features = ["serde"] }
 collab-types = { path = "../collab-types" }
 tilo-desktop-model = { path = "../../session/desktop-model" }
+tilo-action-policy = { path = "../action-policy" }
 # The shared neighbour wire vocabulary (`NeighbourMsg`, colorimetry, HDR metadata).
 neighbour-wire = { path = "../neighbour-wire" }
 tilo-user-identity = { path = "../tilo-user-identity" }

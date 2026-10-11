@@ -64,14 +64,15 @@ impl NativeDocumentReadContext {
 /// Data only. Its provider retains the actual bounded native save's lifetime.
 pub enum NativeDocumentRead {
     Unchanged([u8; 32]),
+    /// The owner holds no complete capture right now: the record's governed
+    /// checkpoint is still arriving. Not readable yet, and no failure:
+    /// answered as [`Reply::Unavailable`], the reader withholds readiness
+    /// and asks again.
+    Pending,
     Captured {
         revision: [u8; 32],
         body: Box<dyn DocumentBytes>,
     },
-    /// The owner holds no complete capture right now (a checkpoint it is
-    /// admitting has not fully arrived). Answered as [`Reply::Unavailable`]:
-    /// the reader withholds readiness and asks again, it is not refused.
-    Pending,
 }
 pub trait NativeDocumentReads: Send + Sync {
     /// Durable native installation obligation, independent of runtime health.

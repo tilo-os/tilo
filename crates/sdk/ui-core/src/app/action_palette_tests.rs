@@ -175,8 +175,7 @@ impl crate::resources::PublishesResources for Publisher {
                         key: "lazy-flipped".into(),
                     },
                 )
-                .unwrap()
-                .requiring(tilo_actions::PermissionRequirement::Write),
+                .unwrap(),
             )
         })
     }
@@ -309,9 +308,8 @@ fn palette_catalog_materializes_once_per_generation_under_fresh_authority() {
         assert_eq!(app.collect_local_resources().len(), 1);
         app.actions.permission_generation.set(u64::MAX);
 
-        app.set_permission_ctx(PermissionContext::from_capabilities(
-            collab_types::caps::Actor::person(None, "restricted"),
-            Vec::new(),
+        app.set_permission_ctx(crate::permissions::PermissionContext::stranger(
+            "restricted",
         ));
 
         assert_eq!(app.actions.permission_generation.get(), u64::MAX);
@@ -393,9 +391,8 @@ fn palette_catalog_materializes_once_per_generation_under_fresh_authority() {
                     .any(|label| label.contains("Flip it"))
             );
             if revoke {
-                app.set_permission_ctx(PermissionContext::from_capabilities(
-                    collab_types::caps::Actor::person(None, "restricted"),
-                    Vec::new(),
+                app.set_permission_ctx(crate::permissions::PermissionContext::stranger(
+                    "restricted",
                 ));
             }
             assert!(app.action_palette_handle_key(&synth_enter()));
@@ -426,9 +423,8 @@ fn palette_catalog_materializes_once_per_generation_under_fresh_authority() {
     {
         let mut app = App::new_with_controlled_inputs(State::new(), Box::new(Publisher));
         app.action_registry_mut().register::<Flip>(FLIP_TYPE);
-        app.set_permission_ctx(PermissionContext::from_capabilities(
-            collab_types::caps::Actor::person(None, "restricted"),
-            Vec::new(),
+        app.set_permission_ctx(crate::permissions::PermissionContext::stranger(
+            "restricted",
         ));
         app.open_action_palette();
         app.actions
@@ -907,12 +903,7 @@ fn palette_dispatch_routes_through_the_app_and_its_visible_controls() {
         assert!(app.state.peek_last_undo().is_none());
 
         app.state.doc.put(ROOT, "draft", "finished").unwrap();
-        let context = tilo_actions::ActionContext::for_resource(
-            "Finish draft",
-            "test.draft",
-            "note",
-            "Draft",
-        );
+        let context = tilo_actions::ActionContext::for_resource("test.draft", "note", "Draft");
         assert!(app.state.commit_action_authored_with_context(
             None,
             None,
@@ -925,7 +916,13 @@ fn palette_dispatch_routes_through_the_app_and_its_visible_controls() {
             .message()
             .and_then(|message| tilo_actions::ActionContext::from_change_message(message))
             .unwrap();
-        assert_eq!(context.action_label, "Finish draft");
+        assert_eq!(
+            context
+                .resource
+                .as_ref()
+                .map(|resource| resource.label.as_str()),
+            Some("Draft")
+        );
     }
 
     // Case `ctrl_k_invokes_a_projected_semantic_view_control`.

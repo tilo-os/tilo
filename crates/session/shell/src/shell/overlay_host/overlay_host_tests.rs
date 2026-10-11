@@ -195,7 +195,7 @@ fn collaboration_status_preferences_round_trip_and_fall_back_to_grounded_intent(
         let entry = ui::widget::history::HistoryEntry {
             id: ui::widget::history::HistoryEntryId([1; 16]),
             author: ui::widget::history::HistoryAuthor::new("Ada", 120.0, "ada"),
-            op_class: collab_types::OpClass::Govern,
+            entry_kind: ui::widget::EntryKind::Access,
             artifact_kind: collab_types::ArtifactKind::Note,
             timestamp: std::time::SystemTime::now(),
             summary: "5 permission changes".into(),
@@ -214,7 +214,7 @@ fn collaboration_status_preferences_round_trip_and_fall_back_to_grounded_intent(
         let entry = ui::widget::history::HistoryEntry {
             id: ui::widget::history::HistoryEntryId([2; 16]),
             author: ui::widget::history::HistoryAuthor::new("Ada", 120.0, "ada"),
-            op_class: collab_types::OpClass::Splice,
+            entry_kind: ui::widget::EntryKind::Text,
             artifact_kind: collab_types::ArtifactKind::File,
             timestamp: std::time::SystemTime::now(),
             summary: "+4 -1 chars".into(),
@@ -223,7 +223,6 @@ fn collaboration_status_preferences_round_trip_and_fall_back_to_grounded_intent(
             redaction: None,
             context: Some(
                 ui::tilo_actions::ActionContext::for_resource(
-                    "Edit",
                     "finance:q2",
                     "sheet",
                     "Q2 finance report",
@@ -241,7 +240,7 @@ fn collaboration_status_preferences_round_trip_and_fall_back_to_grounded_intent(
         let make_entry = |id, purpose: &str| ui::widget::history::HistoryEntry {
             id: ui::widget::history::HistoryEntryId([id; 16]),
             author: ui::widget::history::HistoryAuthor::new("Ada", 120.0, "ada"),
-            op_class: collab_types::OpClass::Splice,
+            entry_kind: ui::widget::EntryKind::Text,
             artifact_kind: collab_types::ArtifactKind::File,
             timestamp: std::time::SystemTime::now(),
             summary: purpose.into(),
@@ -250,7 +249,6 @@ fn collaboration_status_preferences_round_trip_and_fall_back_to_grounded_intent(
             redaction: None,
             context: Some(
                 ui::tilo_actions::ActionContext::for_resource(
-                    "Edit",
                     format!("resource:{id}"),
                     "document",
                     purpose,
@@ -2818,8 +2816,8 @@ fn first_login_setup_then_an_app_joins_the_home_workspace_in_the_same_session() 
     let chrome = ChromeState::new(tree);
     assert_eq!(
         chrome.borrow().tree().desktop.workspaces[0]
-            .owner
-            .as_deref(),
+            .owner()
+            .map(String::as_str),
         Some("quickuser"),
         "before setup the session acts as the account"
     );
@@ -2875,8 +2873,8 @@ fn first_login_setup_then_an_app_joins_the_home_workspace_in_the_same_session() 
         .iter()
         .find(|w| w.room == room)
         .expect("home");
-    assert_eq!(home.role_of_at(&principal, 0), Some(CapRole::Owner));
-    assert_eq!(home.role_of_at(&"quickuser".to_string(), 0), None);
+    assert_eq!(home.role_of(&principal), Some(CapRole::Owner));
+    assert_eq!(home.role_of("quickuser"), None);
     assert_eq!(state.local_user_id, principal);
 }
 

@@ -6,6 +6,7 @@
 use std::rc::Rc;
 
 use serde_json::json;
+use tilo_app::advanced::{Affine, NodeId, Scene, TaffyTree};
 use tilo_app::prelude::*;
 use tilo_app::vello::kurbo::{BezPath, Stroke};
 use tilo_app::vello::peniko::Color;

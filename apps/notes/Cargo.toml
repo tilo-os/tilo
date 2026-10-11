@@ -59,6 +59,7 @@ taffy.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+tilo-history = { path = "../../crates/sdk/tilo-history" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tilo-test-env = { path = "../../crates/dev/test-env" }
 

@@ -43,6 +43,11 @@ pub enum Placement {
     /// Its own window group, right of the group named here. Unlike [`Placement::NewGroup`] ("beside
     /// whatever has focus"), names a specific group, so the answer survives focus moving between launch and arrival. Falls back to [`Placement::NewGroup`] when gone, as [`Placement::TabIn`] does.
     RightOf(GroupId),
+    /// [`Self::RightOf`] without taking focus: a view an actor's action
+    /// needs (an agent's, a Shortcut's, another app's), opened beside the
+    /// group that actor works in, on whichever strip holds it. The person
+    /// keeps their place and focus.
+    Beside(GroupId),
     /// A new window group at an exact seam in a named strip. The index is
     /// clamped to the live group count; a stale strip falls back to
     /// [`Self::NewGroup`] rather than placing the window in an arbitrary strip.
@@ -287,7 +292,10 @@ pub fn relocate_tab(tree: &mut WorkspaceTree, tab_id: TabId, placement: Placemen
             strip,
             ui::widget::TabDropTarget::GroupGap { gap_index: index },
         )),
-        Placement::NewGroup | Placement::RightOf(_) | Placement::IntoTab(_) => None,
+        Placement::NewGroup
+        | Placement::RightOf(_)
+        | Placement::Beside(_)
+        | Placement::IntoTab(_) => None,
     };
     let Some((destination_strip, mut target)) = destination else {
         return false;
@@ -546,15 +554,11 @@ pub fn place_tab(tree: &mut WorkspaceTree, new_tab: Tab, placement: Placement) -
     // focused-strip placement rule rather than landing in a random strip.
     let explicit_strip = match placement {
         Placement::GroupAt(strip, _) => ws.strips.iter().position(|s| s.id == strip),
-        Placement::TabAt(group, _)
-        | Placement::BackgroundTabAt(group, _)
-        | Placement::TabIn(group)
-        | Placement::RightOf(group) => ws.strips.iter().position(|s| {
-            s.window_groups
+        _ => named_group(placement).and_then(|group| {
+            ws.strips
                 .iter()
-                .any(|candidate| candidate.id == group)
+                .position(|s| s.window_groups.iter().any(|g| g.id == group))
         }),
-        Placement::NewGroup | Placement::IntoTab(_) => None,
     };
     // Target strip: explicit destination, then focused one, else the first.
     let strip_idx = explicit_strip
@@ -577,6 +581,7 @@ pub fn place_tab(tree: &mut WorkspaceTree, new_tab: Tab, placement: Placement) -
         // `IntoTab` only reaches here when its tab has gone; it degrades to a new group, as the variant's own documentation says.
         Placement::NewGroup
         | Placement::RightOf(_)
+        | Placement::Beside(_)
         | Placement::GroupAt(_, _)
         | Placement::IntoTab(_) => None,
     };
@@ -610,7 +615,9 @@ pub fn place_tab(tree: &mut WorkspaceTree, new_tab: Tab, placement: Placement) -
     let group_id = group.id;
     // Right of the group the placement named, falling back to the focused one when that group is gone, and to the end of the strip when nothing is focused either.
     let anchor = match placement {
-        Placement::RightOf(g) => Some(g).filter(|g| strip.window_groups.iter().any(|w| w.id == *g)),
+        Placement::RightOf(g) | Placement::Beside(g) => {
+            Some(g).filter(|g| strip.window_groups.iter().any(|w| w.id == *g))
+        }
         _ => None,
     }
     .or(active_group);
@@ -623,9 +630,24 @@ pub fn place_tab(tree: &mut WorkspaceTree, new_tab: Tab, placement: Placement) -
             .map_or(strip.window_groups.len(), |i| i.saturating_add(1)),
     };
     strip.window_groups.insert(insert_at, group);
-    tree.desktop.active_strip.insert(ws_id, strip_id);
-    tree.desktop.set_active_group(strip_id, group_id);
+    // Someone else's view: the person stays where they are.
+    if !matches!(placement, Placement::Beside(_)) {
+        tree.desktop.active_strip.insert(ws_id, strip_id);
+        tree.desktop.set_active_group(strip_id, group_id);
+    }
     tab_id
+}
+
+/// The existing group `placement` names, whatever it does there.
+const fn named_group(placement: Placement) -> Option<GroupId> {
+    match placement {
+        Placement::TabAt(group, _)
+        | Placement::BackgroundTabAt(group, _)
+        | Placement::TabIn(group)
+        | Placement::RightOf(group)
+        | Placement::Beside(group) => Some(group),
+        Placement::NewGroup | Placement::GroupAt(..) | Placement::IntoTab(_) => None,
+    }
 }
 
 /// Rewrite the `app_id` and tab `title` of a previously-adopted `TileContent::Foreign` tab on

@@ -21,7 +21,6 @@ thin = ["dep:runtime-dylib"]
 [dependencies]
 lru.workspace = true
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
-tilo-actions = { path = "../../crates/collab/actions" }
 tilo-files = { path = "../../crates/platform/tilo-files" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # The registry list, its client and its trust classification. Shared
@@ -42,7 +41,6 @@ blake3.workspace = true
 getrandom.workspace = true
 rand_core.workspace = true
 automerge.workspace = true
-tilo-automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
@@ -57,6 +55,7 @@ tilo-net = { path = "../../crates/platform/tilo-net", features = ["blocking"] }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+tilo-history = { path = "../../crates/sdk/tilo-history" }
 tilo-app-package = { path = "../../crates/packaging/tilo-app-package" }
 base64.workspace = true
 flate2.workspace = true

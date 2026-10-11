@@ -58,7 +58,6 @@ tracing.workspace = true
 # Direct quick-ui adjacent deps (matches the set quick-terminal +
 # file-explorer pull in for their `Widget` impls).
 automerge.workspace = true
-tilo-automerge.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
@@ -70,6 +69,7 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["te
 # extension install tests unpack into throwaway directories
 tempfile.workspace = true
 tilo-test-env = { path = "../../crates/dev/test-env" }
+tilo-history = { path = "../../crates/sdk/tilo-history" }
 
 [lints]
 workspace = true

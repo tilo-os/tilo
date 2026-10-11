@@ -21,10 +21,12 @@ pub const IDENTIFY_FRESH_MS: u64 = 10_000;
 /// One request to show display numbers. The id is the request time, so a
 /// compositor that restarts never replays an old request as new.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(remote = "Self", default)]
 pub struct IdentifyRequest {
     pub requested_unix_ms: u64,
 }
+
+crate::read_through_json_value!(IdentifyRequest);
 
 impl IdentifyRequest {
     const SECTION: &'static str = "display_identify";

@@ -14,8 +14,8 @@
 //! page), a scratch directory, blobs in the content store, versions of the
 //! resource written by other people at other times, and collaborators shown
 //! where they are in it. Views read the values with
-//! [`ViewCx::fixture`](super::ViewCx::fixture), surfaces with
-//! [`SurfaceCx::fixture`](super::SurfaceCx::fixture).
+//! [`RecordEnv::fixture`](super::RecordEnv::fixture), surfaces with
+//! [`RecordEnv::fixture`](super::RecordEnv::fixture).
 
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
@@ -273,7 +273,7 @@ impl<R: Resource> Fixture<R> {
     }
 
     /// The content store the capture's views read from
-    /// ([`ViewCx::content`](super::ViewCx::content)), for the blobs a scene
+    /// ([`RecordEnv::content`](super::RecordEnv::content)), for the blobs a scene
     /// shows: photos, attachments, thumbnails. A private one when the host
     /// lent none.
     pub fn content(&mut self) -> &tilo_content::ContentStore {
@@ -351,11 +351,17 @@ fn write_version<R: Resource>(
     use tilo_actions::Action as _;
     let action = version.invoke.build(version.at_ms)?;
     let encoded = tilo_resource::encode::<R>(&action).map_err(|error| error.to_string())?;
-    let label =
-        tilo_resource::action_label::<R>(&action).unwrap_or_else(|| version.invoke.id.to_owned());
-    let context = tilo_actions::ActionContext::for_resource(label, R::KIND, R::KIND, R::LABEL)
+    let mut context = tilo_actions::ActionContext::for_resource(R::KIND, R::KIND, R::LABEL)
         .with_change(action.change_kind())
         .with_host_invoker(version.author.clone(), None);
+    if let Some(described) = action.describe(doc).or_else(|| {
+        tilo_actions::Described::of_published(
+            &encoded,
+            tilo_actions::ActionKey::new("", R::KIND, version.invoke.id),
+        )
+    }) {
+        context = context.with_described(described);
+    }
     let envelope = tilo_actions::ActionEnvelope {
         id: tilo_actions::ActionId::new(),
         action: encoded,

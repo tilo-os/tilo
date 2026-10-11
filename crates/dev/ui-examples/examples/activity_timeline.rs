@@ -162,7 +162,10 @@ pub fn run(args: &[String]) {
         entries.len()
     );
     for e in &entries {
-        println!("  {:<14} {:<10?} {}", e.author.name, e.op_class, e.summary);
+        println!(
+            "  {:<14} {:<10?} {}",
+            e.author.name, e.entry_kind, e.summary
+        );
     }
 
     let timeline = ActivityTimeline::with_entries(entries.clone())

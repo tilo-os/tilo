@@ -2338,12 +2338,14 @@ impl Widget for TileHost {
                         Some(&author),
                         None,
                         crate::undo::get_state(app.as_ref()),
+                        None,
                     ),
                     UndoStep::Redo => history.redo_as(
                         doc,
                         Some(&author),
                         None,
                         crate::undo::get_state(app.as_ref()),
+                        None,
                     ),
                 }
                 .map(|entry| {

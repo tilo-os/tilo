@@ -36,7 +36,7 @@ use anyhow::{Context, anyhow};
 use tilo_content::{ContentState, ContentStore};
 use vello::peniko::{Blob, ImageAlphaType, ImageData as PenikoImage, ImageFormat};
 
-use crate::doc::{ImportedPage, PagePlanEntry};
+use crate::markup::{ImportedPage, PagePlanEntry};
 use crate::model::{
     AnnoKind, Annotation, Comment, Document, FormEntry, MarkupStyle, OutlineItem, PtRect,
     Signature, SignatureInk,

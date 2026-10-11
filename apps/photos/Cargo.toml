@@ -19,7 +19,6 @@ thin = ["dep:runtime-dylib"]
 
 [dependencies]
 # A new album's id is minted when the caller names none.
-uuid.workspace = true
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # The open photograph is published as a Resource whose edits are ActionSpecs,
@@ -35,7 +34,6 @@ agent-provider-config = { path = "../../crates/agent/provider-config" }
 tilo-files = { path = "../../crates/platform/tilo-files" }
 tilo-paths = { path = "../../crates/platform/tilo-paths" }
 automerge.workspace = true
-tilo-automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
@@ -51,6 +49,7 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["te
 tempfile.workspace = true
 vello_encoding.workspace = true
 tilo-test-env = { path = "../../crates/dev/test-env" }
+tilo-history = { path = "../../crates/sdk/tilo-history" }
 
 [[test]]
 name = "it"

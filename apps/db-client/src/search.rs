@@ -8,8 +8,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
-use tilo_actions::Resource;
-use ui::tilo_actions::ActionAddress;
+use ui::tilo_actions::Resource;
 use ui::tilo_resource::{Effect, SearchEntry};
 use uuid::Uuid;
 
@@ -98,8 +97,7 @@ fn index_database_and_schema(
         database,
         focus.id(),
         database_name.clone(),
-        hit(&database_name, ActionAddress::new(&database_id, focus.id()))
-            .subtitled("Active database"),
+        hit(&database_name, &database_id).subtitled("Active database"),
     );
     for schema in &session.schema.schemas {
         let schema_id = catalog_resource_id("schema", &[connection_id, &schema.name]);
@@ -115,8 +113,7 @@ fn index_database_and_schema(
             schema_resource,
             focus.id(),
             schema.name.clone(),
-            hit(&schema.name, ActionAddress::new(&schema_id, focus.id()))
-                .subtitled(format!("Schema in {database_name}")),
+            hit(&schema.name, &schema_id).subtitled(format!("Schema in {database_name}")),
         );
         for relation in &schema.tables {
             index_relation(connection.id, schema, relation, rows, resources);
@@ -134,8 +131,8 @@ fn index_relation(
     let connection_id = &connection.to_string();
     let relation_id =
         catalog_resource_id("relation", &[connection_id, &schema.name, &relation.name]);
-    let result = hit(&relation.name, ActionAddress::new(&relation_id, "browse"))
-        .subtitled(format!("{}.{}", schema.name, relation.name));
+    let result =
+        hit(&relation.name, &relation_id).subtitled(format!("{}.{}", schema.name, relation.name));
     let resource = Resource::new(
         &relation_id,
         match relation.kind {
@@ -165,9 +162,10 @@ fn index_relation(
             "column",
             &[connection_id, &schema.name, &relation.name, &column.name],
         );
-        let result = hit(&column.name, ActionAddress::new(&column_id, "browse")).subtitled(
-            format!("{} in {}.{}", column.decl_type, schema.name, relation.name),
-        );
+        let result = hit(&column.name, &column_id).subtitled(format!(
+            "{} in {}.{}",
+            column.decl_type, schema.name, relation.name
+        ));
         let mut column_resource = Resource::new(&column_id, "database.column", &column.name);
         column_resource.actions.clone_from(&resource.actions);
         index_resource(
@@ -218,11 +216,7 @@ fn index_current_result(
             result_resource,
             show.id(),
             format!("query result {}", result.message()),
-            hit(
-                "Current query result",
-                ActionAddress::new(&result_id, show.id()),
-            )
-            .subtitled(result.message()),
+            hit("Current query result", &result_id).subtitled(result.message()),
         );
     }
 }
@@ -244,11 +238,7 @@ fn index_transactions(
         transaction,
         begin.id(),
         "transaction begin commit rollback",
-        hit(
-            "Transaction",
-            ActionAddress::new(&transaction_id, begin.id()),
-        )
-        .subtitled("Active database"),
+        hit("Transaction", &transaction_id).subtitled("Active database"),
     );
 }
 
@@ -286,8 +276,7 @@ fn index_query_history(
             history_entry,
             rerun.id(),
             format!("query {} {}", entry.generation, entry.summary),
-            hit(&title, ActionAddress::new(&entry_id, rerun.id()))
-                .subtitled("Local only — never shared with collaborators"),
+            hit(&title, &entry_id).subtitled("Local only — never shared with collaborators"),
         );
     }
 }
@@ -319,6 +308,19 @@ fn apply_catalog_snapshot(
 }
 
 impl DbSearchIndex {
+    /// What opening the row anchored at `anchor` runs: the effect its hit
+    /// was found for (browse a relation, focus the database, show the
+    /// result, rerun a query). `None` once the row is gone.
+    pub fn opened(&self, anchor: &str) -> Option<DbEffect> {
+        let resource = self.resource(anchor)?;
+        let encoded = resource
+            .actions
+            .first()?
+            .build_json(&serde_json::Map::new())
+            .ok()?;
+        DbEffect::from_payload(&encoded.payload).ok()
+    }
+
     /// Every row of the catalogue as a search entry.
     pub fn entries(&self) -> Vec<SearchEntry> {
         self.state
@@ -370,10 +372,10 @@ impl DbSearchIndex {
     }
 }
 
-/// A catalogue hit titled `title`, invoking `address`.
-fn hit(title: impl Into<String>, address: ActionAddress) -> SearchEntry {
+/// A catalogue hit titled `title`, anchored at the row `id`.
+fn hit(title: impl Into<String>, id: &str) -> SearchEntry {
     SearchEntry::new(title, String::new())
-        .invoking(address)
+        .anchored(id)
         .grouped(KIND)
 }
 
@@ -385,7 +387,17 @@ fn index_resource(
     search_text: impl Into<String>,
     mut entry: SearchEntry,
 ) {
-    debug_assert!(resource.actions.iter().any(|action| action.id == action_id));
+    let mut resource = resource;
+    // What opening the row runs comes first ([`DbSearchIndex::opened`]).
+    let opens = resource
+        .actions
+        .iter()
+        .position(|action| action.id == action_id);
+    debug_assert!(opens.is_some());
+    if let Some(at) = opens {
+        let action = resource.actions.remove(at);
+        resource.actions.insert(0, action);
+    }
     let id = resource.id.as_str().to_string();
     entry.text = search_text.into();
     rows.push((id.clone(), entry));
@@ -464,20 +476,18 @@ mod tests {
     /// The app's search source over the index's entries, as the framework
     /// builds it.
     fn source(index: &DbSearchIndex) -> impl SearchProvider + use<> {
-        ui::framework::testing::search_source::<crate::resource::DbClient>(index.entries())
+        ui::framework::testing::search_source::<crate::record::Workspace>(index.entries())
     }
 
     fn assert_address_resolves(index: &DbSearchIndex, result: &SearchResult) {
-        let address = result.action_address().expect("canonical action address");
         let resource = index
-            .resource(&address.resource)
-            .expect("the live row of the hit's exact address resolves");
-        assert!(
-            resource
-                .actions
-                .iter()
-                .any(|action| action.id == address.action),
-            "search address points at an action published by the resolved resource"
+            .resource(&result.action_id)
+            .expect("the live row of the hit's anchor resolves");
+        let opened = index.opened(&result.action_id).expect("the hit opens");
+        assert_eq!(
+            resource.actions[0].id,
+            opened.id(),
+            "the hit opens with an action its row publishes"
         );
     }
 
@@ -503,8 +513,8 @@ mod tests {
                 .expect("relation search hit");
             assert_eq!(hit.title, "albums");
             assert_eq!(
-                hit.action_address().expect("canonical address").action,
-                "browse"
+                index.opened(&hit.action_id).map(|effect| effect.id()),
+                Some("browse")
             );
             assert_address_resolves(&index, hit);
         }
@@ -615,9 +625,8 @@ mod tests {
                     .into_iter()
                     .find(|result| result.title == title)
                     .unwrap_or_else(|| panic!("canonical search hit for {title}"));
-                let address = hit.action_address().expect("canonical address");
                 let resource = index
-                    .resource(&address.resource)
+                    .resource(&hit.action_id)
                     .expect("the live row materializes the canonical resource");
                 for action in expected_actions {
                     assert!(
@@ -664,9 +673,7 @@ mod tests {
 
             assert!(source(&index).search_limited("albums", 4).is_empty());
             assert!(
-                index
-                    .resource(&old_relation.action_address().unwrap().resource)
-                    .is_none(),
+                index.resource(&old_relation.action_id).is_none(),
                 "a relation cannot resolve against a disconnected, different active connection"
             );
         }
@@ -680,12 +687,7 @@ mod tests {
             assert!(!before.is_empty());
 
             let id = "duplicate-resource".to_string();
-            let row = || {
-                (
-                    id.clone(),
-                    hit("Duplicate", ActionAddress::new(&id, "browse")),
-                )
-            };
+            let row = || (id.clone(), hit("Duplicate", &id));
             let error = apply_catalog_snapshot(
                 &index.state,
                 "broken snapshot".to_string(),

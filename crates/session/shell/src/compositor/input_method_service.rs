@@ -27,10 +27,9 @@ use smithay::wayland::socket::ListeningSocketSource;
 use settings_store::hardware::InputMethodEngine;
 
 use super::input_environment::InputEnvironment;
-use super::input_method::{InputMethodOwner, OskInput, TrustedInputMethod};
+use super::input_method::{InputMethodOwner, OskInput, OskPreference, TrustedInputMethod};
 use super::state::{ClientState, State};
 use crate::shell::state::RoomId;
-use settings_store::accessibility::{AccessibilitySettings, OnScreenKeyboard};
 
 const PACKAGE_ID: &str = super::state::OSK_APP_ID;
 const PACKAGE_KIND: &str = "service";
@@ -38,9 +37,13 @@ const RETRY_BACKOFF: Duration = Duration::from_secs(5);
 const INSTALL_REFRESH: Duration = Duration::from_secs(30);
 
 /// The on-screen keyboard preference in `settings`.
-pub fn osk_preference(settings: &settings_store::live::Snapshot) -> OnScreenKeyboard {
-    AccessibilitySettings::from_section(&settings.section(settings_store::accessibility::SECTION))
-        .on_screen_keyboard
+pub fn osk_preference(settings: &settings_store::live::Snapshot) -> OskPreference {
+    OskPreference::from_setting(
+        settings
+            .document
+            .get("accessibility")
+            .and_then(|section| section.get("on_screen_keyboard")),
+    )
 }
 
 /// What one service should be running: the owner it serves and, for the
@@ -511,7 +514,7 @@ pub struct InputMethodServices {
     /// The saved settings the owner follows, re-read by [`Self::reload`].
     primary_layout: String,
     engine: Option<InputMethodEngine>,
-    osk_preference: OnScreenKeyboard,
+    osk_preference: OskPreference,
     /// Whether the on-screen keyboard package can run at all. Without it an
     /// automatic keyboard must never take the seat, or nothing would answer
     /// the focused field.
@@ -570,7 +573,7 @@ impl InputMethodServices {
             sockets,
             primary_layout: "us".to_string(),
             engine: None,
-            osk_preference: OnScreenKeyboard::default(),
+            osk_preference: OskPreference::default(),
             osk_installed: false,
             osk_input: OskInput::default(),
             installed_epoch: crate::shell::launcher::installed_apps_epoch(),

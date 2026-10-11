@@ -37,6 +37,10 @@ impl OverviewHost for ShellOverview<'_> {
     fn scope_label(&self, scope: &Scope) -> String {
         tilo_desktop::workspace_settings::scope_label(scope, &crate::shell::launcher::ShellApps)
     }
+
+    fn node_label(&self, node: &tilo_action_policy::TreePath) -> String {
+        tilo_desktop::workspace_settings::node_phrase(node, &crate::shell::launcher::ShellApps)
+    }
 }
 
 /// Every room as the overview shows it to `local_user`, now.

@@ -374,7 +374,6 @@ fn hosted_pump_invocation_advances_and_publishes_then_idles() {
 
 #[test]
 fn hosted_pump_policy_change_and_expiry_refresh() {
-    use crate::permissions::{Actor, CapOverride, PermissionContext, Scope, Subject, Verb};
     use std::sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -382,16 +381,11 @@ fn hosted_pump_policy_change_and_expiry_refresh() {
     let mut fixture = HostedPumpFixture::new(1);
     let time = Arc::new(AtomicU64::new(100));
     let sample = time.clone();
-    fixture.app.permission_ctx = PermissionContext::from_capabilities(
-        Actor::person(None, "fixture-user"),
-        vec![
-            CapOverride::grant(
-                Subject::person("fixture-user"),
-                Scope::Workspace,
-                Verb::Admin,
-            )
-            .with_expiry(110),
-        ],
+    fixture.app.permission_ctx = crate::permissions::PermissionContext::granted(
+        "fixture-user",
+        &crate::permissions::TreePath::root(),
+        crate::permissions::policy::KindSet::ALL,
+        Some(110),
     )
     .with_policy_time_sampler(Arc::new(move || Ok(sample.load(Ordering::Acquire))));
     let generation = fixture.app.actions.resource_generation.get();
@@ -494,10 +488,7 @@ fn hosted_pump_host_owner_permission_replacement_refreshes() {
     );
     assert_eq!(app.actions.resource_generation.get(), generation);
     // What HostWorker::pump does with the host's recomputed authority.
-    *permissions.borrow_mut() = crate::permissions::PermissionContext::from_capabilities(
-        crate::permissions::Actor::person(None, "fixture-user"),
-        vec![],
-    );
+    *permissions.borrow_mut() = crate::permissions::PermissionContext::stranger("fixture-user");
     let report = app.pump_hosted_model_as(false);
     assert!(report.synced && report.published);
     assert_ne!(app.actions.resource_generation.get(), generation);
@@ -636,24 +627,22 @@ fn hosted_pump_cost_idle_before_after() {
 
 #[test]
 fn hosted_pump_action_authority_revoke_refreshes_without_forced_sync() {
-    use crate::permissions::{Actor, PermissionContext, Role};
+    use crate::permissions::{PermissionContext, Role};
     use std::sync::{Arc, Mutex};
     let current = Arc::new(Mutex::new(Some(Role::Owner)));
     let sample = current.clone();
     let mut fixture = HostedPumpFixture::new(1);
-    fixture.app.permission_ctx = PermissionContext::from_capabilities(
-        Actor::person(Some(Role::Editor), "fixture-user"),
-        vec![],
-    )
-    .with_action_authority(
-        "test.directory".into(),
-        Arc::new(move || {
-            Ok(PermissionContext::from_capabilities(
-                Actor::person(*sample.lock().unwrap(), "fixture-user"),
-                vec![],
-            ))
-        }),
-    );
+    fixture.app.permission_ctx =
+        crate::permissions::PermissionContext::member("fixture-user", Role::Editor)
+            .with_action_authority(
+                "test.directory".into(),
+                Arc::new(move || {
+                    Ok(match *sample.lock().unwrap() {
+                        Some(role) => PermissionContext::member("fixture-user", role),
+                        None => PermissionContext::stranger("fixture-user"),
+                    })
+                }),
+            );
     assert!(fixture.pump().synced);
     fixture.assert_idle();
     *current.lock().unwrap() = None;

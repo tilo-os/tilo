@@ -494,7 +494,7 @@ impl OpaqueParts {
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct Tint {
     night_light: Option<Color>,
-    color_filter: ColorFilter,
+    color_filter: DesktopColorFilter,
     viewport: (f64, f64),
 }
 
@@ -596,32 +596,55 @@ fn night_light_on(manual: bool, scheduled: bool, night: Option<bool>) -> bool {
     }
 }
 
-use settings_store::accessibility::{AccessibilitySettings, ColorFilter};
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum DesktopColorFilter {
+    #[default]
+    None,
+    Grayscale,
+    Inverted,
+    GrayscaleInverted,
+}
+
 use settings_store::magnifier::{MagnifierState, MagnifierView};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct VisualAccessibility {
-    color_filter: ColorFilter,
+    color_filter: DesktopColorFilter,
     magnifier: MagnifierState,
     cursor_crosshair: bool,
 }
 
 impl Default for VisualAccessibility {
     fn default() -> Self {
-        Self::of(AccessibilitySettings::default())
+        Self {
+            color_filter: DesktopColorFilter::None,
+            magnifier: MagnifierState {
+                zoom: settings_store::magnifier::OFF,
+                view: MagnifierView::Lens,
+            },
+            cursor_crosshair: false,
+        }
     }
 }
 
 impl VisualAccessibility {
     fn load() -> Self {
-        Self::of(AccessibilitySettings::load())
-    }
-
-    fn of(settings: AccessibilitySettings) -> Self {
+        let section = settings_store::load_section("accessibility");
         Self {
-            color_filter: settings.color_filter,
-            magnifier: settings.magnifier(),
-            cursor_crosshair: settings.cursor_crosshair,
+            color_filter: match section
+                .get("color_filter")
+                .and_then(serde_json::Value::as_str)
+            {
+                Some("grayscale") => DesktopColorFilter::Grayscale,
+                Some("inverted") => DesktopColorFilter::Inverted,
+                Some("grayscale_inverted") => DesktopColorFilter::GrayscaleInverted,
+                _ => DesktopColorFilter::None,
+            },
+            magnifier: MagnifierState::from_section(&section),
+            cursor_crosshair: section
+                .get("cursor_crosshair")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false),
         }
     }
 }
@@ -1931,7 +1954,10 @@ impl FrameBuilder {
     fn hdr_layers_composited(&self) -> bool {
         !(self.watch_configured_theme
             && (self.night_light
-                || !matches!(self.visual_accessibility.color_filter, ColorFilter::None)
+                || !matches!(
+                    self.visual_accessibility.color_filter,
+                    DesktopColorFilter::None
+                )
                 || self.visual_accessibility.magnifier.is_on()))
     }
 
@@ -2721,7 +2747,10 @@ impl FrameBuilder {
     fn global_filter(&self) -> bool {
         self.watch_configured_theme
             && (self.night_light
-                || !matches!(self.visual_accessibility.color_filter, ColorFilter::None)
+                || !matches!(
+                    self.visual_accessibility.color_filter,
+                    DesktopColorFilter::None
+                )
                 || self.visual_accessibility.magnifier.is_on()
                 || self.visual_accessibility.cursor_crosshair)
     }
@@ -3067,7 +3096,7 @@ impl FrameBuilder {
         };
         if matches!(
             self.visual_accessibility.color_filter,
-            ColorFilter::Grayscale | ColorFilter::GrayscaleInverted
+            DesktopColorFilter::Grayscale | DesktopColorFilter::GrayscaleInverted
         ) {
             // W3C `color` blend with an achromatic source preserves the
             // backdrop luminosity while replacing hue/saturation: true
@@ -3076,7 +3105,7 @@ impl FrameBuilder {
         }
         if matches!(
             self.visual_accessibility.color_filter,
-            ColorFilter::Inverted | ColorFilter::GrayscaleInverted
+            DesktopColorFilter::Inverted | DesktopColorFilter::GrayscaleInverted
         ) {
             // Difference against white is the exact per-channel inverse.
             overlay(Mix::Difference, Color::WHITE);
@@ -3220,11 +3249,8 @@ impl FrameBuilder {
             ) as u32;
         }
         self.visual_accessibility = VisualAccessibility::load();
-        self.narrator.set_enabled(
-            settings_store::accessibility::AccessibilitySettings::load()
-                .screen_reader()
-                .enabled,
-        );
+        self.narrator
+            .set_enabled(settings_store::screen_reader::ScreenReaderSettings::load().enabled);
     }
 
     /// Speak what changed in the chrome since the last frame (focus moves in
@@ -5300,9 +5326,7 @@ mod tests {
         activate: impl FnOnce(&mut crate::shell::app_notice_card::AppNoticeCard),
     ) {
         use crate::shell::peer_windows::work_counts;
-        use crate::shell::state::{
-            CapOverride, Effect, Principal, Scope, Subject, TileContent, Verb,
-        };
+        use crate::shell::state::TileContent;
         use tilo_desktop_model::MissingApp;
 
         let mut frame = FrameBuilder::new((1280, 800));
@@ -5315,17 +5339,10 @@ mod tests {
             let chrome = frame.chrome.borrow();
             let mut tree = chrome.tree_mut();
             let workspace = tree.desktop.workspaces.last_mut().unwrap();
-            workspace.owner = Some("quinten".into());
             // The production install path must refuse before reaching the
-            // catalogue: this disposable fixture can never install an app.
-            let _ = workspace.grant_capability(CapOverride {
-                effect: Effect::Restrict,
-                ..CapOverride::grant(
-                    Subject::Principal(Principal::Person("quinten".into())),
-                    Scope::App("so.tilo.word-processor".into()),
-                    Verb::Read,
-                )
-            });
+            // catalogue: this disposable fixture has no owner, so no one may
+            // install an app into it.
+            assert!(workspace.owner().is_none());
             let TileContent::PeerWindow { note, missing, .. } =
                 &mut workspace.strips[0].window_groups[0].tabs[0].tile
             else {
@@ -5367,7 +5384,7 @@ mod tests {
             else {
                 panic!("a refused install must keep the peer window");
             };
-            assert!(note.contains("does not permit"), "existing refusal: {note}");
+            assert!(note.contains("no owner"), "existing refusal: {note}");
             assert_eq!(*missing, None);
         }
         assert_eq!(frame.peer_windows_poll(), None, "the request was drained");
@@ -5588,8 +5605,8 @@ mod tests {
                     .iter_mut()
                     .find(|workspace| workspace.id == source_id)
                     .expect("source workspace");
-                source.owner = None;
-                source.capabilities.clear();
+                source.policy.owner = None;
+                source.sandbox.clear();
                 tree.desktop.active = destination_id;
             }
             consume_record_requests(&chrome, &index);
@@ -5789,7 +5806,7 @@ mod tests {
         /// its rebuild on. Drives the ingest and per-frame pump.
         fn a_peers_changes_landing_make_the_frame_rebuild() {
             use crate::shell::state::PeerOrigin;
-            use collab_types::caps::{CapOverride, Scope, Subject, Verb};
+            use collab_types::caps::{Access, CapOverride, Scope, Subject};
 
             // A room owned by somebody else, with something in it.
             let owner = "quinten".to_string();
@@ -5799,13 +5816,13 @@ mod tests {
             let room = host
                 .room_of(host_ws)
                 .expect("the host's workspace has a room");
-            host.grant_in_workspace(
+            host.grant_sandbox_in_workspace(
                 host_ws,
                 &owner,
                 CapOverride::grant(
                     Subject::app("files"),
                     Scope::FsPath("/shared".to_string()),
-                    Verb::Read,
+                    Access::Read,
                 ),
             )
             .expect("the owner may grant in their own room");

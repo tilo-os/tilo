@@ -16,6 +16,8 @@ description = "The Tilo resource layer: typed, hierarchical app resources."
 
 [features]
 test-support = []
+# Dates and times of `chrono` as model values.
+chrono = ["dep:chrono"]
 
 [dependencies]
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
@@ -26,7 +28,9 @@ serde_json.workspace = true
 thiserror.workspace = true
 tilo-automerge.workspace = true
 uuid.workspace = true
+chrono = { workspace = true, optional = true, features = ["alloc"] }
 tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
+tilo-action-policy = { version = "0.1.0", path = "../../collab/action-policy" }
 tilo-content = { version = "0.1.0", path = "../../system/content", default-features = false }
 tilo-rt.workspace = true
 tilo-resource-macros = { version = "0.1.0", path = "../tilo-resource-macros" }

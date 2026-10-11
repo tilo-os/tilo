@@ -32,12 +32,13 @@ pub enum InviteRole {
 }
 
 impl InviteRole {
+    /// The room role an accepted invitation admits its holder with.
     #[must_use]
-    pub fn verb(self) -> crate::shell::state::Verb {
+    pub fn role(self) -> crate::shell::state::CapRole {
         match self {
-            Self::Viewer => crate::shell::state::Verb::Read,
-            Self::Commenter => crate::shell::state::Verb::Comment,
-            Self::Editor => crate::shell::state::Verb::Write,
+            Self::Viewer => crate::shell::state::CapRole::Viewer,
+            Self::Commenter => crate::shell::state::CapRole::Commenter,
+            Self::Editor => crate::shell::state::CapRole::Editor,
         }
     }
 
@@ -783,7 +784,7 @@ mod tests {
         {
             let key = iroh::SecretKey::from_bytes(&[12; 32]);
             let mut ws = workspace(4);
-            ws.room = RoomId::nil();
+            ws.set_room(RoomId::nil());
             assert!(make_invite_token(&key, &ws, &endpoint(&key, 4), 3600).is_err());
         }
     }

@@ -10,7 +10,9 @@ production code outside the hosts that lend the store may not call it:
 
 * the content crate, which defines it;
 * the framework's native process host, which lends it to the window;
-* the filesystem daemon, which serves it.
+* the filesystem daemon, which serves it;
+* the app runtime, which hosts apps and decides what their records receive
+  against the app surfaces kept in the same store.
 
 Nor may app code keep a content store in a ``static`` (a ``OnceLock``, a
 ``thread_local!``): every window has its own store, and two windows of one app
@@ -37,6 +39,7 @@ ALLOWED = (
     Path("crates/system/content"),
     Path("crates/sdk/tilo-app/src/framework/app.rs"),
     Path("crates/system/fs/src/main.rs"),
+    Path("crates/runtime/tilo-runtime/src/cli.rs"),
 )
 CALL = re.compile(r"\bContentStore\s*::\s*for_app\b")
 # A `static` (or a `thread_local!` item) whose type names a content store.

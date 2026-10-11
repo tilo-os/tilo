@@ -18,20 +18,14 @@ use ui::prelude::*;
 use ui::widget::Element;
 
 /// The mounted resource carries no external message plaintext into a workspace
-/// CRDT. Private external histories remain the broker's account-owned data.
+/// CRDT. Private external histories remain the broker's account-owned data,
+/// and everything Messages does is one of its effects. The record's schema
+/// version is the framework's.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
-pub struct Messages {
-    pub schema_version: u64,
-}
+pub struct Messages {}
 
 #[resource(kind = "tilo.messages", label = "Messages")]
-impl Messages {
-    /// Initialize the version marker without creating contacts or messages.
-    #[action(housekeeping)]
-    pub fn initialize_record(&mut self) {
-        self.schema_version = 1;
-    }
-}
+impl Messages {}
 
 #[derive(Clone, Effect)]
 #[effect(operation = "tilo.messages.view", device_only)]
@@ -102,7 +96,7 @@ pub enum MessagesEffect {
         job,
         cancellable,
         idempotent,
-        permission = "read",
+        kind = "read",
         label = "messages-refresh-history"
     )]
     ReadHistory { choice: String },
@@ -181,5 +175,5 @@ impl ResourceApp for MessagesShell {
 
 #[must_use]
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::framework::definition::<MessagesShell>()
+    ui::built_in_definition!(MessagesShell)
 }

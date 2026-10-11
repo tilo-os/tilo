@@ -1,4 +1,4 @@
-//! Enforcement tests for the compositor's capability model.
+//! Enforcement tests for the compositor's room policy and sandbox.
 //!
 //! Every assertion runs against the production API — `Workspace`'s
 //! decision methods, `WorkspaceTree`'s grant/revoke/replicate path, the
@@ -21,12 +21,33 @@ use shell::shell::persist;
 use shell::shell::state::FreshId as _;
 use shell::shell::state::WorkspaceAuthority as _;
 use shell::shell::state::{
-    CapOverride, Capability, Effect, Expiry, FsMode, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION,
-    Principal, ResourceRef, Scope, Subject, Verb, Workspace, WorkspaceId, WorkspaceTree,
+    Access, CapOverride, Capability, Expiry, FsMode, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION,
+    Principal, ResourceRef, Scope, Subject, Workspace, WorkspaceId, WorkspaceTree,
 };
+use tilo_action_policy::{ActionKind, Answer, Role, TreePath};
 
 const ALICE: &str = "alice";
 const BOB: &str = "bob";
+
+/// What `person` gets for an action of `kind` at `relative` in `ws`, now.
+fn answer(ws: &Workspace, person: &str, relative: &TreePath, kind: ActionKind) -> Answer {
+    ws.answer_at(
+        person,
+        &ws.node().join(relative),
+        kind,
+        tilo_clock::unix_now(),
+    )
+}
+
+/// Whether `person` may change the room's contents outright.
+fn may_change(ws: &Workspace, person: &str) -> bool {
+    answer(ws, person, &TreePath::root(), ActionKind::Undoable) == Answer::Allow
+}
+
+/// Whether `person` may read the room.
+fn may_read(ws: &Workspace, person: &str) -> bool {
+    answer(ws, person, &TreePath::root(), ActionKind::Read) == Answer::Allow
+}
 
 fn room_owned_by(owner: &str) -> (WorkspaceTree, WorkspaceId) {
     let mut tree = WorkspaceTree::default();
@@ -100,19 +121,11 @@ fn only_the_owner_administers_a_room() {
     {
         let (mut tree, id) = room_owned_by(ALICE);
 
-        tree.grant_in_workspace(
-            id,
-            &ALICE.to_string(),
-            CapOverride::membership(Subject::person(BOB), id.raw().to_string(), Verb::Write),
-        )
-        .expect("the owner may admit a member");
+        tree.admit_in_workspace(id, &ALICE.to_string(), BOB, Role::Editor)
+            .expect("the owner may admit a member");
 
         // Bob tries to widen his own authority. This must fail.
-        let escalation = tree.grant_in_workspace(
-            id,
-            &BOB.to_string(),
-            CapOverride::membership(Subject::person(BOB), id.raw().to_string(), Verb::Admin),
-        );
+        let escalation = tree.admit_in_workspace(id, &BOB.to_string(), "mallory", Role::Editor);
         assert_eq!(
             escalation, None,
             "a member who is not an administrator must not be able to grant, least of \
@@ -124,25 +137,22 @@ fn only_the_owner_administers_a_room() {
         );
 
         let carol_cap = tree
-            .grant_in_workspace(
+            .grant_sandbox_in_workspace(
                 id,
                 &ALICE.to_string(),
                 CapOverride::grant(
                     Subject::person("carol"),
                     Scope::FsPath("/var/workspace/design".into()),
-                    Verb::Read,
+                    Access::Read,
                 ),
             )
             .expect("owner grants");
         assert!(
-            !tree.revoke_in_workspace(id, &BOB.to_string(), &carol_cap),
+            !tree.revoke_sandbox_in_workspace(id, &BOB.to_string(), &carol_cap),
             "a non-administrator must not be able to revoke"
         );
         assert!(
-            ws_of(&tree, id)
-                .capabilities
-                .iter()
-                .any(|c| c.id == carol_cap),
+            ws_of(&tree, id).sandbox.iter().any(|c| c.id == carol_cap),
             "and the capability must still be there"
         );
     }
@@ -154,36 +164,23 @@ fn only_the_owner_administers_a_room() {
     reason = "one scenario test keeps each merged phase and its fresh fixture visible"
 )]
 fn peer_capabilities_are_enforced_live_attributed_and_replicated() {
-    // Phase `a_peer_without_the_verb_is_denied_and_the_denial_is_attributable`.
+    // Phase `a_viewer_is_denied_changes_and_governance`.
     {
-        use shell::shell::state::CapDecision;
         let (mut tree, id) = room_owned_by(ALICE);
-        tree.grant_in_workspace(
-            id,
-            &ALICE.to_string(),
-            CapOverride::membership(Subject::person(BOB), id.raw().to_string(), Verb::Read),
-        )
-        .expect("owner admits a viewer");
+        tree.admit_in_workspace(id, &ALICE.to_string(), BOB, Role::Viewer)
+            .expect("owner admits a viewer");
 
         let ws = ws_of(&tree, id);
-        let bob = ws.actor_for_person(&BOB.to_string());
-
+        assert!(may_read(ws, BOB), "a Viewer may look");
         assert_eq!(
-            ws.decide(&bob, &ResourceRef::Workspace, Verb::Read),
-            CapDecision::Allow,
-            "a Viewer may look"
+            answer(ws, BOB, &TreePath::root(), ActionKind::Undoable),
+            Answer::Deny,
+            "a Viewer must be denied changes"
         );
-        assert_eq!(
-            ws.decide(&bob, &ResourceRef::Workspace, Verb::Write),
-            CapDecision::DeniedByRole,
-            "a Viewer must be denied Write"
+        assert!(
+            !ws.may_administer(&BOB.to_string()),
+            "a Viewer must be denied governance"
         );
-        assert_eq!(
-            ws.decide(&bob, &ResourceRef::Workspace, Verb::Admin),
-            CapDecision::DeniedByRole,
-            "a Viewer must be denied Admin"
-        );
-        assert!(!ws.allows(&bob, &ResourceRef::Workspace, Verb::Write));
     }
 
     // Phase `the_host_can_change_a_peers_permissions_live`.
@@ -191,48 +188,24 @@ fn peer_capabilities_are_enforced_live_attributed_and_replicated() {
         let (mut tree, id) = room_owned_by(ALICE);
         let bob = BOB.to_string();
 
-        let membership = tree
-            .grant_in_workspace(
-                id,
-                &ALICE.to_string(),
-                CapOverride::membership(Subject::person(BOB), id.raw().to_string(), Verb::Read)
-                    .with_id("bob-membership"),
-            )
+        tree.admit_in_workspace(id, &ALICE.to_string(), BOB, Role::Viewer)
             .expect("owner admits");
-        assert_eq!(membership, "bob-membership");
         assert!(
-            !ws_of(&tree, id).allows(
-                &ws_of(&tree, id).actor_for_person(&bob),
-                &ResourceRef::Workspace,
-                Verb::Write
-            ),
+            !may_change(ws_of(&tree, id), BOB),
             "read-only to begin with"
         );
 
-        tree.grant_in_workspace(
-            id,
-            &ALICE.to_string(),
-            CapOverride::membership(Subject::person(BOB), id.raw().to_string(), Verb::Write)
-                .with_id("bob-membership"),
-        )
-        .expect("owner promotes");
+        tree.admit_in_workspace(id, &ALICE.to_string(), BOB, Role::Editor)
+            .expect("owner promotes");
         assert!(
-            ws_of(&tree, id).allows(
-                &ws_of(&tree, id).actor_for_person(&bob),
-                &ResourceRef::Workspace,
-                Verb::Write
-            ),
+            may_change(ws_of(&tree, id), BOB),
             "the promotion takes effect immediately"
         );
 
-        assert!(tree.revoke_in_workspace(id, &ALICE.to_string(), "bob-membership"));
+        assert!(tree.remove_from_workspace(id, &ALICE.to_string(), BOB));
         assert!(
-            !ws_of(&tree, id).allows(
-                &ws_of(&tree, id).actor_for_person(&bob),
-                &ResourceRef::Workspace,
-                Verb::Read
-            ),
-            "revoking the membership capability removes access outright"
+            !may_read(ws_of(&tree, id), BOB),
+            "ending the membership removes access outright"
         );
         assert_eq!(
             ws_of(&tree, id).role_of(&bob),
@@ -246,7 +219,7 @@ fn peer_capabilities_are_enforced_live_attributed_and_replicated() {
         let (mut host, id) = room_owned_by(ALICE);
         let bob = BOB.to_string();
 
-        tree_grant(&mut host, id, "bob-write");
+        admit_editor(&mut host, id);
 
         let mut peer = WorkspaceTree::default();
         let changes = host.export_changes_since(&[]);
@@ -254,16 +227,12 @@ fn peer_capabilities_are_enforced_live_attributed_and_replicated() {
 
         let peer_ws = ws_of(&peer, id);
         assert!(
-            peer_ws.allows(
-                &peer_ws.actor_for_person(&bob),
-                &ResourceRef::Workspace,
-                Verb::Write
-            ),
-            "the peer must see the capability the host granted"
+            may_change(peer_ws, &bob),
+            "the peer must see the membership the host granted"
         );
 
         let heads = host.current_heads();
-        assert!(host.revoke_in_workspace(id, &ALICE.to_string(), "bob-write"));
+        assert!(host.remove_from_workspace(id, &ALICE.to_string(), BOB));
         let revoke_changes = host.export_changes_since(&heads);
         assert!(
             !revoke_changes.is_empty(),
@@ -275,16 +244,13 @@ fn peer_capabilities_are_enforced_live_attributed_and_replicated() {
 
         let peer_ws = ws_of(&peer, id);
         assert!(
-            !peer_ws.allows(
-                &peer_ws.actor_for_person(&bob),
-                &ResourceRef::Workspace,
-                Verb::Write
-            ),
+            !may_change(peer_ws, &bob),
             "the revocation must take effect ON THE PEER, not merely be recorded on the host"
         );
-        assert!(
-            !peer_ws.capabilities.iter().any(|c| c.id == "bob-write"),
-            "and the capability must be gone from the peer's list"
+        assert_eq!(
+            peer_ws.role_of(&bob),
+            None,
+            "and the membership must be gone from the peer's roster"
         );
     }
 
@@ -297,18 +263,18 @@ fn peer_capabilities_are_enforced_live_attributed_and_replicated() {
         peer.apply_changes(&host.export_changes_since(&[]))
             .expect("hydrate");
 
-        tree_grant_admin(&mut host, id, "bob-admin");
+        delegate_granting(&mut host, id);
         peer.apply_changes(&host.export_changes_since(&[]))
             .expect("sync");
 
         let heads = peer.current_heads();
-        peer.grant_in_workspace(
+        peer.grant_sandbox_in_workspace(
             id,
             &BOB.to_string(),
             CapOverride::grant(
                 Subject::person("carol"),
                 Scope::FsPath("/var/workspace/design".into()),
-                Verb::Read,
+                Access::Read,
             )
             .with_id("carol-read"),
         )
@@ -318,7 +284,7 @@ fn peer_capabilities_are_enforced_live_attributed_and_replicated() {
 
         assert!(
             ws_of(&host, id)
-                .capabilities
+                .sandbox
                 .iter()
                 .any(|c| c.id == "carol-read"),
             "the host must converge on the capability the co-owner issued"
@@ -326,22 +292,30 @@ fn peer_capabilities_are_enforced_live_attributed_and_replicated() {
     }
 }
 
-fn tree_grant(tree: &mut WorkspaceTree, id: WorkspaceId, cap_id: &str) {
-    tree.grant_in_workspace(
-        id,
-        &ALICE.to_string(),
-        CapOverride::membership(Subject::person(BOB), id.raw().to_string(), Verb::Write)
-            .with_id(cap_id),
-    )
-    .expect("owner grants");
+fn admit_editor(tree: &mut WorkspaceTree, id: WorkspaceId) {
+    tree.admit_in_workspace(id, &ALICE.to_string(), BOB, Role::Editor)
+        .expect("owner admits");
 }
 
-fn tree_grant_admin(tree: &mut WorkspaceTree, id: WorkspaceId, cap_id: &str) {
+/// Bob, an editor, may also grant in the room: the owner delegated the
+/// room's grant action to him.
+fn delegate_granting(tree: &mut WorkspaceTree, id: WorkspaceId) {
+    admit_editor(tree, id);
+    let room = ws_of(tree, id).room.to_string();
     tree.grant_in_workspace(
         id,
         &ALICE.to_string(),
-        CapOverride::membership(Subject::person(BOB), id.raw().to_string(), Verb::Admin)
-            .with_id(cap_id),
+        tilo_action_policy::Grant::new(
+            "bob-grants",
+            tilo_action_policy::Subject::person(BOB),
+            tilo_action_policy::roles::governance_action(
+                &room,
+                tilo_action_policy::roles::governance::GRANT,
+            ),
+            tilo_action_policy::KindSet::ALL,
+            Answer::Allow,
+            tilo_action_policy::Subject::person(ALICE),
+        ),
     )
     .expect("owner delegates");
 }
@@ -390,10 +364,14 @@ fn capability_lifetimes_survive_restart_never_shorten_and_expire() {
         assert!(ws.allows(
             &app,
             &ResourceRef::FsPath("/var/workspace/books/dune.epub".into()),
-            Verb::Read
+            Access::Read
         ));
-        assert!(ws.allows(&app, &ResourceRef::Device("camera".into()), Verb::Read));
-        assert!(ws.allows(&app, &ResourceRef::Device("microphone".into()), Verb::Read));
+        assert!(ws.allows(&app, &ResourceRef::Device("camera".into()), Access::Read));
+        assert!(ws.allows(
+            &app,
+            &ResourceRef::Device("microphone".into()),
+            Access::Read
+        ));
 
         persist::save_tree_to(&tree, &path).expect("save");
         let reloaded = persist::load_tree_from(&path).expect("load");
@@ -404,17 +382,21 @@ fn capability_lifetimes_survive_restart_never_shorten_and_expire() {
             ws.allows(
                 &app,
                 &ResourceRef::FsPath("/var/workspace/books/dune.epub".into()),
-                Verb::Read
+                Access::Read
             ),
             "an Always grant MUST survive a restart — before this, nothing in the \
              compositor called save_tree_to at all, so Always behaved like Session"
         );
         assert!(
-            !ws.allows(&app, &ResourceRef::Device("camera".into()), Verb::Read),
+            !ws.allows(&app, &ResourceRef::Device("camera".into()), Access::Read),
             "a Session grant must NOT survive a restart"
         );
         assert!(
-            !ws.allows(&app, &ResourceRef::Device("microphone".into()), Verb::Read),
+            !ws.allows(
+                &app,
+                &ResourceRef::Device("microphone".into()),
+                Access::Read
+            ),
             "a one-shot grant must NOT survive a restart"
         );
         assert!(
@@ -467,7 +449,7 @@ fn capability_lifetimes_survive_restart_never_shorten_and_expire() {
             ws_of(&reloaded, id).allows(
                 &ws_of(&reloaded, id).actor_for_app("org.tilo.Meet"),
                 &ResourceRef::Device("camera".into()),
-                Verb::Read
+                Access::Read
             ),
             "the merged grant is still the permanent one after a restart"
         );
@@ -477,13 +459,13 @@ fn capability_lifetimes_survive_restart_never_shorten_and_expire() {
     {
         let (mut tree, id) = room_owned_by(ALICE);
         let past = 1_000u64; // long before any plausible `now`
-        tree.grant_in_workspace(
+        tree.grant_sandbox_in_workspace(
             id,
             &ALICE.to_string(),
             CapOverride::grant(
                 Subject::app("org.tilo.Ebook"),
                 Scope::FsPath("/var/workspace/books".into()),
-                Verb::Read,
+                Access::Read,
             )
             .with_expiry(past),
         )
@@ -494,7 +476,7 @@ fn capability_lifetimes_survive_restart_never_shorten_and_expire() {
             !ws.allows(
                 &ws.actor_for_app("org.tilo.Ebook"),
                 &ResourceRef::FsPath("/var/workspace/books/dune.epub".into()),
-                Verb::Read
+                Access::Read
             ),
             "a capability past its expiry must stop working even though nobody revoked it"
         );
@@ -517,38 +499,36 @@ fn filesystem_capabilities_export_exactly_and_inherit_to_the_boundary() {
 
         let (mut tree, id) = room_owned_by(ALICE);
         tree.fs_acl_path = Some(acl_path.clone());
-        tree.grant_in_workspace(
+        tree.grant_sandbox_in_workspace(
             id,
             &ALICE.to_string(),
             CapOverride::grant(
                 Subject::person(BOB),
                 Scope::FsPath("/var/workspace/design".into()),
-                Verb::Write,
+                Access::Write,
             )
             .with_id("bob-design"),
         )
         .expect("grant a path");
-        // A non-path capability must NOT reach the filesystem: it has no
-        // business deciding room membership.
-        tree.grant_in_workspace(
-            id,
-            &ALICE.to_string(),
-            CapOverride::membership(Subject::person(BOB), id.raw().to_string(), Verb::Write)
-                .with_id("bob-membership"),
-        )
-        .expect("grant membership");
+        // Membership must NOT reach the filesystem as a path: it has no
+        // business deciding room membership there.
+        tree.admit_in_workspace(id, &ALICE.to_string(), BOB, Role::Editor)
+            .expect("grant membership");
 
         persist::wait_for_saves();
         let raw = std::fs::read_to_string(&acl_path).expect("the export must exist after a grant");
-        let exported: Vec<CapOverride> =
-            serde_json::from_str(&raw).expect("the export must be the array the filesystem parses");
+        let exported: Vec<CapOverride> = serde_json::from_str::<collab_types::FsAuthority>(&raw)
+            .expect("the export must be the authority the filesystem parses")
+            .capabilities;
 
         assert!(
             exported.iter().any(|c| c.id == "bob-design"),
             "a path capability must reach the filesystem"
         );
         assert!(
-            !exported.iter().any(|c| c.id == "bob-membership"),
+            !exported
+                .iter()
+                .any(|c| c.subject == Subject::person(BOB) && !matches!(c.scope, Scope::FsPath(_))),
             "room membership is not a filesystem fact and must not be exported"
         );
         assert!(
@@ -556,10 +536,12 @@ fn filesystem_capabilities_export_exactly_and_inherit_to_the_boundary() {
             "only path-scoped capabilities belong in the filesystem's list"
         );
 
-        assert!(tree.revoke_in_workspace(id, &ALICE.to_string(), "bob-design"));
+        assert!(tree.revoke_sandbox_in_workspace(id, &ALICE.to_string(), "bob-design"));
         persist::wait_for_saves();
         let raw = std::fs::read_to_string(&acl_path).expect("export still present");
-        let exported: Vec<CapOverride> = serde_json::from_str(&raw).expect("parse");
+        let exported: Vec<CapOverride> = serde_json::from_str::<collab_types::FsAuthority>(&raw)
+            .expect("parse")
+            .capabilities;
         assert!(
             !exported.iter().any(|c| c.id == "bob-design"),
             "a revoked capability must disappear from the filesystem's list, or the mount \
@@ -586,7 +568,7 @@ fn filesystem_capabilities_export_exactly_and_inherit_to_the_boundary() {
             !store.permits(
                 &caller,
                 &ResourceRef::FsPath("/var/workspace/books/dune.epub".into()),
-                Verb::Read
+                Access::Read
             ),
             "an app with no capability must be denied"
         );
@@ -604,7 +586,7 @@ fn filesystem_capabilities_export_exactly_and_inherit_to_the_boundary() {
             store.permits(
                 &caller,
                 &ResourceRef::FsPath("/var/workspace/books/dune.epub".into()),
-                Verb::Read
+                Access::Read
             ),
             "the granted subtree is reachable"
         );
@@ -612,7 +594,7 @@ fn filesystem_capabilities_export_exactly_and_inherit_to_the_boundary() {
             !store.permits(
                 &caller,
                 &ResourceRef::FsPath("/var/workspace/finances/tax.ods".into()),
-                Verb::Read
+                Access::Read
             ),
             "a sibling directory the app was never granted must be denied — this is the \
              case that is supposed to raise a prompt, not silently succeed"
@@ -621,7 +603,7 @@ fn filesystem_capabilities_export_exactly_and_inherit_to_the_boundary() {
             !store.permits(
                 &caller,
                 &ResourceRef::FsPath("/var/workspace/booksSECRET/keys".into()),
-                Verb::Read
+                Access::Read
             ),
             "and a path that merely shares a string prefix must be denied"
         );
@@ -629,7 +611,7 @@ fn filesystem_capabilities_export_exactly_and_inherit_to_the_boundary() {
             !store.permits(
                 &caller,
                 &ResourceRef::FsPath("/var/workspace/books/dune.epub".into()),
-                Verb::Write
+                Access::Write
             ),
             "a read grant is not a write grant"
         );
@@ -639,7 +621,7 @@ fn filesystem_capabilities_export_exactly_and_inherit_to_the_boundary() {
             !store.permits(
                 &other,
                 &ResourceRef::FsPath("/var/workspace/books/dune.epub".into()),
-                Verb::Read
+                Access::Read
             ),
             "a capability granted to one app must not serve another"
         );
@@ -649,19 +631,15 @@ fn filesystem_capabilities_export_exactly_and_inherit_to_the_boundary() {
     // Phase `file_capabilities_inherit_down_the_tree_and_stop_at_the_boundary`.
     {
         let (mut tree, id) = room_owned_by(ALICE);
-        tree.grant_in_workspace(
-            id,
-            &ALICE.to_string(),
-            CapOverride::membership(Subject::person(BOB), id.raw().to_string(), Verb::Read),
-        )
-        .expect("admit bob");
-        tree.grant_in_workspace(
+        tree.admit_in_workspace(id, &ALICE.to_string(), BOB, Role::Viewer)
+            .expect("admit bob");
+        tree.grant_sandbox_in_workspace(
             id,
             &ALICE.to_string(),
             CapOverride::grant(
                 Subject::person(BOB),
                 Scope::FsPath("/var/workspace/design".into()),
-                Verb::Write,
+                Access::Write,
             ),
         )
         .expect("give bob the design tree");
@@ -675,7 +653,7 @@ fn filesystem_capabilities_export_exactly_and_inherit_to_the_boundary() {
             "/var/workspace/design/icons/a/b/c.svg",
         ] {
             assert!(
-                ws.allows(&bob, &ResourceRef::FsPath(path.into()), Verb::Write),
+                ws.allows(&bob, &ResourceRef::FsPath(path.into()), Access::Write),
                 "{path} is under the granted directory"
             );
         }
@@ -686,7 +664,7 @@ fn filesystem_capabilities_export_exactly_and_inherit_to_the_boundary() {
             "/etc/shadow",
         ] {
             assert!(
-                !ws.allows(&bob, &ResourceRef::FsPath(path.into()), Verb::Read),
+                !ws.allows(&bob, &ResourceRef::FsPath(path.into()), Access::Read),
                 "{path} is outside the granted directory and must be denied"
             );
         }
@@ -726,7 +704,7 @@ fn scoped_capabilities_carry_exactly_their_own_authority() {
             ws.allows(
                 &app,
                 &ResourceRef::NetHost("docs.example.com".into()),
-                Verb::Write
+                Access::Write
             ),
             "the allowlisted host is reachable"
         );
@@ -734,7 +712,7 @@ fn scoped_capabilities_carry_exactly_their_own_authority() {
             !ws.allows(
                 &app,
                 &ResourceRef::NetHost("evil.example".into()),
-                Verb::Write
+                Access::Write
             ),
             "a host NOT on the allowlist must be denied — recording an allowlist and then \
              behaving as though it said `any host` is the bug this replaces"
@@ -746,19 +724,15 @@ fn scoped_capabilities_carry_exactly_their_own_authority() {
         let (mut tree, id) = room_owned_by(ALICE);
 
         // Bob is admitted to the room. Carol is only given one file.
-        tree.grant_in_workspace(
-            id,
-            &ALICE.to_string(),
-            CapOverride::membership(Subject::person(BOB), id.raw().to_string(), Verb::Write),
-        )
-        .expect("admit bob");
-        tree.grant_in_workspace(
+        tree.admit_in_workspace(id, &ALICE.to_string(), BOB, Role::Editor)
+            .expect("admit bob");
+        tree.grant_sandbox_in_workspace(
             id,
             &ALICE.to_string(),
             CapOverride::grant(
                 Subject::person("carol"),
                 Scope::FsPath("/var/workspace/design/logo.svg".into()),
-                Verb::Read,
+                Access::Read,
             ),
         )
         .expect("share one file with carol");
@@ -777,9 +751,11 @@ fn scoped_capabilities_carry_exactly_their_own_authority() {
              ad-hoc share as 'I made you a collaborator' is exactly what the model forbids"
         );
 
-        let shares = ws.shares_of(&ResourceRef::FsPath(
-            "/var/workspace/design/logo.svg".into(),
-        ));
+        let shares: Vec<&CapOverride> = ws
+            .sandbox
+            .iter()
+            .filter(|c| c.scope == Scope::FsPath("/var/workspace/design/logo.svg".into()))
+            .collect();
         assert_eq!(shares.len(), 1, "one share on this file");
         assert_eq!(
             shares[0].subject,
@@ -797,48 +773,54 @@ fn scoped_capabilities_carry_exactly_their_own_authority() {
         assert!(ws.allows(
             &carol,
             &ResourceRef::FsPath("/var/workspace/design/logo.svg".into()),
-            Verb::Read
+            Access::Read
         ));
         assert!(
-            !ws.allows(&carol, &ResourceRef::Workspace, Verb::Read),
+            !may_read(ws, "carol"),
             "a file share grants no standing in the room itself"
         );
-        assert_eq!(ws.role_of(&"carol".to_string()), None, "and no role");
+        assert_eq!(ws.role_of("carol"), None, "and no role");
     }
 
     // Phase `a_restriction_narrows_a_member_below_their_role`.
     {
-        use shell::shell::state::CapDecision;
         let (mut tree, id) = room_owned_by(ALICE);
+        tree.admit_in_workspace(id, &ALICE.to_string(), BOB, Role::Editor)
+            .expect("admit bob as editor");
+        let finance = ws_of(&tree, id).node().app("finance");
         tree.grant_in_workspace(
             id,
             &ALICE.to_string(),
-            CapOverride::membership(Subject::person(BOB), id.raw().to_string(), Verb::Write),
-        )
-        .expect("admit bob as editor");
-        tree.grant_in_workspace(
-            id,
-            &ALICE.to_string(),
-            CapOverride::new(
-                Subject::person(BOB),
-                Scope::App("finance".into()),
-                Effect::Restrict,
-                Verb::Read,
+            tilo_action_policy::Grant::new(
+                "bob-not-finance",
+                tilo_action_policy::Subject::person(BOB),
+                finance,
+                tilo_action_policy::KindSet::UNDOABLE,
+                Answer::Deny,
+                tilo_action_policy::Subject::person(ALICE),
             ),
         )
         .expect("narrow bob inside one app");
 
         let ws = ws_of(&tree, id);
-        let bob = ws.actor_for_person(&BOB.to_string());
-
         assert_eq!(
-            ws.decide(&bob, &ResourceRef::App("finance".into()), Verb::Write),
-            CapDecision::DeniedByRestriction,
-            "the restriction removes Write inside that app even though the role grants it"
+            answer(
+                ws,
+                BOB,
+                &TreePath::root().app("finance"),
+                ActionKind::Undoable
+            ),
+            Answer::Deny,
+            "the restriction removes changes inside that app even though the role grants them"
         );
         assert_eq!(
-            ws.decide(&bob, &ResourceRef::App("notes".into()), Verb::Write),
-            CapDecision::Allow,
+            answer(
+                ws,
+                BOB,
+                &TreePath::root().app("notes"),
+                ActionKind::Undoable
+            ),
+            Answer::Allow,
             "and it does not leak to other apps"
         );
     }
@@ -846,13 +828,13 @@ fn scoped_capabilities_carry_exactly_their_own_authority() {
     // Phase `a_bearer_token_carries_exactly_its_own_authority`.
     {
         let (mut tree, id) = room_owned_by(ALICE);
-        tree.grant_in_workspace(
+        tree.grant_sandbox_in_workspace(
             id,
             &ALICE.to_string(),
             CapOverride::grant(
                 Subject::token("inv-7f3a"),
                 Scope::FsPath("/var/workspace/design/logo.svg".into()),
-                Verb::Read,
+                Access::Read,
             )
             .with_id("share-link"),
         )
@@ -863,26 +845,27 @@ fn scoped_capabilities_carry_exactly_their_own_authority() {
             .with_principal(Principal::Token("inv-7f3a".into()));
         let path = ResourceRef::FsPath("/var/workspace/design/logo.svg".into());
 
-        assert!(ws.allows(&holder, &path, Verb::Read));
+        assert!(ws.allows(&holder, &path, Access::Read));
         assert!(
-            !ws.allows(&holder, &path, Verb::Write),
+            !ws.allows(&holder, &path, Access::Write),
             "a read link is not a write link"
         );
-        assert!(
-            !ws.allows(&holder, &ResourceRef::Workspace, Verb::Read),
+        assert_eq!(
+            ws.room_readers_at(tilo_clock::unix_now()),
+            vec![(ALICE.to_string(), None)],
             "a share link grants no standing in the room"
         );
 
         let wrong = shell::shell::state::Actor::default()
             .with_principal(Principal::Token("inv-0000".into()));
         assert!(
-            !ws.allows(&wrong, &path, Verb::Read),
+            !ws.allows(&wrong, &path, Access::Read),
             "a different token grants nothing"
         );
 
-        assert!(tree.revoke_in_workspace(id, &ALICE.to_string(), "share-link"));
+        assert!(tree.revoke_sandbox_in_workspace(id, &ALICE.to_string(), "share-link"));
         assert!(
-            !ws_of(&tree, id).allows(&holder, &path, Verb::Read),
+            !ws_of(&tree, id).allows(&holder, &path, Access::Read),
             "a revoked link stops working"
         );
     }
@@ -890,13 +873,13 @@ fn scoped_capabilities_carry_exactly_their_own_authority() {
     // Phase `an_agent_holds_a_scoped_revocable_capability_set_like_an_app`.
     {
         let (mut tree, id) = room_owned_by(ALICE);
-        tree.grant_in_workspace(
+        tree.grant_sandbox_in_workspace(
             id,
             &ALICE.to_string(),
             CapOverride::grant(
                 Subject::agent("assistant"),
                 Scope::FsPath("/var/workspace/notes".into()),
-                Verb::Write,
+                Access::Write,
             )
             .with_id("agent-notes")
             .expiring(Expiry::Never),
@@ -908,27 +891,27 @@ fn scoped_capabilities_carry_exactly_their_own_authority() {
         assert!(ws.allows(
             &agent,
             &ResourceRef::FsPath("/var/workspace/notes/todo.md".into()),
-            Verb::Write
+            Access::Write
         ));
         assert!(
             !ws.allows(
                 &agent,
                 &ResourceRef::FsPath("/var/workspace/finance/budget.ods".into()),
-                Verb::Read
+                Access::Read
             ),
             "an agent is confined to what it was given, like any other subject"
         );
         assert!(
-            !ws.allows(&agent, &ResourceRef::Workspace, Verb::Admin),
+            ws.agent_members_at(tilo_clock::unix_now()).is_empty(),
             "and holds no role, so it never inherits room-wide authority"
         );
 
-        assert!(tree.revoke_in_workspace(id, &ALICE.to_string(), "agent-notes"));
+        assert!(tree.revoke_sandbox_in_workspace(id, &ALICE.to_string(), "agent-notes"));
         assert!(
             !ws_of(&tree, id).allows(
                 &ws_of(&tree, id).actor_for_agent("assistant"),
                 &ResourceRef::FsPath("/var/workspace/notes/todo.md".into()),
-                Verb::Write
+                Access::Write
             ),
             "the agent's authority is revocable in one act"
         );

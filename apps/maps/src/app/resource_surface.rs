@@ -4,7 +4,8 @@
 use ui::framework::{EffectAnswer, EffectCx, EffectStatus, Effected, LiveRow};
 
 use super::MapsApp;
-use crate::resource::{Maps, MapsEffect};
+use crate::resource::MapsEffect;
+use crate::workspace::Workspace;
 
 /// How many rows of one kind a published page holds; the rest resolve by id.
 const ROWS_PER_KIND: usize = 12;
@@ -14,7 +15,7 @@ impl MapsApp {
     pub(crate) fn answer_effect(
         &mut self,
         effect: MapsEffect,
-        cx: &mut EffectCx<Maps, Self>,
+        cx: &mut EffectCx<Workspace, Self>,
     ) -> EffectAnswer {
         match effect {
             MapsEffect::Search { query } => self.search_for(query),

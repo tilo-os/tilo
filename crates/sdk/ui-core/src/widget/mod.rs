@@ -165,6 +165,18 @@ pub fn layout_rect(
     placed(&taffy.layout(node).copied().unwrap_or_default(), origin)
 }
 
+/// Let `node` share its row's main axis with its siblings by `grow`: it
+/// grows and shrinks from a zero basis instead of keeping its own width.
+pub fn share_row(taffy: &mut TaffyTree<()>, node: NodeId, grow: f32) {
+    if let Ok(mut style) = taffy.style(node).cloned() {
+        style.flex_grow = grow;
+        style.flex_shrink = 1.0;
+        style.flex_basis = taffy::style::Dimension::length(0.0);
+        style.size.width = taffy::style::Dimension::auto();
+        let _ = taffy.set_style(node, style);
+    }
+}
+
 /// Route `event` through a container's children, first handler wins. A
 /// child latching a drag gets it exclusively, so the drag survives the
 /// cursor crossing a peer whose handler would otherwise claim it first; a
@@ -2001,17 +2013,6 @@ pub trait Widget {
         None
     }
 
-    /// Rising-edge compensating document actions for the bracket
-    /// [`Self::take_committed_action`] just opened: `(undo_via, redo_via)`.
-    /// Set when the forward action's
-    /// [`tilo_actions::Action::inverse_before`] recorded an outside
-    /// consequence. Default: none (pure CRDT undo via inverse patches).
-    fn take_action_revert(
-        &mut self,
-    ) -> Option<(tilo_actions::EncodedAction, tilo_actions::EncodedAction)> {
-        None
-    }
-
     /// Whether the undo step this widget's last reported boundary opened
     /// stays open for the actions that continue it — the rest of a word
     /// typed a keystroke at a time. A hosted component then closes the step
@@ -2814,6 +2815,8 @@ pub use crate::pen::PenSample;
 pub use decorator::Decorator;
 
 pub(crate) mod layout;
+#[cfg(test)]
+pub(crate) mod replaced_tripwire;
 pub use layout::{
     AuthoredExtent, ExtentSizing, WidgetLayoutError, compute_widget_layout, insets, insets_all,
     insets_xy, layout_clip, text_control_height, with_layout_clip,
@@ -3213,13 +3216,13 @@ pub mod history_scrubber;
 pub mod name_field;
 pub use activity_timeline::ActivityTimeline;
 pub use history::{
-    HistoryAuthor, HistoryClassification, HistoryEntry, HistoryEntryId, HistoryFilter,
-    RedactionDisplay, format_relative_time, hue_to_rgb, op_class_glyph, op_class_is_revertible,
+    AuthorRelation, EntryKind, HistoryAuthor, HistoryClassification, HistoryEntry, HistoryEntryId,
+    HistoryFilter, RedactionDisplay, format_relative_time, hue_to_rgb,
 };
 pub use history_scrubber::HistoryScrubber;
-// The op/artifact vocabulary a `HistoryEntry` is written in. Re-exported so a
+// The artifact vocabulary a `HistoryEntry` is written in. Re-exported so a
 // caller can build one without naming the collab-types crate directly.
-pub use collab_types::{ArtifactKind, OpClass};
+pub use collab_types::ArtifactKind;
 
 // Wheel-disc spoke overflow integration lives in `shell`.
 pub mod channel_browser;

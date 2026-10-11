@@ -201,11 +201,13 @@ impl super::super::InProcessApps {
 
     /// Publish the original native account `identity` owns through
     /// `publish`, refusing an identity of any service but `service`.
-    pub(super) fn publish_native_account(
+    pub(super) fn publish_native_account<
+        P: serde::Serialize + From<(String, String, String, u64)>,
+    >(
         &mut self,
         identity: &NativeMessagingIdentity,
         service: tilo_messaging_protocol::Service,
-        publish: tilo_resource::ActionRef<PersonAccounts, (String, String, String, u64)>,
+        publish: tilo_resource::ActionRef<PersonAccounts, P>,
         name: String,
         scope: &str,
     ) -> Result<(), LaunchError> {

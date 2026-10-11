@@ -571,7 +571,7 @@ pub fn model() -> TubeModel {
         playhead: 0.0,
         playing: false,
         liked: Vec::new(),
-        comment_likes: std::collections::BTreeMap::new(),
+        comment_likes: std::collections::BTreeSet::new(),
         // No pre-seeded notices: the toast stack fills from real activity
         // (auto-skips, share/like acknowledgements, worker status) so it never
         // shows events that didn't happen.

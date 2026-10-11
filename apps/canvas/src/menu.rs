@@ -5,14 +5,14 @@
 //! artwork's actions, the same ones the strip over the canvas makes.
 
 use ui::framework::{Dispatcher, Live};
+use ui::tilo_resource::Invoke;
 use ui::vello::kurbo::Point;
 use ui::widget::MenuEntry;
 use ui::winit::keyboard::{Key, ModifiersState, NamedKey};
 
-use crate::actions::{Align, Arrange, CanvasAction};
+use crate::actions::{Align, Arrange};
 use crate::model::Artwork;
 use crate::panels::shortcuts::keys_for;
-use crate::resource::ArtworkResource;
 use crate::selection::{Combine, Select, UseSelection};
 use crate::tools::{CanvasKey, Tools};
 
@@ -20,8 +20,8 @@ use crate::tools::{CanvasKey, Tools};
 pub fn over(
     canvas: ui::widget::Element,
     tools: &Tools,
-    live: &Live<ArtworkResource>,
-    dispatcher: Dispatcher<ArtworkResource>,
+    live: &Live<Artwork>,
+    dispatcher: Dispatcher<Artwork>,
 ) -> ui::widget::Element {
     let tools = tools.clone();
     let live = live.clone();
@@ -69,21 +69,13 @@ fn lookup(id: &str) -> String {
 }
 
 /// An entry that applies `action` to the artwork.
-fn applying(
-    dispatcher: &Dispatcher<ArtworkResource>,
-    label: &str,
-    action: CanvasAction,
-) -> MenuEntry {
+fn applying(dispatcher: &Dispatcher<Artwork>, label: &str, action: Invoke<Artwork>) -> MenuEntry {
     let dispatcher = dispatcher.clone();
-    MenuEntry::new(lookup(label), move || dispatcher.apply(&action))
+    MenuEntry::new(lookup(label), move || dispatcher.submit(action.clone()))
 }
 
 /// What the menu offers now.
-fn entries(
-    tools: &Tools,
-    art: &Artwork,
-    dispatcher: &Dispatcher<ArtworkResource>,
-) -> Vec<MenuEntry> {
+fn entries(tools: &Tools, art: &Artwork, dispatcher: &Dispatcher<Artwork>) -> Vec<MenuEntry> {
     let picked = tools.selection.get();
     let mut entries = Vec::new();
     if picked.is_empty() {
@@ -129,7 +121,7 @@ fn entries(
 fn marks(
     tools: &Tools,
     art: &Artwork,
-    dispatcher: &Dispatcher<ArtworkResource>,
+    dispatcher: &Dispatcher<Artwork>,
     picked: &[String],
     entries: &mut Vec<MenuEntry>,
 ) {
@@ -165,7 +157,7 @@ fn marks(
         entries.push(applying(
             dispatcher,
             label,
-            CanvasAction::Arrange(Arrange {
+            Artwork::ARRANGE.with(Arrange {
                 ids: picked.to_vec(),
                 to: to.into(),
                 of: None,
@@ -208,7 +200,7 @@ fn marks(
         entries.push(applying(
             dispatcher,
             label,
-            CanvasAction::Align(Align {
+            Artwork::ALIGN.with(Align {
                 ids: picked.to_vec(),
                 edge: Some(edge.into()),
                 distribute: None,
@@ -222,7 +214,7 @@ fn marks(
             entries.push(applying(
                 dispatcher,
                 &format!("canvas-combine-{op}"),
-                CanvasAction::Combine(Combine {
+                Artwork::COMBINE.with(Combine {
                     ids: picked.to_vec(),
                     op: op.into(),
                 }),
@@ -233,7 +225,7 @@ fn marks(
 
 /// The area selected: fill or outline it with the brush's paint, mask or
 /// clear the chosen layer with it, invert it, let it go.
-fn area(tools: &Tools, dispatcher: &Dispatcher<ArtworkResource>, entries: &mut Vec<MenuEntry>) {
+fn area(tools: &Tools, dispatcher: &Dispatcher<Artwork>, entries: &mut Vec<MenuEntry>) {
     let loaded = tools.loaded();
     for (label, what) in [
         ("canvas-context-fill", "fill"),
@@ -244,7 +236,7 @@ fn area(tools: &Tools, dispatcher: &Dispatcher<ArtworkResource>, entries: &mut V
         let dispatcher = dispatcher.clone();
         let loaded = loaded.clone();
         let run = move || {
-            dispatcher.apply(&CanvasAction::UseSelection(UseSelection {
+            dispatcher.submit(Artwork::USE_SELECTION.with(UseSelection {
                 what: what.to_owned(),
                 layer: loaded.layer(),
                 colour: Some(loaded.paint()),
@@ -260,17 +252,17 @@ fn area(tools: &Tools, dispatcher: &Dispatcher<ArtworkResource>, entries: &mut V
     entries.push(applying(
         dispatcher,
         "canvas-context-invert",
-        CanvasAction::Select(Box::new(Select {
+        Artwork::SELECT.with(Select {
             invert: Some(true),
             ..Select::default()
-        })),
+        }),
     ));
     entries.push(applying(
         dispatcher,
         "canvas-area-none",
-        CanvasAction::Select(Box::new(Select {
+        Artwork::SELECT.with(Select {
             mode: Some("none".into()),
             ..Select::default()
-        })),
+        }),
     ));
 }

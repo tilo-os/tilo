@@ -135,11 +135,7 @@ impl TileSource for Source {
                 .unwrap(),
         );
         let permissions = Rc::new(RefCell::new(
-            ui::permissions::PermissionContext::from_capabilities(
-                ui::permissions::Actor::person(None, "retained-author"),
-                vec![],
-            )
-            .at_unix_time(100),
+            ui::permissions::PermissionContext::stranger("retained-author").at_unix_time(100),
         ));
         let context = HostContext::prepare(
             &definition,

@@ -511,6 +511,10 @@ pub struct FrameHarness {
     component_wake: Option<ComponentRunnerWakeState>,
     owner_wake_queue: Option<crate::owner_wake::OwnerWakeQueue>,
     owner_service_layout_retired: bool,
+    /// A replaced composition seen by a focus capture before the next
+    /// layout took it up: the next [`Self::take_composition_dirty`] still
+    /// reports it.
+    composition_replaced: bool,
     layout_requested: bool,
     state: State,
     root: Box<dyn Widget>,
@@ -529,6 +533,13 @@ pub struct FrameHarness {
     child_node: NodeId,
     document_history: Box<crate::standalone_history_host::StandaloneHistoryHost>,
     history_chrome_enabled: bool,
+    /// What each frame's control refresh discovered, as the live App keeps
+    /// it: a component publishing a shared forest is filtered and surveyed
+    /// only where its forest changed.
+    bound_resources: crate::bound_dispatch::BoundResourceCache,
+    /// Advanced every frame: the harness keeps no other record of local
+    /// changes, so nothing local is taken from an earlier frame.
+    bound_resource_frames: u64,
     history_layout: Option<crate::standalone_history_host::HostHistoryLayout>,
     history_focus_pending: bool,
     history_pointer_owned: bool,
@@ -671,6 +682,27 @@ fn full_relayout_forced() -> bool {
     use std::sync::OnceLock;
     static FLAG: OnceLock<bool> = OnceLock::new();
     *FLAG.get_or_init(|| crate::env::var("TILO_UI_FULL_RELAYOUT").is_ok_and(|s| !s.is_empty()))
+}
+
+/// How many replaced compositions may be re-admitted inside one another
+/// before a view counts as never settling.
+const MAX_READMISSIONS: u8 = 8;
+
+thread_local! {
+    /// Re-admissions in progress on this thread, nested inside each other.
+    static READMISSIONS: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
+}
+
+/// The innermost widget under `widget` whose control invocation is pending.
+fn pending_control_owner(widget: &dyn Widget) -> Option<String> {
+    if !crate::widget::controls::has_pending_control_invocation(widget) {
+        return None;
+    }
+    widget
+        .children()
+        .into_iter()
+        .find_map(pending_control_owner)
+        .or_else(|| Some(widget.name().to_owned()))
 }
 
 /// What the root reported for one [`FrameHarness::dispatch_to_root_outcome`].
@@ -1139,7 +1171,35 @@ impl FrameHarness {
             .history
             .as_mut()
             .is_some_and(|history| history.take_structure_dirty());
-        root || history
+        let seen = std::mem::take(&mut self.composition_replaced);
+        root || history || seen
+    }
+
+    /// Whether a widget replaced children since the maps were admitted. The
+    /// change stays pending for the next [`Self::take_composition_dirty`].
+    fn composition_changed(&mut self) -> bool {
+        self.composition_replaced |= self.take_composition_dirty();
+        self.composition_replaced
+    }
+
+    /// Where focus is, as an identity that survives a rebuild. The mapped
+    /// tree is read only while it still is the live composition: once a
+    /// widget replaced children since the maps were admitted, the focused
+    /// control is found in the live tree instead, and the change stays
+    /// pending for the next layout.
+    fn capture_focus_identity(&mut self) -> Option<crate::widget::layout::CompositionFocus> {
+        if self.composition_changed() || self.node_map.is_empty() {
+            return crate::widget::layout::CompositionFocus::capture_live(self.root.as_ref());
+        }
+        // SAFETY: no composition change since these maps were admitted, so
+        // they describe this exclusively owned live tree.
+        unsafe {
+            crate::widget::layout::CompositionFocus::capture(
+                self.focused,
+                &self.node_map,
+                &self.bindings,
+            )
+        }
     }
 
     /// Replace the whole root control of this harness. `node_map` holds raw
@@ -1405,6 +1465,35 @@ impl FrameHarness {
         self.continue_pending_history_control_checked(token, false)
     }
 
+    /// Continue after the caller explicitly confirmed this exact current item.
+    /// The action the host's confirmation is asking about, and the text
+    /// that confirms it, while it asks: a destructive verb or a removal a
+    /// control, a menu or an immediate application submitted.
+    #[must_use]
+    pub fn asking(&self) -> Option<(tilo_actions::ActionAddress, String)> {
+        self.action_palette
+            .as_deref()
+            .and_then(crate::action_palette::ActionPalette::asking)
+            .map(|(address, expected)| (address.clone(), expected.to_owned()))
+    }
+
+    /// Confirm what the host is asking, as the person does: type the
+    /// confirming text into its dialog and press Enter. Answers the action
+    /// confirmed; `None`, changing nothing, when nothing is asked.
+    pub fn confirm_asked(&mut self) -> Option<tilo_actions::ActionAddress> {
+        let (address, expected) = self.asking()?;
+        self.type_text(&expected);
+        self.key("Enter");
+        Some(address)
+    }
+
+    pub fn confirm_pending_history_control(
+        &mut self,
+        token: &crate::history_mode::pending_controls::ContinuationToken,
+    ) -> Option<crate::history_mode::pending_controls::PendingControlStatus> {
+        self.continue_pending_history_control_checked(token, true)
+    }
+
     /// Cancel one exact retained control without dispatching it.
     pub fn cancel_pending_history_control(
         &mut self,
@@ -1548,6 +1637,7 @@ impl FrameHarness {
             component_wake,
             owner_wake_queue: None,
             owner_service_layout_retired: false,
+            composition_replaced: false,
             layout_requested: false,
             state,
             root,
@@ -1565,6 +1655,8 @@ impl FrameHarness {
             child_node: NodeId::from(0usize),
             document_history: Box::new(crate::standalone_history_host::StandaloneHistoryHost::new()),
             history_chrome_enabled: false,
+            bound_resources: crate::bound_dispatch::BoundResourceCache::default(),
+            bound_resource_frames: 0,
             history_layout: None,
             history_focus_pending: false,
             history_pointer_owned: false,
@@ -1986,8 +2078,12 @@ impl FrameHarness {
             .is_some()
         } else {
             match request {
-                crate::undo::UndoRequest::Undo => self.state.undo_as(Some(&author), None, None),
-                crate::undo::UndoRequest::Redo => self.state.redo_as(Some(&author), None, None),
+                crate::undo::UndoRequest::Undo => {
+                    self.state.undo_as(Some(&author), None, None, None)
+                }
+                crate::undo::UndoRequest::Redo => {
+                    self.state.redo_as(Some(&author), None, None, None)
+                }
             }
             .is_some()
         };
@@ -2089,10 +2185,12 @@ impl FrameHarness {
         {
             return;
         }
-        let snapshots = crate::bound_dispatch::discover_bound_resources(
+        self.bound_resource_frames = self.bound_resource_frames.wrapping_add(1);
+        let snapshots = crate::bound_dispatch::discover_cached_bound_resources(
             self.root.as_ref(),
             &self.state.doc,
-            None,
+            &self.bound_resources,
+            self.bound_resource_frames,
         )
         .unwrap_or_default();
         let host_doors = self
@@ -2125,6 +2223,12 @@ impl FrameHarness {
             self.state.doc.get_heads();
         }
         let mut outer_status = None;
+        // One status per component binding, as the live App's sweep reads it:
+        // each read opens the bound record and describes its history.
+        let mut bound_statuses: Vec<(
+            crate::bound_dispatch::CallbackBinding,
+            crate::undo::UndoStatus,
+        )> = Vec::new();
         let mut visited = HashSet::new();
         for (&node, pointer) in &self.node_map {
             // SAFETY: node_map pointers are valid until the next `relayout`.
@@ -2135,7 +2239,17 @@ impl FrameHarness {
             // Preserve bound history label warming across pending edits.
             let bound_status = binding
                 .as_ref()
-                .map(|binding| binding.undo_status(&mut self.state.doc).unwrap_or_default())
+                .map(|binding| {
+                    if let Some((_, status)) = bound_statuses
+                        .iter()
+                        .find(|(seen, _)| seen.same_component(binding))
+                    {
+                        return status.clone();
+                    }
+                    let status = binding.undo_status(&mut self.state.doc).unwrap_or_default();
+                    bound_statuses.push((binding.clone(), status.clone()));
+                    status
+                })
                 .or_else(|| self.bindings.legacy_status(node, &self.author));
             let mut status = || {
                 bound_status.clone().unwrap_or_else(|| {
@@ -3723,14 +3837,7 @@ impl FrameHarness {
             .focused
             .and_then(|node| self.bindings.binding_for(node))
         {
-            // SAFETY: these maps belong to this exclusively borrowed runner.
-            if let Some(focus) = unsafe {
-                crate::widget::layout::CompositionFocus::capture(
-                    self.focused,
-                    &self.node_map,
-                    &self.bindings,
-                )
-            } {
+            if let Some(focus) = self.capture_focus_identity() {
                 self.saved_instance_focus.insert(binding.instance_id, focus);
             }
         }
@@ -4381,6 +4488,11 @@ impl FrameHarness {
         use crate::accesskit_bridge::A11yTarget;
         self.pump_component_wakes_checked()
             .map_err(|error| format!("owner layout readmission refused: {error:?}"))?;
+        // The node is resolved through the maps: admit a composition widgets
+        // replaced since they were built first.
+        if self.composition_changed() {
+            self.readmit_replaced_composition();
+        }
         if self.global_search_query().is_some() {
             let handled = self.perform_system_search_a11y(target, action);
             self.finish_system_search();
@@ -4451,6 +4563,17 @@ impl FrameHarness {
         if !key_path.is_empty() {
             self.set_focused(Some(taffy_id));
         }
+        // Who is acted on, as an identity that survives a rebuild the action
+        // itself may cause.
+        // SAFETY: the action below reaches this node through the same
+        // admitted, unchanged maps.
+        let acted = unsafe {
+            crate::widget::layout::CompositionFocus::capture(
+                Some(taffy_id),
+                &self.node_map,
+                &self.bindings,
+            )
+        };
         let handled = self
             .dispatch_semantic_node(taffy_id, action, |widget, doc, root| {
                 if let Some(target) = semantic_target.as_deref() {
@@ -4470,6 +4593,23 @@ impl FrameHarness {
                 }
             })
             .map_err(|error| format!("component dispatch refused: {error:?}"))?;
+        // The action may have replaced widgets: the node acted on is looked
+        // up again only in the newly admitted composition.
+        // The action may have replaced widgets: what follows looks the node
+        // acted on up again in the newly admitted composition, or not at all
+        // when it is gone.
+        let taffy_id = if self.composition_changed() {
+            self.readmit_replaced_composition();
+            // SAFETY: the readmission admitted this fresh, owned tree.
+            acted.and_then(|acted| unsafe { acted.restore(&self.node_map, &self.bindings, None) })
+        } else {
+            Some(taffy_id)
+        };
+        let Some(taffy_id) = taffy_id else {
+            self.host_tick();
+            self.relayout();
+            return Ok(());
+        };
         if handled
             && (matches!(action, crate::a11y::Action::Focus)
                 || (matches!(action, crate::a11y::Action::SetSelection { .. })
@@ -5642,6 +5782,14 @@ impl FrameHarness {
             // Banked; folded into the frame the following `relayout` commits.
             p.record_since(crate::profiling::Pass::HandleEvent, t_event);
         }
+        // The event may have replaced widgets (a dialog closing on its own
+        // button): a focus target named by the old map is gone with them,
+        // and the new composition is admitted before anything below looks a
+        // node up.
+        if self.composition_changed() {
+            focus_target = None;
+            self.readmit_replaced_composition();
+        }
         // Mirror the App: a widget that claimed focus during dispatch
         // becomes the focused node, so subsequent keystrokes route to it.
         if let Some(t) = focus_target {
@@ -5792,25 +5940,17 @@ impl FrameHarness {
         if self.owner_service_layout_retired {
             return;
         }
+        // Settlement before this tick can already have replaced children (a
+        // surface closing its own dialog): admit the new composition before
+        // dispatch reads the mapped tree, or opening a confirmation would
+        // capture its return focus through pointers to widgets now gone.
+        self.readmit_replaced_composition();
         self.dispatch_control_invocations();
         self.poll_control_invocations();
-        // Settlement and the control callbacks above can replace children.
-        // Retire their raw nodes before sweeping undo brackets, then admit
-        // the new composition so surviving descendants keep their history.
-        if self.take_composition_dirty() {
-            let focus = crate::widget::layout::CompositionFocus::capture_live(self.root.as_ref());
-            self.discard_layout_tree();
-            self.relayout();
-            if self.focused.is_none()
-                && let Some(focus) = focus
-            {
-                // A surviving live focus outranks a captured identity: generic
-                // control names may be shared by unrelated retained controls.
-                // SAFETY: the relayout admitted this fresh, exclusively owned tree.
-                self.focused =
-                    unsafe { focus.restore(&self.node_map, &self.bindings, None) }.or(self.focused);
-            }
-        }
+        // The control callbacks above can replace children too. Retire their
+        // raw nodes before sweeping undo brackets, then admit the new
+        // composition so surviving descendants keep their history.
+        self.readmit_replaced_composition();
         let author = self.author.clone();
         // SAFETY: this host exclusively owns the unchanged root and admitted layout.
         unsafe {
@@ -5822,6 +5962,57 @@ impl FrameHarness {
                 &author,
                 &self.permissions,
             );
+        }
+    }
+
+    /// When the composition was replaced since it was admitted, retire its
+    /// raw nodes and admit the new one, keeping a surviving live focus.
+    ///
+    /// A view that replaces its composition again on every pass while a
+    /// change of its own is still pending never settles: after
+    /// [`MAX_READMISSIONS`] nested passes the harness stops and says which
+    /// view it is (a test fails on it) instead of recursing until the stack
+    /// overflows.
+    fn readmit_replaced_composition(&mut self) {
+        if !self.take_composition_dirty() {
+            return;
+        }
+        let depth = READMISSIONS.get();
+        if depth >= MAX_READMISSIONS {
+            let pending = pending_control_owner(self.root.as_ref());
+            let message = format!(
+                "headless: `{}` never settles: it replaces its composition on every pass while \
+                 a change is pending{}",
+                self.root.name(),
+                pending.map_or_else(String::new, |owner| format!(
+                    " (a control invocation of `{owner}` stays pending)"
+                )),
+            );
+            tracing::error!("{message}");
+            self.discard_layout_tree();
+            // A test fails on it; a release host skips the frame.
+            debug_assert!(false, "{message}");
+            return;
+        }
+        READMISSIONS.set(depth.saturating_add(1));
+        struct Leave;
+        impl Drop for Leave {
+            fn drop(&mut self) {
+                READMISSIONS.set(READMISSIONS.get().saturating_sub(1));
+            }
+        }
+        let _leave = Leave;
+        let focus = crate::widget::layout::CompositionFocus::capture_live(self.root.as_ref());
+        self.discard_layout_tree();
+        self.relayout();
+        if self.focused.is_none()
+            && let Some(focus) = focus
+        {
+            // A surviving live focus outranks a captured identity: generic
+            // control names may be shared by unrelated retained controls.
+            // SAFETY: the relayout admitted this fresh, exclusively owned tree.
+            self.focused =
+                unsafe { focus.restore(&self.node_map, &self.bindings, None) }.or(self.focused);
         }
     }
 
@@ -5849,7 +6040,7 @@ impl FrameHarness {
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
         self.pump_component_wakes();
-        self.invoke_bound_action_checked(address, arguments, false, None)
+        self.invoke_bound_action_for(address, arguments, false, None, None)
             .map_err(crate::bound_dispatch::BoundActionError::into_door)
     }
 
@@ -5865,7 +6056,7 @@ impl FrameHarness {
         ambient: &tilo_actions::ActionContext,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
         self.pump_component_wakes();
-        self.invoke_bound_action_checked(address, arguments, false, Some(ambient))
+        self.invoke_bound_action_for(address, arguments, false, Some(ambient), None)
             .map_err(crate::bound_dispatch::BoundActionError::into_door)
     }
 
@@ -5880,7 +6071,7 @@ impl FrameHarness {
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
         self.pump_component_wakes();
-        self.invoke_bound_action_checked(address, arguments, true, None)
+        self.invoke_bound_action_for(address, arguments, true, None, None)
             .map_err(crate::bound_dispatch::BoundActionError::into_door)
     }
 
@@ -5928,12 +6119,38 @@ impl FrameHarness {
         ),
         tilo_actions::DoorError,
     > {
+        self.start_bound_job_within(invoker, None, address, arguments, confirmed)
+    }
+
+    /// [`Self::start_bound_job_for`] within `ambient`: the task the invoker
+    /// is carrying out (an agent's run, its purpose), recorded with every
+    /// edit the operation makes.
+    ///
+    /// # Errors
+    /// As [`Self::start_bound_job_for`].
+    pub fn start_bound_job_within(
+        &mut self,
+        invoker: Option<tilo_actions::ActionInvoker>,
+        ambient: Option<&tilo_actions::ActionContext>,
+        address: &crate::bound_dispatch::BoundActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+        confirmed: bool,
+    ) -> Result<
+        (
+            tilo_actions::InvocationId,
+            crate::widget::ResourceOperationStart,
+        ),
+        tilo_actions::DoorError,
+    > {
         self.pump_component_wakes();
         let invocation = tilo_actions::InvocationId::new();
         let delivered = invoker.map(|invoker| {
-            let context = tilo_actions::ActionContext::default().with_invoker(invoker.clone());
+            let context = ambient
+                .cloned()
+                .unwrap_or_default()
+                .with_invoker(invoker.clone());
             crate::invocation_scope::Continuation {
-                admitted: self.admitted_requirement(address, arguments),
+                admitted: self.admitted_kind(address, arguments),
                 invoker,
                 context: Some(context),
                 refused: None,
@@ -5951,11 +6168,16 @@ impl FrameHarness {
                     arguments,
                     confirmed,
                     continuation.context.as_ref(),
-                    invocation,
-                    &continuation.invoker.actor,
+                    Some((invocation, Some(&continuation.invoker.actor))),
                 )
             }
-            None => self.invoke_bound_action_as(address, arguments, confirmed, None, invocation),
+            None => self.invoke_bound_action_for(
+                address,
+                arguments,
+                confirmed,
+                None,
+                Some((invocation, None)),
+            ),
         };
         let started = started.map_err(crate::bound_dispatch::BoundActionError::into_door);
         if !matches!(started, Ok(crate::widget::ResourceOperationStart::Accepted)) {
@@ -5980,11 +6202,11 @@ impl FrameHarness {
 
     /// What an invoker of `address` with `arguments` is admitted for: the
     /// operation's own requirement. Nothing when it does not resolve.
-    fn admitted_requirement(
+    fn admitted_kind(
         &self,
         address: &crate::bound_dispatch::BoundActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
-    ) -> tilo_actions::PermissionRequirement {
+    ) -> tilo_actions::ActionKind {
         let address = match self.bound_publication.target(&address.address) {
             Ok(Some(target)) => target.address,
             _ => address.clone(),
@@ -6001,10 +6223,10 @@ impl FrameHarness {
                 .filter(|snapshot| snapshot.binding.instance_id == address.instance_id)
                 .find_map(|snapshot| {
                     tilo_actions::door::resolve(snapshot.resources(), &address.address)
-                        .map(|spec| spec.permission_for_json(arguments))
+                        .map(|spec| spec.need_for(Some(arguments), None).kind)
                 })
         })
-        .unwrap_or(tilo_actions::PermissionRequirement::None)
+        .unwrap_or(tilo_actions::ActionKind::Read)
     }
 
     /// Every update the job `invocation` reported so far, oldest first.
@@ -6135,46 +6357,21 @@ impl FrameHarness {
             .collect()
     }
 
-    fn invoke_bound_action_checked(
-        &mut self,
-        address: &crate::bound_dispatch::BoundActionAddress,
-        arguments: &serde_json::Map<String, serde_json::Value>,
-        confirmed: bool,
-        ambient: Option<&tilo_actions::ActionContext>,
-    ) -> Result<crate::widget::ResourceOperationStart, crate::bound_dispatch::BoundActionError>
-    {
-        self.invoke_bound_action_as(
-            address,
-            arguments,
-            confirmed,
-            ambient,
-            tilo_actions::InvocationId::new(),
-        )
-    }
-
-    fn invoke_bound_action_as(
-        &mut self,
-        address: &crate::bound_dispatch::BoundActionAddress,
-        arguments: &serde_json::Map<String, serde_json::Value>,
-        confirmed: bool,
-        ambient: Option<&tilo_actions::ActionContext>,
-        invocation: tilo_actions::InvocationId,
-    ) -> Result<crate::widget::ResourceOperationStart, crate::bound_dispatch::BoundActionError>
-    {
-        let author = self.author.0.clone();
-        self.invoke_bound_action_for(address, arguments, confirmed, ambient, invocation, &author)
-    }
-
+    /// Invoke `address` as `delivered` says: under its invocation, for its
+    /// actor; a fresh invocation by the person at this device without one.
     fn invoke_bound_action_for(
         &mut self,
         address: &crate::bound_dispatch::BoundActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
         confirmed: bool,
         ambient: Option<&tilo_actions::ActionContext>,
-        invocation: tilo_actions::InvocationId,
-        actor: &str,
+        delivered: Option<(tilo_actions::InvocationId, Option<&str>)>,
     ) -> Result<crate::widget::ResourceOperationStart, crate::bound_dispatch::BoundActionError>
     {
+        let (invocation, actor) =
+            delivered.unwrap_or_else(|| (tilo_actions::InvocationId::new(), None));
+        let author = self.author.0.clone();
+        let actor = actor.unwrap_or(&author);
         let translated = self.bound_publication.target(&address.address)?;
         if translated
             .as_ref()
@@ -6240,15 +6437,9 @@ impl FrameHarness {
             return;
         };
         if self.action_palette.is_none() {
-            // SAFETY: modal admission has not retired this owned live tree.
-            self.ordinary_palette_return_focus = unsafe {
-                crate::widget::layout::CompositionFocus::capture(
-                    self.focused,
-                    &self.node_map,
-                    &self.bindings,
-                )
-            }
-            .or_else(|| crate::widget::layout::CompositionFocus::capture_live(self.root.as_ref()));
+            self.ordinary_palette_return_focus = self.capture_focus_identity().or_else(|| {
+                crate::widget::layout::CompositionFocus::capture_live(self.root.as_ref())
+            });
         }
         self.discard_layout_tree();
         self.focused = None;
@@ -6403,6 +6594,7 @@ impl FrameHarness {
         let scopes = acting
             .as_ref()
             .map(crate::invocation_scope::Continuation::enter);
+        let answering = crate::bound_dispatch::Answering::enter(on_behalf_of.is_some());
         let result = crate::bound_dispatch::invoke_resource_action(
             self.root.as_mut(),
             &mut self.state.doc,
@@ -6422,12 +6614,14 @@ impl FrameHarness {
             },
         )
         .map_err(crate::bound_dispatch::BoundActionError::into_door);
+        drop(answering);
         drop(scopes);
         self.note_continuation(on_behalf_of, &result);
         if let Err(error) = crate::bound_dispatch::notify_control_invocation_result(
             self.root.as_mut(),
             &target,
             &result,
+            on_behalf_of,
         ) {
             tracing::warn!(?error, "headless: bound control feedback unavailable");
         }
@@ -6505,6 +6699,7 @@ impl FrameHarness {
                         broker_admitted: false,
                         ambient: None,
                     },
+                    None,
                 )?;
                 return Ok(crate::widget::ResourceOperationStart::Completed(
                     tilo_actions::ActionOutput::default(),
@@ -6524,6 +6719,7 @@ impl FrameHarness {
                 spec.kind,
                 &encoded,
                 &mut self.state.doc,
+                None,
             )?;
             match &result {
                 crate::widget::ResourceOperationStart::Accepted
@@ -6806,6 +7002,7 @@ impl FrameHarness {
                             broker_admitted: false,
                             ambient: None,
                         },
+                        None,
                     )?;
                     crate::widget::ResourceOperationStart::Completed(
                         tilo_actions::ActionOutput::default(),
@@ -6825,6 +7022,7 @@ impl FrameHarness {
                         spec.kind,
                         &encoded,
                         &mut self.state.doc,
+                        None,
                     )?;
                     match &result {
                         crate::widget::ResourceOperationStart::Accepted
@@ -6874,7 +7072,7 @@ impl FrameHarness {
                     )?;
                 if !self.permissions.permits_invocation(
                     &app_id,
-                    &address.resource,
+                    resource,
                     spec,
                     arguments.as_ref(),
                     argument,
@@ -6883,10 +7081,7 @@ impl FrameHarness {
                 }
                 crate::invocation_scope::check_continuation(
                     spec,
-                    match arguments.as_ref() {
-                        Some(arguments) => spec.permission_for_json(arguments),
-                        None => spec.permission_for_argument(argument),
-                    },
+                    spec.need_for(arguments.as_ref(), argument).kind,
                 )?;
                 let encoded = crate::bound_dispatch::encode_resource_action(
                     &resources,
@@ -7017,10 +7212,10 @@ impl FrameHarness {
                         Some(&intent.arguments),
                         false,
                     )?;
-                if !crate::bound_dispatch::permits_local_value(
+                if !crate::bound_dispatch::permits_local_action(
                     &self.permissions,
                     &crate::collaboration::local_app_id(),
-                    &intent.address.resource,
+                    resource,
                     spec,
                     arguments.as_ref(),
                     None,
@@ -7029,7 +7224,7 @@ impl FrameHarness {
                 }
                 crate::invocation_scope::check_continuation(
                     spec,
-                    spec.permission_for_json(&intent.arguments),
+                    spec.need_for(arguments.as_ref(), None).kind,
                 )?;
                 let encoded = crate::bound_dispatch::encode_resource_action(
                     &resources,
@@ -7128,10 +7323,10 @@ impl FrameHarness {
             Some(supplied),
             confirmed,
         )?;
-        if !crate::bound_dispatch::permits_local_value(
+        if !crate::bound_dispatch::permits_local_action(
             &self.permissions,
             &crate::collaboration::local_app_id(),
-            &address.resource,
+            resource,
             spec,
             arguments.as_ref(),
             None,
@@ -10145,6 +10340,72 @@ mod tests {
         }
     }
 
+    /// A view that replaces its child on every sync and keeps a control
+    /// invocation pending: each pass asks for another.
+    struct NeverSettles {
+        current: Box<dyn Widget>,
+        retired: Vec<Box<dyn Widget>>,
+        structure_dirty: bool,
+        restless: std::rc::Rc<std::cell::Cell<bool>>,
+    }
+
+    impl Widget for NeverSettles {
+        crate::provides!(dyn crate::widget::controls::ActionControls);
+        crate::testing::delegate_widget_methods!(
+            current: build_layout,
+            apply_layout,
+            draw,
+            get_rect
+        );
+        fn name(&self) -> &'static str {
+            "NeverSettles"
+        }
+        fn sync(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
+            if self.restless.get() {
+                let replaced = std::mem::replace(
+                    &mut self.current,
+                    Box::new(Button::new("restless", "Again")),
+                );
+                self.retired.push(replaced);
+                self.structure_dirty = true;
+            }
+            self.current.sync(state, path);
+        }
+        fn children(&self) -> Vec<&dyn Widget> {
+            vec![self.current.as_ref()]
+        }
+        fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+            vec![self.current.as_mut()]
+        }
+        fn take_structure_dirty(&mut self) -> bool {
+            std::mem::take(&mut self.structure_dirty)
+        }
+    }
+
+    impl crate::widget::controls::ActionControls for NeverSettles {
+        fn has_pending_control_invocation(&self) -> bool {
+            self.restless.get()
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "`NeverSettles` never settles")]
+    fn a_view_that_never_settles_fails_instead_of_overflowing_the_stack() {
+        let restless = std::rc::Rc::new(std::cell::Cell::new(false));
+        let mut driver = FrameHarness::new(
+            State::new(),
+            Box::new(NeverSettles {
+                current: Box::new(Button::new("restless", "First")),
+                retired: Vec::new(),
+                structure_dirty: false,
+                restless: restless.clone(),
+            }),
+            (400, 200),
+        );
+        restless.set(true);
+        driver.relayout();
+    }
+
     #[test]
     fn idle_recomposition_keeps_live_focus_when_control_names_are_shared() {
         let current = Column::new()
@@ -10427,14 +10688,7 @@ mod tests {
             _theme: &Theme,
             node_map: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
-            let style = Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
-                ..Default::default()
-            };
-            taffy.widget_leaf(style, node_map, self)
+            taffy.fill_leaf(node_map, self)
         }
 
         fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -11421,12 +11675,9 @@ mod tests {
                 };
                 assert_eq!(*observed.results.borrow(), vec![Ok(expected)]);
                 observed.enqueue("run");
-                *binding.permissions.borrow_mut() = PermissionContext::from_capabilities(
-                    collab_types::caps::Actor::person(
-                        Some(collab_types::role::Role::Viewer),
-                        "reader",
-                    ),
-                    Vec::new(),
+                *binding.permissions.borrow_mut() = crate::permissions::PermissionContext::member(
+                    "reader",
+                    collab_types::role::Role::Viewer,
                 );
                 let before = owner
                     .records
@@ -11514,9 +11765,9 @@ mod tests {
                 crate::permissions::UserId("reader".into()),
             );
             observed.enqueue("run");
-            let readonly = PermissionContext::from_capabilities(
-                collab_types::caps::Actor::person(Some(collab_types::role::Role::Viewer), "reader"),
-                Vec::new(),
+            let readonly = crate::permissions::PermissionContext::member(
+                "reader",
+                collab_types::role::Role::Viewer,
             );
             host.set_permission_ctx(readonly);
             let before = host.state.doc.base_heads();
@@ -13157,7 +13408,10 @@ mod prepared_driver_tests {
             driver
                 .state
                 .commit_action_authored_with_context(None, None, Some(author()), None);
-            driver.state.undo_as(Some(&author()), None, None).unwrap();
+            driver
+                .state
+                .undo_as(Some(&author()), None, None, None)
+                .unwrap();
             driver.relayout();
             let outer_baseline = driver.state.undo_status(Some(&author()));
             assert!(!outer_baseline.can_undo && outer_baseline.can_redo);
@@ -13849,6 +14103,9 @@ mod owner_layout_custody_tests;
 #[cfg(test)]
 #[path = "headless/owner_layout_demand_tests.rs"]
 mod owner_layout_demand_tests;
+#[cfg(test)]
+#[path = "headless/replaced_composition_tests.rs"]
+mod replaced_composition_tests;
 
 #[cfg(test)]
 #[path = "../../../browser/tilo-browser-runtime/src/background_work.rs"]

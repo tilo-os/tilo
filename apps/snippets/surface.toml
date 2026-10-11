@@ -1,0 +1,192 @@
+# The app's public surface, written by `tilo-app surface`: its resources' verbs
+# and stored fields. Review changes to it like an API change; `tilo-app check`
+# fails when the code and this file disagree.
+
+[[resources]]
+kind = "snippets.library"
+label = "Snippets"
+version = 1
+
+[[resources.fields]]
+owner = "snippets"
+path = "snippets"
+stored = "collection"
+title = "Snippets"
+type = "Collection<Snippet>"
+
+[[resources.fields]]
+label = true
+owner = "snippet"
+path = "snippets.*.title"
+stored = "value"
+title = "Title"
+type = "String"
+
+[[resources.fields]]
+owner = "snippet"
+path = "snippets.*.body"
+stored = "value"
+title = "Body"
+type = "String"
+
+[[resources.fields]]
+owner = "snippet"
+path = "snippets.*.description"
+stored = "value"
+title = "What the snippet is for, shown above the body"
+type = "String"
+
+[[resources.fields]]
+owner = "snippet"
+path = "snippets.*.favorite"
+stored = "value"
+title = "Starred"
+type = "bool"
+
+[[resources.fields]]
+owner = "snippet"
+path = "snippets.*.folder"
+stored = "value"
+title = 'Folder: empty for none (only "All snippets" lists it). Written'
+type = "Atom"
+
+[[resources.fields]]
+owner = "snippet"
+path = "snippets.*.language"
+stored = "value"
+title = "Language"
+type = "Language"
+
+[[resources.fields]]
+owner = "snippet"
+path = "snippets.*.tags"
+stored = "value"
+title = "Tags"
+type = "Set<String>"
+
+[[resources.fields]]
+owner = "snippet"
+path = "snippets.*.uses"
+readonly = true
+stored = "value"
+title = """How often it was copied: drives "Most used" and the row's usage"""
+type = "Counter"
+
+[[resources.verbs]]
+id = "new-snippet"
+kind = "undoable"
+label = "Create a snippet"
+
+[[resources.verbs.params]]
+name = "title"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "folder"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs]]
+id = "duplicate"
+kind = "undoable"
+label = "Duplicate a snippet"
+
+[[resources.verbs.params]]
+name = "snippet"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "title"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs]]
+destructive = true
+id = "delete"
+kind = "undoable"
+label = "Delete a snippet"
+
+[[resources.verbs.params]]
+name = "snippet"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+id = "record-use"
+kind = "undoable"
+label = "Record a use of a snippet"
+
+[[resources.verbs.params]]
+name = "snippet"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+id = "rename-folder"
+kind = "undoable"
+label = "Rename a folder"
+
+[[resources.verbs.params]]
+name = "folder"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "to"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+id = "rename-tag"
+kind = "undoable"
+label = "Rename a tag"
+
+[[resources.verbs.params]]
+name = "tag"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "to"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+id = "remove-tag"
+kind = "undoable"
+label = "Remove a tag from every snippet"
+
+[[resources.verbs.params]]
+name = "tag"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"

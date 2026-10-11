@@ -14,7 +14,9 @@ pub const CHECK_SPELLING_KEY: &str = "check_spelling";
 pub const AUTO_CORRECT_KEY: &str = "auto_correct";
 pub const SPELLING_LANGUAGE_KEY: &str = "spelling_language";
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, tilo_resource::Model,
+)]
 pub struct TextAssistancePrefs {
     pub check_spelling: bool,
     pub auto_correct: bool,
@@ -37,6 +39,10 @@ impl Default for TextAssistancePrefs {
 impl crate::storage::SettingsSchema for TextAssistancePrefs {
     const SCOPE: crate::storage::Scope = crate::storage::Scope::Shared(SETTINGS_SECTION);
 }
+
+/// The section as a record the person edits by path.
+#[tilo_resource::resource(kind = "settings.text-assistance", label = "Spelling and text")]
+impl TextAssistancePrefs {}
 
 #[derive(Default)]
 struct CachedPrefs {

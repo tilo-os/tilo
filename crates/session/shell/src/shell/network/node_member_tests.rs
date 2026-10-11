@@ -21,7 +21,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use automerge::transaction::Transactable as _;
 use collab_types::{
-    ContentRetention, DocumentFrame, DocumentMutation, Ed25519PublicKey, OpClass, SignedOp,
+    ContentRetention, DocumentFrame, DocumentMutation, Ed25519PublicKey, OpKind, SignedOp,
     document_artifact_id, document_attestation_id, document_channel_id,
 };
 use ed25519_dalek::SigningKey;
@@ -335,7 +335,7 @@ fn a_node_session_shares_sealed_records_with_the_browser() {
         artifact,
         Ed25519PublicKey::from_bytes(session_cert.device_public_key),
         document_attestation_id(NOTES, &acme.room, "reply"),
-        OpClass::Splice,
+        OpKind::Change,
         SystemTime::now(),
         1,
         metadata,

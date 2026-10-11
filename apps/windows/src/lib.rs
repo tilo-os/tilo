@@ -31,5 +31,5 @@ pub use resource::{Windows, WindowsShell};
 
 /// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::framework::definition::<WindowsShell>()
+    ui::built_in_definition!(WindowsShell)
 }

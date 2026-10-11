@@ -178,7 +178,7 @@ fn agent_work_is_undone_through_the_document_not_the_peer_stack() {
         // and it is only ever called for a locally handled event.
         assert!(
             alice
-                .undo_for_author(&UserId(AGENT.into()), None, None)
+                .undo_as(Some(&UserId(AGENT.into())), None, None, None)
                 .is_none(),
             "a remote author's work never reaches the local undo stack"
         );
@@ -656,13 +656,19 @@ fn one_instruction_two_apps() -> (AutoCommit, AutoCommit, Report, AgentRun) {
             app: PHOTO_EDITOR.into(),
             record: "file:/photos/figure-1.png".into(),
             run: photo_run,
-            summary: "Cropped to 1200x900".into(),
+            what: vec![tilo_actions::Described::new(tilo_actions::Did::verb(
+                tilo_actions::ActionKey::new(PHOTO_EDITOR, "document", "crop"),
+                [],
+            ))],
         },
         RunStep {
             app: WORD_PROCESSOR.into(),
             record: "file:/reports/q3.qdoc".into(),
             run: report_run,
-            summary: "Placed the figure".into(),
+            what: vec![tilo_actions::Described::new(tilo_actions::Did::verb(
+                tilo_actions::ActionKey::new(WORD_PROCESSOR, "document", "place-figure"),
+                [],
+            ))],
         },
     ];
     record_run(

@@ -25,7 +25,7 @@ const MOSTLY: f64 = 0.75;
 pub fn answer(doc: &Doc, action: &str, changes: &[Patch]) -> Option<Value> {
     match action {
         "select" => {
-            let mut answer = json!({"selection": selection(&crate::doc::read(doc))});
+            let mut answer = json!({"selection": selection(&Artwork::from_doc(doc).ok()?)});
             if let (Some(found), Some(fields)) =
                 (crate::subject::take_found(), answer.as_object_mut())
             {
@@ -41,12 +41,12 @@ pub fn answer(doc: &Doc, action: &str, changes: &[Patch]) -> Option<Value> {
             }
             Some(answer)
         }
-        "paint" | "draw" | "use-selection" => {
+        "paint" | "draw" | "import-svg" | "use-selection" => {
             let added = added(changes);
             if added.is_empty() {
                 return None;
             }
-            let art = crate::doc::read(doc);
+            let art = Artwork::from_doc(doc).ok()?;
             // Bottom first, the order they were given in.
             let marks: Vec<&Mark> = art
                 .marks
@@ -69,9 +69,7 @@ pub fn answer(doc: &Doc, action: &str, changes: &[Patch]) -> Option<Value> {
 fn added(changes: &[Patch]) -> Vec<String> {
     changes
         .iter()
-        .filter(|patch| {
-            matches!(patch.path.as_slice(), [(_, Prop::Map(map))] if map == crate::doc::MARKS)
-        })
+        .filter(|patch| matches!(patch.path.as_slice(), [(_, Prop::Map(map))] if map == "marks"))
         .filter_map(|patch| match &patch.action {
             PatchAction::PutMap { key, .. } => Some(key.clone()),
             _ => None,
