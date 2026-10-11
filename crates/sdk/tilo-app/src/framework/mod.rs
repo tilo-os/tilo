@@ -325,6 +325,7 @@ mod record;
 mod root;
 mod rows;
 mod scenario;
+mod section;
 mod settings;
 mod stage;
 mod surface;

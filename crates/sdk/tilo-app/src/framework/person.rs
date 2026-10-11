@@ -2,17 +2,15 @@
 //! kept in the person's own room, beside the record the app shows.
 
 use std::any::Any;
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
 use tilo_actions::{Action as _, ActionContext, ActionError, ActionInvoker, ChangeKind};
 
-use tilo_resource::Fields;
-use ui_core::storage::{Scope, Settings, SettingsRevision, SettingsSchema};
-
 use super::live::Live;
-use super::record::{Held, RecordDoor, SectionValue};
+use super::record::{Held, RecordDoor};
+use super::section::{SectionDoor, SectionKind, record_kind};
 use tilo_resource::{Invoke, Resource};
 use ui_core::LocalState;
 use ui_core::history_mode::HistoryOwner;
@@ -426,55 +424,44 @@ impl PersonState {
         Some(shared)
     }
 
-    /// The settings section `T` held as a record of the person's, opened on
-    /// first use: its edits are their steps, undone and redone like any of
-    /// theirs, and each writes the section's value to the settings document
-    /// with what made it and who. A device-local section has a record per
-    /// device, as its values do.
-    pub(crate) fn open_section<T>(
+    /// The settings section `kind` held as a record of the person's, opened
+    /// on first use: its edits are their steps, undone and redone like any
+    /// of theirs, and each writes the section's value to the settings
+    /// document with what made it and who. A device-local section has a
+    /// record per device, as its values do.
+    pub(crate) fn open_section(
         &self,
-        settings: Settings<T>,
+        kind: Rc<SectionKind>,
         device: Option<&str>,
-    ) -> Option<Rc<Held<T>>>
-    where
-        T: Resource<State = T> + Fields + SettingsSchema,
-    {
-        let kind = section_kind(T::KIND, matches!(T::SCOPE, Scope::DeviceLocal), device);
-        let key = (self.app_id, kind.clone());
+    ) -> Option<Rc<SectionDoor>> {
+        let name = record_kind(kind.kind, kind.device_local, device);
+        let key = (self.app_id, name.clone());
         if let Some(open) = self.opened.borrow().get(&key) {
-            return Rc::clone(open).downcast::<Held<T>>().ok();
+            return Rc::clone(open).downcast::<SectionDoor>().ok();
         }
-        let value = SectionValue::of(settings);
-        let record = open_record(&self.records, kind, T::KIND, &|doc| value.fill(doc))?;
-        let shared = self.shared_of::<T>(record, None)?;
-        let section = Rc::new(Section {
-            value,
-            seen: Cell::new(None),
-        });
-        // The section's record lives as long as the section is held.
-        let held = Rc::new(section_held(&shared, &section));
-        let stepping = Rc::downgrade(&shared);
+        let record = open_record(&self.records, name, kind.kind, &|doc| kind.fill(doc))?;
+        self.owners.borrow_mut().push(record.history_owner());
+        let door = Rc::new(SectionDoor::person(
+            kind,
+            record,
+            self.app_id,
+            self.app_title,
+            self.me.clone(),
+        ));
+        let stepping = Rc::downgrade(&door);
         self.publish(
             key,
-            Rc::clone(&held) as Rc<dyn Any>,
+            Rc::clone(&door) as Rc<dyn Any>,
             Published {
-                id: held.id().to_owned(),
-                label: T::LABEL.to_owned(),
-                door: Rc::clone(&held) as Rc<dyn RecordDoor>,
+                id: door.id().to_owned(),
+                label: door.label().to_owned(),
+                door: Rc::clone(&door) as Rc<dyn RecordDoor>,
                 step: Box::new(move |undo, by| {
-                    stepping.upgrade().is_some_and(|shared| {
-                        let record = PersonRecord { shared };
-                        let stepped = if undo { record.undo() } else { record.redo() };
-                        if stepped {
-                            let action = if undo { "undo" } else { "redo" };
-                            section.write(&record.shared.record, action, by);
-                        }
-                        stepped
-                    })
+                    stepping.upgrade().is_some_and(|door| door.step(undo, by))
                 }),
             },
         );
-        Some(held)
+        Some(door)
     }
 
     /// The person's records `owner` keeps: this app's own, or another app's,
@@ -602,28 +589,6 @@ fn open_record(
         .ok()
 }
 
-/// The record kind a settings section of `kind` is kept in: one per device
-/// for a device-local section. A record kind is a plain label: letters,
-/// digits, `.`, `_`, `-`.
-fn section_kind(kind: &str, device_local: bool, device: Option<&str>) -> String {
-    match device.filter(|_| device_local) {
-        Some(device) => {
-            let device: String = device
-                .chars()
-                .map(|c| {
-                    if c.is_ascii_alphanumeric() || c == '-' {
-                        c
-                    } else {
-                        '_'
-                    }
-                })
-                .collect();
-            format!("settings.{kind}.device-{device}")
-        }
-        None => format!("settings.{kind}"),
-    }
-}
-
 /// The record `shared` as views and the door edit it: read into a state of
 /// its own that follows the record, changed as the person.
 fn held<P: Resource>(shared: &Rc<Shared<P>>, edits: bool) -> Held<P> {
@@ -648,84 +613,20 @@ fn held<P: Resource>(shared: &Rc<Shared<P>>, edits: bool) -> Held<P> {
     )
 }
 
-/// A settings section kept as a record: the section it writes, and the
-/// version of the settings document the record last followed.
-struct Section {
-    value: Rc<SectionValue>,
-    seen: Cell<Option<SettingsRevision>>,
-}
-
-impl Section {
-    /// Write the record's value to the settings document, as `action` by
-    /// `by`.
-    fn write(&self, record: &StoredRecord, action: &str, by: &str) {
-        let Some(written) = record.read(|doc| self.value.store(doc, action, by)) else {
-            return;
-        };
-        if let Err(error) = written {
-            tracing::warn!(kind = self.value.kind, %error, "settings section not written");
-        }
-        self.seen.set(Some(self.value.revision()));
-    }
-
-    /// Take into the record what was written to the settings document
-    /// elsewhere (another window, the Settings app, another device): content
-    /// from outside, nobody's step.
-    fn follow(&self, record: &StoredRecord) {
-        let revision = self.value.revision();
-        if self.seen.get() == Some(revision) {
-            return;
-        }
-        self.seen.set(Some(revision));
-        if record
-            .read(|doc| self.value.holds_stored(doc))
-            .unwrap_or(false)
-        {
-            return;
-        }
-        if let Err(error) = record.edit(false, |doc| self.value.write(doc)) {
-            tracing::warn!(kind = self.value.kind, %error, "settings record did not follow the section");
-        }
-    }
-}
-
-/// The settings section `section`, kept in the record `shared`, as views
-/// and the door edit it.
-fn section_held<T>(shared: &Rc<Shared<T>>, section: &Rc<Section>) -> Held<T>
-where
-    T: Resource<State = T> + Fields + SettingsSchema,
-{
-    section.follow(&shared.record);
-    shared.refresh();
-    let (following, following_section) = (Rc::clone(shared), Rc::clone(section));
-    let (applying, applying_section) = (Rc::clone(shared), Rc::clone(section));
-    Held::new(
-        format!("settings:{}", T::KIND),
-        T::LABEL.to_owned(),
-        true,
-        shared.live.clone(),
-        move |_: &Live<T>| {
-            following_section.follow(&following.record);
-            following.refresh();
-        },
-        move |action: &T::Action, invoker: &ActionInvoker| {
-            PersonRecord {
-                shared: Rc::clone(&applying),
-            }
-            .apply_as(action, invoker)?;
-            applying_section.write(
-                &applying.record,
-                &super::record::action_id(action),
-                &invoker.actor,
-            );
-            Ok(())
-        },
-    )
-}
-
 impl<P: Resource> super::record::sealed::Hold<P> for PersonRecord<P> {
     fn held(&self, _storage: super::record::sealed::Storage<'_>) -> Option<Rc<Held<P>>> {
         self.shared.held.borrow().clone()
+    }
+
+    fn door(
+        &self,
+        _storage: super::record::sealed::Storage<'_>,
+    ) -> Option<super::record::sealed::Door> {
+        self.shared
+            .held
+            .borrow()
+            .clone()
+            .map(|held| super::record::sealed::Door(held as Rc<dyn RecordDoor>))
     }
 }
 

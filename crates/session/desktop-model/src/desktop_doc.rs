@@ -481,7 +481,7 @@ fn read_policy(doc: &AutoCommit, entry: &ObjId) -> Option<StoredPolicy> {
 fn read_presets(doc: &AutoCommit, entry: &ObjId) -> Option<Vec<Preset>> {
     let mut presets: Vec<Preset> = read_blob_map(doc, entry, PRESETS_KEY)?;
     presets.retain(|preset| preset.validate().is_ok());
-    presets.sort_by_key(|preset| preset.name.to_lowercase());
+    crate::grants::sort_presets(&mut presets);
     Some(presets)
 }
 

@@ -11,6 +11,7 @@ use ui_core::LocalState;
 use ui_core::storage::{AppStorage, Settings, SettingsRevision, SettingsSchema};
 
 use super::record::{Held, RecordDoor};
+use super::section::{SectionDoor, SectionKind};
 
 /// One typed settings value, kept current while the view lives: a write
 /// from this window, another window, the Settings app or another of the
@@ -97,7 +98,17 @@ where
         + Sync,
 {
     fn held(&self, storage: super::record::sealed::Storage<'_>) -> Option<Rc<Held<T>>> {
-        storage.0.section(&self.settings)
+        storage.0.section_held(&self.settings)
+    }
+
+    fn door(
+        &self,
+        storage: super::record::sealed::Storage<'_>,
+    ) -> Option<super::record::sealed::Door> {
+        storage
+            .0
+            .section(&self.settings)
+            .map(|door| super::record::sealed::Door(door as Rc<dyn RecordDoor>))
     }
 }
 
@@ -111,8 +122,10 @@ pub(crate) struct ViewStorage {
     person: Option<super::person::PersonState>,
     /// This device, in a live window.
     device: Option<String>,
-    /// The settings sections views edit as records, by type.
-    sections: RefCell<HashMap<TypeId, Rc<dyn Any>>>,
+    /// The settings sections views and surfaces edit as records, by kind.
+    sections: RefCell<HashMap<&'static str, Rc<SectionDoor>>>,
+    /// Those a view part edits through its type, by type.
+    held_sections: RefCell<HashMap<TypeId, Rc<dyn Any>>>,
     /// Those sections, as the door reaches them.
     section_doors: RefCell<Vec<Rc<dyn RecordDoor>>>,
 }
@@ -150,6 +163,7 @@ impl ViewStorage {
             person: hosted.person,
             device: hosted.device,
             sections: RefCell::default(),
+            held_sections: RefCell::default(),
             section_doors: RefCell::default(),
         })
     }
@@ -221,27 +235,56 @@ impl ViewStorage {
     /// record of the person's, whose edits they undo and redo, or in a
     /// window that keeps nothing of theirs (a private one) one that lives as
     /// long as the window.
-    pub(crate) fn section<T>(&self, settings: &Settings<T>) -> Option<Rc<Held<T>>>
+    pub(crate) fn section<T>(&self, settings: &Settings<T>) -> Option<Rc<SectionDoor>>
     where
         T: tilo_resource::Resource<State = T> + tilo_resource::Fields + SettingsSchema,
     {
         super::controls::opened::<T>();
-        if let Some(person) = &self.person {
-            return person.open_section(settings.clone(), self.device());
+        if let Some(open) = self.sections.borrow().get(T::KIND) {
+            return Some(Rc::clone(open));
         }
-        if let Some(open) = self.sections.borrow().get(&TypeId::of::<T>()) {
-            return Rc::clone(open).downcast::<Held<T>>().ok();
+        self.open_section(SectionKind::of(settings))
+    }
+
+    /// [`Self::section`] of the section `kind` describes.
+    fn open_section(&self, kind: Rc<SectionKind>) -> Option<Rc<SectionDoor>> {
+        let name = kind.kind;
+        let door = if let Some(person) = &self.person {
+            person.open_section(kind, self.device())?
+        } else {
+            let door = SectionDoor::window(kind, true)
+                .map_err(
+                    |error| tracing::warn!(kind = name, %error, "settings section unavailable"),
+                )
+                .ok()?;
+            let door = Rc::new(door);
+            self.section_doors
+                .borrow_mut()
+                .push(Rc::clone(&door) as Rc<dyn RecordDoor>);
+            door
+        };
+        self.sections.borrow_mut().insert(name, Rc::clone(&door));
+        Some(door)
+    }
+
+    /// The settings section `T` as a record a view part edits through its
+    /// type ([`ViewCx::record`](super::ViewCx::record)).
+    pub(crate) fn section_held<T>(&self, settings: &Settings<T>) -> Option<Rc<Held<T>>>
+    where
+        T: tilo_resource::Resource<State = T> + tilo_resource::Fields + SettingsSchema,
+    {
+        if let Some(held) = self.held_sections.borrow().get(&TypeId::of::<T>()) {
+            return Rc::clone(held).downcast::<Held<T>>().ok();
         }
-        let held = super::record::section(settings.clone(), true)
+        let held = self
+            .section(settings)?
+            .held::<T>()
             .map_err(|error| tracing::warn!(kind = T::KIND, %error, "settings section unavailable"))
             .ok()?;
         let held = Rc::new(held);
-        self.sections
+        self.held_sections
             .borrow_mut()
             .insert(TypeId::of::<T>(), Rc::clone(&held) as Rc<dyn Any>);
-        self.section_doors
-            .borrow_mut()
-            .push(Rc::clone(&held) as Rc<dyn RecordDoor>);
         Some(held)
     }
 

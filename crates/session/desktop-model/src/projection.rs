@@ -452,7 +452,7 @@ pub fn workspace_presets_of(doc: &AutoCommit) -> Vec<tilo_action_policy::Preset>
         .map(|(_, preset)| preset)
         .filter(|preset: &tilo_action_policy::Preset| preset.validate().is_ok())
         .collect();
-    presets.sort_by_key(|preset| preset.name.to_lowercase());
+    crate::grants::sort_presets(&mut presets);
     presets
 }
 
