@@ -438,6 +438,106 @@ fn native_person_app_read_restriction_preserves_read_in_the_sdk_context() {
     drop(fixture);
 }
 
+#[test]
+fn native_person_app_read_restriction_preserves_read_in_the_actual_catalogue() {
+    use tilo_action_broker::collab_broker::CrdtRoute;
+    use tilo_action_broker::collab_broker_capnp::{
+        PublishedAction, PublishedInput, PublishedSurface,
+    };
+    use tilo_actions::remote::CatalogueQuery;
+
+    let fixture = fixture();
+    let actions = fixture.broker.app_action_broker().unwrap();
+    let room = fixture.room.to_string();
+    let person = tilo_action_broker::collab_broker_capnp::principal_id_for_root(
+        fixture.certificate.user_public_key,
+    );
+    let session = ActionSessionSource::new(actions.clone())
+        .open(&room, Some(&person))
+        .unwrap();
+    let provider = "917";
+    let published = |action: &str, kind, contract| PublishedAction {
+        semantic_identity: Some(runtime_collab::ExportedResourceSemanticIdentity {
+            kind: "chat.agent".into(),
+            key: "chat.person:tide".into(),
+        }),
+        resource: "chat.person:tide".into(),
+        action: action.into(),
+        resource_kind: "chat.agent".into(),
+        resource_label: "Tide".into(),
+        action_label: action.into(),
+        description: None,
+        operation_kind: kind,
+        params: Vec::new(),
+        contract,
+        view: None,
+        input: PublishedInput::None,
+    };
+    actions.replace_published_surfaces_for_test(vec![PublishedSurface {
+        peer_id: 917,
+        app_id: "so.tilo.chat".into(),
+        route: CrdtRoute::record("so.tilo.chat", &room, ""),
+        actions: vec![
+            published(
+                "message",
+                tilo_actions::OperationKind::Effect,
+                tilo_actions::ActionContract::default(),
+            ),
+            published(
+                "open-agent-conversation",
+                tilo_actions::OperationKind::View,
+                tilo_actions::ActionContract::view(),
+            ),
+        ],
+        live: true,
+    }]);
+    let offered = || {
+        ready_remote(session.query(CatalogueQuery {
+            provider: Some(provider.into()),
+            max_results: tilo_actions::remote::MAX_CATALOGUE_PAGE,
+            ..CatalogueQuery::default()
+        }))
+        .unwrap()
+        .rows
+        .into_iter()
+        .filter_map(|row| row.action.map(|action| action.address.action))
+        .collect::<Vec<_>>()
+    };
+    assert_eq!(offered(), ["message", "open-agent-conversation"]);
+
+    invoke_certified_profile_action(
+        &session,
+        &actions,
+        &room,
+        "profile.save",
+        &serde_json::json!({
+            "name": "Native Person catalogue Chat read", "rules": [{
+                "scope": {"App": "so.tilo.chat"}, "effect": "Restrict", "verb": "Read"
+            }]
+        }),
+    );
+    invoke_certified_profile_action(
+        &session,
+        &actions,
+        &room,
+        "profile.assign",
+        &serde_json::json!({
+            "profile": "Native Person catalogue Chat read",
+            "subject_kind": "person",
+            "subject": person
+        }),
+    );
+
+    assert_eq!(
+        offered(),
+        ["open-agent-conversation"],
+        "the actual certified catalogue must retain Read while withdrawing Chat.Write"
+    );
+    drop(session);
+    drop(actions);
+    drop(fixture);
+}
+
 fn person_sdk_permissions(
     tree: &tilo_desktop_model::DesktopTree,
     room: &str,
