@@ -223,6 +223,12 @@ pub trait Model: Sized {
     /// invariant; [`Self::check`] has nothing to do otherwise.
     const CHECKS: bool = false;
 
+    /// Whether this type or a value inside it has a vocabulary of its own
+    /// ([`Operations`](crate::Operations), rich text's): a record routes
+    /// those edits' gestures, landing places and schemas only into such
+    /// fields, and never instantiates the routing for the others.
+    const OPS: bool = false;
+
     /// Whether `null` is a value of the type: an absent `Option`. A field
     /// edit setting any other type to `null` is refused.
     const NULLABLE: bool = false;
@@ -590,7 +596,7 @@ fn load_at<T: Model>(
         Some((value, id)) => T::load(doc, value, id),
         None => T::missing(),
     }
-    .map_err(|error| error.at(key))
+    .located(key)
 }
 
 /// What a key of a map holds: its current value and the id of the op that
@@ -688,9 +694,34 @@ pub fn refresh_key<T: Model>(
         }
         Touch::Below => match get_slot(doc, obj, key)? {
             Some((value, id)) => target.refresh(doc, &value, &id, delta),
-            None => T::missing().map(|missing| *target = missing),
+            None => match T::missing() {
+                Ok(missing) => {
+                    *target = missing;
+                    Ok(())
+                }
+                Err(error) => Err(error),
+            },
         }
-        .map_err(|error| error.at(key)),
+        .located(key),
+    }
+}
+
+/// An error located at a key, as one function per value type rather than
+/// a closure per call.
+pub trait LocatedAt<T> {
+    /// The error, if any, located at `key`.
+    ///
+    /// # Errors
+    /// The error, located.
+    fn located(self, key: &str) -> Result<T, ModelError>;
+}
+
+impl<T> LocatedAt<T> for Result<T, ModelError> {
+    fn located(self, key: &str) -> Result<T, ModelError> {
+        match self {
+            Ok(value) => Ok(value),
+            Err(error) => Err(error.at(key)),
+        }
     }
 }
 
@@ -717,9 +748,7 @@ pub fn write_key<T: Model>(
     key: &str,
     value: &T,
 ) -> Result<(), ModelError> {
-    value
-        .store(doc, Slot::Key(obj, key))
-        .map_err(|error| error.at(key))
+    value.store(doc, Slot::Key(obj, key)).located(key)
 }
 
 /// [`Model::edit`] for a value edited only as a whole: `set` at its own
@@ -839,7 +868,7 @@ pub fn write_key_changed<T: Model>(
         Touch::Untouched if value.stores_as(before) => Ok(()),
         Touch::Untouched | Touch::Below => value
             .store_changed(before, doc, Slot::Key(obj, key), dirty)
-            .map_err(|error| error.at(key)),
+            .located(key),
     }
 }
 
@@ -1270,6 +1299,7 @@ impl<T: Model> Model for Option<T> {
     }
     const SHAPE: crate::Shape = T::SHAPE;
     const CHECKS: bool = T::CHECKS;
+    const OPS: bool = T::OPS;
     const NULLABLE: bool = true;
     leaf_paths!();
     fn op_coalesces(
@@ -1277,19 +1307,37 @@ impl<T: Model> Model for Option<T> {
         previous: &serde_json::Value,
         next: &serde_json::Value,
     ) -> Option<bool> {
-        T::op_coalesces(path, previous, next)
+        if T::OPS {
+            T::op_coalesces(path, previous, next)
+        } else {
+            None
+        }
     }
     fn op_continuable(path: &[Segment], op: &serde_json::Value) -> Option<bool> {
-        T::op_continuable(path, op)
+        if T::OPS {
+            T::op_continuable(path, op)
+        } else {
+            None
+        }
     }
     fn op_describe(path: &[Segment], op: &serde_json::Value) -> Option<crate::path::OpDescription> {
-        T::op_describe(path, op)
+        if T::OPS {
+            T::op_describe(path, op)
+        } else {
+            None
+        }
     }
     fn op_lands(&self, path: &[Segment], op: &serde_json::Value) -> Option<crate::Place> {
-        self.as_ref()?.op_lands(path, op)
+        if T::OPS {
+            self.as_ref()?.op_lands(path, op)
+        } else {
+            None
+        }
     }
     fn op_schemas(prefix: &str, out: &mut Vec<(String, serde_json::Value)>) {
-        T::op_schemas(prefix, out);
+        if T::OPS {
+            T::op_schemas(prefix, out);
+        }
     }
     #[inline(never)]
     fn to_json(&self) -> serde_json::Value {
@@ -1420,25 +1468,44 @@ impl<T: Model> Model for Box<T> {
     }
     const SHAPE: crate::Shape = T::SHAPE;
     const CHECKS: bool = T::CHECKS;
+    const OPS: bool = T::OPS;
     const NULLABLE: bool = T::NULLABLE;
     fn op_coalesces(
         path: &[Segment],
         previous: &serde_json::Value,
         next: &serde_json::Value,
     ) -> Option<bool> {
-        T::op_coalesces(path, previous, next)
+        if T::OPS {
+            T::op_coalesces(path, previous, next)
+        } else {
+            None
+        }
     }
     fn op_continuable(path: &[Segment], op: &serde_json::Value) -> Option<bool> {
-        T::op_continuable(path, op)
+        if T::OPS {
+            T::op_continuable(path, op)
+        } else {
+            None
+        }
     }
     fn op_describe(path: &[Segment], op: &serde_json::Value) -> Option<crate::path::OpDescription> {
-        T::op_describe(path, op)
+        if T::OPS {
+            T::op_describe(path, op)
+        } else {
+            None
+        }
     }
     fn op_lands(&self, path: &[Segment], op: &serde_json::Value) -> Option<crate::Place> {
-        (**self).op_lands(path, op)
+        if T::OPS {
+            (**self).op_lands(path, op)
+        } else {
+            None
+        }
     }
     fn op_schemas(prefix: &str, out: &mut Vec<(String, serde_json::Value)>) {
-        T::op_schemas(prefix, out);
+        if T::OPS {
+            T::op_schemas(prefix, out);
+        }
     }
     type Paths<R> = T::Paths<R>;
     fn paths_at<R>(path: Path<R, Self>) -> T::Paths<R> {
@@ -1529,6 +1596,7 @@ impl<T: Model> Model for Vec<T> {
         serde_json::json!({"type": "array", "items": T::value_schema()})
     }
     const CHECKS: bool = T::CHECKS;
+    const OPS: bool = T::OPS;
     leaf_paths!();
     #[inline(never)]
     fn to_json(&self) -> serde_json::Value {
@@ -1540,9 +1608,7 @@ impl<T: Model> Model for Vec<T> {
             serde_json::Value::Array(items) => items
                 .iter()
                 .enumerate()
-                .map(|(index, item)| {
-                    T::from_json(item).map_err(|error| error.at(&index.to_string()))
-                })
+                .map(|(index, item)| T::from_json(item).located(&index.to_string()))
                 .collect(),
             serde_json::Value::Null => Ok(Self::new()),
             _ => Err(json_shape("a list")),
@@ -1565,7 +1631,7 @@ impl<T: Model> Model for Vec<T> {
                     Some((value, item)) => T::load(doc, &value, &item),
                     None => T::missing(),
                 }
-                .map_err(|error| error.at(&index.to_string()))
+                .located(&index.to_string())
             })
             .collect()
     }
@@ -1582,8 +1648,7 @@ impl<T: Model> Model for Vec<T> {
             } else {
                 Slot::Insert(&list, index)
             };
-            item.store(doc, slot)
-                .map_err(|error| error.at(&index.to_string()))?;
+            item.store(doc, slot).located(&index.to_string())?;
         }
         for index in (self.len()..existing).rev() {
             doc.delete(&list, index)?;
@@ -1612,6 +1677,7 @@ impl<T: Model, const N: usize> Model for [T; N] {
         serde_json::json!({"type": "array", "items": T::value_schema(), "minItems": N, "maxItems": N})
     }
     const CHECKS: bool = T::CHECKS;
+    const OPS: bool = T::OPS;
     leaf_paths!();
     #[inline(never)]
     fn to_json(&self) -> serde_json::Value {
@@ -1651,8 +1717,7 @@ impl<T: Model, const N: usize> Model for [T; N] {
             } else {
                 Slot::Insert(&list, index)
             };
-            item.store(doc, slot)
-                .map_err(|error| error.at(&index.to_string()))?;
+            item.store(doc, slot).located(&index.to_string())?;
         }
         for index in (N..existing).rev() {
             doc.delete(&list, index)?;
@@ -1669,6 +1734,7 @@ impl<T: Model> Model for BTreeMap<String, T> {
         serde_json::json!({"type": "object"})
     }
     const CHECKS: bool = T::CHECKS;
+    const OPS: bool = T::OPS;
     leaf_paths!();
     fn op_coalesces(
         path: &[Segment],
@@ -1676,30 +1742,32 @@ impl<T: Model> Model for BTreeMap<String, T> {
         next: &serde_json::Value,
     ) -> Option<bool> {
         match path.split_first() {
-            Some((Segment::Key(_), rest)) => T::op_coalesces(rest, previous, next),
+            Some((Segment::Key(_), rest)) if T::OPS => T::op_coalesces(rest, previous, next),
             _ => None,
         }
     }
     fn op_continuable(path: &[Segment], op: &serde_json::Value) -> Option<bool> {
         match path.split_first() {
-            Some((Segment::Key(_), rest)) => T::op_continuable(rest, op),
+            Some((Segment::Key(_), rest)) if T::OPS => T::op_continuable(rest, op),
             _ => None,
         }
     }
     fn op_describe(path: &[Segment], op: &serde_json::Value) -> Option<crate::path::OpDescription> {
         match path.split_first() {
-            Some((Segment::Key(_), rest)) => T::op_describe(rest, op),
+            Some((Segment::Key(_), rest)) if T::OPS => T::op_describe(rest, op),
             _ => None,
         }
     }
     fn op_lands(&self, path: &[Segment], op: &serde_json::Value) -> Option<crate::Place> {
         match path.split_first() {
-            Some((Segment::Key(key), rest)) => self.get(key)?.op_lands(rest, op),
+            Some((Segment::Key(key), rest)) if T::OPS => self.get(key)?.op_lands(rest, op),
             _ => None,
         }
     }
     fn op_schemas(prefix: &str, out: &mut Vec<(String, serde_json::Value)>) {
-        T::op_schemas(&format!("{prefix}*."), out);
+        if T::OPS {
+            T::op_schemas(&format!("{prefix}*."), out);
+        }
     }
     #[inline(never)]
     fn to_json(&self) -> serde_json::Value {
@@ -1717,7 +1785,7 @@ impl<T: Model> Model for BTreeMap<String, T> {
                 .map(|(key, value)| {
                     T::from_json(value)
                         .map(|value| (key.clone(), value))
-                        .map_err(|error| error.at(key))
+                        .located(key)
                 })
                 .collect(),
             serde_json::Value::Null => Ok(Self::new()),
@@ -1740,8 +1808,7 @@ impl<T: Model> Model for BTreeMap<String, T> {
             (Some((Segment::Key(key), rest)), op) => {
                 let map = slot.object(doc, ObjType::Map)?;
                 if rest.is_empty() && matches!(op, EditOp::Set { .. }) {
-                    return edit_whole::<T>(doc, Slot::Key(&map, key), rest, op)
-                        .map_err(|error| error.at(key));
+                    return edit_whole::<T>(doc, Slot::Key(&map, key), rest, op).located(key);
                 }
                 // An edit inside an entry that is not there yet starts it
                 // from its value's empty value (a rule for an app that had
@@ -1749,11 +1816,9 @@ impl<T: Model> Model for BTreeMap<String, T> {
                 if doc.get(&map, key.as_str())?.is_none() {
                     let empty = T::missing()
                         .map_err(|_| ModelError::invalid(format!("no entry `{key}`")))?;
-                    empty
-                        .store(doc, Slot::Key(&map, key))
-                        .map_err(|error| error.at(key))?;
+                    empty.store(doc, Slot::Key(&map, key)).located(key)?;
                 }
-                T::edit(doc, Slot::Key(&map, key), rest, op, cx).map_err(|error| error.at(key))
+                T::edit(doc, Slot::Key(&map, key), rest, op, cx).located(key)
             }
             _ => edit_whole::<Self>(doc, slot, path, op),
         }

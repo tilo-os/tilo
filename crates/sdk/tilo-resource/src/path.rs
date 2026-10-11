@@ -256,9 +256,10 @@ impl<R, T> Serialize for Path<R, T> {
 impl<'de, R, T> Deserialize<'de> for Path<R, T> {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let value = serde_json::Value::deserialize(deserializer)?;
-        segments_from_json(value)
-            .map(Self::from_segments)
-            .map_err(serde::de::Error::custom)
+        match segments_from_json(value) {
+            Ok(segments) => Ok(Self::from_segments(segments)),
+            Err(error) => Err(serde::de::Error::custom(error)),
+        }
     }
 }
 
@@ -411,6 +412,7 @@ pub fn op_lands<T: Operations>(
 #[macro_export]
 macro_rules! operations_model {
     () => {
+        const OPS: bool = true;
         fn op_coalesces(
             path: &[$crate::Segment],
             previous: &$crate::__private::serde_json::Value,
@@ -1028,9 +1030,10 @@ fn edit_to_json(path: &[Segment], op: &EditOp) -> serde_json::Value {
 impl<'de, R> Deserialize<'de> for Edit<R> {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let value = serde_json::Value::deserialize(deserializer)?;
-        edit_from_json(value)
-            .map(|(path, op)| Self::new(path, op))
-            .map_err(serde::de::Error::custom)
+        match edit_from_json(value) {
+            Ok((path, op)) => Ok(Self::new(path, op)),
+            Err(error) => Err(serde::de::Error::custom(error)),
+        }
     }
 }
 

@@ -124,6 +124,84 @@ pub struct ItemCollection {
     pub within: Vec<(&'static str, Id)>,
 }
 
+/// A collection field's items as `#[derive(Model)]` publishes them: written
+/// with plain loops, once per item type, so a record's derived code calls
+/// these rather than repeating iterator chains per field.
+pub trait ItemSource {
+    /// The first page of items with their labels.
+    fn item_collection(&self, field: &'static str) -> ItemCollection;
+    /// 1 when there is an item, 0 when there is none.
+    fn item_presence(&self) -> usize;
+    /// The label of the item `id`, when there is one.
+    fn label_of_item(&self, id: &Id) -> Option<String>;
+    /// The labelled items with all their text, for search.
+    fn item_texts(&self, field: &'static str, found: &mut Vec<ItemText>);
+    /// The collections inside the first page of items, placed within them.
+    fn nested_items(&self, field: &'static str, out: &mut Vec<ItemCollection>);
+}
+
+/// [`ItemSource::item_collection`] from items and their ids, in order.
+pub(crate) fn collection_of<'a, T: crate::Model + 'a>(
+    field: &'static str,
+    items: impl IntoIterator<Item = (Id, &'a T)>,
+) -> ItemCollection {
+    let mut labelled = false;
+    let mut listed = Vec::new();
+    for (n, (id, item)) in items.into_iter().enumerate() {
+        if n == 0 {
+            labelled = item.label().is_some();
+        }
+        if n >= ITEM_PAGE {
+            break;
+        }
+        let label = crate::__private::item_label(&id, item);
+        listed.push((id, label));
+    }
+    ItemCollection {
+        within: Vec::new(),
+        field,
+        labelled,
+        items: listed,
+    }
+}
+
+/// [`ItemSource::item_texts`] from items and their ids.
+pub(crate) fn texts_of<'a, T: crate::Model + 'a>(
+    field: &'static str,
+    items: impl IntoIterator<Item = (Id, &'a T)>,
+    found: &mut Vec<ItemText>,
+) {
+    for (id, item) in items {
+        if let Some(label) = item.label() {
+            let mut text = Vec::new();
+            item.collect_text(&mut text);
+            found.push(ItemText {
+                field,
+                id,
+                label,
+                text: text.join("\n"),
+            });
+        }
+    }
+}
+
+/// [`ItemSource::nested_items`] from items and their ids.
+pub(crate) fn nested_of<'a, T: crate::Model + 'a>(
+    field: &'static str,
+    items: impl IntoIterator<Item = (Id, &'a T)>,
+    out: &mut Vec<ItemCollection>,
+) {
+    for (n, (id, item)) in items.into_iter().enumerate() {
+        if n >= ITEM_PAGE {
+            break;
+        }
+        for mut inner in item.nested_collections() {
+            inner.within.insert(0, (field, id.clone()));
+            out.push(inner);
+        }
+    }
+}
+
 /// The id of the child resource an item of a nested collection is
 /// published as: `<kind>/slides/<slide>/elements/<element>`.
 pub fn nested_resource_id<R: Resource>(within: &[(&str, Id)], field: &str, item: &Id) -> String {
@@ -386,16 +464,19 @@ fn scoped<'d, 'a, R: Resource>(
     fields: &[&str],
     field: &str,
 ) -> Vec<(&'a ItemAction, &'d ActionDecl<R>)> {
-    actions
-        .iter()
-        .filter(|action| targets(action, fields, field))
-        .filter_map(|action| {
-            declarations
-                .iter()
-                .find(|decl| decl.id == action.action)
-                .map(|decl| (action, decl))
-        })
-        .collect()
+    let mut out = Vec::new();
+    for action in actions {
+        if !targets(action, fields, field) {
+            continue;
+        }
+        for decl in declarations {
+            if decl.id == action.action {
+                out.push((action, decl));
+                break;
+            }
+        }
+    }
+    out
 }
 
 /// The collection an item action with item parameter `param` (and the
@@ -507,43 +588,32 @@ pub fn for_each_item_child<R: Resource>(
     each: &mut ItemChildVisitor<'_>,
 ) {
     let declarations = R::declarations();
-    let fields: Vec<&str> = collections
-        .iter()
-        .filter(|collection| collection.within.is_empty())
-        .map(|collection| collection.field)
-        .collect();
+    let fields = own_fields(collections);
     for collection in collections {
         if !collection.within.is_empty() {
             // An item of a collection inside an item: its label, its fields,
             // `open`, and the verbs declared on it (`item = slides.elements`).
-            let outer: Vec<&str> = collection.within.iter().map(|(field, _)| *field).collect();
-            let verbs: Vec<(&ItemAction, &ActionDecl<R>)> = actions
-                .iter()
-                .filter(|action| {
-                    action.collection == Some(collection.field) && action.within == outer.as_slice()
-                })
-                .filter_map(|action| {
-                    declarations
-                        .iter()
-                        .find(|decl| decl.id == action.action)
-                        .map(|decl| (action, decl))
-                })
-                .collect();
+            let outer = outer_fields(collection);
+            let mut verbs: Vec<(&ItemAction, &ActionDecl<R>)> = Vec::new();
+            for action in actions {
+                if action.collection != Some(collection.field) || action.within != outer.as_slice()
+                {
+                    continue;
+                }
+                for decl in &declarations {
+                    if decl.id == action.action {
+                        verbs.push((action, decl));
+                        break;
+                    }
+                }
+            }
             if collection.labelled || !verbs.is_empty() {
                 for (id, label) in &collection.items {
                     each(collection, id, label, &|| {
                         let mut child =
                             nested_item::<R>(&collection.within, collection.field, id, label);
                         for (action, decl) in &verbs {
-                            let mut values: Vec<(String, serde_json::Value)> = action
-                                .within_params
-                                .iter()
-                                .zip(&collection.within)
-                                .map(|(param, (_, outer_id))| {
-                                    ((*param).to_owned(), outer_id.as_str().into())
-                                })
-                                .collect();
-                            values.push((action.param.to_owned(), id.as_str().into()));
+                            let values = nested_values(action, &collection.within, id);
                             child = child.with_action(bound(decl, &values));
                         }
                         child
@@ -553,10 +623,10 @@ pub fn for_each_item_child<R: Resource>(
             continue;
         }
         let scoped = scoped::<R>(&declarations, actions, &fields, collection.field);
-        let offers_effects = collection
-            .items
-            .first()
-            .is_some_and(|(id, _)| !R::item_effects(collection.field, id).is_empty());
+        let offers_effects = match collection.items.first() {
+            Some((id, _)) => !R::item_effects(collection.field, id).is_empty(),
+            None => false,
+        };
         if scoped.is_empty() && !offers_effects && !collection.labelled {
             continue;
         }
@@ -565,18 +635,7 @@ pub fn for_each_item_child<R: Resource>(
                 item_resource(&scoped, collection.field, id, label)
             });
         }
-        // Forget items that are gone.
-        BUILT.with(|built| {
-            if let Some(items) = built
-                .borrow_mut()
-                .get_mut(&(TypeId::of::<R>(), collection.field.to_owned()))
-                && items.len() > collection.items.len().saturating_mul(2).max(ITEM_PAGE)
-            {
-                let present: std::collections::HashSet<&Id> =
-                    collection.items.iter().map(|(id, _)| id).collect();
-                items.retain(|id, _| present.contains(id));
-            }
-        });
+        forget_gone(TypeId::of::<R>(), collection);
     }
 }
 
@@ -600,6 +659,53 @@ pub struct ChildrenParts {
     pub items: Vec<ItemCollection>,
     /// The actions offered on items.
     pub item_actions: Vec<ItemAction>,
+}
+
+/// The record's own collections' fields (not those inside items).
+fn own_fields(collections: &[ItemCollection]) -> Vec<&'static str> {
+    collections
+        .iter()
+        .filter(|collection| collection.within.is_empty())
+        .map(|collection| collection.field)
+        .collect()
+}
+
+/// The fields of the items a nested collection sits in, outermost first.
+fn outer_fields(collection: &ItemCollection) -> Vec<&'static str> {
+    collection.within.iter().map(|(field, _)| *field).collect()
+}
+
+/// The arguments an item verb of a nested collection binds: the ids of the
+/// items it sits in, then the item's own.
+fn nested_values(
+    action: &ItemAction,
+    within: &[(&'static str, Id)],
+    id: &Id,
+) -> Vec<(String, serde_json::Value)> {
+    let mut values: Vec<(String, serde_json::Value)> = action
+        .within_params
+        .iter()
+        .zip(within)
+        .map(|(param, (_, outer_id))| ((*param).to_owned(), outer_id.as_str().into()))
+        .collect();
+    values.push((action.param.to_owned(), id.as_str().into()));
+    values
+}
+
+/// Forget cached item resources of `collection` (of the resource type
+/// `kind`) whose items are gone.
+fn forget_gone(kind: TypeId, collection: &ItemCollection) {
+    BUILT.with(|built| {
+        if let Some(items) = built
+            .borrow_mut()
+            .get_mut(&(kind, collection.field.to_owned()))
+            && items.len() > collection.items.len().saturating_mul(2).max(ITEM_PAGE)
+        {
+            let present: std::collections::HashSet<&Id> =
+                collection.items.iter().map(|(id, _)| id).collect();
+            items.retain(|id, _| present.contains(id));
+        }
+    });
 }
 
 /// The resource of an item of a nested collection.
@@ -637,36 +743,51 @@ pub fn offered_on_items<R: Resource>(
     sizes: &[(&'static str, usize)],
     actions: &[ItemAction],
 ) -> Option<Vec<&'static str>> {
+    let mut declared: Vec<(&'static str, Vec<&str>)> = Vec::new();
+    let declarations = R::declarations();
+    for decl in &declarations {
+        let mut names = Vec::with_capacity(decl.params.len());
+        for param in &decl.params {
+            names.push(param.name.as_ref());
+        }
+        declared.push((decl.id, names));
+    }
+    offered_on_items_of(others, sizes, actions, &declared)
+}
+
+/// [`offered_on_items`] over the declarations `declared` (id and parameter
+/// names each).
+fn offered_on_items_of(
+    others: &[tilo_actions::Resource],
+    sizes: &[(&'static str, usize)],
+    actions: &[ItemAction],
+    declared: &[(&'static str, Vec<&str>)],
+) -> Option<Vec<&'static str>> {
     // Verbs on items of a nested collection are known only from the items.
     if actions.iter().any(|action| !action.within.is_empty()) {
         return None;
     }
     let fields: Vec<&str> = sizes.iter().map(|(field, _)| *field).collect();
-    let declarations = R::declarations();
     // `item_children` binds the first declaration of an action's id.
-    let first = |id: &str| declarations.iter().find(|decl| decl.id == id);
-    declarations
+    let first = |id: &str| declared.iter().find(|(declared, _)| *declared == id);
+    declared
         .iter()
-        .filter(|decl| {
+        .filter(|(id, params)| {
             let on_items = actions.iter().any(|action| {
-                action.action == decl.id
-                    && first(action.action).is_some_and(|bound| {
+                action.action == *id
+                    && first(action.action).is_some_and(|(_, bound)| {
                         // What `offered_bound` asks of the item's spec: it
                         // takes fewer parameters than the declaration.
-                        let kept = bound
-                            .params
-                            .iter()
-                            .filter(|param| param.name != action.param)
-                            .count();
-                        kept < decl.params.len()
+                        let kept = bound.iter().filter(|name| **name != action.param).count();
+                        kept < params.len()
                     })
                     && sizes
                         .iter()
                         .any(|&(field, size)| size > 0 && targets(action, &fields, field))
             });
-            on_items || offered_bound(others, decl)
+            on_items || offered_bound_as(others, id, params.len())
         })
-        .map(|decl| decl.id)
+        .map(|(id, _)| *id)
         .collect::<Vec<_>>()
         .into()
 }
@@ -693,16 +814,12 @@ pub fn bound<R: Resource, N: AsRef<str>>(
     decl: &ActionDecl<R>,
     values: &[(N, serde_json::Value)],
 ) -> ActionSpec {
-    let values: Vec<(String, serde_json::Value)> = values
-        .iter()
-        .map(|(name, value)| (name.as_ref().to_owned(), value.clone()))
-        .collect();
-    let params: Vec<ActionParam> = decl
-        .params
-        .iter()
-        .filter(|candidate| !values.iter().any(|(name, _)| candidate.name == *name))
-        .cloned()
-        .collect();
+    let mut owned: Vec<(String, serde_json::Value)> = Vec::with_capacity(values.len());
+    for (name, value) in values {
+        owned.push((name.as_ref().to_owned(), value.clone()));
+    }
+    let values = owned;
+    let params = unbound_params(&decl.params, &values);
     let all = decl.params.clone();
     let build = Arc::clone(&decl.build);
     let mut spec = ActionSpec::typed(
@@ -729,17 +846,46 @@ pub fn bound<R: Resource, N: AsRef<str>>(
     if decl.kind == crate::ActionKind::Undoable {
         spec = spec.reversible();
     }
-    if let Some(field) = decl.field {
+    finish_bound(
+        spec,
+        decl.field,
+        decl.description.as_ref(),
+        decl.destructive,
+        decl.result.as_ref(),
+    )
+}
+
+/// The parameters of `params` that `values` leaves to the caller.
+fn unbound_params(
+    params: &[ActionParam],
+    values: &[(String, serde_json::Value)],
+) -> Vec<ActionParam> {
+    params
+        .iter()
+        .filter(|candidate| !values.iter().any(|(name, _)| candidate.name == *name))
+        .cloned()
+        .collect()
+}
+
+/// What a bound spec carries over from its declaration.
+fn finish_bound(
+    mut spec: ActionSpec,
+    field: Option<&'static str>,
+    description: Option<&String>,
+    destructive: bool,
+    result: Option<&tilo_actions::ResultSpec>,
+) -> ActionSpec {
+    if let Some(field) = field {
         spec = spec.below_field(field);
     }
-    if let Some(description) = &decl.description {
+    if let Some(description) = description {
         spec = spec.with_description(description.clone());
     }
-    if decl.destructive {
+    if destructive {
         spec = spec.destructive();
     }
     // An item verb that answers answers on its item too.
-    if let Some(result) = &decl.result {
+    if let Some(result) = result {
         spec.contract.result = result.clone();
     }
     spec
@@ -752,11 +898,16 @@ pub fn offered_bound<R: Resource>(
     children: &[tilo_actions::Resource],
     decl: &ActionDecl<R>,
 ) -> bool {
+    offered_bound_as(children, decl.id, decl.params.len())
+}
+
+/// [`offered_bound`] of the declaration `id` taking `params` parameters.
+fn offered_bound_as(children: &[tilo_actions::Resource], id: &str, params: usize) -> bool {
     children.iter().any(|child| {
         child
             .actions
             .iter()
-            .any(|spec| spec.id == decl.id && spec.params().len() < decl.params.len())
-            || offered_bound(&child.children, decl)
+            .any(|spec| spec.id == id && spec.params().len() < params)
+            || offered_bound_as(&child.children, id, params)
     })
 }

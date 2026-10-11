@@ -10,6 +10,7 @@ use std::sync::OnceLock;
 
 use crate::action::{ActionCx, Refusal};
 use crate::delta::{Delta, Touch};
+use crate::model::LocatedAt as _;
 use crate::model::{
     Doc, Model, ModelError, Slot, Stores, edit_whole, read_key, refresh_key, write_key_changed,
 };
@@ -161,16 +162,16 @@ impl fmt::Debug for Index {
 
 impl Index {
     fn get<T>(&self, items: &[Entry<T>], id: &Id) -> Option<usize> {
-        self.0
-            .get_or_init(|| {
-                items
-                    .iter()
-                    .enumerate()
-                    .map(|(position, entry)| (entry.id.clone(), position))
-                    .collect()
-            })
-            .get(id)
-            .copied()
+        if self.0.get().is_none() {
+            let mut index = HashMap::with_capacity(items.len());
+            for position in 0..items.len() {
+                if let Some(entry) = items.get(position) {
+                    index.insert(entry.id.clone(), position);
+                }
+            }
+            let _ = self.0.set(index);
+        }
+        self.0.get()?.get(id).copied()
     }
 
     fn reset(&mut self) {
@@ -208,12 +209,16 @@ impl<T: PartialEq> PartialEq for Collection<T> {
     /// Equal items in equal order; where each item's order key came from is
     /// bookkeeping, not content.
     fn eq(&self, other: &Self) -> bool {
-        self.items.len() == other.items.len()
-            && self
-                .items
-                .iter()
-                .zip(&other.items)
-                .all(|(a, b)| a.id == b.id && a.item == b.item)
+        if self.items.len() != other.items.len() {
+            return false;
+        }
+        for at in 0..self.items.len() {
+            match (self.items.get(at), other.items.get(at)) {
+                (Some(a), Some(b)) if a.id == b.id && a.item == b.item => {}
+                _ => return false,
+            }
+        }
+        true
     }
 }
 
@@ -253,8 +258,12 @@ impl<T> Collection<T> {
     }
 
     /// Items in collection order.
-    pub fn iter(&self) -> impl DoubleEndedIterator<Item = (&Id, &T)> + ExactSizeIterator {
-        self.items.iter().map(|entry| (&entry.id, &entry.item))
+    #[allow(
+        clippy::iter_without_into_iter,
+        reason = "a collection iterates its items by id; `for` over it would hide which"
+    )]
+    pub fn iter(&self) -> Iter<'_, T> {
+        Iter(self.items.iter())
     }
 
     /// The item at `position` in collection order.
@@ -264,18 +273,20 @@ impl<T> Collection<T> {
             .map(|entry| (&entry.id, &entry.item))
     }
 
-    pub fn iter_mut(&mut self) -> impl Iterator<Item = (&Id, &mut T)> {
-        self.items
-            .iter_mut()
-            .map(|entry| (&entry.id, &mut entry.item))
+    #[allow(
+        clippy::iter_without_into_iter,
+        reason = "a collection iterates its items by id; `for` over it would hide which"
+    )]
+    pub fn iter_mut(&mut self) -> IterMut<'_, T> {
+        IterMut(self.items.iter_mut())
     }
 
-    pub fn values(&self) -> impl DoubleEndedIterator<Item = &T> + ExactSizeIterator {
-        self.items.iter().map(|entry| &entry.item)
+    pub fn values(&self) -> Values<'_, T> {
+        Values(self.items.iter())
     }
 
-    pub fn ids(&self) -> impl DoubleEndedIterator<Item = &Id> + ExactSizeIterator {
-        self.items.iter().map(|entry| &entry.id)
+    pub fn ids(&self) -> Ids<'_, T> {
+        Ids(self.items.iter())
     }
 
     pub fn contains(&self, id: &Id) -> bool {
@@ -379,12 +390,102 @@ impl<T> Collection<T> {
 /// Whether every item of a collection read from a document has a stored
 /// order key, each above the one before: the keys a write keeps all of.
 fn strictly_ordered<T>(collection: &Collection<T>) -> bool {
-    collection.items.iter().all(|entry| entry.key.is_some())
-        && collection
-            .items
-            .windows(2)
-            .all(|pair| matches!(pair, [a, b] if a.key < b.key))
+    let mut previous: Option<&str> = None;
+    for entry in &collection.items {
+        let Some(key) = entry.key.as_deref() else {
+            return false;
+        };
+        if let Some(previous) = previous
+            && previous >= key
+        {
+            return false;
+        }
+        previous = Some(key);
+    }
+    true
 }
+
+// Named iterators rather than closures over entries: one small set of
+// methods per item type, whatever a caller chains onto them.
+
+/// The items of a [`Collection`] with their ids, in order.
+pub struct Iter<'a, T>(std::slice::Iter<'a, Entry<T>>);
+/// The items of a [`Collection`], to change, with their ids.
+pub struct IterMut<'a, T>(std::slice::IterMut<'a, Entry<T>>);
+/// The items of a [`Collection`], in order.
+pub struct Values<'a, T>(std::slice::Iter<'a, Entry<T>>);
+/// The ids of a [`Collection`], in order.
+pub struct Ids<'a, T>(std::slice::Iter<'a, Entry<T>>);
+
+impl<'a, T> Iterator for Iter<'a, T> {
+    type Item = (&'a Id, &'a T);
+    fn next(&mut self) -> Option<Self::Item> {
+        let entry = self.0.next()?;
+        Some((&entry.id, &entry.item))
+    }
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.0.size_hint()
+    }
+    fn last(mut self) -> Option<Self::Item> {
+        DoubleEndedIterator::next_back(&mut self)
+    }
+}
+impl<T> DoubleEndedIterator for Iter<'_, T> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        let entry = self.0.next_back()?;
+        Some((&entry.id, &entry.item))
+    }
+}
+impl<T> ExactSizeIterator for Iter<'_, T> {}
+
+impl<'a, T> Iterator for IterMut<'a, T> {
+    type Item = (&'a Id, &'a mut T);
+    fn next(&mut self) -> Option<Self::Item> {
+        let entry = self.0.next()?;
+        Some((&entry.id, &mut entry.item))
+    }
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.0.size_hint()
+    }
+}
+
+impl<'a, T> Iterator for Values<'a, T> {
+    type Item = &'a T;
+    fn next(&mut self) -> Option<Self::Item> {
+        Some(&self.0.next()?.item)
+    }
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.0.size_hint()
+    }
+    fn last(mut self) -> Option<Self::Item> {
+        DoubleEndedIterator::next_back(&mut self)
+    }
+}
+impl<T> DoubleEndedIterator for Values<'_, T> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        Some(&self.0.next_back()?.item)
+    }
+}
+impl<T> ExactSizeIterator for Values<'_, T> {}
+
+impl<'a, T> Iterator for Ids<'a, T> {
+    type Item = &'a Id;
+    fn next(&mut self) -> Option<Self::Item> {
+        Some(&self.0.next()?.id)
+    }
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.0.size_hint()
+    }
+    fn last(mut self) -> Option<Self::Item> {
+        DoubleEndedIterator::next_back(&mut self)
+    }
+}
+impl<T> DoubleEndedIterator for Ids<'_, T> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        Some(&self.0.next_back()?.id)
+    }
+}
+impl<T> ExactSizeIterator for Ids<'_, T> {}
 
 impl<T> std::ops::Index<&Id> for Collection<T> {
     type Output = T;
@@ -444,7 +545,7 @@ pub(crate) fn store_in_order(
         let entry = Slot::Key(&map, id.as_str()).object(doc, ObjType::Map)?;
         Slot::Key(&entry, ORDER).put_scalar(doc, ScalarValue::Str(key.into()))?;
         item.store_to(doc, Slot::Key(&entry, VALUE))
-            .map_err(|error| error.at(id.as_str()))?;
+            .located(id.as_str())?;
     }
     Ok(())
 }
@@ -529,8 +630,7 @@ pub(crate) fn edit_entries(
             let Some((Value::Object(ObjType::Map), entry)) = doc.get(&map, id.as_str())? else {
                 return Err(ModelError::invalid(format!("no item `{id}`")));
             };
-            (edits.item)(doc, Slot::Key(&entry, VALUE), rest, op, cx)
-                .map_err(|error| error.at(id.as_str()))
+            (edits.item)(doc, Slot::Key(&entry, VALUE), rest, op, cx).located(id.as_str())
         }
         (None, EditOp::InsertItem { id, at, value }) => {
             let (carried, item) = (edits.parse)(value)?;
@@ -544,7 +644,7 @@ pub(crate) fn edit_entries(
             let entry = Slot::Key(&map, id.as_str()).object(doc, ObjType::Map)?;
             Slot::Key(&entry, ORDER).put_scalar(doc, ScalarValue::Str(key.into()))?;
             item.store_to(doc, Slot::Key(&entry, VALUE))
-                .map_err(|error| error.at(id.as_str()))
+                .located(id.as_str())
         }
         (None, EditOp::RemoveItem { id }) => {
             let map = slot.object(doc, ObjType::Map)?;
@@ -621,8 +721,7 @@ pub(crate) fn store_entries_changed(
             // New here, or replaced by someone else: written whole.
             let entry = Slot::Key(&map, id.as_str()).object(doc, ObjType::Map)?;
             Slot::Key(&entry, ORDER).put_scalar(doc, ScalarValue::Str(key.into()))?;
-            (writes.store)(now, doc, Slot::Key(&entry, VALUE))
-                .map_err(|error| error.at(id.as_str()))?;
+            (writes.store)(now, doc, Slot::Key(&entry, VALUE)).located(id.as_str())?;
             continue;
         };
         let kept = touched == Touch::Untouched && stored_key == key;
@@ -633,7 +732,7 @@ pub(crate) fn store_entries_changed(
         if !kept {
             Slot::Key(&entry, ORDER).put_scalar(doc, ScalarValue::Str(key.into()))?;
         }
-        (writes.changed)(now, at, doc, &entry, dirty).map_err(|error| error.at(id.as_str()))?;
+        (writes.changed)(now, at, doc, &entry, dirty).located(id.as_str())?;
     }
     Ok(())
 }
@@ -664,7 +763,7 @@ fn touched_entry(
     let order = |doc: &Doc| {
         read_key::<crate::Atom>(doc, &entry, ORDER)
             .map(|k| k.0)
-            .map_err(|error| error.at(key))
+            .located(key)
     };
     if below {
         let order = if delta.key(&entry, ORDER) == Touch::Untouched {
@@ -734,7 +833,7 @@ pub(crate) fn load_entries(
     }
     for stored in stored_entries(doc, id)? {
         let at = stored.id.clone();
-        read(stored).map_err(|error| error.at(at.as_str()))?;
+        read(stored).located(at.as_str())?;
     }
     Ok(())
 }
@@ -818,12 +917,76 @@ fn longest_increasing(keys: &[Option<&str>]) -> Vec<usize> {
     chain
 }
 
+impl<T> Collection<T> {
+    /// Whether an item lost its stored order key (moved in memory).
+    fn any_unkeyed(&self) -> bool {
+        for entry in &self.items {
+            if entry.key.is_none() {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Sort the items as stored: by order key, ties by id.
+    fn reorder_by_keys(&mut self) {
+        let mut keys = Vec::with_capacity(self.items.len());
+        for entry in &self.items {
+            keys.push((entry.key.as_deref(), &entry.id));
+        }
+        let order = stored_order(&keys);
+        let mut slots: Vec<Option<Entry<T>>> = Vec::with_capacity(self.items.len());
+        for entry in std::mem::take(&mut self.items) {
+            slots.push(Some(entry));
+        }
+        for at in order {
+            if let Some(entry) = slots.get_mut(at).and_then(Option::take) {
+                self.items.push(entry);
+            }
+        }
+    }
+}
+
+impl<T: Model> crate::items::ItemSource for Collection<T> {
+    fn item_collection(&self, field: &'static str) -> crate::items::ItemCollection {
+        crate::items::collection_of(field, self.entries(crate::items::ITEM_PAGE))
+    }
+    fn item_presence(&self) -> usize {
+        usize::from(!self.items.is_empty())
+    }
+    fn label_of_item(&self, id: &Id) -> Option<String> {
+        let item = self.get(id)?;
+        Some(crate::__private::item_label(id, item))
+    }
+    fn item_texts(&self, field: &'static str, found: &mut Vec<crate::items::ItemText>) {
+        crate::items::texts_of(field, self.entries(usize::MAX), found);
+    }
+    fn nested_items(&self, field: &'static str, out: &mut Vec<crate::items::ItemCollection>) {
+        crate::items::nested_of(field, self.entries(crate::items::ITEM_PAGE), out);
+    }
+}
+
+impl<T> Collection<T> {
+    /// Each item with its id, in order.
+    fn entries(&self, limit: usize) -> Vec<(Id, &T)> {
+        let mut out = Vec::with_capacity(self.items.len().min(limit));
+        for entry in &self.items {
+            if out.len() == limit {
+                break;
+            }
+            out.push((entry.id.clone(), &entry.item));
+        }
+        out
+    }
+}
+
 impl<T: Model> Model for Collection<T> {
     fn value_schema() -> serde_json::Value {
         entries_schema(T::value_schema())
     }
     const SHAPE: crate::Shape = crate::Shape::Collection(&T::SHAPE);
     const CHECKS: bool = T::CHECKS;
+    const OPS: bool = T::OPS;
     crate::model::leaf_paths!();
     fn op_coalesces(
         path: &[Segment],
@@ -831,41 +994,42 @@ impl<T: Model> Model for Collection<T> {
         next: &serde_json::Value,
     ) -> Option<bool> {
         match path.split_first() {
-            Some((Segment::Item(_), rest)) => T::op_coalesces(rest, previous, next),
+            Some((Segment::Item(_), rest)) if T::OPS => T::op_coalesces(rest, previous, next),
             _ => None,
         }
     }
     fn op_continuable(path: &[Segment], op: &serde_json::Value) -> Option<bool> {
         match path.split_first() {
-            Some((Segment::Item(_), rest)) => T::op_continuable(rest, op),
+            Some((Segment::Item(_), rest)) if T::OPS => T::op_continuable(rest, op),
             _ => None,
         }
     }
     fn op_describe(path: &[Segment], op: &serde_json::Value) -> Option<crate::path::OpDescription> {
         match path.split_first() {
-            Some((Segment::Item(_), rest)) => T::op_describe(rest, op),
+            Some((Segment::Item(_), rest)) if T::OPS => T::op_describe(rest, op),
             _ => None,
         }
     }
     fn op_lands(&self, path: &[Segment], op: &serde_json::Value) -> Option<crate::Place> {
         match path.split_first() {
-            Some((Segment::Item(id), rest)) => self.get(id)?.op_lands(rest, op),
+            Some((Segment::Item(id), rest)) if T::OPS => self.get(id)?.op_lands(rest, op),
             _ => None,
         }
     }
     fn op_schemas(prefix: &str, out: &mut Vec<(String, serde_json::Value)>) {
-        T::op_schemas(&format!("{prefix}*."), out);
+        if T::OPS {
+            T::op_schemas(&format!("{prefix}*."), out);
+        }
     }
 
     /// `[{ "id": .., "value": .. }, ..]` in collection order.
     #[inline(never)]
     fn to_json(&self) -> serde_json::Value {
-        serde_json::Value::Array(
-            self.items
-                .iter()
-                .map(|entry| entry_json(&entry.id, entry.item.to_json()))
-                .collect(),
-        )
+        let mut entries = Vec::with_capacity(self.items.len());
+        for entry in &self.items {
+            entries.push(entry_json(&entry.id, entry.item.to_json()));
+        }
+        serde_json::Value::Array(entries)
     }
 
     #[inline(never)]
@@ -876,7 +1040,7 @@ impl<T: Model> Model for Collection<T> {
         let mut collection = Self::default();
         for (index, entry) in entries.iter().enumerate() {
             let (id, value) = entry_parts(index, entry)?;
-            let item = T::from_json(value).map_err(|error| error.at(id.as_str()))?;
+            let item = T::from_json(value).located(id.as_str())?;
             collection.push(id, item);
         }
         Ok(collection)
@@ -941,7 +1105,11 @@ impl<T: Model> Model for Collection<T> {
                 )),
             }
         }
-        for (index, (id, next)) in after.iter().enumerate() {
+        for index in 0..after.items.len() {
+            let Some(entry) = after.items.get(index) else {
+                continue;
+            };
+            let (id, next) = (&entry.id, &entry.item);
             if self.contains(id) {
                 if self.position(id) != Some(index) {
                     out.push(crate::Edit::new(
@@ -994,7 +1162,7 @@ impl<T: Model> Model for Collection<T> {
         let touched = delta.under(id);
         // A collection edited in memory since it was read no longer knows
         // every stored order key; read it again rather than guess.
-        if touched.is_all() || self.items.iter().any(|entry| entry.key.is_none()) {
+        if touched.is_all() || self.any_unkeyed() {
             *self = Self::load(doc, value, id)?;
             return Ok(());
         }
@@ -1020,8 +1188,7 @@ impl<T: Model> Model for Collection<T> {
                             existing.key = order;
                             reorder = true;
                         }
-                        refresh_key(&mut existing.item, doc, &entry, VALUE, delta)
-                            .map_err(|error| error.at(key))?;
+                        refresh_key(&mut existing.item, doc, &entry, VALUE, delta).located(key)?;
                     }
                 }
                 // A new item, or one whose entry was replaced.
@@ -1029,7 +1196,7 @@ impl<T: Model> Model for Collection<T> {
                     let fresh = Entry {
                         id: item_id,
                         key: Some(order),
-                        item: read_key::<T>(doc, &entry, VALUE).map_err(|error| error.at(key))?,
+                        item: read_key::<T>(doc, &entry, VALUE).located(key)?,
                     };
                     if let Some(existing) =
                         position.and_then(|position| self.items.get_mut(position))
@@ -1046,18 +1213,7 @@ impl<T: Model> Model for Collection<T> {
         }
         // A moved order key or a new entry: sorting may move items.
         if reorder {
-            let order = stored_order(
-                &self
-                    .items
-                    .iter()
-                    .map(|entry| (entry.key.as_deref(), &entry.id))
-                    .collect::<Vec<_>>(),
-            );
-            let mut slots: Vec<Option<Entry<T>>> = self.items.drain(..).map(Some).collect();
-            self.items = order
-                .into_iter()
-                .filter_map(|at| slots.get_mut(at).and_then(Option::take))
-                .collect();
+            self.reorder_by_keys();
             self.index.reset();
             self.moved();
         }
@@ -1070,11 +1226,10 @@ impl<T: Model> Model for Collection<T> {
 
     #[inline(never)]
     fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
-        let items: Vec<(&Id, &dyn Stores)> = self
-            .items
-            .iter()
-            .map(|entry| (&entry.id, &entry.item as &dyn Stores))
-            .collect();
+        let mut items: Vec<(&Id, &dyn Stores)> = Vec::with_capacity(self.items.len());
+        for entry in &self.items {
+            items.push((&entry.id, &entry.item as &dyn Stores));
+        }
         store_in_order(doc, slot, &items)
     }
 
@@ -1082,13 +1237,17 @@ impl<T: Model> Model for Collection<T> {
     /// keys a write would keep.
     #[inline(never)]
     fn stores_as(&self, before: &Self) -> bool {
-        self.items.len() == before.items.len()
-            && strictly_ordered(before)
-            && self
-                .items
-                .iter()
-                .zip(&before.items)
-                .all(|(entry, was)| entry.id == was.id && entry.item.stores_as(&was.item))
+        if self.items.len() != before.items.len() || !strictly_ordered(before) {
+            return false;
+        }
+        for at in 0..self.items.len() {
+            match (self.items.get(at), before.items.get(at)) {
+                (Some(entry), Some(was))
+                    if entry.id == was.id && entry.item.stores_as(&was.item) => {}
+                _ => return false,
+            }
+        }
+        true
     }
 
     /// What [`store`](Model::store) writes, from `before` (which knows every
@@ -1103,12 +1262,14 @@ impl<T: Model> Model for Collection<T> {
         slot: Slot<'_>,
         dirty: &Delta,
     ) -> Result<(), ModelError> {
-        let ids: Vec<&Id> = self.items.iter().map(|entry| &entry.id).collect();
-        let stored: Vec<(&Id, Option<&str>)> = before
-            .items
-            .iter()
-            .map(|entry| (&entry.id, entry.key.as_deref()))
-            .collect();
+        let mut ids: Vec<&Id> = Vec::with_capacity(self.items.len());
+        for entry in &self.items {
+            ids.push(&entry.id);
+        }
+        let mut stored: Vec<(&Id, Option<&str>)> = Vec::with_capacity(before.items.len());
+        for entry in &before.items {
+            stored.push((&entry.id, entry.key.as_deref()));
+        }
         store_entries_changed(
             doc,
             slot,

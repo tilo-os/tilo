@@ -698,8 +698,12 @@ fn params_struct(verb: &Verb, self_ty: &Type, type_name: &str) -> Tokens {
                 deserializer: D,
             ) -> ::core::result::Result<Self, D::Error> {
                 let value = <#krate::__private::serde_json::Value as #krate::__private::serde::Deserialize>::deserialize(deserializer)?;
-                Self::from_args(value)
-                    .map_err(<D::Error as #krate::__private::serde::de::Error>::custom)
+                match Self::from_args(value) {
+                    ::core::result::Result::Ok(params) => ::core::result::Result::Ok(params),
+                    ::core::result::Result::Err(error) => ::core::result::Result::Err(
+                        <D::Error as #krate::__private::serde::de::Error>::custom(error),
+                    ),
+                }
             }
         }
 
@@ -1647,8 +1651,12 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
                 deserializer: D,
             ) -> ::core::result::Result<Self, D::Error> {
                 let value = <#krate::__private::serde_json::Value as #krate::__private::serde::Deserialize>::deserialize(deserializer)?;
-                Self::from_tagged(value)
-                    .map_err(<D::Error as #krate::__private::serde::de::Error>::custom)
+                match Self::from_tagged(value) {
+                    ::core::result::Result::Ok(action) => ::core::result::Result::Ok(action),
+                    ::core::result::Result::Err(error) => ::core::result::Result::Err(
+                        <D::Error as #krate::__private::serde::de::Error>::custom(error),
+                    ),
+                }
             }
         }
 

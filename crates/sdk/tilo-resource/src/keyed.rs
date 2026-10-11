@@ -19,6 +19,7 @@ use automerge::{ObjId, ObjType, ReadDoc, Value};
 use crate::action::{ActionCx, Refusal};
 use crate::collection::Id;
 use crate::delta::Delta;
+use crate::model::LocatedAt as _;
 use crate::model::{Doc, Model, ModelError, Slot, edit_whole, read_key, refresh_key};
 use crate::path::{Edit, EditOp, Path, Segment};
 
@@ -309,7 +310,7 @@ impl ItemStorage for ById {
         for item in items {
             let id = item.id();
             item.store(doc, Slot::Key(&map, id.as_str()))
-                .map_err(|error| error.at(id.as_str()))?;
+                .located(id.as_str())?;
         }
         Ok(())
     }
@@ -392,8 +393,7 @@ fn edit_by_id(
             if doc.get(&map, id.as_str())?.is_none() {
                 return Err(ModelError::invalid(format!("no item `{id}`")));
             }
-            (edits.item)(doc, Slot::Key(&map, id.as_str()), rest, op, cx)
-                .map_err(|error| error.at(id.as_str()))
+            (edits.item)(doc, Slot::Key(&map, id.as_str()), rest, op, cx).located(id.as_str())
         }
         (None, EditOp::InsertItem { value, .. }) => {
             let (id, item) = (edits.parse)(value)?;
@@ -403,7 +403,7 @@ fn edit_by_id(
                 return Err(ModelError::invalid(format!("an item `{id}` exists")));
             }
             item.store_to(doc, Slot::Key(&map, id.as_str()))
-                .map_err(|error| error.at(id.as_str()))
+                .located(id.as_str())
         }
         (None, EditOp::RemoveItem { id }) => {
             let map = slot.object(doc, ObjType::Map)?;
@@ -437,6 +437,39 @@ pub(crate) fn removed_and_changed<T: Model + Identified, R>(
     }
 }
 
+impl<T: Model + Identified, S> crate::items::ItemSource for Items<T, S> {
+    fn item_collection(&self, field: &'static str) -> crate::items::ItemCollection {
+        crate::items::collection_of(field, self.entries(crate::items::ITEM_PAGE))
+    }
+    fn item_presence(&self) -> usize {
+        usize::from(!self.items.is_empty())
+    }
+    fn label_of_item(&self, id: &Id) -> Option<String> {
+        let item = self.find(id)?;
+        Some(crate::__private::item_label(id, item))
+    }
+    fn item_texts(&self, field: &'static str, found: &mut Vec<crate::items::ItemText>) {
+        crate::items::texts_of(field, self.entries(usize::MAX), found);
+    }
+    fn nested_items(&self, field: &'static str, out: &mut Vec<crate::items::ItemCollection>) {
+        crate::items::nested_of(field, self.entries(crate::items::ITEM_PAGE), out);
+    }
+}
+
+impl<T: Identified, S> Items<T, S> {
+    /// Each item with the id it carries, in order.
+    fn entries(&self, limit: usize) -> Vec<(Id, &T)> {
+        let mut out = Vec::with_capacity(self.items.len().min(limit));
+        for item in &self.items {
+            if out.len() == limit {
+                break;
+            }
+            out.push((item.id(), item));
+        }
+        out
+    }
+}
+
 impl<T: Model + Identified, S: ItemStorage> Model for Items<T, S> {
     fn value_schema() -> serde_json::Value {
         serde_json::json!({"type": "array", "items": T::value_schema()})
@@ -447,6 +480,7 @@ impl<T: Model + Identified, S: ItemStorage> Model for Items<T, S> {
         crate::Shape::Keyed(&T::SHAPE)
     };
     const CHECKS: bool = T::CHECKS;
+    const OPS: bool = T::OPS;
     crate::model::leaf_paths!();
 
     #[inline(never)]
@@ -555,34 +589,36 @@ impl<T: Model + Identified, S: ItemStorage> Model for Items<T, S> {
         next: &serde_json::Value,
     ) -> Option<bool> {
         match path.split_first() {
-            Some((Segment::Item(_), rest)) => T::op_coalesces(rest, previous, next),
+            Some((Segment::Item(_), rest)) if T::OPS => T::op_coalesces(rest, previous, next),
             _ => None,
         }
     }
 
     fn op_continuable(path: &[Segment], op: &serde_json::Value) -> Option<bool> {
         match path.split_first() {
-            Some((Segment::Item(_), rest)) => T::op_continuable(rest, op),
+            Some((Segment::Item(_), rest)) if T::OPS => T::op_continuable(rest, op),
             _ => None,
         }
     }
 
     fn op_describe(path: &[Segment], op: &serde_json::Value) -> Option<crate::path::OpDescription> {
         match path.split_first() {
-            Some((Segment::Item(_), rest)) => T::op_describe(rest, op),
+            Some((Segment::Item(_), rest)) if T::OPS => T::op_describe(rest, op),
             _ => None,
         }
     }
 
     fn op_lands(&self, path: &[Segment], op: &serde_json::Value) -> Option<crate::Place> {
         match path.split_first() {
-            Some((Segment::Item(id), rest)) => self.find(id)?.op_lands(rest, op),
+            Some((Segment::Item(id), rest)) if T::OPS => self.find(id)?.op_lands(rest, op),
             _ => None,
         }
     }
 
     fn op_schemas(prefix: &str, out: &mut Vec<(String, serde_json::Value)>) {
-        T::op_schemas(&format!("{prefix}*."), out);
+        if T::OPS {
+            T::op_schemas(&format!("{prefix}*."), out);
+        }
     }
 
     fn collect_text(&self, out: &mut Vec<String>) {

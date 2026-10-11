@@ -147,8 +147,8 @@ pub use group::{ActionGroup, GROUP, GROUP_PARAM};
 pub use keyed::{ById, Identified, ItemStorage, Items, Keyed};
 pub use kind::{Kinds, ResourceKind};
 pub use model::{
-    Atom, Doc, Fields, Json, MapSlot, Model, ModelError, Slot, edit_whole, load_slot, read_key,
-    read_slots, refresh_key, take_slot, write_key, write_key_changed,
+    Atom, Doc, Fields, Json, LocatedAt, MapSlot, Model, ModelError, Slot, edit_whole, load_slot,
+    read_key, read_slots, refresh_key, take_slot, write_key, write_key_changed,
 };
 pub use ordered::{Arranged, Ordered};
 pub use path::{Edit, EditOp, Operations, Path, Segment, Settable};
@@ -208,6 +208,62 @@ pub mod __private {
         fn snapshot(&self) -> Option<T> {
             None
         }
+    }
+
+    /// `T`'s value of a field `key` the document does not hold, located at
+    /// it: one function per field type, not a closure per field.
+    ///
+    /// # Errors
+    /// Why `T` has no such value.
+    use crate::model::LocatedAt as _;
+
+    pub fn missing_at<T: crate::Model>(key: &str) -> Result<T, crate::ModelError> {
+        T::missing().located(key)
+    }
+
+    /// The field `key` of a record's JSON form, read as a `T` (or its
+    /// missing value), located at it.
+    ///
+    /// # Errors
+    /// Why the value is not a `T`.
+    pub fn from_json_at<T: crate::Model>(
+        fields: &serde_json::Map<String, serde_json::Value>,
+        key: &str,
+    ) -> Result<T, crate::ModelError> {
+        match fields.get(key) {
+            Some(value) => T::from_json(value),
+            None => T::missing(),
+        }
+        .located(key)
+    }
+
+    /// The field edit `op` at `rest` inside the field `key` of `obj`,
+    /// located at it.
+    ///
+    /// # Errors
+    /// Why the edit does not fit, located at the field.
+    pub fn edit_at<T: crate::Model>(
+        doc: &mut crate::Doc,
+        obj: &ObjId,
+        key: &str,
+        rest: &[crate::Segment],
+        op: &crate::EditOp,
+        cx: &mut crate::ActionCx,
+    ) -> Result<(), crate::ModelError> {
+        T::edit(doc, crate::Slot::Key(obj, key), rest, op, cx).located(key)
+    }
+
+    /// [`Model::read_whole`](crate::Model::read_whole) of the field `key`,
+    /// located at it.
+    ///
+    /// # Errors
+    /// Why the value does not read whole.
+    pub fn read_whole_at<T: crate::Model>(
+        value: &mut T,
+        doc: &crate::Doc,
+        key: &str,
+    ) -> Result<(), crate::ModelError> {
+        value.read_whole(doc).located(key)
     }
 
     /// What `#[resource]` declares of one verb, besides how it is built.
@@ -397,9 +453,7 @@ pub mod __private {
     pub fn first_line<T: crate::Model>(value: &T) -> Option<String> {
         let mut text = Vec::new();
         value.collect_text(&mut text);
-        text.into_iter()
-            .map(|line| line.lines().next().unwrap_or_default().trim().to_owned())
-            .find(|line| !line.is_empty())
+        first_line_of(text)
     }
 
     /// The parameter type of a `T` that may or may not describe its JSON
@@ -538,7 +592,13 @@ pub mod __private {
     pub fn json_via_bytes<T: serde::Serialize + ?Sized>(
         value: &T,
     ) -> Result<serde_json::Value, serde_json::Error> {
-        serde_json::to_vec(value).and_then(|bytes| serde_json::from_slice(&bytes))
+        let bytes = serde_json::to_vec(value)?;
+        value_of_bytes(&bytes)
+    }
+
+    #[inline(never)]
+    fn value_of_bytes(bytes: &[u8]) -> Result<serde_json::Value, serde_json::Error> {
+        serde_json::from_slice(bytes)
     }
 
     /// The action `id` with `arguments`, stamped `now_ms`, decoded as a
@@ -635,15 +695,28 @@ pub mod __private {
     /// The label an item is offered under: its `#[model(label)]`, else its
     /// first text, else its id.
     pub fn item_label<T: crate::Model>(id: &crate::Id, item: &T) -> String {
-        if let Some(label) = item.label().filter(|label| !label.is_empty()) {
+        if let Some(label) = item.label()
+            && !label.is_empty()
+        {
             return label;
         }
         let mut text = Vec::new();
         item.collect_text(&mut text);
+        text_or_id(text, id)
+    }
+
+    /// The first line of `text`, else the id.
+    #[inline(never)]
+    fn text_or_id(text: Vec<String>, id: &crate::Id) -> String {
+        first_line_of(text).unwrap_or_else(|| id.to_string())
+    }
+
+    /// The first non-empty line among `text`.
+    #[inline(never)]
+    fn first_line_of(text: Vec<String>) -> Option<String> {
         text.into_iter()
             .map(|line| line.lines().next().unwrap_or_default().trim().to_owned())
             .find(|line| !line.is_empty())
-            .unwrap_or_else(|| id.to_string())
     }
 
     /// A `#[model(check)]` function's result as a refusal.

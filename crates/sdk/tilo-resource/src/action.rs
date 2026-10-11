@@ -471,6 +471,24 @@ impl<R, P> Clone for Undoing<'_, R, P> {
 
 impl<R, P> Copy for Undoing<'_, R, P> {}
 
+/// A model error as the action's refusal: a function, not a closure per
+/// operation type.
+#[allow(clippy::needless_pass_by_value, reason = "what `map_err` hands it")]
+fn model_refused(error: crate::ModelError) -> ActionError {
+    ActionError::Refused(error.to_string())
+}
+
+/// A document error as the action's refusal.
+#[allow(clippy::needless_pass_by_value, reason = "what `map_err` hands it")]
+fn automerge_refused(error: automerge::AutomergeError) -> ActionError {
+    ActionError::Refused(error.to_string())
+}
+
+/// A verb's refusal as the action's.
+fn refusal_refused(refusal: Refusal) -> ActionError {
+    ActionError::Refused(refusal.0)
+}
+
 /// A record operation with the origin's time attached: the replayable action
 /// of a `#[resource]` record.
 #[derive(Serialize, Clone, Debug)]
@@ -486,7 +504,10 @@ pub struct Stamped<O> {
 impl<'de, O: DeserializeOwned> Deserialize<'de> for Stamped<O> {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let value = serde_json::Value::deserialize(deserializer)?;
-        Self::from_json(value).map_err(serde::de::Error::custom)
+        match Self::from_json(value) {
+            Ok(stamped) => Ok(stamped),
+            Err(error) => Err(serde::de::Error::custom(error)),
+        }
     }
 }
 
@@ -658,7 +679,10 @@ pub struct Reverting<O> {
 impl<'de, O> Deserialize<'de> for Reverting<O> {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let value = serde_json::Value::deserialize(deserializer)?;
-        let (actor, deps, now_ms) = reverted(value).map_err(serde::de::Error::custom)?;
+        let (actor, deps, now_ms) = match reverted(value) {
+            Ok(target) => target,
+            Err(error) => return Err(serde::de::Error::custom(error)),
+        };
         Ok(Self {
             actor,
             deps,
@@ -728,17 +752,14 @@ fn reverted_change(
 
 impl<O: Operation> tilo_actions::Action for Reverting<O> {
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
-        let refused = |error: crate::ModelError| ActionError::Refused(error.to_string());
         let change = self.change(doc)?;
         let deps: Vec<automerge::ChangeHash> = doc
             .get_change_meta_by_hash(&change)
             .map(|meta| meta.deps)
             .unwrap_or_default();
         let read_at = |heads: &[automerge::ChangeHash]| -> Result<O::Record, ActionError> {
-            let at = doc
-                .committed_fork_at(heads)
-                .map_err(|error| ActionError::Refused(error.to_string()))?;
-            O::Record::read_fields(&at, &ROOT).map_err(refused)
+            let at = doc.committed_fork_at(heads).map_err(automerge_refused)?;
+            O::Record::read_fields(&at, &ROOT).map_err(model_refused)
         };
         let before = read_at(&deps)?;
         let after = read_at(&[change])?;
@@ -746,15 +767,15 @@ impl<O: Operation> tilo_actions::Action for Reverting<O> {
         crate::Model::diff(&after, &before, &[], &mut restore);
         let payload = serde_json::to_vec(self).map_err(ActionError::Encode)?;
         let mut cx = ActionCx::for_apply(doc, &payload, self.now_ms);
-        let current = O::Record::read_fields(doc, &ROOT).map_err(refused)?;
+        let current = O::Record::read_fields(doc, &ROOT).map_err(model_refused)?;
         for edit in &restore {
-            edit.apply(doc, &mut cx).map_err(refused)?;
+            edit.apply(doc, &mut cx).map_err(model_refused)?;
         }
-        let mut record = O::Record::read_fields(doc, &ROOT).map_err(refused)?;
+        let mut record = O::Record::read_fields(doc, &ROOT).map_err(model_refused)?;
         let minting = MintScope::enter(&cx);
         O::queue(&mut record, &current, &mut cx);
         drop(minting);
-        record.write_fields(doc, &ROOT).map_err(refused)
+        record.write_fields(doc, &ROOT).map_err(model_refused)
     }
 
     fn locus(&self) -> ExecutionLocus {
@@ -778,32 +799,30 @@ impl<O: Operation> tilo_actions::Action for Stamped<O> {
             drop(take_minted());
         }
         let mut cx = ActionCx::for_apply(doc, &payload, self.now_ms);
-        let refused = |error: crate::ModelError| ActionError::Refused(error.to_string());
         let shape = <O::Record as crate::Model>::SHAPE;
         let units = crate::footprint::has_units(shape);
         // The unit index, kept once something applied: a refused action
         // writes nothing.
         let index = |doc: &mut Doc| {
             if units {
-                crate::footprint::index(doc, shape)
-                    .map_err(|error| ActionError::Refused(error.to_string()))?;
+                crate::footprint::index(doc, shape).map_err(automerge_refused)?;
             }
             Ok::<(), ActionError>(())
         };
         let queues = O::QUEUES && !settles(&self.operation);
         if let Some(edit) = self.operation.edit() {
             if !queues {
-                edit.apply(doc, &mut cx).map_err(refused)?;
+                edit.apply(doc, &mut cx).map_err(model_refused)?;
                 return index(doc);
             }
             // The record's `queue` sees the change the edit made.
-            let before = O::Record::read_fields(doc, &ROOT).map_err(refused)?;
-            edit.apply(doc, &mut cx).map_err(refused)?;
-            let mut record = O::Record::read_fields(doc, &ROOT).map_err(refused)?;
+            let before = O::Record::read_fields(doc, &ROOT).map_err(model_refused)?;
+            edit.apply(doc, &mut cx).map_err(model_refused)?;
+            let mut record = O::Record::read_fields(doc, &ROOT).map_err(model_refused)?;
             let minting = MintScope::enter(&cx);
             O::queue(&mut record, &before, &mut cx);
             drop(minting);
-            record.write_fields(doc, &ROOT).map_err(refused)?;
+            record.write_fields(doc, &ROOT).map_err(model_refused)?;
             return index(doc);
         }
         // An item method reads and writes its item alone; what it wrote is
@@ -813,7 +832,7 @@ impl<O: Operation> tilo_actions::Action for Stamped<O> {
             let performed = self.operation.perform_item(doc, &mut cx);
             drop(minting);
             if let Some(performed) = performed {
-                performed.map_err(|refusal| ActionError::Refused(refusal.0))?;
+                performed.map_err(refusal_refused)?;
                 return index(doc);
             }
         }
@@ -823,7 +842,10 @@ impl<O: Operation> tilo_actions::Action for Stamped<O> {
         let started = automerge::transaction::Transactable::base_heads(doc);
         let (mut record, dirty) = match crate::apply_cache::take::<O::Record>(doc) {
             Some(warm) => (warm.record, Some(warm.dirty)),
-            None => (O::Record::read_fields(doc, &ROOT).map_err(refused)?, None),
+            None => (
+                O::Record::read_fields(doc, &ROOT).map_err(model_refused)?,
+                None,
+            ),
         };
         // What it was: for the record's `queue`, to hold what the verb
         // produced against its footprint, and, when it starts from a
@@ -838,7 +860,7 @@ impl<O: Operation> tilo_actions::Action for Stamped<O> {
             (_, false) => None,
             (Some(kept), true) => Some(kept),
             (None, true) => {
-                read_before = O::Record::read_fields(doc, &ROOT).map_err(refused)?;
+                read_before = O::Record::read_fields(doc, &ROOT).map_err(model_refused)?;
                 Some(&read_before)
             }
         };
@@ -848,7 +870,7 @@ impl<O: Operation> tilo_actions::Action for Stamped<O> {
             O::queue(&mut record, before, &mut cx);
         }
         drop(minting);
-        performed.map_err(|refusal| ActionError::Refused(refusal.0))?;
+        performed.map_err(refusal_refused)?;
         if crate::group::grouping() {
             // The group checks the record once, at its end.
             crate::group::check_or_defer(
@@ -860,19 +882,19 @@ impl<O: Operation> tilo_actions::Action for Stamped<O> {
                         .and_then(|record| crate::Model::check(&record))
                 },
             )
-            .map_err(|refusal| ActionError::Refused(refusal.0))?;
+            .map_err(refusal_refused)?;
         } else {
-            crate::Model::check(&record).map_err(|refusal| ActionError::Refused(refusal.0))?;
+            crate::Model::check(&record).map_err(refusal_refused)?;
         }
         if let (Some(before), true) = (before, units) {
             crate::footprint::check(before, &record, &self.operation.writes())
-                .map_err(|refusal| ActionError::Refused(refusal.0))?;
+                .map_err(refusal_refused)?;
         }
         match (&kept, &dirty) {
             (Some(kept), Some(dirty)) => record.write_changed_fields(kept, doc, &ROOT, dirty),
             _ => record.write_fields(doc, &ROOT),
         }
-        .map_err(refused)?;
+        .map_err(model_refused)?;
         index(doc)?;
         // Kept once all it wrote is written: the next action finds this
         // one's change by its size.
@@ -983,8 +1005,10 @@ impl<R, A: Serialize> ActionRef<R, A> {
         let id = self.id;
         // Through bytes: the serializer writing recorded actions serves
         // here too, rather than one more per parameter type.
-        let value =
-            crate::__private::json_via_bytes(input).map_err(|error| format!("`{id}`: {error}"))?;
+        let value = match crate::__private::json_via_bytes(input) {
+            Ok(value) => value,
+            Err(error) => return Err(format!("`{id}`: {error}")),
+        };
         bind_arguments(id, self.params, value)
     }
 

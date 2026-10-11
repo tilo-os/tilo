@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::action::{ActionCx, Refusal};
 use crate::collection::{Collection, Id};
 use crate::delta::Delta;
+use crate::model::LocatedAt as _;
 use crate::model::{Doc, Model, ModelError, Slot, edit_whole, read_key, refresh_key, write_key};
 use crate::path::{EditOp, Segment, Settable};
 
@@ -217,6 +218,7 @@ impl<T: Model> Model for Set<T> {
         serde_json::json!({"type": "array", "items": T::value_schema()})
     }
     const CHECKS: bool = T::CHECKS;
+    const OPS: bool = T::OPS;
     crate::model::leaf_paths!();
     #[inline(never)]
     fn to_json(&self) -> serde_json::Value {
@@ -682,6 +684,7 @@ fn grid_map(doc: &mut Doc, slot: Slot<'_>) -> Result<ObjId, ModelError> {
 
 impl<T: Model> Model for Grid<T> {
     const CHECKS: bool = T::CHECKS;
+    const OPS: bool = T::OPS;
     crate::model::leaf_paths!();
     #[inline(never)]
     fn diff<R>(&self, after: &Self, path: &[Segment], out: &mut Vec<crate::Edit<R>>) {
@@ -745,19 +748,19 @@ impl<T: Model> Model for Grid<T> {
         next: &serde_json::Value,
     ) -> Option<bool> {
         match path.split_first() {
-            Some((Segment::Cell { .. }, rest)) => T::op_coalesces(rest, previous, next),
+            Some((Segment::Cell { .. }, rest)) if T::OPS => T::op_coalesces(rest, previous, next),
             _ => None,
         }
     }
     fn op_continuable(path: &[Segment], op: &serde_json::Value) -> Option<bool> {
         match path.split_first() {
-            Some((Segment::Cell { .. }, rest)) => T::op_continuable(rest, op),
+            Some((Segment::Cell { .. }, rest)) if T::OPS => T::op_continuable(rest, op),
             _ => None,
         }
     }
     fn op_describe(path: &[Segment], op: &serde_json::Value) -> Option<crate::path::OpDescription> {
         match path.split_first() {
-            Some((Segment::Cell { .. }, rest)) => T::op_describe(rest, op),
+            Some((Segment::Cell { .. }, rest)) if T::OPS => T::op_describe(rest, op),
             _ => None,
         }
     }
@@ -770,7 +773,9 @@ impl<T: Model> Model for Grid<T> {
         }
     }
     fn op_schemas(prefix: &str, out: &mut Vec<(String, serde_json::Value)>) {
-        T::op_schemas(&format!("{prefix}*."), out);
+        if T::OPS {
+            T::op_schemas(&format!("{prefix}*."), out);
+        }
     }
     #[inline(never)]
     fn to_json(&self) -> serde_json::Value {
@@ -796,7 +801,7 @@ impl<T: Model> Model for Grid<T> {
             value
                 .get(key)
                 .map_or(Ok(Vec::new()), Vec::<Id>::from_json)
-                .map_err(|error| error.at(key))
+                .located(key)
         };
         let mut grid = Self::new();
         for (at, id) in ids(ROWS)?.into_iter().enumerate() {
@@ -857,9 +862,7 @@ impl<T: Model> Model for Grid<T> {
         }
         for (row, column, value) in self.cells() {
             let key = cell_key(row.as_str(), column.as_str());
-            value
-                .store(doc, Slot::Key(&cells, &key))
-                .map_err(|error| error.at(&key))?;
+            value.store(doc, Slot::Key(&cells, &key)).located(&key)?;
         }
         Ok(())
     }
@@ -1125,6 +1128,7 @@ fn settle_steps(doc: &mut Doc, steps: &[String]) {
 
 impl<T: Model, O: Serialize + serde::de::DeserializeOwned> Model for OutboxEntry<T, O> {
     const CHECKS: bool = T::CHECKS;
+    const OPS: bool = T::OPS;
     crate::model::leaf_paths!();
     #[inline(never)]
     fn to_json(&self) -> serde_json::Value {
@@ -1311,6 +1315,7 @@ fn outbox_entry(doc: &mut Doc, slot: Slot<'_>, id: &Id) -> Result<(ObjId, ObjId)
 
 impl<T: Model, O: Serialize + serde::de::DeserializeOwned> Model for Outbox<T, O> {
     const CHECKS: bool = T::CHECKS;
+    const OPS: bool = T::OPS;
     crate::model::leaf_paths!();
     #[inline(never)]
     fn to_json(&self) -> serde_json::Value {

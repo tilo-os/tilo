@@ -14,6 +14,7 @@ use automerge::ObjId;
 
 use crate::collection::{Id, VALUE, store_in_order, stored_entries};
 use crate::keyed::{Identified, ItemStorage, Items, removed_and_changed};
+use crate::model::LocatedAt as _;
 use crate::model::{Doc, Model, ModelError, Slot};
 use crate::path::{Edit, EditOp, Path, Segment};
 
@@ -53,8 +54,7 @@ impl ItemStorage for Arranged {
         stored_entries(doc, map)?
             .into_iter()
             .map(|stored| {
-                crate::model::load_slot::<T>(doc, stored.value, VALUE)
-                    .map_err(|error| error.at(stored.id.as_str()))
+                crate::model::load_slot::<T>(doc, stored.value, VALUE).located(stored.id.as_str())
             })
             .collect()
     }

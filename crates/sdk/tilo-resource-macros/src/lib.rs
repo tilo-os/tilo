@@ -219,6 +219,7 @@ fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                         const SHAPE: #krate::Shape = <#ty as #krate::Model>::SHAPE;
                         const CHECKS: bool = <#ty as #krate::Model>::CHECKS;
                         const NULLABLE: bool = <#ty as #krate::Model>::NULLABLE;
+                        const OPS: bool = <#ty as #krate::Model>::OPS;
                         type Paths<__R> = #krate::Path<__R, Self>;
 
                         fn paths_at<__R>(path: #krate::Path<__R, Self>) -> #krate::Path<__R, Self> {
@@ -472,6 +473,7 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
     let mut readonly_fields = Vec::new();
     let mut get_arms = Vec::new();
     let mut op_coalesce_arms = Vec::new();
+    let mut ops_const = vec![quote!(false)];
     let mut op_continuable_arms = Vec::new();
     let mut op_lands_arms = Vec::new();
     let mut op_describe_arms = Vec::new();
@@ -546,7 +548,7 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
             };
             reads.push(quote!(#ident: #krate::load_slot::<#atom>(doc, #slot, #key)?.0));
             missing.push(quote!(
-                #ident: <#atom as #krate::Model>::missing().map_err(|error| error.at(#key))?.0
+                #ident: #krate::__private::missing_at::<#atom>(#key)?.0
             ));
             writes.push(quote!(#krate::write_key::<#atom>(
                 doc,
@@ -577,15 +579,15 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
             };
             reads.push(quote!(#ident: {
                 let mut value = #krate::load_slot::<#ty>(doc, #slot, #key)?;
-                #krate::Model::read_whole(&mut value, doc).map_err(|error| error.at(#key))?;
+                #krate::__private::read_whole_at(&mut value, doc, #key)?;
                 value
             }));
             refreshes.push(quote! {
                 #krate::refresh_key::<#ty>(&mut self.#ident, doc, obj, #key, delta)?;
-                #krate::Model::read_whole(&mut self.#ident, doc).map_err(|error| error.at(#key))?;
+                #krate::__private::read_whole_at(&mut self.#ident, doc, #key)?;
             });
             missing.push(quote!(
-                #ident: <#ty as #krate::Model>::missing().map_err(|error| error.at(#key))?
+                #ident: #krate::__private::missing_at::<#ty>(#key)?
             ));
             writes.push(quote!(#krate::write_key::<#ty>(doc, obj, #key, &self.#ident)?;));
             changed_writes.push(quote!(
@@ -600,7 +602,7 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
             };
             reads.push(quote!(#ident: #krate::load_slot::<#ty>(doc, #slot, #key)?));
             missing.push(quote!(
-                #ident: <#ty as #krate::Model>::missing().map_err(|error| error.at(#key))?
+                #ident: #krate::__private::missing_at::<#ty>(#key)?
             ));
             writes.push(quote!(#krate::write_key::<#ty>(doc, obj, #key, &self.#ident)?;));
             changed_writes.push(quote!(
@@ -613,11 +615,11 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
         }
         texts.push(quote!(#krate::Model::collect_text(&self.#ident, out);));
         get_arms.push(quote!(#key => #krate::Model::get_at(&self.#ident, rest),));
-        op_coalesce_arms
-            .push(quote!(#key => <#ty as #krate::Model>::op_coalesces(rest, previous, next),));
-        op_continuable_arms.push(quote!(#key => <#ty as #krate::Model>::op_continuable(rest, op),));
-        op_lands_arms.push(quote!(#key => #krate::Model::op_lands(&self.#ident, rest, op),));
-        op_describe_arms.push(quote!(#key => <#ty as #krate::Model>::op_describe(rest, op),));
+        op_coalesce_arms.push(quote!(#key if <#ty as #krate::Model>::OPS => <#ty as #krate::Model>::op_coalesces(rest, previous, next),));
+        op_continuable_arms.push(quote!(#key if <#ty as #krate::Model>::OPS => <#ty as #krate::Model>::op_continuable(rest, op),));
+        op_lands_arms.push(quote!(#key if <#ty as #krate::Model>::OPS => #krate::Model::op_lands(&self.#ident, rest, op),));
+        op_describe_arms.push(quote!(#key if <#ty as #krate::Model>::OPS => <#ty as #krate::Model>::op_describe(rest, op),));
+        ops_const.push(quote!(<#ty as #krate::Model>::OPS));
         if !readonly {
             diffs.push(quote! {
                 let mut at = path.to_vec();
@@ -626,7 +628,11 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
             });
         }
         op_schemas.push(quote! {
-            <#ty as #krate::Model>::op_schemas(&::std::format!("{prefix}{}.", #key), out);
+            // Only a field whose type has its own vocabulary is visited: the
+            // others' functions are never instantiated.
+            if <#ty as #krate::Model>::OPS {
+                <#ty as #krate::Model>::op_schemas(&::std::format!("{prefix}{}.", #key), out);
+            }
         });
         let ty_text = quote!(#ty)
             .to_string()
@@ -660,11 +666,7 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
         to_json.push(quote!(
             fields.insert(::std::string::String::from(#key), #krate::Model::to_json(&self.#ident));
         ));
-        from_json.push(quote!(#ident: match fields.get(#key) {
-            ::core::option::Option::Some(value) => <#ty as #krate::Model>::from_json(value),
-            ::core::option::Option::None => <#ty as #krate::Model>::missing(),
-        }
-        .map_err(|error| error.at(#key))?));
+        from_json.push(quote!(#ident: #krate::__private::from_json_at::<#ty>(fields, #key)?));
         if readonly {
             readonly_fields.push(key.clone());
             // The outside settling an outbox entry, or forgetting a settled
@@ -679,90 +681,33 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
                         ::std::format!("`{}` is changed only by the record's actions", #field_name),
                     ));
                 }
-                <#ty as #krate::Model>::edit(doc, #krate::Slot::Key(obj, #key), rest, op, cx)
-                    .map_err(|error| error.at(#key))?
+                #krate::__private::edit_at::<#ty>(doc, obj, #key, rest, op, cx)?
             }));
         } else if options.atom {
-            edit_arms.push(quote!(#key => <#krate::Atom as #krate::Model>::edit(
-                doc,
-                #krate::Slot::Key(obj, #key),
-                rest,
-                op,
-                cx,
-            )
-            .map_err(|error| error.at(#key))?,));
+            edit_arms.push(quote!(#key => #krate::__private::edit_at::<#krate::Atom>(doc, obj, #key, rest, op, cx)?,));
         } else {
-            edit_arms.push(quote!(#key => <#ty as #krate::Model>::edit(
-                doc,
-                #krate::Slot::Key(obj, #key),
-                rest,
-                op,
-                cx,
-            )
-            .map_err(|error| error.at(#key))?,));
+            edit_arms.push(
+                quote!(#key => #krate::__private::edit_at::<#ty>(doc, obj, #key, rest, op, cx)?,),
+            );
         }
-        checks.push(quote!(#krate::Model::check(&self.#ident)?;));
+        checks.push(quote!(if <#ty as #krate::Model>::CHECKS {
+            #krate::Model::check(&self.#ident)?;
+        }));
         checks_const.push(quote!(<#ty as #krate::Model>::CHECKS));
         if last_ident(ty).is_some_and(|(name, _)| name == "Outbox") {
             outbox_names.push(field_name.clone());
         }
         let keyed = last_ident(ty).is_some_and(|(name, _)| name == "Keyed" || name == "Ordered");
         if keyed || last_ident(ty).is_some_and(|(name, _)| name == "Collection") {
-            // Each item with its id: a collection's ids are its own, keyed
-            // and ordered items carry theirs.
-            let (items, find) = if keyed {
-                (
-                    quote!(self.#ident.iter().map(|item| (#krate::Identified::id(item), item))),
-                    quote!(self.#ident.find(id)),
-                )
-            } else {
-                (
-                    quote!(self.#ident.iter().map(|(id, item)| (::core::clone::Clone::clone(id), item))),
-                    quote!(self.#ident.get(id)),
-                )
-            };
+            let source = quote!(#krate::items::ItemSource);
             collection_names.push(field_name.clone());
-            item_label_arms.push(quote!(#field_name => #find
-                .map(|item| #krate::__private::item_label(id, item)),));
-            item_searches.push(quote! {
-                for (id, item) in #items {
-                    if let ::core::option::Option::Some(label) = #krate::Model::label(item) {
-                        let mut text = ::std::vec::Vec::new();
-                        #krate::Model::collect_text(item, &mut text);
-                        found.push(#krate::items::ItemText {
-                            field: #field_name,
-                            id,
-                            label,
-                            text: text.join("\n"),
-                        });
-                    }
-                }
-            });
-            nested.push(quote! {
-                for (id, item) in #items.take(#krate::items::ITEM_PAGE) {
-                    for mut inner in #krate::Model::nested_collections(item) {
-                        inner.within.insert(0, (#field_name, ::core::clone::Clone::clone(&id)));
-                        out.push(inner);
-                    }
-                }
-            });
+            item_label_arms.push(quote!(#field_name => #source::label_of_item(&self.#ident, id),));
+            item_searches.push(quote!(#source::item_texts(&self.#ident, #field_name, &mut found);));
+            nested.push(quote!(#source::nested_items(&self.#ident, #field_name, &mut out);));
             // Whether the collection holds any item: all a publication head
             // needs of it ([`Fields::item_collection_sizes`]).
-            sizes.push(quote!((#field_name, usize::from(#items.next().is_some()))));
-            collections.push(quote!(#krate::items::ItemCollection {
-                within: ::std::vec::Vec::new(),
-                field: #field_name,
-                labelled: #items
-                    .next()
-                    .is_some_and(|(_, item)| #krate::Model::label(item).is_some()),
-                items: #items
-                    .take(#krate::items::ITEM_PAGE)
-                    .map(|(id, item)| {
-                        let label = #krate::__private::item_label(&id, item);
-                        (id, label)
-                    })
-                    .collect(),
-            }));
+            sizes.push(quote!((#field_name, #source::item_presence(&self.#ident))));
+            collections.push(quote!(#source::item_collection(&self.#ident, #field_name)));
         }
     }
     let nested_fn = if collections.is_empty() {
@@ -895,6 +840,7 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
         impl #impl_generics #krate::Model for #name #type_generics #where_clause {
             const SHAPE: #krate::Shape = #krate::Shape::Record(&[#(#shapes),*]);
             const CHECKS: bool = #(#checks_const)||*;
+            const OPS: bool = #(#ops_const)||*;
             type Paths<__R> = #paths_name<__R, #(#generic_args),*>;
 
             fn paths_at<__R>(path: #krate::Path<__R, Self>) -> Self::Paths<__R> {

@@ -186,18 +186,11 @@ pub trait Resource: Sized + 'static {
     /// change of its `comments` for a resource someone who may only comment
     /// can still reply in.
     fn least_need() -> ActionNeed {
-        Self::declarations()
-            .iter()
-            .map(|decl| (decl.kind, decl.field))
-            .min_by_key(|(kind, field)| (*kind, field.is_none()))
-            .map_or_else(
-                || tilo_actions::ActionContract::default().need(),
-                |(kind, field)| ActionNeed {
-                    kind,
-                    field: field.map(str::to_owned),
-                    privileged: false,
-                },
-            )
+        let mut needs = Vec::new();
+        for decl in Self::declarations() {
+            needs.push((decl.kind, decl.field));
+        }
+        least_need_of(&needs)
     }
 
     /// Mutations offered by name. The generic [`APPLY`] action is always
@@ -1644,6 +1637,23 @@ pub(crate) fn refused(reason: &str) -> EncodedAction {
         type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.to_owned(),
         payload: reason.as_bytes().to_vec(),
     }
+}
+
+/// The least a caller needs to take any of the actions `needs` (kind and
+/// field each): the one that asks least.
+#[must_use]
+pub fn least_need_of(needs: &[(ActionKind, Option<&'static str>)]) -> ActionNeed {
+    needs
+        .iter()
+        .min_by_key(|(kind, field)| (*kind, field.is_none()))
+        .map_or_else(
+            || tilo_actions::ActionContract::default().need(),
+            |(kind, field)| ActionNeed {
+                kind: *kind,
+                field: field.map(str::to_owned),
+                privileged: false,
+            },
+        )
 }
 
 /// The published spec of one declared or bound mutation: what the palette,

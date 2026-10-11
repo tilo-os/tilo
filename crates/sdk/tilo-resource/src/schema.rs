@@ -599,20 +599,27 @@ pub(crate) fn declared_invocation<'a>(
     Some((id, fields))
 }
 
+/// One declared action as a member of a record's action schema.
+fn declared_operation(id: &str, params: &[ActionParam], description: &str) -> Value {
+    let variant = object(vec![
+        ("action", constant(id), true),
+        ("args", args_schema(params), true),
+    ]);
+    describe(variant, description)
+}
+
 /// The replayable action of a `#[resource]` record, as the generic
 /// [`APPLY`](crate::APPLY) takes it: `{"op": {"action": id, "args": {..}},
 /// "at": ms}`, one alternative per declaration.
 pub fn record_action_schema<R: crate::Resource>() -> Value {
-    let mut operations: Vec<Value> = R::declarations()
-        .iter()
-        .map(|decl| {
-            let variant = object(vec![
-                ("action", constant(decl.id), true),
-                ("args", args_schema(&decl.params), true),
-            ]);
-            describe(variant, decl.description.as_deref().unwrap_or(&decl.label))
-        })
-        .collect();
+    let mut operations: Vec<Value> = Vec::new();
+    for decl in &R::declarations() {
+        operations.push(declared_operation(
+            decl.id,
+            &decl.params,
+            decl.description.as_deref().unwrap_or(&decl.label),
+        ));
+    }
     if R::EDITS {
         // Described in full by the field-edit action itself.
         operations.push(describe(
