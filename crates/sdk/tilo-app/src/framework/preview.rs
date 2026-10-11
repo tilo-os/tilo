@@ -224,7 +224,7 @@ fn preview<A: ResourceApp>(input: PreviewInput) -> Result<Box<dyn HistoryPreview
 
 /// `A`'s root over `doc`, a frozen past version: read-only, keeping
 /// nothing of the person's.
-fn past_root<A: ResourceApp>(doc: &AutoCommit) -> Result<ResourceRoot<A::Resource>, String> {
+fn past_root<A: ResourceApp>(doc: &AutoCommit) -> Result<ResourceRoot, String> {
     let reader = Reader::<A::Resource>::read(doc).map_err(|error| error.to_string())?;
     Ok(build_root::<A>(
         reader,
@@ -269,7 +269,10 @@ pub(crate) fn render_past<A: ResourceApp>(
     size: (u32, u32),
 ) -> Result<PastVersion<A::Resource>, String> {
     let root = past_root::<A>(&doc)?;
-    let live = root.live().clone();
+    let live = root
+        .typed::<A::Resource>()
+        .map(|typed| typed.live.clone())
+        .ok_or_else(|| format!("{} drew another resource", A::TITLE))?;
     let mut preview = ViewPreview::new(
         root.into_root_widget(),
         <A::Resource as Resource>::LABEL,

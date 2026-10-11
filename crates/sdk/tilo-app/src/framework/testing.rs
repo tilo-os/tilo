@@ -234,9 +234,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// is first written or stepped.
     pub fn open_person_records(&mut self) -> usize {
         self.harness()
-            .with_widget_mut(|root: &mut ResourceRoot<A::Resource>| {
-                root.storage.person_owners().len()
-            })
+            .with_widget_mut(|root: &mut ResourceRoot| root.storage.person_owners().len())
             .unwrap_or_default()
     }
 
@@ -244,7 +242,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// open it.
     pub fn person<P: Resource>(&mut self) -> Option<super::PersonRecord<P>> {
         self.harness()
-            .with_widget_mut(|root: &mut ResourceRoot<A::Resource>| root.storage.person::<P>())
+            .with_widget_mut(|root: &mut ResourceRoot| root.storage.person::<P>())
             .flatten()
     }
 
@@ -253,9 +251,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         &mut self,
     ) -> Option<super::PersonRecord<P>> {
         self.harness()
-            .with_widget_mut(|root: &mut ResourceRoot<A::Resource>| {
-                root.storage.shared_person::<P>()
-            })
+            .with_widget_mut(|root: &mut ResourceRoot| root.storage.shared_person::<P>())
             .flatten()
     }
 
@@ -552,7 +548,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         let arguments: Vec<String> = arguments.iter().map(|&argument| argument.into()).collect();
         let outcome = self
             .harness()
-            .with_widget_mut(|root: &mut ResourceRoot<A::Resource>| root.run.open_here(&arguments))
+            .with_widget_mut(|root: &mut ResourceRoot| root.run.open_here(&arguments))
             .ok_or_else(|| format!("{} is not hosted here", A::TITLE))??;
         self.harness().relayout();
         outcome
@@ -581,7 +577,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// Returns an error if the framework root is absent.
     pub fn take_save_retry(&mut self) -> Result<bool, String> {
         self.harness()
-            .with_widget_mut(|root: &mut super::root::ResourceRoot<A::Resource>| {
+            .with_widget_mut(|root: &mut super::root::ResourceRoot| {
                 super::root::RootApp::take_save_retry(root)
             })
             .ok_or_else(|| "the framework root is not mounted".to_owned())
@@ -634,7 +630,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// draws.
     pub fn with_surface<S: 'static, T>(&mut self, visit: impl FnOnce(&mut S) -> T) -> Option<T> {
         self.harness()
-            .with_widget_mut(|root: &mut ResourceRoot<A::Resource>| {
+            .with_widget_mut(|root: &mut ResourceRoot| {
                 super::root::with_surface::<A::Resource, S, T>(root, visit)
             })
             .flatten()
@@ -997,7 +993,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// `None` when the view has no such widget.
     pub fn with_widget<T: 'static, O>(&mut self, visit: impl FnOnce(&mut T) -> O) -> Option<O> {
         self.harness()
-            .with_widget_mut(|root: &mut super::root::ResourceRoot<A::Resource>| {
+            .with_widget_mut(|root: &mut super::root::ResourceRoot| {
                 find_mut::<T>(root.content.as_mut()).map(visit)
             })
             .flatten()
@@ -1294,7 +1290,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// app's view is not an `S`.
     pub fn surface<S: 'static, O>(&mut self, visit: impl FnOnce(&mut S) -> O) -> Option<O> {
         self.harness()
-            .with_widget_mut(|root: &mut ResourceRoot<A::Resource>| {
+            .with_widget_mut(|root: &mut ResourceRoot| {
                 root.content
                     .as_any_mut()
                     .and_then(|any| any.downcast_mut::<S>())
@@ -1330,14 +1326,14 @@ pub fn with_surface<A: ResourceApp, S: 'static, T>(
     visit: impl FnOnce(&mut S) -> T,
 ) -> Option<T> {
     harness
-        .with_widget_mut(|root: &mut ResourceRoot<A::Resource>| surface_of::<A, S>(root).map(visit))
+        .with_widget_mut(|root: &mut ResourceRoot| surface_of::<A, S>(root).map(visit))
         .flatten()
 }
 
 /// The custom surface of type `S` that `A`'s view hosts in `harness`,
 /// without running a frame (see [`with_surface`]).
 pub fn surface_in<A: ResourceApp, S: 'static>(harness: &mut FrameHarness) -> Option<&mut S> {
-    surface_of::<A, S>(harness.widget_mut::<ResourceRoot<A::Resource>>()?)
+    surface_of::<A, S>(harness.widget_mut::<ResourceRoot>()?)
 }
 
 /// The custom surface of type `S` that `A`'s view hosts, when `widget` is
@@ -1346,14 +1342,11 @@ pub fn surface_in<A: ResourceApp, S: 'static>(harness: &mut FrameHarness) -> Opt
 pub fn surface_in_root<A: ResourceApp, S: 'static>(
     widget: &mut dyn ui_core::widget::Widget,
 ) -> Option<&mut S> {
-    surface_of::<A, S>(
-        widget
-            .as_any_mut()?
-            .downcast_mut::<ResourceRoot<A::Resource>>()?,
-    )
+    surface_of::<A, S>(widget.as_any_mut()?.downcast_mut::<ResourceRoot>()?)
 }
 
-fn surface_of<A: ResourceApp, S: 'static>(root: &mut ResourceRoot<A::Resource>) -> Option<&mut S> {
+fn surface_of<A: ResourceApp, S: 'static>(root: &mut ResourceRoot) -> Option<&mut S> {
+    root.typed::<A::Resource>()?;
     root.content
         .as_mut()
         .as_any_mut()
@@ -1741,22 +1734,19 @@ pub fn surface_report<A: ResourceApp>() -> serde_json::Value {
     report_surface(
         &Opening::of::<A>(),
         <A::Resource as Resource>::surface(),
-        &|harness| {
-            harness
-                .with_widget_mut(|root: &mut ResourceRoot<A::Resource>| {
-                    let effects = root.effects.specs().into_iter().map(|spec| spec.id);
-                    let views = <A::Resource as Resource>::views(&root.live().get())
-                        .into_iter()
-                        .map(|view| view.id);
-                    (effects.collect(), views.collect())
-                })
-                .unwrap_or_default()
-        },
+        &published_ids,
     )
 }
 
 /// The ids of the effects and of the named views a built view publishes.
 type PublishedIds = (Vec<String>, Vec<String>);
+
+/// [`PublishedIds`] of the root `harness` hosts.
+fn published_ids(harness: &mut FrameHarness) -> PublishedIds {
+    harness
+        .with_widget_mut(|root: &mut ResourceRoot| root.published_ids())
+        .unwrap_or_default()
+}
 
 /// [`surface_report`] of the app `opening` describes, whose resource's
 /// surface is `surface`; `published` reads the ids of the effects and the

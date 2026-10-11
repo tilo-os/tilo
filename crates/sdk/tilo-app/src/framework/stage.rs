@@ -153,20 +153,17 @@ pub fn stage<A: ResourceApp>(
         &Staging {
             title: A::TITLE,
             kind: <A::Resource as Resource>::KIND,
-            stage_root: stage_root::<A::Resource>,
+            stage_root,
             input: A::scenario_input,
         },
         actions,
     )
 }
 
-/// The collaborators the root of `R` the harness hosts shows once its views
-/// staged `scenario`; `None` when it hosts no such root.
-fn stage_root<R: Resource>(
-    harness: &mut FrameHarness,
-    scenario: Option<&str>,
-) -> Option<Collaborators> {
-    harness.with_widget_mut(|root: &mut ResourceRoot<R>| root.stage(scenario))
+/// The collaborators the root the harness hosts shows once its views
+/// staged `scenario`; `None` when it hosts no root.
+fn stage_root(harness: &mut FrameHarness, scenario: Option<&str>) -> Option<Collaborators> {
+    harness.with_widget_mut(|root: &mut ResourceRoot| root.stage(scenario))
 }
 
 /// The collaborators a staged capture shows, as the presence frames their

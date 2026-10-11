@@ -140,7 +140,7 @@ pub struct Dispatcher<R: Resource> {
 /// who edits, the door's queue, permissions, refusals and the undo-step
 /// bookkeeping.
 #[derive(Clone)]
-struct DispatchCore {
+pub(crate) struct DispatchCore {
     app_id: &'static str,
     resource_id: Rc<str>,
     /// [`Resource::KIND`] and [`Resource::LABEL`] of the resource.
@@ -345,7 +345,7 @@ impl DispatchCore {
             .push_back((ControlInvocation { address, arguments }, on_behalf_of));
     }
 
-    fn note_continuation(
+    pub(crate) fn note_continuation(
         &self,
         invocation: tilo_actions::InvocationId,
         action: &str,
@@ -372,7 +372,7 @@ impl DispatchCore {
         self.permission_states = Rc::default();
     }
 
-    fn follow(&self, permissions: LivePermissions) {
+    pub(crate) fn follow(&self, permissions: LivePermissions) {
         *self.permissions.borrow_mut() = Some(permissions);
         self.refresh_permission_states();
     }
@@ -387,7 +387,7 @@ impl DispatchCore {
         state
     }
 
-    fn refresh_permission_states(&self) {
+    pub(crate) fn refresh_permission_states(&self) {
         for (asked, state) in self.permission_states.borrow().iter() {
             let allowed = self.may_asked(asked);
             if state.get() != allowed {
@@ -440,7 +440,7 @@ impl DispatchCore {
         }
     }
 
-    fn set_read_only(&self, read_only: bool) -> bool {
+    pub(crate) fn set_read_only(&self, read_only: bool) -> bool {
         if self.read_only.get() == read_only {
             return false;
         }
@@ -468,7 +468,7 @@ impl DispatchCore {
         self.unreadable.borrow().clone()
     }
 
-    fn refuse(&self, action: &str, reason: String) {
+    pub(crate) fn refuse(&self, action: &str, reason: String) {
         self.refused.set(Some(Refused {
             action: action.to_owned(),
             reason,
@@ -564,7 +564,7 @@ impl DispatchCore {
         self.continuing.set(false);
     }
 
-    fn take_committed(&self) -> Option<Vec<ChangeHash>> {
+    pub(crate) fn take_committed(&self) -> Option<Vec<ChangeHash>> {
         let bracket = self.host.borrow_mut().take_committed();
         let continuing = self.continuing.replace(false);
         self.opened
@@ -574,7 +574,53 @@ impl DispatchCore {
     }
 }
 
+/// What a root reads and drives of its dispatcher, without its type.
+impl DispatchCore {
+    /// Who edits through this dispatcher; `None` in a view of a past version.
+    pub(crate) fn me(&self) -> Option<&str> {
+        self.me.as_deref()
+    }
+
+    pub(crate) fn note_landed(&self, action: &str, output: &tilo_actions::ActionOutput) {
+        self.landed.set(Some(Landed::of(action, output)));
+    }
+
+    /// Say why the record does not read as the resource (`None` once it
+    /// does again); until then every submission is refused with it.
+    pub(crate) fn set_unreadable(&self, reason: Option<String>) {
+        *self.unreadable.borrow_mut() = reason;
+    }
+
+    /// The next queued invocation, with the effect invocation it continues.
+    pub(crate) fn take_attributed(&self) -> Option<AttributedControlInvocation> {
+        self.queue.borrow_mut().pop_front()
+    }
+
+    pub(crate) fn has_pending(&self) -> bool {
+        !self.queue.borrow().is_empty()
+    }
+
+    /// The step the last boundary opened stays open for the actions that
+    /// continue it ([`Resource::coalesces`]).
+    pub(crate) fn keeps_step_open(&self) -> bool {
+        self.opened.get()
+    }
+
+    pub(crate) fn resource_id(&self) -> &str {
+        &self.resource_id
+    }
+
+    pub(crate) fn app_id(&self) -> &'static str {
+        self.app_id
+    }
+}
+
 impl<R: Resource> Dispatcher<R> {
+    /// What does not name the resource type.
+    pub(crate) fn core(&self) -> &DispatchCore {
+        &self.core
+    }
+
     pub(crate) fn for_custody(
         &self,
         custody: ui_core::invocation_scope::ResourceInvocationScope,
@@ -584,17 +630,6 @@ impl<R: Resource> Dispatcher<R> {
         // An effect's group cannot absorb the person's unrelated input.
         dispatcher.group = Rc::default();
         dispatcher
-    }
-
-    /// Hand the door's result for a submission the effect `invocation`
-    /// queued to that effect, once it waits for its submissions to land.
-    pub(crate) fn note_continuation(
-        &self,
-        invocation: tilo_actions::InvocationId,
-        action: &str,
-        result: &Result<ui_core::host_operation::ResourceOperationStart, tilo_actions::DoorError>,
-    ) {
-        self.core.note_continuation(invocation, action, result);
     }
 
     /// What the effect `invocation` submitted here, once it all landed: the
@@ -703,11 +738,6 @@ impl<R: Resource> Dispatcher<R> {
         self.core.read_only.clone()
     }
 
-    /// Follow the participant's permissions as the host keeps them.
-    pub(crate) fn follow(&self, permissions: LivePermissions) {
-        self.core.follow(permissions);
-    }
-
     /// Whether the host currently allows what `need` is, as observable view
     /// state. It follows changes even when writing remains allowed and the
     /// resource document does not change. Bind it to a conditional pane or
@@ -720,10 +750,6 @@ impl<R: Resource> Dispatcher<R> {
     /// its settings), as observable view state: for an owner's pane.
     pub fn govern_state(&self) -> LocalState<bool> {
         self.core.asked_state(Asked::Govern)
-    }
-
-    pub(crate) fn refresh_permission_states(&self) {
-        self.core.refresh_permission_states();
     }
 
     /// The same dispatcher deciding by `permissions`, for a test of a
@@ -753,12 +779,6 @@ impl<R: Resource> Dispatcher<R> {
         self.core.may(&(self.permission_of)(action))
     }
 
-    /// Record a change of the participant's permissions. Returns whether
-    /// anything changed.
-    pub(crate) fn set_read_only(&self, read_only: bool) -> bool {
-        self.core.set_read_only(read_only)
-    }
-
     /// The last edit or effect submitted here that was refused — denied
     /// permission, unavailable, failed — and why, for a view to show. An
     /// edit waiting for the user's confirmation is not refused.
@@ -773,17 +793,8 @@ impl<R: Resource> Dispatcher<R> {
         self.core.landed.clone()
     }
 
-    pub(crate) fn note_landed(&self, action: &str, output: &tilo_actions::ActionOutput) {
-        self.core.landed.set(Some(Landed::of(action, output)));
-    }
-
-    /// Say why the record does not read as the resource (`None` once it
-    /// does again); until then every submission is refused with it.
-    pub(crate) fn set_unreadable(&self, reason: Option<String>) {
-        *self.core.unreadable.borrow_mut() = reason;
-    }
-
     /// Record that the door refused `action`, submitted here.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn refuse(&self, action: &str, reason: String) {
         self.core.refuse(action, reason);
     }
@@ -1172,30 +1183,16 @@ impl<R: Resource> Dispatcher<R> {
     }
 
     /// The next queued invocation, with the effect invocation it continues.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn take_attributed(&self) -> Option<AttributedControlInvocation> {
         self.core.queue.borrow_mut().pop_front()
-    }
-
-    pub(crate) fn has_pending(&self) -> bool {
-        !self.core.queue.borrow().is_empty()
-    }
-
-    /// The undo boundary before this event's first immediate action, which
-    /// opens a step; none while the event's actions continue the open step.
-    pub(crate) fn take_committed(&self) -> Option<Vec<ChangeHash>> {
-        self.core.take_committed()
-    }
-
-    /// The step the last boundary opened stays open for the actions that
-    /// continue it ([`Resource::coalesces`]).
-    pub(crate) fn keeps_step_open(&self) -> bool {
-        self.core.opened.get()
     }
 
     pub(crate) fn name_resource(&self, label: &str) {
         self.core.resource_label.set(label.to_owned());
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn resource_id(&self) -> &str {
         &self.core.resource_id
     }
