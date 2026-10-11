@@ -133,7 +133,7 @@ def _notifications(st) -> list:
     return st["chrome"].get("notifications") or []
 
 
-def _is_undo_close(toast: dict, title: str) -> bool:
+def _is_undo_close(toast: dict, title: str, tab_count: int = 1) -> bool:
     """A transient undo toast for a captured title, with any reopen binding.
 
     Match the English/German shell messages, including the unbound hint. A
@@ -142,8 +142,10 @@ def _is_undo_close(toast: dict, title: str) -> bool:
     if (not title or not title.strip() or toast.get("severity") != "Info"
             or toast.get("persistent")):
         return False
-    messages = ((f"Closed {title}", r"Select to undo(?:, or press .+ later)?"),
-                (f"{title} geschlossen", r"Zum Rückgängigmachen auswählen(?: oder später .+ drücken)?"))
+    english = f"Closed {tab_count} tabs" if tab_count > 1 else f"Closed {title}"
+    german = f"{tab_count} Tabs geschlossen" if tab_count > 1 else f"{title} geschlossen"
+    messages = ((english, r"Select to undo(?:, or press .+ later)?"),
+                (german, r"Zum Rückgängigmachen auswählen(?: oder später .+ drücken)?"))
     return any(toast.get("title") == heading and re.fullmatch(hint, toast.get("body") or "")
                is not None for heading, hint in messages)
 
@@ -237,7 +239,8 @@ def close_group(ctx, gid, before_close=None) -> None:
     an unknown action."""
     st = ctx.state()
     if before_close is not None:
-        before_close(st)
+        if before_close(st) is False:
+            return
     if core.group_by_id(st, gid) is None:
         return
     try:
@@ -263,12 +266,14 @@ def _close(ctx, res, label, gid, app_procs, toasts0):
     before = ctx.facts.get(f"groups_before:{label}", set())
     launch = ctx.facts[f"launch:{label}"]
     queue = [gid]
-    titles = {}
+    closed = {}
     examined = set(before)
 
-    def observe(st):
+    def observe(st, closing=None):
         groups = core.all_groups(st)
-        candidates = [g for g in groups if g["id"] not in examined and g["id"] not in queue]
+        candidates = [g for g in groups if g["id"] != gid and
+                      (g["id"] in queue or g["id"] not in examined)]
+        eligible = set()
         if candidates:
             procs = _procs(ctx)
             owned = launch.members(procs)
@@ -279,19 +284,27 @@ def _close(ctx, res, label, gid, app_procs, toasts0):
                 examined.add(group["id"])
                 apps = [(core.tab_app(tab) or "").lower() for tab in group["tabs"]]
                 if apps and all(app in exclusive_ids for app in apps):
-                    queue.append(group["id"])
+                    eligible.add(group["id"])
+                    if group["id"] not in queue:
+                        queue.append(group["id"])
         # Capture all pending titles before invoking a close: it can end dialogs too.
         for group in groups:
-            if group["id"] in queue:
-                titles[group["id"]] = group["tabs"][0].get("title") or ""
-        res.metrics["closed_titles"] = list(titles.values())
-        res.metrics["extra_windows"] = len(queue) - 1
+            group_id = group["id"]
+            if group_id == gid or group_id in eligible:
+                closed[group_id] = [tab.get("title") or "" for tab in group["tabs"]]
+            elif group_id in queue:
+                # A pending group can acquire an unrelated tab or lose exclusive
+                # attribution. Do not close it or accept its later notifications.
+                closed.pop(group_id, None)
+        res.metrics["closed_titles"] = [title for titles in closed.values() for title in titles]
+        res.metrics["extra_windows"] = sum(group_id != gid for group_id in closed)
+        return closing is None or closing == gid or closing in eligible
 
     observe(ctx.state())
     deadline = time.monotonic() + 10
     for other in queue:
         expect(time.monotonic() < deadline, f"new app windows kept appearing while closing {label} for 10 s")
-        close_group(ctx, other, observe)
+        close_group(ctx, other, lambda st: observe(st, other))
         observe(ctx.state())
     ctx.wait_state(lambda s: core.group_by_id(s, gid) is None, 10, f"{label}'s window gone after close")
     left = wait_until(lambda: not lingering(_procs(ctx), launch, app_procs) or None, CLOSE_GRACE_S, 1.0)
@@ -299,8 +312,11 @@ def _close(ctx, res, label, gid, app_procs, toasts0):
     res.metrics["lingering_after_close"] = [c.cmd for c in still.values()]
     st = ctx.state()
     toasts = _notifications(st)[toasts0:]
-    res.metrics["undo_toasts"] = [t for t in toasts if any(_is_undo_close(t, title) for title in titles.values())]
-    false = [t for t in toasts if not any(_is_undo_close(t, title) for title in titles.values())]
+    def expected_undo(toast):
+        return any(titles and _is_undo_close(toast, titles[0], len(titles)) for titles in closed.values())
+
+    res.metrics["undo_toasts"] = [t for t in toasts if expected_undo(t)]
+    false = [t for t in toasts if not expected_undo(t)]
     res.metrics["toasts"] = false
     expect(not still,
            f"{label}'s processes still running {CLOSE_GRACE_S} s after close: "

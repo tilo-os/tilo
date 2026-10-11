@@ -311,6 +311,58 @@ class LateWindowCloseTests(unittest.TestCase):
             self.close(ctx)
         self.assertEqual([g["id"] for g in ctx.groups], [1, 3])
 
+    def test_queued_installer_is_revalidated_at_its_close_guard(self):
+        for transition in ["unrelated_tab", "ambiguous_process"]:
+            class ChangedInstaller(CloseFixture):
+                def __init__(self):
+                    super().__init__()
+                    self.reads = 0
+                    self.invoked = []
+
+                def state(self):
+                    self.reads += 1
+                    if self.reads == 4:
+                        if transition == "unrelated_tab":
+                            self.groups[-1]["tabs"].append({"title": "Editor", "tile": {"Foreign": {"app_id": "gedit"}}})
+                        else:
+                            self.processes = row(5001, 900, 5001, "C:\\windows\\system32\\control.exe unrelated-prefix")
+                    return super().state()
+
+                def invoke(self, provider, action):
+                    self.invoked.append(action)
+                    super().invoke(provider, action)
+
+            with self.subTest(transition=transition):
+                ctx = ChangedInstaller()
+                with self.assertRaisesRegex(apps.CheckFailed, "processes still running"):
+                    self.close(ctx)
+                self.assertEqual(ctx.invoked, ["group.close:2"])
+                self.assertEqual([g["id"] for g in ctx.groups], [1, 3])
+
+    def test_owned_multitab_group_uses_exact_localized_group_toast(self):
+        for heading, body in [("Closed 2 tabs", "Select to undo"),
+                              ("2 Tabs geschlossen", "Zum Rückgängigmachen auswählen oder später Strg+Umschalt+T drücken")]:
+            class GroupToast(CloseFixture):
+                def invoke(self, provider, action):
+                    super().invoke(provider, action)
+                    if action == "group.close:3":
+                        self.toasts[-1] = undo_toast(heading, body)
+
+            with self.subTest(heading=heading):
+                ctx = GroupToast()
+                ctx.groups[2]["tabs"].append({"title": "Second installer", "tile": {"Foreign": {"app_id": "control.exe"}}})
+                metrics = self.close(ctx)
+                self.assertEqual(len(metrics["undo_toasts"]), 2)
+                self.assertEqual(metrics["closed_titles"], ["Wine File", "Wine Mono Installer", "Second installer"])
+                self.assertEqual([g["id"] for g in ctx.groups], [1])
+
+    def test_group_toasts_with_wrong_count_errors_or_persistence_fail(self):
+        for toast in [undo_toast("Closed 3 tabs"), undo_toast("Closed 2 tabs", severity="Error"),
+                      undo_toast("Closed 2 tabs", persistent=True)]:
+            with self.subTest(toast=toast):
+                with self.assertRaisesRegex(apps.CheckFailed, "unexpected notifications"):
+                    self.close(CloseFixture(extra_toast=toast))
+
     def test_continually_created_app_windows_fail_within_the_close_budget(self):
         class Reopening(CloseFixture):
             def invoke(self, provider, action):
