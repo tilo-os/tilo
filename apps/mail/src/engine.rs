@@ -788,9 +788,7 @@ pub mod live {
         } else {
             account.imap_port
         };
-        let tcp = tokio::net::TcpStream::connect((host, port))
-            .await
-            .map_err(|e| classify_conn_failure(&e.to_string()))?;
+        let tcp = crate::connect::tcp(host, port).await?;
         let connector = tokio_rustls::TlsConnector::from(tls);
         let server_name = rustls::pki_types::ServerName::try_from(host.to_string())
             .map_err(|e| format!("invalid IMAP host name: {e}"))?;

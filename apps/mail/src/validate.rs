@@ -13,7 +13,7 @@ use crate::model::AccountConfig;
 
 /// The connection probe seam. Implementors attempt the two round-trips that
 /// prove an account works.
-pub trait ProbeTransport {
+pub trait ProbeTransport: Sync {
     /// Attempt an IMAP `LOGIN` (or `AUTHENTICATE XOAUTH2`) to the account's
     /// incoming server. `Ok(())` on a successful greeting + auth.
     ///
@@ -58,9 +58,10 @@ impl ValidationState {
     }
 }
 
-/// Run the full check: config-level validation first (no network), then IMAP,
-/// then SMTP. Short-circuits on the first failure so the user sees the most
-/// upstream problem.
+/// Run the full check: config-level validation first (no network), then IMAP
+/// and SMTP together. The two servers are independent, so the person waits for
+/// the slower one rather than for both in turn; when both fail, the IMAP
+/// reason is the one shown, as the most upstream problem.
 pub fn validate_account<T: ProbeTransport + ?Sized>(
     cfg: &AccountConfig,
     transport: &T,
@@ -68,10 +69,18 @@ pub fn validate_account<T: ProbeTransport + ?Sized>(
     if let Some((_, msg)) = cfg.validate().into_iter().next() {
         return ValidationState::Invalid(msg);
     }
-    if let Err(e) = transport.imap_login(cfg) {
+    let (imap, smtp) = std::thread::scope(|scope| {
+        let smtp = scope.spawn(|| transport.smtp_handshake(cfg));
+        let imap = transport.imap_login(cfg);
+        let smtp = smtp
+            .join()
+            .unwrap_or_else(|_| Err("the check stopped unexpectedly".into()));
+        (imap, smtp)
+    });
+    if let Err(e) = imap {
         return ValidationState::Failed(format!("IMAP login failed: {e}"));
     }
-    if let Err(e) = transport.smtp_handshake(cfg) {
+    if let Err(e) = smtp {
         return ValidationState::Failed(format!("SMTP handshake failed: {e}"));
     }
     ValidationState::Ok
@@ -217,7 +226,7 @@ mod live_probe {
                             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                         }
                     } => Err("Account verification cancelled".into()),
-                    result = tokio::time::timeout(std::time::Duration::from_secs(30), fut) => {
+                    result = tokio::time::timeout(std::time::Duration::from_secs(20), fut) => {
                         result.unwrap_or_else(|_| Err("Account verification timed out".into()))
                     }
                 }
@@ -288,9 +297,7 @@ mod live_probe {
                 } else {
                     cfg.imap_port
                 };
-                let tcp = tokio::net::TcpStream::connect((host, port))
-                    .await
-                    .map_err(|e| classify_conn_failure(&e.to_string()))?;
+                let tcp = crate::connect::tcp(host, port).await?;
                 let connector = tokio_rustls::TlsConnector::from(tls);
                 let server_name = rustls::pki_types::ServerName::try_from(host.to_string())
                     .map_err(|e| format!("invalid IMAP host name: {e}"))?;
@@ -368,6 +375,7 @@ mod live_probe {
                 let secret = token.unwrap_or_else(|| cfg.password.clone());
                 let mailer: AsyncSmtpTransport<Tokio1Executor> = builder
                     .port(port)
+                    .timeout(Some(std::time::Duration::from_secs(10)))
                     .credentials(Credentials::new(user, secret))
                     .build();
                 // test_connection performs connect + EHLO (+ TLS upgrade), proving
@@ -547,6 +555,46 @@ mod tests {
                 .expect("cancellation must close the TLS socket");
             worker.join().unwrap();
         }
+    }
+
+    #[test]
+    fn imap_and_smtp_are_checked_at_the_same_time() {
+        use std::sync::Mutex;
+        use std::sync::mpsc::{Receiver, Sender, channel};
+        use std::time::Duration;
+        /// Each side announces itself and waits for the other: only a check
+        /// that runs both together gets past it.
+        struct Rendezvous {
+            imap: (Mutex<Sender<()>>, Mutex<Receiver<()>>),
+            smtp: (Mutex<Sender<()>>, Mutex<Receiver<()>>),
+        }
+        impl ProbeTransport for Rendezvous {
+            fn imap_login(&self, _cfg: &AccountConfig) -> Result<(), String> {
+                self.imap.0.lock().unwrap().send(()).unwrap();
+                self.imap
+                    .1
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(5))
+                    .map_err(|_| "smtp never started".to_owned())
+            }
+            fn smtp_handshake(&self, _cfg: &AccountConfig) -> Result<(), String> {
+                self.smtp.0.lock().unwrap().send(()).unwrap();
+                self.smtp
+                    .1
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(5))
+                    .map_err(|_| "imap never started".to_owned())
+            }
+        }
+        let (to_smtp, from_imap) = channel();
+        let (to_imap, from_smtp) = channel();
+        let probe = Rendezvous {
+            imap: (Mutex::new(to_smtp), Mutex::new(from_smtp)),
+            smtp: (Mutex::new(to_imap), Mutex::new(from_imap)),
+        };
+        assert_eq!(validate_account(&good_cfg(), &probe), ValidationState::Ok);
     }
 
     /// A programmable probe for the state-machine tests.
