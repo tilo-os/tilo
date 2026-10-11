@@ -6782,6 +6782,7 @@ mod tests {
             assert!(
                 app.first_run.perform_action(
                     &ui::a11y::Action::Activate,
+                    &[],
                     &mut ui::widget::Edits::lend(&mut doc),
                     &automerge::ROOT,
                 ),

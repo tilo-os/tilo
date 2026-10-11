@@ -398,6 +398,7 @@ impl Widget for Probe {
     fn perform_action(
         &mut self,
         _: &crate::a11y::Action,
+        _key_path: &[u64],
         doc: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {

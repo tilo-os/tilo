@@ -1171,6 +1171,7 @@ impl App {
             .dispatch_node(focused, |widget, doc, root| {
                 widget.perform_action(
                     &crate::a11y::Action::Activate,
+                    &[],
                     &mut crate::widget::Edits::lend(doc),
                     root,
                 )
@@ -3032,7 +3033,7 @@ mod legacy_owner_routing_tests {
                 _ => false,
             }
         }
-        fn perform_action_at(
+        fn perform_action(
             &mut self,
             action: &crate::a11y::Action,
             keys: &[u64],

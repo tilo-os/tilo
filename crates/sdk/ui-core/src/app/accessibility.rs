@@ -1133,14 +1133,14 @@ impl App {
                         root,
                     )
                 } else if synthetic {
-                    widget.perform_action_at(
+                    widget.perform_action(
                         action,
                         &key_path,
                         &mut crate::widget::Edits::lend(doc),
                         root,
                     )
                 } else {
-                    widget.perform_action(action, &mut crate::widget::Edits::lend(doc), root)
+                    widget.perform_action(action, &[], &mut crate::widget::Edits::lend(doc), root)
                 }
             })
             .ok()?;
@@ -1476,7 +1476,7 @@ impl App {
                     let handled = self
                         .dispatch_node(taffy_id, |widget, doc, root| {
                             if let Some(key_path) = keyed_path {
-                                widget.perform_action_at(
+                                widget.perform_action(
                                     &verb,
                                     &key_path,
                                     &mut crate::widget::Edits::lend(doc),

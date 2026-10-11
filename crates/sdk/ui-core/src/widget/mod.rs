@@ -1578,44 +1578,26 @@ pub trait Widget {
         false
     }
 
-    /// May mutate the CRDT like [`handle_event`](Widget::handle_event).
-    /// Default `false` ("not handled") falls back to generic dispatch
-    /// (`Focus` moves keyboard focus, `Activate` synthesises a click);
-    /// widgets with richer semantics (slider inc/dec, combo
-    /// expand/collapse) override to handle those verbs precisely.
-    fn perform_action(
-        &mut self,
-        _action: &crate::a11y::Action,
-        _state: &mut crate::widget::Edits<'_>,
-        _path: &ModelPath,
-    ) -> bool {
-        false
-    }
-
-    /// Perform an accessibility [`Action`](crate::a11y::Action) aimed at one of
-    /// this widget's **synthetic** accessibility nodes — the routed counterpart
-    /// to [`perform_action`](Widget::perform_action).
+    /// Perform an accessibility [`Action`](crate::a11y::Action) on this
+    /// widget, or on one of its **synthetic** accessibility nodes. May mutate
+    /// the CRDT like [`handle_event`](Widget::handle_event).
     ///
-    /// A widget that paints its own contents (a timeline of clips, a
-    /// spreadsheet grid, a table of rows) has no child widgets to receive an
-    /// action, so it describes its structure through
-    /// [`AccessNode::children`](crate::a11y::AccessNode::children) instead. When
-    /// an assistive technology activates one of those nodes, the host resolves
-    /// the node's id back to `(this widget, key path)` and calls this method, so
-    /// the widget knows **which** element the user meant.
-    ///
-    /// `key_path` names the target relative to this widget: one element per
-    /// level of [`AccessNode::children`](crate::a11y::AccessNode::children)
-    /// nesting — `[row]` for a table row, `[row, cell]` for a cell inside it.
-    /// Each element is the node's [`key`](crate::a11y::AccessNode::key), or its
-    /// ordinal among its siblings when it declared none. An **empty** path means
-    /// the action targets the widget itself.
+    /// `key_path` names the target relative to this widget; **empty** means
+    /// the widget itself. A widget that paints its own contents (a timeline of
+    /// clips, a spreadsheet grid, a table of rows) has no child widgets to
+    /// receive an action, so it describes its structure through
+    /// [`AccessNode::children`](crate::a11y::AccessNode::children) instead, and
+    /// the host resolves an activated node back to `(this widget, key path)`:
+    /// one element per level of nesting — `[row]` for a table row, `[row,
+    /// cell]` for a cell inside it. Each element is the node's
+    /// [`key`](crate::a11y::AccessNode::key), or its ordinal among its siblings
+    /// when it declared none.
     ///
     /// For an element keyed by identity rather than position, compare the
     /// incoming key against [`hash_key`](crate::a11y::hash_key) of your own id:
     ///
     /// ```ignore
-    /// fn perform_action_at(&mut self, action: &Action, key_path: &[u64], ..) -> bool {
+    /// fn perform_action(&mut self, action: &Action, key_path: &[u64], ..) -> bool {
     ///     let Some(&clip_key) = key_path.first() else { return false };
     ///     let Some(clip) = self.clips.iter().find(|c| hash_key(&c.id) == clip_key) else {
     ///         return false;   // stale reference — do nothing, never guess
@@ -1624,23 +1606,19 @@ pub trait Widget {
     /// }
     /// ```
     ///
-    /// Returns `true` if the widget consumed the action. The **default forwards
-    /// to [`perform_action`](Widget::perform_action)**, ignoring the path — so
-    /// every existing widget keeps behaving exactly as it did, and a widget with
-    /// no synthetic children (where the path is always empty) need not override
-    /// this at all. If a widget declines, the host falls back to its generic
-    /// dispatch just as it does for `perform_action`; note that the fallback is
-    /// widget-granular (it moves focus to, or clicks the centre of, the whole
-    /// widget), so a canvas that wants per-element operation must implement this.
-    fn perform_action_at(
+    /// Returns `true` if the widget consumed the action. Default `false` ("not
+    /// handled") falls back to generic dispatch (`Focus` moves keyboard focus,
+    /// `Activate` synthesises a click on the whole widget); widgets with
+    /// richer semantics (slider inc/dec, combo expand/collapse, per-element
+    /// canvases) override to handle those verbs precisely.
+    fn perform_action(
         &mut self,
-        action: &crate::a11y::Action,
-        key_path: &[u64],
-        state: &mut crate::widget::Edits<'_>,
-        path: &ModelPath,
+        _action: &crate::a11y::Action,
+        _key_path: &[u64],
+        _state: &mut crate::widget::Edits<'_>,
+        _path: &ModelPath,
     ) -> bool {
-        let _ = key_path;
-        self.perform_action(action, state, path)
+        false
     }
 
     /// Handle an action addressed to a synthetic accessibility child created
@@ -1650,7 +1628,7 @@ pub trait Widget {
     /// Custom canvases using
     /// [`AccessNode::with_keyed_action_routes`](crate::a11y::AccessNode::with_keyed_action_routes)
     /// do not need to override this method: the default decodes the published
-    /// semantic target and forwards it to [`Widget::perform_action_at`].
+    /// semantic target and forwards it to [`Widget::perform_action`].
     fn perform_semantic_action(
         &mut self,
         target: &str,
@@ -1661,7 +1639,7 @@ pub trait Widget {
         // `AccessNode::with_keyed_action_routes` publishes a custom-painted
         // control through the same semantic target that search and agents
         // consume. Decode that target here, at the Widget boundary, so the
-        // app author implements `perform_action_at` once and gets every input
+        // app author implements `perform_action` once and gets every input
         // route promised by the adapter. Explicit semantic targets keep using
         // their widget-specific implementations because they do not carry
         // this reserved prefix.
@@ -1681,7 +1659,7 @@ pub trait Widget {
         if key_path.is_empty() {
             return false;
         }
-        self.perform_action_at(action, &key_path, state, path)
+        self.perform_action(action, &key_path, state, path)
     }
 
     /// A disabled (`false`) widget is excluded from focus traversal, must

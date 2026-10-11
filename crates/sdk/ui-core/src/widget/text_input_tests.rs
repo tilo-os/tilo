@@ -779,6 +779,7 @@ fn value_bindings_publish_user_edits_but_not_model_updates() {
         assert!(Widget::perform_action(
             &mut first,
             &crate::a11y::Action::SetValue("Lin".into()),
+            &[],
             &mut crate::widget::Edits::lend(&mut document),
             &automerge::ROOT,
         ));
@@ -807,6 +808,7 @@ fn value_bindings_publish_user_edits_but_not_model_updates() {
         assert!(Widget::perform_action(
             &mut input,
             &crate::a11y::Action::SetValue("after".into()),
+            &[],
             &mut crate::widget::Edits::lend(&mut document),
             &automerge::ROOT,
         ));
@@ -2007,6 +2009,7 @@ fn secret_field_carries_a_show_hide_control_off_the_tab_order() {
             .unwrap()
             .perform_action(
                 &Action::Activate,
+                &[],
                 &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             );
@@ -2033,6 +2036,7 @@ fn secret_field_carries_a_show_hide_control_off_the_tab_order() {
             .unwrap()
             .perform_action(
                 &Action::Activate,
+                &[],
                 &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             );
@@ -2168,6 +2172,7 @@ fn accessibility_exposes_role_name_value_and_grapheme_actions() {
                 anchor: 1,
                 focus: 2,
             },
+            &[],
             &mut crate::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
@@ -2180,6 +2185,7 @@ fn accessibility_exposes_role_name_value_and_grapheme_actions() {
         assert!(Widget::perform_action(
             &mut ti,
             &Action::SetValue("new value".into()),
+            &[],
             &mut crate::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
@@ -2224,6 +2230,7 @@ fn a_bound_text_is_only_read_and_edits_wait_for_the_owner() {
             anchor: 0,
             focus: 0,
         },
+        &[],
         &mut crate::widget::Edits::lend(&mut document),
         &automerge::ROOT,
     ));
@@ -2232,6 +2239,7 @@ fn a_bound_text_is_only_read_and_edits_wait_for_the_owner() {
     assert!(Widget::perform_action(
         &mut input,
         &Action::SetValue("Project Atlas".into()),
+        &[],
         &mut crate::widget::Edits::lend(&mut document),
         &automerge::ROOT,
     ));
@@ -2419,6 +2427,7 @@ fn action_bindings_own_edits_and_accessibility_set_value() {
         assert!(Widget::perform_action(
             &mut input,
             &crate::a11y::Action::SetValue("Project Atlas".into()),
+            &[],
             &mut crate::widget::Edits::lend(&mut doc),
             &automerge::ROOT
         ));
@@ -3641,6 +3650,7 @@ fn clearing_without_a_binding_is_a_noop_for_local_users() {
     assert!(Widget::perform_action(
         &mut local_input,
         &crate::a11y::Action::SetValue("updated".into()),
+        &[],
         &mut crate::widget::Edits::lend(&mut doc),
         &automerge::ROOT,
     ));

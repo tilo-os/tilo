@@ -1254,37 +1254,6 @@ impl Widget for Autocomplete {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut crate::widget::Edits<'_>,
-        path: &ModelPath,
-    ) -> bool {
-        use crate::a11y::Action;
-        let (state, path) = crate::doc::document(state, path);
-        match action {
-            Action::Focus | Action::Expand => {
-                self.begin_edit();
-                true
-            }
-            Action::Collapse => {
-                self.cancel();
-                true
-            }
-            _ => {
-                let handled = Widget::perform_action(&mut self.input, action, state, path);
-                if handled && matches!(action, Action::SetValue(_)) {
-                    self.input.set_focus(true);
-                    self.outcome = AutocompleteOutcome::None;
-                    self.recompute();
-                    self.open = true;
-                    self.list.set_highlight(None);
-                }
-                handled
-            }
-        }
-    }
-
-    fn perform_action_at(
-        &mut self,
-        action: &crate::a11y::Action,
         key_path: &[u64],
         state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
@@ -1292,7 +1261,28 @@ impl Widget for Autocomplete {
         use crate::a11y::{Action, hash_key};
         let own_key = hash_key(&self.test_id().unwrap_or("autocomplete"));
         if key_path.is_empty() || key_path == [own_key] {
-            return self.perform_action(action, state, path);
+            let (state, path) = crate::doc::document(state, path);
+            return match action {
+                Action::Focus | Action::Expand => {
+                    self.begin_edit();
+                    true
+                }
+                Action::Collapse => {
+                    self.cancel();
+                    true
+                }
+                _ => {
+                    let handled = Widget::perform_action(&mut self.input, action, &[], state, path);
+                    if handled && matches!(action, Action::SetValue(_)) {
+                        self.input.set_focus(true);
+                        self.outcome = AutocompleteOutcome::None;
+                        self.recompute();
+                        self.open = true;
+                        self.list.set_highlight(None);
+                    }
+                    handled
+                }
+            };
         }
         if !self.open || !matches!(action, Action::Activate) {
             return false;
@@ -1341,6 +1331,7 @@ mod tests {
             let mut state = AutoCommit::new();
             assert!(ac.perform_action(
                 &Action::SetValue("al".into()),
+                &[],
                 &mut crate::widget::Edits::lend(&mut state),
                 &automerge::ROOT
             ));
@@ -1348,7 +1339,7 @@ mod tests {
             let node = ac.accessibility().unwrap();
             assert_eq!(node.children[1].name.as_deref(), Some("album"));
             let key = hash_key(&("autocomplete-suggestion", "album"));
-            assert!(ac.perform_action_at(
+            assert!(ac.perform_action(
                 &Action::Activate,
                 &[key],
                 &mut crate::widget::Edits::lend(&mut state),
@@ -1360,7 +1351,7 @@ mod tests {
                 AutocompleteOutcome::Accepted("album".into())
             );
             assert!(!ac.is_open());
-            assert!(!ac.perform_action_at(
+            assert!(!ac.perform_action(
                 &Action::Activate,
                 &[key],
                 &mut crate::widget::Edits::lend(&mut state),
