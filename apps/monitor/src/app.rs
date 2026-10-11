@@ -977,7 +977,9 @@ impl MonitorApp {
 
     /// Open the cadence menu under the header's button.
     fn open_cadence_menu(&mut self) {
-        let Some(anchor) = find_widget(&self.shell, CADENCE_BUTTON_ID).map(Widget::get_rect) else {
+        let Some(anchor) =
+            ui::widget::find_test_id(&self.shell, CADENCE_BUTTON_ID).map(Widget::get_rect)
+        else {
             return;
         };
         let choices = Cadence::all();
@@ -1635,17 +1637,6 @@ impl Widget for MonitorApp {
     }
 }
 
-/// The descendant of `widget` whose test id is `id`.
-fn find_widget<'a>(widget: &'a dyn Widget, id: &str) -> Option<&'a dyn Widget> {
-    if widget.test_id() == Some(id) {
-        return Some(widget);
-    }
-    widget
-        .children()
-        .into_iter()
-        .find_map(|child| find_widget(child, id))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2140,13 +2131,7 @@ mod tests {
     #[test]
     fn narrow_header_keeps_both_modes_readable_and_clickable() {
         fn named_rect(widget: &dyn Widget, id: &str) -> Option<Rect> {
-            if widget.test_id() == Some(id) {
-                return Some(widget.get_rect());
-            }
-            widget
-                .children()
-                .into_iter()
-                .find_map(|child| named_rect(child, id))
+            ui::widget::find_test_id(widget, id).map(Widget::get_rect)
         }
         let mut harness = window(app(), (390, 844));
         let tabs = named_rect(harness.root::<MonitorApp>(), "monitor.tabs").unwrap();

@@ -871,18 +871,14 @@ impl HistoryHost {
     #[cfg(test)]
     pub(crate) fn activate_retained_control_for_test(&mut self, id: &str) -> bool {
         fn activate(widget: &mut dyn Widget, id: &str) -> bool {
-            if widget.test_id() == Some(id) {
-                return widget.perform_action(
+            crate::widget::find_test_id_mut(widget, id).is_some_and(|widget| {
+                widget.perform_action(
                     &crate::a11y::Action::Activate,
                     &[],
                     &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
                     &automerge::ROOT,
-                );
-            }
-            widget
-                .children_mut()
-                .into_iter()
-                .any(|child| activate(child, id))
+                )
+            })
         }
         // Invokes the retained production button callback. No phase, lease,
         // descriptor, or producer behavior is replaced by this access seam.
