@@ -2085,7 +2085,7 @@ impl AppHandler {
         // taffy tree from scratch so new widgets get node ids the
         // layout pass below can see.
         mark_first_frame("first-frame-build-layout-start");
-        app.layout.structure_dirty |= app.root_widget.take_structure_dirty();
+        app.layout.structure_dirty |= app.take_root_structure_dirty();
         // Captured BEFORE `rebuild_structure` clears it — a fresh
         // taffy tree always needs a full solve regardless of the
         // scroll fast path below.

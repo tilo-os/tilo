@@ -1659,16 +1659,25 @@ mod component_adapter {
             root.modal_capture()
         }
         fn take_structure_dirty(&mut self) -> bool {
-            let relayout = std::mem::take(&mut self.relayout);
+            self.take_structure_change().rebuilds()
+        }
+        /// The root's change as it says it; the component's own reasons (a
+        /// relayout it asked for, a save status no `App` presented) rebuild.
+        fn take_structure_change(&mut self) -> crate::widget::StructureChange {
+            use crate::widget::StructureChange;
+            let relayout = StructureChange::of(std::mem::take(&mut self.relayout));
             let binding = self.component.callback_binding();
             let Ok(_entry) = binding.enter() else {
                 return relayout;
             };
-            let save_status_changed = self.component.take_save_status_changed();
+            let save_status_changed =
+                StructureChange::of(self.component.take_save_status_changed());
             let Some(root) = self.component.root.as_deref_mut() else {
                 return relayout;
             };
-            root.take_structure_dirty() | save_status_changed | relayout
+            root.take_structure_change()
+                .join(save_status_changed)
+                .join(relayout)
         }
         fn needs_redraw(&self) -> bool {
             let binding = self.component.callback_binding();

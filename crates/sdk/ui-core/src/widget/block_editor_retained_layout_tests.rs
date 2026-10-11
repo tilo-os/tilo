@@ -314,6 +314,57 @@ fn retained_heading_list_and_quote_typing_damages_its_row_and_matches_gpu_pixels
     }
 }
 
+#[test]
+fn retained_code_lines_and_prose_beside_code_and_tables_damage_their_row_and_match_gpu_pixels() {
+    let blocks = || {
+        let mut code = Block::code_block(Some("rust".into()), "fn main() {");
+        let group = code.id.clone();
+        code.code_group = Some(group.clone());
+        let mut body = Block::code_block(Some("rust".into()), "    run();");
+        body.code_group = Some(group.clone());
+        let mut end = Block::code_block(Some("rust".into()), "}");
+        end.code_group = Some(group);
+        vec![
+            Block::paragraph("Before the code."),
+            code,
+            body,
+            end,
+            Block::paragraph("Between code and table."),
+            Block::table("| A | B |\n| --- | --- |\n| 1 | 2 |", true),
+            Block::paragraph("After the table."),
+        ]
+    };
+    // The run's first line (whose block also paints the run's ground), a
+    // later line, its last line, and prose in a note holding code and a
+    // table.
+    for (index, before_text) in [
+        (1, "fn main() {"),
+        (2, "    run();"),
+        (3, "}"),
+        (0, "Before the code."),
+        (6, "After the table."),
+    ] {
+        let mut fixture = RetainedEditor::with_blocks(1000.0, 1.0, blocks());
+        fixture.editor.focus_block(index, CursorPlacement::End);
+        fixture.frame();
+        fixture.frame();
+        let before = fixture.scene.clone();
+        fixture.key(Key::Character("x".into()), Modifiers::default());
+        assert_eq!(
+            fixture.editor.blocks[index].text(),
+            format!("{before_text}x"),
+            "the key reached block {index}"
+        );
+        let area: f64 = fixture.damage.iter().map(Rect::area).sum();
+        assert!(
+            area < fixture.editor.get_rect().area() / 4.0,
+            "typing in block {index} must damage its row, not the document: {:?}",
+            fixture.damage
+        );
+        assert_damage_pixels(&before, &fixture, true);
+    }
+}
+
 fn assert_damage_pixels(before: &Scene, fixture: &RetainedEditor, sparse: bool) {
     let background = fixture.theme.tokens.colors.surfaces.content;
     let mut retained = crate::offscreen::OffscreenRenderer::new(1200, 1100);

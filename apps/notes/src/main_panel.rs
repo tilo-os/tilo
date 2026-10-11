@@ -2006,10 +2006,22 @@ impl Widget for MainPanel {
     }
 
     fn take_structure_dirty(&mut self) -> bool {
-        // Forward the editor's structure-dirty flag (split/merge
-        // shifted the block count) so the host App rebuilds the
-        // taffy tree.
-        std::mem::take(&mut self.tag_layout_dirty) || self.editor.take_structure_dirty()
+        self.take_structure_change().rebuilds()
+    }
+
+    /// The header rebuilt its widgets: the host rebuilds its tree, but the
+    /// panel's damage describes it (the header is a part of its own, and a
+    /// header that grew or shrank moves the parts below it, which repaints
+    /// the panel). The editor's flag (a split or merge changed the block
+    /// count) rebuilds.
+    fn take_structure_change(&mut self) -> ui::widget::StructureChange {
+        use ui::widget::StructureChange;
+        let header = if std::mem::take(&mut self.tag_layout_dirty) {
+            StructureChange::Described
+        } else {
+            StructureChange::None
+        };
+        header.join(self.editor.take_structure_change())
     }
 
     fn is_layout_dirty(&self) -> bool {
