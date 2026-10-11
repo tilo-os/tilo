@@ -18370,7 +18370,6 @@ dependencies = [
  "tilo-vello-encoding",
  "tilo-winit",
  "tokio",
- "tokio-util",
  "tracing",
  "tracing-subscriber",
  "two-face",
