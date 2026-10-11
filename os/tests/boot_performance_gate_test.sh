@@ -451,6 +451,10 @@ grep -Fqx 'ExecStartPre=+/usr/bin/mkdir -p -m 0700 %h/.config/tilo-store/registr
   || fail 'app-host broker state is not provisioned before confinement'
 grep -Fqx 'ReadWritePaths=%S/tilo-app-host %h/.local/share/tilo-apps %h/.config/tilo-store/registry-checkpoints %h/.local/share/flatpak %h/.cache/flatpak' "$app_host_service" \
   || fail 'app-host checkpoint and account package-manager writes lack exact scoped storage'
+grep -Fqx 'Environment=TILO_STORE_CACHE_DIR=%S/tilo-app-host/cache' "$app_host_service" \
+  || fail 'app-host verified downloads do not use its private writable state directory'
+grep -Fqx 'StateDirectoryMode=0700' "$app_host_service" \
+  || fail 'app-host download state is not private'
 app_host_source="$repo/crates/packaging/app-host/src/main.rs"
 app_host_rpc="$repo/crates/packaging/app-host/src/service.rs"
 grep -Fqx 'ListenStream=%t/tilo/services/app-host.sock' "$app_host_socket"

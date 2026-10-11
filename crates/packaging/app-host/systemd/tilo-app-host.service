@@ -34,4 +34,6 @@ CapabilityBoundingSet=
 AmbientCapabilities=
 StateDirectory=tilo-app-host
 StateDirectoryMode=0700
+# Verified downloads are disposable broker state, never writes to the read-only home.
+Environment=TILO_STORE_CACHE_DIR=%S/tilo-app-host/cache
 ReadWritePaths=%S/tilo-app-host %h/.local/share/tilo-apps %h/.config/tilo-store/registry-checkpoints %h/.local/share/flatpak %h/.cache/flatpak
