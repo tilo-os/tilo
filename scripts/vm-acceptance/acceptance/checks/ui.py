@@ -13,9 +13,9 @@ from ..core import CheckFailed, Unobservable, check, expect
 AREA = "ui"
 
 THEMES = {
-    "light": {"theme": "light", "high_contrast": False},
-    "dark": {"theme": "dark", "high_contrast": False},
-    "high-contrast": {"theme": "dark", "high_contrast": True},
+    "light": ("appearance.theme.light",),
+    "dark": ("appearance.theme.dark",),
+    "high-contrast": ("appearance.theme.dark", "appearance.high-contrast"),
 }
 
 # Chrome only: window contents scroll out of view by design.
@@ -24,12 +24,9 @@ CONTAINER = re.compile(r"(Host|Container|Layer|Root)(\[\d+\])?$")
 
 
 def set_theme(ctx, name: str) -> None:
-    """Persist a theme the way Settings > Appearance does (settings.json)."""
-    raw = ctx.vm.exec('cat "$HOME/.config/tilo/settings.json" 2>/dev/null || echo "{}"')
-    body = "\n".join(l for l in raw.splitlines() if not l.startswith("receipt:"))
-    doc = json.loads(body or "{}")
-    doc.setdefault("appearance", {}).update(THEMES[name])
-    ctx.vm.write_home_file(".config/tilo/settings.json", json.dumps(doc, indent=2).encode())
+    """Select the theme through shell actions, which persist it and repaint chrome."""
+    for action in THEMES[name]:
+        ctx.vm.invoke("actions", action)
     time.sleep(2.5)
 
 
