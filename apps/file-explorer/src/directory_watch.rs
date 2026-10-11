@@ -122,47 +122,12 @@ impl DirectoryWatch {
     }
 }
 
-/// Filesystems whose entries can change without passing through this
-/// kernel, by `statfs` magic: FUSE (tilo-fs, virtiofs, cloud mounts), NFS,
-/// SMB/CIFS, 9P, Ceph, AFS.
-#[cfg(target_os = "linux")]
-const REMOTE_FILESYSTEMS: [u32; 9] = [
-    0x6573_5546, // FUSE
-    0x0000_6969, // NFS
-    0x0000_517B, // SMB
-    0xFF53_4D42, // CIFS
-    0xFE53_4D42, // SMB2
-    0x0102_1997, // 9P
-    0x00C3_6400, // Ceph
-    0x6B41_4653, // AFS (kAFS)
-    0x5346_414F, // AFS (OpenAFS)
-];
-
-#[cfg(target_os = "linux")]
 fn coverage_of(dir: &Path) -> Coverage {
-    match rustix::fs::statfs(dir) {
-        Ok(stat) => {
-            #[expect(
-                clippy::cast_sign_loss,
-                clippy::cast_possible_truncation,
-                reason = "statfs magic numbers are 32-bit; the width and sign of `f_type` vary by target"
-            )]
-            let magic = stat.f_type as u32;
-            if REMOTE_FILESYSTEMS.contains(&magic) {
-                Coverage::Partial
-            } else {
-                Coverage::Complete
-            }
-        }
-        Err(_) => Coverage::Partial,
+    if tilo_files::native::watch_sees_every_change(dir) {
+        Coverage::Complete
+    } else {
+        Coverage::Partial
     }
-}
-
-/// Outside Linux the filesystem type is not checked, so a watch is trusted
-/// for local edits only.
-#[cfg(not(target_os = "linux"))]
-fn coverage_of(_dir: &Path) -> Coverage {
-    Coverage::Partial
 }
 
 #[cfg(test)]
@@ -213,12 +178,5 @@ mod tests {
         assert!(!watch.point_at(Some(&missing)));
         assert_eq!(watch.coverage(), Coverage::None);
         assert!(!watch.take_changes());
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn a_local_directory_is_completely_covered() {
-        let dir = tempfile::tempdir().unwrap();
-        assert_eq!(coverage_of(dir.path()), Coverage::Complete);
     }
 }
