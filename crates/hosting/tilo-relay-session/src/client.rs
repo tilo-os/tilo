@@ -1298,7 +1298,7 @@ where
     let mut schedule = V2WriteSchedule::default();
     let mut pointers = PointerPacer::default();
     loop {
-        let due = pointers.next_due(Instant::now());
+        let due = pointers.next_due();
         // Queued envelopes first: a newer move of a held pointer that is
         // already waiting replaces it before the gap's end writes it.
         let event = tokio::select! {

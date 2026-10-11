@@ -10,9 +10,16 @@
 //!
 //! - **Leading edge.** A move of a slot that has not been written within the
 //!   gap is written at once.
-//! - **Latest wins, never later than the gap.** A move inside the gap replaces
-//!   the held one and is written when the gap ends, so the final resting
-//!   position always goes, at most [`POINTER_GAP`] after the previous write.
+//! - **Latest wins, when the gap ends.** A move inside the gap replaces the
+//!   held one and is written when the gap ends, so the final resting position
+//!   always goes.
+//! - **Fresh rather than stale.** A 30 Hz producer paced to 20 Hz leaves the
+//!   held move up to a whole producer period old when the gap ends. When the
+//!   producer's next move is due within [`FRESHER_WAIT`], and sooner than the
+//!   held one has gone stale, the writer waits for it and writes that one at
+//!   once instead; if it does not come, the held move goes. A receiver so
+//!   gets moves that are on average a few milliseconds old, not half a
+//!   producer period, and a resting position is at most [`FRESHER_WAIT`] late.
 //! - **Order where it matters.** Anything but a delta or other latest-state
 //!   presence (a caret, a selection, a typing range) takes every held pointer
 //!   ahead of it, in the same write: an app's `Left` never overtakes its last
@@ -24,6 +31,7 @@
 //! looked at, so a person's and an agent's pointer travel alike.
 
 use std::collections::HashMap;
+use std::time::Duration;
 
 use n0_future::time::Instant;
 
@@ -63,22 +71,65 @@ pub(crate) fn pacing(envelope: &Envelope) -> Pacing {
     }
 }
 
+/// The longest a held move that has gone stale waits past the end of its gap
+/// for a fresher one its producer is about to publish.
+pub(crate) const FRESHER_WAIT: Duration = Duration::from_millis(15);
+/// How late a producer's next move may be against its own rhythm and still
+/// be waited for.
+const ARRIVAL_SLACK: Duration = Duration::from_millis(3);
+
+/// A move held back, with its posting order and when it was posted.
+struct Held {
+    order: u64,
+    envelope: Envelope,
+    posted: Instant,
+}
+
 #[derive(Default)]
 struct Slot {
     /// When this slot was last written.
     sent: Option<Instant>,
-    /// The newest move not yet written, with its posting order.
-    held: Option<(u64, Envelope)>,
+    /// The newest move not yet written.
+    held: Option<Held>,
+    /// When the newest move was posted, and how long after the one before
+    /// it: the producer's rhythm while it moves faster than the gap.
+    posted: Option<Instant>,
+    rhythm: Option<Duration>,
 }
 
 impl Slot {
-    fn ready(&self, now: Instant) -> bool {
-        self.sent.is_none_or(|sent| now >= ready_at(sent))
+    /// When the held move falls due, if one is held.
+    ///
+    /// At the end of its gap, unless the producer's next move is due within
+    /// [`FRESHER_WAIT`] and sooner than the held move has gone stale: then
+    /// that fresher move is waited for, and the held one goes only if it does
+    /// not come. A move posted after its gap ended is fresh and goes at once.
+    fn due(&self) -> Option<Instant> {
+        let held = self.held.as_ref()?;
+        let Some(gap_end) = self.sent.map(|sent| later(sent, POINTER_GAP)) else {
+            return Some(held.posted);
+        };
+        let staleness = gap_end.saturating_duration_since(held.posted);
+        let fresher = self
+            .rhythm
+            .map(|rhythm| later(held.posted, rhythm))
+            .filter(|next| {
+                let wait = next.saturating_duration_since(gap_end);
+                *next > gap_end && wait <= FRESHER_WAIT && wait < staleness
+            });
+        Some(fresher.map_or(gap_end, |next| later(next, ARRIVAL_SLACK)))
+    }
+
+    /// Whether this slot paces nothing any more: nothing held, and its gap
+    /// over, so a move after this pause goes at once anyway.
+    fn idle(&self, now: Instant) -> bool {
+        self.held.is_none() && self.sent.is_none_or(|sent| now >= later(sent, POINTER_GAP))
     }
 }
 
-fn ready_at(sent: Instant) -> Instant {
-    sent.checked_add(POINTER_GAP).unwrap_or(sent)
+/// `at + by`, or `at` itself past the end of time.
+fn later(at: Instant, by: Duration) -> Instant {
+    at.checked_add(by).unwrap_or(at)
 }
 
 /// The pointer moves a session writer holds back, per slot.
@@ -106,7 +157,7 @@ impl PointerPacer {
     pub(crate) fn admit(&mut self, envelope: Envelope, now: Instant) -> Admitted {
         let ahead = match pacing(&envelope) {
             Pacing::Pointer(key) => {
-                self.hold(key, envelope);
+                self.hold(key, envelope, now);
                 return Admitted::Held;
             }
             Pacing::Passes => Vec::new(),
@@ -115,38 +166,39 @@ impl PointerPacer {
         Admitted::Write { ahead, envelope }
     }
 
-    /// Hold `envelope` as the newest move of `key`, replacing an older one.
-    pub(crate) fn hold(&mut self, key: PointerKey, envelope: Envelope) {
+    /// Hold `envelope`, posted at `now`, as the newest move of `key`,
+    /// replacing an older one.
+    pub(crate) fn hold(&mut self, key: PointerKey, envelope: Envelope, now: Instant) {
         let order = self.posted;
         self.posted = self.posted.wrapping_add(1);
-        self.slots.entry(key).or_default().held = Some((order, envelope));
+        let slot = self.slots.entry(key).or_default();
+        slot.rhythm = slot
+            .posted
+            .map(|before| now.saturating_duration_since(before))
+            .filter(|rhythm| !rhythm.is_zero() && *rhythm <= POINTER_GAP);
+        slot.posted = Some(now);
+        slot.held = Some(Held {
+            order,
+            envelope,
+            posted: now,
+        });
     }
 
-    /// When the next held move falls due, if any is held; `now` for one that
-    /// is due already.
-    pub(crate) fn next_due(&self, now: Instant) -> Option<Instant> {
-        self.slots
-            .values()
-            .filter(|slot| slot.held.is_some())
-            .map(|slot| slot.sent.map_or(now, ready_at))
-            .min()
+    /// When the next held move falls due, if any is held.
+    pub(crate) fn next_due(&self) -> Option<Instant> {
+        self.slots.values().filter_map(Slot::due).min()
     }
 
-    /// Take every held move whose slot may be written at `now`, in posting
-    /// order, and mark those slots written. Slots idle for a whole gap are
-    /// forgotten: a move after such a pause is written at once anyway.
+    /// Take every held move that is due at `now`, in posting order, and mark
+    /// those slots written. Idle slots are forgotten.
     pub(crate) fn take_due(&mut self, now: Instant) -> Vec<Envelope> {
         let mut due = Vec::new();
         self.slots.retain(|_, slot| {
-            if !slot.ready(now) {
-                return true;
+            if slot.due().is_some_and(|at| at <= now) {
+                due.extend(slot.held.take());
+                slot.sent = Some(now);
             }
-            let Some(held) = slot.held.take() else {
-                return false;
-            };
-            slot.sent = Some(now);
-            due.push(held);
-            true
+            !slot.idle(now)
         });
         in_order(due)
     }
@@ -166,9 +218,9 @@ impl PointerPacer {
     }
 }
 
-fn in_order(mut moves: Vec<(u64, Envelope)>) -> Vec<Envelope> {
-    moves.sort_by_key(|(order, _)| *order);
-    moves.into_iter().map(|(_, envelope)| envelope).collect()
+fn in_order(mut moves: Vec<Held>) -> Vec<Envelope> {
+    moves.sort_by_key(|held| held.order);
+    moves.into_iter().map(|held| held.envelope).collect()
 }
 
 #[cfg(test)]
@@ -272,32 +324,33 @@ pub(crate) mod tests {
         let t0 = Instant::now();
         let mut pacer = PointerPacer::default();
         let first = pointer("tile", 1.0);
-        pacer.hold(key_of(&first), first.clone());
+        pacer.hold(key_of(&first), first.clone(), t0);
         assert_eq!(pacer.take_due(t0), vec![first]);
-        assert_eq!(pacer.next_due(t0), None);
+        assert_eq!(pacer.next_due(), None);
         // A whole gap later the slot is idle again: the next move goes at once.
+        let t1 = t0 + POINTER_GAP;
         let later = pointer("tile", 2.0);
-        pacer.hold(key_of(&later), later.clone());
-        assert_eq!(pacer.take_due(t0 + POINTER_GAP), vec![later]);
+        pacer.hold(key_of(&later), later.clone(), t1);
+        assert_eq!(pacer.take_due(t1), vec![later]);
     }
 
     #[test]
-    fn a_30_hz_stream_goes_at_20_hz_and_its_last_move_by_the_gaps_end() {
+    fn a_30_hz_stream_goes_at_20_hz_and_its_last_move_soon_after_the_gaps_end() {
         let t0 = Instant::now();
         let mut pacer = PointerPacer::default();
         let mut written = Vec::new();
         for step in 0..10_u32 {
             let now = t0 + ms(33) * step;
             // The writer wakes for every move and every due instant.
-            while let Some(due) = pacer.next_due(now).filter(|due| *due < now) {
+            while let Some(due) = pacer.next_due().filter(|due| *due < now) {
                 written.extend(pacer.take_due(due).into_iter().map(|e| (due, e)));
             }
             let envelope = pointer("tile", f64::from(step));
-            pacer.hold(key_of(&envelope), envelope);
+            pacer.hold(key_of(&envelope), envelope, now);
             written.extend(pacer.take_due(now).into_iter().map(|e| (now, e)));
         }
         let last_posted = t0 + ms(33 * 9);
-        let due = pacer.next_due(last_posted).expect("the last move is held");
+        let due = pacer.next_due().expect("the last move is held");
         assert!(due <= last_posted + POINTER_GAP);
         written.extend(pacer.take_due(due).into_iter().map(|e| (due, e)));
 
@@ -313,9 +366,52 @@ pub(crate) mod tests {
             Some(&pointer("tile", 9.0)),
             "the resting position must be written"
         );
-        // 297 ms of moves: the first at once, then one per gap.
+        // 297 ms of moves: the first at once, then about one per gap.
         assert_eq!(written.len(), 7, "{written:?}");
-        assert!(pacer.next_due(due).is_none());
+        assert!(pacer.next_due().is_none());
+    }
+
+    #[test]
+    fn a_stale_held_move_waits_briefly_for_a_fresher_one() {
+        let t0 = Instant::now();
+        let mut pacer = PointerPacer::default();
+        let a = pointer("tile", 1.0);
+        pacer.hold(key_of(&a), a.clone(), t0);
+        assert_eq!(pacer.take_due(t0), vec![a.clone()]);
+        // Posted 32 ms in, this move is 18 ms old when the gap ends; the
+        // producer's next is due 14 ms after that, so it is waited for.
+        let b = pointer("tile", 2.0);
+        pacer.hold(key_of(&b), b.clone(), t0 + ms(32));
+        let fresher_due = t0 + ms(64) + ARRIVAL_SLACK;
+        assert_eq!(pacer.next_due(), Some(fresher_due));
+        assert!(pacer.take_due(t0 + POINTER_GAP).is_empty());
+        // It comes, and goes at once in place of the stale one.
+        let c = pointer("tile", 3.0);
+        pacer.hold(key_of(&c), c.clone(), t0 + ms(64));
+        assert_eq!(pacer.take_due(t0 + ms(64)), vec![c]);
+
+        // If the producer stops instead, the held move still goes.
+        let mut pacer = PointerPacer::default();
+        pacer.hold(key_of(&a), a.clone(), t0);
+        assert_eq!(pacer.take_due(t0), vec![a]);
+        pacer.hold(key_of(&b), b.clone(), t0 + ms(32));
+        assert_eq!(pacer.take_due(fresher_due), vec![b]);
+        assert!(fresher_due <= t0 + POINTER_GAP + FRESHER_WAIT + ARRIVAL_SLACK);
+    }
+
+    #[test]
+    fn a_held_move_that_is_still_fresh_goes_when_the_gap_ends() {
+        let t0 = Instant::now();
+        let mut pacer = PointerPacer::default();
+        let a = pointer("tile", 1.0);
+        pacer.hold(key_of(&a), a.clone(), t0);
+        assert_eq!(pacer.take_due(t0), vec![a]);
+        // Posted 40 ms in, 10 ms old at the gap's end: waiting the 30 ms for
+        // the producer's next move would cost more than it saves.
+        let b = pointer("tile", 2.0);
+        pacer.hold(key_of(&b), b.clone(), t0 + ms(40));
+        assert_eq!(pacer.next_due(), Some(t0 + POINTER_GAP));
+        assert_eq!(pacer.take_due(t0 + POINTER_GAP), vec![b]);
     }
 
     #[test]
@@ -324,19 +420,19 @@ pub(crate) mod tests {
         let mut pacer = PointerPacer::default();
         let a = pointer("tile a", 1.0);
         let b = pointer("tile b", 1.0);
-        pacer.hold(key_of(&a), a.clone());
+        pacer.hold(key_of(&a), a.clone(), t0);
         assert_eq!(pacer.take_due(t0), vec![a]);
-        pacer.hold(key_of(&b), b.clone());
+        pacer.hold(key_of(&b), b.clone(), t0 + ms(10));
         assert_eq!(pacer.take_due(t0 + ms(10)), vec![b]);
 
         let a2 = pointer("tile a", 2.0);
         let b2 = pointer("tile b", 2.0);
-        pacer.hold(key_of(&b2), b2.clone());
-        pacer.hold(key_of(&a2), a2.clone());
+        pacer.hold(key_of(&b2), b2.clone(), t0 + ms(20));
+        pacer.hold(key_of(&a2), a2.clone(), t0 + ms(20));
         assert!(pacer.take_due(t0 + ms(20)).is_empty());
-        assert_eq!(pacer.next_due(t0 + ms(20)), Some(t0 + POINTER_GAP));
+        assert_eq!(pacer.next_due(), Some(t0 + POINTER_GAP));
         assert_eq!(pacer.take_all(t0 + ms(20)), vec![b2, a2]);
-        assert!(pacer.next_due(t0 + ms(20)).is_none());
+        assert!(pacer.next_due().is_none());
     }
 
     #[test]
@@ -345,7 +441,7 @@ pub(crate) mod tests {
         let mut pacer = PointerPacer::default();
         for slot in 0..100_u32 {
             let envelope = pointer(&format!("tile {slot}"), 0.0);
-            pacer.hold(key_of(&envelope), envelope);
+            pacer.hold(key_of(&envelope), envelope, t0);
         }
         assert_eq!(pacer.take_due(t0).len(), 100);
         assert_eq!(pacer.slots.len(), 100);
