@@ -1716,8 +1716,20 @@ pub(super) mod tests {
     fn a_retained_build_moves_cheaply() {
         // The owner job of every edit moves its build into the blocking pool
         // and back on each quantum; inline selection state made that 54 KB.
-        let size = std::mem::size_of::<RetainBuild>();
-        assert!(size <= 2048, "a RetainBuild is {size} bytes inline");
+        use std::mem::size_of;
+        let size = size_of::<RetainBuild>();
+        assert!(
+            size <= 2048,
+            "a RetainBuild is {size} bytes inline: store {}, sorter {}, phase {}, \
+             publication {}, fast {}, continuity {}, stamp {}",
+            size_of::<WorkspaceStore>(),
+            size_of::<super::super::bounded::Sorter>(),
+            size_of::<RetainPhase>(),
+            size_of::<Option<super::super::shell_selection::Publication>>(),
+            size_of::<Option<super::super::shell_selection::tail_cache::FastTail>>(),
+            size_of::<Option<super::super::continuity::Receipt>>(),
+            size_of::<Option<tail_index::Stamp>>(),
+        );
     }
 
     #[test]
