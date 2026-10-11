@@ -130,14 +130,8 @@ impl FilePickerOverlay {
         active.widget.handle_event(
             event,
             &mut ui::widget::EventCtx {
-                scale_factor: ctx.scale_factor,
-                modifiers: ctx.modifiers,
-                state: ctx.state.reborrow(),
-                path: ctx.path,
-                handled: &mut *ctx.handled,
-                focus_target: &mut *ctx.focus_target,
-                node_id: node,
                 taffy: &taffy,
+                ..ctx.reborrow(ctx.path, node)
             },
         );
         *ctx.handled = true;
