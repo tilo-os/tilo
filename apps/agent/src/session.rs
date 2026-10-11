@@ -3081,6 +3081,24 @@ fn word_action_anchor(action: &RichTextAction, _focus: &str) -> tilo_actions::In
         RichTextAction::AppendParagraph { .. } | RichTextAction::ContinueParagraph { .. } => {
             tilo_actions::InteractionAnchor::Resource
         }
+        RichTextAction::InsertBlocks { at, .. } | RichTextAction::InsertMarkdown { at, .. } => {
+            match at {
+                tilo_document::block_edit::Placement::After(id) => object_anchor(id),
+                tilo_document::block_edit::Placement::Start
+                | tilo_document::block_edit::Placement::End => {
+                    tilo_actions::InteractionAnchor::Resource
+                }
+            }
+        }
+        RichTextAction::SetBlockText { block, .. }
+        | RichTextAction::SetBlockShape { block, .. }
+        | RichTextAction::SetBlockDone { block, .. }
+        | RichTextAction::ShiftIndent { block, .. }
+        | RichTextAction::MoveBlock { block, .. } => object_anchor(block),
+        RichTextAction::DeleteBlocks { blocks } => tilo_actions::InteractionAnchor::Objects {
+            ids: blocks.clone(),
+        },
+        RichTextAction::SyncBody { .. } => tilo_actions::InteractionAnchor::Resource,
     }
 }
 
