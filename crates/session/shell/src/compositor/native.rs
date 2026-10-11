@@ -3279,6 +3279,7 @@ impl ControlState for FrameBuilderControlState<'_> {
                     && surface.presented
                     && surface.transfer_source.is_none()
                     && store.is_presented(surface.surface_id);
+                let (origin_x, origin_y) = store.surface_origin(surface.surface_id, surface.rect);
                 let mut row = serde_json::json!({
                     "surface_id": surface.surface_id,
                     "app_id": surface.app_id,
@@ -3294,8 +3295,8 @@ impl ControlState for FrameBuilderControlState<'_> {
                     "frame_geometry": store.frame_geometry(surface.surface_id),
                     "device_scale": seat.surface_scale(surface.surface_id),
                     "content_origin": {
-                        "x": surface.content_rect.x0,
-                        "y": surface.content_rect.y0,
+                        "x": origin_x,
+                        "y": origin_y,
                     },
                     "buffer": store.frame_size(surface.surface_id)
                         .map(|(w, h)| serde_json::json!({ "w": w, "h": h })),
@@ -18340,6 +18341,82 @@ mod tests {
                 .iter()
                 .all(|row| row["surface_id"] != surface_id)
         );
+        store.forget(surface_id);
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn foreign_frames_observes_exact_floating_content_route() {
+        use crate::compositor::foreign::WindowGeometry;
+
+        let event_loop: calloop::EventLoop<State> =
+            calloop::EventLoop::try_new().expect("event loop");
+        let display: Display<State> = Display::new().expect("display");
+        let mut seat = State::new(event_loop.handle(), display.handle());
+        let fb = FrameBuilder::new((1600, 900));
+        let surface_id = 984_773;
+        let rect = Rect::new(800.0, 100.0, 900.0, 180.0);
+        let content_rect = Rect::new(810.0, 112.0, 890.0, 170.0);
+        let store = crate::compositor::foreign::store();
+        store.forget(surface_id);
+        store.note_placement(surface_id, rect);
+        store.publish_rgba(surface_id, &vec![0; 100 * 80 * 4], 100, 80);
+        store.note_window_geometry(
+            surface_id,
+            Some(WindowGeometry {
+                x: 3,
+                y: 5,
+                width: 94,
+                height: 70,
+                logical_size: Some((100, 80)),
+                buffer_scale: 1,
+            }),
+        );
+        seat.floating_toplevels
+            .push(crate::shell::floating::FloatingToplevel {
+                owner: None,
+                surface_id,
+                token: "private-floating-capability".into(),
+                connection: 7,
+                public_id: "chat.agent-direct:scribe".into(),
+                app_id: "so.tilo.chat".into(),
+                rect,
+                content_rect,
+                input_rect: Some(content_rect),
+                transfer_frame: None,
+                transfer_source: None,
+                suspended: false,
+                presented: false,
+            });
+        let rows = FrameBuilderControlState {
+            fb: &fb,
+            doc: None,
+            shares: None,
+            lock: None,
+            seat: Some(&seat),
+            resolved: None,
+        }
+        .foreign_frames_json();
+        drop(fb);
+        let row = rows
+            .as_array()
+            .expect("observed frame rows")
+            .iter()
+            .find(|row| row["surface_id"] == surface_id)
+            .expect("native secondary surface");
+        let routed_origin = store.surface_origin(surface_id, rect);
+        assert_eq!(routed_origin, (797.0, 95.0));
+        assert_eq!(
+            row["content_origin"],
+            serde_json::json!({"x": routed_origin.0, "y": routed_origin.1})
+        );
+        assert_eq!(
+            row["content_rect"],
+            serde_json::json!({"x": 810.0, "y": 112.0, "w": 80.0, "h": 58.0})
+        );
+        assert_eq!(seat.floating_toplevels[0].rect, rect);
+        assert_eq!(seat.floating_toplevels[0].content_rect, content_rect);
+        assert_eq!(seat.floating_toplevels[0].input_rect, Some(content_rect));
         store.forget(surface_id);
     }
 
