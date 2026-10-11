@@ -635,6 +635,28 @@ already has (`app_cli::first_open_offer`). With the default of 20, an image or
 per-user runtime from within the last 20 releases of an app opens it with no
 runtime download; an older one downloads the runtime the newest version names.
 
+On the device, a downloaded runtime build lives in
+`$XDG_DATA_HOME/tilo-runtime/<version>/` only while something needs it
+(`runtime_bundle::gc`). After every `tilo-install install`, `update` and
+`uninstall`, and on `tilo-install gc`, a build is removed unless an installed
+package (the user's or the image's) names it as its `runtime` or among its
+`optional-runtimes`, it is pinned (`tilo-install runtime pin`, or installed
+with `--pinned`), it was installed within the last hour (an app's first open
+installs its runtime and then the app, in two steps), or a running app has it
+mounted. A build leaves its version's directory in one rename before any file
+is deleted, so a collection stopped halfway never leaves a build a launch
+would pick. Nothing runs on a timer.
+
+A launch holds what it runs on from before it looks at it until its sandbox
+exits: a shared `flock` on `.launches/<version>` in the runtime root for each
+per-user runtime build, and on `leases/<package id>` in the app store for its
+payload tree. Removal takes the same file exclusively without waiting, so an
+app opened while it is being updated keeps the build it chose, payload and
+runtime, and the collection after the launch ends takes them. A launcher that
+dies releases its holds with its descriptors. The app host's own installs and
+removals run the same collection as `tilo-install`, which also removes the
+staging a crashed install left in the store's `tmp/`.
+
 `prune-storage --dry-run --keep-releases N --keep-prereleases M` lists the
 published versions that policy drops and what pruning deletes once they are
 gone, without changing anything.

@@ -520,10 +520,7 @@ enum Reach {
     /// ([`crate::network::reachability`]).
     Internet,
     /// Only this machine's (tests).
-    #[cfg_attr(
-        not(test),
-        allow(dead_code, reason = "tests reach only loopback peers")
-    )]
+    #[cfg(test)]
     Loopback,
     /// Only this machine's, holding relays nobody listens on back the way
     /// [`Self::Internet`] holds back the public ones (tests of the
@@ -1590,6 +1587,7 @@ impl ShellNetwork {
                 iroh::Endpoint::builder(presets::N0).relay_mode(held_back),
                 iroh::endpoint::default_relay_mode().relay_map(),
             ),
+            #[cfg(test)]
             Reach::Loopback => (
                 iroh::Endpoint::builder(presets::Minimal)
                     .relay_mode(iroh::RelayMode::Disabled)
@@ -7737,6 +7735,26 @@ pub(crate) fn native_read_network_for_test(
     network.local_peer_id = network.keypair.public();
     network.host_identity = Some(identity);
     (network, commands)
+}
+
+/// Deliver a fixture response through production peer authentication and RPC matching.
+#[cfg(test)]
+pub(crate) fn native_remote_answer_for_test(
+    network: &ShellNetwork,
+    workspace: u64,
+    from: iroh::EndpointId,
+    message: tilo_actions::remote::RemoteActionMessage,
+) {
+    let frame = tilo_actions::remote::RemoteActionFrame::new(message)
+        .encode()
+        .unwrap();
+    network.dispatch_neighbour_msg(
+        workspace,
+        from,
+        None,
+        false,
+        NeighbourMsg::RemoteAction { frame },
+    );
 }
 
 /// Give a fixture network the worker runtime a spawned one owns, so governor

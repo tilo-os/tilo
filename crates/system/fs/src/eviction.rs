@@ -19,7 +19,7 @@ use uuid::Uuid;
 
 use crate::availability::{
     AvailabilityPolicy, AvailabilityRegistry, EvictionBlocker, EvictionDecision,
-    EvictionRequirements, RecordAvailability, RecordKind, Residency,
+    EvictionRequirements, RecordAvailability, RecordKind, Residency, pinned_in_snapshot,
 };
 use crate::clock::unix_now_ms;
 use crate::{FileHistoryStore, Hydrator};
@@ -346,7 +346,7 @@ impl EvictionCoordinator {
             }
             let protects_current = targets.contains(&record.record_id)
                 || record.residency != Residency::NotResident
-                || captured_effective_pinned(records, record.record_id);
+                || pinned_in_snapshot(records, record.record_id);
             if protects_current && let Some(version) = record.current_version {
                 keys.push((record.record_id, version));
             }
@@ -394,25 +394,6 @@ impl EvictionCoordinator {
             .await?;
         Ok(EvictionCatalog::with_empty_versions(payloads, empty)?)
     }
-}
-
-fn captured_effective_pinned(records: &[RecordAvailability], record_id: FileRecordId) -> bool {
-    let mut current = Some(record_id);
-    let mut remaining = records.len().saturating_add(1);
-    while let Some(record_id) = current {
-        if remaining == 0 {
-            return true;
-        }
-        remaining = remaining.saturating_sub(1);
-        let Some(record) = records.iter().find(|record| record.record_id == record_id) else {
-            return true;
-        };
-        if record.policy == AvailabilityPolicy::Pinned {
-            return true;
-        }
-        current = record.parent;
-    }
-    false
 }
 
 fn plan_for_mode(
@@ -1654,10 +1635,10 @@ mod tests {
             let missing = FileRecordId::new();
             let mut child = RecordAvailability::new(child_id, RecordKind::File);
             child.parent = Some(missing);
-            assert!(captured_effective_pinned(&[child.clone()], child_id));
+            assert!(pinned_in_snapshot(&[child.clone()], child_id));
 
             child.parent = Some(child_id);
-            assert!(captured_effective_pinned(&[child], child_id));
+            assert!(pinned_in_snapshot(&[child], child_id));
         }
         // Phase `batch_safe_plans_match_single_plans_for_shared_and_partial_payloads`.
         {

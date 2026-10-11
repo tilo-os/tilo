@@ -334,6 +334,9 @@ pub struct DrmDispatchState {
     pub signal_status: BTreeMap<String, OutputSignalStatus>,
     /// Receiving end of the presenter's signalling reports.
     pub signal_reports: Option<Receiver<SignalReport>>,
+    /// What each output's primary plane offers fullscreen clients, as the
+    /// presenter last learned it ([`super::client_scanout::ClientPlanes`]).
+    pub client_planes: super::client_scanout::ClientPlanes,
 }
 
 /// What the DRM backend keeps for drawing tablets.
@@ -1206,6 +1209,7 @@ impl DrmDispatchState {
             fullscreen_output: None,
             signal_status: BTreeMap::new(),
             signal_reports: None,
+            client_planes: super::client_scanout::ClientPlanes::default(),
         }
     }
 
@@ -1629,6 +1633,8 @@ impl DrmDispatchState {
             // A replugged or rebuilt output gets a fresh chance at what an
             // earlier generation of it failed to drive.
             self.signal_status.remove(&build.config_key);
+            // Its plane is probed again by the first fullscreen client on it.
+            self.client_planes.publish(id, None);
             self.live.push(LiveEntry {
                 key,
                 id,

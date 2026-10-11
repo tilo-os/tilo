@@ -23,7 +23,8 @@ use durable_store::{
 };
 
 use crate::{
-    SCHEMA_VERSION, SCHEMA_VERSION_KEY, StoreError, decode_canonical, validate_canonical_schema_of,
+    SCHEMA_VERSION, SCHEMA_VERSION_KEY, StoreError, decode_canonical_with, load_hint,
+    validate_canonical_schema_of,
 };
 
 /// Debounce window [`FsStore`](crate::FsStore) applies by default. Long
@@ -268,7 +269,16 @@ impl DocOwner {
         let Some(stored) = self.store.read(&self.key)? else {
             return Ok(None);
         };
-        let (doc, repair) = decode_canonical(&stored.bytes, recover_partial, &self.label)?;
+        let known = self
+            .store
+            .read_hint(&self.key)
+            .and_then(|hint| load_hint::hashes_for(&hint, &stored.bytes));
+        let (doc, repair) = decode_canonical_with(
+            &stored.bytes,
+            recover_partial,
+            &self.label,
+            known.as_deref(),
+        )?;
         Ok(Some(StoredLoad {
             doc,
             source: stored.bytes,
@@ -579,7 +589,14 @@ impl DocWriter {
     ) -> Result<(), StoreError> {
         let bytes = doc.save();
         let len = bytes.len();
+        let hint = load_hint::encode(&bytes, doc.committed_document().change_hashes());
         self.submit(WriteOp::Replace(bytes), heads)?;
+        if let (Some(owner), Some(hint)) = (&self.owner, hint)
+            && let Err(error) = owner.store.write_hint(&owner.key, &hint)
+        {
+            // Only the next open's speed depends on it.
+            tracing::debug!(document = %owner.label.display(), %error, "load hint not kept");
+        }
         self.base = len;
         self.appended = 0;
         self.full_writes = self.full_writes.saturating_add(1);
@@ -1153,5 +1170,75 @@ mod tests {
             assert!(writer.try_flush().is_err());
             assert_eq!(writer.document_path(), Path::new(""));
         }
+    }
+
+    #[test]
+    fn a_full_save_keeps_a_load_hint_only_a_load_of_those_bytes_takes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store: Rc<dyn DurableStore> =
+            Rc::new(FsStore::with_debounce(tmp.path(), Duration::from_secs(600)));
+        let key = StorageKey::record("so.tilo.test", "room", "large");
+        let owner = Rc::new(DocOwner::acquire(Rc::clone(&store), key.clone()).unwrap());
+        let mut doc = owner.new_document().unwrap();
+        let items = doc.put_object(ROOT, "items", ObjType::Map).unwrap();
+        for i in 0..6_000_u64 {
+            let value = blake3::hash(&i.to_le_bytes()).to_hex().to_string();
+            doc.put(&items, format!("item-{i:05}"), value).unwrap();
+            if i % 50 == 0 {
+                doc.commit();
+            }
+        }
+        let mut writer = DocWriter::start_new(&owner, &mut doc).unwrap();
+        writer.try_flush().unwrap();
+        let saved = store.read(&key).unwrap().unwrap().bytes;
+        assert!(saved.len() >= load_hint::MIN_HINTED_BYTES);
+        let hashes = doc.committed_document().change_hashes().to_vec();
+        let hint = store.read_hint(&key).expect("a full save keeps a hint");
+        assert_eq!(load_hint::hashes_for(&hint, &saved), Some(hashes.clone()));
+
+        // A later edit is appended after the hinted chunk.
+        doc.put(ROOT, "later", "appended").unwrap();
+        writer.request(&mut doc);
+        writer.try_flush().unwrap();
+        let stored = store.read(&key).unwrap().unwrap().bytes;
+        assert!(stored.len() > saved.len() && stored.starts_with(&saved));
+        drop(writer);
+        let appended = doc.committed_document().change_hashes().to_vec();
+        assert_eq!(appended.len(), hashes.len() + 1);
+        let loaded_hashes = |owner: &DocOwner| {
+            let loaded = owner.load().unwrap().expect("stored document");
+            loaded
+                .document()
+                .committed_document()
+                .change_hashes()
+                .to_vec()
+        };
+        assert_eq!(loaded_hashes(&owner), appended);
+
+        // The load takes the hint as given: two changes listed in swapped
+        // order (heads unchanged) come back swapped, which a rebuild
+        // would never produce.
+        let mut swapped = hashes;
+        swapped.swap(1, 2);
+        store
+            .write_hint(&key, &load_hint::encode(&saved, &swapped).unwrap())
+            .unwrap();
+        let mut expected = appended.clone();
+        expected.swap(1, 2);
+        assert_eq!(loaded_hashes(&owner), expected);
+
+        // A hint made for other bytes is ignored and every change rebuilt.
+        let mut other = doc.fork();
+        other.put(ROOT, "other", 1).unwrap();
+        let other_saved = other.save();
+        let mut other_swapped = other.committed_document().change_hashes().to_vec();
+        other_swapped.swap(1, 2);
+        store
+            .write_hint(
+                &key,
+                &load_hint::encode(&other_saved, &other_swapped).unwrap(),
+            )
+            .unwrap();
+        assert_eq!(loaded_hashes(&owner), appended);
     }
 }

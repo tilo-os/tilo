@@ -1,7 +1,9 @@
 //! DRM scanout — modeset a connector and present GPU-rendered frames.
 //!
 //! KMS hardware cursor plane (`set_cursor2`/`move_cursor`, software cursor as fallback) plus
-//! two buffer rings per output, each ping-ponged via `page_flip`:
+//! two buffer rings per output, each ping-ponged by page flips. Every flip goes through
+//! [`super::kms_flip::KmsFlip`]: an atomic commit of the primary plane where the driver
+//! takes atomic, else a legacy `drmModePageFlip`:
 //!
 //! - **Direct** ([`DirectScanoutTargets`]): two GBM buffers the size of the output's mode,
 //!   imported as Vulkan render targets. Vello renders the output's part of the scene upright,
@@ -38,14 +40,15 @@ use drm_re::Device as BasicDevice;
 use drm_re::buffer::{Buffer as _, DrmFourcc, DrmModifier, PlanarBuffer};
 use drm_re::control::dumbbuffer::DumbBuffer;
 use drm_re::control::{
-    ClipRect, Device as ControlDevice, Event, FbCmd2Flags, Mode, ModeTypeFlags, PageFlipFlags,
-    connector, crtc, framebuffer,
+    ClipRect, Device as ControlDevice, Event, FbCmd2Flags, Mode, ModeTypeFlags, connector, crtc,
+    framebuffer,
 };
 use smithay::backend::allocator::gbm::{GbmBufferFlags, GbmDevice};
 
 use super::client_scanout::{
-    ClientFramebuffer, ClientHold, ClientPlane, ClientScanout, ClientStatus,
+    ClientFramebuffer, ClientHold, ClientPlane, ClientScanout, ClientStatus, OfferTarget,
 };
+use super::kms_flip::{FlipTarget, KmsFlip};
 use super::paint::{BridgeError, SceneDamage, VelloDrmBridge};
 use super::xrgb_history::{
     XrgbHistoryCommit, XrgbHistoryIdentity, XrgbTargetHistory, XrgbWritePlan,
@@ -370,8 +373,9 @@ pub struct DirectScanoutTargets {
     buffers: GbmScanoutBuffers,
     format: ScanoutFormat,
     /// The CRTC was modeset onto one of these buffers. A legacy page flip
-    /// cannot change the framebuffer format, so HDR targets become visible
-    /// through one `set_crtc` before flips take over.
+    /// cannot change the framebuffer format, and the HDR signal is switched
+    /// on with it, so HDR targets become visible through one `set_crtc`
+    /// before flips take over.
     crtc_bound: bool,
     /// KMS accepted a frame rendered into one of these targets; until then the
     /// CRTC still shows the dumb front.
@@ -1800,6 +1804,8 @@ pub struct DrmScanout {
     /// The primary plane and the client buffers tried on it, for scanning a
     /// fullscreen client's buffer out.
     client_plane: ClientPlane,
+    /// How page flips reach KMS: every flip goes through it.
+    flip: KmsFlip,
 }
 
 /// Two dumb buffers and their framebuffers, in one pixel format.
@@ -2019,6 +2025,7 @@ impl DrmScanout {
             };
 
         let use_pageflip = connector_uses_pageflip(&card, connector);
+        let flip = probe_flips(&card, connector, crtc, (width, height), use_pageflip);
         Ok(Self {
             card,
             pci_bus_id,
@@ -2059,7 +2066,8 @@ impl DrmScanout {
             hdr_signal,
             hdr_request: None,
             hdr_encoder: None,
-            client_plane: ClientPlane::default(),
+            client_plane: ClientPlane::with_plane(flip.plane().cloned()),
+            flip,
         })
     }
 
@@ -3032,6 +3040,19 @@ impl DrmScanout {
         )
     }
 
+    /// Queue a page flip onto `framebuffer`: every flip this output makes,
+    /// whichever ring or client buffer it shows ([`KmsFlip::queue`]).
+    fn queue_flip(&mut self, framebuffer: framebuffer::Handle) -> std::io::Result<()> {
+        self.flip.queue(&self.card, framebuffer)
+    }
+
+    /// Whether this output's flips may change the framebuffer's format
+    /// (they are atomic): a client buffer of another format than the
+    /// targets' can then be flipped in and out.
+    pub(super) fn flips_change_format(&self) -> bool {
+        self.flip.changes_format()
+    }
+
     /// Queue a page flip to buffer `idx`, making it the new front. A transient `EBUSY`/`EAGAIN` skips the frame; a "not supported" errno latches the page-flip path off, falling back to `dirty_framebuffer`.
     fn flip_to(&mut self, idx: usize) -> bool {
         self.apply_adaptive_sync();
@@ -3039,10 +3060,7 @@ impl DrmScanout {
             tracing::warn!("DRM scanout: no framebuffer at index {idx}; skipping page flip");
             return false;
         };
-        match self
-            .card
-            .page_flip(self.crtc, fb, PageFlipFlags::EVENT, None)
-        {
+        match self.queue_flip(fb) {
             Ok(()) => {
                 self.flip_submission = self.flip_submission.wrapping_add(1);
                 self.flip_queued_at = Some(std::time::Instant::now());
@@ -3304,10 +3322,7 @@ impl DrmScanout {
                 "direct scanout slot {index} has no KMS framebuffer"
             ));
         };
-        match self
-            .card
-            .page_flip(self.crtc, framebuffer, PageFlipFlags::EVENT, None)
-        {
+        match self.queue_flip(framebuffer) {
             Ok(()) => {
                 self.flip_pending = true;
                 if targets.state.submit(index) {
@@ -3422,8 +3437,32 @@ impl DrmScanout {
     pub(super) fn client_framebuffer(
         &mut self,
         dmabuf: &smithay::backend::allocator::dmabuf::Dmabuf,
+        fourcc: DrmFourcc,
     ) -> Result<std::sync::Arc<ClientFramebuffer>, String> {
-        self.client_plane.framebuffer(&self.card, self.crtc, dmabuf)
+        self.client_plane
+            .framebuffer(&self.card, self.flip.target(), dmabuf, fourcc)
+    }
+
+    /// Refresh what this output's primary plane offers a fullscreen client
+    /// in place of `target` framebuffers on the KMS device `device`; `None`
+    /// withdraws the offer ([`super::client_scanout::ClientPlane::offer`]).
+    pub(super) fn offer_client_plane(&mut self, device: u64, target: Option<DrmFourcc>) {
+        let target = target.map(|format| OfferTarget {
+            format,
+            changes_format: self.flip.changes_format(),
+        });
+        self.client_plane
+            .offer(&self.card, self.crtc, device, target);
+    }
+
+    /// Publish this output's offer to fullscreen clients into `planes`, when
+    /// it changed since last published.
+    pub(super) fn publish_client_plane(
+        &mut self,
+        output: OutputId,
+        planes: &super::client_scanout::ClientPlanes,
+    ) {
+        self.client_plane.publish_offer(output, planes);
     }
 
     /// A flip of `dmabuf` failed: composite it from now on.
@@ -3455,10 +3494,7 @@ impl DrmScanout {
             return DirectSubmit::Failed("HDR targets cannot flip to a client buffer".to_owned());
         }
         self.apply_adaptive_sync();
-        match self
-            .card
-            .page_flip(self.crtc, client.framebuffer(), PageFlipFlags::EVENT, None)
-        {
+        match self.queue_flip(client.framebuffer()) {
             Ok(()) => {
                 self.flip_pending = true;
                 if targets.state.submit_client() {
@@ -3879,6 +3915,35 @@ fn monotonic_now() -> Duration {
 /// describes only the destination-history commit decision.
 fn pageflip_history_commit_is_safe(dirty_ok: bool, flip_ok: bool) -> bool {
     dirty_ok && flip_ok
+}
+
+/// Choose, once the CRTC is set up, how `connector`'s flips reach KMS
+/// ([`KmsFlip::probe`]), and say so in the session log.
+fn probe_flips(
+    card: &Card,
+    connector: connector::Handle,
+    crtc: crtc::Handle,
+    size: (u32, u32),
+    use_pageflip: bool,
+) -> KmsFlip {
+    let flip = KmsFlip::probe(
+        card,
+        FlipTarget { crtc, size },
+        legacy_flip_reason(use_pageflip),
+    );
+    flip.log(u32::from(connector));
+    flip
+}
+
+/// Why an output's flips stay legacy without asking the card: a connector
+/// that presents without page flips never flips, and
+/// [`super::kms_flip::KMS_ATOMIC_ENV`]`=0` asks for legacy flips.
+fn legacy_flip_reason(use_pageflip: bool) -> Option<String> {
+    if !use_pageflip {
+        return Some("the connector presents without page flips".to_owned());
+    }
+    super::kms_flip::atomic_flips_forced_off()
+        .then(|| format!("forced by {}=0", super::kms_flip::KMS_ATOMIC_ENV))
 }
 
 /// Virtual CRTCs do not signal vblank. Page-flipping one waits out the kernel

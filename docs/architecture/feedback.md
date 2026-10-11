@@ -62,7 +62,7 @@ task or granting access to one. The SDK supplies the actual source record stamp;
 a returning participant can read this history after reconnecting. As with the
 receipt projection, the returned JSON alone is not a durability witness.
 
-## Host integration still required
+## Host integration
 
 The SDK provides `feedback_composer::prepare`, a real shared resource component
 with the same semantic actions as its themed, localized controls. It always
@@ -91,8 +91,58 @@ wake pump; their launch configuration cannot supply a destination or adapter.
 Pending private writes schedule a storage wake independently of draft records;
 awaiting a destination receipt does not schedule automatic transport retries.
 An unconfigured entry refuses review/send rather than choosing a public room.
-The production startup still needs to install its authenticated adapter and
-admitted destination; the source acceptance uses isolated private fixtures.
+The relay supplies read-only feedback admission and acknowledgment on its existing
+`RemoteActionFrame` transport. `RelayRecordsLink` carries the existing certified
+caller and governor Read policy into `RoomActions`; it uses
+`Rooms::resource_view_document` and the retained store, never the app worker's
+cache as durability evidence. Selected manifests, files and directory ancestry
+must pass durability barriers. Registered Chat projection runs in a confined
+worker; only the purpose-specific receipt digest reaches the existing owner
+signer. `read-feedback-destination` confirms an existing text channel and
+`read-feedback-receipt` can require the exact attributed reporter root. A
+signed acknowledgment binds the owner, reporter, destination, publication verb,
+submission identity and approved digest. Screenshot receipts remain refused
+until an actual owner content store supplies a durable content witness.
+
+The browser's existing `CertifiedPeer.configureFeedback({room, provider, channel})`
+selects a destination before desktop mounting. `WasmPeer` requests admission from
+its connected host, matches both roots/devices against retained certificates,
+requires actual current role/capabilities, and installs the trusted Rust startup
+custody. The helper waits for this acknowledgment and never joins another room.
+Sending queues the registered ClientLocal action on the existing Chat record and
+uses the peer's ordinary Write publication. It does not invoke a document write
+on the host as another person. Receipt requests are bounded and retries preserve
+the approved submission identity; loss of session admission or stale policy fails
+closed. Description-only capture is the production default.
+
+Live configuration must name the already-authorized room UUID, exact provider
+`record:so.tilo.chat:` and text channel ID, and select the already-certified
+reporter's root/device. These values are not present in the public demo's verified
+configuration. No destination, enrollment or grant is created by this feature.
+Native startup reads optional `feedback-destination.json` under the existing
+`org.tilo.Shell/apps` private profile. Its closed JSON contains only `room`,
+`provider` and `channel`; it contains no role, capability, identity or key. Missing
+configuration leaves feedback unconfigured. The compositor binds this selection
+to its original `ShellNetwork`. `feedback_custody` reads the committed enrolled
+room's governor and checks current selected reporter custody without a legacy
+identity fallback. The correlated owner response supplies admission; every use
+also compares current native role and capabilities, so a stale answer cannot
+survive policy change, revocation, selection change or an uncertain owner.
+
+The producer calls `InProcessApps::install_feedback_startup` and retains the
+private outbox. Its Chat publisher opens the existing record inside the
+original SDK committed-read bridge and invokes the registered local
+`submit-feedback` door as the original application person. The ordinary native
+broker model pump commits and publishes the edit without painting or pixels;
+no direct peer snapshot or replacement network bypasses that custody. Its
+presentation remains ephemeral inside the original checked namespace, so model
+service teardown cannot replace the user's saved Chat window view. Startup cannot
+create a missing Chat record. Cold restart requires fresh owner admission and
+current selected custody again.
+`NoCapture` remains mandatory until a durable screenshot content witness exists.
+Source qualification does not establish deployed native or browser acceptance.
+Tests use isolated certified sessions, the real native broker and retained storage,
+including cold application and owner restarts.
 
 A host must supply its existing durable profile store, an admitted
 `Destination { room, provider, channel }`, authenticated action transport,

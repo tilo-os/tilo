@@ -1,5 +1,5 @@
 [Unit]
-Description=Start the firewall and network outside the login critical path
+Description=Firewall and network, started by tilo-network-start.service once logins are allowed
 Requires=firewalld.service NetworkManager.service
 Wants=chronyd.service
 After=firewalld.service

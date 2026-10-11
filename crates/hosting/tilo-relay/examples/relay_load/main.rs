@@ -6,7 +6,7 @@
 //! production [`tilo_relay::Relay`] with authentication and the co-edit path
 //! as a daemon runs them. The parent then connects N collaborators in rooms
 //! of four, each its own device certificate, iroh endpoint and
-//! `tilo-relay/5` session, and plays a fixed, deterministic minute of work
+//! `tilo-relay/7` session, and plays a fixed, deterministic minute of work
 //! for each of them, over and over:
 //!
 //! - **typing**: 30 one-character edits, one every 200 ms, through the
@@ -25,10 +25,14 @@
 //! Per window the parent asks the relay process for its CPU time, resident
 //! memory, egress counters and the bytes its iroh endpoint put on UDP, and
 //! divides by collaborators and hours. Fan-out latency is publish to receipt
-//! by each other member of the room. Store fsyncs per edit divides the file
+//! by each other member of the room; pointer and caret latency are the same
+//! for each pointer move and caret the relay forwarded (one it coalesced
+//! away under a later one is never received, and not counted). Store fsyncs per edit divides the file
 //! and directory barriers the relay's workspace stores issued by the deltas
 //! it committed; listed entries per edit divides the directory entries they
-//! listed to retain them the same way.
+//! listed to retain them the same way. Compaction's own CPU time and the
+//! document signatures it verified are reported beside them, per
+//! collaborator-hour and per edit.
 //!
 //! The samples go to `--out DIR/hosting-load.json` for
 //! `tools/perf/adapters.py hosting-load`, which turns them into records and
@@ -230,6 +234,8 @@ struct Window {
     deltas: u64,
     store_fsyncs: u64,
     store_listed_entries: u64,
+    compaction_cpu_s: f64,
+    compaction_signature_checks: u64,
     hours: f64,
 }
 
@@ -248,6 +254,14 @@ impl Window {
             store_listed_entries: after
                 .store_listed_entries
                 .saturating_sub(before.store_listed_entries),
+            compaction_cpu_s: float(
+                after
+                    .compaction_cpu_ns
+                    .saturating_sub(before.compaction_cpu_ns),
+            ) / 1e9,
+            compaction_signature_checks: after
+                .compaction_signature_checks
+                .saturating_sub(before.compaction_signature_checks),
             hours: elapsed.as_secs_f64() / SECONDS_PER_HOUR,
         }
     }
@@ -261,6 +275,9 @@ struct Report {
     idle_rss_bytes: u64,
     windows: Vec<Window>,
     fanout_ms: Vec<f64>,
+    /// Pointer moves and carets, publish to receipt by each other member.
+    pointer_ms: Vec<f64>,
+    caret_ms: Vec<f64>,
     edits: u64,
     presence: u64,
     undelivered: usize,
@@ -279,6 +296,13 @@ impl Report {
             "no collaborator received another's edit while measuring; nothing was fanned out"
         );
         fanout_ms.sort_by(f64::total_cmp);
+        let (mut pointer_ms, mut caret_ms) = fleet.take_presence_latencies();
+        anyhow::ensure!(
+            !pointer_ms.is_empty() && !caret_ms.is_empty(),
+            "no collaborator received another's pointer move and caret while measuring"
+        );
+        pointer_ms.sort_by(f64::total_cmp);
+        caret_ms.sort_by(f64::total_cmp);
         Ok(Self {
             collaborators: args.collaborators,
             rooms: fleet.rooms(),
@@ -286,6 +310,8 @@ impl Report {
             idle_rss_bytes: idle.rss_bytes,
             windows,
             fanout_ms,
+            pointer_ms,
+            caret_ms,
             edits: fleet.edits.load(Ordering::SeqCst),
             presence: fleet.presence.load(Ordering::SeqCst),
             undelivered: fleet.undelivered(),
@@ -335,6 +361,20 @@ impl Report {
             .collect()
     }
 
+    /// Compaction's thread CPU, in milliseconds per collaborator-hour.
+    fn compaction_cpu_ms(&self) -> Vec<f64> {
+        self.per_collaborator_hour(|window| window.compaction_cpu_s * 1e3)
+    }
+
+    /// Document signatures compaction verified per committed delta.
+    fn compaction_signature_checks_per_edit(&self) -> Vec<f64> {
+        self.windows
+            .iter()
+            .filter(|window| window.deltas > 0)
+            .map(|window| float(window.compaction_signature_checks) / float(window.deltas))
+            .collect()
+    }
+
     /// Resident memory each connected, active collaborator adds to the relay.
     fn rss_mib(&self) -> Vec<f64> {
         let collaborators = float(u64::try_from(self.collaborators).unwrap_or(u64::MAX));
@@ -363,8 +403,12 @@ impl Report {
                 "hosting.relay.egress_bytes_per_collab_hour": kpi("bytes", self.transport_bytes()),
                 "hosting.relay.frame_bytes_per_collab_hour": kpi("bytes", self.app_bytes()),
                 "hosting.relay.fanout_ms": kpi("ms", self.fanout_ms.clone()),
+                "hosting.relay.presence_pointer_ms": kpi("ms", self.pointer_ms.clone()),
+                "hosting.relay.presence_caret_ms": kpi("ms", self.caret_ms.clone()),
                 "hosting.relay.store_fsyncs_per_edit": kpi("count", self.store_fsyncs_per_edit()),
                 "hosting.relay.store_listed_entries_per_edit": kpi("count", self.store_listed_entries_per_edit()),
+                "hosting.relay.compaction_cpu_ms_per_collab_hour": kpi("ms", self.compaction_cpu_ms()),
+                "hosting.relay.compaction_signature_checks_per_edit": kpi("count", self.compaction_signature_checks_per_edit()),
             },
         })
     }
@@ -375,7 +419,11 @@ impl Report {
              undelivered_edits={} cpu_s_per_collab_hour_p50={:.3} rss_mib_per_collab_p50={:.3} \
              egress_mb_per_collab_hour_p50={:.3} frame_mb_per_collab_hour_p50={:.3} \
              live_frame_mb_per_collab_hour_p50={:.3} fanout_ms_p50={:.1} fanout_ms_p99={:.1} \
-             store_fsyncs_per_edit_p50={:.3} store_listed_entries_per_edit_p50={:.3}",
+             presence_pointer_ms_p50={:.1} presence_pointer_ms_p99={:.1} \
+             presence_caret_ms_p50={:.1} presence_caret_ms_p99={:.1} \
+             store_fsyncs_per_edit_p50={:.3} store_listed_entries_per_edit_p50={:.3} \
+             compaction_cpu_ms_per_collab_hour_p50={:.1} \
+             compaction_signature_checks_per_edit_p50={:.3}",
             self.collaborators,
             self.rooms,
             self.windows.len(),
@@ -389,8 +437,14 @@ impl Report {
             median(self.live_bytes()) / 1e6,
             nearest_rank(&self.fanout_ms, 50),
             nearest_rank(&self.fanout_ms, 99),
+            nearest_rank(&self.pointer_ms, 50),
+            nearest_rank(&self.pointer_ms, 99),
+            nearest_rank(&self.caret_ms, 50),
+            nearest_rank(&self.caret_ms, 99),
             median(self.store_fsyncs_per_edit()),
             median(self.store_listed_entries_per_edit()),
+            median(self.compaction_cpu_ms()),
+            median(self.compaction_signature_checks_per_edit()),
         )
     }
 }

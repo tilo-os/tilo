@@ -13,7 +13,7 @@ use ui::widget::{AppModel, ModelPath};
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ChangeHash, ObjId};
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{Color, Fill};
@@ -105,12 +105,10 @@ use image_layout::{
 use layout_cache::{ShapeKeyInput, shape_key};
 use proofing::misspelled_spans;
 pub use proofing::{PersonalDictionary, WriterLayout};
-#[cfg(test)]
-use text_runs::block_runs;
 use text_runs::{
-    block_change_decos, block_change_ranges, block_comment_ranges, block_note_refs,
-    block_runs_markup, char_font_family, char_font_size, char_highlight, composed_block,
-    note_numbering, note_text, parse_hex_rgb, running_head_runs, running_head_runs_editing,
+    block_change_decos, block_change_ranges, block_comment_ranges, block_note_refs, block_runs,
+    char_font_family, char_font_size, char_highlight, composed_block, note_numbering, note_text,
+    parse_hex_rgb, running_head_runs, running_head_runs_editing,
 };
 use toolbar::{HIGHLIGHT_PALETTE, STYLE_PALETTE, ToolAction, ToolEntry};
 
@@ -7039,8 +7037,7 @@ impl WordProcessorWidget {
             let mut row_h = 26.0f64;
             for c in 0..ncols {
                 if let Some(cell) = cells.iter().find(|cl| cell_rc(cl) == (r, c)) {
-                    let (runs, underlines, strikes) =
-                        block_runs_markup(cell, self.review.is_visible());
+                    let (runs, underlines, strikes) = block_runs(cell, self.review.is_visible());
                     let wrap_w = num::f32_of_f64((col_w - 2.0 * layout.cell_padding).max(24.0));
                     let align = block_align(cell, TextAlign::Left);
                     let key = shape_key(&ShapeKeyInput {
@@ -7356,7 +7353,7 @@ impl WordProcessorWidget {
         };
         let wrap_w =
             (fg.content_w - num::f32_of_f64(indent) - num::f32_of_f64(float_reserve)).max(40.0);
-        let (runs, underlines, strikes) = block_runs_markup(b, self.review.is_visible());
+        let (runs, underlines, strikes) = block_runs(b, self.review.is_visible());
         let align = block_align(b, style_align(&st.align));
         let family = parse_font(&st.font);
         // The paragraph's line-spacing multiplier (1.0 = single) scales the
@@ -10238,19 +10235,7 @@ impl Widget for WordProcessorWidget {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.window_history.tree_rebuilt();
-        // `new_leaf` is typed `-> TaffyResult<NodeId>` for API generality but
-        // cannot actually return `Err` for a fresh leaf (see the
-        // `TaffyTreeExt` doc comment in `ui::widget::mod`), and
-        // `Widget::build_layout` returns a bare `NodeId` across every
-        // implementor, so there is nowhere to surface a theoretical error.
-        let style = Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
-            ..Default::default()
-        };
-        taffy.widget_leaf(style, node_map, self)
+        taffy.fill_leaf(node_map, self)
     }
 
     /// Authored chrome keeps its retained toolkit children available to the

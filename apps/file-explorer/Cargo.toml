@@ -46,7 +46,6 @@ sha2.workspace = true
 # Shared thumbnail generator and cache. PDF previews use dynamically loaded
 # pdfium and fall back to a badge; video remains a badge in this crate.
 tilo-thumbnail = { path = "../../crates/media/thumbnail", features = ["pdf"] }
-trash = "5.2.6"
 mime_guess.workspace = true
 chrono = { workspace = true, default-features = true }
 # CLDR-backed date/time and decimal formatting. Keep these scoped to Files:

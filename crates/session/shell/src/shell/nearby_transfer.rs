@@ -599,26 +599,13 @@ impl NearbyTransferStore {
             now_unix_ms,
             media,
         } = staging;
-        self.ensure_capacity(0)?;
         if !super::device_fabric::valid_nearby_file_name(&name) {
             return Err(crate::shell::i18n::t("nearby-error-name-not-portable"));
         }
-        if id == [0; 16]
-            || self.index.outbox.iter().any(|entry| entry.id == id)
-            || self.index.inbox.iter().any(|entry| entry.id == id)
-            || self.object_path(id).exists()
-            || self.partial_path(id).exists()
-        {
-            return Err("nearby transfer id is already in use".into());
-        }
-        let object = self.object_path(id);
+        let object = self.reserve_object(id)?;
         let metadata = fs::symlink_metadata(source).map_err(display)?;
         let staged = if metadata.file_type().is_file() {
-            if metadata.len() == 0 || metadata.len() > MAX_TRANSFER_BYTES {
-                return Err(crate::shell::i18n::t("nearby-error-too-large"));
-            }
-            self.ensure_capacity(metadata.len())?;
-            self.ensure_free_space(metadata.len())?;
+            self.admit_regular(metadata.len())?;
             let kind = if media {
                 TransferKind::MediaHandoff
             } else {
@@ -632,39 +619,12 @@ impl NearbyTransferStore {
         } else {
             return Err("nearby transfer source must be a regular file or folder".into());
         };
-        let kind = match staged {
-            Ok(kind) => kind,
-            Err(error) => {
-                let _ = fs::remove_file(&object);
-                return Err(error);
-            }
-        };
-        let (total_bytes, content_hash) = hash_file(&object)?;
-        if total_bytes == 0 || total_bytes > MAX_TRANSFER_BYTES {
+        let staged = staged
+            .and_then(|kind| self.record_outgoing(&object, kind, id, target, name, now_unix_ms));
+        if staged.is_err() {
             let _ = fs::remove_file(&object);
-            return Err(crate::shell::i18n::t("nearby-error-too-large"));
         }
-        if let Err(error) = self.ensure_capacity(total_bytes) {
-            let _ = fs::remove_file(&object);
-            return Err(error);
-        }
-        let entry = OutboxEntry {
-            id,
-            target,
-            name,
-            kind,
-            total_bytes,
-            content_hash,
-            created_unix_ms: now_unix_ms,
-            expires_unix_ms: now_unix_ms.saturating_add(TRANSFER_LIFETIME_MS),
-        };
-        self.index.outbox.push(entry.clone());
-        if let Err(error) = self.persist() {
-            self.index.outbox.pop();
-            let _ = fs::remove_file(object);
-            return Err(error);
-        }
-        Ok(entry)
+        staged
     }
 
     /// Stage from an already-open Files grant capability. No app-controlled
@@ -680,46 +640,66 @@ impl NearbyTransferStore {
         now_unix_ms: u64,
         id: [u8; 16],
     ) -> Result<OutboxEntry, String> {
-        self.ensure_capacity(0)?;
-        if id == [0; 16]
-            || self.index.outbox.iter().any(|entry| entry.id == id)
-            || self.index.inbox.iter().any(|entry| entry.id == id)
-            || self.object_path(id).exists()
-            || self.partial_path(id).exists()
-        {
-            return Err("nearby transfer id is already in use".into());
-        }
+        let object = self.reserve_object(id)?;
         let metadata = source.metadata()?;
-        let object = self.object_path(id);
         let name = source.name().to_string();
         let staged = if metadata.is_file() {
-            if metadata.len() == 0 || metadata.len() > MAX_TRANSFER_BYTES {
-                return Err(crate::shell::i18n::t("nearby-error-too-large"));
-            }
-            self.ensure_capacity(metadata.len())?;
-            self.ensure_free_space(metadata.len())?;
+            self.admit_regular(metadata.len())?;
             copy_open_regular(source.into_file(), &object).map(|()| TransferKind::File)
         } else if metadata.is_dir() {
             archive_open_folder(&source.into_file(), &object).map(|()| TransferKind::FolderArchive)
         } else {
             return Err("nearby transfer source must be a regular file or folder".into());
         };
-        let kind = match staged {
-            Ok(kind) => kind,
-            Err(error) => {
-                let _ = fs::remove_file(&object);
-                return Err(error);
-            }
-        };
-        let (total_bytes, content_hash) = hash_file(&object)?;
-        if total_bytes == 0 || total_bytes > MAX_TRANSFER_BYTES {
+        let staged = staged
+            .and_then(|kind| self.record_outgoing(&object, kind, id, target, name, now_unix_ms));
+        if staged.is_err() {
             let _ = fs::remove_file(&object);
+        }
+        staged
+    }
+
+    /// The object path for a new outgoing transfer, once the queue has room
+    /// and `id` names no transfer, object or partial download yet.
+    fn reserve_object(&self, id: [u8; 16]) -> Result<PathBuf, String> {
+        self.ensure_capacity(0)?;
+        let object = self.object_path(id);
+        if id == [0; 16]
+            || self.index.outbox.iter().any(|entry| entry.id == id)
+            || self.index.inbox.iter().any(|entry| entry.id == id)
+            || object.exists()
+            || self.partial_path(id).exists()
+        {
+            return Err("nearby transfer id is already in use".into());
+        }
+        Ok(object)
+    }
+
+    /// Whether a regular file of `len` bytes may be staged.
+    fn admit_regular(&self, len: u64) -> Result<(), String> {
+        if len == 0 || len > MAX_TRANSFER_BYTES {
             return Err(crate::shell::i18n::t("nearby-error-too-large"));
         }
-        if let Err(error) = self.ensure_capacity(total_bytes) {
-            let _ = fs::remove_file(&object);
-            return Err(error);
+        self.ensure_capacity(len)?;
+        self.ensure_free_space(len)
+    }
+
+    /// Hashes a staged object and records it in the outbox. The caller
+    /// removes the object when this fails.
+    fn record_outgoing(
+        &mut self,
+        object: &Path,
+        kind: TransferKind,
+        id: [u8; 16],
+        target: String,
+        name: String,
+        now_unix_ms: u64,
+    ) -> Result<OutboxEntry, String> {
+        let (total_bytes, content_hash) = hash_file(object)?;
+        if total_bytes == 0 || total_bytes > MAX_TRANSFER_BYTES {
+            return Err(crate::shell::i18n::t("nearby-error-too-large"));
         }
+        self.ensure_capacity(total_bytes)?;
         let entry = OutboxEntry {
             id,
             target,
@@ -733,7 +713,6 @@ impl NearbyTransferStore {
         self.index.outbox.push(entry.clone());
         if let Err(error) = self.persist() {
             self.index.outbox.pop();
-            let _ = fs::remove_file(object);
             return Err(error);
         }
         Ok(entry)
