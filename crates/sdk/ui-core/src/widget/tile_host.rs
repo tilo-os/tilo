@@ -473,20 +473,6 @@ impl TileHost {
             }
         }
     }
-    /// Install a legacy tile's declared presentation against its settled actual
-    /// store/checkout/lifetime. No outer State or invented component is used.
-    /// # Errors
-    /// Refuses missing, stale or foreign document custody and invalid scope metadata.
-    /// Exact live component token for this retained history owner.
-    pub fn document_history_target(&self) -> Option<String> {
-        self.history.as_ref()?;
-        let TileContent::App(app) = &self.content else {
-            return None;
-        };
-        let binding = app.callback_binding()?;
-        let _entry = binding.enter().ok()?;
-        Some(binding.lifetime_id.to_string())
-    }
     /// Inactive retained tiles have no nodes in the current Taffy tree.
     pub(crate) fn discard_layout_nodes(&mut self) {
         self.live_callback_node = None;

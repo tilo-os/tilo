@@ -439,22 +439,6 @@ impl DeviceFleetStore {
             .map_err(|error| io::Error::other(error.to_string()))
     }
 
-    /// Sign the digest of an owner-only disk-unlock setting (a device's
-    /// auto-approval) with the root of `identity_id`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the identity cannot sign.
-    pub fn sign_unlock_setting(
-        &self,
-        identity_id: &str,
-        digest: &[u8; 32],
-    ) -> io::Result<[u8; 64]> {
-        let (root, _) = self.identity(identity_id)?;
-        root.sign(digest)
-            .map_err(|error| io::Error::other(error.to_string()))
-    }
-
     /// The person's secret-sync key, when this device holds the root of
     /// `identity_id`.
     ///

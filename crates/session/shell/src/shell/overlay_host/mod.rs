@@ -2476,17 +2476,6 @@ impl ShellOverlayHost {
         }
     }
 
-    /// Gate this host behind the shell-owned identity ceremony.
-    ///
-    /// This lives on the compositor root rather than in a pre-session winit
-    /// window: on a fresh machine there is no display server before `shell`,
-    /// and an application-shaped setup window could be imitated by an app.
-    #[must_use]
-    pub fn with_onboarding(mut self, identity_dir: std::path::PathBuf) -> Self {
-        self.enable_onboarding(identity_dir);
-        self
-    }
-
     fn register_onboarding_actions(&mut self) {
         if let Some(view) = self.onboarding.as_ref() {
             self.search_registry.register(view.semantic_provider());
