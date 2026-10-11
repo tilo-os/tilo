@@ -320,9 +320,11 @@ async fn start_inner(
             },
         }))
         .map_err(RelayError::Identity)?;
-    let link = Arc::new(relay.agent_link());
     agents
-        .start(HostEndpoint::iroh(relay.node_addr(), host_cert), link)
+        .start(
+            HostEndpoint::iroh(relay.node_addr(), host_cert),
+            Arc::new(relay.agent_link()),
+        )
         .map_err(RelayError::Identity)?;
     Ok((relay, agents))
 }

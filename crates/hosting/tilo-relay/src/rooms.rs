@@ -561,12 +561,11 @@ impl Rooms {
     ///
     /// Returns why the room could not be created, persisted or bound.
     pub async fn create(&self, name: &str) -> Result<RoomSummary, String> {
-        let host = &self.inner.host;
         let room = GovernedRoom::create(
             &self.inner.dir,
             name,
-            &host.cert,
-            &host.key,
+            &self.inner.host.cert,
+            &self.inner.host.key,
             SystemTime::now(),
         )?;
         self.bind(&room).await?;
