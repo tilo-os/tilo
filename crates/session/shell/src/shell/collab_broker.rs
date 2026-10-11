@@ -808,8 +808,17 @@ fn spawn_inner(
     });
 
     let local_session = crate::shell::collab_broker_capnp::LocalSessionAuthority::new();
+    let channel_keys = if config.is_none() {
+        Some(session_channel_keys(channel_encryption.clone()))
+    } else {
+        None
+    };
     let mut services = if config.is_none() {
-        super::broker_services::native_services(membership.clone(), peer_sync.cloned())
+        super::broker_services::native_services(
+            membership.clone(),
+            peer_sync.cloned(),
+            channel_keys.clone(),
+        )
     } else {
         tilo_action_broker::services::HostServices::default()
     };
@@ -822,11 +831,7 @@ fn spawn_inner(
     // changes tell each route's endpoint when to ask again. A session broker
     // follows even without one; a configured peer broker never has one and
     // still says it cannot follow.
-    services.channel_keys = if config.is_none() {
-        Some(session_channel_keys(channel_encryption.clone()))
-    } else {
-        None
-    };
+    services.channel_keys = channel_keys;
     services.audio_output = Some(Arc::new(super::audio_output::AudioOutputService::new(
         local_session.lifecycle(),
     )));

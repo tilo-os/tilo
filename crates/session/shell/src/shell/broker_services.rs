@@ -33,6 +33,7 @@ pub(crate) struct NativeOwnerCommitService {
     tree: WorkspaceTreeHandle,
     owner: Option<super::native_workspace_owner::NativeWorkspaceOwner>,
     network: Option<Arc<super::network::ShellNetwork>>,
+    history_keys: Option<tilo_action_broker::channel_encryption::ChannelKeyProvider>,
 }
 impl NativeOwnerCommitService {
     pub(crate) fn new(
@@ -54,6 +55,7 @@ impl NativeOwnerCommitService {
             tree,
             owner,
             network,
+            history_keys: None,
         }
     }
     pub(crate) fn owner(&self) -> Option<super::native_workspace_owner::NativeWorkspaceOwner> {
@@ -1505,8 +1507,11 @@ impl tilo_action_broker::peer_actions::CertificateAuthority for NativeCertificat
 fn native_document_reads(
     tree: &WorkspaceTreeHandle,
     network: Option<Arc<super::network::ShellNetwork>>,
+    history_keys: Option<tilo_action_broker::channel_encryption::ChannelKeyProvider>,
 ) -> Arc<dyn NativeDocumentReads> {
-    Arc::new(NativeOwnerCommitService::new(tree.clone(), network))
+    let mut service = NativeOwnerCommitService::new(tree.clone(), network);
+    service.history_keys = history_keys;
+    Arc::new(service)
 }
 
 fn native_workspace_memberships(
@@ -1541,10 +1546,11 @@ fn native_resource_views(
 pub fn native_services(
     membership: Option<WorkspaceTreeHandle>,
     network: Option<Arc<super::network::ShellNetwork>>,
+    history_keys: Option<tilo_action_broker::channel_encryption::ChannelKeyProvider>,
 ) -> HostServices {
     let committed_documents = membership
         .as_ref()
-        .map(|tree| native_document_reads(tree, network.clone()));
+        .map(|tree| native_document_reads(tree, network.clone(), history_keys));
     let workspace_memberships = membership
         .as_ref()
         .map(|tree| native_workspace_memberships(tree, network.clone()));

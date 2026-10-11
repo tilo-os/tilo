@@ -21,8 +21,9 @@ mod backend;
 mod bounded;
 pub use bounded::{
     BoundedPeerError, BoundedPeerInvalid, BoundedStatePeer, PeerDeliveryPolicy,
-    PeerDeliveryPolicyError, PeerDocumentRead, PeerDocumentReadError, PeerLimits, PeerMediaCall,
-    PeerMember, PeerPolicyBasis, PeerRead, PeerRevocations, PeerRoomAccess,
+    PeerDeliveryPolicyError, PeerDocumentCapture, PeerDocumentRead, PeerDocumentReadError,
+    PeerLimits, PeerMediaCall, PeerMember, PeerPolicyBasis, PeerRead, PeerRevocations,
+    PeerRoomAccess,
 };
 #[cfg(test)]
 pub(crate) mod json_resource_tests;
@@ -39,6 +40,7 @@ mod native_publication;
 pub use native_publication::NativePublicationCut;
 mod resources;
 mod sealed_compaction;
+mod sealed_history;
 pub use media_governance::VerifiedSecurityMetadataOnly;
 pub use sealed_compaction::SealCheckpoint;
 
@@ -2269,53 +2271,7 @@ impl StatePeer {
     /// exact admission evidence and within the record's watermark and bounds.
     /// A compaction is only ever first and covers none of the later writes.
     fn restore_sealed(&mut self, route: &Route, ops: Vec<SignedOp>) -> Result<(), String> {
-        let held: usize = ops.iter().map(|op| op.payload.len()).sum();
-        if ops.is_empty() || ops.len() > MAX_SEALED_OPS || held > MAX_SEALED_BYTES {
-            return Err("sealed record history outside its bounds".into());
-        }
-        let document = self
-            .core
-            .documents
-            .get(route)
-            .ok_or("sealed history for a record this state does not hold")?;
-        if !document.encryption_required || !document.sealed.is_empty() {
-            return Err("sealed history for a record that is not encrypted".into());
-        }
-        for op in &ops {
-            collab_types::verify_op(op).map_err(err)?;
-            let payload = collab_types::validate_whole_document_payload_route(
-                &route.app,
-                &self.core.room,
-                &route.record,
-                op,
-            )
-            .map_err(err)?;
-            if !matches!(
-                payload,
-                collab_types::WholeDocumentPayload::Encrypted { .. }
-            ) {
-                return Err("sealed history holds a cleartext write".into());
-            }
-            let admitted =
-                DocumentAdmission::from_op(&self.core.room, &route.app, &route.record, op)
-                    .map_err(err)?;
-            if self.core.exact_admissions.get(&admitted.key) != Some(&admitted.operation_id) {
-                return Err("sealed history lacks exact admission evidence".into());
-            }
-            if document
-                .channel
-                .last_seq_per_author
-                .get(&op.author)
-                .is_none_or(|floor| *floor < op.seq)
-            {
-                return Err("sealed history is ahead of the record's watermark".into());
-            }
-        }
-        sealed_compaction::check_stored(&ops, &document.channel.last_seq_per_author)?;
-        if let Some(document) = self.core.documents.get_mut(route) {
-            document.sealed = ops;
-        }
-        Ok(())
+        sealed_history::restore(&mut self.core, route, ops)
     }
     pub fn room_message(&self) -> NeighbourMsg {
         let changes = self

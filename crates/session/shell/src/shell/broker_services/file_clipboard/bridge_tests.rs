@@ -71,7 +71,7 @@ impl Fixture {
         .encode()
         .expect("certified identity");
         let clipboard = Arc::new(NativeFileClipboard::new(tree.clone()));
-        let mut services = super::super::native_services(Some(tree.clone()), None);
+        let mut services = super::super::native_services(Some(tree.clone()), None, None);
         services.file_clipboard = Some(clipboard.clone());
         // This fixture enrolls its signed device explicitly through the broker's
         // test-support configuration; it has no installed native identity host.
