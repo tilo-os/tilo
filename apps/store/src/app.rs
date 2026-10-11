@@ -4317,11 +4317,7 @@ mod tests {
     }
 
     fn has_test_id(widget: &dyn Widget, id: &str) -> bool {
-        widget.test_id() == Some(id)
-            || widget
-                .children()
-                .into_iter()
-                .any(|child| has_test_id(child, id))
+        ui::widget::find_test_id(widget, id).is_some()
     }
 
     /// Mount a composed tree and run one frame at `width` × 900.

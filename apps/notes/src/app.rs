@@ -1958,19 +1958,7 @@ impl NotesApp {
 
     /// The laid-out rect of the shell's control with test id `id`.
     fn header_button_rect(&self, id: &str) -> Option<Rect> {
-        fn find(widget: &dyn Widget, id: &str) -> Option<Rect> {
-            if widget.test_id() == Some(id) {
-                return Some(widget.get_rect());
-            }
-            let mut found = None;
-            widget.for_each_child(&mut |child| {
-                if found.is_none() {
-                    found = find(child, id);
-                }
-            });
-            found
-        }
-        find(&self.shell, id)
+        ui::widget::find_test_id(&self.shell, id).map(Widget::get_rect)
     }
 
     /// Test hook: whether a live page-tree drag is in flight.
