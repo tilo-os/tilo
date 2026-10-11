@@ -3,15 +3,15 @@
 //! strip (which stole a row of vertical space from the editor at every
 //! width, and read especially poorly on mobile).
 //!
-//! `NotesApp` refreshes a [`StatusBarState`] snapshot and, when it changes,
-//! pokes the bubble for save or navigation changes, then quietly fades.
-//! Word counts update without reopening it; failures remain visible. The
-//! bubble also appears while the pointer hovers the bottom-right corner.
+//! `NotesApp` refreshes a [`StatusBarState`] snapshot every event and
+//! reports its save state to the surface, which shows only a failure and
+//! the save that ends it: autosave is invisible. The snapshot, counts
+//! included, stays readable as the window's accessibility status.
 //!
 //! This type owns no CRDT state and does no rendering — it holds the
 //! snapshot and formats the labels, which keeps it trivially unit-testable.
 
-/// Whether the notebook's changes are on disk, as the status bubble says it.
+/// Whether the notebook's changes are on disk, as the accessibility status says it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
 pub enum SaveStatus {
     /// Nothing waits to be written.
@@ -122,15 +122,6 @@ impl StatusModel {
             }
             None => pages,
         }
-    }
-
-    /// How long the open note is ("142 words"), for the saved bubble; none
-    /// with no note open.
-    pub fn word_text(&self) -> Option<String> {
-        self.state.word_count.map(|words| match words {
-            1 => "1 word".to_string(),
-            _ => format!("{words} words"),
-        })
     }
 
     /// The full bubble label: save state, then the page/word counts.
