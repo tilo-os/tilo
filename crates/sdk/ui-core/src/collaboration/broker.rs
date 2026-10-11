@@ -1773,7 +1773,12 @@ impl BridgeState {
     ) {
         // Latch before withdrawing health or dropping any queued receipt sender.
         self.record_publication_failure(DocumentPublicationError::Failed(direction.into()));
-        if self.healthy.swap(false, Ordering::AcqRel) {
+        self.document_reads.close();
+        let was_healthy = self.healthy.swap(false, Ordering::AcqRel);
+        // Re-notify after health publication: a construction waiter may have
+        // consumed the readiness withdrawal while health was still closing.
+        self.document_reads.progressed();
+        if was_healthy {
             if let Some((invocation_id, error)) = rejected {
                 let (rpc_kind, rpc_error, rpc_error_truncated) = bounded_rpc_diagnostic(error);
                 tracing::error!(

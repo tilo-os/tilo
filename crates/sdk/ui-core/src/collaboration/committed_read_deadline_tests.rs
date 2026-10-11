@@ -1,6 +1,79 @@
 /// Withhold a real RPC acknowledgement, rather than treating UI body equality
 /// as evidence that the original document route remains healthy.
 #[test]
+fn terminal_bridge_failure_withdraws_reads_before_disconnected_health() {
+    use automerge::transaction::Transactable as _;
+    let mut graph = automerge::AutoCommit::new();
+    graph
+        .put(automerge::ROOT, "body", "committed before fencing")
+        .unwrap();
+    graph.commit();
+    let broker = FakeBroker {
+        captures: Arc::new(std::sync::Mutex::new(Captures {
+            committed_history_fixture: Some(graph.save()),
+            committed_private_binding: Some(7),
+            ..Captures::default()
+        })),
+        op_backlog: vec![],
+        presence_backlog: vec![],
+        context_backlog: vec![],
+        scrollback_response: None,
+    };
+    let (fd, _captures, thread) = stand_up_fake_broker(broker);
+    let mut manager =
+        CollaborationManager::from_sdk_fd_for_test(fd, "original-app", Uuid::new_v4());
+    let state = broker_state(&manager);
+    let key = manager.primary_route().unwrap().route.channel_id();
+    let ready = state.document_reads.delivery_generation(&key).unwrap();
+    let initial = poll_until(&mut manager, |events| {
+        events
+            .iter()
+            .any(|event| matches!(event, CollabEvent::CommittedDocument { .. }))
+    });
+    for event in initial {
+        if let CollabEvent::CommittedDocument { read, .. } = event {
+            read.applied();
+        }
+    }
+    tilo_test_env::wait_until("the original acknowledged read to become ready", || {
+        let _ = manager.poll();
+        ready.load(Ordering::Acquire)
+    });
+    // Hold the actual delivery turn so asynchronous read-loop cleanup cannot
+    // repair the observation after the terminal transition has been published.
+    let semaphore = state.document_reads.delivery_turn(&key).unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let turn = runtime
+        .block_on(tilo_test_env::within(
+            "the original committed delivery turn",
+            semaphore.acquire_owned(),
+        ))
+        .unwrap();
+    state.fail_closed("the original native reader was fenced");
+    let healthy = state.is_healthy();
+    let read_ready = ready.load(Ordering::Acquire);
+    let publishable = state.document_reads.publishable(&key);
+    drop(turn);
+    drop(manager);
+    thread.join().unwrap();
+    assert!(
+        !healthy,
+        "terminal failure must withdraw collaboration health"
+    );
+    assert!(
+        !read_ready,
+        "read readiness must be withdrawn before disconnected health is visible"
+    );
+    assert!(
+        !publishable,
+        "a fenced original read must never remain publishable"
+    );
+}
+
+#[test]
 fn committed_capture_ack_deadline_renews_original_root_without_admitting_old_bytes() {
     held_capture_acknowledgement(AcknowledgementOutcome::Renew);
 }
