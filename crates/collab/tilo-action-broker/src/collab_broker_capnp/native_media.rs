@@ -124,6 +124,33 @@ impl PeerProcess {
         };
         process.alive().then_some(process)
     }
+    /// Resolves when this task, or the launch it runs beneath, has exited.
+    /// Pidfd readiness is the notification; it never resolves otherwise, and
+    /// is pending forever if the descriptor cannot be watched.
+    #[cfg(target_os = "linux")]
+    pub(super) async fn exited(&self) {
+        let watch = |task: &Arc<std::os::fd::OwnedFd>| {
+            task.try_clone().ok().and_then(|task| {
+                tokio::io::unix::AsyncFd::with_interest(task, tokio::io::Interest::READABLE).ok()
+            })
+        };
+        let task = watch(&self.task);
+        let launcher = self.launcher.as_ref().and_then(watch);
+        tokio::select! {
+            () = async {
+                match &task {
+                    Some(task) => { let _ = task.readable().await; }
+                    None => std::future::pending::<()>().await,
+                }
+            } => {},
+            () = async {
+                match &launcher {
+                    Some(launcher) => { let _ = launcher.readable().await; }
+                    None => std::future::pending::<()>().await,
+                }
+            } => {},
+        }
+    }
     #[cfg(not(target_os = "linux"))]
     pub(super) fn from_socket(_: &tokio::net::UnixStream) -> Option<Self> {
         None
