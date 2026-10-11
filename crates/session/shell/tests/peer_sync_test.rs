@@ -231,6 +231,57 @@ fn datagrams(a: &iroh::Endpoint, b: &iroh::Endpoint) -> u64 {
         .saturating_add(b.metrics().socket.recv_datagrams.get())
 }
 
+/// Send one move on a key of its own and wait for it: the first message may
+/// still settle the connection, which a measured drag must not include.
+async fn warm_path(cmd: &mpsc::Sender<NetCmd>, events: &mut mpsc::Receiver<NetEvent>) {
+    let warm = NeighbourMsg::PresenceMoved {
+        peer: 7,
+        user: "alice".into(),
+        key: "warm".into(),
+        point: (0.0, 0.0),
+        ts: 0,
+        colour: None,
+    };
+    cmd.send(NetCmd::Publish {
+        ws: WS,
+        msg: warm.clone(),
+    })
+    .await
+    .unwrap();
+    tilo_test_env::within("the warm-up move arrived", async {
+        while let Some(event) = events.recv().await {
+            if matches!(event, NetEvent::Msg { msg, .. } if msg == warm) {
+                return;
+            }
+        }
+        panic!("event channel closed before the warm-up move");
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+}
+
+/// Each drag move that arrives, as its step and when it arrived, until the
+/// path has been quiet for half a second.
+fn collect_drag(
+    mut events: mpsc::Receiver<NetEvent>,
+) -> tokio::task::JoinHandle<Vec<(usize, Instant)>> {
+    tokio::spawn(async move {
+        let mut arrivals = Vec::new();
+        let quiet = Duration::from_millis(500);
+        while let Ok(Some(event)) = timeout(quiet, events.recv()).await {
+            if let NetEvent::Msg {
+                msg: NeighbourMsg::PresenceMoved { key, ts, .. },
+                ..
+            } = event
+                && key == "cursor"
+            {
+                arrivals.push((usize::try_from(ts).unwrap(), Instant::now()));
+            }
+        }
+        arrivals
+    })
+}
+
 /// The direct (gossip) path paces a pointer as a relay session does: a
 /// 30 Hz drag reaches the other desktop at no more than 20 Hz, its resting
 /// position always arrives, and no move is shown more than 100 ms after it
@@ -247,50 +298,12 @@ async fn a_drag_reaches_the_other_desktop_paced_with_its_resting_position() {
     connect_pair(&cmd_a, addr_a, &cmd_b, addr_b).await;
     wait_peer_joined(&mut events_a).await;
     wait_peer_joined(&mut events_b).await;
-    // Warm the path: the first message may still settle the connection.
-    let warm = NeighbourMsg::PresenceMoved {
-        peer: 7,
-        user: "alice".into(),
-        key: "warm".into(),
-        point: (0.0, 0.0),
-        ts: 0,
-        colour: None,
-    };
-    cmd_a
-        .send(NetCmd::Publish {
-            ws: WS,
-            msg: warm.clone(),
-        })
-        .await
-        .unwrap();
-    tilo_test_env::within("the warm-up move arrived", async {
-        while let Some(event) = events_b.recv().await {
-            if matches!(event, NetEvent::Msg { msg, .. } if msg == warm) {
-                return;
-            }
-        }
-        panic!("event channel closed before the warm-up move");
-    })
-    .await;
+    warm_path(&cmd_a, &mut events_b).await;
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     let before = datagrams(&endpoint_a, &endpoint_b);
     let start = Instant::now();
-    let receiver = tokio::spawn(async move {
-        let mut received = Vec::new();
-        let quiet = Duration::from_millis(500);
-        while let Ok(Some(event)) = timeout(quiet, events_b.recv()).await {
-            if let NetEvent::Msg {
-                msg: NeighbourMsg::PresenceMoved { key, ts, .. },
-                ..
-            } = event
-                && key == "cursor"
-            {
-                received.push((usize::try_from(ts).unwrap(), Instant::now()));
-            }
-        }
-        received
-    });
+    let listener = collect_drag(events_b);
     let mut published = Vec::with_capacity(usize::try_from(MOVES).unwrap());
     for step in 0..MOVES {
         let due = start
@@ -306,7 +319,7 @@ async fn a_drag_reaches_the_other_desktop_paced_with_its_resting_position() {
             .await
             .unwrap();
     }
-    let received = receiver.await.unwrap();
+    let received = listener.await.unwrap();
     let elapsed = start.elapsed();
     let packets = datagrams(&endpoint_a, &endpoint_b).saturating_sub(before);
     let packets_per_minute =
