@@ -70,6 +70,10 @@ fn canonical_image_store(
     ui::ImageStore::with_max_dimension(&fetcher, 2048)
 }
 
+/// How long referenced image bytes that have not arrived wait before the
+/// notebook is read for them again.
+const CANONICAL_ASSETS_RETRY: std::time::Duration = std::time::Duration::from_secs(1);
+
 type ImportedAssets = Vec<(String, Vec<u8>)>;
 /// Document heads, pending operations, selected page and tag filter.
 type CanonicalProjectionKey = (Vec<ChangeHash>, usize, Option<PageId>, Option<TagId>);
@@ -945,6 +949,11 @@ impl NotesApp {
             };
             let result = fit_image_asset(request.image.bytes).and_then(|bytes| {
                 let source = format!("asset:{}", blake3::hash(&bytes).to_hex());
+                // The pasted picture is drawn from here at once, whatever the
+                // content store does with the notebook's copy.
+                if let Ok(mut assets) = self.canonical_assets.write() {
+                    assets.insert(source.clone(), bytes.clone());
+                }
                 // Replaces the selection the paste was made over, or goes
                 // after the block the caret was in, as one action.
                 let edit = self
@@ -1748,7 +1757,7 @@ impl NotesApp {
         };
         let retry = self
             .canonical_assets_waiting
-            .is_some_and(|since| since.elapsed() >= std::time::Duration::from_secs(1));
+            .is_some_and(|since| since.elapsed() >= CANONICAL_ASSETS_RETRY);
         if manifest == self.canonical_asset_manifest && !retry {
             return;
         }
@@ -1765,12 +1774,16 @@ impl NotesApp {
         }
         self.canonical_asset_manifest = manifest;
         self.canonical_assets_waiting = waiting.then(ui::time::now);
-        if arrived && retry {
-            // The image store remembers a failed load; a fresh store draws the
-            // images that were placeholders while their bytes were on the way.
-            self.main
-                .set_image_store(Some(canonical_image_store(&self.canonical_assets)));
-            self.self_dirty = true;
+        if arrived {
+            // The image store remembers a failed load, and an image block is
+            // laid out (and asked for) in the frame it appears, before its
+            // bytes were in the snapshot: forget the failures so the images
+            // that were placeholders are fetched again.
+            if let Some(store) = self.main.image_store()
+                && store.forget_failed()
+            {
+                self.self_dirty = true;
+            }
         }
     }
 
@@ -1782,6 +1795,12 @@ impl NotesApp {
             return;
         };
         let trimmed = new_title.trim();
+    /// When the images still on their way are looked for again.
+    fn canonical_assets_retry_deadline(&self) -> Option<ui::time::Instant> {
+        self.canonical_assets_waiting
+            .map(|since| since + CANONICAL_ASSETS_RETRY)
+    }
+
         let changed = self
             .workspace
             .get(id)
@@ -2063,6 +2082,16 @@ impl NotesApp {
 
     /// Test hook: drop the editor's keyboard focus so global single-key
     /// shortcuts (like `?`) fire instead of typing into a note. Mirrors
+    /// Test hook: whether the picture `source` (`asset:<digest>`) has
+    /// decoded in the notebook's image store, once its loads settle.
+    #[doc(hidden)]
+    pub fn image_decoded_for_test(&self, source: &str) -> bool {
+        self.main.image_store().is_some_and(|store| {
+            store.block_until_idle(ui::time::Duration::from_secs(2));
+            store.get(source).is_some()
+        })
+    }
+
     /// the state when the page tree — not the editor — is focused.
     #[doc(hidden)]
     pub fn blur_editor_for_test(&mut self) {
@@ -2607,6 +2636,9 @@ impl Widget for NotesApp {
     fn has_pending_visual_work(&self) -> bool {
         self.children()
             .iter()
+        if let Some(deadline) = self.canonical_assets_retry_deadline() {
+            earliest = Some(earliest.map_or(deadline, |old| old.min(deadline)));
+        }
             .any(|child| child.has_pending_visual_work())
     }
 

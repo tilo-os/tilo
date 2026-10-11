@@ -647,6 +647,22 @@ impl ImageStore {
         None
     }
 
+    /// Forget every load that failed, so the next [`get`](Self::get) of its
+    /// URL asks the fetcher again. A failure is cached (it would otherwise be
+    /// re-fetched every frame), which is wrong for a source whose bytes were
+    /// not available yet and now are: a caller that knows they changed calls
+    /// this. Returns whether any failure was forgotten.
+    pub fn forget_failed(&self) -> bool {
+        let Ok(mut slots) = self.shared.slots.lock() else {
+            return false;
+        };
+        let before = slots.slots.len();
+        slots
+            .slots
+            .retain(|_, entry| !matches!(entry.slot, Slot::Failed));
+        slots.slots.len() != before
+    }
+
     /// Whether `url` has been requested yet (Ready/Loading/Failed all count).
     pub fn is_known(&self, url: &str) -> bool {
         // Same poisoned-lock degrade as `get`: unknown is the safe answer.
@@ -786,6 +802,26 @@ pub fn paint_image_cover(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn forgetting_failures_lets_an_image_whose_bytes_arrived_load() {
+        use std::sync::{Arc, RwLock};
+        let bytes = Arc::new(RwLock::new(None::<Vec<u8>>));
+        let source = Arc::clone(&bytes);
+        let fetch: Fetcher = Arc::new(move |_| source.read().ok()?.clone());
+        let store = ImageStore::new(&fetch);
+        store.get("asset:late");
+        store.block_until_idle(Duration::from_secs(2));
+        assert!(store.get("asset:late").is_none(), "no bytes yet: failed");
+        *bytes.write().unwrap() = Some(png_bytes(4, 3, [9, 9, 9]));
+        store.block_until_idle(Duration::from_secs(2));
+        assert!(store.get("asset:late").is_none(), "a failure is cached");
+        assert!(store.forget_failed());
+        assert!(!store.forget_failed(), "nothing left to forget");
+        store.get("asset:late");
+        store.block_until_idle(Duration::from_secs(2));
+        assert!(store.get("asset:late").is_some());
+    }
 
     #[test]
     fn failed_host_image_can_retry_only_its_admitted_request_and_decode_real_bytes() {
