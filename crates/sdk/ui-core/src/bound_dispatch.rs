@@ -4913,7 +4913,8 @@ pub(crate) fn merge_remote_owned_document(
                 .borrow()
                 .is_required()
                 .then(|| doc.base_heads());
-            let changed = crate::history_mode::routes::merge_committed(&mut candidate, mutation)?;
+            let changed =
+                crate::history_mode::routes::merge_committed_into_copy(&mut candidate, mutation)?;
             identity
                 .validate(&candidate)
                 .map_err(RemoteApplyError::InvalidMutation)?;

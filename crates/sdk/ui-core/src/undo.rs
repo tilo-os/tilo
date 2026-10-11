@@ -900,7 +900,8 @@ pub(crate) fn status_snapshot(
 ) -> UndoStatus {
     let undo = history.next_undo_as(doc, author);
     let redo = history.next_redo_as(doc, author);
-    let mut snapshot = doc.clone();
+    // Copied only for an entry that names no step of its own.
+    let mut snapshot = None;
     // An entry an undo or redo already moved names the step it carries, not
     // the undo change that moved it last.
     let mut summary = |entry: &crate::state::UndoEntry, from: &[_], to: &[_]| {
@@ -908,7 +909,10 @@ pub(crate) fn status_snapshot(
             .step
             .as_ref()
             .and_then(crate::history_source::sentence::step_summary)
-            .unwrap_or_else(|| crate::history_source::change_summary(&mut snapshot, from, to))
+            .unwrap_or_else(|| {
+                let snapshot = snapshot.get_or_insert_with(|| doc.clone());
+                crate::history_source::change_summary(snapshot, from, to)
+            })
     };
     UndoStatus {
         can_undo: undo.is_some(),
