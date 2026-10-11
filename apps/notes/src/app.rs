@@ -2868,6 +2868,17 @@ impl ui::resources::PublishesResources for NotesApp {
     ) -> ui::widget::ActionDirectoryInvocationDomain {
         self.notes_invocation_domain(doc)
     }
+    /// A note-creating action answers with the page it made.
+    fn document_action_result(
+        &self,
+        doc: &AutoCommit,
+        address: &tilo_actions::ActionAddress,
+        changes: &[automerge::Patch],
+    ) -> Option<serde_json::Value> {
+        matches!(address.action.as_str(), "new-page" | "new-child")
+            .then(|| actions::created_page_result(doc, changes))
+            .flatten()
+    }
 }
 
 impl NotesApp {

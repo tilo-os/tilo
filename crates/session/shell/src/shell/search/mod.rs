@@ -449,6 +449,13 @@ pub trait SearchProvider {
         false
     }
 
+    /// Bracket one exhaustive, machine-facing enumeration: while on, a
+    /// provider that keeps resources behind a drill-down (an app's pages,
+    /// their blocks) may also list what sits one level inside them, within
+    /// its own bounds. The palette never turns it on, so typing stays
+    /// cheap and a person drills down as before.
+    fn set_enumerating(&self, _on: bool) {}
+
     /// Page a retained search index.  This is the canonical shell query
     /// surface.  `query` remains for small, direct callers and backwards
     /// compatible provider tests; registry/palette/agent discovery always
@@ -1066,6 +1073,11 @@ impl SearchRegistry {
         let mut pages = 0usize;
         let mut results = 0usize;
         let mut bytes = 0usize;
+        if exhaustive {
+            for source in &sources {
+                source.provider.set_enumerating(true);
+            }
+        }
         // A file index may need hundreds of sparse pages. Survey every source
         // before following continuations so it cannot hide an app or action.
         'rounds: loop {
@@ -1136,6 +1148,11 @@ impl SearchRegistry {
             }
             if !exhaustive || !advanced {
                 break;
+            }
+        }
+        if exhaustive {
+            for source in &sources {
+                source.provider.set_enumerating(false);
             }
         }
         sources

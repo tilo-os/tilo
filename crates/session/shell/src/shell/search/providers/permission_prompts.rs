@@ -1,10 +1,12 @@
 //! Answers to existing session-local portal prompts, never arbitrary grants.
 use std::rc::Rc;
 
+use crate::shell::agent_admission::MemberChoice;
+use crate::shell::chrome_state::PromptRequest;
 use crate::shell::chrome_state::{Chrome, ChromeState};
 use crate::shell::i18n::t;
 use crate::shell::overlay_host::{
-    capability_label, is_active_workspace_owner, prompt_choice_to_outcome,
+    is_active_workspace_owner, prompt_choice_to_outcome, prompt_label,
 };
 use crate::shell::search::action_api::{ActionError, ActionParam, ParamType};
 use crate::shell::search::{ResourceKind, SearchContext, SearchProvider, SearchResult};
@@ -19,6 +21,17 @@ pub(crate) fn answer_pending_prompt(
     id: uuid::Uuid,
     choice: PromptChoice,
 ) -> Result<(), ActionError> {
+    answer_pending_prompt_as(state, id, choice, None)
+}
+
+/// [`answer_pending_prompt`], admitting an agent door client as `member`
+/// when the person named one.
+pub(crate) fn answer_pending_prompt_as(
+    state: &mut ChromeState,
+    id: uuid::Uuid,
+    choice: PromptChoice,
+    member: Option<MemberChoice>,
+) -> Result<(), ActionError> {
     if state.pending_grants.front().is_none_or(|p| p.id != id) {
         return Err(ActionError::Refused(t("permission-request-expired")));
     }
@@ -28,10 +41,50 @@ pub(crate) fn answer_pending_prompt(
         )));
     }
     if let Some(mut pending) = state.pending_grants.pop_front() {
-        pending.answer(prompt_choice_to_outcome(choice));
+        pending.answer_as(prompt_choice_to_outcome(choice), member);
         state.bump();
     }
     Ok(())
+}
+
+/// A decision's parameters: always the confirmation; for an agent door
+/// client also which agent it is admitted as, and a new agent's preset.
+fn prompt_params(agent_admission: bool) -> Vec<ActionParam> {
+    let mut params = vec![ActionParam::required_owned(
+        "confirm",
+        ParamType::Boolean,
+        t("permission-request-confirm"),
+    )];
+    if agent_admission {
+        params.push(ActionParam::optional_owned(
+            "agent",
+            ParamType::Text,
+            t("agent-door-param-agent"),
+        ));
+        params.push(ActionParam::optional_owned(
+            "preset",
+            ParamType::Text,
+            t("agent-door-param-preset"),
+        ));
+    }
+    params
+}
+
+/// The agent the person named, if they named one.
+fn member_choice(
+    args: &crate::shell::search::action_api::ActionArgs,
+) -> Result<Option<MemberChoice>, ActionError> {
+    let preset = args
+        .text("preset")
+        .map(|value| {
+            tilo_desktop::workspace_settings::AgentAuthorityPreset::parse(value)
+                .ok_or_else(|| ActionError::Refused(t("agent-door-preset-invalid")))
+        })
+        .transpose()?;
+    Ok(args.text("agent").map(|agent| MemberChoice {
+        agent: agent.to_owned(),
+        preset,
+    }))
 }
 
 #[derive(Default)]
@@ -60,6 +113,7 @@ impl SearchProvider for PermissionPromptsProvider {
             return Vec::new();
         };
         let prompt_id = pending.id;
+        let agent_admission = matches!(pending.request, PromptRequest::AgentAdmission(_));
         let rows: Vec<_> = [
             ("allow-once", PromptChoice::Allow),
             ("allow-session", PromptChoice::Session),
@@ -76,15 +130,11 @@ impl SearchProvider for PermissionPromptsProvider {
             subtitle: Some(format!(
                 "{}: {}",
                 pending.app_id,
-                capability_label(&pending.capability)
+                prompt_label(&pending.request)
             )),
             badge: Some(self.display_name()),
             score: 0,
-            params: vec![ActionParam::required_owned(
-                "confirm",
-                ParamType::Boolean,
-                t("permission-request-confirm"),
-            )],
+            params: prompt_params(agent_admission),
             contract: Some(tilo_actions::ActionContract {
                 permission: tilo_actions::PermissionRequirement::Admin,
                 risk: tilo_actions::RiskLevel::Destructive,
@@ -92,12 +142,13 @@ impl SearchProvider for PermissionPromptsProvider {
                 retry: tilo_actions::RetryPolicy::AtMostOnce,
                 ..tilo_actions::ActionContract::default()
             }),
-            on_open: Rc::new(move |_doc, _root, chrome: &Chrome, _args| {
+            on_open: Rc::new(move |_doc, _root, chrome: &Chrome, args| {
                 let mut state = chrome.borrow_mut();
                 if !is_active_workspace_owner(&state) {
                     return Err(ActionError::Refused(t("permission-request-owner-required")));
                 }
-                answer_pending_prompt(&mut state, prompt_id, choice)
+                let member = member_choice(args)?;
+                answer_pending_prompt_as(&mut state, prompt_id, choice, member)
             }),
             on_invoke: None,
             on_begin_invoke: None,

@@ -44,6 +44,13 @@ const MAX_JOB_ROWS_PER_QUERY: usize = 4;
 /// Directory responses are an acceleration cache, not a second unbounded
 /// replica of every connected application's action namespace.
 const MAX_RETAINED_DIRECTORY_PAGES: usize = 64;
+/// How many resources an enumeration opens below the roots, and how deep.
+/// Notes' pages (and their blocks) are the motivating case: a bounded,
+/// breadth-first walk, never an app's whole tree.
+const MAX_NESTED_RESOURCES_PER_ENUMERATION: usize = 64;
+const MAX_NESTED_DEPTH: usize = 3;
+const MAX_NESTED_ACTION_ROWS: usize = 1_024;
+const MAX_RETAINED_NESTED_PAGES: usize = 128;
 /// A stalled LocalSet/capability must not leave a palette-owned oneshot alive
 /// forever. Retrying after this deadline remains bounded by the bridge queue.
 const DIRECTORY_PAGE_REPLY_TIMEOUT: Duration = Duration::from_secs(2);
@@ -71,6 +78,11 @@ pub(crate) fn set_directory_start_timeout_for_test(timeout: Option<Duration>) {
 /// key lets a bounded palette walk a long directory without replacing an
 /// already-rendered page.
 type DirectoryCacheKey = (u64, String, String, Vec<u8>);
+
+/// One resource's first directory page: publisher, actor, the resource it is
+/// the parent of, and the query. Kept apart from [`DirectoryCacheKey`]: the
+/// palette owns one level at a time, an enumeration opens several.
+type NestedCacheKey = (u64, String, String, String);
 
 struct PendingDirectoryPage {
     receiver: Pending<Result<CataloguePage, ActionHostError>>,
@@ -293,6 +305,10 @@ pub struct LiveAppActionsProvider {
     action_sessions: ActionSessionSource,
     directory_pages: RefCell<HashMap<DirectoryCacheKey, CataloguePage>>,
     directory_pending: RefCell<HashMap<DirectoryCacheKey, PendingDirectoryPage>>,
+    /// Pages of resources below a root, fetched only while enumerating.
+    nested_pages: RefCell<HashMap<NestedCacheKey, CataloguePage>>,
+    nested_pending: RefCell<HashMap<NestedCacheKey, PendingDirectoryPage>>,
+    enumerating: Cell<bool>,
     /// The palette owns at most one needle's directory projection.
     /// Keeping previous query terms made rapid typing retain unbounded pages
     /// and receivers even though no result could ever be rendered again.
@@ -484,13 +500,23 @@ impl LiveAppActionsProvider {
         operation: &str,
     ) -> Option<tilo_actions::ResourceSemanticIdentity> {
         let pages = self.directory_pages.borrow();
+        let nested = self.nested_pages.borrow();
         let publisher = peer.to_string();
         let mut descriptors = pages
             .iter()
             .filter(|((cached_peer, _, _, _), page)| {
                 *cached_peer == peer && page.revision == revision
             })
-            .flat_map(|(_, page)| &page.rows)
+            .map(|(_, page)| page)
+            .chain(
+                nested
+                    .iter()
+                    .filter(|((cached_peer, _, _, _), page)| {
+                        *cached_peer == peer && page.revision == revision
+                    })
+                    .map(|(_, page)| page),
+            )
+            .flat_map(|page| &page.rows)
             .filter(|row| row.provider == publisher)
             .filter_map(|row| row.action.as_ref())
             .filter(|descriptor| {
@@ -520,6 +546,9 @@ impl LiveAppActionsProvider {
             broker,
             directory_pages: RefCell::new(HashMap::new()),
             directory_pending: RefCell::new(HashMap::new()),
+            nested_pages: RefCell::new(HashMap::new()),
+            nested_pending: RefCell::new(HashMap::new()),
+            enumerating: Cell::new(false),
             directory_query: RefCell::new(None),
             resource_kinds: vec![
                 ResourceKind::Action,
@@ -979,6 +1008,10 @@ impl LiveAppActionsProvider {
                 PendingPoll::Waiting => true,
             }
         });
+        if self.poll_nested_pages(now) {
+            self.auxiliary_snapshot.borrow_mut().take();
+            self.directory_epoch.fetch_add(1, Ordering::Relaxed);
+        }
         if expired {
             // An empty projection must not prevent another bounded request
             // after a stalled directory ticket has been cancelled.
@@ -1016,6 +1049,158 @@ impl LiveAppActionsProvider {
         }
     }
 
+    /// Land the nested pages that have arrived. `true` when any did, or one
+    /// gave up: the projection built without it must be rebuilt.
+    fn poll_nested_pages(&self, now: Instant) -> bool {
+        let mut landed = Vec::new();
+        let mut changed = false;
+        self.nested_pending.borrow_mut().retain(|key, pending| {
+            match crate::shell::search::invocation_wake::poll(
+                &mut pending.receiver,
+                &crate::shell::search::invocation_wake::waker(),
+            ) {
+                PendingPoll::Ready(Ok(page)) if !page.stale_cursor => {
+                    landed.push((key.clone(), page));
+                    false
+                }
+                PendingPoll::Ready(_) | PendingPoll::Abandoned => {
+                    changed = true;
+                    false
+                }
+                PendingPoll::Waiting if pending.deadline <= now => {
+                    changed = true;
+                    false
+                }
+                PendingPoll::Waiting => true,
+            }
+        });
+        if !landed.is_empty() {
+            let mut pages = self.nested_pages.borrow_mut();
+            for (key, page) in landed {
+                if !pages.contains_key(&key)
+                    && pages.len() >= MAX_RETAINED_NESTED_PAGES
+                    && let Some(evicted) = pages.keys().next().cloned()
+                {
+                    pages.remove(&evicted);
+                }
+                pages.insert(key, page);
+            }
+            changed = true;
+        }
+        changed
+    }
+
+    fn request_nested_page(
+        &self,
+        peer_id: u64,
+        cluster_id: &str,
+        actor: &str,
+        needle: &str,
+        parent_resource: &str,
+    ) {
+        let key = (
+            peer_id,
+            actor.to_string(),
+            parent_resource.to_string(),
+            needle.to_string(),
+        );
+        if self.nested_pages.borrow().contains_key(&key)
+            || self.nested_pending.borrow().contains_key(&key)
+        {
+            return;
+        }
+        let Ok(session) = self.action_sessions.open(cluster_id, Some(actor)) else {
+            return;
+        };
+        let query = CatalogueQuery {
+            provider: Some(peer_id.to_string()),
+            parent_resource: Some(parent_resource.to_string()),
+            needle: needle.to_string(),
+            max_results: 48,
+            limits: Some(CatalogueLimits {
+                max_bytes: Some(48 * 1024),
+                max_work: Some(4_096),
+                max_depth: Some(1),
+            }),
+            ..CatalogueQuery::default()
+        };
+        self.nested_pending.borrow_mut().insert(
+            key,
+            PendingDirectoryPage {
+                receiver: crate::shell::search::invocation_wake::watch(session.query(query)),
+                deadline: deadline_after(DIRECTORY_PAGE_REPLY_TIMEOUT),
+                initial_page: true,
+            },
+        );
+    }
+
+    /// The actions one level and more inside the resources `root`'s first
+    /// page lists, breadth first and bounded in resources, depth and rows.
+    /// A page still owed is requested and the projection rebuilt when it
+    /// lands; what the gate hides never reaches the page, so nothing here
+    /// widens what the caller may see.
+    fn nested_entries(
+        &self,
+        root: &ActionDirectoryRoot,
+        actor: &str,
+        needle: &str,
+        root_revision: &str,
+        first: Vec<String>,
+        entries: &mut Vec<AuxiliaryEntry>,
+    ) {
+        let mut queue: std::collections::VecDeque<(String, usize)> =
+            first.into_iter().map(|id| (id, 1)).collect();
+        let mut opened = 0usize;
+        let mut rows = 0usize;
+        let mut seen = HashSet::new();
+        while let Some((resource, depth)) = queue.pop_front() {
+            if opened >= MAX_NESTED_RESOURCES_PER_ENUMERATION
+                || rows >= MAX_NESTED_ACTION_ROWS
+                || !seen.insert(resource.clone())
+            {
+                continue;
+            }
+            opened = opened.saturating_add(1);
+            let key = (
+                root.peer_id,
+                actor.to_string(),
+                resource.clone(),
+                needle.to_string(),
+            );
+            // A page of another directory revision describes rows that may
+            // be gone or renamed: ask again rather than list them.
+            if self
+                .nested_pages
+                .borrow()
+                .get(&key)
+                .is_some_and(|page| page.revision != root_revision)
+            {
+                self.nested_pages.borrow_mut().remove(&key);
+            }
+            self.request_nested_page(root.peer_id, &root.cluster_id, actor, needle, &resource);
+            let Some(page) = self.nested_pages.borrow().get(&key).cloned() else {
+                continue;
+            };
+            for row in page.rows {
+                if let Some(descriptor) = row.action {
+                    if rows >= MAX_NESTED_ACTION_ROWS {
+                        break;
+                    }
+                    rows = rows.saturating_add(1);
+                    entries.push(AuxiliaryEntry::Directory {
+                        root: root.clone(),
+                        revision: page.revision.clone(),
+                        descriptor,
+                        actor: actor.to_string(),
+                        cursor: Vec::new(),
+                    });
+                } else if row.has_children && depth < MAX_NESTED_DEPTH {
+                    queue.push_back((row.resource.id.as_str().to_string(), depth.saturating_add(1)));
+                }
+            }
+        }
+    }
+
     fn poll_directory_pages(&self) {
         self.poll_directory_pages_at(Instant::now());
     }
@@ -1036,6 +1221,12 @@ impl LiveAppActionsProvider {
         self.directory_pending
             .borrow_mut()
             .retain(|(_, _, cached_needle, _), _| cached_needle == &next);
+        self.nested_pages
+            .borrow_mut()
+            .retain(|(_, _, _, cached_needle), _| cached_needle == &next);
+        self.nested_pending
+            .borrow_mut()
+            .retain(|(_, _, _, cached_needle), _| cached_needle == &next);
         self.directory_epoch.fetch_add(1, Ordering::Relaxed);
     }
 
@@ -1056,6 +1247,10 @@ impl LiveAppActionsProvider {
         if invalidated.is_empty() {
             return;
         }
+        // A refused row may sit on a nested page: drop them all, they are
+        // cheap to ask for again.
+        self.nested_pages.borrow_mut().clear();
+        self.nested_pending.borrow_mut().clear();
         let mut pages = self.directory_pages.borrow_mut();
         let mut pending = self.directory_pending.borrow_mut();
         for key in invalidated {
@@ -1077,7 +1272,12 @@ impl LiveAppActionsProvider {
         root_limit: usize,
         resume: &AuxiliaryResume,
     ) {
-        let scope = Self::surface_scope(ctx);
+        let expand = self.enumerating.get() && ctx.chrome.search_resource_scope.is_none();
+        let scope = if expand {
+            format!("{}{ID_SEPARATOR}enumerating", Self::surface_scope(ctx))
+        } else {
+            Self::surface_scope(ctx)
+        };
         if self
             .auxiliary_snapshot
             .borrow()
@@ -1219,6 +1419,7 @@ impl LiveAppActionsProvider {
                     .cloned();
                 let Some(page) = page else { break };
                 let rows = page.rows;
+                let mut nested_first = Vec::new();
                 let mut consumed = row_offset.min(rows.len());
                 for row in rows.into_iter().skip(row_offset) {
                     if entries.len() >= root_limit {
@@ -1243,11 +1444,24 @@ impl LiveAppActionsProvider {
                             cursor: remote_cursor.clone(),
                         });
                     } else if row.has_children {
+                        if expand {
+                            nested_first.push(row.resource.id.as_str().to_string());
+                        }
                         entries.push(AuxiliaryEntry::Resource {
                             root: root.clone(),
                             row,
                         });
                     }
+                }
+                if expand {
+                    self.nested_entries(
+                        &root,
+                        &root_actor,
+                        needle,
+                        &page.revision,
+                        nested_first,
+                        &mut entries,
+                    );
                 }
                 if next_resume.is_some() {
                     break;
@@ -2498,8 +2712,11 @@ impl SearchProvider for LiveAppActionsProvider {
             .iter()
             .find(|workspace| workspace.room.to_string() == root.cluster_id)
             .map(|workspace| ctx.chrome.local_user_for_room(&workspace.room))?;
-        let cached = self.directory_pages.borrow().iter().find_map(
-            |((cached_peer, cached_actor, needle, cursor), page)| {
+        let cached = self
+            .directory_pages
+            .borrow()
+            .iter()
+            .find_map(|((cached_peer, cached_actor, needle, cursor), page)| {
                 if *cached_peer != peer_id || cached_actor != &actor || page.revision != revision {
                     return None;
                 }
@@ -2508,8 +2725,26 @@ impl SearchProvider for LiveAppActionsProvider {
                     (descriptor.address.resource == resource && descriptor.address.action == action)
                         .then(|| (descriptor.clone(), needle.clone(), cursor.clone()))
                 })
-            },
-        )?;
+            })
+            .or_else(|| {
+                // A row an enumeration listed below a root.
+                self.nested_pages.borrow().iter().find_map(
+                    |((cached_peer, cached_actor, _, needle), page)| {
+                        if *cached_peer != peer_id
+                            || cached_actor != &actor
+                            || page.revision != revision
+                        {
+                            return None;
+                        }
+                        page.rows.iter().find_map(|row| {
+                            let descriptor = row.action.as_ref()?;
+                            (descriptor.address.resource == resource
+                                && descriptor.address.action == action)
+                                .then(|| (descriptor.clone(), needle.clone(), Vec::new()))
+                        })
+                    },
+                )
+            })?;
         Some(self.directory_action_result(&root, revision, &cached.0, &cached.1, &actor, &cached.2))
             .filter(|result| result.id == id)
     }
@@ -2555,7 +2790,8 @@ impl SearchProvider for LiveAppActionsProvider {
             .map(|snapshot| (snapshot.source_generation, snapshot.scope == scope));
         let ready = built == Some((source_generation, true));
         let pending = self.directory_pending.borrow().len();
-        if !ready || pending > 0 {
+        let nested = self.nested_pending.borrow().len();
+        if !ready || pending > 0 || nested > 0 {
             // Why a listing is not complete yet, for whoever has to find
             // out why one never settles.
             tracing::debug!(
@@ -2564,10 +2800,15 @@ impl SearchProvider for LiveAppActionsProvider {
                 ?built,
                 building = self.surface_build.borrow().is_some(),
                 pending_directory_pages = pending,
+                pending_nested_pages = nested,
                 "app actions still settling"
             );
         }
-        !ready || pending > 0
+        !ready || pending > 0 || nested > 0
+    }
+
+    fn set_enumerating(&self, on: bool) {
+        self.enumerating.set(on);
     }
 
     #[allow(
@@ -4913,6 +5154,135 @@ mod tests {
                 "the child fetch must carry the selected stable resource address"
             );
         }
+    }
+
+    /// Notes' pages and blocks sit behind their notebook: an enumeration must
+    /// list their actions, the palette must not, and a nested row must resolve
+    /// by its own address afterwards.
+    #[test]
+    fn enumeration_lists_the_actions_of_resources_below_a_root() {
+        fn resource_row(id: &str, label: &str, has_children: bool) -> CatalogueRow {
+            CatalogueRow {
+                provider: "9".into(),
+                app_id: "so.tilo.notes".into(),
+                parent_resource: String::new(),
+                resource: CatalogueResource {
+                    id: id.into(),
+                    kind: "notes.page".into(),
+                    label: label.into(),
+                    presentation: None,
+                },
+                action: None,
+                has_children,
+                visibility: None,
+            }
+        }
+        fn action_row(resource: &str, action: &str) -> CatalogueRow {
+            let mut descriptor = exported("Rename note", action);
+            descriptor.address = tilo_actions::ActionAddress::new(resource, action);
+            CatalogueRow {
+                provider: "9".into(),
+                app_id: "so.tilo.notes".into(),
+                parent_resource: resource.into(),
+                resource: CatalogueResource {
+                    id: resource.into(),
+                    kind: "notes.page".into(),
+                    label: "Page".into(),
+                    presentation: None,
+                },
+                action: Some(descriptor),
+                has_children: false,
+                visibility: None,
+            }
+        }
+        let chrome = chrome();
+        let broker = broker_for(&chrome);
+        let provider = LiveAppActionsProvider::new_with_fixture_identity(broker.clone());
+        let (cluster_id, actor) = {
+            let chrome = chrome.borrow();
+            let room = chrome.tree().desktop.workspaces[0].room;
+            (room.to_string(), chrome.local_user_for_room(&room))
+        };
+        broker.replace_action_directory_roots_for_test(vec![ActionDirectoryRoot {
+            peer_id: 9,
+            app_id: "so.tilo.notes".into(),
+            cluster_id,
+            record_id: "notebook".into(),
+        }]);
+        provider.directory_pages.borrow_mut().insert(
+            (9, actor.clone(), String::new(), Vec::new()),
+            page(
+                vec![
+                    action_row("notes.notebook", "new"),
+                    resource_row("notes.page:a", "Page A", true),
+                ],
+                Vec::new(),
+            ),
+        );
+        provider.nested_pages.borrow_mut().insert(
+            (9, actor.clone(), "notes.page:a".into(), String::new()),
+            page(
+                vec![
+                    action_row("notes.page:a", "rename"),
+                    action_row("notes.page:a", "new-child"),
+                    resource_row("notes.block:a1", "Block", true),
+                ],
+                Vec::new(),
+            ),
+        );
+        provider.nested_pages.borrow_mut().insert(
+            (9, actor, "notes.block:a1".into(), String::new()),
+            page(vec![action_row("notes.block:a1", "set-style")], Vec::new()),
+        );
+        let doc = AutoCommit::new();
+        let ids = |provider: &LiveAppActionsProvider| {
+            let chrome = chrome.borrow();
+            let ctx = SearchContext {
+                query_scope: None,
+                include_programmatic: false,
+                needle: "",
+                wanted: &[ResourceKind::Action],
+                chrome: &chrome,
+                doc: &doc,
+                doc_root: &automerge::ROOT,
+            };
+            provider
+                .query_page(ctx, None, SearchBudget::PALETTE)
+                .results
+                .into_iter()
+                .map(|row| row.id)
+                .collect::<Vec<_>>()
+        };
+        let named = |ids: &[String], resource: &str, action: &str| {
+            let tail = [resource, action].join(&ID_SEPARATOR.to_string());
+            ids.iter().any(|id| id.ends_with(&tail))
+        };
+
+        let palette = ids(&provider);
+        assert!(named(&palette, "notes.notebook", "new"));
+        assert!(
+            !named(&palette, "notes.page:a", "rename"),
+            "the palette drills down; it does not open every resource"
+        );
+
+        provider.set_enumerating(true);
+        let listed = ids(&provider);
+        provider.set_enumerating(false);
+        assert!(named(&listed, "notes.notebook", "new"), "{listed:?}");
+        assert!(named(&listed, "notes.page:a", "rename"), "{listed:?}");
+        assert!(named(&listed, "notes.page:a", "new-child"), "{listed:?}");
+        assert!(named(&listed, "notes.block:a1", "set-style"), "{listed:?}");
+
+        let nested = listed
+            .iter()
+            .find(|id| id.ends_with(&["notes.page:a", "rename"].join(&ID_SEPARATOR.to_string())))
+            .expect("the page's rename row");
+        let chrome_ref = chrome.borrow();
+        let resolved = provider.resolve(nested, context("", &chrome_ref, &doc));
+        assert!(
+            resolved.is_some_and(|row| row.id == *nested),
+            "a listed nested address resolves"
+        );
     }
 }
 
