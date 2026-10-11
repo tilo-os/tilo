@@ -44,6 +44,25 @@ class Renderer(unittest.TestCase):
         self.assertEqual(records.renderer("GPU (virgl): nodes: renderD128 | drivers: virtio-pci"), "virgl")
         self.assertEqual(records.renderer("GPU (i915): nodes: renderD128", {"hardware": True}), "gpu")
 
+    def test_a_vm_created_without_virgl_renders_in_software_without_mesas_warning(self):
+        class Vm:
+            def __init__(self, out):
+                self.out = out
+
+            def exec(self, _script, check=True):
+                return self.out
+
+        # A session pinned to lavapipe never asks Mesa's EGL for the virtio GPU,
+        # so the dri2 warning the label used to rely on is absent.
+        pinned = Vm("nodes: by-path card0 card1 renderD128\ndrivers: faux_driver virtio-pci\n")
+        label, display = run.renderer(pinned, without_3d=True)
+        self.assertEqual(records.renderer(label, display), "lavapipe")
+        label, display = run.renderer(pinned)
+        self.assertEqual(records.renderer(label, display), "virgl",
+                         "a VM someone else created may have virgl")
+        warned = Vm("nodes: renderD128\ndrivers: virtio-pci\nMESA-EGL: warning: egl: failed to create dri2 screen\n")
+        self.assertEqual(records.renderer(*run.renderer(warned)), "lavapipe")
+
     def test_an_unnamed_renderer_is_refused_rather_than_guessed(self):
         with self.assertRaises(ValueError):
             records.renderer(None)
