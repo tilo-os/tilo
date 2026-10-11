@@ -725,7 +725,7 @@ jobs:
             echo "::error::accept only applies to main, where the store is written"
             exit 1
           fi
-          args=(--store "$GITHUB_SERVER_URL" --owner "$owner" --groups "$GROUPS"
+          args=(--store "$GITHUB_SERVER_URL" --owner "$owner" --lane perf-scheduled --groups "$GROUPS"
                 --publish-dir publish --run "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" --summary summary.md)
           [[ -n ${ACCEPT:-} ]] && args+=(--accept "$ACCEPT")
           [[ -n ${SERIES:-} ]] && args+=(--synthetic "$SERIES" --synthetic-factor "${FACTOR:-1.0}")
