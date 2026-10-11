@@ -78,9 +78,19 @@ struct Args {
     /// Directory for `hosting-load.json`.
     #[arg(long)]
     out: Option<PathBuf>,
+    /// Confine the relay process to this many CPUs, as on a VM with that many
+    /// vCPUs: its daemon runtime then starts that many workers (at most
+    /// four), and its blocking pool shares the same CPUs. The collaborators
+    /// run on the CPUs left over. Linux only; by default the relay may use
+    /// every CPU.
+    #[arg(long)]
+    relay_cpus: Option<usize>,
     /// Run as the relay process (internal: the bench starts it itself).
     #[arg(long, hide = true)]
     serve: bool,
+    /// The CPUs the relay process runs on (internal: `--relay-cpus` picks them).
+    #[arg(long, hide = true, value_delimiter = ',')]
+    cpus: Vec<usize>,
 }
 
 fn main() -> ExitCode {
@@ -91,7 +101,7 @@ fn main() -> ExitCode {
     }
     let args = Args::parse();
     let result = if args.serve {
-        relay_process::serve()
+        relay_process::serve(&args.cpus)
     } else {
         bench(&args)
     };
@@ -111,19 +121,25 @@ fn bench(args: &Args) -> anyhow::Result<()> {
         "--collaborators must fill rooms of at least two"
     );
     anyhow::ensure!(args.minutes >= 1, "--minutes must be at least 1");
+    // Split the CPUs before this process starts its runtime, so its workers
+    // count only the collaborators' share.
+    let relay_cpus = match args.relay_cpus {
+        Some(count) => Some(relay_process::split_cpus(count)?),
+        None => None,
+    };
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
-        .block_on(run(args))
+        .block_on(run(args, relay_cpus.as_deref()))
 }
 
-async fn run(args: &Args) -> anyhow::Result<()> {
+async fn run(args: &Args, relay_cpus: Option<&[usize]>) -> anyhow::Result<()> {
     let fleet = Fleet::enrol(args.collaborators, args.room_size)?;
     let state = tempfile::Builder::new()
         .prefix("tilo-relay-load-")
         .tempdir()
         .context("the relay's state directory")?;
-    let mut relay = RelayProcess::spawn(&fleet, state.path()).await?;
+    let mut relay = RelayProcess::spawn(&fleet, state.path(), relay_cpus).await?;
     let result = measure(args, &fleet, &mut relay).await;
     relay.stop().await;
     drop(state);
@@ -272,6 +288,8 @@ struct Report {
     collaborators: usize,
     rooms: usize,
     room_size: usize,
+    /// The CPUs the relay was confined to (`--relay-cpus`); none is all.
+    relay_cpus: Option<usize>,
     idle_rss_bytes: u64,
     windows: Vec<Window>,
     fanout_ms: Vec<f64>,
@@ -307,6 +325,7 @@ impl Report {
             collaborators: args.collaborators,
             rooms: fleet.rooms(),
             room_size: args.room_size,
+            relay_cpus: args.relay_cpus,
             idle_rss_bytes: idle.rss_bytes,
             windows,
             fanout_ms,
@@ -391,6 +410,7 @@ impl Report {
             "collaborators": self.collaborators,
             "rooms": self.rooms,
             "room_size": self.room_size,
+            "relay_cpus": self.relay_cpus,
             "window_s": WINDOW.as_secs(),
             "windows": self.windows.len(),
             "relay_idle_rss_mib": mib(self.idle_rss_bytes),

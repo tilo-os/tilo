@@ -62,6 +62,10 @@ on:
         description: "A/B: rounds, each running both sides (at least 6 for a 95 % interval)."
         required: false
         default: "8"
+      ab_relay_cpus:
+        description: "A/B hosting: confine the relay to this many CPUs, as on a VM with that many vCPUs (empty: all, which gives it 4 workers). Both sides' bench must know --relay-cpus."
+        required: false
+        default: ""
 
 concurrency:
   # compare.py reads the store's state and then appends to it; two runs at
@@ -653,12 +657,14 @@ jobs:
           BASE: ${{ github.event.inputs.ab_base }}
           CANDIDATE: ${{ github.event.inputs.ab_candidate }}
           ROUNDS: ${{ github.event.inputs.ab_rounds }}
+          RELAY_CPUS: ${{ github.event.inputs.ab_relay_cpus }}
         run: |
           set -euo pipefail
           ./os/dev/assert-native-arch.sh x86_64
           git config --global --add safe.directory "$PWD"
           python3 tools/perf/ab.py run --groups "$GROUP" --base "${BASE:-origin/main}" \
             --candidate "${CANDIDATE:-$GITHUB_SHA}" --rounds "$ROUNDS" --out perf-ab \
+            --hosting-relay-cpus "${RELAY_CPUS:-0}" \
             --virtualization kvm --runner runner --summary "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
