@@ -142,6 +142,28 @@ class TypingTargetTests(unittest.TestCase):
             self.assertFalse(target(client, "/4", "(<'New note'>,)", None))
 
 
+class CheckedRoleTests(unittest.TestCase):
+    def test_checked_role_preserves_transport_failure_and_malformed_success(self):
+        from unittest import mock
+
+        client = CLIENT.AtspiClient("address", "bus")
+        with mock.patch.object(
+            client, "call", side_effect=CLIENT.GateError("UnknownObject")
+        ) as read, self.assertRaisesRegex(CLIENT.GateError, "UnknownObject"):
+            client.checked_role("/retired")
+        read.assert_called_once_with(
+            "/retired", "org.a11y.atspi.Accessible.GetRole"
+        )
+
+        with mock.patch.object(client, "call", return_value="(uint32 37,)\n"):
+            self.assertEqual(client.checked_role("/tab"), 37)
+        for malformed in ("", "prefix uint32 37 suffix", "(uint32 37, 'extra')"):
+            with self.subTest(malformed=malformed), mock.patch.object(
+                client, "call", return_value=malformed
+            ):
+                self.assertIsNone(client.checked_role("/malformed"))
+
+
 class KeyboardFocusTests(unittest.TestCase):
     def focus_client(self, states: list[int]):
         from unittest import mock

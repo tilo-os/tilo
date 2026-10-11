@@ -1140,6 +1140,24 @@ def stale_editor_transport(error):
         and "org.a11y.atspi.Text" in text)
 
 
+def restricted_snapshot_role(client, path, subject, observation):
+    """Read a role from one coherent restricted-view tree generation."""
+    try:
+        role = client.checked_role(path)
+    except atspi.GateError as error:
+        unknown_object = r"org\.freedesktop\.DBus\.Error\.UnknownObject(?=[:\s]|$)"
+        if re.search(unknown_object, str(error)) is not None:
+            # The caller abandons this whole window snapshot. Never combine a
+            # name from the retired generation with a later role response.
+            raise
+        permission_count(observation, "at_unobservable")
+        raise RuntimeError(f"restricted {subject} role is unobservable") from None
+    if role is None:
+        permission_count(observation, "at_unobservable")
+        raise RuntimeError(f"restricted {subject} role is unobservable")
+    return role
+
+
 def chat_editor_contract(access, observation=None):
     client = atspi.AtspiClient(access.get("address") or atspi.atspi_address(), access["bus"])
     name = atspi.property_text(client.property(access["composer"], "Name"))
@@ -1877,14 +1895,14 @@ def agent_write_restricted_accessibility(agent_name, expected, *, observation=No
                 )
                 headings = []
                 for path in heading_candidates:
-                    try:
-                        role = client.role(path)
-                    except atspi.GateError:
+                    role = restricted_snapshot_role(
+                        client, path, "Agent heading", observation
+                    )
+                    if role == 0:
                         permission_count(observation, "at_unobservable")
-                        raise RuntimeError("restricted Agent heading role is unobservable") from None
-                    if role is None or role == 0:
-                        permission_count(observation, "at_unobservable")
-                        raise RuntimeError("restricted Agent heading role is unobservable")
+                        raise RuntimeError(
+                            "restricted Agent heading role is unobservable"
+                        )
                     if role == AT_SPI_ROLE_HEADING:
                         headings.append(path)
                 notices = client.named(
@@ -1902,11 +1920,9 @@ def agent_write_restricted_accessibility(agent_name, expected, *, observation=No
                     if name not in forbidden:
                         continue
                     if name == "Queue task":
-                        try:
-                            role = client.role(path)
-                        except atspi.GateError:
-                            permission_count(observation, "at_unobservable")
-                            raise RuntimeError("restricted Queue control role is unobservable") from None
+                        role = restricted_snapshot_role(
+                            client, path, "Queue control", observation
+                        )
                         if role == AT_SPI_ROLE_TAB:
                             permission_count(observation, "queue_tabs")
                             queue_tabs += 1

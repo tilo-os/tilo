@@ -200,6 +200,18 @@ class AtspiClient:
         match = re.search(r"uint32\s+(\d+)", reply)
         return int(match.group(1)) if match else None
 
+    def checked_role(self, path: str) -> int | None:
+        """Read one role while preserving a D-Bus transport failure.
+
+        Most generic tree probes treat a missing role as a non-match. Gates
+        that have already identified a security-sensitive node instead need
+        to distinguish a malformed successful reply from a retired object so
+        they can retry the complete tree generation.
+        """
+        reply = self.call(path, "org.a11y.atspi.Accessible.GetRole")
+        match = re.fullmatch(r"\s*\(\s*uint32\s+(\d+)\s*,\s*\)\s*", reply)
+        return int(match.group(1)) if match else None
+
     def property(self, path: str, name: str) -> str:
         return self.call(
             path, "org.freedesktop.DBus.Properties.Get", "org.a11y.atspi.Accessible", name,

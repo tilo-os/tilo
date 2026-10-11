@@ -759,7 +759,7 @@ class RestrictedQueueRoleTests(unittest.TestCase):
                 self.assertNotIn("/queue", json.dumps(observation))
 
     def observe(self, role, *, revoked=False, editable=False, forbidden=None, queue_button=False,
-                observation=None, heading_options=None):
+                observation=None, heading_options=None, include_queue=True):
         heading_options = heading_options or {}
         heading_role = heading_options.get("heading_role", "(uint32 83,)")
         roster_role = heading_options.get("roster_role", "(uint32 31,)")
@@ -767,8 +767,9 @@ class RestrictedQueueRoleTests(unittest.TestCase):
         notice = ("This agent is no longer available here. Your draft is kept on this device."
                   if revoked else "You cannot send messages in this conversation.")
         tree = {"/heading": "(<'Tide, agent'>,)", "/notice": f"(<'{notice}'>,)",
-                "/return": "(<'Return conversation'>,)", "/draft": "(<'PRIVATE-DRAFT'>,)",
-                "/queue": "(<'Queue task'>,)"}
+                "/return": "(<'Return conversation'>,)", "/draft": "(<'PRIVATE-DRAFT'>,)"}
+        if include_queue:
+            tree["/queue"] = "(<'Queue task'>,)"
         if forbidden:
             tree["/mutable"] = f"(<'{forbidden}'>,)"
         if queue_button:
@@ -858,6 +859,32 @@ class RestrictedQueueRoleTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "role is unobservable") as refused:
             self.observe(PROOF.atspi.GateError("PRIVATE unreadable role"))
         self.assertNotIn("PRIVATE", str(refused.exception))
+        with self.assertRaisesRegex(RuntimeError, "role is unobservable"):
+            self.observe(PROOF.atspi.GateError(
+                "org.freedesktop.DBus.Error.UnknownInterface: org.a11y.atspi.Text"
+            ))
+        with self.assertRaisesRegex(RuntimeError, "role is unobservable"):
+            self.observe(PROOF.atspi.GateError(
+                "org.freedesktop.DBus.Error.UnknownObjectSuffix: not the stale-object code"
+            ))
+
+    def test_retired_queue_role_retries_a_whole_coherent_snapshot(self):
+        observation = {}
+        retired = PROOF.atspi.GateError(
+            "org.freedesktop.DBus.Error.UnknownObject: retired Queue node"
+        )
+        self.assertIsNone(self.observe(retired, observation=observation))
+        self.assertEqual(observation["at_unobservable"], 1)
+        self.assertIsNone(observation.get("queue_unexpected_role"))
+
+        coherent = {}
+        observed = self.observe(
+            "(uint32 37,)", observation=coherent, include_queue=False
+        )
+        self.assertTrue(observed["notice_present"])
+        self.assertEqual(observed["mutable_controls"], 0)
+        self.assertEqual(observed["editable_composers"], 0)
+        self.assertNotIn("at_unobservable", coherent)
 
 
 class PermissionPhaseDiagnosticsTests(unittest.TestCase):
