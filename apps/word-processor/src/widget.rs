@@ -36,7 +36,7 @@ use ui::clipboard_copy;
 use ui::icons::Icon;
 use ui::permissions::UserId;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
-use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
+use ui::widget::toast::{Notice, ToastAnchor, ToastKind};
 use ui::widget::{BlockEditor, Embedded, Widget};
 use ui::{PathSegment, PresenceCtx, PresenceKey, clipboard_paste};
 
@@ -1246,7 +1246,7 @@ pub struct WordProcessorWidget {
     // ---- transient status toast -------------------------------------------
     /// A transient operation result (e.g. save confirmation or failure),
     /// drawn as a toast in the overlay pass. Dismissed on the next interaction.
-    toast: Option<(String, ToastKind)>,
+    toast: Notice,
     ime_rect: Option<Rect>,
     /// The style inspector's shared color-picker popover. It owns its lifecycle,
     /// layout, drawing, and modal input routing; this editor applies its result.
@@ -1514,7 +1514,7 @@ impl WordProcessorWidget {
             portal_rx: None,
             pending_save: None,
             style_menu: StyleMenu::default(),
-            toast: None,
+            toast: Notice::default(),
             ime_rect: None,
             color_picker: StyleColorPicker::default(),
             participants: participants::ParticipantViews::default(),
@@ -1814,7 +1814,7 @@ impl WordProcessorWidget {
             }
             Err(error) => {
                 if self.read_only() {
-                    self.toast = Some((t("toast-view-only"), ToastKind::Error));
+                    self.toast.show(t("toast-view-only"), ToastKind::Error);
                     self.lifecycle.dirty = true;
                 }
                 eprintln!("word-processor: edit refused: {error}");
@@ -3412,7 +3412,8 @@ impl WordProcessorWidget {
                     }
                     portal::PortalOutcome::Failed(reason) => {
                         eprintln!("word-processor: portal error: {reason}");
-                        self.toast = Some((t("toast-file-dialog-failed"), ToastKind::Error));
+                        self.toast
+                            .show(t("toast-file-dialog-failed"), ToastKind::Error);
                     }
                     portal::PortalOutcome::Cancelled => {}
                 }
@@ -3471,7 +3472,7 @@ impl WordProcessorWidget {
                         },
                     )?;
                     self.save_error = None;
-                    self.toast = Some((t("toast-saved"), ToastKind::Success));
+                    self.toast.show(t("toast-saved"), ToastKind::Success);
                     self.note_file_written(path, &bytes);
                 }
                 Err(e) => {
@@ -5375,7 +5376,7 @@ impl WordProcessorWidget {
             .collect();
         if entries.is_empty() {
             // Nothing to build a TOC from — tell the user *why* nothing happened.
-            self.toast = Some((t("toast-toc-empty"), ToastKind::Info));
+            self.toast.show(t("toast-toc-empty"), ToastKind::Info);
             self.lifecycle.dirty = true;
             return;
         }
@@ -5386,10 +5387,10 @@ impl WordProcessorWidget {
         // Scroll the freshly-inserted TOC (always at the document top) into view
         // and surface a confirmation toast, so the action has a visible result.
         self.scroll_y = 0.0;
-        self.toast = Some((
+        self.toast.show(
             t_args("toast-toc-updated", &[arg("n", num::i64_of_usize(n))]),
             ToastKind::Success,
-        ));
+        );
     }
 
     /// Draw the transient confirmation through the shared toast-card renderer.
@@ -5402,24 +5403,14 @@ impl WordProcessorWidget {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let Some((msg, kind)) = self.toast.as_ref() else {
-            return;
-        };
         let area = Rect::new(
             self.rect.x0,
             self.rect.y0,
             self.rect.x1,
             self.rect.y1 - self.layout_bar_height,
         );
-        paint_transient(
-            scene,
-            transform,
-            tr,
-            theme,
-            area,
-            ToastAnchor::BottomCenter,
-            &ToastCard::new(msg, *kind),
-        );
+        self.toast
+            .paint(scene, transform, tr, theme, area, ToastAnchor::BottomCenter);
     }
 }
 
@@ -8997,7 +8988,7 @@ impl WordProcessorWidget {
             return;
         }
         // Any left press dismisses a staged toast (a transient cue).
-        if self.toast.take().is_some() {
+        if self.toast.dismiss() {
             self.lifecycle.dirty = true;
         }
         if !self.rect.contains(self.pointer) {
@@ -10546,7 +10537,9 @@ impl Widget for WordProcessorWidget {
         if !self.styles_panel_full_window() {
             tree.node = tree.node.with_name(t("a11y-document-editor"));
         }
-        Some(tree.into_access_node())
+        let mut node = tree.into_access_node();
+        node.children.extend(self.toast.access_node());
+        Some(node)
     }
 
     fn perform_semantic_action(
@@ -12427,7 +12420,8 @@ impl WordProcessorWidget {
                 if self.sheet.remove(&id) {
                     self.persist_stylesheet_via_actions(state);
                     self.refresh_blocks(state);
-                    self.toast = Some((t("toast-style-deleted"), ToastKind::Success));
+                    self.toast
+                        .show(t("toast-style-deleted"), ToastKind::Success);
                 }
             }
             StyleMenuAction::Duplicate(id) => {
@@ -12439,7 +12433,8 @@ impl WordProcessorWidget {
                     // Apply the copy to the caret block so the panel focuses it.
                     self.dispatch_apply_named_style(state, &new_id);
                     self.refresh_blocks(state);
-                    self.toast = Some((t("toast-style-duplicated"), ToastKind::Success));
+                    self.toast
+                        .show(t("toast-style-duplicated"), ToastKind::Success);
                 }
             }
         }
@@ -12506,7 +12501,8 @@ impl WordProcessorWidget {
 
     fn open_comment_thread(&mut self, comment: &str) {
         if !self.review.comments().iter().any(|item| item.id == comment) {
-            self.toast = Some((t("review-thread-unavailable"), ToastKind::Error));
+            self.toast
+                .show(t("review-thread-unavailable"), ToastKind::Error);
             return;
         }
         self.thread_comment = Some(comment.to_string());
