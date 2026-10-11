@@ -79,6 +79,62 @@ fn parse_radio_state(radios: &str, devices: &str, active: &str) -> RadioState {
     }
 }
 
+/// Where the kernel lists its device classes.
+const SYS_CLASS: &str = "/sys/class";
+
+/// Whether this machine has a Wi-Fi radio, as the kernel lists it: a
+/// wireless PHY, or a network interface that is a WLAN. A few directory
+/// listings and no `nmcli`, so a caller may ask often — Settings asks every
+/// few seconds to follow a dongle being plugged in.
+#[must_use]
+pub fn has_wifi_radio() -> bool {
+    has_wifi_radio_in(std::path::Path::new(SYS_CLASS))
+}
+
+/// Whether this machine has a mobile broadband modem, as the kernel lists
+/// it: a WWAN device, or a network interface that is one. A modem that
+/// `ModemManager` drives over a serial port alone is not listed here;
+/// `get_radio_state` sees it.
+#[must_use]
+pub fn has_wwan_modem() -> bool {
+    has_wwan_modem_in(std::path::Path::new(SYS_CLASS))
+}
+
+fn has_wifi_radio_in(class: &std::path::Path) -> bool {
+    has_entries(&class.join("ieee80211"))
+        || interfaces(class).any(|interface| {
+            interface.join("wireless").exists()
+                || device_type(&interface).as_deref() == Some("wlan")
+        })
+}
+
+fn has_wwan_modem_in(class: &std::path::Path) -> bool {
+    has_entries(&class.join("wwan"))
+        || interfaces(class).any(|interface| device_type(&interface).as_deref() == Some("wwan"))
+}
+
+fn has_entries(directory: &std::path::Path) -> bool {
+    std::fs::read_dir(directory).is_ok_and(|mut entries| entries.any(|entry| entry.is_ok()))
+}
+
+/// The network interfaces under `class`, each as its sysfs directory.
+fn interfaces(class: &std::path::Path) -> impl Iterator<Item = std::path::PathBuf> {
+    std::fs::read_dir(class.join("net"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+}
+
+/// The `DEVTYPE` an interface's `uevent` names, if any.
+fn device_type(interface: &std::path::Path) -> Option<String> {
+    let uevent = std::fs::read_to_string(interface.join("uevent")).ok()?;
+    uevent
+        .lines()
+        .find_map(|line| line.strip_prefix("DEVTYPE="))
+        .map(str::to_owned)
+}
+
 /// # Errors
 ///
 /// Returns an error message if `nmcli` is not installed or the radio-toggle call fails.
@@ -2335,6 +2391,51 @@ mod wifi_deadline_tests {
         )
         .expect(
             "a connection without a supplied secret still needs the normal activation deadline",
+        );
+    }
+
+    /// A Wi-Fi PHY or WLAN interface is a Wi-Fi radio and a WWAN device or
+    /// interface is a modem; a wired interface and an empty class are
+    /// neither.
+    #[test]
+    fn radios_are_read_from_the_kernels_device_classes() {
+        use std::fs;
+        let class = tempfile::tempdir().unwrap();
+        let class = class.path();
+        assert!(!has_wifi_radio_in(class) && !has_wwan_modem_in(class));
+
+        let wired = class.join("net/enp1s0");
+        fs::create_dir_all(&wired).unwrap();
+        fs::write(wired.join("uevent"), "INTERFACE=enp1s0\nIFINDEX=2\n").unwrap();
+        fs::create_dir_all(class.join("ieee80211")).unwrap();
+        fs::create_dir_all(class.join("wwan")).unwrap();
+        assert!(
+            !has_wifi_radio_in(class),
+            "a wired interface is no Wi-Fi radio"
+        );
+        assert!(!has_wwan_modem_in(class), "a wired interface is no modem");
+
+        let wlan = class.join("net/wlp2s0");
+        fs::create_dir_all(&wlan).unwrap();
+        fs::write(wlan.join("uevent"), "DEVTYPE=wlan\nINTERFACE=wlp2s0\n").unwrap();
+        assert!(has_wifi_radio_in(class));
+        assert!(!has_wwan_modem_in(class));
+
+        let modem = class.join("net/wwan0");
+        fs::create_dir_all(&modem).unwrap();
+        fs::write(modem.join("uevent"), "DEVTYPE=wwan\nINTERFACE=wwan0\n").unwrap();
+        assert!(has_wwan_modem_in(class));
+
+        let bare = tempfile::tempdir().unwrap();
+        fs::create_dir_all(bare.path().join("ieee80211/phy0")).unwrap();
+        fs::create_dir_all(bare.path().join("wwan/wwan0")).unwrap();
+        assert!(
+            has_wifi_radio_in(bare.path()),
+            "a PHY with no interface yet"
+        );
+        assert!(
+            has_wwan_modem_in(bare.path()),
+            "a WWAN device with no interface yet"
         );
     }
 }
