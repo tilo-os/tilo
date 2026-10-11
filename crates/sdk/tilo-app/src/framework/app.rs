@@ -700,7 +700,7 @@ fn create<A: ResourceApp>(
             root.dispatcher().submit(invoke);
         }
     }
-    let mut component = AppComponent::new(context, Box::new(root), action_registry::<A>());
+    let mut component = AppComponent::new(context, root.into_widget(), action_registry::<A>());
     component.set_behaviour(A::BEHAVIOUR);
     if A::DOCUMENT_HISTORY {
         let history = super::preview::history_definition::<A>();

@@ -30,7 +30,8 @@ use ui_core::vello::kurbo::{Affine, Rect, Vec2};
 use ui_core::widget::Widget;
 
 use super::app::{Editing, ResourceApp, build_root, leaked};
-use super::root::ResourceRoot;
+use super::live::Live;
+use super::root::{ResourceRoot, RootWidget};
 use ui_core::storage::AppStorage;
 
 struct HistoryKey<A>(std::marker::PhantomData<A>);
@@ -213,17 +214,16 @@ fn readable<R: Resource>(doc: &AutoCommit) -> Result<(), String> {
 fn preview<A: ResourceApp>(input: PreviewInput) -> Result<Box<dyn HistoryPreview>, String> {
     let doc = AutoCommit::load(input.snapshot.bytes()).map_err(|error| error.to_string())?;
     let reader = Reader::<A::Resource>::read(&doc).map_err(|error| error.to_string())?;
-    Ok(Box::new(ViewPreview {
-        root: build_root::<A>(
+    Ok(Box::new(ViewPreview::new(
+        build_root::<A>(
             reader,
             Editing::ReadOnly,
             AppStorage::for_app(A::ID),
             super::settings::Hosted::default(),
         ),
-        doc: Some(doc),
-        bounds: Rect::ZERO,
-        view: input.initial_view,
-    }))
+        doc,
+        input.initial_view,
+    )))
 }
 
 /// A past version drawn by the app's own view, exactly as History mode's
@@ -242,7 +242,7 @@ impl<R: Resource> PastVersion<R> {
 
     /// The state the view was presented.
     pub fn state(&self) -> std::rc::Rc<R::State> {
-        self.preview.root.live().get()
+        self.preview.live.get()
     }
 
     /// The drawn size of the view.
@@ -259,17 +259,16 @@ pub(crate) fn render_past<A: ResourceApp>(
     size: (u32, u32),
 ) -> Result<PastVersion<A::Resource>, String> {
     let reader = Reader::<A::Resource>::read(&doc).map_err(|error| error.to_string())?;
-    let mut preview = ViewPreview {
-        root: build_root::<A>(
+    let mut preview = ViewPreview::new(
+        build_root::<A>(
             reader,
             Editing::ReadOnly,
             AppStorage::for_app(A::ID),
             super::settings::Hosted::default(),
         ),
-        doc: Some(doc),
-        bounds: Rect::ZERO,
-        view: PreviewView::default(),
-    };
+        doc,
+        PreviewView::default(),
+    );
     let theme = Theme::dark();
     let mut text = TextRenderer::new();
     let bounds = Rect::new(0.0, 0.0, f64::from(size.0), f64::from(size.1));
@@ -290,17 +289,16 @@ pub(crate) fn draw_past<A: ResourceApp>(
     theme: &Theme,
 ) -> Result<(), String> {
     let reader = Reader::<A::Resource>::read(&doc).map_err(|error| error.to_string())?;
-    let mut preview = ViewPreview {
-        root: build_root::<A>(
+    let mut preview = ViewPreview::new(
+        build_root::<A>(
             reader,
             Editing::ReadOnly,
             AppStorage::for_app(A::ID),
             super::settings::Hosted::default(),
         ),
-        doc: Some(doc),
-        bounds: Rect::ZERO,
-        view: PreviewView::default(),
-    };
+        doc,
+        PreviewView::default(),
+    );
     let mut text = TextRenderer::new();
     preview.layout(bounds, &mut text, theme)?;
     preview.draw(scene, transform, &mut text, theme);
@@ -308,10 +306,24 @@ pub(crate) fn draw_past<A: ResourceApp>(
 }
 
 struct ViewPreview<R: Resource> {
-    root: ResourceRoot<R>,
+    root: RootWidget,
+    /// The root's live state, which the root widget holds erased.
+    live: Live<R>,
     doc: Option<AutoCommit>,
     bounds: Rect,
     view: PreviewView,
+}
+
+impl<R: Resource> ViewPreview<R> {
+    fn new(root: ResourceRoot<R>, doc: AutoCommit, view: PreviewView) -> Self {
+        Self {
+            live: root.live().clone(),
+            root: RootWidget::new(root),
+            doc: Some(doc),
+            bounds: Rect::ZERO,
+            view,
+        }
+    }
 }
 
 impl<R: Resource> HistoryPreview for ViewPreview<R> {
@@ -553,17 +565,16 @@ mod tests {
             let bytes = doc.fork_at(&past).unwrap().save();
 
             let frozen = AutoCommit::load(&bytes).unwrap();
-            let mut preview = ViewPreview {
-                root: build_root::<PageApp>(
+            let mut preview = ViewPreview::new(
+                build_root::<PageApp>(
                     Reader::read(&frozen).unwrap(),
                     Editing::ReadOnly,
                     AppStorage::for_app(PageApp::ID),
                     crate::framework::settings::Hosted::default(),
                 ),
-                doc: Some(frozen),
-                bounds: Rect::ZERO,
-                view: PreviewView::default(),
-            };
+                frozen,
+                PreviewView::default(),
+            );
             let theme = Theme::dark();
             let mut text = TextRenderer::new();
             preview
@@ -576,7 +587,7 @@ mod tests {
         }
     }
 
-    fn shown(root: &ResourceRoot<Page>) -> Vec<String> {
+    fn shown(root: &RootWidget) -> Vec<String> {
         fn visit(widget: &dyn Widget, out: &mut Vec<String>) {
             if let Some(node) = widget.accessibility()
                 && let Some(label) = node.name

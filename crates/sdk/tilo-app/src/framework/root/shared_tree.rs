@@ -385,9 +385,9 @@ mod tests {
     use serde_json::json;
 
     use super::super::ResourceRoot;
+    use super::super::RootPublishes;
     use crate::prelude::*;
     use ui_core::published::SharedResource;
-    use ui_core::resources::PublishesResources;
 
     #[derive(Model, Default, Debug, Clone, PartialEq)]
     /// One task.

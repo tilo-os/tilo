@@ -41,7 +41,7 @@ pub fn publish_root<A: ResourceApp>() -> i32 {
         ui_core::storage::AppStorage::for_app(A::ID),
         super::settings::Hosted::default(),
     );
-    let view: Box<dyn AppWidget> = Box::new(root);
+    let view: Box<dyn AppWidget> = Box::new(super::root::RootWidget::new(root));
     ui_core::app::publish_dev_root(ui_core::app::DevRoot {
         view,
         registry: action_registry::<A>(),

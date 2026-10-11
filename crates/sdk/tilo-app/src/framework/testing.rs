@@ -639,7 +639,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     pub fn take_save_retry(&mut self) -> Result<bool, String> {
         self.harness()
             .with_widget_mut(|root: &mut super::root::ResourceRoot<A::Resource>| {
-                ui_core::widget::AppWidget::take_save_retry(root)
+                super::root::RootApp::take_save_retry(root)
             })
             .ok_or_else(|| "the framework root is not mounted".to_owned())
     }

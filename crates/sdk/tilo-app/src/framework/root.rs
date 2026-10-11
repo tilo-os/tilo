@@ -41,7 +41,9 @@ use super::surface::SurfacePublication;
 use super::view::{Bindings, ViewCx};
 
 mod shared_tree;
+mod widget;
 use shared_tree::{ItemChildren, NestedViews, PublishedChildren, SharedTreeCache};
+pub(crate) use widget::{RootApp, RootControls, RootModel, RootPublishes, RootSearch, RootWidget};
 
 pub(crate) struct ResourceRoot<R: Resource> {
     title: &'static str,
@@ -395,6 +397,11 @@ impl<R: Resource> ResourceRoot<R> {
             self.dispatch.set_read_only(!permissions.check(write));
         }
         self.dispatch.refresh_permission_states();
+    }
+
+    /// The root as the widget a host mounts.
+    pub(crate) fn into_widget(self) -> Box<dyn AppWidget> {
+        Box::new(RootWidget::new(self))
     }
 
     pub(crate) fn live(&self) -> &Live<R> {
@@ -836,7 +843,7 @@ pub fn with_surface<R: Resource, S: 'static, T>(
         widget.children_mut().into_iter().find_map(find::<S>)
     }
     let root = root.downcast_mut::<ResourceRoot<R>>()?;
-    find::<S>(ui_core::widget::Decorator::inner_mut(root)).map(visit)
+    find::<S>(root.view_mut()).map(visit)
 }
 
 /// The document actions of `resource` and its children that can queue an
@@ -1234,19 +1241,17 @@ impl ResourceSearch {
 // state current, publishes the resource, forwards edits and indexes search.
 // Everything else — layout, input, traversal, operation admission — is the
 // view's own, forwarded by the decorator.
-impl<R: Resource> Decorator for ResourceRoot<R> {
-    ui_core::provides!(dyn ui_core::undo::CommittedActions, dyn ui_core::widget::controls::ActionControls, dyn ui_core::resources::PublishesResources, dyn ui_core::search::capability::SearchSource, dyn ui_core::history_mode::capability::DocumentHistory, dyn ui_core::widget::document_effects::DocumentEffects, #[cfg(not(target_family = "wasm"))] dyn ui_core::component_lifecycle::WindowActivation; inner = content);
+impl<R: Resource> RootModel for ResourceRoot<R> {
+    ui_core::provides!(dyn ui_core::undo::CommittedActions, dyn ui_core::history_mode::capability::DocumentHistory, dyn ui_core::widget::document_effects::DocumentEffects, #[cfg(not(target_family = "wasm"))] dyn ui_core::component_lifecycle::WindowActivation; inner = content);
 
-    type Inner = dyn Widget;
-
-    fn inner(&self) -> &(dyn Widget + 'static) {
+    fn view(&self) -> &(dyn Widget + 'static) {
         match &self.unreadable {
             Some((_, shown)) => shown.as_ref(),
             None => self.content.as_ref(),
         }
     }
 
-    fn inner_mut(&mut self) -> &mut (dyn Widget + 'static) {
+    fn view_mut(&mut self) -> &mut (dyn Widget + 'static) {
         match &mut self.unreadable {
             Some((_, shown)) => shown.as_mut(),
             None => self.content.as_mut(),
@@ -1255,7 +1260,7 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
 
     fn take_structure_dirty(&mut self) -> bool {
         let swapped = std::mem::take(&mut self.swapped);
-        self.inner_mut().take_structure_dirty() || swapped
+        self.view_mut().take_structure_dirty() || swapped
     }
 
     // Input is forwarded unchanged; model, storage and policy wakes remain
@@ -1329,21 +1334,17 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
         if presence.should_cull(self.content.get_rect()) {
             return;
         }
-        Decorator::draw(self, scene, transform, text, theme, presence);
+        RootModel::draw(self, scene, transform, text, theme, presence);
     }
 
     fn needs_redraw(&self) -> bool {
         self.native_presentation.needs_redraw() || self.content.needs_redraw()
     }
 
-    fn name(&self) -> &'static str {
-        "ResourceApp"
-    }
-
     // A screenshot harness reaches the root to stage a scenario's view state
     // (`framework::stage`).
-    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
-        Some(self)
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
     }
 
     // The resource is the same for every participant (an agent task sees and
@@ -1359,7 +1360,7 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
     /// operation types must be in the retained handler table or publication
     /// withdraws the whole component surface.
     fn resource_operation_handlers(&self) -> HashSet<String> {
-        let mut handlers = self.inner().resource_operation_handlers();
+        let mut handlers = self.view().resource_operation_handlers();
         handlers.extend(
             crate::runner::operation_types()
                 .iter()
@@ -1478,7 +1479,7 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
         if let Some(started) = self.effects.start(op)? {
             return Ok(Some(started));
         }
-        if let Some(started) = self.inner_mut().start_operation(op, doc, path)? {
+        if let Some(started) = self.view_mut().start_operation(op, doc, path)? {
             return Ok(Some(started));
         }
         // View openers from the resource/presentation catalogue and from its
@@ -1577,7 +1578,7 @@ impl<R: Resource> ResourceRoot<R> {
     }
 }
 
-impl<R: Resource> ui_core::search::capability::SearchSource for ResourceRoot<R> {
+impl<R: Resource> RootSearch for ResourceRoot<R> {
     fn search_providers(&self) -> Vec<Box<dyn SearchProvider>> {
         // The resource's entries change with its revision; what the surfaces
         // show (a page's text, live rows) changes on their own, so their
@@ -1618,9 +1619,9 @@ impl<R: Resource> ui_core::search::capability::SearchSource for ResourceRoot<R> 
     }
 }
 
-impl<R: Resource> ui_core::resources::PublishesResources for ResourceRoot<R> {
+impl<R: Resource> RootPublishes for ResourceRoot<R> {
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        ui_core::resources::PublishesResources::resources_for(self, None, doc)
+        RootPublishes::resources_for(self, None, doc)
     }
     fn shared_resources_for(
         &self,
@@ -1677,7 +1678,7 @@ impl<R: Resource> ui_core::resources::PublishesResources for ResourceRoot<R> {
         resources
     }
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        ui_core::resources::PublishesResources::resource_for(self, None, doc, id)
+        RootPublishes::resource_for(self, None, doc, id)
     }
     /// Resource `id` in the published tree, or one the tree leaves out: a
     /// child the resource resolves by id, or a live row a surface resolves.
@@ -1772,26 +1773,7 @@ impl<R: Resource> ui_core::resources::PublishesResources for ResourceRoot<R> {
     }
 }
 
-impl<R: Resource> ui_core::widget::controls::ActionControls for ResourceRoot<R> {
-    fn action_control_bindings(&self) -> Vec<ui_core::widget::ControlBindingMetadata> {
-        let mut bindings = Vec::new();
-        ui_core::widget::Widget::for_each_child(self, &mut |child| {
-            bindings.extend(ui_core::widget::controls::action_control_bindings(child));
-        });
-        bindings
-    }
-    fn has_action_control_bindings(&self) -> bool {
-        // The default inventory contributes semantic bindings for this wrapper
-        // and action bindings from its exposed children. Preserve that scope
-        // while avoiding an allocation of the complete accessibility tree.
-        let mut found = false;
-        ui_core::widget::Widget::for_each_child(self, &mut |child| {
-            if !found {
-                found = ui_core::widget::controls::has_action_control_bindings(child);
-            }
-        });
-        found
-    }
+impl<R: Resource> RootControls for ResourceRoot<R> {
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         self.take_attributed_control_invocation()
             .map(|(invocation, _)| invocation)
@@ -1947,7 +1929,7 @@ impl<R: Resource> ui_core::undo::CommittedActions for ResourceRoot<R> {
     }
 }
 
-impl<R: Resource> AppWidget for ResourceRoot<R> {
+impl<R: Resource> RootApp for ResourceRoot<R> {
     fn app_kind(&self) -> AppKind {
         AppKind::Editor
     }
@@ -2187,7 +2169,7 @@ mod search_tests {
         QUERIES.with_borrow_mut(Vec::clear);
         app.harness()
             .with_widget_mut(|root: &mut ResourceRoot<Mailbox>| {
-                let providers = ui_core::search::capability::search_providers(root);
+                let providers = RootSearch::search_providers(root);
                 assert_eq!(providers.len(), 1, "one canonical resource source");
                 let search = &providers[0];
                 search.search("old");
@@ -2222,7 +2204,7 @@ mod search_tests {
         let (titles, mut scoped, declared, reminder) = app
             .harness()
             .with_widget_mut(|root: &mut ResourceRoot<Mailbox>| {
-                let providers = ui_core::search::capability::search_providers(root);
+                let providers = RootSearch::search_providers(root);
                 let search = providers.first().unwrap();
                 let titles = |query: &SearchQuery| {
                     search
@@ -2261,7 +2243,7 @@ mod search_tests {
         app.harness()
             .with_widget_mut(|root: &mut ResourceRoot<Mailbox>| {
                 let mut doc = ui_core::automerge::AutoCommit::new();
-                ui_core::search::capability::activate_search_result(
+                RootSearch::activate_search_result(
                     root,
                     "folder:inbox/msg:1",
                     &mut ui_core::widget::Edits::lend(&mut doc),
