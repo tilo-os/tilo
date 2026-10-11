@@ -442,10 +442,16 @@ async fn run_owner(
         }
     }
     drop(startup);
-    // Idle turns exist only to reclaim replay entries: one becomes
-    // reclaimable when its session lets go of its ticket, which nothing
-    // signals to this task. So the owner polls while it has entries, and with
-    // none it sleeps until work arrives instead of waking every interval.
+    // Idle turns exist only to reclaim replay entries. One becomes
+    // reclaimable when its session lets go of its ticket, and dropping the
+    // ticket wakes this task (`reclaim_wake`). From then on the owner steps
+    // the released entries one per interval, between jobs, until none is
+    // left; with none it sleeps until a job or a released ticket arrives.
+    let reclaim_wake = state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .replays
+        .reclaim_wake();
     let mut idle = tokio::time::interval(RECLAIM_INTERVAL);
     idle.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut reclaiming = false;
@@ -518,6 +524,7 @@ async fn run_owner(
                             biased;
                             job = rx.recv(), if normal_open => if let Some(job) = job { Work::Normal(job) } else { normal_open = false; Work::Idle },
                             job = replay_rx.recv(), if replay_open => if let Some(job) = job { Work::QueueReplay(job) } else { replay_open = false; Work::Idle },
+                            () = reclaim_wake.notified(), if !reclaiming => Work::Idle,
                             _ = idle.tick(), if reclaiming => Work::Idle,
                         }
                     }
@@ -530,6 +537,7 @@ async fn run_owner(
                 biased;
                 job = replay_rx.recv(), if replay_open => if let Some(job) = job { Work::QueueReplay(job) } else { replay_open = false; Work::Idle },
                 job = rx.recv(), if normal_open => if let Some(job) = job { Work::Normal(job) } else { normal_open = false; Work::Idle },
+                () = reclaim_wake.notified(), if !reclaiming => Work::Idle,
                 _ = idle.tick(), if reclaiming => Work::Idle,
             }
         } else {
@@ -636,11 +644,14 @@ async fn run_owner(
                 }
             }
         }
-        if state
+        // An entry still in use needs no turn: its ticket's drop wakes the
+        // owner. So does an entry whose session or connection ended, since
+        // that session drops its ticket as it ends.
+        if !state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .replays
-            .is_empty()
+            .reclaimable()
         {
             reclaiming = false;
             continue;
@@ -1227,14 +1238,7 @@ mod tests {
         assert_eq!(workspace, 7, "the sleeping owner still runs the next job");
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn an_owner_with_a_reclaimable_replay_keeps_reclaiming() {
-        let dir = tempfile::tempdir().unwrap();
-        let (owner, _running) = test_persistence(
-            dir.path(),
-            AdmissionBudgets::isolated(isolated_test_workers()),
-        );
-        let root = store_root(&owner).await;
+    async fn captured_replay(owner: &Persistence) -> ReplayTicket {
         let ticket = ReplayTicket::reserve([2; 32], None).unwrap();
         let authority = ticket.authority.clone();
         receipt(
@@ -1251,19 +1255,62 @@ mod tests {
         )
         .await
         .unwrap();
-        // The session lets go of its ticket; nothing tells the owner, so
-        // only its idle turns can reclaim the entry.
+        ticket
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_owner_with_a_reclaimable_replay_keeps_reclaiming() {
+        let dir = tempfile::tempdir().unwrap();
+        let (owner, _running) = test_persistence(
+            dir.path(),
+            AdmissionBudgets::isolated(isolated_test_workers()),
+        );
+        let root = store_root(&owner).await;
+        let ticket = captured_replay(&owner).await;
+        // The session lets go of its ticket outside the owner; only the
+        // owner's own idle turns can reclaim the entry, without a job.
         drop(ticket);
         let before = idle_turns_of(&root);
         tokio::time::sleep(RECLAIM_INTERVAL * 25).await;
         assert!(
             idle_turns_of(&root) > before,
-            "an owner with a replay entry keeps its idle turns"
+            "a released ticket wakes its owner to reclaim the entry"
         );
         let reclaimed = receipt(owner.read(1, |state| Ok(state.replays.is_empty())).unwrap())
             .await
             .unwrap();
         assert!(reclaimed, "idle turns reclaimed the released replay");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_owner_whose_replays_are_in_use_does_not_tick() {
+        let dir = tempfile::tempdir().unwrap();
+        let (owner, _running) = test_persistence(
+            dir.path(),
+            AdmissionBudgets::isolated(isolated_test_workers()),
+        );
+        let root = store_root(&owner).await;
+        let ticket = captured_replay(&owner).await;
+        let before = idle_turns_of(&root);
+        tokio::time::sleep(RECLAIM_INTERVAL * 25).await;
+        assert_eq!(
+            idle_turns_of(&root) - before,
+            0,
+            "an owner whose replay entries are all in use sleeps until one is released"
+        );
+        let held = receipt(owner.read(1, |state| Ok(state.replays.is_empty())).unwrap())
+            .await
+            .unwrap();
+        assert!(!held, "the entry in use stays in the table");
+        drop(ticket);
+        tokio::time::sleep(RECLAIM_INTERVAL * 25).await;
+        let reclaimed = receipt(owner.read(1, |state| Ok(state.replays.is_empty())).unwrap())
+            .await
+            .unwrap();
+        assert!(
+            reclaimed,
+            "releasing the ticket woke the owner to reclaim it"
+        );
     }
 
     #[tokio::test]
