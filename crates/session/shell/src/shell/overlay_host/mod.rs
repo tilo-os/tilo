@@ -9142,8 +9142,9 @@ impl ShellOverlayHost {
 
     /// The docked wheel drawn on its own while the strips are drawn in
     /// canvas coordinates, with what it can paint: its footprint and the rim
-    /// shadow past its right edge, at the canvas position of the strip it
-    /// rides.
+    /// shadow past its right edge (the disc clips its paint group to that),
+    /// at the canvas position of the strip it rides. The presenter rounds
+    /// the bounds out to whole pixels.
     fn draw_panned_wheel(
         &mut self,
         transform: Affine,
@@ -9151,8 +9152,6 @@ impl ShellOverlayHost {
         theme: &Theme,
         presence: &PresenceCtx,
     ) -> Option<PannedWheel> {
-        /// Room past the footprint and the rim shadow for antialiasing.
-        const AA_MARGIN: f64 = 2.0;
         let rect = self.sidebar.as_ref().map(|sidebar| sidebar.get_rect())?;
         if self.overlay_flags().overview || rect.area() <= 0.0 {
             return None;
@@ -9170,10 +9169,10 @@ impl ShellOverlayHost {
         let mut scene = Scene::new();
         self.draw_docked_wheel(&mut scene, transform, text_renderer, theme, presence);
         let painted = Rect::new(
-            rect.x0 + shift - AA_MARGIN,
-            rect.y0 - AA_MARGIN,
-            rect.x1 + shift + tilo_desktop::sidebar_wheel_disc::RIM_SHADOW_REACH + AA_MARGIN,
-            rect.y1 + AA_MARGIN,
+            rect.x0 + shift,
+            rect.y0,
+            rect.x1 + shift + tilo_desktop::sidebar_wheel_disc::RIM_SHADOW_REACH,
+            rect.y1,
         );
         Some(PannedWheel {
             scene,
