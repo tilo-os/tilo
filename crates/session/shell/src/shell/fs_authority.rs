@@ -452,9 +452,8 @@ mod publisher_wait {
                 }
                 return Wait::Unwatchable;
             };
-            match events(buffer.get(..read).unwrap_or_default(), name.as_bytes()) {
-                Some(wait) => return wait,
-                None => continue,
+            if let Some(wait) = events(buffer.get(..read).unwrap_or_default(), name.as_bytes()) {
+                return wait;
             }
         }
     }
