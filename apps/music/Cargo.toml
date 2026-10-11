@@ -91,7 +91,6 @@ rustypipe = { workspace = true, optional = true, features = ["rustls-no-provider
 tilo-invidious = { path = "../../crates/platform/tilo-invidious", optional = true }
 
 [dev-dependencies]
-tilo-history = { path = "../../crates/sdk/tilo-history" }
 test-http = { path = "../../crates/dev/test-http" }
 tilo-oauth = { path = "../../crates/system/tilo-oauth", features = ["fake"] }
 serial_test.workspace = true

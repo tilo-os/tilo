@@ -27,6 +27,9 @@ pub type SendFuture =
 /// The host must revalidate its current grant and provider identity before I/O.
 /// Cancellation of a caller never authorizes replay of an admitted operation.
 pub trait MessagingHost: HistoryHost {
+    fn groups(&self, _account: &crate::ServiceAccount) -> Option<crate::GroupClient> {
+        None
+    }
     /// An exact account's private native setup capability, if installed.
     fn setup(&self, _account: &crate::ServiceAccount) -> Option<crate::SetupClient> {
         None
@@ -46,6 +49,11 @@ pub struct MessagingClient {
     history: HistoryClient,
 }
 impl MessagingClient {
+    pub fn groups(&self, account: &crate::ServiceAccount) -> Option<crate::GroupClient> {
+        self.host
+            .groups(account)
+            .filter(|groups| groups.principal() == self.principal() && groups.account() == account)
+    }
     /// The authenticated mounting host supplies this capability, never metadata.
     pub fn new(principal: impl Into<String>, host: Arc<dyn MessagingHost>) -> Self {
         Self {

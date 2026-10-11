@@ -512,16 +512,9 @@ impl ui::widget::Decorator for PasswordsSurface {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        match event {
-            WindowEvent::Focused(false) => {
-                // A reveal is only for the actively attended window.
-                self.core.borrow_mut().hide_revealed();
-            }
-            WindowEvent::CursorMoved { position, .. } => {
-                self.core.borrow_mut().pointer =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
-            }
-            _ => {}
+        if matches!(event, WindowEvent::Focused(false)) {
+            // A reveal is only for the actively attended window.
+            self.core.borrow_mut().hide_revealed();
         }
         Widget::handle_event(&mut self.shell, event, ctx);
         if !*ctx.handled && self.handle_shortcut(event, ctx) {

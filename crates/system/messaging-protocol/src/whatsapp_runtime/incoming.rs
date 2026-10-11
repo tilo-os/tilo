@@ -91,7 +91,7 @@ impl WhatsappRuntime {
     }
 }
 
-fn text_body(message: &wa::Message) -> Result<Zeroizing<String>, Error> {
+pub(crate) fn text_body(message: &wa::Message) -> Result<Zeroizing<String>, Error> {
     if !plain_fields(message) {
         return Err(Error::Unsupported);
     }

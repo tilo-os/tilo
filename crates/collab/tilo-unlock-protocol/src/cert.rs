@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::half::Half;
-use crate::{PROTOCOL_VERSION, SlotId, bytes64, digest};
+use crate::{PROTOCOL_VERSION, SlotId, digest};
 
 const BOOT_CERT_CONTEXT: &str = "tilo-unlock boot key certificate v1";
 const ENROL_PROOF_CONTEXT: &str = "tilo-unlock enrol proof v1";
@@ -36,7 +36,7 @@ pub struct BootKeyCert {
     /// Nanoseconds since the Unix epoch.
     pub issued_at_ns: u64,
     /// Root signature over [`BootKeyCert::signing_digest`].
-    #[serde(with = "bytes64")]
+    #[serde(with = "serde_bytes")]
     pub signature: [u8; 64],
 }
 
@@ -162,7 +162,7 @@ pub struct EnrolRequest {
     pub sibling_half: Half,
     /// Boot key signature over [`EnrolRequest::proof_digest`]: proof that the
     /// caller holds the key it asks to have certified.
-    #[serde(with = "bytes64")]
+    #[serde(with = "serde_bytes")]
     pub proof: [u8; 64],
 }
 

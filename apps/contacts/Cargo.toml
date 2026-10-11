@@ -60,7 +60,6 @@ serial_test.workspace = true
 # Already resolved in the workspace lockfile.
 tilo-app-package = { path = "../../crates/packaging/tilo-app-package" }
 # Reads the history sentences the book's changes record.
-tilo-history = { path = "../../crates/sdk/tilo-history" }
 
 [[test]]
 name = "it"

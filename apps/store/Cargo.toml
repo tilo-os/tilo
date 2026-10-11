@@ -55,7 +55,6 @@ tilo-net = { path = "../../crates/platform/tilo-net", features = ["blocking"] }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
-tilo-history = { path = "../../crates/sdk/tilo-history" }
 tilo-app-package = { path = "../../crates/packaging/tilo-app-package" }
 base64.workspace = true
 flate2.workspace = true
