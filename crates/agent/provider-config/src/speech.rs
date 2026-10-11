@@ -23,6 +23,7 @@ pub enum SpeechError {
     TextTooLong,
     Recognition,
     WorkerStopped,
+    DraftInterrupted,
 }
 
 /// Bounded scheduling chosen by the image worker's decoder implementation.
@@ -63,6 +64,10 @@ pub enum SpeechReply {
         revision: String,
         #[serde(default, skip_serializing_if = "DraftPolicy::is_default")]
         draft_policy: DraftPolicy,
+        /// Only an image-owned worker with an installed SIGUSR1 handler can
+        /// abandon provisional inference when Finish requests the final pass.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        finish_interrupts_draft: bool,
     },
     Draft {
         sequence: u64,
@@ -108,6 +113,32 @@ pub fn request(kind: RequestKind, sequence: u64, payload: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn draft_interrupt_capability_is_explicit_and_legacy_defaults_safe() {
+        let legacy: SpeechReply = serde_json::from_slice(
+            br#"{"kind":"ready","sequence":1,"model":"fixture","revision":"1"}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            legacy,
+            SpeechReply::Ready {
+                finish_interrupts_draft: false,
+                ..
+            }
+        ));
+        let supported = br#"{"kind":"ready","sequence":1,"model":"fixture","revision":"1","finish_interrupts_draft":true}"#;
+        let ready: SpeechReply = serde_json::from_slice(supported).unwrap();
+        assert!(matches!(
+            ready,
+            SpeechReply::Ready {
+                finish_interrupts_draft: true,
+                ..
+            }
+        ));
+        assert_eq!(serde_json::to_vec(&ready).unwrap(), supported);
+        assert!(serde_json::from_slice::<SpeechReply>(br#"{"kind":"ready","sequence":1,"model":"fixture","revision":"1","finish_interrupts_draft":"yes"}"#).is_err());
+    }
 
     #[test]
     fn ready_wire_preserves_legacy_context_and_rejects_unbounded_policy() {
