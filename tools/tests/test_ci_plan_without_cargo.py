@@ -1,6 +1,7 @@
 """Exercise the existing metadata-file selector route without local Cargo."""
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -55,9 +56,13 @@ class OfflinePlanTests(unittest.TestCase):
             (root / 'tools/ci').mkdir(parents=True)
             # Read the production suite inventory; do not bypass any gate.
             shutil.copyfile(ROOT / 'tools/ci/suites.toml', root / 'tools/ci/suites.toml')
+            shutil.copyfile(ROOT / 'tools/ci/recorded_test_time.json',
+                            root / 'tools/ci/recorded_test_time.json')
+            (root / 'tools/ci/affected_packages.py').symlink_to(SELECTOR)
             git('add', 'Cargo.toml', 'shared', 'app', 'unrelated', 'collab-types', 'tools')
             git('commit', '-qm', 'base')
             base = git('rev-parse', 'HEAD')
+            git('update-ref', 'refs/remotes/origin/main', base)
             (root / 'shared/src/lib.rs').write_text('pub fn value() { /* changed */ }\n')
             git('add', 'shared/src/lib.rs')
             git('commit', '-qm', 'change shared source')
@@ -77,6 +82,35 @@ class OfflinePlanTests(unittest.TestCase):
             self.assertTrue(plan['security_required'])
             self.assertTrue(plan['rust_required'])
             self.assertFalse(plan['full'])
+            # Exercise the actual command agents are instructed to run, rather
+            # than offering a separate unused alternative. This complete fixture
+            # describes the current worktree's four packages and target paths.
+            invocation = re.search(
+                r'`(python3 tools/ci/affected_packages.py --metadata [^`]+)`',
+                (ROOT / 'AGENTS.md').read_text(),
+            )
+            self.assertIsNotNone(invocation, 'the prescribed caller must pass an explicit metadata file')
+            prescribed = subprocess.run(
+                ['bash', '-euo', 'pipefail', '-c', invocation[1]], cwd=root,
+                env=environment | {'TILO_CURRENT_WORKTREE_METADATA': str(metadata)},
+                text=True, capture_output=True,
+            )
+            self.assertEqual(prescribed.returncode, 0, prescribed.stderr)
+            self.assertEqual(json.loads(prescribed.stdout), plan)
+            self.assertFalse(marker.exists(), 'the prescribed invocation spawned local Cargo')
+            for export in (None, ''):
+                guarded = environment.copy()
+                guarded.pop('TILO_CURRENT_WORKTREE_METADATA', None)
+                if export is not None:
+                    guarded['TILO_CURRENT_WORKTREE_METADATA'] = export
+                refused = subprocess.run(
+                    ['bash', '-euo', 'pipefail', '-c', invocation[1]], cwd=root,
+                    env=guarded, text=True, capture_output=True,
+                )
+                self.assertNotEqual(refused.returncode, 0)
+                self.assertIn('validated current-worktree export required', refused.stderr)
+                self.assertFalse(marker.exists(), 'a missing validated export must not fall back to Cargo')
+
             # An unavailable export fails; it must not silently fall back to Cargo.
             missing = subprocess.run(
                 [sys.executable, str(SELECTOR), '--metadata', str(root / 'absent.json'),

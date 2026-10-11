@@ -52,7 +52,7 @@ the smaller `os/Containerfile.ci-fast`.
 
 | Workflow / job | Local command |
 |---|---|
-| `check.yml` select | `python3 tools/ci/affected_packages.py --base origin/main` prints the plan: packages per shard, suites, examples |
+| `check.yml` select | `python3 tools/ci/affected_packages.py --metadata "$TILO_CURRENT_WORKTREE_METADATA" --base origin/main` previews the plan: packages per shard, suites, examples |
 | `check.yml` security | `bash tools/run-security-boundary-invariants.sh` |
 | `check.yml` suites | `python3 tools/ci/suites.py run <suite>...` (`suites.py list` names them) |
 | `check.yml` test | `scripts/test-local.sh -p <package>...` (see [Running tests like CI](../../DEVELOPMENT.md#running-tests-like-ci)) |
@@ -125,7 +125,8 @@ Jobs that need more than an unprivileged container:
 where local Cargo is prohibited, pass an existing metadata export explicitly:
 
 ```sh
-python3 tools/ci/affected_packages.py --metadata /tmp/workspace-metadata.json \
+python3 tools/ci/affected_packages.py \
+  --metadata "${TILO_CURRENT_WORKTREE_METADATA:?validated current-worktree export required}" \
   --base origin/main --shards 2
 ```
 
@@ -135,7 +136,12 @@ workspace manifest, lockfile and every member manifest. Package manifest,
 dependency and target paths in the export must refer to this checkout; a
 remote absolute path cannot be consumed unchanged. A stale or incomplete
 export is not selection evidence. Do not substitute a hand-written partial
-graph. Missing JSON fails rather than invoking Cargo.
+graph. Bind the export to the exact source revision and compare every root/member
+manifest and the lockfile with the producing worktree before setting
+`TILO_CURRENT_WORKTREE_METADATA`. Keep that validation evidence beside the export;
+refresh it after any source, manifest, lockfile or target-inventory change. The
+prescribed `AGENTS.md` invocation fails before starting Python when the validated
+export variable is unset or empty. Missing JSON fails rather than invoking Cargo.
 
 A Cargo drop-in may execute `metadata` locally because it is a noncompiling
 subcommand. Verify where it runs instead of assuming a remote export. Until a
