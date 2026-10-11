@@ -6804,12 +6804,10 @@ mod tests {
     use std::rc::Rc;
 
     use capnp::capability::Promise;
-    use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
     #[cfg(unix)]
     use tokio::net::UnixStream as TokioUnixStream;
     #[cfg(unix)]
     use tokio::task::LocalSet as TokioLocalSet;
-    use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
     use runtime_collab::PresencePayload as SdkPayload;
     use runtime_collab::raw::{
@@ -7970,14 +7968,7 @@ mod tests {
                 };
                 let (client, server) = tokio::io::duplex(64 * 1024);
                 let broker_client: collab_service::Client = capnp_rpc::new_client(broker);
-                let (r, w) = tokio::io::split(server);
-                let network = Box::new(twoparty::VatNetwork::new(
-                    r.compat(),
-                    w.compat_write(),
-                    rpc_twoparty_capnp::Side::Server,
-                    capnp::message::ReaderOptions::default(),
-                ));
-                let rpc = RpcSystem::new(network, Some(broker_client.client));
+                let rpc = runtime_portal::serve_connected_io(server, broker_client.client);
                 tokio::task::spawn_local(async move {
                     let _ = rpc.await;
                 });
@@ -8328,14 +8319,8 @@ mod tests {
                             stopped,
                         };
                         let broker_client: collab_service::Client = capnp_rpc::new_client(gate);
-                        let (r, w) = tokio::io::split(server);
-                        let network = Box::new(twoparty::VatNetwork::new(
-                            r.compat(),
-                            w.compat_write(),
-                            rpc_twoparty_capnp::Side::Server,
-                            capnp::message::ReaderOptions::default(),
-                        ));
-                        let _ = RpcSystem::new(network, Some(broker_client.client)).await;
+                        let _ =
+                            runtime_portal::serve_connected_io(server, broker_client.client).await;
                     });
                 })
                 .unwrap();
@@ -8366,14 +8351,8 @@ mod tests {
                     let tokio_stream =
                         TokioUnixStream::from_std(server_side).expect("wrap server side");
                     let broker_client: collab_service::Client = capnp_rpc::new_client(broker);
-                    let (r, w) = tokio_stream.into_split();
-                    let network = Box::new(twoparty::VatNetwork::new(
-                        r.compat(),
-                        w.compat_write(),
-                        rpc_twoparty_capnp::Side::Server,
-                        capnp::message::ReaderOptions::default(),
-                    ));
-                    let rpc = RpcSystem::new(network, Some(broker_client.client));
+                    let rpc =
+                        runtime_portal::serve_connected_io(tokio_stream, broker_client.client);
                     let _ = rpc.await;
                 });
             })
