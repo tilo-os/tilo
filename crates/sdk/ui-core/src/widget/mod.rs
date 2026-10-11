@@ -3003,7 +3003,9 @@ pub use chart::{
     Chart, ChartLabels, ChartStyle, RollingSeries, Series, Sparkline, TrendCurve, TrendFill,
     TrendRange, TrendStyle,
 };
+pub(crate) mod chart_data;
 pub(crate) mod chart_labels;
+pub use chart_data::{ChartItem, ChartLink, ChartNode};
 pub mod chart_legend;
 pub mod chart_navigation;
 pub use chart_navigation::{
@@ -3021,7 +3023,7 @@ pub use cartesian_plot::{
 pub mod pie_chart;
 pub use pie_chart::{PieChart, PieSlice, PieStyle, PieTooltipAnchor};
 pub mod polar_area_chart;
-pub use polar_area_chart::{PolarAreaChart, PolarAreaDatum, PolarAreaStyle};
+pub use polar_area_chart::{PolarAreaChart, PolarAreaStyle};
 pub mod heatmap;
 pub use heatmap::{Heatmap, HeatmapCell, HeatmapStyle};
 pub mod histogram;
@@ -3029,9 +3031,9 @@ pub use histogram::{Histogram, HistogramNormalization};
 pub mod candlestick_chart;
 pub use candlestick_chart::{Candle, CandlestickChart, CandlestickStyle};
 pub mod chord_chart;
-pub use chord_chart::{ChordChart, ChordLink, ChordNode, ChordSelection, ChordStyle};
+pub use chord_chart::{ChordChart, ChordSelection, ChordStyle};
 pub mod treemap;
-pub use treemap::{Treemap, TreemapItem, TreemapStyle};
+pub use treemap::{Treemap, TreemapStyle};
 pub mod radar_chart;
 pub use radar_chart::{RadarAxis, RadarChart, RadarLegendStyle, RadarSeries, RadarStyle};
 pub mod range_chart;
@@ -3045,11 +3047,11 @@ pub use distribution_chart::{
     DistributionChart, DistributionKind, DistributionSeries, DistributionStyle,
 };
 pub mod sankey;
-pub use sankey::{SankeyChart, SankeyLink, SankeyNode, SankeySelection, SankeyStyle};
+pub use sankey::{SankeyChart, SankeySelection, SankeyStyle};
 pub mod sunburst;
 pub use sunburst::{SunburstChart, SunburstNode, SunburstStyle};
 pub mod funnel_chart;
-pub use funnel_chart::{FunnelChart, FunnelDirection, FunnelStage, FunnelStyle};
+pub use funnel_chart::{FunnelChart, FunnelDirection, FunnelStyle};
 pub mod gauge;
 pub use gauge::{
     BarGauge, GaugeReading, GaugeStyle, GaugeThresholds, ProgressRing, ProgressRingFace,

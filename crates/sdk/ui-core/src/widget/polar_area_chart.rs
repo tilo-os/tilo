@@ -19,42 +19,12 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::Widget;
+use crate::widget::chart_data::ChartItem;
 use crate::widget::chart_labels::format_compact;
 use crate::widget::chart_navigation::{
     ChartNavAction, ChartTouchTracker, InteractiveChart, chart_leaf, handle_chart_event,
     moved_index,
 };
-
-#[derive(Clone, Debug)]
-pub struct PolarAreaDatum {
-    pub id: String,
-    pub label: String,
-    pub value: f64,
-    pub color: Option<Color>,
-    pub detail: String,
-}
-
-impl PolarAreaDatum {
-    pub fn new(id: impl Into<String>, label: impl Into<String>, value: f64) -> Self {
-        Self {
-            id: id.into(),
-            label: label.into(),
-            value,
-            color: None,
-            detail: String::new(),
-        }
-    }
-    #[must_use]
-    pub fn colored(mut self, color: Color) -> Self {
-        self.color = Some(color);
-        self
-    }
-    #[must_use]
-    pub fn with_detail(mut self, detail: impl Into<String>) -> Self {
-        self.detail = detail.into();
-        self
-    }
-}
 
 #[allow(
     clippy::struct_excessive_bools,
@@ -101,7 +71,7 @@ struct Sector {
 }
 
 pub struct PolarAreaChart {
-    data: Vec<PolarAreaDatum>,
+    data: Vec<ChartItem>,
     style: PolarAreaStyle,
     title: String,
     center_title: String,
@@ -117,7 +87,7 @@ pub struct PolarAreaChart {
 }
 
 impl PolarAreaChart {
-    pub fn new(data: Vec<PolarAreaDatum>) -> Self {
+    pub fn new(data: Vec<ChartItem>) -> Self {
         Self {
             data,
             style: PolarAreaStyle::default(),
@@ -165,7 +135,7 @@ impl PolarAreaChart {
         self.height = height.max(140.0);
         self
     }
-    pub fn set_data(&mut self, data: Vec<PolarAreaDatum>) {
+    pub fn set_data(&mut self, data: Vec<ChartItem>) {
         self.data = data;
         self.hovered = None;
     }
@@ -301,10 +271,10 @@ impl PolarAreaChart {
                     .max(1.0)
             })
     }
-    fn datum(&self, id: &str) -> Option<&PolarAreaDatum> {
+    fn datum(&self, id: &str) -> Option<&ChartItem> {
         self.data.iter().find(|d| d.id == id)
     }
-    fn color(datum: &PolarAreaDatum, index: usize, theme: &Theme) -> Color {
+    fn color(datum: &ChartItem, index: usize, theme: &Theme) -> Color {
         datum
             .color
             .unwrap_or_else(|| theme.tokens.colors.presence.series(index))
@@ -577,7 +547,7 @@ mod tests {
     use super::*;
     #[test]
     fn explicit_max_requires_positive_finite_value() {
-        let mut chart = PolarAreaChart::new(vec![PolarAreaDatum::new("a", "A", 7.0)]);
+        let mut chart = PolarAreaChart::new(vec![ChartItem::new("a", "A", 7.0)]);
         chart.style.max = Some(-2.0);
         assert_eq!(chart.max(), 7.0);
         chart.style.max = Some(10.0);
