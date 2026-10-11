@@ -317,7 +317,10 @@ between and where, and its chrome and the layers over its widgets are
 window-sized parts. A frame compared with the one that painted the generation
 before repaints only that damage (a tooltip repaints its chip); any other
 change to the app (it moved, repainted whole, a frame was skipped) repaints
-its tile. A tile's edge and the tab list's focus ring are parts too. Foreign
+its tile. A tile's edge and the tab list's focus ring are parts too; the
+edge's bounds are a square at each rounded corner and a band as thin as the
+stroke along each side, so a focus change repaints the outline, not a band as
+deep as the corners. Foreign
 buffer swaps keep their
 client-reported damage, from `wl_surface.damage_buffer` as from
 `wl_surface.damage` (scaled to buffer pixels unless a viewport crops or
@@ -333,6 +336,12 @@ band where a moving strip's shadows meet a strip that stayed, and composites
 from the textures; the wheel, which rides the top strip over the strips below,
 is only composited at its new place, and a layer is rasterised again only when
 its scene changes (a strip whose drawing changed, only inside its own row).
+While it pans, a strip draws only the windows the screen shows: a window
+wholly off screen replays its last drawing at the same canvas place
+(`GroupRow::draw_group_apart`), which no pixel shows, and is drawn afresh in
+every frame that shows any of it, so the strip's scene stays byte for byte
+the same while only the pan moves (a window carrying a blurred material or a
+client's GPU buffer is drawn every frame).
 On a scaled display pans step by one device pixel: the drawn pan is the
 gesture's rounded to a device pixel (a layout pixel at 100 %, half of one at
 200 %, two thirds at 150 %, four fifths at 125 %). A pan then moves strip
