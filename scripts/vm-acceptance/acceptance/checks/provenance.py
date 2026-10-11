@@ -65,15 +65,16 @@ def _this_boot_restarts(journal: str) -> dict[str, int]:
     return restarts
 
 
-def session_unit_problem(fields: dict | None, during: list[str], slot: str) -> str | None:
+def session_unit_problem(fields: dict | None, during: list[str], slot: str, caused: int = 0) -> str | None:
     """Why P03 fails over the slot's session unit, a system unit the user journal never
     holds: it could not be read, or its main process (the compositor's wrapper) ended on
     its own and `Restart=` started a fresh session, every window lost. `during` names the
-    checks `run_check` saw it happen in; `NRestarts` also counts any before the first."""
+    checks `run_check` saw it happen in; `NRestarts` also counts any before the first, and
+    the `caused` restarts a check brought about on purpose (A17), which do not count."""
     unit = session_unit.unit(slot)
     if fields is None:
         return f"{unit} could not be read, so a restart of the desktop session would go unseen"
-    restarts = int(fields["NRestarts"])
+    restarts = max(0, int(fields["NRestarts"]) - caused)
     if not restarts and not during:
         return None
     where = f" (during {', '.join(during)})" if during else ""
@@ -113,6 +114,7 @@ def services(ctx, res):
     res.metrics.update(failed=failed, restarts={u: n for u, n in restarts.items() if n})
     fields = session_unit.show(ctx)
     res.metrics["session_unit"] = fields
-    session = session_unit_problem(fields, ctx.facts.get("session_restarted_during") or [], ctx.vm.slot)
+    session = session_unit_problem(fields, ctx.facts.get("session_restarted_during") or [], ctx.vm.slot,
+                                   ctx.facts.get("session_restarts_caused", 0))
     problems = ([f"failed: {failed}"] if failed else []) + ([f"restart loops: {looping}"] if looping else [])
     expect(not problems and not session, "; ".join(problems + ([session] if session else [])))

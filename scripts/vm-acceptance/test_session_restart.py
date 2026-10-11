@@ -169,6 +169,11 @@ class P03Test(unittest.TestCase):
         # A requested restart later in the run reset NRestarts; run_check saw it happen.
         self.assertIsNotNone(session_unit_problem(self.FIELDS, ["W03"], "acceptance"))
 
+    def test_a_restart_a_check_caused_on_purpose_passes(self):
+        # A17 ends the compositor itself; systemd counts that restart too.
+        self.assertIsNone(session_unit_problem({**self.FIELDS, "NRestarts": "1"}, [], "acceptance", caused=1))
+        self.assertIsNotNone(session_unit_problem({**self.FIELDS, "NRestarts": "2"}, [], "acceptance", caused=1))
+
     def test_an_unreadable_unit_fails(self):
         self.assertIn("could not be read", session_unit_problem(None, [], "acceptance"))
 
