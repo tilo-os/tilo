@@ -50,7 +50,8 @@ use crate::doc::SheetsDoc;
 use crate::doc::{ChartKind, ChartSnapshot, CommentReply, CommentThread};
 use crate::model::{Addr, CellFormat, GridEdit, a1_to_addr, col_to_letters, letters_to_col};
 use crate::settings::DocSettings;
-use tilo_locale::{Currency, DateStyle, TimeStyle};
+use tilo_locale::{Currency, DateStyle};
+use ui::clock::TimeStyle;
 
 /// Registry `type_id` for every Sheets action.
 pub const SHEETS_ACTION_TYPE: &str = "sheets.action";

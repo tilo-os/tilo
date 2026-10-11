@@ -10,7 +10,7 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use chrono::{Datelike, NaiveDate, NaiveDateTime, Timelike};
+use chrono::{Datelike, NaiveDate, NaiveDateTime};
 use ui::LocalState;
 use ui::icons::Icon;
 use ui::text_render::TextKind;
@@ -176,9 +176,9 @@ pub fn size(bytes: u64) -> String {
     ui::format::bytes_si(bytes)
 }
 
-/// `12:05`.
+/// `12:05` or `12:05 PM`.
 fn clock(at: NaiveDateTime) -> String {
-    format!("{:02}:{:02}", at.hour(), at.minute())
+    ui::clock::time_of_day(&at)
 }
 
 /// "Today", "Yesterday", or the weekday and date.
@@ -262,14 +262,17 @@ pub(crate) fn schedule_label(schedule: Schedule) -> String {
         Schedule::OnDemand => "When you back up".into(),
         Schedule::Hourly { minute: 0 } => "Every hour, on the hour".into(),
         Schedule::Hourly { minute } => format!("Every hour at {minute:02} past"),
-        Schedule::Daily { hour, minute } => format!("Every day at {hour:02}:{minute:02}"),
+        Schedule::Daily { hour, minute } => {
+            format!("Every day at {}", ui::clock::hour_minute(hour, minute))
+        }
         Schedule::Weekly {
             weekday,
             hour,
             minute,
         } => format!(
-            "Every {} at {hour:02}:{minute:02}",
-            ui::format::weekday_name(weekday.num_days_from_sunday() as usize)
+            "Every {} at {}",
+            ui::format::weekday_name(weekday.num_days_from_sunday() as usize),
+            ui::clock::hour_minute(hour, minute)
         ),
     }
 }

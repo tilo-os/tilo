@@ -12722,20 +12722,13 @@ pub mod tests {
             .expect("runtime");
         let error = tokio::task::LocalSet::new().block_on(&runtime, async move {
             let stream = tokio::net::UnixStream::from_std(stream).expect("tokio stream");
-            let (reader, writer) = stream.into_split();
-            let network = Box::new(twoparty::VatNetwork::new(
-                futures::io::BufReader::new(reader.compat()),
-                futures::io::BufWriter::new(writer.compat_write()),
-                rpc_twoparty_capnp::Side::Client,
-                capnp::message::ReaderOptions::default(),
-            ));
-            let mut rpc = RpcSystem::new(network, None);
             let client = runtime_collab::CollabClient::from_raw(
-                rpc.bootstrap(rpc_twoparty_capnp::Side::Server),
+                runtime_portal::CapnpClient::from_connected_io(
+                    stream,
+                    rpc_twoparty_capnp::Side::Client,
+                )
+                .bootstrap(),
             );
-            tokio::task::spawn_local(async move {
-                let _ = rpc.await;
-            });
             match client
                 .join_channel(
                     "5ba25f73-87c5-447f-a5a6-880dc4249a81#app:so.tilo.calculator",

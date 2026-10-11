@@ -3021,7 +3021,7 @@ impl ChromeState {
             .focus
             .active_until(local_minute, weekday_from_monday)
             .map(|end| {
-                let time = format!("{:02}:{:02}", end / 60, end % 60);
+                let time = ui::clock::hour_minute((end / 60).into(), (end % 60).into());
                 t_args("quiet-status-focus-until", &[("time", time.into())])
             })
     }
