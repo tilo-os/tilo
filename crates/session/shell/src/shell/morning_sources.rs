@@ -181,6 +181,7 @@ fn refresh_row(row: &tilo_actions::remote::CatalogueRow, source: &MorningSource)
                 && action.kind == tilo_actions::OperationKind::Effect
                 && action.contract.permission == tilo_actions::PermissionRequirement::Read
                 && action.contract.confirmation == tilo_actions::ConfirmationPolicy::None
+                && action.input == tilo_actions::InputSpec::None
                 && action.params.iter().all(|parameter| !parameter.required)
         })
 }
