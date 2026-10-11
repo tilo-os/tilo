@@ -418,6 +418,11 @@ impl RichTextLine {
         self.inner.is_focused()
     }
 
+    /// Whether the underlying input currently refuses editing.
+    pub fn is_disabled(&self) -> bool {
+        self.inner.is_disabled()
+    }
+
     /// When losing focus the cursor isn't touched — it stays wherever
     /// the user last left it.
     pub fn set_focus(&mut self, focused: bool) {
