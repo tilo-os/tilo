@@ -781,6 +781,12 @@ impl CaptureStudio {
     pub fn mode(&self) -> CaptureMode {
         self.mode
     }
+    /// Whether the screenshot picker is up and the person is still choosing
+    /// what to capture. Not while a delayed capture counts down (the delay
+    /// exists to let the screen change), and not for recordings or mirrors.
+    pub fn is_choosing_screenshot(&self) -> bool {
+        self.mode == CaptureMode::Screenshot && self.modal_capture().is_some()
+    }
     pub fn is_recording_active(&self) -> bool {
         self.take.active
     }

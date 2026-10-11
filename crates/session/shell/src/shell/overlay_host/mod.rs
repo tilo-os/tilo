@@ -2669,6 +2669,12 @@ impl ShellOverlayHost {
         self.capture_studio.is_open()
     }
 
+    /// Whether the screenshot picker is up and nothing has been chosen yet;
+    /// the compositor holds the screen still for exactly this span.
+    pub fn capture_choosing_screenshot(&self) -> bool {
+        self.capture_studio.is_choosing_screenshot()
+    }
+
     /// Whether an inner shell surface currently owns the seat even though it
     /// is not represented by one of the ordinary chrome overlay flags.
     ///
