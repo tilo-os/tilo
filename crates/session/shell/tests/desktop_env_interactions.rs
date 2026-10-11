@@ -365,7 +365,7 @@ fn resize_handles_persist_clamped_redistributed_group_widths() {
         // neighbour keeps its own width in the unbounded strip.
         cursor(&mut host, &layout, Point::new(cx, cy));
         press(&mut host, &layout);
-        cursor(&mut host, &layout, Point::new(cx + 5000.0, cy));
+        cursor(&mut host, &layout, Point::new(cx + 200_000.0, cy));
         release(&mut host, &layout);
 
         host.tick_pending_width_harvest_for_tests();

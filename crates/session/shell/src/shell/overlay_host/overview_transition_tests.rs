@@ -41,7 +41,7 @@ fn overview_panel_curve_is_settled_monotonic_and_keeps_windows_inset() {
         // Where the strip starts placing groups: past the wheel slot.
         let leading = f64::from(sidebar_width_for_viewport(900.0)) + WHEEL_TO_STRIP_GAP_PX;
         // The widest a group can be, and therefore where the widest one ends.
-        let widest = f64::from(ui::widget::WIDTH_MAX_PERMILLE) / 1000.0 * span.usable;
+        let widest = f64::from(ui::widget::WIDTH_WIDE_PERMILLE) / 1000.0 * span.usable;
         let right_edge = leading + widest;
 
         assert!(
