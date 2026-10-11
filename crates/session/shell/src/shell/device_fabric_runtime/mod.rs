@@ -1606,6 +1606,9 @@ pub struct DeviceFabricRuntime {
     last_sample: Option<Instant>,
     display_refresh: display_refresh::DisplayRefresh,
     last_publish: Option<Instant>,
+    /// What the display files last said, so a sample that changed nothing
+    /// leaves them (and every watcher of their directory) alone.
+    published_displays: Option<PublishedDisplays>,
     local_fingerprint: Option<[u8; 32]>,
     merged_settings_fingerprint: Option<[u8; 32]>,
     roaming_provenance_fingerprint: Option<[u8; 32]>,
@@ -1638,6 +1641,7 @@ impl DeviceFabricRuntime {
             last_sample: None,
             display_refresh: display_refresh::DisplayRefresh::new(network.loop_waker()),
             last_publish: None,
+            published_displays: None,
             local_fingerprint: None,
             merged_settings_fingerprint: None,
             roaming_provenance_fingerprint: None,
@@ -1844,7 +1848,7 @@ impl DeviceFabricRuntime {
             crate::shell::mpris::withdraw_handoff_reports();
         }
         let Some((device, label)) = network.local_device_fabric_identity() else {
-            publish_device_displays(network, policy);
+            publish_device_displays(network, policy, &mut self.published_displays);
             return;
         };
         if !self.settings_origin_initialized {
@@ -1905,9 +1909,12 @@ impl DeviceFabricRuntime {
             );
         }
         let fingerprint = local_observation_fingerprint(&candidate, rich_outputs.as_deref());
-        let heartbeat_due = self
-            .last_publish
-            .is_none_or(|published| now.duration_since(published) >= PRESENCE_HEARTBEAT);
+        // A heartbeat tells the person's connected devices this one is still
+        // here; with none connected it would only rewrite the checkpoint on
+        // disk every beat. The first device to connect gets one at once.
+        let heartbeat_due = self.last_publish.is_none_or(|published| {
+            now.duration_since(published) >= PRESENCE_HEARTBEAT && network.has_personal_routes()
+        });
         if fingerprint != self.local_fingerprint || heartbeat_due {
             self.counter = tentative_stamp.counter;
             if fingerprint == self.local_fingerprint {
@@ -1937,7 +1944,7 @@ impl DeviceFabricRuntime {
             tracing::debug!(%error, "could not publish rich display observations");
         }
         self.merge_remote_state(network, selection, &device, policy);
-        publish_device_displays(network, policy);
+        publish_device_displays(network, policy, &mut self.published_displays);
         crate::shell::device_unlock_runtime::refresh(network);
         if policy.permits(ContinuityCapability::WifiSettings)
             && let Err(error) = network.refresh_wifi_credential_recipients()
@@ -7461,7 +7468,16 @@ pub fn observed_device_displays(
         .collect()
 }
 
-fn publish_device_displays(network: &ShellNetwork, policy: ContinuityPolicySnapshot) {
+type PublishedDisplays = (
+    settings_store::device_displays::DeviceDisplaySnapshot,
+    settings_store::person_displays::PersonDisplays,
+);
+
+fn publish_device_displays(
+    network: &ShellNetwork,
+    policy: ContinuityPolicySnapshot,
+    published: &mut Option<PublishedDisplays>,
+) {
     person_layout::refresh(network, policy);
     let Ok((publisher_pid, publisher_start_ticks)) = settings_store::hardware::publisher_identity()
     else {
@@ -7490,9 +7506,6 @@ fn publish_device_displays(network: &ShellNetwork, policy: ContinuityPolicySnaps
                     .is_ok_and(|owner| network.current_personal_route(&owner).is_some());
         }
     }
-    if let Err(error) = snapshot.save() {
-        tracing::debug!(%error, "could not publish device display observations");
-    }
     let view = settings_store::person_displays::PersonDisplays {
         schema_version: settings_store::person_displays::SCHEMA_VERSION,
         publisher_pid,
@@ -7505,9 +7518,27 @@ fn publish_device_displays(network: &ShellNetwork, policy: ContinuityPolicySnaps
             .filter(|_| policy.permits(ContinuityCapability::DisplayInput))
             .map_or_else(Vec::new, |local| network.person_display_devices(local)),
     };
-    if let Err(error) = view.save() {
-        tracing::debug!(%error, "could not publish person display observations");
+    if let Some((saved_snapshot, saved_view)) = published.as_ref()
+        && *saved_snapshot == snapshot
+        && *saved_view == view
+    {
+        return;
     }
+    let saved = match snapshot.save() {
+        Ok(()) => true,
+        Err(error) => {
+            tracing::debug!(%error, "could not publish device display observations");
+            false
+        }
+    };
+    let saved = match view.save() {
+        Ok(()) => saved,
+        Err(error) => {
+            tracing::debug!(%error, "could not publish person display observations");
+            false
+        }
+    };
+    *published = saved.then_some((snapshot, view));
 }
 
 fn build_local_snapshot(

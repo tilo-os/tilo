@@ -5099,6 +5099,13 @@ impl ShellNetwork {
         sent
     }
 
+    /// Whether any of the person's other devices has a current route here.
+    pub(crate) fn has_personal_routes(&self) -> bool {
+        self.authenticated_personal_routes
+            .lock()
+            .is_ok_and(|routes| !routes.is_empty())
+    }
+
     pub(crate) fn current_personal_route(
         &self,
         device: &crate::shell::personal_continuity::DeviceId,
