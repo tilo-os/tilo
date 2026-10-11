@@ -2142,6 +2142,61 @@ fn warm_at_rest(
     (pixels, layers)
 }
 
+/// Pan the strip a step and back and let it come to rest, as a session's
+/// desktop has once it panned: the windows' layout springs in this fixture
+/// advance only while the strip scrolls, so before a first pan the strips'
+/// drawing still changes in the pan's first frame whatever the layers hold.
+#[cfg(target_os = "linux")]
+fn settle_by_panning_once(frame: &mut FrameBuilder) {
+    frame.host_mut().update_active_strip_pan(0.0, true);
+    for travel in [23.7, 0.0] {
+        frame.host_mut().update_active_strip_pan(travel, false);
+        frame.relayout();
+        let _ = frame.paint_with_damage();
+    }
+    frame.host_mut().end_active_strip_pan(Instant::now());
+    for _ in 0..12 {
+        frame.relayout();
+        let _ = frame.paint_with_damage();
+    }
+}
+
+/// The first frame of a pan from a rest whose layers were warmed (as
+/// `warmed`) rasterises neither the backdrop nor the chrome, and the strips
+/// only where their drawing changed since the warm: when it did not, only
+/// what the pan uncovered.
+#[cfg(target_os = "linux")]
+fn assert_first_frame_from_warmed_rest(
+    layered: &crate::shell::render::paint::RetainedGpuTarget,
+    (warmed, painted): (&FrameCache, &FramePaint),
+    output: u64,
+    label: &str,
+) {
+    let cache = painted
+        .cache
+        .as_ref()
+        .unwrap_or_else(|| panic!("{label}: a pan comes as layers"));
+    let work = layered
+        .last_layer_work_for_test()
+        .unwrap_or_else(|| panic!("{label}: a layered frame records its work"));
+    let raster = work.raster_pixels(layered.size());
+    let apart = layers_apart(warmed, cache);
+    assert!(
+        !work.backdrop
+            && !work.chrome
+            && work.workspace != crate::shell::render::strip_layers::WorkspaceWork::Whole,
+        "{label}: the first frame from a warmed rest rasterises neither the backdrop nor the \
+         chrome nor the strips' layer whole ({work:?}); the layers warmed and the pan's differ \
+         in\n{apart}"
+    );
+    assert!(
+        strips_drawn_alike(cache, warmed) && raster < output / 4,
+        "{label}: the strips are drawn as they were warmed, so the first frame rasterises only \
+         what the pan uncovered ({raster} px of {output}); the layers warmed and the pan's \
+         differ in\n{apart}"
+    );
+}
+
 /// Where two drawings of the desktop as layers differ, for a failure
 /// message: each layer, and per strip where its blit is and the first
 /// place each encoded stream differs.
@@ -2232,6 +2287,7 @@ fn assert_pan_from_warmed_rest(desktop: PanDesktop) {
             let mut frame = pan_fixture(desktop, theme.clone());
             frame.set_strip_pan_presenter(false, true);
             let _ = acknowledged_notes_canvas_of(&mut frame, desktop.notes());
+            settle_by_panning_once(&mut frame);
             let mut layered = gpu_target(size);
             let mut dense = gpu_target(size);
             for _ in 0..4 {
@@ -2243,10 +2299,6 @@ fn assert_pan_from_warmed_rest(desktop: PanDesktop) {
                 );
                 let _ = present_or_keep(&mut layered, &painted, &name);
             }
-            assert!(
-                frame.layers_stale(),
-                "{name}: frames at rest left the presenter's layers behind"
-            );
             let budget = std::cell::Cell::new(if stopped { 1_u32 } else { u32::MAX });
             let keep_going = || {
                 let left = budget.get();
@@ -2293,16 +2345,11 @@ fn assert_pan_from_warmed_rest(desktop: PanDesktop) {
                     layered.last_layer_raster_pixels()
                 );
                 if step == 0 && !stopped {
-                    assert!(
-                        raster < output / 4,
-                        "{label}: the first frame from a warmed rest rasterises only what the \
-                         pan uncovered, not the layers ({raster} px of {output}); the layers \
-                         warmed and the pan's differ in\n{}",
-                        painted
-                            .cache
-                            .as_ref()
-                            .map(|cache| layers_apart(&warm_layers, cache))
-                            .unwrap_or_default()
+                    assert_first_frame_from_warmed_rest(
+                        &layered,
+                        (&warm_layers, &painted),
+                        output,
+                        &label,
                     );
                 }
                 assert_shows_a_full_render(&layered, &mut dense, &painted, &label);
