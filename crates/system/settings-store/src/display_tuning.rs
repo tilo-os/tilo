@@ -7,11 +7,10 @@
 //! same [`crate::hardware::DisplayTransaction`] keep-or-restore handshake as
 //! the Settings pane.
 
-use crate::display_scale::{MAX_SCALE, MIN_SCALE, SCALE_STEP};
 use crate::hardware::{DisplayConfig, DisplayOutputSnapshot, OutputConfig, OutputMode};
 
 /// The scales the Settings pane offers: 100 % to 200 % in quarter steps
-/// ([`MIN_SCALE`], [`MAX_SCALE`], [`SCALE_STEP`]).
+/// ([`MIN_SCALE`](crate::display_scale::MIN_SCALE), [`MAX_SCALE`](crate::display_scale::MAX_SCALE), [`SCALE_STEP`](crate::display_scale::SCALE_STEP)).
 const SCALES: [f64; 5] = [1.0, 1.25, 1.5, 1.75, 2.0];
 
 /// The scales the Settings pane offers.
@@ -165,6 +164,7 @@ pub fn plan_refresh(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::display_scale::{MAX_SCALE, MIN_SCALE, SCALE_STEP};
     use crate::hardware::{DisplayConfig, OutputDescriptor};
 
     fn output(connector: &str, builtin: bool, rates: &[u32]) -> DisplayOutputSnapshot {
