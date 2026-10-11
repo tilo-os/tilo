@@ -364,7 +364,7 @@ impl SessionProtocol {
                     .await?;
             }
             SessionOperationV1::NamespaceSync => {
-                self.serve_namespace_sync(peer, &mut send, &mut recv)
+                self.serve_namespace_sync(peer, remote, &mut send, &mut recv)
                     .await?;
             }
             SessionOperationV1::NamespaceSince { heads } => {
@@ -867,6 +867,7 @@ impl SessionProtocol {
     async fn serve_namespace_sync(
         &self,
         peer: &AuthenticatedFsPeer,
+        remote: iroh_base::PublicKey,
         send: &mut SendStream,
         recv: &mut RecvStream,
     ) -> Result<()> {
@@ -912,6 +913,12 @@ impl SessionProtocol {
                 eprintln!("projecting records after a namespace exchange failed: {error}");
             }
             drop(gate);
+        }
+        // The peer's own pass brought changes: it published something, and
+        // its records are pulled now rather than at this device's next
+        // timer pass, which backs off while nothing happens.
+        if changed {
+            let _ = self.announcements.send(remote);
         }
         exchanged.map(|_| ())
     }
@@ -1374,11 +1381,12 @@ pub(super) async fn sync_namespace(
         anyhow::bail!("unexpected namespace sync response");
     }
     let peer = session.peer.device_public_key;
-    let mut state = namespace
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .begin_sync_with(&peer);
-    let mut received = false;
+    let (before, mut state) = {
+        let mut namespace = namespace
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        (namespace.heads(), namespace.begin_sync_with(&peer))
+    };
     let mut completed = false;
     for _ in 0..MAX_SYNC_ROUNDS {
         // Only namespace state between changesets leaves this device.
@@ -1421,7 +1429,6 @@ pub(super) async fn sync_namespace(
             None => Vec::new(),
         };
         if !reply.is_empty() {
-            received = true;
             let _ = namespace
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1433,13 +1440,15 @@ pub(super) async fn sync_namespace(
         }
     }
     let _ = send.finish();
+    let mut namespace = namespace
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     if completed {
-        namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .finish_sync_with(peer, &state);
+        namespace.finish_sync_with(peer, &state);
     }
-    Ok(received)
+    // Every reply of an idle exchange carries the peer's heads; only
+    // changes that moved this document's heads count as received.
+    Ok(namespace.heads() != before)
 }
 
 /// The namespace changes a peer holds beyond this device's heads, for a

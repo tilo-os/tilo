@@ -388,7 +388,7 @@ fn handle_request(
         StreamRequest::ConnectSpotifyPlayback => {
             let result = backend
                 .spotify_playback(true)
-                .map(|_| (ui::i18n!("music-spotify-playback-authorized"), true))
+                .map(|_| (crate::i18n::t("music-spotify-playback-authorized"), true))
                 .map_err(|error| error.to_string());
             let _ = up_tx.send(StreamUpdate::SourceSelected { result });
         }

@@ -103,6 +103,19 @@ QUALITY_ONLY_HELPERS = {
 # file in the mandatory repository-policy suite. A file missing from this exact
 # map retains native Rust checks.
 QUALITY_ONLY_CONTROL_INPUTS = {
+    # These wrappers select/request the existing image workflow; they change
+    # no compiler, app source or packaging inputs. Mandatory policy tests
+    # observe their request gate, paths, architecture selection and delegation.
+    ".forgejo/workflows/os-dev.yml": (
+        "tools/tests/test_os_dev_arches.py",
+        "tools/tests/test_os_release_matrix.py",
+    ),
+    ".forgejo/workflows/os-dev-x86.yml": (
+        "tools/tests/test_os_dev_arches.py",
+    ),
+    ".forgejo/workflows/os-dev-arm.yml": (
+        "tools/tests/test_os_dev_arches.py",
+    ),
     "os/dev/rpm-snapshot-fingerprint.py": (
         "os/tests/test_rpm_snapshot_fingerprint.py",
         "tools/tests/test_rpm_pin_contract.py",
@@ -278,7 +291,22 @@ def builder_mold_asset(name: str, entry: tuple[str, str]) -> bool:
     )
 
 
+def image_tool_asset(name: str, entry: tuple[str, str]) -> bool:
+    """chunkah's release source and vendor tree: only os/Containerfile.rechunk reads them (TIL-747)."""
+    match = re.fullmatch(r"chunkah-(\d+\.\d+\.\d+)(?:-vendor)?\.tar\.gz", name)
+    if not match:
+        return False
+    return entry[1] == (
+        f"https://github.com/coreos/chunkah/releases/download/v{match.group(1)}/{name}"
+    )
+
+
+def no_workspace_asset(name: str, entry: tuple[str, str]) -> bool:
+    return builder_mold_asset(name, entry) or image_tool_asset(name, entry)
+
+
 def builder_only_asset_manifest_change(root: Path, base: str | None, head: str) -> bool:
+    """Whether every changed manifest row is an asset no workspace build reads."""
     merge_base = comparison_merge_base(root, base, head)
     before = manifest_at(root, merge_base)
     after = manifest_at(root, head)
@@ -289,8 +317,8 @@ def builder_only_asset_manifest_change(root: Path, base: str | None, head: str) 
         if before.get(name) != after.get(name)
     }
     return bool(changed_names) and all(
-        (name not in before or builder_mold_asset(name, before[name]))
-        and (name not in after or builder_mold_asset(name, after[name]))
+        (name not in before or no_workspace_asset(name, before[name]))
+        and (name not in after or no_workspace_asset(name, after[name]))
         for name in changed_names
     )
 

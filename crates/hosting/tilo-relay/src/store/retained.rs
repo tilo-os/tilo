@@ -17,6 +17,8 @@ use std::{
 };
 use tilo_automerge_isolate::{Applied, Dependencies};
 
+mod tail_index;
+
 fn invalid(message: &str) -> StoreError {
     io::Error::new(io::ErrorKind::InvalidData, message).into()
 }
@@ -329,13 +331,15 @@ fn remember_digest(path: &Path, digest: &[u8; 32]) {
 
 /// One prior record of a delta's lineage: its ordinal, and whether it holds
 /// the delta's exact bytes. Only a record of the same size whose digest
-/// matches is read, and then compared in full.
+/// matches is read, and then compared in full. A scan that builds the tail
+/// index (`collected`) takes every record's digest.
 fn inspect_delta(
     entry: &fs::DirEntry,
     name: &str,
     (bytes, digest): (&[u8], &[u8; 32]),
     last: &mut u64,
     duplicate: &mut bool,
+    collected: Option<&mut std::collections::HashSet<u64>>,
     stats: &mut super::bounded::WorkStats,
 ) -> Result<(), StoreError> {
     if let Some(prefix) = name.get(..16)
@@ -347,7 +351,21 @@ fn inspect_delta(
         return Ok(());
     }
     let metadata = entry.metadata()?;
-    if metadata.len() != bytes.len() as u64 || record_digest(&entry.path(), &metadata)? != *digest {
+    let mut known = None;
+    if let Some(collected) = collected {
+        let record = record_digest(&entry.path(), &metadata)?;
+        collected.insert(tail_index::short(&record));
+        known = Some(record);
+    }
+    if metadata.len() != bytes.len() as u64 {
+        return Ok(());
+    }
+    let known = if let Some(known) = known {
+        known
+    } else {
+        record_digest(&entry.path(), &metadata)?
+    };
+    if known != *digest {
         return Ok(());
     }
     let record = Record::read_for_proof(entry.path())?;
@@ -405,6 +423,20 @@ fn stamp(path: &Path) -> io::Result<[i64; 7]> {
     ])
 }
 
+/// The stamp of an active generation the tail index is kept at; none where
+/// there are no stamps, which leaves every commit to the scan.
+fn generation_stamp(path: &Path) -> Option<tail_index::Stamp> {
+    #[cfg(unix)]
+    {
+        stamp(path).ok()
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        None
+    }
+}
+
 /// [`sync_dir`], unless this process synced `path` before and its entries
 /// have not changed since: a barrier every commit repeats over the same
 /// ancestors then costs a `stat` instead of an fsync.
@@ -418,6 +450,8 @@ pub(super) fn sync_dir_once(path: &Path) -> Result<(), StoreError> {
 /// before and it has not been written since. Readers and collection quanta
 /// re-establish the durability of an unchanged selection this way.
 pub(super) fn sync_file_once(path: &Path) -> Result<(), StoreError> {
+    #[cfg(test)]
+    super::test_barrier::check(path, "sync-file")?;
     sync_once(path)
 }
 
@@ -470,6 +504,15 @@ pub(super) fn create_dir(path: &Path) -> Result<(), StoreError> {
     Ok(())
 }
 
+/// Whether anything is at `path`.
+fn exists(path: &Path) -> Result<bool, StoreError> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error.into()),
+    }
+}
+
 pub(super) fn durable_write(path: &Path, bytes: &[u8]) -> Result<(), StoreError> {
     crate::store::atomic_write(path, bytes)?;
     // native::atomic fsyncs the parent and fails when that fails. Apple's fsync
@@ -490,7 +533,7 @@ fn generation_name(name: &str) -> bool {
     name.len() == 32 && name.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
-pub(super) fn current(lineage: &Path) -> Result<Option<PathBuf>, StoreError> {
+pub(crate) fn current(lineage: &Path) -> Result<Option<PathBuf>, StoreError> {
     use std::io::Read;
     let mut name = String::new();
     match fs::File::open(lineage.join("CURRENT")) {
@@ -620,6 +663,8 @@ fn known_record(name: &std::ffi::OsStr) -> bool {
 
 enum RetainPhase {
     Scan(fs::ReadDir),
+    /// A delta whose lineage the tail index describes: nothing to list.
+    Indexed,
     Sort,
     Inspect(fs::File),
     Stage(fs::File),
@@ -665,6 +710,12 @@ pub(crate) struct RetainBuild {
     staged_only: bool,
     continuity: Option<super::continuity::Receipt>,
     store: WorkspaceStore,
+    /// A delta's active generation, stamped when the build began.
+    stamp: Option<tail_index::Stamp>,
+    /// `last` came from the tail index, without listing the generation.
+    indexed: bool,
+    /// Every record digest a delta's full scan saw, to install as the index.
+    collected: Option<std::collections::HashSet<u64>>,
 }
 pub(crate) struct CheckpointStage {
     build: RetainBuild,
@@ -782,6 +833,7 @@ impl CheckpointStage {
                 .as_ref()
                 .invariant("staged missing")?
                 .clone();
+            tail_index::forget(&self.build.lineage);
             sync_dir(&staged)?;
             durable_write(
                 &self.build.lineage.join("CURRENT"),
@@ -831,10 +883,7 @@ impl RetainBuild {
             .as_ref()
             .and_then(super::shell_selection::Selection::publication_on_error)
     }
-    #[allow(
-        dead_code,
-        reason = "aggregate work statistics remain available alongside phase-specific diagnostics"
-    )]
+    #[cfg(test)]
     pub(crate) fn stats(&self) -> &super::bounded::WorkStats {
         self.selection
             .as_ref()
@@ -893,15 +942,42 @@ impl RetainBuild {
                 .checked_add(1)
                 .ok_or_else(|| invalid("retained record sequence exhausted"))?;
             let path = self.active.join(format!("{next:016x}.delta"));
+            if self.indexed && exists(&path)? {
+                // Written behind the index's back: never overwrite it; list.
+                return self.rescan();
+            }
             if let Some(receipt) = &self.continuity {
                 super::continuity::account_validation(&mut self.sorter.stats, self.bytes.len());
                 super::continuity::write(&self.store, &path, &self.bytes, receipt)?;
             }
             durable_write(&path, &self.bytes)?;
             remember_digest(&path, &self.digest);
+            if let (Some(before), Some(after)) = (&self.stamp, generation_stamp(&self.active)) {
+                tail_index::appended(&self.lineage, (before, after), next, &self.digest);
+            } else {
+                tail_index::forget(&self.lineage);
+            }
             self.written = self.bytes.len() as u64;
             self.phase = RetainPhase::Done;
         }
+        Ok(())
+    }
+    /// Install what this delta's full scan found as the lineage's index.
+    fn install_index(&mut self) {
+        if let (Some(stamp), Some(digests)) = (self.stamp, self.collected.take())
+            && !self.duplicate
+        {
+            tail_index::install(&self.lineage, stamp, self.last, digests);
+        }
+    }
+    /// The index no longer matches the generation: list it after all.
+    fn rescan(&mut self) -> Result<(), StoreError> {
+        tail_index::forget(&self.lineage);
+        self.indexed = false;
+        self.last = 0;
+        self.stamp = generation_stamp(&self.active);
+        self.collected = self.stamp.map(|_| std::collections::HashSet::new());
+        self.phase = RetainPhase::Scan(fs::read_dir(&self.active)?);
         Ok(())
     }
     #[expect(
@@ -974,11 +1050,13 @@ impl RetainBuild {
                         if self.checkpoint {
                             self.phase = RetainPhase::Sort;
                         } else {
+                            self.install_index();
                             self.inspected()?;
                         }
                         return Ok(Step::More);
                     };
                     let entry = entry?;
+                    crate::store::count_listed_entry();
                     let name = entry.file_name();
                     let lossy = name.to_string_lossy();
                     if let Some(slot) = super::continuity::reserved_slot(&lossy) {
@@ -995,6 +1073,7 @@ impl RetainBuild {
                                 (&self.bytes, &self.digest),
                                 &mut self.last,
                                 &mut self.duplicate,
+                                self.collected.as_mut(),
                                 &mut self.sorter.stats,
                             )?;
                             continue;
@@ -1013,6 +1092,7 @@ impl RetainBuild {
                     }
                 }
             }
+            RetainPhase::Indexed => self.inspected()?,
             RetainPhase::Sort => {
                 if let Step::Done(path) = self.sorter.step(limit)? {
                     self.phase = RetainPhase::Inspect(fs::File::open(&path)?);
@@ -1125,6 +1205,7 @@ impl RetainBuild {
             }
             RetainPhase::Commit => {
                 let staged = self.staged.as_ref().invariant("staged missing")?;
+                tail_index::forget(&self.lineage);
                 sync_dir(staged)?;
                 durable_write(
                     &self.lineage.join("CURRENT"),
@@ -1319,13 +1400,28 @@ impl WorkspaceStore {
         } else {
             super::bounded::Sorter::unspilled(scratch.join("sort"))
         };
-        let phase = RetainPhase::Scan(fs::read_dir(&active)?);
+        let digest = *blake3::hash(&bytes).as_bytes();
+        // A delta needs the generation's last ordinal and whether it already
+        // holds these bytes; the tail index answers both without listing it.
+        let stamp = if checkpoint {
+            None
+        } else {
+            generation_stamp(&active)
+        };
+        let indexed = stamp
+            .as_ref()
+            .and_then(|stamp| tail_index::last(&lineage, stamp, &digest));
+        let phase = if indexed.is_some() {
+            RetainPhase::Indexed
+        } else {
+            RetainPhase::Scan(fs::read_dir(&active)?)
+        };
         let key = checkpoint_key(&bytes, self.workspace_id);
         Ok(RetainBuild {
             lineage,
             active,
             scratch,
-            digest: *blake3::hash(&bytes).as_bytes(),
+            digest,
             bytes,
             checkpoint,
             workspace: self.workspace_id,
@@ -1334,7 +1430,7 @@ impl WorkspaceStore {
             phase,
             duplicate: false,
             opaque: false,
-            last: 0,
+            last: indexed.unwrap_or(0),
             key,
             staged: None,
             staged_append: false,
@@ -1354,6 +1450,11 @@ impl WorkspaceStore {
             staged_only: false,
             continuity: None,
             store: self.clone(),
+            collected: stamp
+                .filter(|_| indexed.is_none())
+                .map(|_| std::collections::HashSet::new()),
+            indexed: indexed.is_some(),
+            stamp,
         })
     }
     pub(super) fn retain_shared(
@@ -1391,11 +1492,15 @@ impl WorkspaceStore {
         max_bytes: usize,
     ) -> Result<Vec<Vec<u8>>, StoreError> {
         let mut budget = ViewReadBudget {
+            root: self.root.clone(),
             bytes: max_bytes,
             entries: 8192,
         };
         let mut out = Vec::new();
-        if let Some(selected) = current(&self.root.join(super::shell_selection::DIRECTORY))? {
+        let selection = self.root.join(super::shell_selection::DIRECTORY);
+        budget.selection(&selection)?;
+        if let Some(selected) = current(&selection)? {
+            budget.barrier(&selected.join("basis.manifest"))?;
             let mut manifest = fs::File::open(selected.join("basis.manifest"))?;
             while let Some(meta) = super::bounded::read_meta(&mut manifest)? {
                 budget.entry()?;
@@ -1423,6 +1528,7 @@ impl WorkspaceStore {
         }
         lineages.sort_by_key(fs::DirEntry::file_name);
         for lineage in lineages {
+            budget.selection(&lineage.path())?;
             let Some(active) = current(&lineage.path())? else {
                 continue;
             };
@@ -1501,12 +1607,31 @@ fn view_channel_matches(bytes: &[u8], workspace: u64, channel: &[u8; 32]) -> boo
 
 #[cfg(feature = "agents")]
 struct ViewReadBudget {
+    root: PathBuf,
     bytes: usize,
     entries: usize,
 }
 
 #[cfg(feature = "agents")]
 impl ViewReadBudget {
+    fn selection(&self, lineage: &Path) -> Result<(), StoreError> {
+        let selector = lineage.join("CURRENT");
+        if selector.exists() {
+            self.barrier(&selector)?;
+        }
+        Ok(())
+    }
+    fn barrier(&self, path: &Path) -> Result<(), StoreError> {
+        sync_file_once(path)?;
+        for parent in path.ancestors().skip(1) {
+            sync_dir_once(parent)?;
+            if Some(parent) == self.root.parent() {
+                break;
+            }
+        }
+        Ok(())
+    }
+
     fn entry(&mut self) -> Result<(), StoreError> {
         self.entries = self
             .entries
@@ -1516,6 +1641,7 @@ impl ViewReadBudget {
     }
     fn read(&mut self, path: &Path) -> Result<Vec<u8>, StoreError> {
         use std::io::Read as _;
+        self.barrier(path)?;
         let file = fs::File::open(path)?;
         let size = usize::try_from(file.metadata()?.len())
             .map_err(|_| invalid("oversized view source"))?;
@@ -1558,6 +1684,23 @@ pub(super) mod tests {
             retained,
             "bounded view reads must not rewrite committed retained history"
         );
+    }
+
+    #[cfg(feature = "agents")]
+    #[test]
+    fn retained_view_refuses_a_failed_durability_barrier() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = WorkspaceStore::open(dir.path(), 7, false).unwrap();
+        store
+            .retain_checkpoint(&[9; 32], &message(true, 1))
+            .unwrap();
+        let v2 = store.root.join(RETAINED_DIR).join("v2");
+        let lineage = fs::read_dir(v2).unwrap().next().unwrap().unwrap().path();
+        let selector = lineage.join("CURRENT");
+        let fault = super::super::test_barrier::fail(&selector, "sync-file");
+        assert!(store.load_view_channel(&[9; 32], 4096).is_err());
+        drop(fault);
+        assert_eq!(store.load_view_channel(&[9; 32], 4096).unwrap().len(), 1);
     }
 
     fn message(checkpoint: bool, value: u8) -> Vec<u8> {

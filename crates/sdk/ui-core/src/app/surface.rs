@@ -751,12 +751,24 @@ impl App {
     /// out and drawn, as a window of its own runs it. Returns whether the app
     /// wants another frame.
     pub fn surface_frame(&mut self, surface: &dyn AppSurface, scene: &mut Scene) -> bool {
+        self.surface_frame_with_damage(surface, scene, &mut SurfaceDamage::default())
+    }
+
+    /// [`Self::surface_frame`], adding to `damage` where this frame's pixels
+    /// differ from the last frame's, as a window of its own submits them.
+    pub fn surface_frame_with_damage(
+        &mut self,
+        surface: &dyn AppSurface,
+        scene: &mut Scene,
+        damage: &mut SurfaceDamage,
+    ) -> bool {
         let _entry = self.enter_wake_scope();
         let replaced = self.swap_requested_component();
         // The model's own work, as a hosted worker's pump runs it:
         // collaboration (inbound edits, directory requests, publication),
-        // invocations, idle model work and the record.
-        self.pump_hosted_model();
+        // invocations, idle model work and the record. A different record
+        // is a different document under the same widgets.
+        let record_changed = self.pump_hosted_model_record_changed();
         if self.layout.root_node.is_none() {
             self.init_layout();
         }
@@ -773,9 +785,12 @@ impl App {
             self.rebuild_structure();
         }
         let Some(root_node) = self.layout.root_node else {
+            damage.repaint("no layout");
             return true;
         };
-        if run_layout_pass(
+        let boxes_before = widget_boxes(self.root_widget.as_ref());
+        let rebuilds = self.layout.rebuilds;
+        let Some((geometry_changed, _, _)) = run_layout_pass(
             self,
             root_node,
             size.width,
@@ -783,17 +798,54 @@ impl App {
             scale_factor,
             structure_rebuilt,
             None,
-        )
-        .is_none()
-        {
+        ) else {
+            damage.repaint("no layout");
             return true;
-        }
+        };
         let search_pending = self
             .actions
             .action_palette
             .as_mut()
             .is_some_and(|palette| palette.advance_search_page().pending);
-        draw_frame_content(self, scene, size.width, size.height, scale_factor, None);
+        // What a window of its own repaints whole: a rebuilt tree, moved
+        // geometry, another record, and what paints over the widgets.
+        // Carets, selections and marks widgets paint from presence carry no
+        // widget damage (`draw_presence_layer`).
+        let presence_changed =
+            damage.widgets_presence_changed(self.presence_ctx.widget_presence(crate::time::now()));
+        let hud = self
+            .profiler
+            .as_ref()
+            .is_some_and(crate::profiling::FrameProfiler::hud_enabled);
+        // A relayout that moved some of the same widgets repaints where each
+        // was and is: what else is there is drawn by widgets that did not
+        // move, and their own damage covers any change to them.
+        // A layout pass that recomposed the tree may have replaced widgets.
+        let recomposed = self.layout.rebuilds != rebuilds;
+        let moved = if recomposed {
+            None
+        } else if geometry_changed && !structure_rebuilt {
+            moved_boxes(&boxes_before, &widget_boxes(self.root_widget.as_ref()))
+        } else {
+            Some(Vec::new())
+        };
+        let full = [
+            (replaced, "another component"),
+            (record_changed, "another record"),
+            (structure_rebuilt, "a rebuilt tree"),
+            (moved.is_none(), "moved geometry"),
+            (self.debug_mode, "debug outlines"),
+            (self.actions.action_palette.is_some(), "the action palette"),
+            (hud, "the profiler HUD"),
+            (presence_changed, "presence marks"),
+        ]
+        .into_iter()
+        .find_map(|(repaint, why)| repaint.then_some(why));
+        let drawn = draw_frame_content(self, scene, size.width, size.height, scale_factor, None);
+        damage.frame(full, &drawn, f64::from(scale_factor), |regions| {
+            collect_submitted_widget_damage(self.root_widget.as_ref(), regions);
+            regions.extend(moved.into_iter().flatten());
+        });
         complete_native_frame_content(self, |_| {});
         search_pending
             || self.needs_sync
@@ -803,6 +855,124 @@ impl App {
                 .root_widget
                 .next_wake_deadline()
                 .is_some_and(|deadline| deadline <= crate::time::now())
+    }
+}
+
+/// Every widget in tree order, by identity, with its layout box.
+fn widget_boxes(root: &dyn Widget) -> Vec<(*const (), KurboRect)> {
+    fn walk(widget: &dyn Widget, out: &mut Vec<(*const (), KurboRect)>) {
+        out.push((std::ptr::from_ref(widget).cast::<()>(), widget.get_rect()));
+        widget.for_each_child(&mut |child| walk(child, out));
+    }
+    let mut out = Vec::new();
+    walk(root, &mut out);
+    out
+}
+
+/// The old and new box of every widget a relayout moved or resized, when
+/// `before` and `after` list the same widgets in the same order; `None`
+/// when they do not, and which pixels moved cannot be said.
+fn moved_boxes(
+    before: &[(*const (), KurboRect)],
+    after: &[(*const (), KurboRect)],
+) -> Option<Vec<KurboRect>> {
+    if before.len() != after.len() {
+        return None;
+    }
+    let mut moved = Vec::new();
+    for ((old_widget, old), (new_widget, new)) in before.iter().zip(after) {
+        if old_widget != new_widget {
+            return None;
+        }
+        if old != new {
+            moved.extend([*old, *new]);
+        }
+    }
+    Some(moved)
+}
+
+/// Where an app's frames on a surface changed since its host last looked
+/// ([`Self::take`]), decided as a window of its own decides what to submit:
+/// the widgets' damage and the tooltip's bounds, unless something no damage
+/// describes changed, which repaints the surface.
+#[derive(Default)]
+pub struct SurfaceDamage {
+    /// In the surface's scene coordinates. `None` once a frame since the
+    /// last take could not describe its change, and before the first frame.
+    pending: Option<Vec<KurboRect>>,
+    /// The last frame painted a layer over the widgets (an overlay, history
+    /// chrome, a dialog, the palette) that their damage does not describe.
+    top_layer_drawn: bool,
+    /// Where the last frame's tooltip painted.
+    tooltip: Option<KurboRect>,
+    /// The presence the last frame's widgets painted from.
+    widgets: Option<crate::presence::WidgetPresence>,
+    /// Why the last frame repainted the surface whole, if it did.
+    repainted: Option<&'static str>,
+}
+
+impl SurfaceDamage {
+    /// Where the frames since the last take changed, or `None` when they
+    /// must be repainted whole.
+    pub fn take(&mut self) -> Option<Vec<KurboRect>> {
+        self.pending.replace(Vec::new())
+    }
+
+    /// Why the last frame repainted the surface whole, or `None` when its
+    /// damage described it.
+    pub fn repainted(&self) -> Option<&'static str> {
+        self.repainted
+    }
+
+    fn repaint(&mut self, why: &'static str) {
+        self.pending = None;
+        self.repainted = Some(why);
+    }
+
+    /// Whether what widgets paint from presence changed, or follows their
+    /// content (a peer's caret or selection, fresh typing): either moves
+    /// marks no widget reports.
+    fn widgets_presence_changed(&mut self, widgets: crate::presence::WidgetPresence) -> bool {
+        let changed = widgets.marks_follow_content() || self.widgets.as_ref() != Some(&widgets);
+        self.widgets = Some(widgets);
+        changed
+    }
+
+    /// Add one drawn frame: repainted whole for the reason `full` gives,
+    /// when a layer is painted over the widgets or was last frame, and
+    /// otherwise the widget damage `collect` reports (logical, scaled by
+    /// `scale` to the scene) with the tooltip where it was and where it is.
+    fn frame(
+        &mut self,
+        full: Option<&'static str>,
+        drawn: &DrawnFrame,
+        scale: f64,
+        collect: impl FnOnce(&mut Vec<KurboRect>),
+    ) {
+        let layer_shown = std::mem::replace(&mut self.top_layer_drawn, drawn.top_layer.is_some());
+        let tooltip_shown = std::mem::replace(&mut self.tooltip, drawn.tooltip);
+        let full = full
+            .or(drawn.top_layer)
+            .or_else(|| layer_shown.then_some("a layer gone from over the widgets"));
+        if let Some(why) = full {
+            self.repaint(why);
+            return;
+        }
+        self.repainted = None;
+        let Some(pending) = self.pending.as_mut() else {
+            return;
+        };
+        let mut regions = Vec::new();
+        collect(&mut regions);
+        pending.extend(
+            regions
+                .into_iter()
+                .map(|rect| Affine::scale(scale).transform_rect_bbox(rect)),
+        );
+        // The tooltip paints over the widgets: a label that changes in
+        // place has no other damage.
+        pending.extend(tooltip_shown);
+        pending.extend(drawn.tooltip);
     }
 }
 
@@ -821,6 +991,32 @@ mod tests {
     }
 
     include!("native_publication_scroll_tests.rs");
+
+    #[test]
+    fn a_relayout_repaints_where_moved_widgets_were_and_are() {
+        let (a, b) = (1_u8, 2_u8);
+        let (a, b) = (
+            std::ptr::from_ref(&a).cast::<()>(),
+            std::ptr::from_ref(&b).cast::<()>(),
+        );
+        let field = KurboRect::new(0.0, 0.0, 100.0, 20.0);
+        let label = KurboRect::new(0.0, 30.0, 50.0, 40.0);
+        let grown = KurboRect::new(0.0, 0.0, 140.0, 20.0);
+        assert_eq!(
+            moved_boxes(&[(a, field), (b, label)], &[(a, grown), (b, label)]),
+            Some(vec![field, grown])
+        );
+        assert_eq!(
+            moved_boxes(&[(a, field), (b, label)], &[(a, field), (b, label)]),
+            Some(Vec::new())
+        );
+        // Other widgets, or more of them: which pixels moved is unknown.
+        assert_eq!(
+            moved_boxes(&[(a, field), (b, label)], &[(b, field), (a, label)]),
+            None
+        );
+        assert_eq!(moved_boxes(&[(a, field)], &[(a, field), (b, label)]), None);
+    }
 
     /// Records where it is clicked, in its own logical coordinates.
     struct ClickProbe {

@@ -200,7 +200,7 @@ D2 = 10
 W3 = 11
 
 [sdk.tilo-app]
-R1 = 25
+R1 = 24
 
 [sdk.tilo-app-state]
 R1 = 9
@@ -213,7 +213,7 @@ R1 = 18
 W3 = 11
 
 [sdk.tilo-ui]
-R1 = 290
+R1 = 262
 W1 = 18
 W2 = 2
-W3 = 77
+W3 = 61

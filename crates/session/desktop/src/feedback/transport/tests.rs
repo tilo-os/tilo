@@ -674,3 +674,54 @@ fn persisted_owner_pin_and_current_role_survive_reconnect_without_reauthorizatio
         Err(Error::ReceiptMismatch)
     ));
 }
+
+#[test]
+fn retained_receipt_source_cannot_substitute_report_identity_or_destination() {
+    struct CorruptSource {
+        canonical: CanonicalRecord,
+        change_destination: bool,
+    }
+    impl CanonicalReceiptSource for CorruptSource {
+        fn namespace(&self) -> (String, String) {
+            self.canonical.namespace()
+        }
+        fn current_report(&self, submission: &Submission) -> Result<(Receipt, String), Error> {
+            let (mut receipt, author) = self.canonical.current_report(submission)?;
+            if self.change_destination {
+                receipt.destination.channel = "foreign-channel".into();
+            } else {
+                receipt.id = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee".into();
+            }
+            Ok((receipt, author))
+        }
+    }
+    let root = tempfile::tempdir().unwrap();
+    let (records, mut frame) = canonical(root.path());
+    let report = submission();
+    submit(&mut frame, &report);
+    records.try_flush().unwrap();
+    for change_destination in [false, true] {
+        let source = CorruptSource {
+            canonical: CanonicalRecord {
+                records: records.clone(),
+                record: RecordId::package_primary(),
+                project: chat::feedback::canonical_feedback_projection,
+            },
+            change_destination,
+        };
+        let mut service = CanonicalDestination::from_source(
+            enrollment().owner,
+            enrollment().destination,
+            Box::new(source),
+            Box::new(FixtureSigner {
+                owner: enrollment().owner,
+                key: SigningKey::from_bytes(&[41; 32]),
+            }),
+        )
+        .unwrap();
+        assert!(matches!(
+            service.receipt(&report, &enrollment()),
+            Err(Error::ReceiptMismatch)
+        ));
+    }
+}

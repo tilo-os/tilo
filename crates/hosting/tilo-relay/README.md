@@ -75,10 +75,13 @@ endpoint id and local addresses on the current network. Set
 1. Iroh QUIC (NAT hole-punched, node id is stable).
 2. `tilo-relay/1`, `tilo-relay/3` (private actions and agent reads),
    `tilo-relay/4` (device-signed actions), `tilo-relay/5` (`/4` whose
-   zero-signature deltas go without the signature) or `tilo-relay/6` (`/5`
-   whose presence arrives batched and slot-coded) ALPN. Every protocol
+   zero-signature deltas go without the signature), `tilo-relay/6` (`/5`
+   whose presence arrives batched and slot-coded) or `tilo-relay/7` (`/6`
+   whose live deltas arrive coded against the previous one from the same
+   author) ALPN. Every protocol
    gets its presence coalesced and paced per connection
-   (`src/presence_mailbox.rs`).
+   (`src/presence_mailbox.rs`), and presence that may go early rides in the
+   same write as a delta (TIL-776).
 3. Three-message auth handshake — mutual proof-of-possession of certified
    device signing keys. Home hosts require the same user root; provider hosts
    authenticate their pinned host identity and authorize tenant devices with

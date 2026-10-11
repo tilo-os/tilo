@@ -1,0 +1,33 @@
+[package]
+name = "tilo-invidious"
+version = "0.1.0"
+edition = "2024"
+publish = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Fully rangeable YouTube media URLs through public Invidious media proxies."
+
+# Shared by Music (audio) and Tube (muxed video): both need a media URL that
+# serves arbitrary byte ranges over the whole file, which raw googlevideo URLs
+# refuse past the first segment.
+
+[lib]
+name = "tilo_invidious"
+path = "src/lib.rs"
+
+[dependencies]
+tilo-clock = { version = "0.1.0", path = "../tilo-clock" }
+tilo-net = { version = "0.1.0", path = "../tilo-net", features = ["http"] }
+tracing.workspace = true
+
+[dev-dependencies]
+tilo-test-env = { path = "../../dev/test-env" }
+tokio = { workspace = true, features = ["rt", "macros"] }
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

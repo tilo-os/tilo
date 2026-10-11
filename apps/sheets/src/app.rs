@@ -19,7 +19,7 @@ use ui::widget::{AppModel, Edits, ModelPath};
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ChangeHash, ObjId};
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::{BlendMode, Color, Fill};
@@ -52,10 +52,9 @@ use crate::fill;
 use crate::formula;
 use crate::grid::{Grid, GridCmd, GridMetrics};
 use crate::infer::infer_entry;
-use crate::model::{
-    Addr, CellFormat, CellValue, Currency, DateStyle, TimeStyle, a1_to_addr, format_value,
-};
-use crate::settings::{DocSettings, EffectiveLocale, Locale};
+use crate::model::{Addr, CellFormat, CellValue, a1_to_addr, format_value};
+use crate::settings::{DocSettings, EffectiveLocale};
+use tilo_locale::{Currency, DateStyle, Locale, TimeStyle};
 
 /// Rows of the sheet-tab context menu, top to bottom.
 const TAB_MENU_ACTIONS: [TabAction; 6] = [
@@ -2593,15 +2592,7 @@ impl Widget for SheetsApp {
         self.text_scale = f64::from(theme.text_scale);
         self.grid.set_text_scale(self.text_scale);
 
-        // `new_leaf` on a freshly created tree never fails.
-        let style = Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
-            ..Default::default()
-        };
-        taffy.widget_leaf(style, node_map, self)
+        taffy.fill_leaf(node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {

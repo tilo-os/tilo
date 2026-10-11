@@ -150,7 +150,13 @@ containerfile="$repo/os/Containerfile"
 # The Plymouth theme arrives rendered from the plymouth-assets stage, which
 # replaces the context copy of its sources; make-plymouth-assets.py, which
 # rendered it inside the rootfs, no longer enters /usr/local/bin (TIL-733).
-expected_contract=389390d1eb903c3eef1af42e1b5f4b85bfc65028deb8ff4bc5fe17a026723ced
+# The app store arrives from the app-store stage, the builder's store with the
+# env-runtime's host-identical files left out and named in its host-sources
+# (TIL-735); the installed path is unchanged.
+# tilo-network-start.service replaces tilo-network-start.timer: the network is
+# queued once logins are allowed instead of at OnBootSec=0, where it held the
+# greeter through network.target (TIL-767).
+expected_contract=0d1f26b3729368602066f2a95a54f9283ee8c2be31ae6626786b3c4161ae2b42
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {

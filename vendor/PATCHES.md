@@ -311,13 +311,21 @@ opened and closed, past 1 GiB). Now:
 - `Renderer::image_cache_stats()` (through `Resolver::image_cache_stats`)
   reports `ImageCacheStats`: atlas side, resident count, resident CPU bytes
   and area, and lifetime evictions, shrinks and omissions.
+- `Renderer::shrink_image_atlas_soon()` (through
+  `Resolver::shrink_image_atlas_soon`, `ImageCache::shrink_soon`): the caller
+  knows images went for good, a window closed. For the next 16 passes
+  (`SHRINK_SOON_RESOLVES`) a pass after a sparse one halves the atlas at once,
+  as often as the eighth-full rule allows, instead of after 60. A desktop that
+  goes idle after a close draws a handful of frames, so the slow rule kept a
+  256 MiB atlas after four apps closed (TIL-731).
 
 Own tests in `image_cache.rs`: stale residents are released without
 allocation pressure, an image survives two passes that skip it, a committing
 window holds three frames at most, the atlas shrinks after residency drops and
 uploads its residents again where it draws them, a busy atlas does not shrink,
-and thirty open/close cycles leave only the wallpaper resident at the size it
-started with.
+thirty open/close cycles leave only the wallpaper resident at the size it
+started with, and told images went the atlas comes down within a few passes
+while an expired request waits the long way again.
 
 ## `vendor/vello/src/wgpu_engine.rs`: cleared pools and freed downloads are destroyed
 
@@ -393,3 +401,12 @@ Settings uses it to label its foreground physical keyboard map independently
 from logical key events. A real Smithay-to-Winit wire regression covers initial
 keymap/focus and several queued modifier/group changes; no global capture or new
 protocol/socket is introduced.
+
+## Build-script-generated protobuf descriptors
+
+`buffa-build` 0.9.2 is carried as verified registry source with a small
+upstream-compatible change: a descriptor proven to be produced inside the
+caller's Cargo OUT_DIR is not registered as an input. All external descriptors
+remain tracked, including symlinks across the output-directory boundary.
+`vendor/buffa-build/PROVENANCE.md` records the checksum, revision and patch.
+The registry waproto source and its source/hash guards remain unchanged.

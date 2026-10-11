@@ -34,7 +34,7 @@ use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
     AppModel, Button, ButtonRole, ControlSize, Element, InspectorPlacement, ModelPath, NavShell,
-    Popover, TaffyTreeExt, ToggleGroup, Widget,
+    Popover, Switch, TaffyTreeExt, ToggleGroup, Widget,
 };
 
 use crate::model::{MonitorModel, ProcessDataStatus, ProcessInfo};
@@ -237,149 +237,22 @@ enum Inspected {
     Process(u64),
 }
 
-/// The content column: the active tab's pane.
-struct TabContent {
-    processes: ProcessesPane,
-    resources: ResourcesPane,
-    tab: Rc<std::cell::Cell<Tab>>,
-    shown: Tab,
-    rect: Rect,
-    structure_dirty: bool,
-}
-
-impl TabContent {
-    fn new(shared: &Shared, tab: Rc<std::cell::Cell<Tab>>) -> Self {
-        Self {
-            processes: ProcessesPane::new(Rc::clone(shared)),
-            resources: ResourcesPane::new(Rc::clone(shared)),
-            shown: tab.get(),
-            tab,
-            rect: Rect::ZERO,
-            structure_dirty: true,
-        }
-    }
-
-    fn active(&self) -> &dyn Widget {
-        match self.shown {
-            Tab::Processes => &self.processes,
-            Tab::Resources => &self.resources,
-        }
-    }
-
-    fn active_mut(&mut self) -> &mut dyn Widget {
-        match self.shown {
-            Tab::Processes => &mut self.processes,
-            Tab::Resources => &mut self.resources,
-        }
-    }
-
-    fn follow_tab(&mut self) {
-        let tab = self.tab.get();
-        if tab != self.shown {
-            self.shown = tab;
-            self.structure_dirty = true;
-        }
-    }
-}
-
-impl Widget for TabContent {
-    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        self.follow_tab();
-        self.active_mut().sync(state, path);
-    }
-
-    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
-        self.active_mut().update(state, path)
-    }
-
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        self.follow_tab();
-        self.structure_dirty = false;
-        let child = self.active_mut().build_layout(taffy, theme, node_map);
-        let node = taffy.fill_node(child);
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
-    }
-
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = ui::widget::layout_rect(taffy, node, origin);
-        if let Some(child) = first_child(taffy, node) {
-            let origin = self.rect.origin();
-            self.active_mut().apply_layout(taffy, child, origin);
-        }
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        self.active_mut()
-            .draw(scene, transform, text_renderer, theme, presence);
-    }
-
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        if let Some(child) = first_child(ctx.taffy, ctx.node_id) {
-            self.active_mut()
-                .handle_event(event, &mut ctx.reborrow(ctx.path, child));
-        }
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        vec![self.active()]
-    }
-
-    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
-        visitor(self.active());
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        vec![self.active_mut()]
-    }
-
-    fn wants_pointer_capture(&self) -> bool {
-        self.active().wants_pointer_capture()
-    }
-
-    fn needs_animation_frame(&self) -> bool {
-        self.active().needs_animation_frame()
-    }
-
-    fn is_layout_dirty(&self) -> bool {
-        self.structure_dirty || self.tab.get() != self.shown || self.active().is_layout_dirty()
-    }
-
-    fn layout_needs_measure(&self) -> bool {
-        self.is_layout_dirty() || self.active().layout_needs_measure()
-    }
-
-    fn take_structure_dirty(&mut self) -> bool {
-        self.follow_tab();
-        let mut dirty = std::mem::take(&mut self.structure_dirty);
-        dirty |= self.active_mut().take_structure_dirty();
-        dirty
-    }
-
-    fn name(&self) -> &'static str {
-        "TabContent"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-}
-
 /// The first child of `node`.
 fn first_child(taffy: &TaffyTree<()>, node: NodeId) -> Option<NodeId> {
     taffy.children(node).ok()?.first().copied()
+}
+
+/// The content column: the active tab's pane.
+fn tab_content(shared: &Shared, shown_tab: &Rc<std::cell::Cell<Tab>>) -> Switch<Tab> {
+    let shared = Rc::clone(shared);
+    let shown_tab = Rc::clone(shown_tab);
+    Switch::new(
+        move || shown_tab.get(),
+        move |tab| match tab {
+            Tab::Processes => Box::new(ProcessesPane::new(Rc::clone(&shared))) as Element,
+            Tab::Resources => Box::new(ResourcesPane::new(Rc::clone(&shared))),
+        },
+    )
 }
 
 #[allow(
@@ -516,7 +389,7 @@ impl MonitorApp {
         let prefs = Prefs::default();
         let shell = NavShell::new()
             .with_id("monitor.shell")
-            .content(Box::new(TabContent::new(&shared, Rc::clone(&shown_tab))));
+            .content(Box::new(tab_content(&shared, &shown_tab)));
         Self {
             model,
             sampler,
@@ -1604,7 +1477,10 @@ impl Widget for MonitorApp {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = ui::widget::layout_rect(taffy, node, origin);
+        let Ok(l) = taffy.layout(node) else {
+            return;
+        };
+        self.rect = ui::widget::placed(l, origin);
         if let Some(shell) = first_child(taffy, node) {
             self.shell
                 .apply_layout(taffy, shell, Point::new(self.rect.x0, self.rect.y0));

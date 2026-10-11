@@ -246,6 +246,21 @@ pub trait Resource: Sized + 'static {
         Vec::new()
     }
 
+    /// [`children`](Self::children) split into the children that are not
+    /// items and the items of the record's collections, so a publisher can
+    /// keep the item children it built for a previous version and build
+    /// only the ones whose label changed (TIL-766). `others` followed by
+    /// [`item_children`](crate::items::item_children) of the rest must be
+    /// exactly `children`. The default puts every child in `others`;
+    /// `#[resource]` splits off its item collections.
+    fn children_parts(state: &Self::State) -> crate::items::ChildrenParts {
+        crate::items::ChildrenParts {
+            others: Self::children(state),
+            items: Vec::new(),
+            item_actions: Vec::new(),
+        }
+    }
+
     /// The ids of the [`declarations`](Self::declarations) that
     /// [`children`](Self::children) offer on some child with arguments
     /// already bound (an item action on each item of a list), which the

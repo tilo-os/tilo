@@ -90,19 +90,8 @@ impl AgendaView {
     }
 
     pub(crate) fn handle_event(&mut self, input: &mut InputContext<'_>) -> bool {
-        self.scroll.handle_event(
-            input.event,
-            &mut ui::widget::EventCtx {
-                scale_factor: input.scale_factor,
-                modifiers: &input.modifiers,
-                state: input.state.reborrow(),
-                path: input.path,
-                handled: input.handled,
-                focus_target: input.focus_target,
-                node_id: input.node_id,
-                taffy: input.taffy,
-            },
-        );
+        self.scroll
+            .handle_event(input.event, &mut input.event_ctx());
         *input.handled
     }
 

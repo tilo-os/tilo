@@ -30,16 +30,17 @@ use std::time::{Duration, SystemTime};
 use collab_types::{ChannelId, Role, generate_keypair};
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use threshold_identity::ThresholdIdentity;
+use tilo_identity_ceremony::{
+    IdentityFlowError, IdentityStore, InviteBrokerLocator, InviteTerms, MemoryIdentityStore,
+    mint_invite_for_broker,
+};
 use tilo_ui::State;
 use tilo_ui::a11y::{Action, Role as AccessRole};
 use tilo_ui::clipboard::{ClipboardBackend, ClipboardTarget};
 use tilo_ui::headless::{FrameHarness, SemanticExpectation};
 use tilo_ui::theme::Theme;
 use tilo_ui::widget::QrWidget;
-use tilo_ui::widget::identity_flow::{
-    IdentityFlow, IdentityFlowError, IdentityFlowScreen, IdentityStore, InviteBrokerLocator,
-    InviteTerms, MemoryIdentityStore, mint_invite_for_broker,
-};
+use tilo_ui::widget::identity_flow::{IdentityFlow, IdentityFlowScreen};
 use tilo_ui::winit::dpi::PhysicalPosition;
 use tilo_ui::winit::event::{DeviceId, ElementState, MouseButton, WindowEvent};
 use vello::kurbo::Rect;

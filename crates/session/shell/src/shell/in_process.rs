@@ -21,6 +21,7 @@ use ui::launch::LaunchError;
 use ui::permissions::{Actor, PermissionContext, Role, UserId};
 use ui::record::{RecordCheckout, RecordId, RecordOpenError, RecordOwners};
 
+mod feedback_native;
 #[cfg(test)]
 mod feedback_tests;
 pub mod messaging;
@@ -29,6 +30,8 @@ pub mod messaging;
 /// views live in, as one person on one device.
 pub struct InProcessApps {
     feedback: Option<tilo_desktop::feedback::PrivateFeedback>,
+    native_feedback: Option<Box<dyn feedback_native::Producer>>,
+    feedback_destination: Option<tilo_desktop::feedback::Destination>,
     store: Rc<dyn durable_store::DurableStore>,
     owners: RecordOwners,
     views: HashMap<String, Rc<InstanceViewStore>>,
@@ -78,6 +81,8 @@ impl InProcessApps {
     pub fn new(store: Rc<dyn durable_store::DurableStore>, device_id: &str, author: &str) -> Self {
         Self {
             feedback: None,
+            native_feedback: None,
+            feedback_destination: None,
             owners: RecordOwners::with_store(Rc::clone(&store)),
             store,
             views: HashMap::new(),
@@ -408,6 +413,7 @@ impl InProcessApps {
             )
         }));
         apps.native_broker_socket = Some(socket);
+        apps.feedback_destination = feedback_native::configured_destination(profile)?;
         apps.native_messaging_root = Some(profile.join("private-messages"));
         let registry = tilo_messaging::messaging_registry(&apps.author.0)
             .map_err(|_| LaunchError::BindingMismatch)?;
@@ -562,23 +568,127 @@ impl InProcessApps {
 
     /// Storage/transport wakes service the approved outbox, including while
     /// its private window is closed. Failures remain in the private status UI.
-    pub(crate) fn pump_feedback(&self) {
+    pub(crate) fn pump_feedback(&mut self) {
+        if let Some(mut delivery) = self.native_feedback.take() {
+            let result = delivery.pump(self);
+            if let Err(error) = result {
+                tracing::debug!(%error, "native feedback remains unavailable");
+            }
+            self.native_feedback = Some(delivery);
+        }
         if let Some(feedback) = &self.feedback {
             let _ = feedback.pump();
         }
     }
 
     pub(crate) fn feedback_deadline(&self) -> Option<ui::time::Instant> {
-        self.feedback
+        let private = self
+            .feedback
             .as_ref()
-            .and_then(tilo_desktop::feedback::PrivateFeedback::next_wake_deadline)
+            .and_then(tilo_desktop::feedback::PrivateFeedback::next_wake_deadline);
+        let native = self
+            .native_feedback
+            .as_ref()
+            .and_then(|_| ui::time::now().checked_add(ui::time::Duration::from_secs(2)));
+        private.into_iter().chain(native).min()
     }
+
+    /// Bind configured feedback to this session's already enrolled network.
+    /// Missing configuration leaves the private composer unconfigured.
+    pub(crate) fn bind_feedback_network(
+        &mut self,
+        network: std::sync::Arc<crate::shell::network::ShellNetwork>,
+    ) {
+        if self.native_feedback.is_some() || self.feedback.is_some() {
+            return;
+        }
+        let Some(destination) = self.feedback_destination.clone() else {
+            return;
+        };
+        match feedback_native::Delivery::new(network, destination, &self.author.0) {
+            Ok(delivery) => self.native_feedback = Some(Box::new(delivery)),
+            Err(error) => tracing::debug!(%error, "native feedback startup refused"),
+        }
+    }
+}
+
+/// Whether this process's session services — the collaboration broker and
+/// the identity service its in-process apps connect to — are listening yet.
+///
+/// The native session builds its desktop, and so mounts every hosted tab it
+/// restores (a Notes notebook, a Terminal), before it binds those services:
+/// the broker needs the desktop's chrome to start. A restored tab's one
+/// connection attempt then found no socket and the app stayed offline for
+/// the whole session: nothing it published reached the palette, search or an
+/// agent until the tab was reopened (TIL-759).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SessionServices {
+    /// No session in this process binds them (a test, a hosted host): a
+    /// missing socket is final.
+    NotHere,
+    /// The session will bind them shortly: a connection waits.
+    Starting,
+    /// Both are bound, or their start was attempted: a connection that
+    /// still fails is final.
+    Listening,
+}
+
+static SESSION_SERVICES: std::sync::OnceLock<tokio::sync::watch::Sender<SessionServices>> =
+    std::sync::OnceLock::new();
+
+fn session_services() -> &'static tokio::sync::watch::Sender<SessionServices> {
+    SESSION_SERVICES.get_or_init(|| tokio::sync::watch::channel(SessionServices::NotHere).0)
+}
+
+/// Say where this process's session services are; [`session_connector`]s
+/// waiting for them wake on the change.
+pub fn set_session_services(state: SessionServices) {
+    session_services().send_replace(state);
+}
+
+/// The most a hosted app's first connection waits for its session's
+/// services: inside the SDK's own 5 s bound on the whole connect.
+const SESSION_SERVICES_WAIT: std::time::Duration = std::time::Duration::from_secs(4);
+
+/// Connect to the session socket at `path`. A socket not there yet, while
+/// `services` says the session is still starting them, is waited for: until
+/// they listen (one retry, on the change — no polling) or `wait` ends.
+async fn connect_session_socket(
+    path: &std::path::Path,
+    services: &tokio::sync::watch::Sender<SessionServices>,
+    wait: std::time::Duration,
+) -> std::io::Result<std::os::unix::net::UnixStream> {
+    let mut changes = services.subscribe();
+    let error = match std::os::unix::net::UnixStream::connect(path) {
+        Ok(stream) => return Ok(stream),
+        Err(error) => error,
+    };
+    let not_bound_yet = matches!(
+        error.kind(),
+        std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+    );
+    let starting = *changes.borrow_and_update() == SessionServices::Starting;
+    if !not_bound_yet || !starting {
+        return Err(error);
+    }
+    let settled = tokio::time::timeout(
+        wait,
+        changes.wait_for(|state| *state != SessionServices::Starting),
+    )
+    .await
+    .is_ok_and(|changed| changed.is_ok());
+    if !settled {
+        return Err(error);
+    }
+    std::os::unix::net::UnixStream::connect(path)
 }
 
 /// A connection for `app` in `room` to the broker at `collab` and the
 /// identity service at `identity`, made as the launcher makes an app's: the
 /// session records the launch, the connection names the app and room, and
-/// the broker attests it against that record before the app joins.
+/// the broker attests it against that record before the app joins. A tab
+/// the session restores before it binds those services waits for them
+/// ([`SessionServices`]).
 pub fn session_connector(
     collab: std::path::PathBuf,
     identity: std::path::PathBuf,
@@ -588,12 +698,17 @@ pub fn session_connector(
     let (app, room) = (app.to_owned(), room.to_owned());
     ui::collaboration::HostSessionConnector::new(move |_route| async move {
         let failed = |error: std::io::Error| runtime_portal::NotAvailable::ConnectionFailed(error);
+        let services = session_services();
         crate::shell::launcher::register_in_process_launch(&app, &room);
-        let mut stream = std::os::unix::net::UnixStream::connect(&collab).map_err(failed)?;
+        let mut stream = connect_session_socket(&collab, services, SESSION_SERVICES_WAIT)
+            .await
+            .map_err(failed)?;
         launcher::services::write_collab_handoff(&mut stream, &app, &room).map_err(failed)?;
         stream.set_nonblocking(true).map_err(failed)?;
         let collaboration = tokio::net::UnixStream::from_std(stream).map_err(failed)?;
-        let mut identity = std::os::unix::net::UnixStream::connect(&identity).map_err(failed)?;
+        let mut identity = connect_session_socket(&identity, services, SESSION_SERVICES_WAIT)
+            .await
+            .map_err(failed)?;
         launcher::services::write_identity_handshake(&mut identity, &app, &room).map_err(failed)?;
         identity.set_nonblocking(true).map_err(failed)?;
         let identity = tokio::net::UnixStream::from_std(identity).map_err(failed)?;
@@ -614,6 +729,70 @@ mod tests {
 
     const ROOM: &str = "6a3f0c2e-0f1b-4c5d-9e8f-123456789abc";
     const TAB: u64 = 41;
+
+    fn session_socket_runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+    }
+
+    /// A tab the session restores before it binds its services connects
+    /// once they listen, woken by the change (TIL-759).
+    #[test]
+    fn a_hosted_tab_restored_before_the_session_binds_its_services_connects_once_they_listen() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("collab.sock");
+        let (services, _) = tokio::sync::watch::channel(SessionServices::Starting);
+        let runtime = session_socket_runtime();
+        let (connected, _listener) = runtime.block_on(async {
+            let bind = async {
+                tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+                let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+                services.send_replace(SessionServices::Listening);
+                listener
+            };
+            tokio::join!(
+                connect_session_socket(&path, &services, std::time::Duration::from_secs(4)),
+                bind
+            )
+        });
+        assert!(connected.is_ok(), "{connected:?}");
+    }
+
+    /// Where no session binds the services here, or once it has, a missing
+    /// socket fails at once; a session that never comes costs the bound.
+    #[test]
+    fn a_missing_session_socket_fails_without_waiting_unless_the_session_is_starting() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("absent.sock");
+        let runtime = session_socket_runtime();
+        for state in [SessionServices::NotHere, SessionServices::Listening] {
+            let (services, _) = tokio::sync::watch::channel(state);
+            let started = std::time::Instant::now();
+            let error = runtime
+                .block_on(connect_session_socket(
+                    &path,
+                    &services,
+                    std::time::Duration::from_secs(4),
+                ))
+                .unwrap_err();
+            assert_eq!(error.kind(), std::io::ErrorKind::NotFound, "{state:?}");
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(1),
+                "{state:?}"
+            );
+        }
+        let (services, _) = tokio::sync::watch::channel(SessionServices::Starting);
+        let error = runtime
+            .block_on(connect_session_socket(
+                &path,
+                &services,
+                std::time::Duration::from_millis(50),
+            ))
+            .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+    }
 
     fn mount_terminal(apps: &mut InProcessApps) -> ui::headless::FrameHarness {
         let component = apps

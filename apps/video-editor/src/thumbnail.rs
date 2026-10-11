@@ -64,10 +64,6 @@ const MAX_FRAMES_PER_SOURCE: usize = 96;
 
 /// Decode workers the editor's pipeline runs — and therefore the cap on live
 /// `GStreamer` pipelines.
-#[cfg_attr(
-    not(feature = "decode"),
-    allow(dead_code, reason = "only the decoder path starts workers")
-)]
 const MAX_WORKERS: usize = 2;
 
 /// How long [`ThumbnailCache::warm_blocking`] waits for the pipeline to settle
@@ -214,17 +210,34 @@ pub fn representative(palette: u8, w: u32, h: u32) -> Thumb {
 #[derive(Clone)]
 enum Slot {
     /// The pipeline has been asked for it (under this key) and has not
-    /// answered yet.
-    #[cfg_attr(
-        not(feature = "decode"),
-        allow(dead_code, reason = "only the decoder path asks for frames")
-    )]
+    /// answered yet. Only the decoder path asks for frames.
+    #[cfg(any(feature = "decode", test))]
     Pending(ThumbKey),
     /// A real decoded frame.
     Ready(Arc<Thumb>),
     /// The decode was attempted and produced nothing. **Terminal** — never
     /// requested again, and not pending.
     Failed,
+}
+
+impl Slot {
+    /// The key a decode is pending under, if one is.
+    fn pending_key(&self) -> Option<&ThumbKey> {
+        match self {
+            #[cfg(any(feature = "decode", test))]
+            Self::Pending(key) => Some(key),
+            _ => None,
+        }
+    }
+
+    /// The decoded frame, if the slot holds one.
+    fn ready(&self) -> Option<&Arc<Thumb>> {
+        if let Self::Ready(thumb) = self {
+            Some(thumb)
+        } else {
+            None
+        }
+    }
 }
 
 /// One source's frames, keyed by time bucket, plus the LRU stamps used to
@@ -321,7 +334,7 @@ impl ThumbnailCache {
         }
         for (id, f) in &self.frames {
             for (bucket, slot) in &f.slots {
-                if let Slot::Pending(key) = slot {
+                if let Some(key) = slot.pending_key() {
                     match self.service.peek(key) {
                         Some(state) if state.is_loading() => {}
                         state => settled.push((*id, *bucket, state)),
@@ -401,7 +414,7 @@ impl ThumbnailCache {
         }
         if let Some(f) = self.frames.get_mut(&id) {
             for slot in f.slots.values_mut() {
-                if let Slot::Pending(key) = slot {
+                if let Some(key) = slot.pending_key() {
                     self.service.cancel(key);
                     *slot = Slot::Failed;
                 }
@@ -593,14 +606,15 @@ impl ThumbnailCache {
             }
             let lo = want.saturating_sub(NEAR_BUCKETS);
             let hi = want.saturating_add(NEAR_BUCKETS);
-            let below = f.slots.range(lo..want).rev().find_map(|(b, s)| match s {
-                Slot::Ready(th) => Some((want - b, th)),
-                _ => None,
-            });
-            let above = f.slots.range(want..=hi).find_map(|(b, s)| match s {
-                Slot::Ready(th) => Some((b - want, th)),
-                _ => None,
-            });
+            let below = f
+                .slots
+                .range(lo..want)
+                .rev()
+                .find_map(|(b, s)| s.ready().map(|th| (want - b, th)));
+            let above = f
+                .slots
+                .range(want..=hi)
+                .find_map(|(b, s)| s.ready().map(|th| (b - want, th)));
             let nearest = match (below, above) {
                 (Some((db, tb)), Some((da, ta))) => Some(if db <= da { tb } else { ta }),
                 (Some((_, tb)), None) => Some(tb),
@@ -626,7 +640,7 @@ impl ThumbnailCache {
             || self
                 .frames
                 .values()
-                .any(|f| f.slots.values().any(|s| matches!(s, Slot::Pending(_))))
+                .any(|f| f.slots.values().any(|s| s.pending_key().is_some()))
     }
 
     /// Bound what one source keeps: drop the least-recently-looked-at settled
@@ -642,7 +656,7 @@ impl ThumbnailCache {
         let mut settled: Vec<u32> = f
             .slots
             .iter()
-            .filter(|(_, s)| !matches!(s, Slot::Pending(_)))
+            .filter(|(_, s)| s.pending_key().is_none())
             .map(|(b, _)| *b)
             .collect();
         if settled.len() > MAX_FRAMES_PER_SOURCE {

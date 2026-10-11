@@ -38,6 +38,9 @@ impl Routes {
     pub(super) fn remove(&mut self, ws: u64) {
         self.entries.remove(&ws);
     }
+    pub(super) fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
 }
 
 /// The connected relay session of the joined room on topic `ws`.

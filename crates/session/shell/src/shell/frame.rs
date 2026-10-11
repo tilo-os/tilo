@@ -29,7 +29,7 @@ use winit::keyboard::{Key, NamedKey};
 use crate::shell::build_tilo_overlay_host_with_chrome;
 use crate::shell::chrome_state::{Chrome, ChromeState};
 use crate::shell::foreign::ForeignSurfaceWidget;
-use crate::shell::overlay_host::ShellOverlayHost;
+use crate::shell::overlay_host::{ShellOverlayHost, overlay_part};
 use crate::shell::state::WorkspaceTree;
 
 use ui::backdrop::{BackdropFrame, BackdropRecording, BackdropRegion, RecordedBackdrop};
@@ -190,6 +190,69 @@ pub struct FrameLayers {
 /// Widest workspace layer, in scene pixels. Past this the strips keep their
 /// pan in the scene.
 const MAX_CANVAS_WIDTH: u32 = 16384;
+
+/// When a producer whose presenter composites layers draws the frame as
+/// layers ([`FramePaint::cache`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LayerPolicy {
+    /// Every frame the layers can express.
+    #[default]
+    Always,
+    /// Only while a strip pans, and [`PAN_LINGER_FRAMES`] frames after it
+    /// stops. A frame at rest keeps its screen-space damage, so typing or a
+    /// hover repaints what it changed, not a layer.
+    WhilePanning,
+}
+
+/// Frames a [`LayerPolicy::WhilePanning`] producer keeps drawing layers
+/// after the last strip pan moved, so a gesture that pauses for a frame
+/// does not leave the layers and come back.
+const PAN_LINGER_FRAMES: u32 = 4;
+
+/// What the presenter asks of strip pans.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct StripPanPresenter {
+    /// It reuses strip pixels, so pans land on whole pixels.
+    pixel_aligned: bool,
+    /// It composites strip pans from retained layers.
+    composites_layers: bool,
+}
+
+/// The strips' pans as the latest frame drew them, and how many frames ago
+/// one last moved.
+#[derive(Debug)]
+struct StripMotion {
+    offsets: Vec<(u64, f64)>,
+    still_frames: u32,
+}
+
+impl Default for StripMotion {
+    fn default() -> Self {
+        Self {
+            offsets: Vec::new(),
+            still_frames: PAN_LINGER_FRAMES,
+        }
+    }
+}
+
+impl StripMotion {
+    /// Note the pans of this frame; whether a strip that was already there
+    /// moved in the last [`PAN_LINGER_FRAMES`] frames.
+    fn note(&mut self, offsets: Vec<(u64, f64)>) -> bool {
+        let moved = offsets.iter().any(|(id, scroll)| {
+            self.offsets
+                .iter()
+                .any(|(seen, before)| seen == id && (scroll - before).abs() > f64::EPSILON)
+        });
+        self.still_frames = if moved {
+            0
+        } else {
+            self.still_frames.saturating_add(1)
+        };
+        self.offsets = offsets;
+        self.still_frames < PAN_LINGER_FRAMES
+    }
+}
 
 /// Layer composition is a Linux DRM capability; other presenters retain their dense path.
 fn separable_layer(scene: &Scene) -> bool {
@@ -663,6 +726,13 @@ pub struct FrameBuilder {
     next_scene_revision: u64,
     /// Capacity of this builder's actual presenter; absent for dense captures.
     retained_layer_width: Option<u32>,
+    /// Which frames that presenter gets as layers.
+    layer_policy: LayerPolicy,
+    /// What [`LayerPolicy::WhilePanning`] tells a pan by.
+    strip_motion: StripMotion,
+    /// What the presenter asks of strip pans
+    /// ([`Self::set_strip_pan_presenter`]): whole-pixel pans, and layers.
+    strip_pan_presenter: StripPanPresenter,
     /// HDR layers of the latest [`Self::paint`], until taken.
     painted_hdr_layers: Vec<crate::shell::hdr_surface::HdrLayer>,
     /// The backdrops the latest [`Self::paint`] drew floating surfaces over.
@@ -937,6 +1007,9 @@ impl FrameBuilder {
             last_produced_sections: None,
             next_scene_revision: 1,
             retained_layer_width: None,
+            layer_policy: LayerPolicy::default(),
+            strip_motion: StripMotion::default(),
+            strip_pan_presenter: StripPanPresenter::default(),
             painted_hdr_layers: Vec::new(),
             painted_backdrop: None,
             pointer_image: crate::compositor::cursor::PointerImage::default(),
@@ -1028,6 +1101,7 @@ impl FrameBuilder {
             self.scene_size = (sw, sh);
         }
         self.outputs = Some(outputs);
+        self.align_strip_pans();
         self.rebuild_layout_tree();
     }
 
@@ -1952,9 +2026,21 @@ impl FrameBuilder {
         let recording = self
             .hdr_layers_composited()
             .then(crate::shell::hdr_surface::HdrLayerRecording::begin);
-        let plan = (layered && !global_filter)
-            .then(|| self.strip_plan())
-            .flatten();
+        let panning = self.strip_motion.note(
+            self.host
+                .strip_scroll_offsets()
+                .into_iter()
+                .map(|(id, scroll, _)| (id, scroll))
+                .collect(),
+        );
+        let plan = (layered
+            && !global_filter
+            && match self.layer_policy {
+                LayerPolicy::Always => true,
+                LayerPolicy::WhilePanning => panning && self.lone_unmagnified_output(),
+            })
+        .then(|| self.strip_plan())
+        .flatten();
         let unbake = plan.as_ref().is_some_and(|plan| plan.unbake);
         let retained_scope = ui::retained_present::RetainedScene::begin(unbake);
         let foreign_recording = super::foreign_damage::Recording::begin();
@@ -1966,60 +2052,78 @@ impl FrameBuilder {
             &self.theme,
             &self.presence,
         );
-        for proxy in &self.floating_transfer_proxies {
-            proxy.draw(&mut sections.above_quick_settings);
-        }
-        for (_, surface) in &mut self.floating_overlays {
-            if surface.is_mapped() {
-                surface.draw(
-                    &mut sections.above_quick_settings,
-                    Affine::IDENTITY,
-                    &mut self.text_renderer,
-                    &self.theme,
-                    &self.presence,
-                );
+        // Each kind of client surface floating over the desktop is one
+        // damage part, there whether or not any is mapped: a popup opening
+        // or a floating window repainting repaints its own rect.
+        let desktop = Rect::new(0.0, 0.0, self.viewport.0, self.viewport.1);
+        let above = &mut sections.above_quick_settings;
+        overlay_part(above, "shell.floating-transfer", desktop, |scene| {
+            for proxy in &self.floating_transfer_proxies {
+                proxy.draw(scene);
             }
-        }
+            None
+        });
+        overlay_part(above, "shell.floating-windows", desktop, |scene| {
+            self.floating_overlays
+                .iter_mut()
+                .filter(|(_, surface)| surface.is_mapped())
+                .map(|(_, surface)| {
+                    surface.draw_bounded(
+                        scene,
+                        Affine::IDENTITY,
+                        &mut self.text_renderer,
+                        &self.theme,
+                        &self.presence,
+                    )
+                })
+                .collect()
+        });
         let mut fullscreen_on_top = None;
-        if let Some((_, surface)) = &mut self.fullscreen_overlay
-            && surface.is_mapped()
-        {
-            let draws_before = sections.above_quick_settings.encoding().draw_tags.len();
-            surface.draw(
-                &mut sections.above_quick_settings,
-                Affine::IDENTITY,
-                &mut self.text_renderer,
-                &self.theme,
-                &self.presence,
-            );
-            fullscreen_on_top = crate::shell::scanout_candidate::DrawnOnTop::last_in(
-                &sections.above_quick_settings,
-                draws_before,
-            );
-        }
-        for (_, surface) in &mut self.transient_overlays {
-            if surface.is_mapped() {
-                surface.draw(
-                    &mut sections.above_quick_settings,
-                    Affine::IDENTITY,
-                    &mut self.text_renderer,
-                    &self.theme,
-                    &self.presence,
-                );
+        overlay_part(above, "shell.fullscreen", desktop, |scene| {
+            let (_, surface) = self.fullscreen_overlay.as_mut()?;
+            if !surface.is_mapped() {
+                return None;
             }
-        }
-        if self.osk_active
-            && let Some(keyboard) = self.osk_overlay.as_mut()
-            && keyboard.is_mapped()
-        {
-            keyboard.draw(
-                &mut sections.above_quick_settings,
+            let draws_before = scene.encoding().draw_tags.len();
+            let bounds = surface.draw_bounded(
+                scene,
                 Affine::IDENTITY,
                 &mut self.text_renderer,
                 &self.theme,
                 &self.presence,
             );
-        }
+            fullscreen_on_top =
+                crate::shell::scanout_candidate::DrawnOnTop::last_in(scene, draws_before);
+            Some(vec![bounds?])
+        });
+        overlay_part(above, "shell.popups", desktop, |scene| {
+            self.transient_overlays
+                .iter_mut()
+                .filter(|(_, surface)| surface.is_mapped())
+                .map(|(_, surface)| {
+                    surface.draw_bounded(
+                        scene,
+                        Affine::IDENTITY,
+                        &mut self.text_renderer,
+                        &self.theme,
+                        &self.presence,
+                    )
+                })
+                .collect()
+        });
+        overlay_part(above, "shell.osk", desktop, |scene| {
+            let keyboard = self.osk_overlay.as_mut().filter(|_| self.osk_active)?;
+            if !keyboard.is_mapped() {
+                return None;
+            }
+            Some(vec![keyboard.draw_bounded(
+                scene,
+                Affine::IDENTITY,
+                &mut self.text_renderer,
+                &self.theme,
+                &self.presence,
+            )?])
+        });
         drop(retained_scope);
 
         let parts = OpaqueParts::of(&parts_recording.finish(), &sections);
@@ -2068,7 +2172,9 @@ impl FrameBuilder {
                 )
             })
             .flatten();
-        let damage_regions = self.with_backdrop_damage(damage_regions, &backdrop_surfaces);
+        let damage_regions = self
+            .with_backdrop_damage(damage_regions, &backdrop_surfaces)
+            .map(|regions| without_contained_regions(&regions));
         // A backdrop-dependent section is never independently composited.
         let separable = backdrop_surfaces.is_empty()
             && hdr_layers.is_empty()
@@ -2103,7 +2209,12 @@ impl FrameBuilder {
         let mut scene = Scene::new();
         scene.append(&sections.backdrop, None);
         match &strips {
-            Some(strips) => self.append_panned(&mut scene, &sections.workspace, strips),
+            Some(strips) => crate::shell::render::strip_layers::append_panned(
+                &mut scene,
+                &sections.workspace,
+                strips,
+                self.scene_size,
+            ),
             None => scene.append(&sections.workspace, None),
         }
         scene.append(&sections.workspace_overlays, None);
@@ -2199,7 +2310,8 @@ impl FrameBuilder {
             }
             _ => drawn,
         };
-        crate::shell::scanout_candidate::ScanoutCandidate::new(placed, scene)
+        let (surface, _) = self.fullscreen_overlay.as_ref()?;
+        crate::shell::scanout_candidate::ScanoutCandidate::new(*surface, placed, scene)
     }
 
     /// A floating surface shows a blur of what is below it, which can change
@@ -2319,6 +2431,56 @@ impl FrameBuilder {
         }
     }
 
+    /// Tell the producer what its presenter asks of strip pans: whole-pixel
+    /// pans (`pixel_aligned`, a CPU presenter), and frames as layers while
+    /// a strip pans (`composites_layers`, the DRM GPU presenter). Layers are
+    /// drawn only where the scene is the logical desktop unmagnified; there
+    /// the pans land on whole pixels too, so a pan moves strip pixels
+    /// without resampling them.
+    pub fn set_strip_pan_presenter(&mut self, pixel_aligned: bool, composites_layers: bool) {
+        self.strip_pan_presenter = StripPanPresenter {
+            pixel_aligned,
+            composites_layers,
+        };
+        if composites_layers {
+            self.set_layer_policy(LayerPolicy::WhilePanning);
+            // The presenter keeps layers of the output's size, never a
+            // canvas: no strip is too wide for it.
+            self.set_retained_layer_width(Some(u32::MAX));
+        } else {
+            self.set_retained_layer_width(None);
+        }
+        self.align_strip_pans();
+    }
+
+    /// Whole-pixel pans where the presenter reuses strip pixels as they are.
+    fn align_strip_pans(&mut self) {
+        let StripPanPresenter {
+            pixel_aligned,
+            composites_layers,
+        } = self.strip_pan_presenter;
+        let layered = composites_layers && self.lone_unmagnified_output();
+        self.host
+            .set_pixel_aligned_strip_pan(pixel_aligned || layered);
+    }
+
+    /// One display showing the logical desktop unmagnified: the scene a
+    /// layer-compositing presenter renders as a whole. Several displays each
+    /// render their own view of the scene, so they keep it.
+    fn lone_unmagnified_output(&self) -> bool {
+        self.outputs
+            .as_ref()
+            .is_none_or(|outputs| outputs.len() == 1 && output_scene::is_identity(outputs))
+    }
+
+    /// Which frames this producer's presenter gets as layers.
+    pub fn set_layer_policy(&mut self, policy: LayerPolicy) {
+        if self.layer_policy != policy {
+            self.layer_policy = policy;
+            self.last_produced_sections = None;
+        }
+    }
+
     /// A filter following the pointer (the magnifier, the crosshair) moves
     /// pixels or lines across the whole desktop: no frame under it is sparse.
     fn pointer_filter(&self) -> bool {
@@ -2366,7 +2528,13 @@ impl FrameBuilder {
             return None;
         }
         let screen_w = scene_px(self.scene_size.0).max(1);
-        let max_width = self.retained_layer_width?.min(MAX_CANVAS_WIDTH);
+        // A presenter that keeps the strips as they are on screen
+        // ([`LayerPolicy::WhilePanning`]) keeps no canvas texture, so the
+        // canvas may be as wide as the strip.
+        let max_width = match self.layer_policy {
+            LayerPolicy::Always => self.retained_layer_width?.min(MAX_CANVAS_WIDTH),
+            LayerPolicy::WhilePanning => self.retained_layer_width?,
+        };
         if screen_w > max_width {
             return None;
         }
@@ -2418,42 +2586,25 @@ impl FrameBuilder {
                 });
             }
         }
+        // Each pixel of the screen reads the canvas at one strip's pan.
+        // Where two strips' destinations meet (the docked wheel rides the
+        // active strip, and its rect reaches into the strip below), each
+        // would draw the other's windows at its own pan: those pans stay in
+        // the scene.
+        let overlapping = plan.strips.iter().enumerate().any(|(index, a)| {
+            plan.strips
+                .iter()
+                .skip(index.saturating_add(1))
+                .any(|b| strip_blits_overlap(a, b))
+        });
+        if overlapping {
+            return Some(StripPlan {
+                unbake: false,
+                width: screen_w,
+                strips: Vec::new(),
+            });
+        }
         Some(plan)
-    }
-
-    /// Append a workspace drawn in canvas coordinates as it appears on
-    /// screen: inside each panned strip read at the strip's pan, everywhere
-    /// else in place, as a presenter compositing the layers shows it.
-    fn append_panned(&self, scene: &mut Scene, workspace: &Scene, strips: &[StripBlit]) {
-        use vello::kurbo::Shape as _;
-        if strips.is_empty() {
-            scene.append(workspace, None);
-            return;
-        }
-        let dest = |strip: &StripBlit| {
-            Rect::new(
-                f64::from(strip.dest_x),
-                f64::from(strip.dest_y),
-                f64::from(strip.dest_x) + f64::from(strip.dest_w),
-                f64::from(strip.dest_y) + f64::from(strip.dest_h),
-            )
-        };
-        for strip in strips {
-            scene.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &dest(strip));
-            scene.append(
-                workspace,
-                Some(Affine::translate((-f64::from(strip.scroll_x), 0.0))),
-            );
-            scene.pop_layer();
-        }
-        let (w, h) = self.scene_size;
-        let mut rest = Rect::new(0.0, 0.0, w, h).to_path(0.1);
-        for strip in strips {
-            rest.extend(dest(strip).path_elements(0.1));
-        }
-        scene.push_clip_layer(Fill::EvenOdd, Affine::IDENTITY, &rest);
-        scene.append(workspace, None);
-        scene.pop_layer();
     }
 
     #[cfg(test)]
@@ -3065,10 +3216,6 @@ impl FrameBuilder {
     /// it can idle instead of burning a core on an unchanged scene.
     pub fn needs_animation_frame(&self) -> bool {
         self.animation_demand().any()
-    }
-
-    pub(crate) fn content_redrawing_leaves(&self) -> Vec<String> {
-        self.host.content_redrawing_leaves()
     }
 
     pub(crate) fn content_animating_leaves(&self) -> Vec<String> {
@@ -5541,6 +5688,7 @@ mod tests {
         let candidate = frame
             .scanout_candidate()
             .expect("the fullscreen client alone on top is a candidate");
+        assert_eq!(candidate.surface, FULLSCREEN);
         assert_eq!(candidate.origin, (0, 0));
         assert_eq!(candidate.size, SIZE);
         assert!(candidate.covers((0, 0), SIZE));
@@ -7985,6 +8133,43 @@ mod tests {
 #[cfg(test)]
 #[path = "frame_retained_tests.rs"]
 mod retained_tests;
+
+/// `regions` without any region another one contains (the first of two
+/// equal ones stays): the same pixels, rasterised once. A changed card's
+/// old and new bounds and the blurred surface on it often nest.
+fn without_contained_regions(regions: &[FineDamageRect]) -> Vec<FineDamageRect> {
+    let rect = |region: &FineDamageRect| {
+        Rect::new(
+            f64::from(region.x),
+            f64::from(region.y),
+            f64::from(region.x) + f64::from(region.width),
+            f64::from(region.y) + f64::from(region.height),
+        )
+    };
+    let contains = |outer: &FineDamageRect, inner: &FineDamageRect| {
+        rect(outer).union(rect(inner)) == rect(outer)
+    };
+    regions
+        .iter()
+        .enumerate()
+        .filter(|&(index, region)| {
+            !regions.iter().enumerate().any(|(other, outer)| {
+                other != index && contains(outer, region) && (outer != region || other < index)
+            })
+        })
+        .map(|(_, region)| *region)
+        .collect()
+}
+
+/// Whether the destinations of `a` and `b` share a pixel.
+fn strip_blits_overlap(a: &StripBlit, b: &StripBlit) -> bool {
+    let span = |start: u32, length: u32| (start, start.saturating_add(length));
+    let (ax0, ax1) = span(a.dest_x, a.dest_w);
+    let (ay0, ay1) = span(a.dest_y, a.dest_h);
+    let (bx0, bx1) = span(b.dest_x, b.dest_w);
+    let (by0, by1) = span(b.dest_y, b.dest_h);
+    ax0 < bx1 && bx0 < ax1 && ay0 < by1 && by0 < ay1
+}
 
 /// A non-negative scene coordinate as whole pixels, rounded down.
 fn scene_px(value: f64) -> u32 {

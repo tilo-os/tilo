@@ -31,7 +31,7 @@ use ui::widget::{
     NavSection, NavShell, SidebarPlacement, Widget,
 };
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Affine, Point, Rect, Vec2};
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -256,7 +256,7 @@ impl Core {
             return;
         }
         self.selection = sel;
-        self.list.scroll = 0.0;
+        self.list.scroller.set_offset(Vec2::ZERO);
         self.recompute_visible();
     }
 

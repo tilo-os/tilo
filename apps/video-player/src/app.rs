@@ -3183,6 +3183,24 @@ mod tests {
                 .expect("the formats control is addressable");
             assert!(framed.focus_synthetic_accessibility(&[index]));
             assert!(framed.formats_focused);
+            assert!(!framed.open_focused, "Formats focus excludes Open focus");
+            assert!(
+                framed.focus_synthetic_accessibility(&[0]),
+                "the original Open accessibility target keeps its index"
+            );
+            assert!(
+                framed.open_focused && !framed.formats_focused,
+                "returning to Open clears Formats focus"
+            );
+            let tree = framed
+                .accessibility()
+                .expect("focused player accessibility");
+            assert_eq!(
+                tree.children[0].action_target.as_deref(),
+                Some("video-player.open")
+            );
+            assert!(tree.children[0].state.focused);
+            assert!(!tree.children[index].state.focused);
             assert_eq!(
                 framed.synthetic_accessibility_rect(&[index]),
                 Some(framed.status_action_rect)
