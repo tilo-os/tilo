@@ -8,6 +8,213 @@ use tilo_contact_directory::ContactDirectory;
 use ui::framework::testing::TestApp;
 use ui::tilo_resource::Id;
 
+#[derive(Clone)]
+struct GroupHostFixture {
+    revoked: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    pending: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    wakes: std::sync::Arc<std::sync::Mutex<Vec<std::task::Waker>>>,
+    group_writes: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+impl GroupHostFixture {
+    fn new(pending: bool) -> std::sync::Arc<Self> {
+        std::sync::Arc::new(Self {
+            revoked: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            pending: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(pending)),
+            wakes: std::sync::Arc::default(),
+            group_writes: std::sync::Arc::default(),
+        })
+    }
+    fn release(&self) {
+        self.pending
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        for wake in self.wakes.lock().expect("fixture group wakers").drain(..) {
+            wake.wake();
+        }
+    }
+}
+impl tilo_messaging::HistoryHost for GroupHostFixture {
+    fn read(
+        &self,
+        _: tilo_contact_directory::routing::Route,
+        _: usize,
+    ) -> tilo_messaging::HistoryFuture {
+        Box::pin(std::future::ready(Err(
+            tilo_messaging::HistoryError::Unavailable,
+        )))
+    }
+}
+impl tilo_messaging::MessagingHost for GroupHostFixture {
+    fn account_state(
+        &self,
+        account: &tilo_messaging::ServiceAccount,
+    ) -> tilo_messaging::AccountState {
+        if !self.revoked.load(std::sync::atomic::Ordering::SeqCst)
+            && account == &tilo_messaging::ServiceAccount::new("whatsapp", "fixture-whatsapp")
+        {
+            tilo_messaging::AccountState::Ready
+        } else {
+            tilo_messaging::AccountState::Locked
+        }
+    }
+    fn groups(
+        &self,
+        account: &tilo_messaging::ServiceAccount,
+    ) -> Option<tilo_messaging::GroupClient> {
+        Some(tilo_messaging::GroupClient::new(
+            "11".repeat(32),
+            account.clone(),
+            std::sync::Arc::new(self.clone()),
+        ))
+    }
+    fn send(&self, _: tilo_messaging::SendRequest) -> tilo_messaging::SendFuture {
+        Box::pin(std::future::ready(Err(
+            tilo_messaging::SendError::Unavailable,
+        )))
+    }
+}
+impl tilo_messaging::GroupHost for GroupHostFixture {
+    fn send(&self, request: tilo_messaging::GroupSendRequest) -> tilo_messaging::GroupActionFuture {
+        self.group_writes
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Box::pin(std::future::ready(Ok(tilo_messaging::GroupReceipt {
+            account: tilo_messaging::ServiceAccount::new("whatsapp", "fixture-whatsapp"),
+            group: request.group,
+            operation: request.operation,
+        })))
+    }
+    fn change(
+        &self,
+        request: tilo_messaging::GroupChangeRequest,
+    ) -> tilo_messaging::GroupActionFuture {
+        self.group_writes
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Box::pin(std::future::ready(Ok(tilo_messaging::GroupReceipt {
+            account: tilo_messaging::ServiceAccount::new("whatsapp", "fixture-whatsapp"),
+            group: request.group,
+            operation: request.operation,
+        })))
+    }
+    fn history(&self, group: String) -> tilo_messaging::GroupHistoryFuture {
+        Box::pin(std::future::ready(Ok(tilo_messaging::GroupHistory {
+            account: tilo_messaging::ServiceAccount::new("whatsapp", "fixture-whatsapp"),
+            group,
+            messages: vec![tilo_messaging::GroupMessage {
+                author: "456@lid".into(),
+                message: tilo_messaging::Message {
+                    id: "fixture-stanza".into(),
+                    text: "private group message fixture".to_owned().into(),
+                    timestamp_ms: 1000,
+                    direction: tilo_messaging::Direction::Incoming,
+                    delivery: None,
+                },
+            }],
+        })))
+    }
+
+    fn list(&self) -> tilo_messaging::GroupsFuture {
+        Box::pin(std::future::ready(Ok(tilo_messaging::GroupList {
+            account: tilo_messaging::ServiceAccount::new("whatsapp", "fixture-whatsapp"),
+            groups: vec![tilo_messaging::GroupSummary {
+                id: "123@g.us".into(),
+                title: "Private group fixture".into(),
+            }],
+        })))
+    }
+    fn read(&self, group: String) -> tilo_messaging::MembershipFuture {
+        let host = self.clone();
+        Box::pin(std::future::poll_fn(move |cx| {
+            if host.pending.load(std::sync::atomic::Ordering::SeqCst) {
+                host.wakes
+                    .lock()
+                    .expect("fixture group wakers")
+                    .push(cx.waker().clone());
+                return std::task::Poll::Pending;
+            }
+            std::task::Poll::Ready(Ok(tilo_messaging::GroupMembership {
+                account: tilo_messaging::ServiceAccount::new("whatsapp", "fixture-whatsapp"),
+                group: tilo_messaging::GroupSummary {
+                    id: group.clone(),
+                    title: "Private group fixture".into(),
+                },
+                members: vec![tilo_messaging::GroupMember {
+                    address: "456@lid".into(),
+                    role: tilo_messaging::GroupRole::Admin,
+                }],
+                announcement: false,
+                self_member: "456@lid".into(),
+                review: "fixture-review".into(),
+            }))
+        }))
+    }
+}
+#[test]
+fn private_group_membership_uses_registered_actions_and_never_mutates_workspace_state() {
+    let host = GroupHostFixture::new(false);
+    let revoked = host.revoked.clone();
+    let mut app = group_fixture(host);
+    app.settle();
+    let before = app.read_document(|doc| doc.clone().save());
+    assert!(matches!(
+        app.effect(&MessagesEffect::ListGroups {
+            service: "whatsapp".into(),
+            account: "fixture-whatsapp".into()
+        }),
+        Err(ui::tilo_actions::DoorError::ConfirmationRequired)
+    ));
+    let list = app
+        .effect_confirmed(&MessagesEffect::ListGroups {
+            service: "whatsapp".into(),
+            account: "fixture-whatsapp".into(),
+        })
+        .expect("registered group listing");
+    assert_eq!(
+        list.value.expect("group list value")["groups"][0]["id"],
+        "123@g.us"
+    );
+    let members = app
+        .effect_confirmed(&MessagesEffect::ReadGroupMembership {
+            service: "whatsapp".into(),
+            account: "fixture-whatsapp".into(),
+            group: "123@g.us".into(),
+        })
+        .expect("registered membership query");
+    assert_eq!(
+        members.value.expect("membership value")["members"][0]["address"],
+        "456@lid"
+    );
+    app.settle();
+    assert!(
+        app.harness()
+            .a11y_nodes()
+            .iter()
+            .any(|(_, node)| node.label() == Some("456@lid"))
+    );
+    assert_eq!(app.read_document(|doc| doc.clone().save()), before);
+    assert!(
+        app.effect_confirmed(&MessagesEffect::ListGroups {
+            service: "signal".into(),
+            account: "fixture-whatsapp".into()
+        })
+        .is_err()
+    );
+    revoked.store(true, std::sync::atomic::Ordering::SeqCst);
+    assert!(
+        app.effect_confirmed(&MessagesEffect::ReadGroupMembership {
+            service: "whatsapp".into(),
+            account: "fixture-whatsapp".into(),
+            group: "123@g.us".into()
+        })
+        .is_err()
+    );
+    app.settle();
+    assert!(
+        !app.harness()
+            .a11y_nodes()
+            .iter()
+            .any(|(_, node)| node.label() == Some("456@lid"))
+    );
+}
+
 const PERSON: &str = "00000000-0000-4000-8000-000000000001";
 
 #[test]
@@ -424,4 +631,163 @@ pub(crate) fn live_messages_with_service_and_scope<T: std::any::Any>(
     })
     .expect("open exact live person");
     app
+}
+
+fn group_fixture(host: std::sync::Arc<GroupHostFixture>) -> TestApp<MessagesShell> {
+    let client = tilo_messaging::MessagingClient::new("11".repeat(32), host);
+    let registry =
+        tilo_messaging::messaging_registry(&"11".repeat(32)).expect("native registry fixture");
+    registry
+        .register(
+            tilo_messaging::ServiceAccount::new("whatsapp", "fixture-whatsapp"),
+            client,
+        )
+        .expect("register exact group account");
+    let client = registry.client();
+    let mut owner =
+        TestApp::<AccountOwnerFixture>::for_person(&"11".repeat(32)).expect("group account owner");
+    let accounts = owner
+        .shared_person::<tilo_messaging::PersonAccounts>()
+        .expect("group account record");
+    accounts
+        .invoke(&tilo_messaging::PersonAccounts::SAVE_ACCOUNT.with((
+            "fixture-whatsapp".into(),
+            "whatsapp".into(),
+            "Personal WhatsApp".into(),
+            serde_json::json!({}),
+            true,
+            0,
+        )))
+        .expect("controlled WhatsApp metadata");
+    let mut app = TestApp::<MessagesShell>::for_person_with_lent(&"11".repeat(32), client)
+        .expect("private Messages fixture");
+    let linked = app
+        .shared_person::<tilo_messaging::PersonAccounts>()
+        .expect("read-only account metadata");
+    linked
+        .record()
+        .merge_peer_document(
+            accounts
+                .record()
+                .document()
+                .expect("account owner document"),
+        )
+        .expect("existing account sync path");
+    app.settle();
+    app
+}
+
+#[test]
+fn stale_group_membership_result_cannot_clear_newer_account_group_view() {
+    let host = GroupHostFixture::new(true);
+    let mut app = group_fixture(host.clone());
+    let pending = app
+        .start_effect(&MessagesEffect::ReadGroupMembership {
+            service: "whatsapp".into(),
+            account: "fixture-whatsapp".into(),
+            group: "123@g.us".into(),
+        })
+        .expect("pending membership read");
+    app.effect_confirmed(&MessagesEffect::ListGroups {
+        service: "whatsapp".into(),
+        account: "fixture-whatsapp".into(),
+    })
+    .expect("newer group listing");
+    host.release();
+    assert!(
+        app.harness()
+            .wait_until(ui::time::Duration::from_secs(5), |harness| harness
+                .job_updates(pending)
+                .iter()
+                .any(ui::tilo_actions::InvocationUpdate::is_terminal)),
+        "the superseded read must complete"
+    );
+    app.settle();
+    let nodes = app.harness().a11y_nodes();
+    assert!(
+        nodes
+            .iter()
+            .any(|(_, node)| node.label() == Some("Private group fixture"))
+    );
+    assert!(
+        !nodes
+            .iter()
+            .any(|(_, node)| node.label() == Some("456@lid"))
+    );
+}
+
+#[test]
+fn group_text_and_membership_changes_require_confirmation_and_current_private_selection() {
+    let host = GroupHostFixture::new(false);
+    let writes = host.group_writes.clone();
+    let revoked = host.revoked.clone();
+    let mut app = group_fixture(host);
+    app.settle();
+    let before = app.read_document(|doc| doc.clone().save());
+    let membership = MessagesEffect::ReadGroupMembership {
+        service: "whatsapp".into(),
+        account: "fixture-whatsapp".into(),
+        group: "123@g.us".into(),
+    };
+    let page = app
+        .effect_confirmed(&membership)
+        .expect("membership")
+        .value
+        .expect("review projection");
+    assert_eq!(page["review"], "fixture-review");
+    let history = MessagesEffect::ReadGroupHistory {
+        service: "whatsapp".into(),
+        account: "fixture-whatsapp".into(),
+        group: "123@g.us".into(),
+    };
+    assert!(matches!(
+        app.effect(&history),
+        Err(ui::tilo_actions::DoorError::ConfirmationRequired)
+    ));
+    assert_eq!(
+        app.effect_confirmed(&history)
+            .expect("private history")
+            .value
+            .expect("history")["messages"][0]["text"],
+        "private group message fixture"
+    );
+    let send = MessagesEffect::SendGroupText {
+        service: "whatsapp".into(),
+        account: "fixture-whatsapp".into(),
+        group: "123@g.us".into(),
+        review: "fixture-review".into(),
+        operation: uuid::Uuid::new_v4().to_string(),
+        text: "outgoing private fixture".into(),
+    };
+    assert!(matches!(
+        app.effect(&send),
+        Err(ui::tilo_actions::DoorError::ConfirmationRequired)
+    ));
+    assert_eq!(writes.load(std::sync::atomic::Ordering::SeqCst), 0);
+    app.effect_confirmed(&send).expect("controlled group send");
+    assert_eq!(writes.load(std::sync::atomic::Ordering::SeqCst), 1);
+    let leave = MessagesEffect::LeaveGroup {
+        service: "whatsapp".into(),
+        account: "fixture-whatsapp".into(),
+        group: "123@g.us".into(),
+        review: "fixture-review".into(),
+        operation: uuid::Uuid::new_v4().to_string(),
+    };
+    assert!(matches!(
+        app.effect(&leave),
+        Err(ui::tilo_actions::DoorError::ConfirmationRequired)
+    ));
+    app.effect_confirmed(&leave)
+        .expect("controlled group leave");
+    assert_eq!(writes.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert!(
+        app.effect_confirmed(&send).is_err(),
+        "closing membership invalidates old controls"
+    );
+    app.effect_confirmed(&membership).expect("new review");
+    revoked.store(true, std::sync::atomic::Ordering::SeqCst);
+    assert!(app.effect_confirmed(&send).is_err());
+    assert_eq!(writes.load(std::sync::atomic::Ordering::SeqCst), 2);
+    app.settle();
+    assert_eq!(app.read_document(|doc| doc.clone().save()), before);
 }
