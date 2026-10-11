@@ -385,11 +385,11 @@ fn note_idle_turn(state: &Mutex<State>) {
         .store
         .root()
         .to_path_buf();
-    *idle_turns()
+    let mut turns = idle_turns()
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .entry(root)
-        .or_default() += 1;
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let count = turns.entry(root).or_default();
+    *count = count.saturating_add(1);
 }
 
 #[expect(
@@ -1239,8 +1239,12 @@ mod tests {
         receipt(
             owner
                 .read(1, move |state| {
-                    while let Step::More = state.capture_replay(&authority)? {}
-                    Ok(())
+                    loop {
+                        let step = state.capture_replay(&authority)?;
+                        if matches!(step, Step::Done(_)) {
+                            return Ok(());
+                        }
+                    }
                 })
                 .unwrap(),
         )
