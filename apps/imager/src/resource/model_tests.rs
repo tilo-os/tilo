@@ -197,12 +197,9 @@ fn an_agents_changes_render_as_the_apps_sentences() {
         ("lab01", true)
     );
 
-    let catalogue = tilo_history::Catalogue::new("en-US", &[LOCALES[0].1]);
-    let reader = tilo_history::Reader::new("en-US").with_app(&catalogue);
     let entries: Vec<_> = app
-        .versions()
+        .history()
         .into_iter()
-        .filter_map(|version| version.context)
         .filter(|entry| {
             entry
                 .invoker
@@ -210,7 +207,7 @@ fn an_agents_changes_render_as_the_apps_sentences() {
                 .is_some_and(|invoker| invoker.actor == "agent:claude")
         })
         .collect();
-    let sentences: Vec<String> = entries.iter().map(|entry| reader.sentence(entry)).collect();
+    let sentences = app.sentences(&entries);
     assert_eq!(
         sentences,
         [
