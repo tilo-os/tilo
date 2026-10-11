@@ -35,8 +35,6 @@ use durable_store::{DurableStore, StorageKey};
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 
-mod native_file;
-pub use native_file::{FileHistoryReader, InitialFileHistory};
 pub mod person;
 pub mod transfer;
 
@@ -1305,7 +1303,6 @@ pub struct RecordSet {
     // Retained from the private native construction scope; weakly borrows the
     // one actual worker after construction ends. Never a positive authority.
     native_initial: Option<crate::collaboration::native_initial::InitialReadBridge>,
-    file_mode_selected: bool,
     // Drop after the writers and reservations above. Temporary profiles must
     // outlive asynchronous flushes and recovery handles, not just their host.
     _profile_lifetime: Option<std::rc::Rc<dyn std::any::Any>>,
@@ -1372,7 +1369,6 @@ impl RecordSet {
             pending: HashMap::new(),
             next_reservation: 0,
             native_initial: crate::collaboration::native_initial::capture_bridge(),
-            file_mode_selected: false,
             _profile_lifetime: None,
         }
     }
@@ -1398,7 +1394,6 @@ impl RecordSet {
             pending: HashMap::new(),
             next_reservation: 0,
             native_initial: None,
-            file_mode_selected: false,
             _profile_lifetime: None,
         }
     }
@@ -2389,7 +2384,6 @@ impl RecordOwners {
             native_initial: (joins_construction && self.portable.is_none())
                 .then(crate::collaboration::native_initial::capture_bridge)
                 .flatten(),
-            file_mode_selected: false,
             _profile_lifetime: self.profile_lifetime.clone(),
         });
         if let Some(cache) = &self.portable {

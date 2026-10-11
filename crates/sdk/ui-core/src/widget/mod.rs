@@ -2946,15 +2946,8 @@ pub mod floating_surface;
 pub use context_menu::{ContextMenu, MenuButton, MenuItem};
 pub mod context_menu_area;
 pub use context_menu_area::{ContextMenuArea, MenuEntry};
-pub mod data_table;
-mod virtual_table_semantics;
-pub use virtual_table_semantics::{
-    TableSemanticCell, TableSemanticColumn, TableSemanticControl, TableSemanticRow,
-    VirtualTableSemantics,
-};
-mod virtual_list_semantics;
-pub use virtual_list_semantics::{ListSemanticRow, VirtualListSemantics};
 pub(crate) mod block_editor_table;
+pub mod data_table;
 pub mod table {
     pub use super::block_editor_table::*;
 }
@@ -3134,15 +3127,6 @@ pub use list_row::{
     ControlRow, ListRow, ListRowFace, RowAction, RowLeading, RowStatus, RowValue, SwipeAction,
     badge_column_width,
 };
-pub mod keyframe;
-pub use keyframe::{KeyframeFace, KeyframeState};
-pub mod disclosure_header;
-pub use disclosure_header::DisclosureHeaderFace;
-pub mod synthetic_focus;
-pub use synthetic_focus::{
-    adjacent_semantic_target, mark_semantic_focus, paint_semantic_focus, recover_semantic_focus,
-    semantic_focus_order, semantic_target_at_path, semantic_target_bounds,
-};
 pub mod toggle_group;
 pub use toggle_group::{
     Segment, SegmentedFace, SegmentedStyle, SegmentedTouch, SegmentedTouchGroup,
@@ -3211,14 +3195,10 @@ pub mod conflict_banner;
 pub mod conflict_picker;
 pub mod merge_strategy;
 
-// Threshold-identity invite ceremony plus a QR widget; state machine entry
-// point is `identity_flow/mod.rs`.
-pub mod identity_flow;
 pub mod qr;
 pub mod resource_actions;
 pub use conflict_banner::ConflictBanner;
 pub use conflict_picker::{ConflictPicker, PickerOutcome};
-pub use identity_flow::{IdentityFlow, IdentityFlowScreen, ScreenOutcome};
 pub use merge_strategy::{
     Alternative, ConcurrentOp, ConflictKind, ConflictResolver, MergeStrategy, surface_banner,
 };

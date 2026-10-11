@@ -6,7 +6,7 @@
 
 [apps.agent]
 D1 = 3
-D2 = 15
+D2 = 9
 
 [apps.backups]
 D1 = 1
@@ -186,7 +186,7 @@ R1 = 18
 W3 = 11
 
 [sdk.tilo-ui]
-R1 = 261
-W1 = 18
+R1 = 254
+W1 = 16
 W2 = 2
 W3 = 61

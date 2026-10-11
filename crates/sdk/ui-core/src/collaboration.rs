@@ -103,11 +103,6 @@ mod portable_committed {
 }
 pub use history::{DocumentHistory, HISTORY_PAGE_SIZE, HISTORY_PREFETCH_MARGIN};
 
-#[cfg(any(test, feature = "test-support"))]
-mod loopback;
-#[cfg(any(test, feature = "test-support"))]
-pub use loopback::{LoopbackPeer, LoopbackTransport};
-
 /// Reserved `invokePublishedAction.peerId` meaning "the application
 /// connection making this request". Live broker peer ids are allocated from
 /// zero upward; the broker never assigns this sentinel.
