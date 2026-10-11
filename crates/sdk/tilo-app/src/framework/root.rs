@@ -423,6 +423,11 @@ impl<R: Resource> ResourceRoot<R> {
         RootWidget::boxed(Box::new(self))
     }
 
+    /// The root as the widget a past version's preview draws.
+    pub(crate) fn into_root_widget(self) -> RootWidget {
+        RootWidget::new(Box::new(self))
+    }
+
     pub(crate) fn live(&self) -> &Live<R> {
         &self.live
     }
@@ -2268,17 +2273,18 @@ pub(crate) struct Unopened {
 }
 
 impl Unopened {
-    /// The window of a record that does not read as `R`. Only this
-    /// constructor knows `R`; the widget itself is the same for every
-    /// resource type.
-    pub(crate) fn new<R: Resource>(
+    /// The window of a record that does not read as the resource of
+    /// `kind` and `label`, whose actions are `declarations`.
+    pub(crate) fn new(
         title: &'static str,
         icon: IconDescriptor,
+        (kind, label): (&'static str, &'static str),
+        declarations: &[tilo_resource::Declaration],
         reason: String,
     ) -> Self {
-        let mut resource = tilo_actions::Resource::new(R::KIND, R::KIND, R::LABEL);
-        for decl in R::declarations() {
-            resource = resource.with_action(tilo_resource::declaration_spec(&decl));
+        let mut resource = tilo_actions::Resource::new(kind, kind, label);
+        for decl in declarations {
+            resource = resource.with_action(tilo_resource::declaration_spec(decl));
         }
         withhold_document_actions(&mut resource, &reason);
         Self {
