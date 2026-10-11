@@ -179,6 +179,7 @@ pub(super) struct ActionRuntime {
     pub(super) last_control_availability: Option<(ResourceCacheKey, u64)>,
     pub(super) local_history_status: Option<(bool, bool, bool)>,
     pub(super) last_published_actions: Option<Vec<tilo_actions::ActionDescriptor>>,
+    pub(super) action_surface_retry: Option<super::ActionSurfaceRetry>,
     #[cfg(test)]
     pub(super) action_surface_publication_attempts: usize,
     /// Opaque, revision-bound continuation state for the broker directory.
@@ -250,6 +251,7 @@ impl ActionRuntime {
             last_control_availability: None,
             local_history_status: None,
             last_published_actions: None,
+            action_surface_retry: None,
             #[cfg(test)]
             action_surface_publication_attempts: 0,
             action_directory_cursors: std::collections::HashMap::new(),

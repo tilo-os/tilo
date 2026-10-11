@@ -4157,6 +4157,11 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             request_primary_redraw();
         }
 
+        // A bound surface that was withdrawn because its authority could not
+        // be observed retries on its own capped deadline. Publication is
+        // model-only, so it neither fabricates a redraw nor mutates the app.
+        app.service_action_surface_retry();
+
         let scheduled_deadline = crate::close_admission::wake_deadline(
             app.root_widget
                 .next_wake_deadline()
@@ -4300,6 +4305,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     .then(|| crate::time::now() + Duration::from_millis(50)),
             )
             .chain(action_authority_wake_deadline(&self.app))
+            .chain(self.app.action_surface_retry_deadline())
             .min();
         match deadline {
             Some(deadline) => event_loop.set_control_flow(ControlFlow::WaitUntil(deadline)),

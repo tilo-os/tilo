@@ -220,9 +220,11 @@ impl super::App {
             // the (skipped) sync; the publication below must not reuse it.
             self.invalidate_widget_resource_cache();
         }
-        if always_refresh
-            || self.actions.hosted.publication.is_none()
-            || self.hosted_publication_stamp() != self.actions.hosted.publication
+        let publication_retry_waiting = self.action_surface_retry_blocks_publication();
+        if !publication_retry_waiting
+            && (always_refresh
+                || self.actions.hosted.publication.is_none()
+                || self.hosted_publication_stamp() != self.actions.hosted.publication)
         {
             report.published = true;
             self.publish_action_surface();
@@ -274,6 +276,9 @@ impl super::App {
         let current = HostedAuthorityWitness { app, owner };
         let changed = self.actions.hosted.authority.as_ref() != Some(&current);
         self.actions.hosted.authority = Some(current);
+        if changed {
+            self.rearm_action_surface_retry();
+        }
         changed
     }
 

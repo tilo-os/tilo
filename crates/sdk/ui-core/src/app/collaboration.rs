@@ -585,8 +585,10 @@ impl App {
         // full-tree fallback. This runs independently of queued requests and
         // keeps unchanged idle passes free of another resource survey.
         if self.collaboration.manager.is_connected()
-            && self.try_action_directory_revision().is_ok()
+            && !model_refresh
             && self.actions.action_directory_snapshot.is_none()
+            && !self.action_surface_retry_blocks_publication()
+            && self.try_action_directory_revision().is_ok()
         {
             self.publish_action_surface_after_refresh();
         }
@@ -624,7 +626,15 @@ impl App {
         if refused_surface {
             self.actions.last_published_actions = None;
         }
-        if action_surface_may_have_changed || action_surface_needs_publication || refused_surface {
+        if action_surface_may_have_changed || refused_surface {
+            self.rearm_action_surface_retry();
+        }
+        if !model_refresh
+            && (action_surface_may_have_changed
+                || action_surface_needs_publication
+                || refused_surface)
+            && !self.action_surface_retry_blocks_publication()
+        {
             // The normal idle pump also repairs invalidation from a later
             // model sync or a presence-only batch. Neither necessarily brings
             // another action event after a terminal operation was published.
@@ -681,6 +691,10 @@ impl App {
             "collaboration connection changed"
         );
         if state.is_ready() {
+            // A real transport transition starts a fresh bounded publication
+            // episode, including any empty withdrawal that was not accepted
+            // by the previous connection.
+            self.rearm_action_surface_retry();
             // Announcements made while connecting were refused; repeat the
             // current one on the acknowledged route.
             if let Some(scope) = self.presence.broadcast_scope.clone() {

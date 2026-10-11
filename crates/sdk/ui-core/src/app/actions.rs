@@ -3,6 +3,18 @@
 // Kept as an `App` implementation so custom widgets and built-in controls
 // share one authoritative action/resource route.
 
+const ACTION_SURFACE_RETRY_INITIAL: std::time::Duration = std::time::Duration::from_millis(25);
+const ACTION_SURFACE_RETRY_MAX: std::time::Duration = std::time::Duration::from_secs(1);
+const ACTION_SURFACE_RETRY_ATTEMPTS: u8 = 8;
+
+#[derive(Clone, Copy)]
+pub(super) struct ActionSurfaceRetry {
+    pub(super) deadline: Option<crate::time::Instant>,
+    delay: std::time::Duration,
+    attempts: u8,
+    pub(super) withdrawal_pending: bool,
+}
+
 #[derive(Clone, Copy)]
 struct ResourceInvocation<'a> {
     address: &'a tilo_actions::ActionAddress,
@@ -368,6 +380,19 @@ impl App {
         Vec<tilo_actions::Resource>,
         Vec<crate::bound_dispatch::BoundResourceSnapshot>,
     ) {
+        self.try_collect_resources_with_bound_declarations()
+            .unwrap_or_default()
+    }
+
+    fn try_collect_resources_with_bound_declarations(
+        &self,
+    ) -> Result<
+        (
+            Vec<tilo_actions::Resource>,
+            Vec<crate::bound_dispatch::BoundResourceSnapshot>,
+        ),
+        String,
+    > {
         let _entry = self.enter_wake_scope();
         let key = self.ensure_resource_cache();
         let mut resources = self
@@ -383,8 +408,7 @@ impl App {
             &self.state.doc,
             &self.actions.bound_resource_cache,
             self.actions.resource_generation.get(),
-        )
-        .unwrap_or_default();
+        )?;
         resources.extend(
             snapshots
                 .iter()
@@ -398,7 +422,7 @@ impl App {
         ) {
             resources.extend(legacy);
         }
-        (resources, snapshots)
+        Ok((resources, snapshots))
     }
 
     /// Audit every retained control binding against the fresh resource tree.
@@ -561,6 +585,10 @@ impl App {
     /// Transport-only projection. Each component is validated with its own
     /// registry before its domain resource is assigned an opaque publication alias.
     fn publication_resources(&mut self) -> Vec<tilo_actions::Resource> {
+        self.try_publication_resources().unwrap_or_default()
+    }
+
+    fn try_publication_resources(&mut self) -> Result<Vec<tilo_actions::Resource>, String> {
         fn remove_reserved(mut resource: tilo_actions::Resource) -> Option<tilo_actions::Resource> {
             if resource
                 .id
@@ -594,8 +622,7 @@ impl App {
             &self.state.doc,
             &self.actions.bound_resource_cache,
             self.actions.resource_generation.get(),
-        )
-        .unwrap_or_default();
+        )?;
         for component in components {
             if self.require_bound_broker_route(&component.binding).is_err() {
                 continue;
@@ -652,7 +679,122 @@ impl App {
                 resources.push(edit);
             }
         }
-        resources
+        Ok(resources)
+    }
+
+    /// Withdraw an unprovable surface immediately, while leaving publication
+    /// unsettled. A bounded backoff window retries fresh discovery without a
+    /// redraw or busy wake loop; after it, only a real source event retries.
+    fn withdraw_unobservable_bound_surface(&mut self, app_id: String) {
+        let published = self.actions.last_published_actions.take();
+        self.actions.action_directory_snapshot = None;
+        self.actions.action_directory_stamp = None;
+        self.actions.action_directory_cursors.clear();
+        // The authority watcher compares against this witness before deciding
+        // whether a same-policy replacement needs a model wake. Discovery has
+        // just proved that witness unobservable, so retaining its previous
+        // value would incorrectly coalesce the recovery event.
+        self.actions.hosted = model_lifecycle::HostedPumpState::default();
+        let withdrawal_pending = self
+            .actions
+            .action_surface_retry
+            .is_some_and(|retry| retry.withdrawal_pending)
+            || published
+                .as_ref()
+                .is_some_and(|actions| !actions.is_empty());
+        let withdrawal_pending = withdrawal_pending
+            && !self
+                .collaboration
+                .manager
+                .send(CollabRequest::PublishActions {
+                    app_id,
+                    actions: Vec::new(),
+                });
+        self.defer_action_surface_retry(withdrawal_pending);
+    }
+
+    fn defer_action_surface_retry(&mut self, withdrawal_pending: bool) {
+        if self
+            .actions
+            .action_surface_retry
+            .is_some_and(|retry| retry.deadline.is_none())
+        {
+            if withdrawal_pending && let Some(retry) = self.actions.action_surface_retry.as_mut() {
+                retry.withdrawal_pending = true;
+            }
+            return;
+        }
+        let (delay, attempts) =
+            self.actions
+                .action_surface_retry
+                .map_or((ACTION_SURFACE_RETRY_INITIAL, 1), |retry| {
+                    (
+                        retry.delay.saturating_mul(2).min(ACTION_SURFACE_RETRY_MAX),
+                        retry.attempts.saturating_add(1),
+                    )
+                });
+        if attempts > ACTION_SURFACE_RETRY_ATTEMPTS {
+            self.actions.action_surface_retry = Some(ActionSurfaceRetry {
+                deadline: None,
+                delay: ACTION_SURFACE_RETRY_MAX,
+                attempts: ACTION_SURFACE_RETRY_ATTEMPTS,
+                withdrawal_pending,
+            });
+            return;
+        }
+        self.actions.action_surface_retry = Some(ActionSurfaceRetry {
+            deadline: Some(crate::time::now() + delay),
+            delay,
+            attempts,
+            withdrawal_pending,
+        });
+    }
+
+    pub(super) fn rearm_action_surface_retry(&mut self) {
+        let Some(retry) = self.actions.action_surface_retry.as_mut() else {
+            return;
+        };
+        retry.deadline = Some(crate::time::now());
+        retry.delay = ACTION_SURFACE_RETRY_INITIAL;
+        retry.attempts = 0;
+    }
+
+    pub(super) fn action_surface_retry_deadline(&self) -> Option<crate::time::Instant> {
+        self.actions
+            .action_surface_retry
+            .and_then(|retry| retry.deadline)
+    }
+
+    pub(super) fn action_surface_retry_blocks_publication(&self) -> bool {
+        self.actions.action_surface_retry.is_some_and(|retry| {
+            retry
+                .deadline
+                .is_none_or(|deadline| deadline > crate::time::now())
+        })
+    }
+
+    /// Retry only when the bounded backoff is due. The native runner includes
+    /// this deadline in its ordinary wait; hosted owners reach it through
+    /// their existing pumps. No redraw or document mutation is manufactured.
+    pub(super) fn service_action_surface_retry(&mut self) -> bool {
+        let due = self
+            .actions
+            .action_surface_retry
+            .and_then(|retry| retry.deadline)
+            .is_some_and(|deadline| deadline <= crate::time::now());
+        if !due {
+            return false;
+        }
+        if !self.collaboration.manager.is_connected()
+            || !self.published_action_history_ready_after_refresh()
+        {
+            if let Some(retry) = self.actions.action_surface_retry.as_mut() {
+                retry.deadline = None;
+            }
+            return false;
+        }
+        self.publish_action_surface();
+        true
     }
 
     /// Publish the live resource/action tree through the session broker.
@@ -690,6 +832,26 @@ impl App {
             self.actions.last_published_bound_route = route;
         }
         let publication_app_id = self.publication_app_id();
+        if self
+            .actions
+            .action_surface_retry
+            .is_some_and(|retry| retry.withdrawal_pending)
+        {
+            if !self
+                .collaboration
+                .manager
+                .send(CollabRequest::PublishActions {
+                    app_id: publication_app_id.clone(),
+                    actions: Vec::new(),
+                })
+            {
+                self.defer_action_surface_retry(true);
+                return;
+            }
+            if let Some(retry) = self.actions.action_surface_retry.as_mut() {
+                retry.withdrawal_pending = false;
+            }
+        }
         // This is independent of the legacy eager surface below.  The
         // broker owns the capability and asks the UI thread to materialise a
         // bounded page; large apps therefore do not become a flattened RPC
@@ -697,12 +859,24 @@ impl App {
         self.collaboration
             .manager
             .publish_action_directory(publication_app_id.clone());
-        let resources = self.publication_resources();
+        let resources = match self.try_publication_resources() {
+            Ok(resources) => resources,
+            Err(_) => {
+                self.withdraw_unobservable_bound_surface(publication_app_id);
+                return;
+            }
+        };
         // Use this exact snapshot for coverage as well as publication. That
         // prevents recursive/repeated resource collection and makes the audit
         // correspond to the catalogue about to cross the wire.
         let (control_resources, bound_declarations) =
-            self.collect_resources_with_bound_declarations();
+            match self.try_collect_resources_with_bound_declarations() {
+                Ok(discovery) => discovery,
+                Err(_) => {
+                    self.withdraw_unobservable_bound_surface(publication_app_id);
+                    return;
+                }
+            };
         let binding_coverage = self.control_binding_coverage_for(
             &control_resources,
             crate::widget::controls::action_control_bindings(self.root_widget.as_ref()),
@@ -747,7 +921,12 @@ impl App {
                     })
                 {
                     self.actions.last_published_actions = Some(Vec::new());
+                    self.actions.action_surface_retry = None;
+                } else {
+                    self.defer_action_surface_retry(true);
                 }
+            } else {
+                self.actions.action_surface_retry = None;
             }
             return;
         }
@@ -793,6 +972,7 @@ impl App {
                 .as_ref()
                 .is_none_or(Vec::is_empty)
             {
+                self.actions.action_surface_retry = None;
                 return;
             }
             if self
@@ -804,12 +984,16 @@ impl App {
                 })
             {
                 self.actions.last_published_actions = Some(Vec::new());
+                self.actions.action_surface_retry = None;
+            } else {
+                self.defer_action_surface_retry(true);
             }
             return;
         }
         let descriptors = tilo_actions::door::survey(&resources);
         self.capture_action_directory_snapshot(&resources, &descriptors);
         if self.actions.last_published_actions.as_ref() == Some(&descriptors) {
+            self.actions.action_surface_retry = None;
             return;
         }
         let actions = descriptors
@@ -826,6 +1010,9 @@ impl App {
             })
         {
             self.actions.last_published_actions = Some(descriptors);
+            self.actions.action_surface_retry = None;
+        } else {
+            self.defer_action_surface_retry(false);
         }
     }
 

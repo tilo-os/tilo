@@ -120,6 +120,46 @@ impl crate::collaboration::PeerTransport for HostedPumpTransport {
     }
 }
 
+struct RefuseActionWithdrawal(Rc<Cell<usize>>);
+impl crate::collaboration::PeerTransport for RefuseActionWithdrawal {
+    fn is_connected(&self) -> bool {
+        true
+    }
+    fn send(&mut self, request: CollabRequest) -> Result<(), String> {
+        if matches!(request, CollabRequest::PublishActions { actions, .. } if actions.is_empty()) {
+            self.0.set(self.0.get() + 1);
+            return Err("fixture refuses the withdrawal".into());
+        }
+        Ok(())
+    }
+    fn poll(&mut self) -> Vec<CollabEvent> {
+        Vec::new()
+    }
+    fn publish_action_directory(&mut self, _: String) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+struct TransitioningHostedPumpTransport {
+    connected: Rc<Cell<bool>>,
+    sent: Rc<RefCell<Vec<CollabRequest>>>,
+}
+impl crate::collaboration::PeerTransport for TransitioningHostedPumpTransport {
+    fn is_connected(&self) -> bool {
+        self.connected.get()
+    }
+    fn send(&mut self, request: CollabRequest) -> Result<(), String> {
+        self.sent.borrow_mut().push(request);
+        Ok(())
+    }
+    fn poll(&mut self) -> Vec<CollabEvent> {
+        Vec::new()
+    }
+    fn publish_action_directory(&mut self, _: String) -> Result<(), String> {
+        Ok(())
+    }
+}
+
 impl HostedPumpFixture {
     /// An application worker: unbound instance wake scope, no event loop.
     fn new(actions: usize) -> Self {
@@ -593,7 +633,7 @@ fn hosted_owned_counter() -> HostedOwnedCounter {
     }
 }
 
-fn restrict_counter_owner_to_read(fixture: &HostedOwnedCounter) {
+fn counter_owner_read_permissions() -> crate::permissions::PermissionContext {
     use crate::permissions::{Actor, CapOverride, Effect, Scope, Subject, Verb};
     let mut ceiling = CapOverride::grant(
         Subject::person("fixture-user"),
@@ -601,10 +641,78 @@ fn restrict_counter_owner_to_read(fixture: &HostedOwnedCounter) {
         Verb::Read,
     );
     ceiling.effect = Effect::Restrict;
-    *fixture.permissions.borrow_mut() = crate::permissions::PermissionContext::from_capabilities(
+    crate::permissions::PermissionContext::from_capabilities(
         Actor::person(Some(crate::permissions::Role::Owner), "fixture-user"),
         vec![ceiling],
+    )
+}
+
+fn restrict_counter_owner_to_read(fixture: &HostedOwnedCounter) {
+    *fixture.permissions.borrow_mut() = counter_owner_read_permissions();
+}
+
+fn assert_counter_read_surface(app: &App) {
+    let published = app.actions.last_published_actions.as_ref().unwrap();
+    assert!(
+        published
+            .iter()
+            .any(|action| action.address.action == "inspect")
     );
+    assert!(
+        published
+            .iter()
+            .all(|action| action.address.action != "bump")
+    );
+}
+
+fn action_publication_batches(
+    sent: &Rc<RefCell<Vec<CollabRequest>>>,
+) -> Vec<Vec<crate::collaboration::ExportedAction>> {
+    sent.borrow()
+        .iter()
+        .filter_map(|request| match request {
+            CollabRequest::PublishActions { actions, .. } => Some(actions.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn install_transient_read_authority(
+    fixture: &mut HostedOwnedCounter,
+) -> (
+    Arc<std::sync::atomic::AtomicBool>,
+    Arc<std::sync::atomic::AtomicUsize>,
+    Rc<RefCell<Vec<CollabRequest>>>,
+) {
+    let sent = Rc::new(RefCell::new(Vec::new()));
+    fixture.app.collaboration.manager =
+        CollaborationManager::with_peer_transport(HostedPumpTransport {
+            sent: Rc::clone(&sent),
+            events: Rc::new(RefCell::new(Vec::new())),
+            directory: Rc::new(RefCell::new(Vec::new())),
+        });
+    let observable = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let sample_observable = Arc::clone(&observable);
+    let samples = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let sample_count = Arc::clone(&samples);
+    let read_policy = counter_owner_read_permissions();
+    let sampled_policy = read_policy.clone();
+    let deadline = Arc::new(std::sync::atomic::AtomicU64::new(
+        crate::time::try_unix_now_ms().unwrap() + 60_000,
+    ));
+    *fixture.permissions.borrow_mut() = read_policy.with_live_action_authority(
+        "test.directory".into(),
+        Arc::new(move || {
+            sample_count.fetch_add(1, Ordering::AcqRel);
+            if sample_observable.load(Ordering::Acquire) {
+                Ok(sampled_policy.clone())
+            } else {
+                Err("fixture authority projection is between replacements".into())
+            }
+        }),
+        deadline,
+    );
+    (observable, samples, sent)
 }
 
 #[test]
@@ -639,6 +747,196 @@ fn hosted_owner_read_ceiling_keeps_read_publication_and_disables_write_control()
             .iter()
             .all(|action| action.address.action != "bump")
     );
+}
+
+#[test]
+fn hosted_transient_bound_discovery_failure_withdraws_then_recovers_read_surface() {
+    let mut fixture = hosted_owned_counter();
+    let (observable, _, sent) = install_transient_read_authority(&mut fixture);
+
+    let initial = fixture.app.pump_hosted_model_as(false);
+    assert!(initial.synced && initial.published);
+    assert_counter_read_surface(&fixture.app);
+    let batches = action_publication_batches(&sent);
+    assert_eq!(batches.len(), 1);
+    assert!(!batches[0].is_empty());
+    assert_eq!(
+        fixture.app.pump_hosted_model_as(false),
+        model_lifecycle::HostedPumpReport::default(),
+        "the stable Read policy settles before the transient observation gap"
+    );
+
+    observable.store(false, Ordering::Release);
+    fixture.app.publish_action_surface_after_refresh();
+    assert!(fixture.app.actions.last_published_actions.is_none());
+    assert!(fixture.app.actions.action_directory_snapshot.is_none());
+    assert!(fixture.app.actions.action_directory_stamp.is_none());
+    let batches = action_publication_batches(&sent);
+    assert_eq!(batches.len(), 2);
+    assert!(batches[1].is_empty(), "the broker receives the withdrawal");
+
+    let first_retry = fixture
+        .app
+        .actions
+        .action_surface_retry
+        .expect("the unobservable surface has a bounded retry");
+    assert!(first_retry.deadline.unwrap() > crate::time::now());
+    fixture
+        .app
+        .actions
+        .action_surface_retry
+        .as_mut()
+        .unwrap()
+        .deadline = Some(crate::time::now());
+    assert!(fixture.app.service_action_surface_retry());
+    assert!(fixture.app.actions.last_published_actions.is_none());
+    assert_eq!(
+        action_publication_batches(&sent).len(),
+        2,
+        "a persistent gap does not spin or resend the empty surface"
+    );
+    let second_retry = fixture
+        .app
+        .actions
+        .action_surface_retry
+        .expect("a persistent gap remains scheduled without an immediate wake");
+    assert!(second_retry.deadline.unwrap() > crate::time::now());
+
+    observable.store(true, Ordering::Release);
+    fixture
+        .app
+        .actions
+        .action_surface_retry
+        .as_mut()
+        .unwrap()
+        .deadline = Some(crate::time::now());
+    assert!(fixture.app.service_action_surface_retry());
+    assert_counter_read_surface(&fixture.app);
+    assert!(fixture.app.actions.action_surface_retry.is_none());
+    drop(fixture);
+    let batches = action_publication_batches(&sent);
+    assert_eq!(batches.len(), 3);
+    assert!(!batches[2].is_empty());
+    assert!(batches[2].iter().any(|action| action.action == "inspect"));
+    assert!(batches[2].iter().all(|action| action.action != "bump"));
+}
+
+#[test]
+fn hosted_persistent_bound_discovery_failure_exhausts_without_polling_forever() {
+    let mut fixture = hosted_owned_counter();
+    let (observable, samples, sent) = install_transient_read_authority(&mut fixture);
+    assert!(fixture.app.pump_hosted_model_as(false).published);
+    observable.store(false, Ordering::Release);
+    fixture.app.publish_action_surface_after_refresh();
+    let samples_before_deadline = samples.load(Ordering::Acquire);
+    fixture.app.pump_collab_presence();
+    assert_eq!(
+        samples.load(Ordering::Acquire),
+        samples_before_deadline,
+        "an idle presence pump cannot bypass the scheduled deadline"
+    );
+
+    let mut retries = 0;
+    while fixture
+        .app
+        .actions
+        .action_surface_retry
+        .and_then(|retry| retry.deadline)
+        .is_some()
+    {
+        assert!(retries < 16, "the bounded retry state must terminate");
+        fixture
+            .app
+            .actions
+            .action_surface_retry
+            .as_mut()
+            .unwrap()
+            .deadline = Some(crate::time::now());
+        assert!(fixture.app.service_action_surface_retry());
+        retries += 1;
+    }
+    assert!(
+        retries > 1,
+        "a transient gap receives multiple fresh samples"
+    );
+    assert!(
+        fixture
+            .app
+            .actions
+            .action_surface_retry
+            .is_some_and(|retry| retry.deadline.is_none()),
+        "exhaustion remains a settled fail-closed witness"
+    );
+    assert!(!fixture.app.service_action_surface_retry());
+    let attempts_at_exhaustion = fixture.app.actions.action_surface_publication_attempts;
+    assert!(
+        !fixture.app.pump_hosted_model_as(false).published,
+        "an idle hosted pump cannot restart an exhausted retry episode"
+    );
+    fixture.app.pump_collab_presence();
+    assert_eq!(
+        fixture.app.actions.action_surface_publication_attempts, attempts_at_exhaustion,
+        "required authority validation must not become another publication/discovery attempt"
+    );
+    assert!(
+        fixture
+            .app
+            .actions
+            .action_surface_retry
+            .is_some_and(|retry| retry.deadline.is_none())
+    );
+    drop(fixture);
+    let batches = action_publication_batches(&sent);
+    assert_eq!(batches.len(), 2);
+    assert!(!batches[0].is_empty());
+    assert!(batches[1].is_empty());
+}
+
+#[test]
+fn hosted_failed_withdrawal_is_retried_before_recovered_surface() {
+    let mut fixture = hosted_owned_counter();
+    let (observable, _, _) = install_transient_read_authority(&mut fixture);
+    assert!(fixture.app.pump_hosted_model_as(false).published);
+    let refused = Rc::new(Cell::new(0));
+    fixture.app.collaboration.manager =
+        CollaborationManager::with_peer_transport(RefuseActionWithdrawal(Rc::clone(&refused)));
+    observable.store(false, Ordering::Release);
+    fixture.app.publish_action_surface_after_refresh();
+    assert_eq!(refused.get(), 1);
+    assert!(
+        fixture
+            .app
+            .actions
+            .action_surface_retry
+            .is_some_and(|retry| retry.withdrawal_pending)
+    );
+
+    let sent = Rc::new(RefCell::new(Vec::new()));
+    let connected = Rc::new(Cell::new(false));
+    fixture.app.collaboration.manager =
+        CollaborationManager::with_peer_transport(TransitioningHostedPumpTransport {
+            connected: Rc::clone(&connected),
+            sent: Rc::clone(&sent),
+        });
+    connected.set(true);
+    fixture.app.pump_collab_presence();
+    assert_eq!(action_publication_batches(&sent), vec![Vec::new()]);
+
+    observable.store(true, Ordering::Release);
+    fixture
+        .app
+        .actions
+        .action_surface_retry
+        .as_mut()
+        .unwrap()
+        .deadline = Some(crate::time::now());
+    assert!(fixture.app.service_action_surface_retry());
+    drop(fixture);
+    let batches = action_publication_batches(&sent);
+    assert_eq!(batches.len(), 2);
+    assert!(batches[0].is_empty());
+    assert!(batches[1].iter().any(|action| action.action == "inspect"));
+    assert!(batches[1].iter().all(|action| action.action != "bump"));
 }
 
 #[test]
