@@ -4,6 +4,9 @@ After=tilo-graphical-session.target
 PartOf=tilo-graphical-session.target
 
 [Service]
+# Session-critical: every launch asks the broker, so it is never queued behind
+# applications or batch work (see os/etc/systemd/user/session.slice.d).
+Slice=session.slice
 Type=notify
 # The package store is the one the launcher, the shell and tilo-install
 # read and write; the daemon keeps no store of its own. Packages the daemon

@@ -2069,6 +2069,7 @@ COPY \
     os/etc/polkit-1/rules.d/49-tilo-disk-unlock.rules \
     os/etc/polkit-1/rules.d/49-tilo-greeter-power.rules \
     os/etc/polkit-1/rules.d/49-tilo-greeter-fingerprint.rules \
+    os/etc/polkit-1/rules.d/49-tilo-session-priority.rules \
     /etc/polkit-1/rules.d/
 # Graphical login greeter (ui-toolkit based). Launched at the greetd VT inside
 # `cage` — see etc/greetd/config.toml.

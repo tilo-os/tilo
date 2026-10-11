@@ -156,7 +156,10 @@ containerfile="$repo/os/Containerfile"
 # tilo-network-start.service replaces tilo-network-start.timer: the network is
 # queued once logins are allowed instead of at OnBootSec=0, where it held the
 # greeter through network.target (TIL-767).
-expected_contract=0d1f26b3729368602066f2a95a54f9283ee8c2be31ae6626786b3c4161ae2b42
+# The session-priority polkit rule (set-property on session scopes only) ships
+# beside the other policies; it is the one payload row added by the interactive
+# priority policy. Its unit drop-ins ride the existing /etc/systemd/ COPY.
+expected_contract=75785025e2d98e238c25d04ef6b7034ecd55652d7cba78207ac7dfe5f546cda0
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
