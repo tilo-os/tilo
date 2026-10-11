@@ -288,6 +288,40 @@ fn publish(path: &Path, bytes: &[u8], replace: bool) -> io::Result<bool> {
     }
 }
 
+/// Bind a Unix socket at `path` that only its owner can connect to (mode
+/// `0600`), replacing a socket left there by a previous run. Any other kind
+/// of file at `path` is never removed. The parent directory must exist.
+///
+/// # Errors
+/// [`io::ErrorKind::AlreadyExists`] when `path` is not a socket, and the
+/// removal's, bind's or permission change's error otherwise.
+#[cfg(unix)]
+pub fn bind_socket(path: &Path) -> io::Result<std::os::unix::net::UnixListener> {
+    use std::os::unix::fs::{FileTypeExt as _, PermissionsExt as _};
+    use std::os::unix::net::UnixListener;
+
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if !metadata.file_type().is_socket() => {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!("{} exists and is not a socket", path.display()),
+            ));
+        }
+        Ok(_) => match std::fs::remove_file(path) {
+            Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
+            _ => {}
+        },
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    let listener = UnixListener::bind(path)?;
+    if let Err(error) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)) {
+        let _ = std::fs::remove_file(path);
+        return Err(error);
+    }
+    Ok(listener)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -425,5 +459,27 @@ mod tests {
         assert!(rewrite(&path).is_err());
         assert!(write_atomic(&path, b"replacement").is_err());
         assert_eq!(std::fs::read(&path).unwrap(), b"must survive");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn socket_binds_owner_only_and_replaces_only_a_socket() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("service.sock");
+
+        let previous = bind_socket(&path).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+        drop(previous);
+        let _replacement = bind_socket(&path).unwrap();
+
+        let file = root.path().join("not-a-socket");
+        std::fs::write(&file, b"keep").unwrap();
+        assert_eq!(
+            bind_socket(&file).unwrap_err().kind(),
+            io::ErrorKind::AlreadyExists
+        );
+        assert_eq!(std::fs::read(&file).unwrap(), b"keep");
     }
 }
