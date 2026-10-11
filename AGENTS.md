@@ -102,8 +102,14 @@ Before pushing:
 2. Run the narrow tests that prove the change, plus the relevant all-target compile check
    (for shell work, `cargo check -p shell --tests`).
 3. Commit the candidate, then inspect the affected plan with
-   `python3 tools/ci/affected_packages.py --base origin/main --shards 2`; unexpected full-workspace
-   selection is a bug to understand before pushing.
+   `python3 tools/ci/affected_packages.py --metadata "${TILO_CURRENT_WORKTREE_METADATA:?validated current-worktree export required}" --base origin/main --shards 2`.
+   Set `TILO_CURRENT_WORKTREE_METADATA` to a complete metadata JSON export from the existing
+   builder or CI, validated against this worktree's exact source revision, workspace/member
+   manifests and lockfile, with its package, dependency and target paths mapped to this worktree.
+   Do not reuse an unverified export or manufacture a partial graph. Without a validated export,
+   leave selection to normal CI: omitting `--metadata` invokes local Cargo, even when a Cargo
+   drop-in would remotely execute builds. Unexpected full-workspace selection is a bug to
+   understand before pushing.
 4. Push a task branch and use a PR. Do not probe `main` with a direct push. `.githooks/pre-push`
    refuses a branch that conflicts with the current main or leaves `crates/workspace-hack` stale,
    the two rejections CI otherwise reports a minute after the push. After pushing, let
