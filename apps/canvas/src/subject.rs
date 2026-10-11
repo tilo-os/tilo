@@ -14,6 +14,7 @@
 )]
 
 use std::cell::RefCell;
+use ui::num::usize_of_f64;
 
 use ui::TextRenderer;
 use ui::vello::kurbo::{Affine, Point};
@@ -160,7 +161,7 @@ pub(crate) fn prepare_in(
     ) * Affine::translate((-view.x0, -view.y0));
     let at = select.at.map(|[x, y]| {
         let cell = to_cells * Point::new(x, y);
-        (index(cell.x), index(cell.y))
+        (usize_of_f64(cell.x), usize_of_f64(cell.y))
     });
     let current = if subject {
         None
@@ -358,15 +359,6 @@ fn matte_picture(matte: &tilo_subject::Matte) -> Result<Vec<u8>, String> {
 /// The first characters of a revision, enough to tell it.
 fn short(revision: &str) -> &str {
     revision.get(..12).unwrap_or(revision)
-}
-
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "checked to lie inside the picture before the cast"
-)]
-fn index(value: f64) -> usize {
-    value.floor().max(0.0) as usize
 }
 
 /// `using` as authored: masking (or clearing) by a refined edge, each

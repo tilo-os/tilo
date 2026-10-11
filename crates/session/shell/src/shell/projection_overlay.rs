@@ -17,6 +17,7 @@
 //! hit-testing. The overlay host only coordinates visibility and invalidation.
 
 use std::time::{Duration, Instant};
+use ui::num::{f32_of_f64, f64_of_usize, usize_of_f64};
 
 use settings_store::display_mode::{self, DisplayLayoutError, DisplayLayoutMode};
 use settings_store::hardware::{
@@ -52,25 +53,6 @@ const SCRIM_ALPHA: f32 = 0.45;
 /// the transaction it staged. Bounded so an open sheet never turns into
 /// per-frame settings I/O.
 const DISPLAY_POLL: Duration = Duration::from_millis(250);
-
-#[allow(clippy::cast_precision_loss, reason = "device counts are small")]
-fn usize_to_f64_lossy(n: usize) -> f64 {
-    n as f64
-}
-
-#[allow(clippy::cast_possible_truncation, reason = "screen pixels fit f32")]
-fn f64_to_f32_lossy(v: f64) -> f32 {
-    v as f32
-}
-
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "float-to-usize casts saturate and caller clamps the result"
-)]
-fn f64_floor_to_usize_saturating(v: f64) -> usize {
-    v.floor() as usize
-}
 
 #[allow(
     clippy::cast_possible_truncation,
@@ -1401,7 +1383,7 @@ impl ProjectionOverlay {
     fn layout_row_rect(&self, index: usize) -> Rect {
         let r = self.sheet_rect();
         // Rows of 52 px on a 58 px pitch, below the 80 px header.
-        let y0 = r.y0 + 80.0 + usize_to_f64_lossy(index) * 58.0;
+        let y0 = r.y0 + 80.0 + f64_of_usize(index) * 58.0;
         Rect::new(r.x0 + 16.0, y0, r.x1 - 16.0, y0 + 52.0)
     }
 
@@ -1457,8 +1439,7 @@ impl ProjectionOverlay {
             - Self::device_row_pitch()
             - footer)
             .max(pitch);
-        let height =
-            (usize_to_f64_lossy(self.displays.remote().len().min(3)) * pitch).min(available);
+        let height = (f64_of_usize(self.displays.remote().len().min(3)) * pitch).min(available);
         Rect::new(
             r.x0 + gutter,
             self.remote_top() + heading,
@@ -1468,7 +1449,7 @@ impl ProjectionOverlay {
     }
 
     fn remote_row_rect(&self, index: usize) -> Rect {
-        let y0 = usize_to_f64_lossy(index) * self.remote_row_pitch();
+        let y0 = f64_of_usize(index) * self.remote_row_pitch();
         Rect::new(
             0.0,
             y0,
@@ -1488,7 +1469,7 @@ impl ProjectionOverlay {
 
     fn row_rect(&self, index: usize) -> Rect {
         let r = self.sheet_rect();
-        let y0 = self.device_rows_top() + usize_to_f64_lossy(index) * Self::device_row_pitch();
+        let y0 = self.device_rows_top() + f64_of_usize(index) * Self::device_row_pitch();
         Rect::new(r.x0 + 16.0, y0, r.x1 - 16.0, y0 + 56.0)
     }
 
@@ -1536,9 +1517,7 @@ impl ProjectionOverlay {
 
         self.device_rects.clear();
         let rows_top = self.device_rows_top();
-        let max_rows =
-            f64_floor_to_usize_saturating((r.y1 - rows_top - 40.0) / Self::device_row_pitch())
-                .max(1);
+        let max_rows = usize_of_f64((r.y1 - rows_top - 40.0) / Self::device_row_pitch()).max(1);
         if self.controller.devices.is_empty() {
             self.draw_devices_empty(scene, transform, text_renderer, theme, r);
         } else {
@@ -1601,7 +1580,7 @@ impl ProjectionOverlay {
             &t("display-sheet-subtitle"),
             colors.text_dim,
             transform.pre_translate((r.x0 + 20.0, r.y0 + 49.0).into()),
-            Some(f64_to_f32_lossy(r.width() - 88.0)),
+            Some(f32_of_f64(r.width() - 88.0)),
             &type_scale.style(TextRole::Caption),
         );
 
@@ -1665,7 +1644,7 @@ impl ProjectionOverlay {
             let pictogram = Rect::new(row.x0 + 12.0, row.y0 + 14.0, row.x0 + 56.0, row.y1 - 14.0);
             draw_layout_pictogram(scene, transform, pictogram, mode, theme, enabled);
             let text_x = pictogram.x1 + 14.0;
-            let text_w = f64_to_f32_lossy(row.x1 - text_x - 44.0);
+            let text_w = f32_of_f64(row.x1 - text_x - 44.0);
             text_renderer.draw_style(
                 scene,
                 &t(layout_title_key(mode)),
@@ -1747,7 +1726,7 @@ impl ProjectionOverlay {
                 &t("display-sheet-saving-layout"),
                 colors.text_dim,
                 transform.pre_translate((band.x0 + 4.0, band.y0 + 8.0).into()),
-                Some(f64_to_f32_lossy(band.width() - 8.0)),
+                Some(f32_of_f64(band.width() - 8.0)),
                 &type_scale.style(TextRole::Caption),
             );
         } else if self.confirming() {
@@ -1790,7 +1769,7 @@ impl ProjectionOverlay {
                 &message,
                 colors.semantic.danger,
                 transform.pre_translate((band.x0 + 4.0, band.y0 + 8.0).into()),
-                Some(f64_to_f32_lossy(band.width() - 8.0)),
+                Some(f32_of_f64(band.width() - 8.0)),
                 &type_scale.style(TextRole::Caption),
             );
         }
@@ -1825,7 +1804,7 @@ impl ProjectionOverlay {
             .set_viewport(self.remote_viewport(), theme);
         self.remote_scroll.set_content_size(
             self.remote_viewport().width(),
-            usize_to_f64_lossy(remote.len()) * self.remote_row_pitch(),
+            f64_of_usize(remote.len()) * self.remote_row_pitch(),
         );
         let focused = if let SheetFocus::Remote(index) = self.focus {
             Some(index)
@@ -2125,7 +2104,7 @@ impl ProjectionOverlay {
                 &t("wireless-credential-hint"),
                 colors.text_dim,
                 transform.pre_translate((r.x0 + 20.0, top + 71.0).into()),
-                Some(f64_to_f32_lossy(r.width() - 40.0)),
+                Some(f32_of_f64(r.width() - 40.0)),
                 &type_scale.style(TextRole::Caption),
             );
         } else {
@@ -2175,7 +2154,7 @@ impl ProjectionOverlay {
         );
         let detail = text_renderer.elide_to_width_style(
             &detail,
-            f64_to_f32_lossy(r.width() - 56.0),
+            f32_of_f64(r.width() - 56.0),
             &type_scale.style(TextRole::Caption),
         );
         let (dw, _) =
@@ -2248,7 +2227,7 @@ impl ProjectionOverlay {
             );
             let name = text_renderer.elide_to_width_style(
                 &device.name,
-                f64_to_f32_lossy(row.width() - 142.0),
+                f32_of_f64(row.width() - 142.0),
                 &type_scale.style(TextRole::Caption),
             );
             text_renderer.draw_style(
@@ -2279,7 +2258,7 @@ impl ProjectionOverlay {
                     colors.text_dim
                 },
                 transform.pre_translate((row.x0 + 46.0, row.y0 + 31.0).into()),
-                Some(f64_to_f32_lossy(row.width() - 142.0)),
+                Some(f32_of_f64(row.width() - 142.0)),
                 &type_scale.style(TextRole::Caption),
             );
             Self::draw_device_action(

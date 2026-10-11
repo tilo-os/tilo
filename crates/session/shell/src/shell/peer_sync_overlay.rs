@@ -5,6 +5,7 @@
 //! performs the network request emitted by [`PeerSyncOverlay::handle_event`]
 //! and returns its result through [`PeerSyncOverlay::finish_request`].
 
+use ui::num::f32_of_f64;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::Fill;
@@ -882,7 +883,7 @@ impl PeerSyncOverlay {
         if let Some(status) = self.state.status.as_deref() {
             let status = ctx
                 .text
-                .elide_to_width(status, body_size, f64_to_f32(m.avail));
+                .elide_to_width(status, body_size, f32_of_f64(m.avail));
             ctx.text.draw_text(
                 ctx.scene,
                 &status,
@@ -1190,7 +1191,7 @@ impl PeerSyncOverlay {
             } else {
                 colors.text_primary
             };
-            let shown = text.elide_to_width(line, body, f64_to_f32(avail));
+            let shown = text.elide_to_width(line, body, f32_of_f64(avail));
             text.draw_text(
                 scene,
                 &shown,
@@ -1245,7 +1246,7 @@ impl PeerSyncOverlay {
                 &ui::surface::edge_outline(rect, radius),
             );
         }
-        let shown = text.elide_to_width(label, body, f64_to_f32(rect.width() - 16.0));
+        let shown = text.elide_to_width(label, body, f32_of_f64(rect.width() - 16.0));
         let (width, height) = text.measure(&shown, body, None);
         text.draw_text(
             scene,
@@ -1528,7 +1529,7 @@ fn draw_naming(
         None,
         &rr,
     );
-    let shown = text.elide_to_width(typed, name, f64_to_f32(avail - 40.0));
+    let shown = text.elide_to_width(typed, name, f32_of_f64(avail - 40.0));
     let (tw, th) = text.measure(&shown, name, None);
     let ty = f64::midpoint(field.y0, field.y1) - f64::from(th) / 2.0;
     let caret_w = 1.5;
@@ -1587,7 +1588,7 @@ fn draw_naming(
             }
         },
     );
-    let note = text.elide_to_width(&identity, body, f64_to_f32(avail));
+    let note = text.elide_to_width(&identity, body, f32_of_f64(avail));
     text.draw_text(
         scene,
         &note,
@@ -1678,7 +1679,7 @@ fn draw_receiving(ctx: &mut PaintCtx<'_>, m: &SheetMetrics, mut y: f64, typed: &
             ],
         )
     };
-    let line = text.elide_to_width(&line, name, f64_to_f32(avail));
+    let line = text.elide_to_width(&line, name, f32_of_f64(avail));
     text.draw_text(
         scene,
         &line,
@@ -1738,7 +1739,7 @@ fn draw_person(ctx: &mut PaintCtx<'_>, rect: Rect, who: &str, sub: &str, named: 
     let x = center.x + 30.0;
     let ns = theme.tokens.typography.size(TextRole::Caption).max(12.0);
     let ss = theme.tokens.typography.size(TextRole::Caption).max(10.0);
-    let who = text.elide_to_width(who, ns, f64_to_f32(rect.x1 - x));
+    let who = text.elide_to_width(who, ns, f32_of_f64(rect.x1 - x));
     text.draw_text(
         scene,
         &who,
@@ -1747,7 +1748,7 @@ fn draw_person(ctx: &mut PaintCtx<'_>, rect: Rect, who: &str, sub: &str, named: 
         transform.pre_translate((x, rect.y0 + 2.0).into()),
         None,
     );
-    let sub = text.elide_to_width(sub, ss, f64_to_f32(rect.x1 - x));
+    let sub = text.elide_to_width(sub, ss, f32_of_f64(rect.x1 - x));
     text.draw_text(
         scene,
         &sub,
@@ -1782,14 +1783,6 @@ fn draw_code(ctx: &mut PaintCtx<'_>, at: Point, code: &str, avail: f64) -> f64 {
         None,
     );
     field.y1
-}
-
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "Text elision accepts f32 widths; narrowing f64 overlay geometry may round subpixel precision without changing record or identity data."
-)]
-fn f64_to_f32(v: f64) -> f32 {
-    v as f32
 }
 
 #[cfg(test)]

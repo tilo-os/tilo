@@ -10,6 +10,7 @@
 )]
 
 use std::collections::BTreeMap;
+use ui::num::f32_of_f64;
 
 use serde::{Deserialize, Serialize};
 use ui::tilo_resource::{self, JsonSchema};
@@ -1094,31 +1095,23 @@ impl Shape {
         };
         if let Some(spacing) = hatch {
             return Some(tilo_wet_media::Form::Hatch {
-                spacing: narrow(*spacing),
-                angle: narrow(angle.unwrap_or(45.0)),
+                spacing: f32_of_f64(*spacing),
+                angle: f32_of_f64(angle.unwrap_or(45.0)),
             });
         }
         if let Some(forks) = forks {
             return Some(tilo_wet_media::Form::Branch {
                 forks: *forks,
-                spread: narrow(spread.unwrap_or(35.0)),
+                spread: f32_of_f64(spread.unwrap_or(35.0)),
             });
         }
         dabs.map(|count| tilo_wet_media::Form::Dabs {
             count,
-            scatter: narrow(scatter.unwrap_or(size * 2.0)),
-            length: narrow(dab_length.unwrap_or(0.0)),
-            angle: angle.map(narrow),
+            scatter: f32_of_f64(scatter.unwrap_or(size * 2.0)),
+            length: f32_of_f64(dab_length.unwrap_or(0.0)),
+            angle: angle.map(f32_of_f64),
         })
     }
-}
-
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "stroke geometry is bounded by the document's size limits"
-)]
-fn narrow(value: f64) -> f32 {
-    value as f32
 }
 
 impl Shape {

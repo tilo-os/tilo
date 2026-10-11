@@ -1,6 +1,7 @@
 use crate::animation::Spring;
 use crate::color_compat::ColorCompat;
 use crate::icons;
+use crate::num::f32_of_f64;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -72,18 +73,6 @@ fn instant_ago_ms(ms: u64) -> Instant {
         .unwrap_or_else(crate::time::now)
 }
 
-/// Narrows a screen-space coordinate, length or eased animation factor
-/// (`f64`, from taffy layout or CRDT storage) to the `f32` vello/taffy
-/// consume. Real output geometry never approaches `f32`'s range (or an
-/// eased factor its precision), so this never truncates in practice.
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "screen coordinates/lengths and eased [0,1] factors are always far below f32's range"
-)]
-fn px_f32(v: f64) -> f32 {
-    v as f32
-}
-
 /// One critically-damped heavy spring per rect edge. A new target mid-flight
 /// keeps value and velocity, so Super+M twice is one motion, not a queue.
 struct RectSprings {
@@ -97,25 +86,25 @@ impl RectSprings {
     fn at(rect: Rect) -> Self {
         let params = SpringPresets::default().heavy;
         Self {
-            x: Spring::new(px_f32(rect.x0), params),
-            y: Spring::new(px_f32(rect.y0), params),
-            w: Spring::new(px_f32(rect.width()), params),
-            h: Spring::new(px_f32(rect.height()), params),
+            x: Spring::new(f32_of_f64(rect.x0), params),
+            y: Spring::new(f32_of_f64(rect.y0), params),
+            w: Spring::new(f32_of_f64(rect.width()), params),
+            h: Spring::new(f32_of_f64(rect.height()), params),
         }
     }
 
     fn set_target(&mut self, rect: Rect) {
-        self.x.set_target(px_f32(rect.x0));
-        self.y.set_target(px_f32(rect.y0));
-        self.w.set_target(px_f32(rect.width().max(0.0)));
-        self.h.set_target(px_f32(rect.height().max(0.0)));
+        self.x.set_target(f32_of_f64(rect.x0));
+        self.y.set_target(f32_of_f64(rect.y0));
+        self.w.set_target(f32_of_f64(rect.width().max(0.0)));
+        self.h.set_target(f32_of_f64(rect.height().max(0.0)));
     }
 
     fn snap(&mut self, rect: Rect) {
-        self.x.snap(px_f32(rect.x0));
-        self.y.snap(px_f32(rect.y0));
-        self.w.snap(px_f32(rect.width().max(0.0)));
-        self.h.snap(px_f32(rect.height().max(0.0)));
+        self.x.snap(f32_of_f64(rect.x0));
+        self.y.snap(f32_of_f64(rect.y0));
+        self.w.snap(f32_of_f64(rect.width().max(0.0)));
+        self.h.snap(f32_of_f64(rect.height().max(0.0)));
     }
 
     fn step(&mut self, dt: f32) {
@@ -514,7 +503,7 @@ impl WindowGroup {
     }
 
     fn arm_width_from_zero(&mut self) {
-        let target = px_f32(self.resolved_width_px());
+        let target = f32_of_f64(self.resolved_width_px());
         if self.reduce_motion {
             self.width_spring = None;
             return;
@@ -527,7 +516,7 @@ impl WindowGroup {
     }
 
     fn retarget_width(&mut self, from: f64, to: f64) {
-        let to = px_f32(to.max(0.0));
+        let to = f32_of_f64(to.max(0.0));
         if self.reduce_motion {
             self.width_spring = None;
             return;
@@ -536,7 +525,7 @@ impl WindowGroup {
             spring.set_target(to);
             return;
         }
-        let from = px_f32(from.max(0.0));
+        let from = f32_of_f64(from.max(0.0));
         if (from - to).abs() < 0.5 {
             return;
         }
@@ -607,7 +596,7 @@ impl WindowGroup {
         }
         let raw = (elapsed.as_secs_f64() / spawn_anim_secs()).clamp(0.0, 1.0);
         let eased = 1.0 - (1.0 - raw).powi(3);
-        px_f32(eased)
+        f32_of_f64(eased)
     }
 
     pub fn start_closing(&mut self) {
@@ -1430,7 +1419,7 @@ impl WindowGroup {
                 self.restore_hover = self.maximized && self.restore_rect.contains(pt);
                 self.close_hover = self.maximized && self.close_rect.contains(pt);
                 if self.resize_origin.is_some() {
-                    self.update_resize(px_f32(pt.x));
+                    self.update_resize(f32_of_f64(pt.x));
                     return true;
                 }
                 false
@@ -1491,7 +1480,7 @@ impl WindowGroup {
                 // Anchor on the actual press point, not the group's right
                 // edge — the hit zone is `RESIZE_HANDLE_PX` wide, so the
                 // edge would jump the window on grab.
-                self.begin_resize(px_f32(self.last_cursor.x));
+                self.begin_resize(f32_of_f64(self.last_cursor.x));
                 true
             }
             WindowEvent::MouseInput {
@@ -1626,7 +1615,7 @@ impl WindowGroup {
             // No offset: the per-host curve already carries the y-drift.
             // Ratio of two `Duration`s taken via `as_secs_f64` rather than
             // an integer->float `as` cast on the millisecond counts.
-            let raw = px_f32(
+            let raw = f32_of_f64(
                 (started.elapsed().as_secs_f64()
                     / Duration::from_millis(GROUP_CLOSE_FADE_MS).as_secs_f64())
                 .clamp(0.0, 1.0),
@@ -1644,7 +1633,7 @@ impl WindowGroup {
                 let eased = 1.0 - (1.0 - raw).powi(3);
                 let scale = SPAWN_ANIM_INITIAL_SCALE + (1.0 - SPAWN_ANIM_INITIAL_SCALE) * eased;
                 let x_off = SPAWN_ANIM_X_OFFSET * (1.0 - eased);
-                (px_f32(eased), x_off, 0.0, scale)
+                (f32_of_f64(eased), x_off, 0.0, scale)
             }
         } else {
             (1.0, 0.0, 0.0, 1.0)
@@ -1676,7 +1665,7 @@ impl WindowGroup {
             let elapsed = started.elapsed().as_secs_f64();
             let raw = (elapsed / (f64::from(CLOSE_FADE_MS) / 1000.0)).clamp(0.0, 1.0);
             let eased = 1.0 - (1.0 - raw).powi(3);
-            let alpha = px_f32(1.0 - eased);
+            let alpha = f32_of_f64(1.0 - eased);
             let scale = 1.0 + (-0.05) * eased; // 1.0 → 0.95
             let y_offset = -20.0 * eased;
             if let Some((_, h)) = self.hosts.iter_mut().find(|(i, _)| *i == id) {
@@ -2358,7 +2347,7 @@ impl Widget for WindowGroup {
             display: taffy::Display::Flex,
             flex_direction: taffy::FlexDirection::Column,
             size: Size {
-                width: Dimension::length(px_f32(self.layout_width_px())),
+                width: Dimension::length(f32_of_f64(self.layout_width_px())),
                 height: Dimension::percent(1.0),
             },
             flex_grow: 0.0,
@@ -2378,7 +2367,7 @@ impl Widget for WindowGroup {
             // External navigation (including a fullscreen host) owns its
             // own chrome and keeps the complete client area.
             if !self.external_navigation {
-                style.padding.top = length(px_f32(maximized_chrome_height(theme)));
+                style.padding.top = length(f32_of_f64(maximized_chrome_height(theme)));
             }
             if let Some(bar_node) = bar_node {
                 let mut bar_style = taffy.style(bar_node).cloned().unwrap_or_default();
@@ -2932,7 +2921,7 @@ mod tests {
         );
 
         group.hover_resize = false;
-        group.begin_resize(px_f32(rect.x1));
+        group.begin_resize(f32_of_f64(rect.x1));
         let dragging = render(&mut group);
         assert_ne!(
             at(&dragging, x, y),
@@ -4266,7 +4255,7 @@ mod tests {
 
             // In-flight resize drag holds the cursor even off the band —
             // pointer capture keeps the gesture alive.
-            g.begin_resize(px_f32(rect.x1));
+            g.begin_resize(f32_of_f64(rect.x1));
             assert_eq!(
                 Widget::cursor_shape(&g, Point::new(rect.center().x, cy)),
                 Some(winit::window::CursorIcon::EwResize),
@@ -4880,7 +4869,7 @@ mod tests {
             assert!(
                 g.width_spring
                     .as_ref()
-                    .is_some_and(|s| s.target() < px_f32(mid)),
+                    .is_some_and(|s| s.target() < f32_of_f64(mid)),
                 "Narrow on a 1200 px strip is smaller than the mid-open width",
             );
         }

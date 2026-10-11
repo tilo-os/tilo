@@ -50,6 +50,7 @@
 //! host next builds the tree, never in the middle of the event, so the host
 //! never holds a widget the shell has dropped.
 
+use crate::num::f32_of_f64;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -1130,14 +1131,6 @@ fn index_f64(i: usize) -> f64 {
 )]
 fn unit_f32(v: f64) -> f32 {
     v.clamp(0.0, 1.0) as f32
-}
-
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "on-screen layout extents fit f32 exactly at every UI scale"
-)]
-fn to_f32(v: f64) -> f32 {
-    v as f32
 }
 
 /// The shell's buttons report presses here.
@@ -3099,7 +3092,7 @@ fn measure(
         return Ok(natural);
     }
     let proposal = Size {
-        width: MeasureConstraint::AtMost(to_f32(bound)),
+        width: MeasureConstraint::AtMost(f32_of_f64(bound)),
         height: MeasureConstraint::Intrinsic,
     };
     let measured = ManualContext::measure(ctx, index, proposal)?.size;

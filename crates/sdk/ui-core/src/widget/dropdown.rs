@@ -35,6 +35,7 @@
 //! container routes all events to it exclusively — how the out-of-layout
 //! list becomes hit-testable and click-outside dismissal works.
 
+use crate::num::f32_of_f64;
 use crate::widget::scrollbar::{PressOutcome, ScrollMetrics, Scrollbar};
 use crate::widget::{AppModel, ModelPath};
 use std::cell::Cell;
@@ -92,17 +93,6 @@ type SelectionChangeCallback = Box<dyn FnMut(&str)>;
 /// dropdown never approaches `u32::MAX` options.
 fn count_f64(n: usize) -> f64 {
     f64::from(u32::try_from(n).unwrap_or(u32::MAX))
-}
-
-/// Narrows a bounded screen-space `f64` (row/pixel geometry) to `f32` for
-/// vello/taffy; dropdown content stays far below `f32::MAX`.
-#[inline]
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "screen-space pixel values in this widget never approach f32::MAX"
-)]
-fn px(v: f64) -> f32 {
-    v as f32
 }
 
 /// Composes a paint transform with a translation. `Affine`'s `Mul` is pure
@@ -888,7 +878,7 @@ impl Dropdown {
 
     fn max_scroll(&self, n: usize) -> f32 {
         let content = count_f64(n) * self.item_h;
-        px((content - self.rows_height(n)).max(0.0))
+        f32_of_f64((content - self.rows_height(n)).max(0.0))
     }
 
     fn scroll_metrics(&self, n: usize) -> ScrollMetrics {
@@ -929,9 +919,9 @@ impl Dropdown {
 
     /// Scroll so the row at filtered-position `vi` is fully visible.
     fn ensure_visible(&mut self, vi: usize, n: usize) {
-        let box_h = px(self.rows_height(n));
-        let top = px(count_f64(vi) * self.item_h);
-        let bottom = top + px(self.item_h);
+        let box_h = f32_of_f64(self.rows_height(n));
+        let top = f32_of_f64(count_f64(vi) * self.item_h);
+        let bottom = top + f32_of_f64(self.item_h);
         if top < self.scroll {
             self.scroll = top;
         } else if bottom > self.scroll + box_h {
@@ -1063,7 +1053,7 @@ impl Dropdown {
             let list = self.list_rect(filtered.len());
             let metrics = self.scroll_metrics(filtered.len());
             if let Some(offset) = self.scrollbar.drag_to(self.scrollbar_track, metrics, pos) {
-                self.scroll = px(offset);
+                self.scroll = f32_of_f64(offset);
                 *handled = true;
                 return;
             }
@@ -1103,7 +1093,7 @@ impl Dropdown {
                         return;
                     }
                     PressOutcome::Page(offset) => {
-                        self.scroll = px(offset);
+                        self.scroll = f32_of_f64(offset);
                         *handled = true;
                         return;
                     }
@@ -1142,7 +1132,7 @@ impl Dropdown {
     fn on_wheel(&mut self, delta: &MouseScrollDelta, handled: &mut bool) {
         let dy = match delta {
             MouseScrollDelta::LineDelta(_, y) => *y * -LINE_PX,
-            MouseScrollDelta::PixelDelta(p) => px(-p.y),
+            MouseScrollDelta::PixelDelta(p) => f32_of_f64(-p.y),
         };
         let n = self.filtered().len();
         self.scroll = (self.scroll + dy).clamp(0.0, self.max_scroll(n));
@@ -1296,7 +1286,7 @@ impl Widget for Dropdown {
         if self.menu.is_some() {
             // A menu button is an icon-only control of its size.
             self.caption_height = 0.0;
-            let side = px(self.control_size.height(theme));
+            let side = f32_of_f64(self.control_size.height(theme));
             let node = taffy.leaf_node(Style {
                 size: Size {
                     width: Dimension::length(side),
@@ -1318,17 +1308,17 @@ impl Widget for Dropdown {
         let width = if self.fill {
             Dimension::percent(1.0)
         } else if self.measured > 0.0 {
-            Dimension::length(px(self.field_width(self.measured)))
+            Dimension::length(f32_of_f64(self.field_width(self.measured)))
         } else {
             Dimension::auto()
         };
         let style = Style {
             size: Size {
                 width,
-                height: Dimension::length(px(self.field_height + self.caption_height)),
+                height: Dimension::length(f32_of_f64(self.field_height + self.caption_height)),
             },
             min_size: Size {
-                width: Dimension::length(px(PAD_X + CHEVRON_W)),
+                width: Dimension::length(f32_of_f64(PAD_X + CHEVRON_W)),
                 height: Dimension::auto(),
             },
             flex_shrink: 1.0,
@@ -1353,7 +1343,7 @@ impl Widget for Dropdown {
         if self.menu.is_some() {
             // A menu button is the square of its size laid out in
             // `build_layout`.
-            let side = px(self.field_height);
+            let side = f32_of_f64(self.field_height);
             return Size {
                 width: known.width.unwrap_or(side),
                 height: known.height.unwrap_or(side),
@@ -1366,10 +1356,10 @@ impl Widget for Dropdown {
             self.field_width(self.measured)
         };
         Size {
-            width: known.width.unwrap_or(px(width)),
+            width: known.width.unwrap_or(f32_of_f64(width)),
             height: known
                 .height
-                .unwrap_or(px(self.field_height + self.caption_height)),
+                .unwrap_or(f32_of_f64(self.field_height + self.caption_height)),
         }
     }
 
@@ -1387,7 +1377,7 @@ impl Widget for Dropdown {
             return false;
         };
         let mut style = current.clone();
-        style.size.width = Dimension::length(px(self.field_width(self.measured)));
+        style.size.width = Dimension::length(f32_of_f64(self.field_width(self.measured)));
         if style == *current {
             return false;
         }
@@ -1602,7 +1592,7 @@ impl Widget for Dropdown {
                 // rather than wrapping into the row beneath it.
                 let shown = text_renderer.elide_to_width_style(
                     opt,
-                    px((label_end - row.x0 - LIST_PAD).max(0.0)),
+                    f32_of_f64((label_end - row.x0 - LIST_PAD).max(0.0)),
                     &theme.text(TextRole::Body),
                 );
                 let (_, opt_h) =
@@ -1978,9 +1968,11 @@ fn paint_face(ctx: &mut PaintCtx<'_>, face: &FacePaint<'_>) -> Rect {
     let style = face.size.label_style(theme);
     if let Some(caption) = face.caption {
         let caption_style = theme.text(TextRole::Caption);
-        let shown =
-            ctx.text
-                .elide_to_width_style(caption, px(face.outer.width().max(1.0)), &caption_style);
+        let shown = ctx.text.elide_to_width_style(
+            caption,
+            f32_of_f64(face.outer.width().max(1.0)),
+            &caption_style,
+        );
         ctx.text(
             &shown,
             &caption_style,
@@ -2056,7 +2048,7 @@ fn paint_face(ctx: &mut PaintCtx<'_>, face: &FacePaint<'_>) -> Rect {
         // One line, elided to the room left of the chevron: a max width
         // handed to `draw_text` wraps instead, and a wrapped second line
         // lands under the control's bottom edge.
-        let room = px(content.width().max(0.0) + 0.5);
+        let room = f32_of_f64(content.width().max(0.0) + 0.5);
         let shown = ctx.text.elide_to_width_style(label, room, &style);
         let (_, th) = ctx.text.measure_style(&shown, None, &style);
         let ty = face.field.y0 + (face.field.height() - f64::from(th)) / 2.0;
