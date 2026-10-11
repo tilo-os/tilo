@@ -15,6 +15,10 @@ pub(super) enum Operation {
     Observe,
     Cancel,
 }
+#[cfg_attr(
+    not(feature = "broker-transport"),
+    expect(dead_code, reason = "only the broker transport delivers an attempt")
+)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AttemptFailure {
     Deadline,
@@ -27,6 +31,10 @@ pub(super) struct Ticket {
     pub invocation: [u8; 16],
 }
 
+#[cfg_attr(
+    not(feature = "broker-transport"),
+    expect(dead_code, reason = "only the broker transport delivers an attempt")
+)]
 struct Inner {
     route: RouteSpec,
     binding: PublishedInvocationBinding,
@@ -106,6 +114,7 @@ impl Drop for AttemptOwner {
     }
 }
 
+#[cfg(feature = "broker-transport")]
 pub(crate) enum RequestView<'a> {
     Invoke {
         invocation: &'a [u8; 16],
@@ -258,9 +267,11 @@ impl ManagedAttempt {
     pub(crate) fn meter_bytes(&self) -> usize {
         self.shared().queued_bytes
     }
+    #[cfg(feature = "broker-transport")]
     pub(crate) fn deadline(&self) -> Instant {
         self.shared().deadline
     }
+    #[cfg(feature = "broker-transport")]
     pub(crate) fn claim(
         &self,
         route: &RouteSpec,
@@ -296,6 +307,7 @@ impl ManagedAttempt {
             },
         }))
     }
+    #[cfg(feature = "broker-transport")]
     pub(crate) fn finish(
         self,
         result: Result<PublishedInvocationObservation, AttemptFailure>,
@@ -329,35 +341,6 @@ impl ManagedAttempt {
         })
     }
 }
-/// Host-local request view, for a sender whose receiver runs in the same
-/// process (a Cloud host and its own broker). It is the same original row the
-/// SDK transport would send; it confers no authority.
-pub enum LocalRequest<'a> {
-    Invoke {
-        invocation: &'a [u8; 16],
-        binding: &'a PublishedInvocationBinding,
-        revision: &'a str,
-        resource: &'a str,
-        action: &'a str,
-        argument: Option<&'a str>,
-        confirmation_json: &'a str,
-    },
-    Observe {
-        host: &'a [u8; 16],
-        invocation: &'a [u8; 16],
-    },
-    Cancel {
-        host: &'a [u8; 16],
-        invocation: &'a [u8; 16],
-    },
-}
-/// Host-local transport outcome; neither proves that execution did not occur.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LocalFailure {
-    Deadline,
-    Unavailable,
-}
-impl ManagedAttempt {}
 impl ManagedAttemptResult {
     #[expect(
         clippy::expect_used,
