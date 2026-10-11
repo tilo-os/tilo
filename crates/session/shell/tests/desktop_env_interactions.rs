@@ -1589,3 +1589,177 @@ fn pointer_focus_keeps_native_card_in_place_but_keyboard_focus_reveals_it() {
 // 3. Horizontal strip scroll
 
 // 4. Drag-file-to-open
+
+// ---------------------------------------------------------------------------
+// Resizing from every window edge, first and last included
+// ---------------------------------------------------------------------------
+
+/// Three narrow groups: all fit on screen, none is special.
+fn narrow_strip() -> (WorkspaceTree, StripId, Vec<GroupId>) {
+    let (mut tree, strip_id, ids) = single_strip_tree(&[100, 200, 300]);
+    for g in &mut tree.desktop.workspaces[0].strips[0].window_groups {
+        g.width = WindowWidth::Narrow;
+    }
+    (tree, strip_id, ids)
+}
+
+fn on_screen_widths(host: &mut ShellOverlayHost, strip_id: StripId) -> Vec<f64> {
+    (0..3)
+        .map(|i| {
+            host.group_at_for_tests(strip_id, i)
+                .unwrap()
+                .get_rect()
+                .width()
+        })
+        .collect()
+}
+
+/// Press at `from`, drag `dx` along the real input path, release, and
+/// return the on-screen widths after the frame loop's next layout.
+fn drag_from(
+    from: impl Fn(&mut ShellOverlayHost, StripId) -> Point,
+    dx: f64,
+    shift: bool,
+) -> (Vec<f64>, Vec<f64>) {
+    use winit::keyboard::ModifiersState;
+    let (tree, strip_id, _ids) = narrow_strip();
+    let (mut host, _chrome) = build_tilo_overlay_host_with_chrome(&tree);
+    let layout = lay_out_host(&mut host);
+    let before = on_screen_widths(&mut host, strip_id);
+    let at = from(&mut host, strip_id);
+    let mods = if shift {
+        Modifiers::from(ModifiersState::SHIFT)
+    } else {
+        Modifiers::default()
+    };
+    cursor(&mut host, &layout, at);
+    press_with_modifiers(&mut host, &layout, mods);
+    cursor(&mut host, &layout, Point::new(at.x + dx, at.y));
+    release(&mut host, &layout);
+    let _ = lay_out_host(&mut host);
+    let after = on_screen_widths(&mut host, strip_id);
+    (before, after)
+}
+
+fn group_rect(host: &mut ShellOverlayHost, strip_id: StripId, i: usize) -> vello::kurbo::Rect {
+    host.group_at_for_tests(strip_id, i).unwrap().get_rect()
+}
+
+fn assert_widths(before: &[f64], after: &[f64], delta: [f64; 3], what: &str) {
+    for i in 0..3 {
+        assert!(
+            (after[i] - (before[i] + delta[i])).abs() <= 1.5,
+            "{what}: group {i} went {} -> {}, expected {:+} (before {before:?}, after {after:?})",
+            before[i],
+            after[i],
+            delta[i],
+        );
+    }
+}
+
+#[test]
+fn first_window_right_edge_resizes_and_pushes_neighbours() {
+    // Inside the painted grip, 2 px from the edge.
+    let (b, a) = drag_from(
+        |h, s| {
+            let r = group_rect(h, s, 0);
+            Point::new(r.x1 - 2.0, r.center().y)
+        },
+        40.0,
+        false,
+    );
+    assert_widths(&b, &a, [40.0, 0.0, 0.0], "first window, right grip");
+    // On the seam between the first and second window.
+    let (b, a) = drag_from(
+        |h, s| {
+            let r = group_rect(h, s, 0);
+            Point::new(r.x1 + 4.0, r.center().y)
+        },
+        40.0,
+        false,
+    );
+    assert_widths(&b, &a, [40.0, 0.0, 0.0], "first window, seam");
+}
+
+#[test]
+fn last_window_right_edge_resizes() {
+    // The last window ends 16 px short of the output edge, and the pointer
+    // cannot leave the output, so the drag stays within it.
+    let (b, a) = drag_from(
+        |h, s| {
+            let r = group_rect(h, s, 2);
+            Point::new(r.x1 - 2.0, r.center().y)
+        },
+        12.0,
+        false,
+    );
+    assert_widths(&b, &a, [0.0, 0.0, 12.0], "last window, right grip");
+}
+
+#[test]
+fn first_window_left_edge_can_be_grabbed_and_resizes_it() {
+    // Dragging the left edge towards the window's centre narrows it, away
+    // from the centre widens it. Neighbours keep their widths.
+    let grab = |h: &mut ShellOverlayHost, s: StripId| {
+        let r = group_rect(h, s, 0);
+        Point::new(r.x0 + 2.0, r.center().y)
+    };
+    let (b, a) = drag_from(grab, 40.0, false);
+    assert_widths(&b, &a, [-40.0, 0.0, 0.0], "first window, left edge inward");
+    let (b, a) = drag_from(grab, -40.0, false);
+    assert_widths(&b, &a, [40.0, 0.0, 0.0], "first window, left edge outward");
+}
+
+#[test]
+fn middle_window_edges_resize_plain_and_zero_sum_with_shift() {
+    // The seam's right half is the middle window's left edge; the seam is
+    // the first window's trailing edge, so the first window follows it.
+    let left_edge = |h: &mut ShellOverlayHost, s: StripId| {
+        let r = group_rect(h, s, 1);
+        Point::new(r.x0 + 2.0, r.center().y)
+    };
+    let (b, a) = drag_from(left_edge, 40.0, false);
+    assert_widths(&b, &a, [40.0, 0.0, 0.0], "middle window left edge");
+    let (b, a) = drag_from(left_edge, 40.0, true);
+    assert_widths(&b, &a, [40.0, -40.0, 0.0], "middle window left edge, shift");
+    let right_edge = |h: &mut ShellOverlayHost, s: StripId| {
+        let r = group_rect(h, s, 1);
+        Point::new(r.x1 - 2.0, r.center().y)
+    };
+    let (b, a) = drag_from(right_edge, 40.0, false);
+    assert_widths(&b, &a, [0.0, 40.0, 0.0], "middle window right edge");
+    let (b, a) = drag_from(right_edge, 40.0, true);
+    assert_widths(
+        &b,
+        &a,
+        [0.0, 40.0, -40.0],
+        "middle window right edge, shift",
+    );
+}
+
+#[test]
+fn every_window_edge_has_the_same_grab_zone() {
+    let (tree, strip_id, _ids) = narrow_strip();
+    let (mut host, _chrome) = build_tilo_overlay_host_with_chrome(&tree);
+    let _layout = lay_out_host(&mut host);
+    let zone = ui::widget::RESIZE_HANDLE_PX;
+    for i in 0..3 {
+        let r = group_rect(&mut host, strip_id, i);
+        let g = host.group_at_for_tests(strip_id, i).unwrap();
+        let lead = g.leading_resize_grab_rect().expect("leading grip");
+        let trail = g.resize_grab_rect().expect("trailing grip");
+        assert_approx_eq!(lead.width(), zone, "group {i} leading zone");
+        assert_approx_eq!(trail.width(), zone, "group {i} trailing zone");
+        assert_approx_eq!(lead.x0, r.x0);
+        assert_approx_eq!(trail.x1, r.x1);
+    }
+    // The seam hit zone is exactly the two neighbouring grips plus the gap.
+    let gap = group_rect(&mut host, strip_id, 1).x0 - group_rect(&mut host, strip_id, 0).x1;
+    let seam = host
+        .group_row_mut_for_tests(strip_id)
+        .unwrap()
+        .handle_at(0)
+        .unwrap()
+        .get_rect();
+    assert_approx_eq!(seam.width(), 2.0 * zone + gap, "seam zone");
+}

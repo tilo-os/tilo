@@ -1237,20 +1237,38 @@ impl GroupRow {
 
     /// Visible screen-space edge grip, using ordinary widget dispatch geometry.
     /// The viewport clips grips, and promoted or hidden groups have none.
-    pub fn group_resize_rect(&self, group_id: u64) -> Option<Rect> {
+    pub fn group_resize_rects(&self, group_id: u64) -> Vec<Rect> {
         if self.hidden {
-            return None;
+            return Vec::new();
         }
-        let (index, group) = self
+        let Some((index, group)) = self
             .groups
             .iter()
             .enumerate()
-            .find(|(_, group)| group.id == group_id)?;
+            .find(|(_, group)| group.id == group_id)
+        else {
+            return Vec::new();
+        };
         if self.layout_hides_group(index) || self.fullscreen_group == Some(group_id) {
-            return None;
+            return Vec::new();
         }
-        let rect = group.resize_grab_rect()?.intersect(self.rect);
-        (rect.width() > 0.0 && rect.height() > 0.0).then_some(rect)
+        group
+            .resize_grab_rects()
+            .into_iter()
+            .map(|rect| rect.intersect(self.rect))
+            .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0)
+            .collect()
+    }
+
+    /// Whether `p` lies on any visible window's edge grip.
+    pub fn resize_grab_hit_at(&self, p: Point) -> bool {
+        !self.hidden
+            && self.rect.contains(p)
+            && self.groups.iter().enumerate().any(|(i, group)| {
+                !self.layout_hides_group(i)
+                    && self.fullscreen_group != Some(group.id)
+                    && group.resize_grab_hit(p)
+            })
     }
 
     /// Whether the group promoted by [`Self::set_fullscreen`] stops at its
@@ -3331,6 +3349,9 @@ impl Widget for GroupRow {
         for (i, group) in self.groups.iter_mut().enumerate() {
             group.set_reduce_motion(theme.reduce_motion);
             let lane = lane_of.get(i).copied().unwrap_or(0);
+            // No seam handle sits left of a lane's first group.
+            let prev_lane = i.checked_sub(1).and_then(|p| lane_of.get(p).copied());
+            group.set_leads_lane(prev_lane != Some(lane));
             let dest_fits = snap_lane.get(lane).copied().unwrap_or(false);
             if group.is_closing() && !theme.reduce_motion {
                 // A closing slot owns its width spring even when its destination
@@ -4711,6 +4732,23 @@ impl GroupRow {
         // remembered cursor (or an active capture) before siblings. Keep every
         // sibling in the fallback order: synthetic and keyboard-adjacent test
         // paths can legitimately lack a preceding cursor move.
+        // Edge grips first, for every group: they overlay the windows' own
+        // content, so no group's tile may swallow the pointer before the group
+        // under it has seen it.
+        if matches!(
+            event,
+            WindowEvent::CursorMoved { .. } | WindowEvent::MouseInput { .. }
+        ) {
+            for i in 0..self.groups.len() {
+                if self.layout_hides_group(i) {
+                    continue;
+                }
+                if self.groups[i].handle_edge_input(event, ctx.scale_factor, *ctx.modifiers) {
+                    *ctx.handled = true;
+                    return;
+                }
+            }
+        }
         let preferred = matches!(event, WindowEvent::MouseInput { .. }).then(|| {
             self.groups
                 .iter()
