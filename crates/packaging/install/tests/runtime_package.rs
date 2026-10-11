@@ -314,6 +314,9 @@ fn runtime_install_reuses_verified_local_blobs() {
         "install",
         thin.to_str().unwrap(),
         "--allow-self-signed",
+        // A second build of the one runtime package is a replacement: the
+        // catalogue holds one verified record per package id.
+        "--force",
         "--payload-from",
         &url,
     ]);
@@ -357,6 +360,9 @@ fn runtime_install_refuses_a_local_file_whose_hash_differs() {
         "install",
         thin.to_str().unwrap(),
         "--allow-self-signed",
+        // A second build of the one runtime package is a replacement: the
+        // catalogue holds one verified record per package id.
+        "--force",
         "--payload-from",
         &url,
     ]);

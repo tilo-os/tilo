@@ -957,9 +957,11 @@ fn install(
         return install_runtime_package(
             &candidate,
             &checked,
-            force,
-            pinned,
-            dry_run,
+            RuntimeInstallOptions {
+                replacement,
+                pinned,
+                dry_run,
+            },
             payload_from
                 .as_ref()
                 .map(|source| source as &dyn BlobFetcher),
@@ -1090,6 +1092,20 @@ impl tilo_app_package::BlobSource for BlobDir {
     }
 }
 
+impl BlobFetcher for BlobDir {
+    fn fetch(
+        &self,
+        hashes: &[tilo_app_package::BlobHash],
+        sink: &mut dyn tilo_app_package::BlobSink,
+    ) -> std::io::Result<()> {
+        for hash in hashes {
+            let mut file = fs::File::open(self.0.join(hash.to_hex()))?;
+            sink.accept(hash, file.metadata()?.len(), &mut file)?;
+        }
+        Ok(())
+    }
+}
+
 /// Install a native runtime package: its payload is a signed runtime
 /// bundle, which lands where the launcher looks for the runtime it
 /// provides (`$XDG_DATA_HOME/tilo-runtime/<version>`). The bundle must
@@ -1101,12 +1117,17 @@ impl tilo_app_package::BlobSource for BlobDir {
 /// keeps it through the app install that follows; `pinned` keeps it for
 /// good. A replaced bundle leaves the version's directory in one rename
 /// before it is deleted, and stays while a running app has it mounted.
+#[derive(Clone, Copy)]
+struct RuntimeInstallOptions {
+    replacement: Replacement,
+    pinned: bool,
+    dry_run: bool,
+}
+
 fn install_runtime_package(
     candidate: &Candidate,
     checked: &Checked,
-    force: bool,
-    pinned: bool,
-    dry_run: bool,
+    options: RuntimeInstallOptions,
     payload: Option<&dyn BlobFetcher>,
 ) -> Result<(), Error> {
     let provides = checked
@@ -1125,33 +1146,25 @@ fn install_runtime_package(
         .ok_or_else(|| Error::RuntimeReferenceMalformed(provides.to_string()))?;
     let dest = runtime_bundle::default_bundle_path(version)
         .map_err(|e| Error::RuntimeBundle(e.to_string()))?;
-    if dry_run {
+    if options.dry_run {
         println!("plan: install runtime {provides}");
         println!("  package   : {} {}", checked.id(), checked.version());
         println!("  bundle    : {}", dest.display());
         println!("(nothing was written)");
         return Ok(());
     }
+    let store = store()?;
+    let layers = layers(checked.id())?;
+    let existing = layers.running();
+    let already_installed =
+        existing.is_some_and(|row| row.package_id_hex == checked.meta.id.to_hex());
+    fits_os(checked)?;
     let root = dest
         .parent()
         .ok_or_else(|| Error::RuntimeBundle(format!("{} has no parent", dest.display())))?;
+    fs::create_dir_all(root)?;
     let bundles = runtime_bundle::gc::BundleRoot::new(root);
     let _collection_held_off = bundles.install_lock()?;
-    let keep = |bundles: &runtime_bundle::gc::BundleRoot| -> Result<(), Error> {
-        bundles.lease(version, tilo_clock::unix_now())?;
-        if pinned {
-            bundles.pin(version)?;
-        }
-        Ok(())
-    };
-    if dest.join(runtime_bundle::BUNDLE_MANIFEST_FILENAME).exists() && !force {
-        keep(&bundles)?;
-        println!(
-            "runtime {provides} is already installed at {}",
-            dest.display()
-        );
-        return Ok(());
-    }
     let staging = root.join(format!(
         "{}{}",
         runtime_bundle::gc::STAGING_PREFIX,
@@ -1162,21 +1175,81 @@ fn install_runtime_package(
     }
     let result = stage_runtime_bundle(candidate, &staging, payload).and_then(|tree| {
         let manifest = check_runtime_bundle(&tree, version)?;
+        if existing.is_some() && !already_installed && options.replacement == Replacement::Refuse {
+            return Err(Error::AlreadyInstalled(checked.id().to_string()));
+        }
+        // Publish the verified signed package through the same catalogue and
+        // integrity records AppHost reads. Reuse the already fetched blobs;
+        // a thin engine must not download its entire payload a second time.
+        let blobs = BlobDir(staging.join("blobs"));
+        if !record_runtime_package(&store, candidate, checked, options, &blobs)? {
+            return Ok(false);
+        }
         seal_runtime_bundle(&tree, &manifest);
         let replaced = bundles.retire(version)?;
         fs::rename(&tree, &dest)?;
         if let Some(replaced) = replaced {
             bundles.purge(&replaced, &install::gc::in_use_now())?;
         }
-        Ok(())
+        Ok(true)
     });
     let _ = fs::remove_dir_all(&staging);
-    result?;
-    keep(&bundles)?;
-    println!("installed: runtime {provides}");
+    if !result? {
+        return Ok(());
+    }
+    bundles.lease(version, tilo_clock::unix_now())?;
+    if options.pinned {
+        bundles.pin(version)?;
+    }
+    if already_installed {
+        println!("runtime {provides} is already installed; its verified package record is current");
+    } else {
+        println!("installed: runtime {provides}");
+    }
     println!("  package  : {} {}", checked.id(), checked.version());
     println!("  bundle   : {}", dest.display());
     Ok(())
+}
+
+/// The normal package-store commit retains pins and can preserve an explicit
+/// version hold. No runtime directory is promoted if that hold wins.
+fn record_runtime_package(
+    store: &PackageStore,
+    candidate: &Candidate,
+    checked: &Checked,
+    options: RuntimeInstallOptions,
+    blobs: &BlobDir,
+) -> Result<bool, Error> {
+    let admission = checked_admission(
+        checked,
+        options.pinned,
+        held_below_image(&layers(checked.id())?, checked.version()),
+        candidate_source(candidate),
+    );
+    if options.replacement == Replacement::PreserveHeld {
+        match store
+            .install_preserving_hold(candidate.reader()?, admission, Some(blobs))
+            .map_err(store_error)?
+        {
+            package_store::InstallSelection::Installed(_) => {}
+            package_store::InstallSelection::Preserved(row) => {
+                print_cohort_selection(&row, true);
+                return Ok(false);
+            }
+        }
+    } else {
+        store
+            .install(candidate.reader()?, admission, Some(blobs))
+            .map_err(store_error)?;
+    }
+    Ok(true)
+}
+
+fn candidate_source(candidate: &Candidate) -> String {
+    match candidate {
+        Candidate::File(path) => path.display().to_string(),
+        Candidate::Fetched(_) => "registry".to_string(),
+    }
 }
 
 /// Materialise the package's payload tree under `staging`; returns the tree.
@@ -1478,6 +1551,9 @@ fn update_allowed(
     // for equality only — not evidence of an upgrade.
     match compare_versions(&entry.version, checked.version()) {
         Some(std::cmp::Ordering::Equal) | None if entry.version == checked.version() => {
+            if checked.manifest.package.kind == tilo_app_package::Kind::Runtime {
+                verify_current_runtime(entry, checked)?;
+            }
             println!("{} {} is already current", entry.id, entry.version);
             Ok(Some(UpdateOutcome::AlreadyCurrent))
         }
@@ -1488,6 +1564,43 @@ fn update_allowed(
         }),
         _ => Ok(None),
     }
+}
+
+/// A version string and a retained directory cannot establish that an exact
+/// runtime package remains installed. Replay its signed package record and
+/// compare the mounted bundle's signed manifest with that package's payload.
+fn verify_current_runtime(entry: &InstalledPackage, checked: &Checked) -> Result<(), Error> {
+    if entry.package_id_hex != checked.meta.id.to_hex() {
+        return Err(Error::Policy(
+            "the offered runtime changes the installed version's signed root".into(),
+        ));
+    }
+    let report = package_store::integrity::verify(entry, &entry.payload_root)
+        .map_err(|error| Error::Store(error.to_string()))?;
+    if !report.is_intact() {
+        return Err(Error::RuntimeBundle(
+            "the installed runtime package payload is damaged".into(),
+        ));
+    }
+    let version = checked
+        .manifest
+        .package
+        .provides
+        .as_deref()
+        .and_then(|runtime| runtime.split_once('/').map(|(_, version)| version))
+        .ok_or_else(|| {
+            Error::RuntimeBundle("the runtime package names no valid provided runtime".into())
+        })?;
+    let bundle = runtime_bundle::default_bundle_path(version)
+        .map_err(|error| Error::RuntimeBundle(error.to_string()))?;
+    check_runtime_bundle(&bundle, version)?;
+    let manifest = runtime_bundle::BUNDLE_MANIFEST_FILENAME;
+    if fs::read(bundle.join(manifest))? != fs::read(entry.payload_root.join(manifest))? {
+        return Err(Error::RuntimeBundle(
+            "the installed bundle differs from its signed package".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn update_one(
@@ -1516,6 +1629,24 @@ fn update_one(
     let checked = check(&candidate, request.trust)?;
     if let Some(outcome) = update_allowed(entry, &checked, request)? {
         return Ok(outcome);
+    }
+
+    if checked.manifest.package.kind == tilo_app_package::Kind::Runtime {
+        install_runtime_package(
+            &candidate,
+            &checked,
+            RuntimeInstallOptions {
+                replacement: Replacement::Replace,
+                pinned: entry.pinned,
+                dry_run: request.dry_run,
+            },
+            payload,
+        )?;
+        return Ok(if request.dry_run {
+            UpdateOutcome::Planned
+        } else {
+            UpdateOutcome::Swapped
+        });
     }
 
     let data_home = data_home_root()?;

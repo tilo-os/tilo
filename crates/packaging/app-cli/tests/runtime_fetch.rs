@@ -180,13 +180,13 @@ type = "gui"
     )
 }
 
-fn runtime_tapp(bundle: &Path, provides: &str) -> Vec<u8> {
+fn runtime_tapp(bundle: &Path, provides: &str, version: &str) -> Vec<u8> {
     tapp(
         &format!(
             r#"
 [package]
 id = "so.tilo.runtime"
-version = "0.1.7"
+version = "{version}"
 kind = "runtime"
 name = "Tilo runtime"
 provides = "{provides}"
@@ -401,7 +401,7 @@ fn a_registry_build_for_another_runtime_fetches_that_runtime_or_is_refused() {
     assert!(package_store::list_installed().unwrap().is_empty());
 
     // Phase `with_its_runtime_on_offer_the_runtime_is_fetched_first`.
-    let runtime_full = runtime_tapp(&registry_bundle, &needed);
+    let runtime_full = runtime_tapp(&registry_bundle, &needed, "0.1.7");
     let objects = root.join("objects");
     std::fs::create_dir_all(&objects).unwrap();
     let split = tilo_app_package::chunks::split(runtime_full.as_slice(), &objects).unwrap();
@@ -447,6 +447,35 @@ fn a_registry_build_for_another_runtime_fetches_that_runtime_or_is_refused() {
         "installing the engine must not replace or install its app"
     );
 
+    let installed_runtime = package_store::list_installed()
+        .unwrap()
+        .into_iter()
+        .find(|row| row.id == registry_types::NATIVE_RUNTIME_PACKAGE_ID)
+        .expect("the verified runtime installation must publish its canonical package identity");
+    assert_eq!(installed_runtime.version, "0.1.7");
+    assert_eq!(installed_runtime.package_id_hex, split.meta.id.to_hex());
+    assert_eq!(
+        installed_runtime.publisher_key_hex,
+        hex::encode(publisher().verifying_key().to_bytes())
+    );
+    assert!(installed_runtime.manifest_path.is_file());
+    assert!(installed_runtime.payload_root.join("bundle.toml").is_file());
+
+    assert!(
+        package_store::integrity::verify(&installed_runtime, &installed_runtime.payload_root,)
+            .unwrap()
+            .is_intact()
+    );
+    let repeat = std::process::Command::new(env!("CARGO_BIN_EXE_app"))
+        .args(["runtime", "install", &needed, "--repo", "local"])
+        .output()
+        .unwrap();
+    assert!(
+        repeat.status.success(),
+        "{}",
+        String::from_utf8_lossy(&repeat.stderr)
+    );
+
     let listing = app_cli::available();
     assert!(
         !listing
@@ -481,4 +510,69 @@ fn a_registry_build_for_another_runtime_fetches_that_runtime_or_is_refused() {
         .find(|row| row.id == APP_ID)
         .expect("the app is installed");
     assert_eq!(linked.version, "2.0.0");
+
+    // A subsequent runtime package update must materialize its provided bundle,
+    // not merely replace the package row while leaving its libraries absent.
+    let (new_version, new_bundle) = runtime_bundle(root, "newer", b"new toolkit", &identity_path);
+    let new_needed = format!("tilo-runtime/{new_version}");
+    let new_tapp = runtime_tapp(&new_bundle, &new_needed, "0.1.8");
+    let new_root = app_registry::tapp::load(&new_tapp)
+        .unwrap()
+        .package_id
+        .to_hex();
+    served.put("/new-runtime.tapp", new_tapp.clone());
+    let newer = snapshot(
+        vec![entry(
+            registry_types::NATIVE_RUNTIME_PACKAGE_ID,
+            "0.1.8",
+            &format!("{base}/new-runtime.tapp"),
+            &new_tapp,
+            &new_needed,
+        )],
+        &owner,
+        Some(&second),
+    );
+    served.put("/entries", serde_json::to_vec(&newer).unwrap());
+    let update = std::process::Command::new(env!("CARGO_BIN_EXE_app"))
+        .args(["runtime", "install", &new_needed, "--repo", "local"])
+        .output()
+        .unwrap();
+    assert!(
+        update.status.success(),
+        "{}",
+        String::from_utf8_lossy(&update.stderr)
+    );
+    let rows = package_store::list_installed().unwrap();
+    let runtime = rows
+        .iter()
+        .find(|row| row.id == registry_types::NATIVE_RUNTIME_PACKAGE_ID)
+        .unwrap();
+    assert_eq!(runtime.version, "0.1.8");
+    assert_eq!(runtime.package_id_hex, new_root);
+    assert_eq!(
+        runtime.publisher_key_hex,
+        installed_runtime.publisher_key_hex
+    );
+    runtime_bundle::verify_bundle(&runtimes.join(&new_version)).unwrap();
+    runtime_bundle::verify_bundle(&runtimes.join(&registry_version)).unwrap();
+    assert_eq!(
+        std::fs::read(runtimes.join(&new_version).join("lib/libruntime_dylib.so")).unwrap(),
+        b"new toolkit"
+    );
+
+    // A catalogued package plus a damaged retained bundle is not installed
+    // successfully: the real same-version update must refuse, not trust presence.
+    std::fs::write(
+        runtimes.join(&new_version).join("lib/libruntime_dylib.so"),
+        b"tampered",
+    )
+    .unwrap();
+    let damaged = std::process::Command::new(env!("CARGO_BIN_EXE_app"))
+        .args(["runtime", "install", &new_needed, "--repo", "local"])
+        .output()
+        .unwrap();
+    assert!(
+        !damaged.status.success(),
+        "damaged retained runtime must not count as a completed install"
+    );
 }
