@@ -2,7 +2,7 @@
 use crate::component_support::*;
 use notes::{actions, doc::NotesDoc};
 use std::{cell::RefCell, rc::Rc};
-use ui::{Widget, headless::Driver};
+use ui::{Widget, headless::FrameHarness};
 use vello::{Scene, kurbo::Rect, peniko::Color};
 
 struct DamageWitness {
@@ -54,7 +54,7 @@ fn paragraph_input(reduce_motion: bool, key: &str, prefix: &str, advance_timesta
     let mut inputs = runner_inputs();
     inputs.theme.reduce_motion = reduce_motion;
     let background = inputs.theme.tokens.colors.surfaces.content;
-    let mut driver = Driver::from_component_with_decorator(
+    let mut driver = FrameHarness::from_component_with_decorator(
         component(&f, 11, existing(&checkout)),
         (1200, 900),
         inputs,
@@ -156,7 +156,7 @@ fn assert_sparse_pixels(before: &Scene, after: &Scene, damage: &[Rect], backgrou
 }
 
 fn report_unsettled_scene(
-    driver: &Driver,
+    driver: &FrameHarness,
     records: &ui::record::RecordStore,
     record: &ui::record::RecordId,
     background: Color,
@@ -185,7 +185,7 @@ fn pin_edit_clock(seconds: u64) {
     );
 }
 
-fn date_captions(driver: &Driver) -> Vec<String> {
+fn date_captions(driver: &FrameHarness) -> Vec<String> {
     driver
         .a11y_nodes()
         .into_iter()
@@ -197,7 +197,7 @@ fn date_captions(driver: &Driver) -> Vec<String> {
         .collect()
 }
 
-fn type_with_timestamp(driver: &mut Driver, key: &str, advance_timestamp: bool) {
+fn type_with_timestamp(driver: &mut FrameHarness, key: &str, advance_timestamp: bool) {
     let before = advance_timestamp.then(|| date_captions(driver));
     if advance_timestamp {
         // Only wall time advances: the ordinary action stamps a new minute

@@ -2703,7 +2703,7 @@ fn ime_and_accessibility_expose_terminal_semantics() {
     // Case `app_wrapper_routes_ime_commit_to_the_focused_terminal`.
     {
         let (widget, rx) = build_test_widget();
-        let mut app = ui::headless::Driver::new(State::new(), Box::new(widget), (800, 480));
+        let mut app = ui::headless::FrameHarness::new(State::new(), Box::new(widget), (800, 480));
         app.tab(false);
         app.send(&winit::event::WindowEvent::Ime(winit::event::Ime::Commit(
             "Grüße".into(),

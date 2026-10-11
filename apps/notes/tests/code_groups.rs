@@ -435,7 +435,7 @@ fn code_fence_edits_keep_identities_boundaries_and_copy_buttons() {
     }
 }
 
-fn copy_targets(live: &ui::headless::Driver) -> Vec<String> {
+fn copy_targets(live: &ui::headless::FrameHarness) -> Vec<String> {
     fn collect(node: &ui::a11y::AccessNode, targets: &mut Vec<String>) {
         if let Some(target) = &node.action_target
             && target.starts_with("notes.code-copy:")

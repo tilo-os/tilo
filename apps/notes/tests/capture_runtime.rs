@@ -71,7 +71,7 @@ fn short_narrow_note_keeps_its_title_and_metadata_above_the_caret() {
     );
 }
 
-fn text_node(driver: &ui::headless::Driver, target: &str) -> ui::a11y::AccessNode {
+fn text_node(driver: &ui::headless::FrameHarness, target: &str) -> ui::a11y::AccessNode {
     fn semantic(node: &ui::a11y::AccessNode, target: &str) -> Option<ui::a11y::AccessNode> {
         if node.action_target.as_deref() == Some(target) {
             return Some(node.clone());

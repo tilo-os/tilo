@@ -176,7 +176,7 @@ mod tests {
                 "profile-name-label",
                 TextInput::local().with_id("profile-name"),
             );
-            let app = crate::headless::Driver::new(
+            let app = crate::headless::FrameHarness::new(
                 crate::State::new(),
                 Box::new(crate::column![field]),
                 (400, 600),
