@@ -2332,10 +2332,10 @@ impl SdkCertifiedIdentity for runtime_identity::BrokerSigningIdentity {
         )
     }
     fn device_certificate(&self) -> Option<&[u8]> {
-        runtime_identity::BrokerSigningIdentity::device_certificate(self)
+        self.metadata().device_certificate()
     }
     fn signing_public_key(&self) -> [u8; 32] {
-        runtime_identity::BrokerSigningIdentity::signing_public_key(self)
+        self.metadata().signing_public_key()
     }
     fn sign_collaboration_join(
         &self,
@@ -2505,6 +2505,7 @@ async fn sdk_join_identity_from_host(
     cluster_id: Uuid,
 ) -> Result<LocalSdkJoinIdentity, runtime_portal::NotAvailable> {
     let device_certificate = identity
+        .metadata()
         .device_certificate()
         .map(<[u8]>::to_vec)
         .ok_or_else(|| {
@@ -5202,7 +5203,7 @@ async fn try_send_frame(
         LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Harness(key)) => {
             key.verifying_key().to_bytes()
         }
-        LocalSdkDocumentSigner::Host(identity) => identity.signing_public_key(),
+        LocalSdkDocumentSigner::Host(identity) => identity.metadata().signing_public_key(),
     };
     let author = collab_types::Ed25519PublicKey::from_bytes(author);
     let attestation =
