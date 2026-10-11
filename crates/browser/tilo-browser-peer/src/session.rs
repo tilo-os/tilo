@@ -2750,11 +2750,12 @@ mod tests {
         };
         let decoded =
             SavedPeerChannels::decode(&saved.encode()?).ok_or("stored state did not decode")?;
-        assert_eq!(
-            postcard::to_stdvec(&decoded.requests)?,
-            postcard::to_stdvec(&vec![request])?
-        );
-        assert_eq!(decoded.held, saved.held);
+        if postcard::to_stdvec(&decoded.requests)? != postcard::to_stdvec(&vec![request])? {
+            return Err("the pending access request changed on reopen".into());
+        }
+        if decoded.held != saved.held {
+            return Err("the held edit changed on reopen".into());
+        }
         Ok(())
     }
 
@@ -2772,9 +2773,12 @@ mod tests {
         let mut bytes = V2_SAVED_CHANNELS_TAG.to_vec();
         postcard::to_io(&saved, &mut bytes)?;
         let decoded = SavedPeerChannels::decode(&bytes).ok_or("version two did not decode")?;
-        assert!(decoded.requests.is_empty());
-        assert_eq!(decoded.held, saved.held);
-        assert!(matches!(decoded.channels, StoredChannels::Current(_)));
+        if !decoded.requests.is_empty()
+            || decoded.held != saved.held
+            || !matches!(decoded.channels, StoredChannels::Current(_))
+        {
+            return Err("version two lost held edits or decoded as another version".into());
+        }
         Ok(())
     }
 
@@ -2793,9 +2797,12 @@ mod tests {
         let held = vec![(route, vec![b"before the reload".to_vec()])];
         let bytes = postcard::to_stdvec(&(channels, &held))?;
         let decoded = SavedPeerChannels::decode(&bytes).ok_or("legacy state did not decode")?;
-        assert!(decoded.requests.is_empty());
-        assert_eq!(decoded.held, held);
-        assert!(matches!(decoded.channels, StoredChannels::Legacy(_)));
+        if !decoded.requests.is_empty()
+            || decoded.held != held
+            || !matches!(decoded.channels, StoredChannels::Legacy(_))
+        {
+            return Err("legacy state lost held edits or decoded as another version".into());
+        }
         Ok(())
     }
 
