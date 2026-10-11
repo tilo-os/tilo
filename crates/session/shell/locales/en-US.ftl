@@ -1534,13 +1534,6 @@ search-action-device-revoked = Device revoked
 search-action-device-revoked-body = The revocation was root-signed and recorded in this identity's device list.
 
 # Search: applications
-search-apps-group-start-here = Start here
-search-apps-group-everyday = Everyday
-search-apps-group-work = Work
-search-apps-group-media = Media
-search-apps-group-system-tools = System tools
-search-apps-group-more-apps = More apps
-search-apps-group-developer-tools = Developer tools
 search-apps-detail-grouped = { $group } · { $detail }
 search-apps-open = Open { $app }
 search-apps-open-subtitle = { $target } · { $detail }

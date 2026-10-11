@@ -1531,13 +1531,6 @@ search-action-device-revoked = Gerät widerrufen
 search-action-device-revoked-body = Der Widerruf wurde mit dem Stammschlüssel signiert und in der Geräteliste dieser Identität vermerkt.
 
 # Suche: Anwendungen
-search-apps-group-start-here = Zum Einstieg
-search-apps-group-everyday = Alltag
-search-apps-group-work = Arbeit
-search-apps-group-media = Medien
-search-apps-group-system-tools = Systemwerkzeuge
-search-apps-group-more-apps = Weitere Apps
-search-apps-group-developer-tools = Entwicklerwerkzeuge
 search-apps-detail-grouped = { $group } · { $detail }
 search-apps-open = { $app } öffnen
 search-apps-open-subtitle = { $target } · { $detail }
