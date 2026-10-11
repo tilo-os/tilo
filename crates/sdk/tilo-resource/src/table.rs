@@ -205,6 +205,36 @@ pub struct OwnCheck {
     /// Read a record from the map it is stored in, to check it after an
     /// edit of one of its fields.
     pub read: ReadRecord,
+    /// What the check reads (`#[model(check_reads, check_items)]`); `None`
+    /// when it may read anything, so every edit inside the record checks it.
+    pub reads: Option<CheckReads>,
+}
+
+/// What a record's own check reads: an edit that touches none of it cannot
+/// break the invariant, so the record is not read again to check it.
+pub struct CheckReads {
+    /// The keys of the fields it reads.
+    pub fields: &'static [&'static str],
+    /// The keys of the collections whose items it counts but does not read
+    /// into: adding, removing or replacing an item touches it, an edit
+    /// inside one does not.
+    pub items: &'static [&'static str],
+}
+
+impl CheckReads {
+    /// Whether an edit at `path` (from the record) can change what the
+    /// check reads.
+    #[must_use]
+    pub fn touched_by(&self, path: &[Segment]) -> bool {
+        match path.split_first() {
+            Some((Segment::Field(key), rest)) => {
+                self.fields.contains(&key.as_str())
+                    || (self.items.contains(&key.as_str()) && rest.len() <= 1)
+            }
+            // The whole record, or a path it does not know: checked.
+            None | Some(_) => true,
+        }
+    }
 }
 
 /// A record type as `#[derive(Model)]` describes it. See the [module
@@ -1405,7 +1435,12 @@ pub fn edit_fields(
             )));
         }
     }
-    if let Some(own) = &record.own_check {
+    if let Some(own) = &record.own_check
+        && own
+            .reads
+            .as_ref()
+            .is_none_or(|reads| reads.touched_by(path))
+    {
         let checked = obj.clone();
         let (read, own_check) = (own.read, own.check);
         crate::group::check_or_defer(format!("{}@{:?}", (record.name)(), obj), doc, move |doc| {

@@ -83,7 +83,13 @@ shared ones (`RichText`, `Grid`). An app does not implement `Resource` by hand.
   `fn(&Self) -> Result<(), Refusal>`. It runs after every change that touched a
   value of that type, from any path: a field edit, a verb, a group, an agent's
   `apply`. A refused check refuses the whole change. One place covers every way
-  in.
+  in. A field edit reads the record again to check it, so a record holding a
+  lot (a sheet's cells) says what its check reads:
+  `#[model(check = Sheet::valid, check_reads = "name color charts")]`, and
+  `check_items = "sheets"` for a collection whose items it only counts. An edit
+  inside none of them (typing into a cell) does not re-read the record; a verb
+  still checks the record it changed. A field left out that the check does
+  read goes unchecked on field edits.
 
 ### Paths
 
