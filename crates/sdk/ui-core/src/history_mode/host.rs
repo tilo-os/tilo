@@ -874,6 +874,7 @@ impl HistoryHost {
             crate::widget::find_test_id_mut(widget, id).is_some_and(|widget| {
                 widget.perform_action(
                     &crate::a11y::Action::Activate,
+                    &[],
                     &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
                     &automerge::ROOT,
                 )

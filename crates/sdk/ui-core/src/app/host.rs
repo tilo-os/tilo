@@ -83,14 +83,16 @@ fn draw_frame_content(
         || (app.history.is_some() && !app_live);
     if app_live {
         crate::widget::native_view_frame_start(app.root_widget.as_mut());
-        app.root_widget.draw_with_presence(
-            scene,
-            transform,
-            &mut app.text_renderer,
-            &app.theme,
-            &app.presence_ctx,
-            &app.permission_ctx,
-        );
+        app.presence_ctx
+            .with_permissions(app.permission_ctx.clone(), || {
+                app.root_widget.draw(
+                    scene,
+                    transform,
+                    &mut app.text_renderer,
+                    &app.theme,
+                    &app.presence_ctx,
+                )
+            });
     }
     // Everything from here on paints outside the widgets' layout boxes, where
     // their damage cannot describe it.
@@ -131,7 +133,7 @@ fn draw_frame_content(
             &app.presence_ctx,
         ) {
             tracing::debug!(?error, "history frame refused");
-            app.layout.structure_dirty = true;
+            app.layout.request_rebuild();
             app.layout.layout_dirty = true;
         }
     }
@@ -534,7 +536,7 @@ fn run_layout_pass(
     let viewport_changed = app.layout.last_layout_logical != Some(logical);
     if app.history_chrome_enabled {
         if (app.history_viewport_width >= 900.0) != (logical.0 >= 900.0) {
-            app.layout.structure_dirty = true;
+            app.layout.request_rebuild();
         }
         app.history_viewport_width = logical.0;
         let _ = app.history_local_resources();
@@ -551,7 +553,7 @@ fn run_layout_pass(
         && !app.layout.structure_dirty
         && app.history.is_none()
         && app.history_layout.is_none())
-    .then(|| widget_geometry(app.root_widget.as_ref()));
+    .then(|| crate::pointer_replay::widget_geometry(app.root_widget.as_ref()));
     let mut t_compute_us = 0u128;
     let mut t_apply_us = 0u128;
     let mut current_root = root_node;
@@ -658,7 +660,13 @@ fn run_layout_pass(
         app.layout.last_layout_logical = None;
         return None;
     }
+    if recomposed && viewport_changed {
+        // Composition settled against a new allocation: what moved is not
+        // a change any widget described.
+        app.layout.frame_rebuilds_described = false;
+    }
     if app.settle_history_presentation() {
+        app.layout.frame_rebuilds_described = false;
         let root = app.layout.root_node?;
         return run_layout_pass(app, root, width, height, scale_factor, true, native_host);
     }
@@ -710,21 +718,10 @@ fn run_layout_pass(
     app.publish_action_surface();
     let geometry_changed = recomposed
         || viewport_changed
-        || geometry_before.is_none_or(|before| before != widget_geometry(app.root_widget.as_ref()));
+        || geometry_before.is_none_or(|before| {
+            before != crate::pointer_replay::widget_geometry(app.root_widget.as_ref())
+        });
     Some((geometry_changed, t_compute_us, t_apply_us))
-}
-
-/// Every widget's layout box in tree order. Two snapshots of one unchanged
-/// tree are equal exactly when no widget moved or resized.
-#[cfg(feature = "native")]
-fn widget_geometry(root: &dyn crate::widget::Widget) -> Vec<KurboRect> {
-    fn walk(widget: &dyn crate::widget::Widget, out: &mut Vec<KurboRect>) {
-        out.push(widget.get_rect());
-        widget.for_each_child(&mut |child| walk(child, out));
-    }
-    let mut out = Vec::new();
-    walk(root, &mut out);
-    out
 }
 
 #[cfg(test)]

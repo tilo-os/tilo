@@ -339,6 +339,147 @@ are 2.75 million text ops), the collection read 21 % (one object lookup each
 for the entry, the item and its title text), layout and the bound-control
 refresh 18 %, and closing the previous window 10 %.
 
+### Typing in a note repaints its line
+
+`apps/notes/tests/typing_damage.rs` drives the real Notes window (its record
+and saver included) the way the desktop runs an in-process tile: input through
+`App::surface_input`, frames through `App::surface_frame_with_damage`, and the
+app's scene appended to a host part hinted with its damage and compared part
+by part (`ui::scene_parts`). Every frame is presented sparsely over the one
+before it and compared with a full render, in dark, light and high contrast.
+Pixels repainted per frame of a 1280×900 app (1,152,000 px):
+
+| Change | Before | After |
+|---|---:|---:|
+| A key after the previous key's save landed | 1,152,000 (a rebuilt tree) | ≈ 48,000 (the line, the caret, the save bubble) |
+| The save landing between keys | 1,152,000 (a rebuilt tree) | ≈ 25,000 (the bubble) |
+| A key a minute after the last edit ("Edited" turns over) | 1,152,000 (a rebuilt tree) | ≈ 81,600 (the line, the bubble, the dates line) |
+| A key in the title | ≈ 816,000 (the page panel) | ≈ 62,500 (the title's band) |
+| The pointer onto a toolbar button | ≈ 1,131,000 (the app below the header) | ≈ 1,200 (the button) |
+
+The desktop's 4K Notes tile repainted 7,022,592 of 8,294,400 px per key
+before (`frame_retained_tests::typing_in_notes_repaints_what_changed_not_the_tile`
+now holds a key and a title letter under 5 % of the output).
+
+What was behind it:
+
+- A record's save status flipping (Saved → Saving on a key, back when the
+  saver lands) marked a framework root's *structure* dirty, so the next frame
+  rebuilt the widget tree and repainted the window. The root now syncs again
+  with a changed status in the same pass, and an `App` presents it with a relayout
+  (`component_lifecycle::take_save_status_presentation`); a component mounted
+  straight in a `TileHost` still sees it as a structure change.
+- Notes drew its shell, page tree, save bubble and toasts as one opaque scene
+  beside the note, so the bubble or a hover in the shell repainted the app.
+  Each is now a damage part with its own proof; the shell's empty column
+  slots no longer claim their columns as needing a redraw.
+- The page's title was outside its parts. It is a part of its own now.
+- The "Created … · Edited …" line rebuilt the header's widgets (and so the
+  tree) whenever its words changed. Same-length changes now retext the built
+  line (`NoteHeader::retext_captions`).
+- A text field's correction chip floats outside the field, where neither the
+  block editor's per-paragraph damage nor the title's covered it: sparse
+  frames left it out or left it behind. Fields report it (`TextInput::overhang`)
+  and the editor and the title damage it where it is and was.
+
+Headings, quotes, list and checklist items and rules now damage their row of
+the editor too.
+
+### Code blocks, tables, tags and page renames repaint what changed
+
+The same test drives a code block (in a note of four lines of prose and a
+two-line run), a table, tags and renames (same window, same three themes, same
+pixel comparison). Largest frame per change, of the 1,152,000 px app (most
+include the save bubble, ≈ 25,000 px):
+
+| Change | Before | After |
+|---|---:|---:|
+| A key in a code run's first line | 183,252 (the editor) | ≈ 59,300 (the line, the bubble) |
+| A key in a later code line | 213,898 (the editor) | ≈ 58,500 |
+| A key in prose in a note holding code | 213,898 (the editor) | ≈ 48,600 (as in any note) |
+| A key in a table cell | 1,152,000 (a rebuilt tree) | ≈ 57,500 (the cell, its editor, the bubble) |
+| A second tag joining the header's row | 1,152,000 (a rebuilt tree) | ≈ 92,200 (the header, the bubble) |
+| The first tag (the header grows, the page moves) | 1,152,000 (a rebuilt tree) | ≈ 817,800 (the page panel) |
+| A key in the page tree's rename field | 229,577 (the tree's column) | ≈ 12,300 (the field) |
+| Naming the note in its title (Enter) | 315,041 (the title, the tree's column) | ≈ 94,200 (the title, the row, the caret's line, the bubble) |
+| Committing the rename | 318,105 (the tree's column, the title) | ≈ 101,400 (the row, the title, the caret's line, the bubble) |
+
+What was behind it:
+
+- The block editor kept per-block parts only while *no* block was code or a
+  table, so one code block anywhere made every key repaint the editor. A code
+  run's ground (drawn by its first block) is now a part of its own; each code
+  line damages its line. A table is a frame part, one part per cell (each
+  row's card when the cells stack), the focused cell's editor and the controls.
+  Formula runs still repaint the editor.
+- A key in a table cell set the editor's *structure* dirty, rebuilding the
+  window's tree per key. The table's line measures the table from its text, so
+  the key now asks for a relayout.
+- A header that rebuilt its widgets (a tag, a caption line) rebuilt the
+  window's tree, and a rebuilt tree repainted the window. A widget can now say
+  its structural change is described (`StructureChange::Described`): its own
+  damage covers what its new children change. The window still rebuilds the
+  tree, but keeps the frame's damage, adding every widget box that came, went
+  or moved, matched by identity across the rebuild. Any other reason to
+  rebuild in that frame (`LayoutRuntime::request_rebuild`, a
+  `StructureChange::Rebuild`, a history or viewport recomposition) repaints
+  the window as before; a decorator or container forwards `Described` only by
+  overriding `take_structure_change`.
+- The page tree (`TreeView`) had no damage of its own: anything in it repainted
+  its column. A settled tree now records one part per visible row and one for
+  the rename field; motion, a drag, an open menu, delegated rows and navigation
+  tiles still repaint the tree. Each scene it keeps opens and closes its own
+  layers: splitting the body's clip layer across two appended scenes rendered
+  stray pixels at a row's corner on Metal.
+
+Still open: a native window repaints whole while a blurred floating surface
+(the save bubble) shows.
+
+### Enter and Backspace repaint the blocks that moved
+
+The same test presses Enter and Backspace in a note of four paragraphs (and a
+list), each key after the previous edit's save landed and the bubble faded, in
+the three themes, every frame compared with a full render. Largest frame per
+key, of the 1,152,000 px app (each includes the save bubble, ≈ 25,000 px):
+
+| Key | Before | After |
+|---|---:|---:|
+| Enter splitting a paragraph | 1,152,000 (a rebuilt tree) | ≈ 114,400 (the rows from the split down, the drag handle, the bubble) |
+| Enter ending a paragraph | 1,152,000 (a rebuilt tree) | ≈ 92,900 |
+| Enter adding a list item | 1,152,000 (a rebuilt tree) | ≈ 213,700 (the rows from the new item down) |
+| Backspace joining two paragraphs | 1,152,000 (a rebuilt tree) | ≈ 91,800 |
+| Backspace removing an empty paragraph | 1,152,000 (a rebuilt tree) | ≈ 114,400 |
+
+What was behind it:
+
+- A block that came, went or changed its kind set the editor's *structure*
+  dirty, so the window rebuilt its whole tree. The block stack is one measured
+  leaf and blocks are not widgets, so the editor now *restacks*: it prepares
+  its lines again (`BlockEditor::prepare_blocks`, what a rebuild did for them)
+  and asks for a relayout. A block that brings or takes an image's button
+  still rebuilds. A collaborator's block arrives the same way
+  (`present_blocks`).
+- `PaintDamage` matched parts by position and gave up when one came, went or
+  moved. Parts are now matched by key; a part whose damage covers everything
+  it paints (`PaintPart::placed`: a block's row, a cell, the drag handle, a
+  code run's chrome) repaints where it was and where it is. Parts that only
+  certify where their scene changes (`PaintPart::new`) still repaint whole
+  when they come, go or move.
+- The editor's frame geometry was its rect, which a new paragraph grows, and
+  the drag handle beside the caret's block and a code run's chrome were drawn
+  outside its parts. The geometry is now the editor's top edge and width, and
+  the handle and chrome are placed parts.
+- A window repaints where a relaid widget's box was and is; the editor's box
+  grew with every paragraph. A widget can say its own damage covers changes to
+  its box (`Widget::damage_covers_own_box`, after its draw); the editor does
+  whenever it recorded a paint. The note panel keys the editor's part by its
+  top edge and width, and the scrollbar, whose thumb moves with the note's
+  height, is a part of its own.
+
+The rows below the edit still repaint (the region moved): Enter near the top
+of a long note repaints the visible note, not the window. A copy of the moved
+pixels in the renderer would avoid that.
+
 ## Verified shared-list CPU workload
 
 The `ui-perf perf_scenario --count 1200 --json` list case now checks the real

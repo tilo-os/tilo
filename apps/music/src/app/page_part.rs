@@ -78,7 +78,7 @@ impl PagePart {
             state: &mut ui::widget::Edits<'_>,
         ) -> bool {
             if widget.test_id() == Some(id) {
-                return widget.perform_action(action, state, &automerge::ROOT);
+                return widget.perform_action(action, &[], state, &automerge::ROOT);
             }
             widget
                 .children_mut()

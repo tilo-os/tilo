@@ -25,6 +25,18 @@ Both directories contain `PROVENANCE.md`, licences and focused regression
 tests. No insecure verifier, alternative trust loader or policy exception is
 introduced.
 
+## iroh idle timers
+
+`iroh` 1.0.3, `netwatch` 0.19.1 and `iroh-gossip` 0.101.0 are the
+checksum-verified registry releases in the lock, each with one small patch
+so an idle endpoint wakes for nothing: no re-STUN tick and no home relay
+while the relay map is empty, no 15 s wall-clock poll on Linux (a timerfd the
+kernel cancels on resume or a clock step replaces it), and no gossip cache
+sweep once a topic's caches are empty. Network changes still arrive through
+netlink at once. Each directory's `TILO-PATCH.md` has the details and an
+upstream-ready description; `crates/system/fs/tests/iroh_idle.rs` pins them.
+Remove a copy once its upstream release carries the change.
+
 ## Exportable histories
 
 The fork changes also live in two standalone histories, disconnected from the
@@ -326,6 +338,52 @@ uploads its residents again where it draws them, a busy atlas does not shrink,
 thirty open/close cycles leave only the wallpaper resident at the size it
 started with, and told images went the atlas comes down within a few passes
 while an expired request waits the long way again.
+
+## Scratch shrink (`bump_budget.rs`, `wgpu_engine.rs`, `lib.rs`)
+
+Upstream and the bump-budget patch above size a renderer's working memory for
+the busiest scene it has drawn and keep it: the bump reservation only grows,
+and the buffer pool keeps every size class until something clears it. A
+compositor that once drew several windows therefore kept their scratch after
+they closed (about 35 MiB on the dev VM: a 36 MiB reservation against the
+bare desktop's 28, and a 68 MiB pool). `Renderer::set_shrink_scratch(true)`
+opts a renderer in; it is off by default, so applications keep upstream's
+behaviour.
+
+- `BudgetTracker` tags each counter readback with whether its render ran
+  coarse over the whole scene (`begin_dense_readback`, used by
+  `render_to_texture_with_post_render_checked{,_indexed}`); a damage render's
+  counters cover only the bins it redrew, so they neither count nor shrink.
+  It keeps the field-wise maximum of the dense, non-overflowing frames since
+  the reservation last changed. After 120 of them (`SHRINK_AFTER_FRAMES`) it
+  lowers each field towards four times that maximum (`SHRINK_HEADROOM`, twice
+  what growth reserves), by at most half per shrink, so the scene that grew
+  a field still fits once and draws without overflowing when it comes back.
+  A shrink that frees less than an eighth of what the viewport reserves,
+  floors included (`SHRINK_MIN_FRACTION`), is not taken. Growth or an
+  overflow starts the window again. The caller clears the pool on a shrink
+  as it does on growth (`collect` reports both as `changed`).
+- `ResourcePool` stamps each free buffer with the recording that returned
+  it; after each recording an opted-in engine destroys the free buffers no
+  recording has taken for 120 recordings (`POOL_KEEP_RECORDINGS`), with the
+  cached bind groups that name them. Buffers are taken from the end of their
+  class's list, so a class's surplus goes first.
+- `Renderer::shrink_scratch_soon()`: the caller knows the scene got smaller
+  for good, a window closed. The next shrink needs only two dense frames
+  drawn since (`SHRINK_SOON_FRAMES`, within 16 measurements), once, and for
+  the next 64 recordings free buffers go after 16 untaken. An idle desktop
+  draws a handful of frames after a close, too few for the slow rule.
+- `Renderer::scratch_shrinks()` counts the shrinks, for the caller to have
+  freed device memory returned (a software rasteriser keeps it otherwise).
+
+Own tests in `bump_budget.rs` (a window of lighter dense frames shrinks it by
+at most half and the busy scene still fits, damage renders neither count nor
+shrink, an overflow or a growth starts the window again, a soon request
+shrinks once after two dense frames drawn since, small steps and renderers
+that did not opt in hold) and in `lib.rs` on a GPU (the shrunk renderer draws
+the light scene bit-identically to a fresh one, holds less, and draws the
+busy scene again in one render, identically; buffers no recording takes are
+destroyed and the pool holds what the light scene alone pools).
 
 ## `vendor/vello/src/wgpu_engine.rs`: cleared pools and freed downloads are destroyed
 

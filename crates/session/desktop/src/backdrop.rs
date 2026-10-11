@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use taffy::style_helpers::percent;
 use taffy::{NodeId, Style, TaffyTree};
-use ui::permissions::{PermissionContext, PermissionScope};
+use ui::permissions::PermissionScope;
 use ui::presence::{PresenceCtx, PresenceKey};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -300,7 +300,7 @@ impl DesktopBackdrop {
             return;
         }
 
-        // Same `std::mem::take` dance as `Column::draw_with_presence`,
+        // Same `std::mem::take` dance as `Column::draw`,
         // to avoid an aliasing borrow.
         let mut local = std::mem::take(&mut self.cached);
         local.reset();
@@ -500,28 +500,13 @@ impl Widget for DesktopBackdrop {
     ) {
         self.paint_backdrop(scene, transform, theme);
         if let Some(child) = &mut self.child {
-            child.draw(scene, transform, text_renderer, theme, presence);
-        }
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        permissions: &PermissionContext,
-    ) {
-        self.paint_backdrop(scene, transform, theme);
-        if let Some(child) = &mut self.child {
-            child.draw_with_presence(
+            ui::widget::draw_child(
+                child.as_mut(),
                 scene,
                 transform,
                 text_renderer,
                 theme,
                 presence,
-                permissions,
             );
         }
     }

@@ -2457,7 +2457,7 @@ mod tests {
     use super::*;
     use crate::model::Workspace;
     use automerge::transaction::Transactable;
-    use tilo_actions::{ActionInput, ExecutionMode, LocalTransport, OperationKind, ResultSpec};
+    use tilo_actions::{ExecutionMode, LocalTransport, OperationKind, ResultSpec};
     use ui::tilo_resource::Resource as _;
     use uuid::Uuid;
 
@@ -2955,15 +2955,6 @@ mod tests {
         }
     }
 
-    fn prompted_encode(spec: &ActionSpec, arg: &str) -> EncodedAction {
-        match &spec.input {
-            ActionInput::Prompted { build, .. } => build(arg),
-            ActionInput::Immediate(_) | ActionInput::Deferred { .. } => {
-                panic!("expected a prompted action: {}", spec.id)
-            }
-        }
-    }
-
     fn resource_count(resource: &Resource) -> usize {
         1 + resource.children.iter().map(resource_count).sum::<usize>()
     }
@@ -3422,7 +3413,7 @@ mod tests {
                 .iter()
                 .find(|action| action.id == "replace-text")
                 .expect("agent-editable block action");
-            let encoded = prompted_encode(edit, "Rewritten");
+            let encoded = edit.build_text("Rewritten").unwrap();
             let decoded: NotesAction = serde_json::from_slice(&encoded.payload).unwrap();
             assert_eq!(
                 decoded,
@@ -3718,7 +3709,7 @@ mod tests {
             // New-child builds an AppendPage under the right parent; the position
             // is resolved when it applies (the minted id differs each call).
             let new_child_spec = page.actions.iter().find(|a| a.id == "new-child").unwrap();
-            let encoded = prompted_encode(new_child_spec, "Child");
+            let encoded = new_child_spec.build_text("Child").unwrap();
             let decoded: NotesAction =
                 serde_json::from_slice(&encoded.payload).expect("payload decodes to NotesAction");
             let NotesAction::AppendPage { id, title, parent } = &decoded else {
@@ -3847,7 +3838,7 @@ mod tests {
             .find(|spec| spec.id == "new-page")
             .unwrap();
         let new_action: NotesAction =
-            serde_json::from_slice(&prompted_encode(new_spec, "Later note").payload).unwrap();
+            serde_json::from_slice(&new_spec.build_text("Later note").unwrap().payload).unwrap();
         let NotesAction::AppendPage { id, parent, .. } = &new_action else {
             panic!("a new note resolves its sibling position when it applies");
         };
@@ -3993,7 +3984,7 @@ mod tests {
                 .find(|action| action.id == "new-and-assign-tag")
                 .expect("normal create-and-assign workflow");
             assert!(matches!(
-                serde_json::from_slice::<NotesAction>(&prompted_encode(create, "Planning").payload),
+                serde_json::from_slice::<NotesAction>(&create.build_text("Planning").unwrap().payload),
                 Ok(NotesAction::CreateAndAssignTag { page, tag: TagData { name, .. } }) if page == projects.to_string() && name == "Planning"
             ));
         }

@@ -65,6 +65,24 @@ pub struct Actions<R: Resource> {
     marker: PhantomData<fn() -> R>,
 }
 
+/// The published resource [`Actions`] bind to, as the root refreshes it:
+/// not generic over the resource, so it is compiled once in the shared
+/// runtime.
+pub(crate) struct PublishedActions(Rc<RefCell<tilo_actions::Resource>>);
+
+impl PublishedActions {
+    /// Follow the canonical publication of this same hosted resource.
+    pub(crate) fn update(&self, published: tilo_actions::Resource) {
+        let mut current = self.0.borrow_mut();
+        // A handle belongs to one root; a replacement gets its own handle.
+        if current.id == published.id && current.kind == published.kind {
+            *current = published;
+        } else {
+            tracing::error!("action publication changed resource identity");
+        }
+    }
+}
+
 impl<R: Resource> Clone for Actions<R> {
     fn clone(&self) -> Self {
         Self {
@@ -82,15 +100,9 @@ impl<R: Resource> Actions<R> {
         }
     }
 
-    /// Follow the canonical publication of this same hosted resource.
-    pub(crate) fn update(&self, published: tilo_actions::Resource) {
-        let mut current = self.published.borrow_mut();
-        // A handle belongs to one root; a replacement gets its own handle.
-        if current.id == published.id && current.kind == published.kind {
-            *current = published;
-        } else {
-            tracing::error!("action publication changed resource identity");
-        }
+    /// What these actions bind to, for the root that keeps it current.
+    pub(crate) fn published(&self) -> PublishedActions {
+        PublishedActions(Rc::clone(&self.published))
     }
 
     /// The binding of `action` for a control with input `I`, or `None` when

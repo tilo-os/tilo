@@ -21,7 +21,7 @@
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd, RawFd};
-use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
@@ -984,10 +984,10 @@ impl Broker {
         if let Some(parent) = socket.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let _ = std::fs::remove_file(&socket);
         let address = SocketAddress::new(&socket)?;
-        let listener = UnixListener::bind(&address.path)?;
-        restrict_socket(&address.path)?;
+        // Owner-only: the socket is the route to the policy file. It lives in
+        // the 0700 store already, but a mode on the socket itself costs nothing.
+        let listener = tilo_files::native::private::bind_socket(&address.path)?;
 
         let state = Arc::new(Mutex::new(state));
         let thread_state = Arc::clone(&state);
@@ -1088,13 +1088,6 @@ impl Drop for Broker {
         }
         let _ = std::fs::remove_file(&self.address.path);
     }
-}
-
-fn restrict_socket(path: &Path) -> std::io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    // Owner-only: the socket is the route to the policy file. It lives in the
-    // 0700 store already, but a mode on the socket itself costs nothing.
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
 }
 
 fn serve_connection(stream: UnixStream, state: &Arc<Mutex<BrokerState>>, shared: &Shared) {

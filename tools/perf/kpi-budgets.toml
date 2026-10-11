@@ -540,6 +540,130 @@ p99_tolerance = 2.0
 min_delta = 10000.0
 source = "strip_pan_bench, pixels a 4K six-window pan frame rasterises"
 
+# The same pan on a 4K panel at 150 % and 200 %, and on a desktop of two
+# strips (the docked wheel riding the top strip over the second) at 100 % and
+# 200 %. Frame time is reported like the 100 % pan's. Raster pixels are
+# enforced about 40 % above the medians measured (Perf / scheduled 115087:
+# 55,566 at 150 %, 68,816 at 200 %, 94,548 on two strips, 187,872 on two
+# strips at 200 %: the uncovered columns, plus on two strips the band where
+# the panning strip's shadows meet the still one's); a pan that falls back to
+# repainting the output (8,294,400 px) fails at once.
+
+[kpi."render.shell.pan_pixels.4k_s150"]
+unit = "pixels"
+p50 = 80000.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 10000.0
+source = "strip_pan_bench, pixels a 4K six-window pan frame at 150 % rasterises"
+
+[kpi."render.shell.pan_pixels.4k_s200"]
+unit = "pixels"
+p50 = 100000.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 10000.0
+source = "strip_pan_bench, pixels a 4K six-window pan frame at 200 % rasterises"
+
+[kpi."render.shell.pan_pixels.4k_strips2"]
+unit = "pixels"
+p50 = 135000.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 10000.0
+source = "strip_pan_bench, pixels a 4K pan frame of two strips rasterises"
+
+[kpi."render.shell.pan_pixels.4k_s200_strips2"]
+unit = "pixels"
+p50 = 265000.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 10000.0
+source = "strip_pan_bench, pixels a 4K pan frame of two strips at 200 % rasterises"
+
+[kpi."render.shell.pan_us.4k_s150"]
+unit = "us"
+p99 = 6900.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1000.0
+source = "KPI document: Frame time p99 at 4K/144 Hz, damage-limited (lavapipe; reported only)"
+
+[kpi."render.shell.pan_us.4k_s200"]
+unit = "us"
+p99 = 6900.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1000.0
+source = "KPI document: Frame time p99 at 4K/144 Hz, damage-limited (lavapipe; reported only)"
+
+[kpi."render.shell.pan_us.4k_strips2"]
+unit = "us"
+p99 = 6900.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1000.0
+source = "KPI document: Frame time p99 at 4K/144 Hz, damage-limited (lavapipe; reported only)"
+
+[kpi."render.shell.pan_us.4k_s200_strips2"]
+unit = "us"
+p99 = 6900.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1000.0
+source = "KPI document: Frame time p99 at 4K/144 Hz, damage-limited (lavapipe; reported only)"
+
+# The CPU building a pan frame's scene (FrameBuilder::paint_with_damage). A
+# strip panning draws only the windows the screen shows; a window wholly off
+# screen replays its last drawing. Measured p50 3.5 ms on one strip, 5.4 ms on
+# two (Perf / scheduled 98362; 5.2 and 7.1 ms when every window of the strip
+# was drawn again each frame, run 98285). A wall-clock KPI: reported against
+# the 144 Hz frame budget, never enforced.
+
+[kpi."render.shell.pan_scene_us.4k"]
+unit = "us"
+p99 = 6900.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1000.0
+source = "KPI document: Frame time p99 at 4K/144 Hz; the CPU share of a pan frame (lavapipe runner; reported only)"
+
+[kpi."render.shell.pan_scene_us.4k_s150"]
+unit = "us"
+p99 = 6900.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1000.0
+source = "KPI document: Frame time p99 at 4K/144 Hz; the CPU share of a pan frame (lavapipe runner; reported only)"
+
+[kpi."render.shell.pan_scene_us.4k_s200"]
+unit = "us"
+p99 = 6900.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1000.0
+source = "KPI document: Frame time p99 at 4K/144 Hz; the CPU share of a pan frame (lavapipe runner; reported only)"
+
+[kpi."render.shell.pan_scene_us.4k_strips2"]
+unit = "us"
+p99 = 6900.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1000.0
+source = "KPI document: Frame time p99 at 4K/144 Hz; the CPU share of a pan frame (lavapipe runner; reported only)"
+
+[kpi."render.shell.pan_scene_us.4k_s200_strips2"]
+unit = "us"
+p99 = 6900.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1000.0
+source = "KPI document: Frame time p99 at 4K/144 Hz; the CPU share of a pan frame (lavapipe runner; reported only)"
+
 [kpi."render.shell.strip_move_us.4k"]
 unit = "us"
 p99 = 16700.0
@@ -547,6 +671,64 @@ p50_tolerance = 1.5
 p99_tolerance = 2.0
 min_delta = 1000.0
 source = "KPI document: Frame time p99 at 4K/144 Hz, full repaint (lavapipe; reported only)"
+
+[kpi."render.shell.strip_move_us.4k_s150"]
+unit = "us"
+p99 = 16700.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1000.0
+source = "KPI document: Frame time p99 at 4K/144 Hz, full repaint (lavapipe; reported only)"
+
+[kpi."render.shell.strip_move_us.4k_s200"]
+unit = "us"
+p99 = 16700.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1000.0
+source = "KPI document: Frame time p99 at 4K/144 Hz, full repaint (lavapipe; reported only)"
+
+# A strip-to-strip move is one frame: focus moves between two windows and the
+# strip ribbon and rail change. It repaints those: the two windows' edges (a
+# square at each corner, a band as thin as the stroke along each side), the
+# ribbon and the rail (404,224 px at 100 %, 495,616 at 150 %, 510,720 at 200 %,
+# Perf / scheduled 98362; 628,480 to 946,176 when the edges were damaged in
+# bands as deep as their corners, run 97828; 2,838,528 to 3,289,856 when Quick
+# Settings was damaged as one rect spanning its panel, the ribbon and the
+# rail). Every move is measured from a desktop at rest, the first one
+# included, so the max is a move too: a move that repaints the output
+# (8,294,400 px) fails at once. Raster pixels are enforced about 40 % above
+# the medians.
+
+[kpi."render.shell.strip_move_pixels.4k"]
+unit = "pixels"
+p50 = 570000.0
+max = 570000.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 10000.0
+source = "strip_pan_bench, pixels a 4K six-window strip move frame rasterises"
+
+[kpi."render.shell.strip_move_pixels.4k_s150"]
+unit = "pixels"
+p50 = 700000.0
+max = 700000.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 10000.0
+source = "strip_pan_bench, pixels a 4K six-window strip move frame at 150 % rasterises"
+
+[kpi."render.shell.strip_move_pixels.4k_s200"]
+unit = "pixels"
+p50 = 720000.0
+max = 720000.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 10000.0
+source = "strip_pan_bench, pixels a 4K six-window strip move frame at 200 % rasterises"
 
 # Opening a framework app over a long list (TIL-758): the framework-scaling
 # example (crates/sdk/tilo-app/examples/framework-scaling.rs, `open` mode)
@@ -728,10 +910,12 @@ source = "KPI document target after four apps closed (TIL-731; resources.py foot
 # The compositor's cgroup once the four apps have closed (TIL-731): at most its R01
 # idle figure (310-376 MiB on the dev VM, anon + shmem + kernel) plus 32 MiB; after the
 # close it is 331-335 MiB. It held 663-678 MiB while lavapipe kept every page closed
-# windows had touched.
+# windows had touched. Since the renderer gives back the scratch the four windows grew
+# (its bump reservation and pooled buffers), 352 MiB after the close against 361 at the
+# same base (vm-acceptance 96816, 96817).
 [kpi."memory.idle_mib.compositor.after_close"]
 unit = "MiB"
-max = 410.0
+max = 380.0
 min_delta = 32.0
 source = "TIL-731: the compositor returns to within 32 MiB of idle after four apps close"
 
@@ -739,10 +923,13 @@ source = "TIL-731: the compositor returns to within 32 MiB of idle after four ap
 # on lavapipe its device memory. R01 holds 73 MiB; after the close 105-109 MiB, the
 # renderer's pooled buffers and bump buffers sized for the desktop it last drew
 # (vm-acceptance 91838, 91987). It held 441-466 MiB before freed device memory was
-# punched out and the image atlas came down after a close (TIL-731).
+# punched out and the image atlas came down after a close (TIL-731). Since the renderer
+# gives back what the windows grew of its bump reservation and pool, 101 MiB against
+# 105 at the same base (vm-acceptance 96816, 96817): what stays is the pool of the frame
+# the desktop drew last.
 [kpi."memory.compositor_memfd_mib.after_close"]
 unit = "MiB"
-max = 120.0
+max = 112.0
 min_delta = 16.0
 source = "TIL-731: R01's compositor memfd shmem (73 MiB) plus the renderer's working set"
 

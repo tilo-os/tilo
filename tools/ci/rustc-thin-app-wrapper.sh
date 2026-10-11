@@ -10,6 +10,10 @@ set -euo pipefail
 
 compiler="$1"
 shift
+compiler_command=("$compiler")
+if [[ -n ${TILO_THIN_SCCACHE:-} ]]; then
+    compiler_command=("$TILO_THIN_SCCACHE" "$compiler")
+fi
 crate_name=""
 previous=""
 for argument in "$@"; do
@@ -36,7 +40,7 @@ case ":${TILO_THIN_BIN_CRATES:-}:" in
         # Packed relative relocations (DT_RELR, glibc >= 2.36) store the PIE's
         # ~20k R_X86_64_RELATIVE entries as a bitmap instead of 24 bytes each;
         # for Settings that is ~490 KB of .rela.dyn per tapp.
-        exec "$compiler" "$@" -C prefer-dynamic -C opt-level=z -C codegen-units=1 \
+        exec "${compiler_command[@]}" "$@" -C prefer-dynamic -C opt-level=z -C codegen-units=1 \
             -C llvm-args=--enable-merge-functions \
             -C llvm-args=--enable-machine-outliner=always \
             -C link-arg=-Wl,-z,pack-relative-relocs \
@@ -73,9 +77,22 @@ if [ "$crate_name" = "runtime_dylib" ]; then
         export TILO_LAZY_LINK_CC="${chosen:-cc}"
         lazy_link=(-C "linker=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/runtime-dylib-lazy-link.py")
     fi
-    exec "$compiler" "$@" -C prefer-dynamic \
+    exec "${compiler_command[@]}" "$@" -C prefer-dynamic \
         -C link-arg=-Wl,-z,pack-relative-relocs \
         -C link-arg=-Wl,-Bsymbolic-functions \
         ${lazy_link[@]+"${lazy_link[@]}"}
 fi
-exec "$compiler" "$@"
+
+# A runtime engine (crates/runtime/engines/*) is a Rust dylib
+# chained on the runtime: one app maps it beside libruntime_dylib.so. It
+# needs prefer-dynamic to link against the runtime at all (a dylib that links
+# another Rust dylib otherwise carries a second libstd), and the runtime's
+# relocation flags for the same reasons.
+case "$crate_name" in
+    tilo_*_engine)
+        exec "${compiler_command[@]}" "$@" -C prefer-dynamic \
+            -C link-arg=-Wl,-z,pack-relative-relocs \
+            -C link-arg=-Wl,-Bsymbolic-functions
+        ;;
+esac
+exec "${compiler_command[@]}" "$@"

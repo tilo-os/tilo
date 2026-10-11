@@ -594,7 +594,12 @@ impl App {
                 for _ in 0..times {
                     any |= app
                         .dispatch_node(fid, |widget, doc, root| {
-                            widget.perform_action(&act, &mut crate::widget::Edits::lend(doc), root)
+                            widget.perform_action(
+                                &act,
+                                &[],
+                                &mut crate::widget::Edits::lend(doc),
+                                root,
+                            )
                         })
                         .unwrap_or(false);
                 }
@@ -782,6 +787,9 @@ impl App {
         damage: &mut SurfaceDamage,
     ) -> bool {
         let _entry = self.enter_wake_scope();
+        // Armed for this frame: each rebuild it does clears it unless every
+        // request behind it was a change the widgets describe.
+        self.layout.frame_rebuilds_described = true;
         let replaced = self.swap_requested_component();
         // The model's own work, as a hosted worker's pump runs it:
         // collaboration (inbound edits, directory requests, publication),
@@ -798,8 +806,19 @@ impl App {
         )]
         let scale_factor = surface.scale_factor() as f32;
         self.layout.last_frame_size = Some(size);
-        self.layout.structure_dirty |= self.root_widget.take_structure_dirty() || replaced;
+        // A rebuild the widgets describe (only the reporting widget replaced
+        // children, and its damage covers them) keeps the frame's damage: the
+        // widgets' own, and every widget box that came, went or moved. Any
+        // other reason to rebuild this frame disarms it.
+        let changed = self.take_root_structure_dirty();
+        if replaced {
+            self.layout.request_rebuild();
+        }
+        self.layout.structure_dirty |= changed;
         let structure_rebuilt = self.layout.structure_dirty;
+        // Every widget and its box as the last frame left them, before
+        // anything is rebuilt: compared by identity only, never reached.
+        let boxes_before = widget_boxes(self.root_widget.as_ref());
         if structure_rebuilt {
             self.rebuild_structure();
         }
@@ -807,7 +826,6 @@ impl App {
             damage.repaint("no layout");
             return true;
         };
-        let boxes_before = widget_boxes(self.root_widget.as_ref());
         let rebuilds = self.layout.rebuilds;
         let Some((geometry_changed, _, _)) = run_layout_pass(
             self,
@@ -844,17 +862,19 @@ impl App {
         // move, and their own damage covers any change to them.
         // A layout pass that recomposed the tree may have replaced widgets.
         let recomposed = self.layout.rebuilds != rebuilds;
-        let moved = if recomposed {
-            None
-        } else if geometry_changed && !structure_rebuilt {
-            moved_boxes(&boxes_before, &widget_boxes(self.root_widget.as_ref()))
-        } else {
-            Some(Vec::new())
+        let described = (structure_rebuilt || recomposed) && self.layout.frame_rebuilds_described;
+        let relaid = !described && !recomposed && geometry_changed && !structure_rebuilt;
+        let boxes_after = (described || relaid).then(|| widget_boxes(self.root_widget.as_ref()));
+        let moved = match &boxes_after {
+            Some(after) if described => Some(changed_boxes(&boxes_before, after)),
+            Some(after) => moved_boxes(&boxes_before, after),
+            None if recomposed => None,
+            None => Some(Vec::new()),
         };
         let full = [
             (replaced, "another component"),
             (record_changed, "another record"),
-            (structure_rebuilt, "a rebuilt tree"),
+            (structure_rebuilt && !described, "a rebuilt tree"),
             (moved.is_none(), "moved geometry"),
             (self.debug_mode, "debug outlines"),
             (self.actions.action_palette.is_some(), "the action palette"),
@@ -864,6 +884,30 @@ impl App {
         .into_iter()
         .find_map(|(repaint, why)| repaint.then_some(why));
         let drawn = draw_frame_content(self, scene, size.width, size.height, scale_factor, None);
+        // A widget whose own damage this draw covers where its box was and is
+        // (a block editor that grew by a paragraph) leaves its box to that
+        // damage; its children's boxes still count.
+        let moved = match (moved, &boxes_after) {
+            (Some(moved), Some(after)) if !moved.is_empty() => {
+                let covered = boxes_covered_by_own_damage(self.root_widget.as_ref());
+                let uncovered = |boxes: &[(WidgetIdentity, KurboRect)]| -> Vec<_> {
+                    boxes
+                        .iter()
+                        .filter(|(widget, _)| !covered.contains(widget))
+                        .copied()
+                        .collect()
+                };
+                let (before, after) = (uncovered(&boxes_before), uncovered(after));
+                if covered.is_empty() {
+                    Some(moved)
+                } else if described {
+                    Some(changed_boxes(&before, &after))
+                } else {
+                    moved_boxes(&before, &after).or(Some(moved))
+                }
+            }
+            (moved, _) => moved,
+        };
         damage.frame(full, &drawn, f64::from(scale_factor), |regions| {
             collect_submitted_widget_damage(self.root_widget.as_ref(), regions);
             regions.extend(moved.into_iter().flatten());
@@ -880,14 +924,39 @@ impl App {
     }
 }
 
+/// A widget's identity within one tree walk: its address and its depth (a
+/// widget held at the start of its parent shares the parent's address).
+type WidgetIdentity = (*const (), usize);
+
 /// Every widget in tree order, by identity, with its layout box.
-fn widget_boxes(root: &dyn Widget) -> Vec<(*const (), KurboRect)> {
-    fn walk(widget: &dyn Widget, out: &mut Vec<(*const (), KurboRect)>) {
-        out.push((std::ptr::from_ref(widget).cast::<()>(), widget.get_rect()));
-        widget.for_each_child(&mut |child| walk(child, out));
+fn widget_boxes(root: &dyn Widget) -> Vec<(WidgetIdentity, KurboRect)> {
+    fn walk(widget: &dyn Widget, depth: usize, out: &mut Vec<(WidgetIdentity, KurboRect)>) {
+        out.push((
+            (std::ptr::from_ref(widget).cast::<()>(), depth),
+            widget.get_rect(),
+        ));
+        widget.for_each_child(&mut |child| walk(child, depth.saturating_add(1), out));
     }
     let mut out = Vec::new();
-    walk(root, &mut out);
+    walk(root, 0, &mut out);
+    out
+}
+
+/// Every widget whose own damage covers a change to its box this frame
+/// ([`Widget::damage_covers_own_box`]), by identity as [`widget_boxes`] has it.
+fn boxes_covered_by_own_damage(root: &dyn Widget) -> std::collections::HashSet<WidgetIdentity> {
+    fn walk(
+        widget: &dyn Widget,
+        depth: usize,
+        out: &mut std::collections::HashSet<WidgetIdentity>,
+    ) {
+        if widget.damage_covers_own_box() {
+            out.insert((std::ptr::from_ref(widget).cast::<()>(), depth));
+        }
+        widget.for_each_child(&mut |child| walk(child, depth.saturating_add(1), out));
+    }
+    let mut out = std::collections::HashSet::new();
+    walk(root, 0, &mut out);
     out
 }
 
@@ -895,8 +964,8 @@ fn widget_boxes(root: &dyn Widget) -> Vec<(*const (), KurboRect)> {
 /// `before` and `after` list the same widgets in the same order; `None`
 /// when they do not, and which pixels moved cannot be said.
 fn moved_boxes(
-    before: &[(*const (), KurboRect)],
-    after: &[(*const (), KurboRect)],
+    before: &[(WidgetIdentity, KurboRect)],
+    after: &[(WidgetIdentity, KurboRect)],
 ) -> Option<Vec<KurboRect>> {
     if before.len() != after.len() {
         return None;
@@ -911,6 +980,31 @@ fn moved_boxes(
         }
     }
     Some(moved)
+}
+
+/// The old and new box of every widget that a rebuild and relayout moved,
+/// and the box of every widget that came or went, matched by identity.
+fn changed_boxes(
+    before: &[(WidgetIdentity, KurboRect)],
+    after: &[(WidgetIdentity, KurboRect)],
+) -> Vec<KurboRect> {
+    let old: std::collections::HashMap<_, _> = before.iter().copied().collect();
+    let new: std::collections::HashMap<_, _> = after.iter().copied().collect();
+    let mut changed = Vec::new();
+    for (widget, rect) in after {
+        match old.get(widget) {
+            Some(was) if was == rect => {}
+            Some(was) => changed.extend([*was, *rect]),
+            None => changed.push(*rect),
+        }
+    }
+    changed.extend(
+        before
+            .iter()
+            .filter(|(widget, _)| !new.contains_key(widget))
+            .map(|(_, rect)| *rect),
+    );
+    changed
 }
 
 /// Where an app's frames on a surface changed since its host last looked
@@ -1018,8 +1112,8 @@ mod tests {
     fn a_relayout_repaints_where_moved_widgets_were_and_are() {
         let (a, b) = (1_u8, 2_u8);
         let (a, b) = (
-            std::ptr::from_ref(&a).cast::<()>(),
-            std::ptr::from_ref(&b).cast::<()>(),
+            (std::ptr::from_ref(&a).cast::<()>(), 1),
+            (std::ptr::from_ref(&b).cast::<()>(), 1),
         );
         let field = KurboRect::new(0.0, 0.0, 100.0, 20.0);
         let label = KurboRect::new(0.0, 30.0, 50.0, 40.0);
@@ -1038,6 +1132,39 @@ mod tests {
             None
         );
         assert_eq!(moved_boxes(&[(a, field)], &[(a, field), (b, label)]), None);
+    }
+
+    #[test]
+    fn a_described_rebuild_repaints_the_widgets_that_came_went_or_moved() {
+        let (a, b, c) = (1_u8, 2_u8, 3_u8);
+        let [a, b, c] = [&a, &b, &c].map(|widget| (std::ptr::from_ref(widget).cast::<()>(), 1));
+        let header = KurboRect::new(0.0, 0.0, 100.0, 20.0);
+        let chip = KurboRect::new(0.0, 0.0, 40.0, 20.0);
+        let body = KurboRect::new(0.0, 30.0, 100.0, 90.0);
+        let lower = KurboRect::new(0.0, 40.0, 100.0, 100.0);
+        // A chip came, the body moved down under it; the header kept its box.
+        assert_eq!(
+            changed_boxes(
+                &[(a, header), (b, body)],
+                &[(a, header), (c, chip), (b, lower)]
+            ),
+            vec![chip, body, lower]
+        );
+        // The chip went again.
+        assert_eq!(
+            changed_boxes(
+                &[(a, header), (c, chip), (b, body)],
+                &[(a, header), (b, body)]
+            ),
+            vec![chip]
+        );
+        // A widget held at the start of its parent shares the parent's
+        // address, not its depth: neither is mistaken for the other.
+        let child = (a.0, 2);
+        assert_eq!(
+            changed_boxes(&[(a, header), (child, chip)], &[(a, header), (child, chip)]),
+            Vec::<KurboRect>::new()
+        );
     }
 
     /// Records where it is clicked, in its own logical coordinates.
@@ -1303,7 +1430,7 @@ mod tests {
             &[crate::close_admission::Choice::KeepEditing],
             app.input.platform,
         );
-        app.layout.structure_dirty = true;
+        app.layout.request_rebuild();
         app.layout.layout_dirty = true;
         app.surface_frame(&region, &mut Scene::new());
         PHYSICAL.with_borrow_mut(Vec::clear);

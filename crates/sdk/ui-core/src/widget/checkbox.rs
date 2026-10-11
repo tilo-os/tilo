@@ -330,7 +330,7 @@ impl Widget for Checkbox {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        _presence: &crate::presence::PresenceCtx,
+        presence: &crate::presence::PresenceCtx,
     ) {
         let target = f64::from(self.control.interaction.minimum_target());
         let visual_center = if self.label.is_some() {
@@ -370,6 +370,7 @@ impl Widget for Checkbox {
                 &style,
             );
         }
+        crate::widget::draw_gate_and_peer_focus(self, scene, transform, theme, presence);
     }
 
     fn name(&self) -> &'static str {
@@ -679,6 +680,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut c,
                 &Action::ToggleCheck,
+                &[],
                 &mut crate::widget::Edits::lend(&mut doc),
                 &root
             ));
@@ -687,6 +689,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut c,
                 &Action::Activate,
+                &[],
                 &mut crate::widget::Edits::lend(&mut doc),
                 &root
             ));
@@ -701,6 +704,7 @@ mod tests {
             assert!(!Widget::perform_action(
                 &mut c,
                 &Action::ToggleCheck,
+                &[],
                 &mut crate::widget::Edits::lend(&mut doc),
                 &root
             ));
@@ -767,6 +771,7 @@ mod tests {
             assert!(!Widget::perform_action(
                 &mut checkbox,
                 &crate::a11y::Action::Activate,
+                &[],
                 &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
@@ -781,6 +786,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut checkbox,
                 &crate::a11y::Action::Activate,
+                &[],
                 &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
@@ -849,6 +855,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut first,
                 &Action::ToggleCheck,
+                &[],
                 &mut crate::widget::Edits::lend(&mut document),
                 &automerge::ROOT,
             ));

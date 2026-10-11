@@ -28,7 +28,6 @@ use winit::keyboard::{Key, NamedKey};
 use ui::a11y::{AccessNode, AccessState, Role};
 use ui::icons::Icon;
 use ui::paint::PaintCtx;
-use ui::permissions::PermissionContext;
 use ui::presence::{PresenceCtx, PresenceKey};
 use ui::text_render::{TextRenderer, TextStyle};
 use ui::theme::Theme;
@@ -7365,7 +7364,7 @@ impl Widget for VideoEditorApp {
     }
 
     /// The window's History control answers to its own target; everything
-    /// else the tree publishes is a keyed route to [`Self::perform_action_at`].
+    /// else the tree publishes is a keyed route to [`Self::perform_action`].
     fn perform_semantic_action(
         &mut self,
         target: &str,
@@ -7392,7 +7391,7 @@ impl Widget for VideoEditorApp {
         else {
             return false;
         };
-        !key_path.is_empty() && self.perform_action_at(action, &key_path, state, path)
+        !key_path.is_empty() && self.perform_action(action, &key_path, state, path)
     }
 
     /// Route an assistive technology's action to the element it named.
@@ -7407,7 +7406,7 @@ impl Widget for VideoEditorApp {
         clippy::indexing_slicing,
         reason = "a decoded accessibility action has its fixed argument shape validated before its command-specific fields are read"
     )]
-    fn perform_action_at(
+    fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
         key_path: &[u64],
@@ -7504,18 +7503,6 @@ impl Widget for VideoEditorApp {
 
     fn get_rect(&self) -> Rect {
         self.rect
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        _permissions: &PermissionContext,
-    ) {
-        self.draw(scene, transform, tr, theme, presence);
     }
 }
 

@@ -14,7 +14,7 @@ use ui_core::presence::PresenceCtx;
 use ui_core::text_render::TextRenderer;
 use ui_core::vello::Scene;
 use ui_core::vello::kurbo::{Affine, Point, Rect};
-use ui_core::widget::{ContextMenu, Element, MenuItem, TaffyTreeExt, Widget};
+use ui_core::widget::{ContextMenu, Element, MenuItem, TaffyTreeExt, Widget, draw_child};
 use ui_core::winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use ui_core::winit::keyboard::{Key, NamedKey};
 use ui_core::{Theme, taffy};
@@ -812,7 +812,7 @@ impl<R: Resource> Widget for Each<R> {
 
     // Measured rows move the rows after them: read what Taffy measured and
     // place the mounted rows (and the list's height) to match.
-    fn adjust_layout_with_measure(
+    fn adjust_layout_style(
         &mut self,
         taffy: &mut TaffyTree<()>,
         node: NodeId,
@@ -898,9 +898,14 @@ impl<R: Resource> Widget for Each<R> {
     ) {
         self.remounts = 0;
         self.for_each_mounted(|view| {
-            if !presence.should_cull(view.widget.get_rect()) {
-                view.widget.draw(scene, transform, text, theme, presence);
-            }
+            draw_child(
+                view.widget.as_mut(),
+                scene,
+                transform,
+                text,
+                theme,
+                presence,
+            );
         });
     }
 

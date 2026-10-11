@@ -560,6 +560,9 @@ pub fn run() -> std::process::ExitCode {
     // Pinning here, while `main` is still single-threaded, makes the
     // compositor and every launched app agree on one device.
     let gpu_pin = paints.then(compositor::render_node::pin_process).flatten();
+    // The single-threaded start is over: startup marks are written from their
+    // own thread from here on, never by the thread that marks.
+    tilo_startup_metrics::start_writer();
 
     // Cold-start warmup on a background thread, as early as possible.
     // cosmic-text's `FontSystem::new` (mmaps every face, up to ~1s) and

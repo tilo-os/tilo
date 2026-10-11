@@ -567,11 +567,31 @@ pub struct BlockEditor {
     painted_blocks: usize,
     dirty: bool,
     paint_damage: crate::widget::paint_damage::PaintDamage,
+    /// Where each line this draw painted past its own rect (a correction
+    /// chip floats above or below its field), by block id.
+    line_overhang: HashMap<String, Rect>,
+    /// [`Self::line_overhang`] as the last drawn frame painted it.
+    drawn_overhang: HashMap<String, Rect>,
+    /// Where each visual table's focused cell painted in the last draw,
+    /// by block id.
+    table_focus_paint: HashMap<String, Rect>,
+    /// [`Self::table_focus_paint`] as the last drawn frame painted it.
+    drawn_table_focus: HashMap<String, Rect>,
+    /// A table cell's text changed since the last layout: the table's line
+    /// measures again, as its rows may have grown or shrunk.
+    table_relayout: bool,
+    /// Blocks came, went or changed their kind, depth or fence since the
+    /// last layout: their lines are prepared and the stack measured again
+    /// ([`Self::restack`]). No widget comes or goes with a block, so the
+    /// host relayouts rather than rebuilding its tree.
+    restack: bool,
     /// Which blocks the person may have changed since the owning model last
     /// asked ([`Self::take_edit_scope`]).
     edit_scope: EditScope,
-    /// Set when the block list grows/shrinks; drained by
-    /// `take_structure_dirty` so the host rebuilds taffy.
+    /// Set when the editor's widgets or layout nodes change (an image's
+    /// button, the find bar, a new document); drained by
+    /// `take_structure_dirty` so the host rebuilds taffy. A change to the
+    /// block list alone is a [`Self::restack`].
     structure_dirty: bool,
     edit_pending: bool,
     /// Structural text replacement must flush as one host undo boundary even
@@ -728,6 +748,10 @@ pub struct FindReplaceBatch {
 
 const DEFAULT_EMPTY_HINT: &str = "Start typing — / for blocks, [[ to link, ![[ to embed";
 const CODE_HEADER_HEIGHT: f64 = 28.0;
+/// How far a code run's ground reaches above its first line's header and
+/// below its last line: 4 px stays inside the inter-block gap, never
+/// overlapping a neighbour.
+const CODE_PAD_Y: f64 = 4.0;
 const FORMULA_BLOCK_MIN_HEIGHT: f32 = 164.0;
 const FORMULA_VISUAL_MIN_HEIGHT: f32 = 132.0;
 const FORMULA_HEADER_HEIGHT: f64 = 28.0;
@@ -777,6 +801,12 @@ impl BlockEditor {
             painted_blocks: 0,
             dirty: true,
             paint_damage: crate::widget::paint_damage::PaintDamage::default(),
+            line_overhang: HashMap::new(),
+            drawn_overhang: HashMap::new(),
+            table_focus_paint: HashMap::new(),
+            drawn_table_focus: HashMap::new(),
+            table_relayout: false,
+            restack: false,
             structure_dirty: true,
             edit_pending: false,
             edit_scope: EditScope::Anywhere,
@@ -1243,6 +1273,15 @@ impl BlockEditor {
         Some(rect)
     }
 
+    /// Everything the last draw painted: the editor's rect and what its
+    /// lines and tables' focused cells painted past it.
+    fn paint_extent(&self) -> Rect {
+        self.line_overhang
+            .values()
+            .chain(self.table_focus_paint.values())
+            .fold(self.rect, |extent, painted| extent.union(*painted))
+    }
+
     /// For tests + notes-app persistence to seed blocks directly;
     /// production code should prefer the public mutators.
     pub fn blocks_mut(&mut self) -> &mut Vec<Block> {
@@ -1263,6 +1302,15 @@ impl BlockEditor {
     /// through [`Self::blocks_mut`] or other direct access.
     pub fn note_edit_anywhere(&mut self) {
         self.edit_scope = EditScope::Anywhere;
+    }
+
+    /// Blocks came, went or changed their kind, depth or fence: lay the
+    /// stack out again before the next frame. No widget comes or goes with a
+    /// block, so the host relayouts instead of rebuilding its tree, and the
+    /// editor's damage says what moved.
+    pub(super) fn restack(&mut self) {
+        self.restack = true;
+        self.dirty = true;
     }
 
     /// For the notes app's markdown parser, which produces a richer
@@ -2345,8 +2393,7 @@ impl BlockEditor {
         suffix_block.set_indent(block.indent());
         let next_idx = idx.saturating_add(1);
         self.blocks.insert(next_idx, suffix_block);
-        self.structure_dirty = true;
-        self.dirty = true;
+        self.restack();
         self.focus_block(next_idx, CursorPlacement::Start);
     }
 
@@ -2382,8 +2429,7 @@ impl BlockEditor {
             b.line.set_marks(marks);
         }
         self.blocks.remove(idx);
-        self.structure_dirty = true;
-        self.dirty = true;
+        self.restack();
         self.focus_block(prev_idx, CursorPlacement::Byte(join_at));
     }
 
@@ -2399,14 +2445,12 @@ impl BlockEditor {
                 b.line.set_focus(self.is_focused);
             }
             self.focused = Some(0);
-            self.structure_dirty = true;
-            self.dirty = true;
+            self.restack();
             return;
         }
         let target = idx.saturating_sub(1);
         self.blocks.remove(idx);
-        self.structure_dirty = true;
-        self.dirty = true;
+        self.restack();
         let target = target.min(self.blocks.len().saturating_sub(1));
         self.focus_block(target, CursorPlacement::End);
     }
@@ -2590,8 +2634,7 @@ impl BlockEditor {
         } else {
             b.nesting = 0;
         }
-        self.structure_dirty = true;
-        self.dirty = true;
+        self.restack();
         // Dividers aren't focusable — push focus to the next block (or a
         // fresh trailing paragraph) so the user can keep typing.
         if is_divider && self.focused == Some(idx) {
@@ -2765,8 +2808,7 @@ impl BlockEditor {
         // Backspace is normally classified as local typing. An outdent may
         // touch arbitrarily many descendants, all of which must be committed.
         self.note_edit_anywhere();
-        self.structure_dirty = true;
-        self.dirty = true;
+        self.restack();
         self.edit_pending = true;
         self.commit_pending = true;
         true
@@ -3294,9 +3336,17 @@ impl BlockEditor {
         true
     }
 
-    fn draw_block_drag_affordance(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+    /// Paint the drag handle of the block holding the caret, the hovered one
+    /// and the dragged one. Returns where each handle painted.
+    fn draw_block_drag_affordance(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+    ) -> Vec<Rect> {
         let tokens = &theme.tokens;
         let hovered = self.hovered_block();
+        let mut painted = Vec::new();
         for index in 0..self.blocks.len() {
             let Some(handle) = self.block_drag_handle_rect(index) else {
                 continue;
@@ -3306,6 +3356,7 @@ impl BlockEditor {
             if !active && !contains_caret && hovered != Some(index) {
                 continue;
             }
+            painted.push(handle);
             let color = tokens.colors.text_primary.with_alpha_factor(0.72);
             let center = handle.center();
             let scale = self.text_scale;
@@ -3336,6 +3387,7 @@ impl BlockEditor {
                 }
             }
         }
+        painted
     }
 
     fn hovered_block(&self) -> Option<usize> {
@@ -6249,6 +6301,53 @@ struct BlockDrawCtx<'a> {
     image_previews: &'a [Option<Rect>],
     image_attachments: &'a HashMap<String, ImageAttachment>,
     image_store: Option<&'a crate::ImageStore>,
+    /// While `Some`, a table draws each cell's text (each row's card, when
+    /// its cells stack) into a scene of its own here, with where it paints,
+    /// instead of into `scene`: the editor damages a cell, not the table.
+    table_cells: Option<Vec<(Rect, Scene)>>,
+    /// While [`Self::table_cells`] collects, a Markdown table edited as text
+    /// paints its source line here: a key in the source damages the line
+    /// and the cells it changed, not the table.
+    table_source: Option<Scene>,
+    /// While set, the first block of a code run paints the run's ground into
+    /// [`Self::code_ground`] with its bounds, instead of into `scene`: a key
+    /// in that line damages the line, not the run.
+    collect_code_ground: bool,
+    code_ground: Option<(Rect, Scene)>,
+}
+
+impl BlockDrawCtx<'_> {
+    /// Run `draw` into a scene of its own when collecting table cells.
+    fn table_cell(&mut self, painted: Rect, draw: impl FnOnce(&mut Self)) {
+        if self.table_cells.is_none() {
+            draw(self);
+            return;
+        }
+        let outer = std::mem::take(self.scene);
+        draw(self);
+        let drawn = std::mem::replace(self.scene, outer);
+        if let Some(cells) = self.table_cells.as_mut() {
+            cells.push((painted, drawn));
+        }
+    }
+}
+
+/// A tracked table block's paint, split where a change can be damaged on
+/// its own: [`BlockEditor::draw`] makes each a part.
+struct TableParts {
+    /// Its source line, when the table is edited as Markdown text.
+    source: Option<Scene>,
+    /// Its frame, header band and grid.
+    ground: Scene,
+    /// Each cell's text (each row's card, when the cells stack), with where
+    /// it paints.
+    cells: Vec<(Rect, Scene)>,
+    /// The focused cell's editor.
+    focus: Scene,
+    /// The mode and add row/column buttons above it.
+    controls: Scene,
+    /// Where the controls stand.
+    controls_paint: Option<Rect>,
 }
 
 /// Formula-run state threaded through [`draw_block`]'s `CodeBlock` arm —
@@ -6284,51 +6383,55 @@ fn draw_markdown_table(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
         for (row_index, row) in layout.rows.iter().enumerate() {
             let height = layout.row_heights.get(row_index).copied().unwrap_or(0.0);
             let card = Rect::new(rect.x0, row_y, rect.x1, row_y + height - 8.0 * scale);
-            let shape = vello::kurbo::RoundedRect::from_rect(card, 6.0 * scale);
-            ctx.scene.fill(
-                vello::peniko::Fill::NonZero,
-                ctx.transform,
-                ctx.theme.tokens.colors.surfaces.raised,
-                None,
-                &shape,
-            );
-            ctx.scene.stroke(
-                &vello::kurbo::Stroke::new(scale),
-                ctx.transform,
-                crate::surface::edge_on(ctx.theme.tokens.colors.surfaces.raised),
-                None,
-                &shape,
-            );
-            let mut y = row_y + 8.0 * scale;
-            for (column, value) in row.iter().enumerate() {
-                let x = rect.x0 + layout.padding_x;
-                let width = Some((layout.column_width - 2.0 * layout.padding_x).max(1.0) as f32);
-                if let Some(label) = labels.get(column) {
+            // A row is one card: its stroke reaches half a hairline past it.
+            ctx.table_cell(card.inflate(scale, scale), |ctx| {
+                let shape = vello::kurbo::RoundedRect::from_rect(card, 6.0 * scale);
+                ctx.scene.fill(
+                    vello::peniko::Fill::NonZero,
+                    ctx.transform,
+                    ctx.theme.tokens.colors.surfaces.raised,
+                    None,
+                    &shape,
+                );
+                ctx.scene.stroke(
+                    &vello::kurbo::Stroke::new(scale),
+                    ctx.transform,
+                    crate::surface::edge_on(ctx.theme.tokens.colors.surfaces.raised),
+                    None,
+                    &shape,
+                );
+                let mut y = row_y + 8.0 * scale;
+                for (column, value) in row.iter().enumerate() {
+                    let x = rect.x0 + layout.padding_x;
+                    let width =
+                        Some((layout.column_width - 2.0 * layout.padding_x).max(1.0) as f32);
+                    if let Some(label) = labels.get(column) {
+                        ctx.text_renderer.draw_style(
+                            ctx.scene,
+                            label,
+                            ctx.theme.tokens.colors.text_primary,
+                            translated(ctx.transform, x, y),
+                            width,
+                            &TextStyle::new(14.0).with_weight(crate::text_render::TextWeight::Bold),
+                        );
+                    }
+                    let label_height = layout.label_heights.get(column).copied().unwrap_or(0.0);
                     ctx.text_renderer.draw_style(
                         ctx.scene,
-                        label,
+                        value,
                         ctx.theme.tokens.colors.text_primary,
-                        translated(ctx.transform, x, y),
+                        translated(ctx.transform, x, y + label_height + 4.0 * scale),
                         width,
-                        &TextStyle::new(14.0).with_weight(crate::text_render::TextWeight::Bold),
+                        &TextStyle::new(14.0),
                     );
+                    y += layout
+                        .cell_heights
+                        .get(row_index)
+                        .and_then(|heights| heights.get(column))
+                        .copied()
+                        .unwrap_or(0.0);
                 }
-                let label_height = layout.label_heights.get(column).copied().unwrap_or(0.0);
-                ctx.text_renderer.draw_style(
-                    ctx.scene,
-                    value,
-                    ctx.theme.tokens.colors.text_primary,
-                    translated(ctx.transform, x, y + label_height + 4.0 * scale),
-                    width,
-                    &TextStyle::new(14.0),
-                );
-                y += layout
-                    .cell_heights
-                    .get(row_index)
-                    .and_then(|heights| heights.get(column))
-                    .copied()
-                    .unwrap_or(0.0);
-            }
+            });
             row_y += height;
         }
         return;
@@ -6385,20 +6488,24 @@ fn draw_markdown_table(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
     let mut row_y = table_rect.y0;
     for (row_index, (row, height)) in layout.rows.iter().zip(&layout.row_heights).enumerate() {
         for (column_index, value) in row.iter().enumerate() {
-            let x = table_rect.x0 + column_width * column_index as f64 + layout.padding_x;
+            let left = table_rect.x0 + column_width * column_index as f64;
+            let x = left + layout.padding_x;
             let y = row_y + 8.0 * scale;
-            ctx.text_renderer.draw_style(
-                ctx.scene,
-                value,
-                ctx.theme.tokens.colors.text_primary,
-                translated(ctx.transform, x, y),
-                Some((column_width - 2.0 * layout.padding_x).max(1.0) as f32),
-                &TextStyle::new(14.0).with_weight(if row_index == 0 {
-                    crate::text_render::TextWeight::Bold
-                } else {
-                    crate::text_render::TextWeight::Regular
-                }),
-            );
+            let cell = Rect::new(left, row_y, left + column_width, row_y + height);
+            ctx.table_cell(cell, |ctx| {
+                ctx.text_renderer.draw_style(
+                    ctx.scene,
+                    value,
+                    ctx.theme.tokens.colors.text_primary,
+                    translated(ctx.transform, x, y),
+                    Some((column_width - 2.0 * layout.padding_x).max(1.0) as f32),
+                    &TextStyle::new(14.0).with_weight(if row_index == 0 {
+                        crate::text_render::TextWeight::Bold
+                    } else {
+                        crate::text_render::TextWeight::Regular
+                    }),
+                );
+            });
         }
         row_y += height;
     }
@@ -6586,6 +6693,7 @@ fn draw_block(
         }
         BlockKind::Table { visual } => {
             if !visual {
+                let outer = ctx.table_cells.is_some().then(|| std::mem::take(ctx.scene));
                 b.line.draw(
                     ctx.scene,
                     ctx.transform,
@@ -6593,6 +6701,9 @@ fn draw_block(
                     ctx.theme,
                     ctx.presence,
                 );
+                if let Some(outer) = outer {
+                    ctx.table_source = Some(std::mem::replace(ctx.scene, outer));
+                }
             }
             if let Some(Some(preview)) = ctx.table_previews.get(idx).copied() {
                 draw_markdown_table(ctx, preview, b.text());
@@ -6620,6 +6731,17 @@ fn draw_block(
         ctx.theme,
         ctx.presence,
     );
+}
+
+/// Whether a change to a block of `kind` can be damaged where the block
+/// paints: its row of the editor, the whole ground of the run a code block
+/// starts, a table's cells. Not a formula, whose preview and visual editor
+/// reach past its source lines.
+fn damages_where_it_paints(kind: &BlockKind) -> bool {
+    match kind {
+        BlockKind::CodeBlock { .. } => formula_descriptor(kind).is_none(),
+        _ => true,
+    }
 }
 
 fn transclusion_target(block: &Block) -> Option<PageId> {
@@ -6848,8 +6970,6 @@ fn draw_code_block_prefix(
     ctx: &mut BlockDrawCtx<'_>,
     formulas: &FormulaDrawCtx<'_>,
 ) {
-    // 4px: stays inside the inter-block gap, never overlaps neighbours.
-    const CODE_PAD_Y: f64 = 4.0;
     // A run breaks whenever the language changes, not just at the
     // code/non-code boundary — two adjacent fences in different
     // languages get their own background rather than merging into one.
@@ -6896,6 +7016,7 @@ fn draw_code_block_prefix(
         + CODE_PAD_Y;
     // `gutter` is the distance from the content edge to the line rect.
     let bg_rect = Rect::new(line_rect.x0 - gutter, top, line_rect.x1, bottom);
+    let outer = ctx.collect_code_ground.then(|| std::mem::take(ctx.scene));
     let shape = vello::kurbo::RoundedRect::from_rect(bg_rect, 4.0);
     ctx.scene.fill(
         vello::peniko::Fill::NonZero,
@@ -6912,6 +7033,10 @@ fn draw_code_block_prefix(
         None,
         &bar,
     );
+    if let Some(outer) = outer {
+        let ground = std::mem::replace(ctx.scene, outer);
+        ctx.code_ground = Some((bg_rect, ground));
+    }
 }
 
 /// Draws a code block's paired formula preview/chrome, if this block
@@ -7079,6 +7204,180 @@ impl BlockEditor {
         }
     }
 
+    /// Prepare every block's line for layout and its place in the stack
+    /// (margins, minimums, fixed rows) under `theme`: what a tree rebuild
+    /// does for the blocks, and all a block that came, went or changed its
+    /// kind needs ([`Self::restack`]).
+    #[expect(
+        clippy::too_many_lines,
+        clippy::indexing_slicing,
+        clippy::cast_possible_truncation,
+        reason = "one index-aligned pass prepares each block's line and stack box with finite pixel dimensions"
+    )]
+    fn prepare_blocks(&mut self, theme: &Theme) {
+        self.restack = false;
+        self.refresh_image_attachments();
+        self.refresh_image_dimensions();
+        self.table_editors.retain(|id, _| {
+            self.blocks.iter().any(|block| {
+                block.id == *id && matches!(block.kind, BlockKind::Table { visual: true })
+            })
+        });
+        self.table_mode_controls.retain(|id, _| {
+            self.blocks
+                .iter()
+                .any(|block| block.id == *id && matches!(block.kind, BlockKind::Table { .. }))
+        });
+        self.refresh_layout_theme(theme);
+        // Lines within one authored fence stay together; distinct adjacent
+        // fences need space outside both painted backgrounds.
+        let is_code: Vec<bool> = self
+            .blocks
+            .iter()
+            .map(|b| matches!(b.kind, BlockKind::CodeBlock { .. }))
+            .collect();
+        let is_paragraph: Vec<bool> = self
+            .blocks
+            .iter()
+            .map(|block| matches!(block.kind, BlockKind::Paragraph))
+            .collect();
+        let continues_code: Vec<bool> = self
+            .blocks
+            .iter()
+            .enumerate()
+            .map(|(index, block)| {
+                index
+                    .checked_sub(1)
+                    .is_some_and(|previous| self.blocks[previous].same_code_group(block))
+            })
+            .collect();
+        let is_formula_end = compute_is_formula_end(&self.blocks);
+        let code_headers: Vec<f64> = (0..self.blocks.len())
+            .map(|index| code_header_height(&self.blocks, index, self.text_scale))
+            .collect();
+        self.stack_boxes.clear();
+        let embeds: Vec<bool> = self
+            .blocks
+            .iter()
+            .map(|block| {
+                transclusion_target(block).is_some()
+                    || standalone_markdown_image(block.text()).is_some()
+            })
+            .collect();
+        for (i, b) in self.blocks.iter_mut().enumerate() {
+            let image = self.image_attachments.get(&b.id);
+            let image_preview = image
+                .and_then(|image| standalone_markdown_image(&image.source))
+                .map(|(_, source)| self.image_dimensions.get(source).copied());
+            b.line.set_image_preview(match image_preview {
+                Some(dimensions) => super::rich_text_line::ImagePreview::Present {
+                    dimensions,
+                    editing: image.is_some_and(|image| image.editing),
+                },
+                None => super::rich_text_line::ImagePreview::Absent,
+            });
+            b.line.set_table_preview(match b.kind {
+                BlockKind::Table { visual } => Some(visual),
+                _ => None,
+            });
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "bounded on-screen block inset"
+            )]
+            b.line.set_layout_inset(
+                (prefix_gutter_for(&b.kind) * self.text_scale) as f32
+                    + LIST_INDENT_STEP_PX * f32::from(b.indent()) * theme.text_scale,
+            );
+            b.line.set_wrap(
+                (self.wrap_lines
+                    || image_preview.is_some()
+                    || matches!(b.kind, BlockKind::Table { visual: false }))
+                    && formula_descriptor(&b.kind).is_none()
+                    && !matches!(b.kind, BlockKind::Table { visual: true }),
+            );
+            // A document paragraph already receives spacing from the block
+            // stack. TextInput's normal multiline field padding would add
+            // another 8 px above and below every line, making consecutive
+            // prose read like separate form fields. Keep that padding for
+            // richer controls and use the text line-height for compact prose.
+            b.line.set_compact_wrapped(
+                self.compact_paragraph_spacing && matches!(b.kind, BlockKind::Paragraph),
+            );
+            let header_height = code_headers[i] as f32;
+            b.line.set_layout_header_height(header_height);
+            b.line.prepare_layout(&self.layout_theme);
+            let row_height = b.line.row_height(theme.text_scale);
+            let mut stack_box = StackBox {
+                margin_top: 0.0,
+                fixed: (!b.line.measures_height()).then_some(row_height),
+                min: row_height,
+            };
+            if header_height > 0.0 {
+                let height = (b.kind.font_size() * theme.text_scale * 1.5)
+                    .max(20.0 * theme.text_scale)
+                    + header_height;
+                if !self.wrap_lines {
+                    stack_box.fixed = Some(height);
+                }
+                stack_box.min = height;
+            }
+            // Per-block top margin (not a uniform gap) so it can be zeroed
+            // for soft-break continuations, the first block, and consecutive
+            // code lines (one contiguous fenced unit).
+            let continues_code_block = continues_code[i];
+            let adjacent_fences =
+                is_code[i] && i.checked_sub(1).is_some_and(|previous| is_code[previous]);
+            let compact_paragraph_pair = self.compact_paragraph_spacing
+                && is_paragraph[i]
+                && i.checked_sub(1)
+                    .is_some_and(|previous| is_paragraph[previous]);
+            // An embed (an embedded note, an image) is an object in the
+            // flow: it stands a group gap from the text on either side.
+            let around_embed = embeds.get(i).copied().unwrap_or(false)
+                || i.checked_sub(1)
+                    .and_then(|previous| embeds.get(previous).copied())
+                    .unwrap_or(false);
+            stack_box.margin_top = if i == 0 || b.soft_break || continues_code_block {
+                0.0
+            } else if adjacent_fences || around_embed {
+                theme.tokens.spacing.s4 * theme.text_scale
+            } else if compact_paragraph_pair {
+                theme.tokens.spacing.s1 * theme.text_scale
+            } else {
+                theme.tokens.spacing.s2 * theme.text_scale
+            };
+            if is_formula_end.get(i).copied().unwrap_or(false) {
+                stack_box.min = if formula_descriptor(&b.kind)
+                    .is_some_and(|descriptor| descriptor.mode == crate::math::FormulaMode::Visual)
+                {
+                    FORMULA_VISUAL_MIN_HEIGHT
+                } else {
+                    FORMULA_BLOCK_MIN_HEIGHT
+                };
+            }
+            if transclusion_target(b).is_some() {
+                stack_box.min = TRANSCLUSION_MIN_HEIGHT * theme.text_scale;
+            }
+            self.stack_boxes.push(stack_box);
+        }
+        // The lines' text inset is known once each line has its wrap mode.
+        self.text_pad = self
+            .blocks
+            .first()
+            .map_or(0.0, |block| block.line.text_inset(theme));
+    }
+
+    /// Prepare the blocks again after a [`Self::restack`], under the theme
+    /// the last tree build laid them out with, and forget the stack so the
+    /// next layout measures it.
+    fn settle_restack(&mut self) {
+        if self.restack {
+            let theme = std::sync::Arc::clone(&self.layout_theme);
+            self.prepare_blocks(&theme);
+            self.stack.width = None;
+        }
+    }
+
     /// Measure the block stack. A query without a definite width asks for an
     /// intrinsic size: answer it from the last stack rather than reshaping
     /// every paragraph at a width it will never be painted at.
@@ -7088,6 +7387,7 @@ impl BlockEditor {
         available: Size<taffy::AvailableSpace>,
         text_renderer: &mut TextRenderer,
     ) -> Size<f32> {
+        self.settle_restack();
         let definite = known.width.or(match available.width {
             taffy::AvailableSpace::Definite(width) => Some(width),
             _ => None,
@@ -7269,11 +7569,10 @@ impl Widget for BlockEditor {
         }
     }
 
-    #[expect(
+    #[allow(
         clippy::too_many_lines,
-        clippy::indexing_slicing,
         clippy::cast_possible_truncation,
-        reason = "the five-pass widget contract builds one index-aligned layout projection with finite pixel dimensions"
+        reason = "the five-pass widget contract builds the editor's layout nodes in one pass with finite pixel dimensions"
     )]
     fn build_layout(
         &mut self,
@@ -7290,150 +7589,7 @@ impl Widget for BlockEditor {
         };
         self.text_scale = f64::from(theme.text_scale);
         self.handle = HandleMetrics::from_tokens(&theme.tokens.spacing, &theme.tokens.metrics);
-        self.refresh_image_attachments();
-        self.refresh_image_dimensions();
-        self.table_editors.retain(|id, _| {
-            self.blocks.iter().any(|block| {
-                block.id == *id && matches!(block.kind, BlockKind::Table { visual: true })
-            })
-        });
-        self.table_mode_controls.retain(|id, _| {
-            self.blocks
-                .iter()
-                .any(|block| block.id == *id && matches!(block.kind, BlockKind::Table { .. }))
-        });
-        self.refresh_layout_theme(theme);
-        // Lines within one authored fence stay together; distinct adjacent
-        // fences need space outside both painted backgrounds.
-        let is_code: Vec<bool> = self
-            .blocks
-            .iter()
-            .map(|b| matches!(b.kind, BlockKind::CodeBlock { .. }))
-            .collect();
-        let is_paragraph: Vec<bool> = self
-            .blocks
-            .iter()
-            .map(|block| matches!(block.kind, BlockKind::Paragraph))
-            .collect();
-        let continues_code: Vec<bool> = self
-            .blocks
-            .iter()
-            .enumerate()
-            .map(|(index, block)| {
-                index
-                    .checked_sub(1)
-                    .is_some_and(|previous| self.blocks[previous].same_code_group(block))
-            })
-            .collect();
-        let is_formula_end = compute_is_formula_end(&self.blocks);
-        let code_headers: Vec<f64> = (0..self.blocks.len())
-            .map(|index| code_header_height(&self.blocks, index, self.text_scale))
-            .collect();
-        self.stack_boxes.clear();
-        let embeds: Vec<bool> = self
-            .blocks
-            .iter()
-            .map(|block| {
-                transclusion_target(block).is_some()
-                    || standalone_markdown_image(block.text()).is_some()
-            })
-            .collect();
-        for (i, b) in self.blocks.iter_mut().enumerate() {
-            let image = self.image_attachments.get(&b.id);
-            let image_preview = image
-                .and_then(|image| standalone_markdown_image(&image.source))
-                .map(|(_, source)| self.image_dimensions.get(source).copied());
-            b.line.set_image_preview(match image_preview {
-                Some(dimensions) => super::rich_text_line::ImagePreview::Present {
-                    dimensions,
-                    editing: image.is_some_and(|image| image.editing),
-                },
-                None => super::rich_text_line::ImagePreview::Absent,
-            });
-            b.line.set_table_preview(match b.kind {
-                BlockKind::Table { visual } => Some(visual),
-                _ => None,
-            });
-            #[allow(
-                clippy::cast_possible_truncation,
-                reason = "bounded on-screen block inset"
-            )]
-            b.line.set_layout_inset(
-                (prefix_gutter_for(&b.kind) * self.text_scale) as f32
-                    + LIST_INDENT_STEP_PX * f32::from(b.indent()) * theme.text_scale,
-            );
-            b.line.set_wrap(
-                (self.wrap_lines
-                    || image_preview.is_some()
-                    || matches!(b.kind, BlockKind::Table { visual: false }))
-                    && formula_descriptor(&b.kind).is_none()
-                    && !matches!(b.kind, BlockKind::Table { visual: true }),
-            );
-            // A document paragraph already receives spacing from the block
-            // stack. TextInput's normal multiline field padding would add
-            // another 8 px above and below every line, making consecutive
-            // prose read like separate form fields. Keep that padding for
-            // richer controls and use the text line-height for compact prose.
-            b.line.set_compact_wrapped(
-                self.compact_paragraph_spacing && matches!(b.kind, BlockKind::Paragraph),
-            );
-            let header_height = code_headers[i] as f32;
-            b.line.set_layout_header_height(header_height);
-            b.line.prepare_layout(&self.layout_theme);
-            let row_height = b.line.row_height(theme.text_scale);
-            let mut stack_box = StackBox {
-                margin_top: 0.0,
-                fixed: (!b.line.measures_height()).then_some(row_height),
-                min: row_height,
-            };
-            if header_height > 0.0 {
-                let height = (b.kind.font_size() * theme.text_scale * 1.5)
-                    .max(20.0 * theme.text_scale)
-                    + header_height;
-                if !self.wrap_lines {
-                    stack_box.fixed = Some(height);
-                }
-                stack_box.min = height;
-            }
-            // Per-block top margin (not a uniform gap) so it can be zeroed
-            // for soft-break continuations, the first block, and consecutive
-            // code lines (one contiguous fenced unit).
-            let continues_code_block = continues_code[i];
-            let adjacent_fences =
-                is_code[i] && i.checked_sub(1).is_some_and(|previous| is_code[previous]);
-            let compact_paragraph_pair = self.compact_paragraph_spacing
-                && is_paragraph[i]
-                && i.checked_sub(1)
-                    .is_some_and(|previous| is_paragraph[previous]);
-            // An embed (an embedded note, an image) is an object in the
-            // flow: it stands a group gap from the text on either side.
-            let around_embed = embeds.get(i).copied().unwrap_or(false)
-                || i.checked_sub(1)
-                    .and_then(|previous| embeds.get(previous).copied())
-                    .unwrap_or(false);
-            stack_box.margin_top = if i == 0 || b.soft_break || continues_code_block {
-                0.0
-            } else if adjacent_fences || around_embed {
-                theme.tokens.spacing.s4 * theme.text_scale
-            } else if compact_paragraph_pair {
-                theme.tokens.spacing.s1 * theme.text_scale
-            } else {
-                theme.tokens.spacing.s2 * theme.text_scale
-            };
-            if is_formula_end.get(i).copied().unwrap_or(false) {
-                stack_box.min = if formula_descriptor(&b.kind)
-                    .is_some_and(|descriptor| descriptor.mode == crate::math::FormulaMode::Visual)
-                {
-                    FORMULA_VISUAL_MIN_HEIGHT
-                } else {
-                    FORMULA_BLOCK_MIN_HEIGHT
-                };
-            }
-            if transclusion_target(b).is_some() {
-                stack_box.min = TRANSCLUSION_MIN_HEIGHT * theme.text_scale;
-            }
-            self.stack_boxes.push(stack_box);
-        }
+        self.prepare_blocks(theme);
         // One measured leaf stands for the whole block stack. The editor
         // places its blocks itself from per-line cached heights, so an edit
         // re-measures only the lines it touched and the layout tree does not
@@ -7461,11 +7617,6 @@ impl Widget for BlockEditor {
                 layout_children.push(button_node);
             }
         }
-        // The lines' text inset is known once each line has its wrap mode.
-        self.text_pad = self
-            .blocks
-            .first()
-            .map_or(0.0, |block| block.line.text_inset(theme));
         let find_node = self.find_field.build_layout(taffy, theme, node_map);
         let mut find_style = taffy.style(find_node).cloned().unwrap_or_default();
         if !self.find_visible {
@@ -7541,6 +7692,9 @@ impl Widget for BlockEditor {
     )]
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.table_relayout = false;
+        // A host that solved the tree without measuring the stack.
+        self.settle_restack();
         let new_origin = Point::new(self.rect.x0, self.rect.y0);
         if let Some(content) = self.content_node {
             let width = taffy.unrounded_layout(content).size.width;
@@ -7767,10 +7921,12 @@ impl Widget for BlockEditor {
             && self.document_selection.is_none()
             && self.retained_block_selection.is_none()
             && self.blocks.iter().all(|block| {
-                matches!(block.kind, BlockKind::Paragraph) && block.line.selection_range().is_none()
+                damages_where_it_paints(&block.kind) && block.line.selection_range().is_none()
             });
         let mut paragraph_parts = Vec::new();
         let mut paragraph_scene = Scene::new();
+        self.line_overhang.clear();
+        self.table_focus_paint.clear();
         let unit;
         let theme = if self.content_sized {
             unit = theme.at_unit_text_scale();
@@ -7793,7 +7949,7 @@ impl Widget for BlockEditor {
             }
         }
 
-        self.draw_block_drag_affordance(scene, transform, theme);
+        let handles = self.draw_block_drag_affordance(scene, transform, theme);
 
         // Precompute run geometry so a multi-line fence paints one background
         // and a formula fence paints one preview after its final source line.
@@ -7922,6 +8078,10 @@ impl Widget for BlockEditor {
             image_previews: self.image_preview_rects.as_slice(),
             image_attachments: &self.image_attachments,
             image_store: self.image_store.as_ref(),
+            table_cells: None,
+            table_source: None,
+            collect_code_ground: false,
+            code_ground: None,
         };
         let mut formulas = FormulaDrawCtx {
             runs: formula_runs.as_slice(),
@@ -7976,9 +8136,30 @@ impl Widget for BlockEditor {
                     self.transclusion_previews.get(id),
                 );
             } else {
+                // A table's cells become parts of their own.
+                ctx.table_cells =
+                    (track_paragraphs && matches!(b.kind, BlockKind::Table { .. })).then(Vec::new);
+                // A code run's ground too.
+                ctx.collect_code_ground = track_paragraphs;
                 draw_block(b, idx, &mut ctx, &mut formulas);
+                ctx.collect_code_ground = false;
             }
+            let code_ground = ctx.code_ground.take();
             b.line.inner_mut().suppress_caret_paint(false);
+            if let Some(overhang) = b.line.overhang() {
+                self.line_overhang.insert(b.id.clone(), overhang);
+            }
+            // A tracked table's ground (its frame and grid) so far; its source
+            // line, cells, focused cell and controls follow apart.
+            let source = ctx.table_source.take();
+            let mut table_parts = ctx.table_cells.take().map(|cells| TableParts {
+                source,
+                ground: std::mem::take(ctx.scene),
+                cells,
+                focus: Scene::new(),
+                controls: Scene::new(),
+                controls_paint: None,
+            });
             if matches!(b.kind, BlockKind::Table { visual: true })
                 && let Some(Some(rect)) = self.table_preview_rects.get(idx)
             {
@@ -8006,7 +8187,13 @@ impl Widget for BlockEditor {
                         presence,
                         self.caret_paint_suppressed,
                     );
+                    if let Some(painted) = table.projected_focus_paint() {
+                        self.table_focus_paint.insert(b.id.clone(), painted);
+                    }
                 }
+            }
+            if let Some(parts) = table_parts.as_mut() {
+                parts.focus = std::mem::take(ctx.scene);
             }
             if let BlockKind::Table { visual } = b.kind
                 && let Some(Some(rect)) = self.table_preview_rects.get(idx)
@@ -8066,16 +8253,117 @@ impl Widget for BlockEditor {
                         presence,
                     );
                 }
+                if let Some(parts) = table_parts.as_mut() {
+                    // Where the controls stand whether or not they show, and
+                    // the focus ring a button paints around itself.
+                    let reach = f64::from(theme.tokens.spacing.s2);
+                    parts.controls_paint = [&control.button, &control.add_row, &control.add_column]
+                        .into_iter()
+                        .map(|button| button.get_rect().inflate(reach, reach))
+                        .reduce(|all, rect| all.union(rect));
+                }
             }
-            if track_paragraphs {
+            if let Some(parts) = table_parts.as_mut() {
+                parts.controls = std::mem::take(ctx.scene);
+            }
+            if let (Some(parts), Some(painted)) =
+                (table_parts, paint_rects.get(idx).copied().flatten())
+            {
+                // The table's frame where the block paints, across the
+                // editor; each cell where it is; the focused cell where it
+                // is and was; the controls where they stand.
+                let mut ground = vec![
+                    Rect::new(self.rect.x0, painted.y0, self.rect.x1, painted.y1)
+                        .union(b.line.get_rect()),
+                ];
+                ground.extend(self.line_overhang.get(&b.id).copied());
+                ground.extend(self.drawn_overhang.get(&b.id).copied());
+                if let Some(source) = parts.source {
+                    // The Markdown source line, and its correction chip
+                    // where it is and was.
+                    let line = b.line.get_rect();
+                    let mut damage = vec![line];
+                    damage.extend(self.line_overhang.get(&b.id).copied());
+                    damage.extend(self.drawn_overhang.get(&b.id).copied());
+                    paragraph_scene.append(&source, None);
+                    paragraph_parts.push(crate::widget::paint_damage::PaintPart::placed(
+                        format!("{}:source", b.id),
+                        line,
+                        source,
+                        damage,
+                    ));
+                }
+                paragraph_scene.append(&parts.ground, None);
+                paragraph_parts.push(crate::widget::paint_damage::PaintPart::placed(
+                    b.id.clone(),
+                    painted,
+                    parts.ground,
+                    ground,
+                ));
+                for (index, (cell, scene)) in parts.cells.into_iter().enumerate() {
+                    paragraph_scene.append(&scene, None);
+                    paragraph_parts.push(crate::widget::paint_damage::PaintPart::placed(
+                        format!("{}:cell:{index}", b.id),
+                        cell,
+                        scene,
+                        vec![cell],
+                    ));
+                }
+                let focus = [
+                    self.table_focus_paint.get(&b.id),
+                    self.drawn_table_focus.get(&b.id),
+                ]
+                .into_iter()
+                .flatten()
+                .copied()
+                .collect();
+                paragraph_scene.append(&parts.focus, None);
+                paragraph_parts.push(crate::widget::paint_damage::PaintPart::placed(
+                    format!("{}:focus", b.id),
+                    painted,
+                    parts.focus,
+                    focus,
+                ));
+                paragraph_scene.append(&parts.controls, None);
+                paragraph_parts.push(crate::widget::paint_damage::PaintPart::placed(
+                    format!("{}:controls", b.id),
+                    painted,
+                    parts.controls,
+                    parts.controls_paint.into_iter().collect(),
+                ));
+            } else if track_paragraphs {
+                if let Some((ground, scene)) = code_ground {
+                    // The run's ground, across the editor where it stands.
+                    paragraph_scene.append(&scene, None);
+                    paragraph_parts.push(crate::widget::paint_damage::PaintPart::placed(
+                        format!("{}:ground", b.id),
+                        ground,
+                        scene,
+                        vec![Rect::new(self.rect.x0, ground.y0, self.rect.x1, ground.y1)],
+                    ));
+                }
                 let drawn = std::mem::take(ctx.scene);
                 paragraph_scene.append(&drawn, None);
                 let rect = b.line.get_rect();
-                paragraph_parts.push(crate::widget::paint_damage::PaintPart::new(
+                // A paragraph paints in its line; a heading, quote, list item
+                // or rule also in its prefix gutter, so it damages its row of
+                // the editor; a code line paints in its line over the run's
+                // ground, a part of its own. Then its correction chip where
+                // it is and was.
+                let row = match (&b.kind, paint_rects.get(idx).copied().flatten()) {
+                    (BlockKind::Paragraph | BlockKind::CodeBlock { .. }, _) | (_, None) => rect,
+                    (_, Some(painted)) => {
+                        Rect::new(self.rect.x0, painted.y0, self.rect.x1, painted.y1).union(rect)
+                    }
+                };
+                let mut damage = vec![row];
+                damage.extend(self.line_overhang.get(&b.id).copied());
+                damage.extend(self.drawn_overhang.get(&b.id).copied());
+                paragraph_parts.push(crate::widget::paint_damage::PaintPart::placed(
                     b.id.clone(),
                     rect,
                     drawn,
-                    vec![rect],
+                    damage,
                 ));
             }
             if let Some(preceding) = preceding {
@@ -8168,6 +8456,19 @@ impl Widget for BlockEditor {
             self.copied_code_start = None;
         }
         for (rect, start, end) in &self.code_copy_hits {
+            let Some((line, inset, run)) = self.blocks.get(*start).map(|block| {
+                (
+                    block.line.get_rect(),
+                    block.line.text_inset(ctx.theme),
+                    block.id.clone(),
+                )
+            }) else {
+                continue;
+            };
+            // Each run's chrome is a part of its own, which moves with the
+            // run: a paragraph that came above it repaints it where it was
+            // and is, not the editor.
+            let held = track_paragraphs.then(|| std::mem::take(ctx.scene));
             let dragging_this_group = dragged_group
                 .as_ref()
                 .is_some_and(|group| group.contains(start));
@@ -8206,13 +8507,6 @@ impl Widget for BlockEditor {
                         "Code",
                         |value| if value.is_empty() { "Code" } else { value },
                     );
-            let Some((line, inset)) = self
-                .blocks
-                .get(*start)
-                .map(|block| (block.line.get_rect(), block.line.text_inset(ctx.theme)))
-            else {
-                continue;
-            };
             // The language label starts where the code does.
             let left = line.x0 + inset;
             let available = (rect.x0 - left - 8.0 * self.text_scale).max(0.0);
@@ -8265,6 +8559,19 @@ impl Widget for BlockEditor {
                     Some(available as f32),
                 );
             }
+            if let Some(held) = held {
+                let chrome = std::mem::replace(ctx.scene, held);
+                paragraph_scene.append(&chrome, None);
+                // The label and hint from where the code starts, the button
+                // at the run's corner.
+                let reach = 2.0 * self.text_scale;
+                paragraph_parts.push(crate::widget::paint_damage::PaintPart::placed(
+                    format!("{run}:chrome"),
+                    *rect,
+                    chrome,
+                    vec![Rect::new(line.x0, rect.y0, rect.x1, rect.y1).inflate(reach, reach)],
+                ));
+            }
         }
 
         // Runs AFTER the block loop: pixel_x_for_byte needs this frame's
@@ -8313,24 +8620,43 @@ impl Widget for BlockEditor {
         drop(links_probe);
         if let Some(prefix) = outside_prefix {
             let suffix = std::mem::take(scene);
-            let mut outside = prefix.clone();
-            outside.append(&suffix, None);
-            let mut complete = prefix;
+            let mut complete = prefix.clone();
             complete.append(&paragraph_scene, None);
             complete.append(&suffix, None);
             *scene = complete;
+            // The editor's top edge and width, not its height: a block that
+            // came or went grows or shrinks it, and each block is a part
+            // that says where it was and is.
+            let place = Rect::new(self.rect.x0, self.rect.y0, self.rect.x1, self.rect.y0);
+            // The prefix is the drag handles, a part that moves with the
+            // caret's block: where they were and are.
+            let reach = f64::from(theme.tokens.spacing.s1);
+            let handle_damage: Vec<Rect> = handles
+                .iter()
+                .map(|handle| handle.inflate(reach, reach))
+                .collect();
+            paragraph_parts.push(crate::widget::paint_damage::PaintPart::placed(
+                "drag-handles".into(),
+                handle_damage
+                    .iter()
+                    .copied()
+                    .reduce(|all, handle| all.union(handle))
+                    .unwrap_or_else(|| Rect::new(place.x0, place.y0, place.x1, place.y0 + 1.0)),
+                prefix,
+                handle_damage,
+            ));
             self.paint_damage.record(
-                self.rect,
+                self.paint_extent(),
                 Some(crate::widget::paint_damage::PaintFrame::new(
-                    vec![self.rect, presence.viewport.get().unwrap_or(self.rect)],
+                    vec![place, presence.viewport.get().unwrap_or(place)],
                     transform,
                     theme,
-                    outside,
+                    suffix,
                     paragraph_parts,
                 )),
             );
         } else {
-            self.paint_damage.record(self.rect, None);
+            self.paint_damage.record(self.paint_extent(), None);
         }
         let own = std::mem::replace(scene, incoming);
         scene.append(&own, None);
@@ -8559,6 +8885,7 @@ impl Widget for BlockEditor {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        _key_path: &[u64],
         _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
@@ -9312,7 +9639,9 @@ impl Widget for BlockEditor {
                 self.focus_block(index, CursorPlacement::Byte(cursor));
             }
             self.begin_edit();
-            let handled = self.blocks[index].line.perform_action(action, state, path);
+            let handled = self.blocks[index]
+                .line
+                .perform_action(action, &[], state, path);
             if handled {
                 self.dirty = true;
                 if matches!(action, crate::a11y::Action::SetValue(_)) {
@@ -9486,6 +9815,7 @@ impl Widget for BlockEditor {
 
     fn layout_needs_measure(&self) -> bool {
         self.structure_dirty
+            || self.restack
             || self.dirty
             || self
                 .blocks
@@ -9495,8 +9825,14 @@ impl Widget for BlockEditor {
 
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
         if self.needs_redraw() || self.paint_damage.is_recorded() {
-            self.paint_damage.collect(self.rect, regions);
+            self.paint_damage.collect(self.paint_extent(), regions);
         }
+    }
+
+    /// Its damage after a draw says where each block was and is, or repaints
+    /// where the editor painted then and paints now.
+    fn damage_covers_own_box(&self) -> bool {
+        self.paint_damage.covers_own_bounds()
     }
 
     fn release_scene_cache(&mut self) {
@@ -9508,10 +9844,19 @@ impl Widget for BlockEditor {
 
     fn mark_drawn(&mut self) {
         self.dirty = false;
+        if self.paint_damage.is_recorded() {
+            self.drawn_overhang.clone_from(&self.line_overhang);
+            self.drawn_table_focus.clone_from(&self.table_focus_paint);
+        }
         self.paint_damage.mark_drawn();
     }
 
     fn take_structure_dirty(&mut self) -> bool {
+        // Blocks that came or went may bring or take an image's button: a
+        // widget, which only a rebuild adds or removes.
+        if self.restack {
+            self.refresh_image_attachments();
+        }
         let was = self.structure_dirty;
         self.structure_dirty = false;
         was
@@ -9523,7 +9868,9 @@ impl Widget for BlockEditor {
     /// line rather than through `children()`, which the editor does not
     /// expose, so an idle document re-measures nothing.
     fn is_layout_dirty(&self) -> bool {
-        self.blocks.iter().any(|block| block.line.is_layout_dirty())
+        self.restack
+            || self.table_relayout
+            || self.blocks.iter().any(|block| block.line.is_layout_dirty())
     }
 }
 
@@ -11033,11 +11380,15 @@ impl BlockEditor {
             return false;
         }
         if let Some(block) = self.blocks.get_mut(index) {
+            // The line measures the table from its text, so a cell that now
+            // wraps relayouts the editor; no widget came or went, so the
+            // tree is not rebuilt (which would repaint the window per key).
             block.line.set_text(&source);
+            block.line.forget_stacked_height();
         }
+        self.table_relayout = true;
         self.edit_pending = true;
         self.commit_pending = true;
-        self.structure_dirty = true;
         self.dirty = true;
         true
     }

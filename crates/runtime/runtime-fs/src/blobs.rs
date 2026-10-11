@@ -40,10 +40,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use capnp::capability::Promise;
-use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
+use capnp_rpc::rpc_twoparty_capnp;
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncReadExt as _;
-use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 use wire_frame::Framing;
 
 pub use crate::blobs_capnp::{
@@ -382,14 +381,7 @@ pub async fn serve_connection(
             client.client
         }
     };
-    let (read_half, write_half) = stream.into_split();
-    let network = twoparty::VatNetwork::new(
-        read_half.compat(),
-        write_half.compat_write(),
-        rpc_twoparty_capnp::Side::Server,
-        capnp::message::ReaderOptions::default(),
-    );
-    RpcSystem::new(Box::new(network), Some(bootstrap))
+    runtime_portal::serve_connected_io(stream, bootstrap)
         .await
         .map_err(|error| io::Error::other(error.to_string()))
 }

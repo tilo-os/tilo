@@ -27,7 +27,6 @@ use winit::keyboard::{Key, NamedKey};
 
 use ui::Widget;
 use ui::collaboration::PresencePayload;
-use ui::permissions::PermissionContext;
 use ui::presence::{PresenceCtx, PresenceKey};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -355,6 +354,10 @@ pub struct NotesApp {
     /// flagging itself dirty.
     self_dirty: bool,
     paint_damage: ui::widget::paint_damage::PaintDamage,
+    /// Where this draw painted the save status (its bubble or failure card).
+    status_painted: Option<Rect>,
+    /// Where the last drawn frame painted it.
+    status_drawn: Option<Rect>,
     /// Inputs of the last canonical projection: document heads, pending
     /// operations, selected page and tag filter. `sync` re-projects the
     /// whole page tree only when one of them moved instead of every frame.
@@ -602,6 +605,8 @@ impl NotesApp {
             laid_out: false,
             self_dirty: false,
             paint_damage: ui::widget::paint_damage::PaintDamage::default(),
+            status_painted: None,
+            status_drawn: None,
             canonical_synced: None,
             projection_adopted: false,
             dispatcher: None,
@@ -735,16 +740,78 @@ impl NotesApp {
     /// window — the reclaimed home of the old bottom status strip. It shows
     /// on a status change or while the pointer hovers the bottom-right band,
     /// then fades. All colours come from the theme (via `draw_pill`).
+    /// Returns where it painted, `self.rect` when it painted without saying.
     fn draw_status_bubble(
         &mut self,
         scene: &mut Scene,
         transform: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
-    ) {
+    ) -> Option<Rect> {
         let now = ui::time::now();
-        self.save_surface
+        let before = scene.encoding().draw_tags.len();
+        let painted = self
+            .save_surface
             .paint(scene, transform, tr, theme, self.rect, now);
+        painted.or_else(|| (scene.encoding().draw_tags.len() != before).then_some(self.rect))
+    }
+
+    /// What `draw` painted, as the parts its damage is proven by: the note
+    /// panel, the shell, the page tree, the save status and the toasts
+    /// (`scenes`, in that order), each with where it can change. `None`
+    /// while something reaches past those parts' own damage: an editor
+    /// popup, the page tree's menu or a dragged row.
+    fn paint_frame(
+        &self,
+        transform: Affine,
+        theme: &Theme,
+        scenes: [&Scene; 5],
+    ) -> Option<ui::widget::paint_damage::PaintFrame> {
+        use ui::widget::paint_damage::{PaintFrame, PaintPart};
+        let sidebar = self.sidebar.tree();
+        if self.main.has_editor_popup() || self.sidebar.menu_is_open() || sidebar.is_dragging() {
+            return None;
+        }
+        let [main, shell, page_tree, status, toasts] = scenes;
+        let mut main_damage = Vec::new();
+        self.main.collect_damage(&mut main_damage);
+        // A settled shell reports its controls (a hovered button), not
+        // itself.
+        let mut shell_damage = Vec::new();
+        self.shell.collect_damage(&mut shell_damage);
+        let mut sidebar_damage = Vec::new();
+        if self.sidebar_node.is_some() {
+            sidebar.collect_damage(&mut sidebar_damage);
+        }
+        // The bubble where it was and where it is, with its shadow, within
+        // the app: past its edge a window or a tile clips the shadow (the
+        // bubble sits in the corner a tile shares with the app), and damage
+        // there would repaint whatever lies beyond, another display included.
+        let reach = ui::widget::floating_surface::shadow_reach(theme);
+        let status_damage = [self.status_drawn, self.status_painted]
+            .into_iter()
+            .flatten()
+            .map(|rect| rect.inflate(reach, reach).intersect(self.rect))
+            .filter(|rect| !rect.is_zero_area())
+            .collect();
+        let part = |key: &str, rect: Rect, scene: &Scene, damage: Vec<Rect>| {
+            PaintPart::new(key.into(), rect, scene.clone(), damage)
+        };
+        Some(PaintFrame::new(
+            vec![self.rect, self.main.get_rect(), sidebar.get_rect()],
+            transform,
+            theme,
+            Scene::new(),
+            vec![
+                part("note-main", self.main.get_rect(), main, main_damage),
+                part("notes-shell", self.rect, shell, shell_damage),
+                part("notes-sidebar", self.rect, page_tree, sidebar_damage),
+                part("notes-status", self.rect, status, status_damage),
+                // Toasts report no damage of their own: a change repaints
+                // the app.
+                part("notes-toasts", self.rect, toasts, Vec::new()),
+            ],
+        ))
     }
 
     /// A press on the failed save's toast: "Try again" asks the host to
@@ -2372,9 +2439,15 @@ impl Widget for NotesApp {
         // this the new block gets no taffy node and isn't laid out. The
         // shell's flag too: a drawer opening or the window crossing the
         // breakpoint changes which columns exist.
-        let editor = self.main.take_structure_dirty();
-        let shell = self.shell.take_structure_dirty();
-        editor || shell
+        self.take_structure_change().rebuilds()
+    }
+
+    /// The main panel says whether its change is described (a header that
+    /// rebuilt its widgets); the shell's columns changing is a rebuild.
+    fn take_structure_change(&mut self) -> ui::widget::StructureChange {
+        let main = self.main.take_structure_change();
+        let shell = self.shell.take_structure_change();
+        main.join(shell)
     }
 
     fn build_layout(
@@ -2479,6 +2552,7 @@ impl Widget for NotesApp {
         let main_scene = std::mem::take(scene);
         self.shell
             .draw(scene, transform, text_renderer, theme, presence);
+        let shell_scene = std::mem::take(scene);
         if self.sidebar_node.is_some() {
             let geometry = self.shell.geometry();
             let sidebar_theme = if geometry.sidebar == SidebarPlacement::Drawer {
@@ -2491,8 +2565,10 @@ impl Widget for NotesApp {
             self.sidebar
                 .draw(scene, transform, text_renderer, &sidebar_theme, presence);
         }
+        let sidebar_scene = std::mem::take(scene);
         // Transient floating status bubble (bottom-right).
-        self.draw_status_bubble(scene, transform, text_renderer, theme);
+        self.status_painted = self.draw_status_bubble(scene, transform, text_renderer, theme);
+        let status_scene = std::mem::take(scene);
         // Toasts stand above the status bubble's corner.
         let gutter = f64::from(theme.tokens.spacing.s4);
         let lift = ui::status_bubble::pill_height(theme) + gutter;
@@ -2505,29 +2581,29 @@ impl Widget for NotesApp {
         self.transfer_toasts.place_bottom_right(toast_area, gutter);
         self.transfer_toasts
             .draw(scene, transform, text_renderer, theme, presence);
-        let outside = std::mem::take(scene);
-        let mut main_damage = Vec::new();
-        self.main.collect_damage(&mut main_damage);
-        self.paint_damage.record(
-            self.rect,
-            (!self.main.has_editor_popup()).then(|| {
-                ui::widget::paint_damage::PaintFrame::new(
-                    vec![self.rect, self.main.get_rect()],
-                    transform,
-                    theme,
-                    outside.clone(),
-                    vec![ui::widget::paint_damage::PaintPart::new(
-                        "note-main".into(),
-                        self.main.get_rect(),
-                        main_scene.clone(),
-                        main_damage,
-                    )],
-                )
-            }),
+        let toasts_scene = std::mem::take(scene);
+        let frame = self.paint_frame(
+            transform,
+            theme,
+            [
+                &main_scene,
+                &shell_scene,
+                &sidebar_scene,
+                &status_scene,
+                &toasts_scene,
+            ],
         );
+        self.paint_damage.record(self.rect, frame);
         *scene = incoming;
-        scene.append(&main_scene, None);
-        scene.append(&outside, None);
+        for part in [
+            &main_scene,
+            &shell_scene,
+            &sidebar_scene,
+            &status_scene,
+            &toasts_scene,
+        ] {
+            scene.append(part, None);
+        }
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -2736,25 +2812,15 @@ impl Widget for NotesApp {
     }
 
     fn mark_drawn(&mut self) {
+        if self.paint_damage.is_recorded() {
+            self.status_drawn = self.status_painted;
+        }
         self.paint_damage.mark_drawn();
         self.self_dirty = false;
         self.shell.mark_drawn();
         self.sidebar.mark_drawn();
         self.main.mark_drawn();
         self.shortcuts.mark_drawn();
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        _permissions: &PermissionContext,
-    ) {
-        // The root rect is the whole window — always paint, never cull.
-        self.draw(scene, transform, text_renderer, theme, presence);
     }
 }
 
@@ -3773,6 +3839,7 @@ mod tests {
             );
             assert!(app.main.perform_action(
                 &ui::a11y::Action::Activate,
+                &[],
                 &mut Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));

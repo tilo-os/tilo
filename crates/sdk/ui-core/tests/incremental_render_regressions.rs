@@ -1,6 +1,6 @@
 //! Regressions for two bugs incremental rendering can reintroduce:
 //!
-//! 1. `Column`/`Row::draw_with_presence` rebuild path must recurse
+//! 1. `Column`/`Row::draw` rebuild path must recurse
 //!    into children at `Affine::IDENTITY`; vello's `Scene::append`
 //!    composes the supplied transform onto each stored primitive
 //!    transform, so passing the App-level scale here causes a
@@ -34,7 +34,6 @@ use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
 use tilo_ui::Widget;
 use tilo_ui::i18n::I18nManager;
 use tilo_ui::offscreen::OffscreenRenderer;
-use tilo_ui::permissions::PermissionContext;
 use tilo_ui::presence::PresenceCtx;
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
@@ -219,7 +218,6 @@ struct Harness {
     node_map: HashMap<NodeId, *mut dyn Widget>,
     text_renderer: TextRenderer,
     presence: PresenceCtx,
-    perms: PermissionContext,
     theme: Theme,
     scene: Scene,
     renderer: OffscreenRenderer,
@@ -242,7 +240,6 @@ impl Harness {
         let theme = Theme::dark();
         let mut text_renderer = TextRenderer::new();
         let presence = PresenceCtx::default();
-        let perms = PermissionContext::permissive();
         let mut root = build_dashboard_root();
         let mut taffy = TaffyTree::<()>::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
@@ -284,7 +281,6 @@ impl Harness {
             node_map,
             text_renderer,
             presence,
-            perms,
             theme,
             scene: Scene::new(),
             renderer: OffscreenRenderer::new(canvas_w, canvas_h),
@@ -343,13 +339,12 @@ impl Harness {
         let vp = vello::kurbo::Rect::new(0.0, 0.0, self.logical_w, self.logical_h);
         let prev = self.presence.push_viewport(vp);
         let root: &mut dyn Widget = self.root.as_mut();
-        root.draw_with_presence(
+        root.draw(
             &mut self.scene,
             self.transform,
             &mut self.text_renderer,
             &self.theme,
             &self.presence,
-            &self.perms,
         );
         self.presence.pop_viewport(prev);
         root.mark_drawn();
@@ -404,7 +399,7 @@ fn cached_subtrees_stay_visible_at_scale_and_on_animation_frames() {
         // Frame 1: only spinners + progress bars remain dirty —
         // exactly the "post-scroll steady state" the user reported
         // broken. If a future change reintroduces an unconditional
-        // damage-region clip across the whole `draw_with_presence`,
+        // damage-region clip across the whole `draw`,
         // the second frame will drop all static widgets and this
         // test will fail.
         let _warmup = h.draw_one_frame();
@@ -443,7 +438,6 @@ fn scrolled_scrollable_renders_widgets_that_were_offscreen_at_initial_layout() {
     let theme = Theme::dark();
     let mut text_renderer = TextRenderer::new();
     let presence = PresenceCtx::default();
-    let perms = PermissionContext::permissive();
 
     let mut col = Column::new().with_intrinsic_height();
     for i in 0..200 {
@@ -505,7 +499,7 @@ fn scrolled_scrollable_renders_widgets_that_were_offscreen_at_initial_layout() {
         scene.reset();
         let prev = presence.push_viewport(vp);
         let r: &mut dyn Widget = root;
-        r.draw_with_presence(scene, transform, text_renderer, &theme, presence, &perms);
+        r.draw(scene, transform, text_renderer, &theme, presence);
         presence.pop_viewport(prev);
         r.mark_drawn();
     };

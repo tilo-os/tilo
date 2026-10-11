@@ -348,9 +348,10 @@ impl Widget for EmbeddedApp {
             return false;
         }
         self.app.pump_hosted_model();
-        // A durability that changed in this pass is shown by the next frame,
-        // which rebuilds for it as it would had the frame sampled it itself.
-        self.app.layout.structure_dirty |= self.app.root_widget.take_structure_dirty();
+        // A durability that changed in this pass left the layout dirty
+        // (`App::sync_model`), so the next frame shows it; a structure change
+        // the pass made is rebuilt by that frame.
+        self.app.layout.structure_dirty |= self.app.take_root_structure_dirty();
         let visible = self.app.unsettled() || self.app.root_widget.needs_animation_frame();
         if visible {
             self.wants_frame.set(true);
@@ -564,7 +565,7 @@ impl Widget for EmbeddedApp {
         Some(node)
     }
 
-    fn perform_action_at(
+    fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],

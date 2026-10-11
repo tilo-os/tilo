@@ -235,6 +235,38 @@ pub struct AccountsArea {
     cx: PaneCx,
     model: std::cell::OnceCell<Shared<AccountsPane>>,
     account_root: Option<AccountRoot>,
+    /// The credential vault, its custody and the sync statuses, opened off
+    /// the UI thread after the window's first frame ([`Self::start_read`]).
+    read: crate::device_read::DeviceRead<AccountsRead>,
+}
+
+/// What the External Accounts area opens of the device: the credential
+/// vault (a Secret Service round trip for its custody and key), the
+/// custodian (an HTTP client for iCloud sign-in) and the accounts' sync
+/// statuses. Opened off the UI thread; the person's directory, which a
+/// host's record may hold, is read on the UI thread
+/// ([`AccountsPane::from_read`]).
+pub(crate) struct AccountsRead {
+    statuses: accounts::AccountSyncStatusStore,
+    vault: accounts::SecretVault,
+    custodian: account_custody::Custodian,
+}
+
+impl AccountsRead {
+    /// Open the stores under `root`.
+    fn of(root: &AccountRoot) -> Self {
+        Self {
+            statuses: root.statuses(),
+            vault: root.vault(),
+            custodian: root.custodian(),
+        }
+    }
+
+    /// Open the stores under the config root `explicit`, or the user's: the
+    /// same stores as the root's, whose person's record none of them read.
+    fn under(explicit: Option<std::path::PathBuf>) -> Self {
+        Self::of(&explicit.map_or_else(AccountRoot::live, AccountRoot::at))
+    }
 }
 
 impl AccountsArea {
@@ -243,7 +275,27 @@ impl AccountsArea {
             cx: cx.clone(),
             model: std::cell::OnceCell::new(),
             account_root: None,
+            read: crate::device_read::DeviceRead::default(),
         }
+    }
+
+    /// Open the vault, the custodian and the statuses off the UI thread;
+    /// `false` when they have been opened or are being opened, or for a
+    /// screenshot, which opens none of them.
+    pub(crate) fn start_read(&self) -> bool {
+        if self.is_open() || self.cx.scene().is_some() {
+            return false;
+        }
+        let explicit = self
+            .account_root
+            .as_ref()
+            .and_then(|root| root.explicit().map(std::path::Path::to_path_buf));
+        self.read.start(move || AccountsRead::under(explicit))
+    }
+
+    /// Whether the read [`Self::start_read`] started has ended.
+    pub(crate) fn read_finished(&self) -> bool {
+        self.read.is_finished()
     }
 
     pub(crate) fn with_account_root(mut self, root: AccountRoot) -> Self {
@@ -262,9 +314,17 @@ impl AccountsArea {
                     || self.account_root.clone().unwrap_or_else(AccountRoot::live),
                     AccountRoot::at,
                 );
+            let read = self.read.take();
             let mut model = if scene.is_some() {
                 AccountsPane::from_dir_in(root, crate::accounts::sample_directory(), false)
+            } else if let Some(read) = read
+                && !root.mutation_pending()
+            {
+                let dir = AccountDirectory::load_in(&root);
+                AccountsPane::from_read(root, dir, read)
             } else {
+                // Opened here: nothing was read, or an interrupted mutation
+                // is recovered first, which may rewrite the vault read.
                 AccountsPane::in_root(root)
             };
             if let Some(kind) = scene.and_then(|scene| scene.account_form) {
@@ -509,15 +569,25 @@ impl AccountsPane {
 
     /// The live pane over the account stores under `account_root`.
     pub fn in_root(account_root: AccountRoot) -> Self {
+        // Loading the directory first recovers an interrupted mutation,
+        // which may rewrite the vault the read then opens.
+        let dir = AccountDirectory::load_in(&account_root);
+        let read = AccountsRead::of(&account_root);
+        Self::from_read(account_root, dir, read)
+    }
+
+    /// The live pane over the account stores under `account_root`, showing
+    /// `dir` and holding what `read` opened.
+    fn from_read(account_root: AccountRoot, dir: AccountDirectory, read: AccountsRead) -> Self {
         // The live pane shows the *real* stores — empty until the user adds an
         // account. It never substitutes illustrative sample accounts: showing
         // fabricated `ada@example.com` rows would present made-up data on an
         // empty state. The deterministic `--shots`/tests use
         // `from_dir(sample_directory(), true)` for a rich still instead.
         Self {
-            dir: AccountDirectory::load_in(&account_root),
-            sync_statuses: account_root.statuses(),
-            vault: account_root.vault(),
+            dir,
+            sync_statuses: read.statuses,
+            vault: read.vault,
             is_sample: false,
             form_kind: None,
             form_error: None,
@@ -536,7 +606,7 @@ impl AccountsPane {
             reauth_probe: None,
             reauth_candidate: None,
             sign_in: None,
-            custodian: account_root.custodian(),
+            custodian: read.custodian,
             opener: std::sync::Arc::new(PortalOpener),
             cloud: CloudMounts::live(),
             changed: false,
@@ -2728,5 +2798,62 @@ mod tests {
                 "{labels:?}"
             );
         }
+    }
+
+    /// Wait for a background read to end, as the warm-up's wake would.
+    fn until_finished(finished: impl Fn() -> bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while !finished() {
+            assert!(std::time::Instant::now() < deadline, "the read ends");
+            std::thread::yield_now();
+        }
+    }
+
+    /// The warm-up opens the vault off the UI thread once; the model holds
+    /// what it opened, so a saved credential is there.
+    #[test]
+    fn the_area_builds_its_model_from_the_read_it_started() {
+        let (dir, root) = scratch_root();
+        let id = accounts::AccountId::from("warm@example.test");
+        let mut store = accounts::AccountStore::new();
+        store.upsert(accounts::Account::new(id.clone(), "email"));
+        root.save_store(&store).expect("the store is saved");
+        let mut vault = root.vault();
+        vault.put(&id, &accounts::Secret::password("test-only-password"));
+        vault.try_save().expect("the vault is saved");
+        let cx = PaneCx::in_file(dir.path().join("settings.json"));
+        let area = AccountsArea::new(&cx).with_account_root(root.clone());
+        assert!(area.start_read(), "the first read starts");
+        assert!(!area.start_read(), "one read at a time");
+        assert!(!area.is_open(), "a running read publishes nothing yet");
+        until_finished(|| area.read_finished());
+        let model = area.model().borrow();
+        assert!(area.is_open());
+        assert!(vault.get(&id).is_some(), "the credential was saved");
+        assert_eq!(
+            model.vault.get(&id),
+            vault.get(&id),
+            "the vault read is held"
+        );
+        assert_eq!(
+            model.directory(),
+            AccountsPane::in_root(root).directory(),
+            "the directory is the one reading in place shows"
+        );
+        drop(model);
+        assert!(!area.start_read(), "a built model is not read again");
+    }
+
+    /// A mutation whose intent is on disk is recovered before the vault is
+    /// opened, so a vault read before it is not used.
+    #[test]
+    fn a_pending_mutation_is_seen() {
+        let (_dir, root) = scratch_root();
+        assert!(!root.mutation_pending());
+        let config = root.path().expect("an explicit root");
+        let accounts_dir = accounts::accounts_dir_in(&config);
+        std::fs::create_dir_all(&accounts_dir).expect("the accounts directory");
+        std::fs::write(accounts_dir.join("mutation-journal.json"), b"{}").expect("an intent");
+        assert!(root.mutation_pending());
     }
 }

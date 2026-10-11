@@ -17,6 +17,8 @@
 //! the download continues in the background and the result arrives as a
 //! notification.
 
+mod semantic;
+
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::fs::OpenOptions;
@@ -593,6 +595,7 @@ impl PressedActions {
 )]
 pub struct OnboardingView {
     flow: Onboarding,
+    semantic: Rc<RefCell<semantic::Snapshot>>,
     context: OnboardingContext,
     /// Existing metadata is authoritative when its keyring item is
     /// unavailable or its collaboration chain cannot be verified. Recovery
@@ -677,6 +680,8 @@ pub struct OnboardingView {
     codec_status: CodecPackStatus,
     /// The install started from this page, until its unit returns.
     codec_running: Option<Receiver<Result<(), String>>>,
+    /// Terminal result of the actual setup worker, used by semantic receipts.
+    codec_worker_succeeded: Option<bool>,
     /// A refusal from systemd or polkit (the helper's own errors arrive in
     /// its status).
     codec_error: Option<String>,
@@ -868,6 +873,7 @@ impl OnboardingView {
     ) -> Self {
         Self {
             flow: Onboarding::new(),
+            semantic: Rc::default(),
             context,
             recovery_only: false,
             minter,
@@ -913,11 +919,21 @@ impl OnboardingView {
             codec_page: false,
             codec_status: CodecPackStatus::default(),
             codec_running: None,
+            codec_worker_succeeded: None,
             codec_error: None,
             codec_changed: Arc::new(AtomicBool::new(false)),
             codec_watching: false,
             synced_at: Instant::now(),
         }
+    }
+
+    pub(crate) fn semantic_provider(&self) -> Rc<dyn crate::shell::search::SearchProvider> {
+        self.publish_semantic_state();
+        Rc::new(semantic::Provider::new(self))
+    }
+
+    fn publish_semantic_state(&self) {
+        *self.semantic.borrow_mut() = semantic::Snapshot::from_view(self);
     }
 
     /// Take `action` as though its button had been clicked. Review renderers
@@ -1111,6 +1127,7 @@ impl OnboardingView {
         match spawned {
             Ok(_) => {
                 self.codec_error = None;
+                self.codec_worker_succeeded = None;
                 self.codec_running = Some(rx);
             }
             Err(error) => {
@@ -1132,12 +1149,14 @@ impl OnboardingView {
         if let Some(events) = self.codec_running.as_ref() {
             match events.try_recv() {
                 Ok(result) => {
+                    self.codec_worker_succeeded = Some(result.is_ok());
                     self.codec_error = result.err();
                     self.codec_running = None;
                     changed = true;
                 }
                 Err(TryRecvError::Empty) => {}
                 Err(TryRecvError::Disconnected) => {
+                    self.codec_worker_succeeded = Some(false);
                     self.codec_running = None;
                     changed = true;
                 }
@@ -1158,6 +1177,7 @@ impl OnboardingView {
         if let Some(events) = self.codec_running.as_ref()
             && let Ok(result) = events.recv()
         {
+            self.codec_worker_succeeded = Some(result.is_ok());
             self.codec_error = result.err();
             self.codec_running = None;
             self.codec_changed.store(true, Ordering::Release);
@@ -3032,6 +3052,12 @@ impl OnboardingView {
 
 impl Drop for OnboardingView {
     fn drop(&mut self) {
+        let mut snapshot = self.semantic.borrow_mut();
+        snapshot.phase = if self.finished { "finished" } else { "closed" };
+        snapshot.failed = !self.finished;
+        snapshot.operations.clear();
+        snapshot.revision = snapshot.revision.wrapping_add(1);
+        drop(snapshot);
         self.nearby = None;
         clear_secret(&self.connect_passphrase);
         clear_secret(&self.backup_passphrase);
@@ -3563,6 +3589,7 @@ impl Widget for OnboardingView {
             self.invalidation.both();
             self.transition_started = Instant::now();
         }
+        self.publish_semantic_state();
     }
 
     fn build_layout(

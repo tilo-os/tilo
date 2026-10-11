@@ -1232,29 +1232,7 @@ impl WindowSwitcher {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
         let m = self.metrics;
-        let tier = ui::chrome::selection_tier(theme, state);
-        let rr = RoundedRect::from_rect(card, m.card_radius);
-        if tier.fill.components[3] > 0.0 {
-            scene.fill(Fill::NonZero, transform, tier.fill, None, &rr);
-        }
-        if let Some(border) = tier.border {
-            scene.stroke(
-                &vello::kurbo::Stroke::new(1.0),
-                transform,
-                border,
-                None,
-                &rr,
-            );
-        }
-        if let Some(glow) = tier.inner_glow {
-            scene.stroke(
-                &vello::kurbo::Stroke::new(1.0),
-                transform,
-                glow,
-                None,
-                &RoundedRect::from_rect(card.inset(-1.0), (m.card_radius - 1.0).max(0.0)),
-            );
-        }
+        ui::chrome::selection_tier(theme, state).paint(scene, transform, card, m.card_radius);
         let well = Rect::new(
             card.x0 + m.inset,
             card.y0 + m.inset,

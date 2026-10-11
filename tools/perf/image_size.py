@@ -245,10 +245,13 @@ def select_platform(index: dict[str, Any], arch: str | None) -> str:
                  if item.get("platform", {}).get("os", "linux") == "linux"]
     if arch:
         manifests = [item for item in manifests if item.get("platform", {}).get("architecture") == ARCH[arch]]
-    if len(manifests) != 1:
-        raise ValueError(f"the index holds {len(manifests)} linux manifests for {arch or 'any architecture'}; "
+    # buildx's OCI archive names one image once per tag: one descriptor each,
+    # all with the same digest.
+    digests = sorted({item["digest"] for item in manifests})
+    if len(digests) != 1:
+        raise ValueError(f"the index holds {len(digests)} linux manifests for {arch or 'any architecture'}; "
                          "pass --arch")
-    return manifests[0]["digest"]
+    return digests[0]
 
 
 @dataclasses.dataclass

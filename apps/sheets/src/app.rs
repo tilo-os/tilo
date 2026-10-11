@@ -27,7 +27,6 @@ use winit::event::{ElementState, Modifiers, MouseButton, MouseScrollDelta, Windo
 
 use ui::chart_palette::ChartPalette;
 use ui::collaboration::PresencePayload;
-use ui::permissions::PermissionContext;
 use ui::portal::{FileFilter, PickRequest};
 use ui::presence::{PresenceCtx, PresenceKey};
 use ui::text_render::{TextRenderer, TextStyle};
@@ -2623,6 +2622,11 @@ impl Widget for SheetsApp {
         // tab strip, below the top layer.
         self.draw_status_bubble(scene, transform, text_renderer, theme);
         self.draw_tab_rename(scene, transform, text_renderer, theme);
+        // Presence-in-navigation: when a peer is on a DIFFERENT sheet,
+        // glow that sheet's tab in their colour so you can see where they
+        // went ("Alice is on Q2"). Painted after the chrome so it reads on
+        // top of the tab surface.
+        self.draw_sheet_tab_presence(scene, transform, theme, presence);
     }
 
     fn draw_overlay(
@@ -2650,23 +2654,6 @@ impl Widget for SheetsApp {
         // fading, so it hides itself without needing a stray pointer event.
         (self.motion == MotionPreference::Full && self.status_bubble.needs_frame(ui::time::now()))
             || self.children().iter().any(|c| c.needs_animation_frame())
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        _permissions: &PermissionContext,
-    ) {
-        self.draw(scene, transform, text_renderer, theme, presence);
-        // Presence-in-navigation: when a peer is on a DIFFERENT sheet,
-        // glow that sheet's tab in their colour so you can see where they
-        // went ("Alice is on Q2"). Painted after the chrome so it reads on
-        // top of the tab surface.
-        self.draw_sheet_tab_presence(scene, transform, theme, presence);
     }
 
     fn settle(&mut self, edits: &mut Edits<'_>, _path: &ObjId) {

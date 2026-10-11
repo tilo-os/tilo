@@ -550,7 +550,6 @@ dependencies = [
  "capnp-rpc",
  "clap",
  "ed25519-dalek 3.0.0",
- "futures-util",
  "getrandom 0.4.3",
  "hex",
  "install",
@@ -564,9 +563,9 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tilo-app-package",
+ "tilo-files",
  "tilo-paths",
  "tokio",
- "tokio-util",
  "tracing",
  "tracing-subscriber",
  "wire-frame",
@@ -2502,6 +2501,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tilo-advisory-lock",
  "tilo-clock",
+ "tilo-files",
  "tilo-test-env",
  "windows-vm",
  "wire-frame",
@@ -4643,14 +4643,14 @@ dependencies = [
  "capnp",
  "capnp-rpc",
  "format-provider-abi",
- "futures",
  "getrandom 0.4.3",
  "notify",
+ "runtime-portal",
  "serde",
  "tempfile",
+ "tilo-files",
  "tilo-paths",
  "tokio",
- "tokio-util",
  "toml 1.0.6+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
@@ -7211,8 +7211,6 @@ dependencies = [
 [[package]]
 name = "iroh"
 version = "1.0.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "460de6bc52163b41b1646931f2897e5ab986f0966ade444467fec25024751a72"
 dependencies = [
  "backon",
  "blake3",
@@ -7345,8 +7343,6 @@ dependencies = [
 [[package]]
 name = "iroh-gossip"
 version = "0.101.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4e1dc4b05f73e7a1b9e83b531eb63c3fd671b0af3aeb13b59c546dd7ca747515"
 dependencies = [
  "blake3",
  "bytes",
@@ -9218,6 +9214,7 @@ dependencies = [
  "tilo-oauth",
  "tilo-paths",
  "tilo-spotify",
+ "tilo-spotify-engine",
  "tilo-test-env",
  "tilo-thumbnail",
  "tilo-vello",
@@ -9510,8 +9507,6 @@ dependencies = [
 [[package]]
 name = "netwatch"
 version = "0.19.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4d9cbe01741347ef750d743d6690603f5eed8341e679fb51c8e629337aa11976"
 dependencies = [
  "atomic-waker",
  "bytes",
@@ -13032,7 +13027,6 @@ dependencies = [
  "tilo-clock",
  "tilo-test-env",
  "tokio",
- "tokio-util",
  "workspace-hack",
 ]
 
@@ -13046,7 +13040,6 @@ dependencies = [
  "async-imap",
  "chrono-tz",
  "collab-types",
- "comemo",
  "desktop-policy",
  "mime_guess",
  "os-actions",
@@ -13069,18 +13062,11 @@ dependencies = [
  "tilo-oauth",
  "tilo-pdf",
  "tilo-relay-protocol",
- "tilo-spotify",
  "tilo-subject",
  "tilo-thumbnail",
  "tilo-ui",
  "tilo-user-identity",
  "tilo-wet-media",
- "tiny-skia",
- "typst",
- "typst-assets",
- "typst-layout",
- "typst-pdf",
- "typst-render",
  "vte",
  "workspace-hack",
  "xattr",
@@ -13104,7 +13090,6 @@ dependencies = [
  "tilo-files",
  "tilo-test-env",
  "tokio",
- "tokio-util",
  "uuid",
  "wire-frame",
  "workspace-hack",
@@ -16929,6 +16914,7 @@ dependencies = [
  "iroh-base",
  "iroh-blobs",
  "iroh-gossip",
+ "iroh-relay",
  "irpc",
  "libc",
  "moka",
@@ -17322,6 +17308,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tilo-clock",
+ "tilo-files",
  "tilo-net",
  "tilo-rt",
  "tilo-segment",
@@ -17667,7 +17654,6 @@ dependencies = [
  "getrandom 0.4.3",
  "google-cast-protocol",
  "hex",
- "libc",
  "mdns-sd",
  "postcard",
  "prost",
@@ -17682,6 +17668,7 @@ dependencies = [
  "sha2 0.11.0",
  "thiserror 2.0.21",
  "tilo-callstream",
+ "tilo-files",
  "tilo-paths",
  "tilo-rt",
  "tilo-test-env",
@@ -17837,6 +17824,7 @@ name = "tilo-relay-session"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "collab-types",
  "ed25519-dalek 3.0.0",
  "getrandom 0.3.4",
  "getrandom 0.4.3",
@@ -18205,6 +18193,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-spotify-engine"
+version = "0.1.0"
+dependencies = [
+ "runtime-dylib",
+ "tilo-spotify",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-startup-metrics"
 version = "0.1.0"
 dependencies = [
@@ -18268,6 +18265,20 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tracing",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-typst-engine"
+version = "0.1.0"
+dependencies = [
+ "comemo",
+ "runtime-dylib",
+ "typst",
+ "typst-assets",
+ "typst-layout",
+ "typst-pdf",
+ "typst-render",
  "workspace-hack",
 ]
 
@@ -18373,7 +18384,6 @@ dependencies = [
  "tilo-vello-encoding",
  "tilo-winit",
  "tokio",
- "tokio-util",
  "tracing",
  "tracing-subscriber",
  "two-face",
@@ -19445,6 +19455,7 @@ dependencies = [
  "tilo-app",
  "tilo-automerge-fork",
  "tilo-files",
+ "tilo-typst-engine",
  "tilo-typst-fonts",
  "tilo-vello",
  "tilo-winit",
@@ -22252,7 +22263,6 @@ dependencies = [
  "tracing-core",
  "tracing-subscriber",
  "ttf-parser",
- "typst-assets",
  "unic-langid",
  "unic-langid-impl",
  "unicode-bidi",

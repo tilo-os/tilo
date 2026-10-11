@@ -254,12 +254,14 @@ mod tests {
         let surface = field.host.widget_mut();
         assert!(surface.perform_action(
             &ui::a11y::Action::SetValue("first\nsecond".into()),
+            &[],
             &mut ui::widget::Edits::lend(&mut field.doc),
             &ROOT,
         ));
         assert_eq!(field.host.widget().source().plain_text(), "first\nsecond");
         assert!(field.host.widget_mut().perform_action(
             &ui::a11y::Action::SetValue("one".into()),
+            &[],
             &mut ui::widget::Edits::lend(&mut field.doc),
             &ROOT,
         ));

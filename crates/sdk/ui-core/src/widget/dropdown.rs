@@ -1285,7 +1285,7 @@ impl Widget for Dropdown {
         // overlay pass, so it doesn't reserve layout space.
         //
         // The control is as wide as its widest option (measured in
-        // `adjust_layout_with_measure`), or the row's width with `fill`. In
+        // `adjust_layout_style`), or the row's width with `fill`. In
         // both cases it is the item that gives when the row is short of
         // room, like `TextInput` and unlike fixed-size leaves such as
         // `Toggle`: with `flex_shrink: 0` a dropdown claimed the whole row
@@ -1373,7 +1373,7 @@ impl Widget for Dropdown {
         }
     }
 
-    fn adjust_layout_with_measure(
+    fn adjust_layout_style(
         &mut self,
         tree: &mut TaffyTree<()>,
         node: NodeId,
@@ -1818,6 +1818,7 @@ impl Widget for Dropdown {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        _key_path: &[u64],
         state: &mut crate::widget::Edits<'_>,
         root: &ModelPath,
     ) -> bool {
@@ -2486,6 +2487,7 @@ mod tests {
         assert!(Widget::perform_action(
             &mut dropdown,
             &crate::a11y::Action::SetValue("second".into()),
+            &[],
             &mut crate::widget::Edits::lend(&mut document),
             &root
         ));
@@ -2493,6 +2495,7 @@ mod tests {
         assert!(!Widget::perform_action(
             &mut dropdown,
             &crate::a11y::Action::SetValue("foreign".into()),
+            &[],
             &mut crate::widget::Edits::lend(&mut document),
             &root
         ));
@@ -2532,6 +2535,7 @@ mod tests {
         assert!(Widget::perform_action(
             &mut dropdown,
             &crate::a11y::Action::Expand,
+            &[],
             &mut crate::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
@@ -3170,6 +3174,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut first,
                 &crate::a11y::Action::SetValue(String::from("Europe/Amsterdam")),
+                &[],
                 &mut crate::widget::Edits::lend(&mut document),
                 &automerge::ROOT,
             ));
@@ -3260,6 +3265,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut dropdown,
                 &Action::Expand,
+                &[],
                 &mut crate::widget::Edits::lend(&mut document),
                 &root,
             ));
@@ -3267,6 +3273,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut dropdown,
                 &Action::Collapse,
+                &[],
                 &mut crate::widget::Edits::lend(&mut document),
                 &root,
             ));
@@ -3274,6 +3281,7 @@ mod tests {
             assert!(!Widget::perform_action(
                 &mut dropdown,
                 &Action::SetValue(String::from("not an option")),
+                &[],
                 &mut crate::widget::Edits::lend(&mut document),
                 &root,
             ));
@@ -3380,6 +3388,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut dropdown,
                 &crate::a11y::Action::SetValue("Asia/Tokyo".into()),
+                &[],
                 &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));

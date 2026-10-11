@@ -701,7 +701,6 @@ pub struct NotificationsPane {
     prefs: Followed<NotificationPrefs>,
     apps: Vec<InstalledNotificationApp>,
     shown: Shown,
-    structure_dirty: bool,
     composed: ui::widget::Composed,
 }
 
@@ -717,7 +716,6 @@ impl NotificationsPane {
             prefs,
             apps,
             shown,
-            structure_dirty: false,
             composed: ui::widget::Composed::default(),
         }
     }
@@ -1076,7 +1074,7 @@ impl Widget for NotificationsPane {
         if self.prefs.refresh() {
             self.shown.show(self.prefs.get());
             // The status pill and the per-app captions follow the values.
-            self.structure_dirty = true;
+            self.composed.invalidate();
         }
         self.composed.sync(state, root);
     }
@@ -1098,12 +1096,6 @@ impl Widget for NotificationsPane {
 
     fn name(&self) -> &'static str {
         "NotificationsPane"
-    }
-
-    fn take_structure_dirty(&mut self) -> bool {
-        let own = std::mem::take(&mut self.structure_dirty);
-        let child = self.composed.take_structure_dirty();
-        own || child
     }
 }
 

@@ -19,6 +19,14 @@ pub fn radius(theme: &Theme) -> f64 {
     f64::from(theme.tokens.radii.panel)
 }
 
+/// How far a floating Panel's shadow reaches past its rect on any side:
+/// what a host repaints around a panel that appears, moves or changes.
+#[must_use]
+pub fn shadow_reach(theme: &Theme) -> f64 {
+    let elevation = &theme.tokens.elevation.floating;
+    f64::from(elevation.blur) * 2.0 + f64::from(elevation.offset_y).abs()
+}
+
 /// Paint a floating Panel's body in `rect`: shadow, material, edge. Content
 /// is drawn on top by the caller.
 pub fn paint(scene: &mut Scene, transform: Affine, rect: Rect, theme: &Theme) {
@@ -41,7 +49,7 @@ pub fn paint_rounded(scene: &mut Scene, transform: Affine, rect: Rect, radius: f
     // outside the panel: the material below records this scene for blur,
     // and must not sample its own shadow as a dimmed foreground.
     let elevation = &theme.tokens.elevation.floating;
-    let reach = f64::from(elevation.blur) * 2.0 + f64::from(elevation.offset_y).abs();
+    let reach = shadow_reach(theme);
     let mut exterior = rect.inflate(reach, reach).to_path(0.1);
     exterior.extend(RoundedRect::from_rect(rect, radius).path_elements(0.1));
     scene.push_clip_layer(Fill::EvenOdd, transform, &exterior);
