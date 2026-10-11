@@ -2031,6 +2031,9 @@ input-dictionary-all-languages = All languages
 
 input-scope-all = All keyboards
 input-scope-inheritance = Physical keyboards share these sources until you change a keyboard's own list. The on-screen keyboard has its own sources.
+input-scope-own = { $name } types its own layouts
+input-scope-use-shared = Use shared layouts
+input-error-keyboard-shared = that keyboard already types the shared layouts.
 input-keyboard-scope = Keyboard
 input-source-activate = Make active
 input-sources-selection-description = Select a source to preview or edit. Drag to reorder.

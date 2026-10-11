@@ -140,6 +140,138 @@ pub fn device_key(base: &str, serial: &str, physical: &str) -> String {
     }
 }
 
+/// The X11 keyboard configuration systemd-localed writes for
+/// `localectl set-x11-keymap`.
+const LOCALED_X11_CONFIG: &str = "/etc/X11/xorg.conf.d/00-keyboard.conf";
+/// The console configuration; systemd-localed also records the X11 layout
+/// here as `XKBLAYOUT`/`XKBVARIANT`.
+const VCONSOLE_CONFIG: &str = "/etc/vconsole.conf";
+/// Both files are a few lines; anything larger is not a keyboard config.
+const SYSTEM_CONFIG_LIMIT: u64 = 64 * 1024;
+
+/// The input sources this machine was set up with, for a person who has not
+/// chosen any. In order: the session's `XKB_DEFAULT_LAYOUT` and
+/// `XKB_DEFAULT_VARIANT` (the installer exports them for every session, and
+/// they are what libxkbcommon applies to a keymap compiled without names),
+/// then systemd-localed's X11 layout, then the console's `XKBLAYOUT`.
+/// Empty when none of them names a valid layout.
+#[must_use]
+pub fn system_sources() -> Vec<String> {
+    system_sources_from(&|name| std::env::var(name).ok(), &read_system_config)
+}
+
+/// The sources a person who has chosen none types: the machine's
+/// ([`system_sources`]), else US. Never empty.
+#[must_use]
+pub fn default_sources() -> Vec<String> {
+    let mut sources = system_sources();
+    if sources.is_empty() {
+        sources.push("us".into());
+    }
+    sources
+}
+
+/// The layout a document falls back to when it names no usable one: the
+/// system's primary layout, else US.
+#[must_use]
+pub fn fallback_layout() -> String {
+    default_sources().swap_remove(0)
+}
+
+/// [`system_sources`] over an environment `variable` reader and a
+/// configuration `file` reader.
+fn system_sources_from(
+    variable: &dyn Fn(&str) -> Option<String>,
+    file: &dyn Fn(&str) -> Option<String>,
+) -> Vec<String> {
+    let variable = |name: &str| variable(name).unwrap_or_default();
+    let from_environment = sources_from_names(
+        &variable("XKB_DEFAULT_LAYOUT"),
+        &variable("XKB_DEFAULT_VARIANT"),
+    );
+    if !from_environment.is_empty() {
+        return from_environment;
+    }
+    if let Some(text) = file(LOCALED_X11_CONFIG) {
+        let sources = xorg_keyboard_sources(&text);
+        if !sources.is_empty() {
+            return sources;
+        }
+    }
+    file(VCONSOLE_CONFIG)
+        .map(|text| vconsole_sources(&text))
+        .unwrap_or_default()
+}
+
+fn read_system_config(path: &str) -> Option<String> {
+    use std::io::Read as _;
+    let mut text = String::new();
+    std::fs::File::open(path)
+        .ok()?
+        .take(SYSTEM_CONFIG_LIMIT)
+        .read_to_string(&mut text)
+        .ok()?;
+    Some(text)
+}
+
+/// Source ids from XKB rule names: comma-separated layouts with one variant
+/// slot each, as `XKB_DEFAULT_*`, localed and setxkbmap spell them.
+/// Invalid and duplicate entries are dropped; the list is bounded to the
+/// XKB group limit.
+fn sources_from_names(layouts: &str, variants: &str) -> Vec<String> {
+    let mut variants = variants.split(',');
+    let mut sources = Vec::new();
+    for layout in layouts.split(',') {
+        let variant = variants.next().unwrap_or_default().trim();
+        let layout = layout.trim();
+        if layout.is_empty() {
+            continue;
+        }
+        let id = if variant.is_empty() {
+            layout.to_owned()
+        } else {
+            format!("{layout}:{variant}")
+        };
+        if crate::hardware::KeyboardInputSource::parse(&id).is_some()
+            && !sources.contains(&id)
+            && sources.len() < crate::hardware::MAX_KEYBOARD_INPUT_SOURCES
+        {
+            sources.push(id);
+        }
+    }
+    sources
+}
+
+/// `XKBLAYOUT`/`XKBVARIANT` from an env-style `vconsole.conf`.
+fn vconsole_sources(text: &str) -> Vec<String> {
+    let value = |key: &str| {
+        text.lines()
+            .filter_map(|line| line.trim().split_once('='))
+            .filter(|(name, _)| name.trim() == key)
+            .map(|(_, value)| value.trim().trim_matches(['"', '\'']).to_owned())
+            .last()
+            .unwrap_or_default()
+    };
+    sources_from_names(&value("XKBLAYOUT"), &value("XKBVARIANT"))
+}
+
+/// `Option "XkbLayout"`/`"XkbVariant"` from localed's xorg.conf snippet.
+fn xorg_keyboard_sources(text: &str) -> Vec<String> {
+    let value = |key: &str| {
+        text.lines()
+            .filter_map(|line| line.trim().strip_prefix("Option"))
+            .filter_map(|rest| {
+                let mut quoted = rest.split('"').skip(1).step_by(2);
+                let name = quoted.next()?;
+                let value = quoted.next()?;
+                name.eq_ignore_ascii_case(key).then(|| value.to_owned())
+            })
+            .last()
+            .unwrap_or_default()
+    };
+    sources_from_names(&value("XkbLayout"), &value("XkbVariant"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -177,6 +309,69 @@ mod tests {
         let restored: RichInputConfig =
             serde_json::from_value(serde_json::to_value(&input).unwrap()).unwrap();
         assert_eq!(restored.keyboard_assignments, input.keyboard_assignments);
+    }
+
+    #[test]
+    fn the_machine_layout_is_read_from_xkb_names_localed_and_the_console() {
+        assert_eq!(sources_from_names("de", ""), ["de"]);
+        assert_eq!(
+            sources_from_names("de,us", "nodeadkeys,"),
+            ["de:nodeadkeys", "us"]
+        );
+        assert_eq!(
+            sources_from_names(" de , ../evil, de", ""),
+            ["de"],
+            "invalid and repeated names are dropped"
+        );
+        assert!(sources_from_names("", "nodeadkeys").is_empty());
+        assert_eq!(sources_from_names("a,b,c,d,e", "").len(), 4);
+
+        let vconsole =
+            "# Written by systemd-localed(8)\nKEYMAP=de\nXKBLAYOUT=\"de\"\nXKBVARIANT=nodeadkeys\n";
+        assert_eq!(vconsole_sources(vconsole), ["de:nodeadkeys"]);
+        assert!(
+            vconsole_sources("KEYMAP=de-latin1\n").is_empty(),
+            "a console keymap alone is not an XKB layout"
+        );
+
+        let xorg = r#"Section "InputClass"
+        Identifier "system-keyboard"
+        MatchIsKeyboard "on"
+        Option "XkbLayout" "de,us"
+        Option "XkbVariant" ","
+EndSection
+"#;
+        assert_eq!(xorg_keyboard_sources(xorg), ["de", "us"]);
+        assert!(xorg_keyboard_sources("Section \"InputClass\"\nEndSection\n").is_empty());
+    }
+
+    #[test]
+    fn the_session_environment_wins_over_localed_and_the_console() {
+        let environment = |layout: &'static str| {
+            move |name: &str| match name {
+                "XKB_DEFAULT_LAYOUT" => Some(layout.to_owned()),
+                "XKB_DEFAULT_VARIANT" => Some("nodeadkeys".to_owned()),
+                _ => None,
+            }
+        };
+        let files = |path: &str| match path {
+            LOCALED_X11_CONFIG => Some("Option \"XkbLayout\" \"fr\"\n".to_owned()),
+            VCONSOLE_CONFIG => Some("XKBLAYOUT=es\n".to_owned()),
+            _ => None,
+        };
+        let nothing = |_: &str| None;
+        assert_eq!(
+            system_sources_from(&environment("de"), &files),
+            ["de:nodeadkeys"]
+        );
+        assert_eq!(system_sources_from(&environment(""), &files), ["fr"]);
+        assert_eq!(
+            system_sources_from(&nothing, &|path: &str| {
+                (path == VCONSOLE_CONFIG).then(|| "XKBLAYOUT=es\n".to_owned())
+            }),
+            ["es"]
+        );
+        assert!(system_sources_from(&nothing, &nothing).is_empty());
     }
 
     #[test]
