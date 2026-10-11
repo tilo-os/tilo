@@ -17675,6 +17675,63 @@ fn focus_quick_settings_accessibility(host: &mut ShellOverlayHost, child_path: &
 /// widget publishes it.
 const PALETTE_QUERY_TARGET: &str = "command-palette:query";
 
+/// Where one `update` of the host spent its time, reported as
+/// `SLOW-HOST-UPDATE` when the whole of it took long enough to hold up input:
+/// a stalled pump then names its step in the session log.
+struct UpdateSteps {
+    started: Instant,
+    last: Instant,
+    steps: [(&'static str, Duration); 20],
+    len: usize,
+}
+
+/// An update this long delays the frame behind it by a visible amount.
+const SLOW_HOST_UPDATE: Duration = Duration::from_millis(50);
+
+impl UpdateSteps {
+    fn start() -> Self {
+        let now = Instant::now();
+        Self {
+            started: now,
+            last: now,
+            steps: [("", Duration::ZERO); 20],
+            len: 0,
+        }
+    }
+
+    fn mark(&mut self, step: &'static str) {
+        let now = Instant::now();
+        if let Some(slot) = self.steps.get_mut(self.len) {
+            *slot = (step, now.saturating_duration_since(self.last));
+            self.len = self.len.saturating_add(1);
+        }
+        self.last = now;
+    }
+
+    /// The `SLOW-HOST-UPDATE` line, when the update was slow.
+    fn report(&self, total: Duration) -> Option<String> {
+        if total < SLOW_HOST_UPDATE {
+            return None;
+        }
+        let steps = self
+            .steps
+            .iter()
+            .take(self.len)
+            .map(|(step, took)| format!("{step}={took:?}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        Some(format!("SLOW-HOST-UPDATE total={total:?} ({steps})"))
+    }
+}
+
+impl Drop for UpdateSteps {
+    fn drop(&mut self) {
+        if let Some(line) = self.report(self.started.elapsed()) {
+            eprintln!("{line}");
+        }
+    }
+}
+
 impl Widget for ShellOverlayHost {
     ui::provides!(dyn ui::component_lifecycle::ComponentLifecycle);
 
@@ -17750,6 +17807,7 @@ impl Widget for ShellOverlayHost {
         reason = "the compositor tick is deliberately ordered in one place so source refreshes precede palette input and every frame-side effect remains visible"
     )]
     fn update(&mut self, doc: &AppModel, path: &ModelPath) -> bool {
+        let mut steps = UpdateSteps::start();
         let (doc, path) = ui::doc::document_ref(doc, path);
         if let Some(chrome) = &self.chrome
             && let Some(apps) = chrome.borrow().hosted_inputs.in_process()
@@ -17761,6 +17819,7 @@ impl Widget for ShellOverlayHost {
             apps.pump_messaging_records();
             apps.pump_feedback();
         }
+        steps.mark("in-process-apps");
         if self.onboarding.is_some() {
             // Compositor-owned sheets (polkit administrator prompts, network
             // secrets) are raised by the system on behalf of the person in
@@ -17778,17 +17837,21 @@ impl Widget for ShellOverlayHost {
         let radio_dirty = self.poll_quick_settings_radio();
         let quick_settings_dirty = self.apply_quick_settings_readings();
         let display_storage_dirty = self.projection_overlay.poll_storage();
+        steps.mark("settings-readings");
         // Runs first so an invite token / prompt is in chrome before draw.
         self.pump_peer_sync();
+        steps.mark("peer-sync");
         self.tick_shortcut_triggers();
         self.pump_shortcut_step_prompts();
         self.record_finished_shortcut_runs();
+        steps.mark("shortcut-triggers");
         if let Some(chrome) = self.chrome.as_ref() {
             let mut state = chrome.borrow_mut();
             state.sync_external_tree_revision();
             state.expire_notification_history_clear(Instant::now());
             state.flush_notification_history();
         }
+        steps.mark("notification-history");
         let mut search_index_ready = false;
         // Retained search indexes are maintained on the compositor tick,
         // before palette input is routed.  Providers may do a source refresh
@@ -17817,10 +17880,12 @@ impl Widget for ShellOverlayHost {
                         doc_root: path,
                     });
         }
+        steps.mark("search-index");
         self.poll_pending_launchpad_actions();
         // Before the resync, so what an action moved is spliced this frame.
         self.run_requested_shortcut_actions();
         self.latch_overview_transition();
+        steps.mark("launchpad-and-shortcut-actions");
         // Workspace switch before anything walking `group_row_ptrs` (it
         // replaces the whole row set), then splice the tree's structural
         // changes into the rows — both before the children's own `update`
@@ -17829,7 +17894,9 @@ impl Widget for ShellOverlayHost {
         let chrome_dirty = self.resync_strips_from_tree() || ws_swapped;
         // Before children update, so a promotion/restore this frame shows.
         self.sync_fullscreen_from_chrome();
+        steps.mark("resync");
         let content_dirty = self.content.update(doc, path);
+        steps.mark("content-update");
         // Normally drained synchronously by input dispatch. Keep this
         // fallback for accessibility/synthetic activation paths that can
         // queue a widget close without returning through pointer dispatch.
@@ -17841,6 +17908,7 @@ impl Widget for ShellOverlayHost {
         self.harvest_floating_surface_requests();
         self.harvest_floating_surface_source_updates();
         self.harvest_capture_studio_requests();
+        steps.mark("harvest-requests");
         let palette_dirty = self.palette.update(doc, path);
         if search_index_ready {
             // A worker published an immutable index after the palette opened.
@@ -17859,6 +17927,7 @@ impl Widget for ShellOverlayHost {
             .map(|(_, mirror)| mirror.update(doc, path))
             .fold(false, |dirty, next| dirty || next);
         let sidebar_dirty = self.sidebar.as_mut().is_some_and(|w| w.update(doc, path));
+        steps.mark("palette-mirrors-sidebar");
         // The harvesters run after `content.update` so this frame's
         // gestures are visible to them, mirroring one-shot widget-side
         // changes into the persisted tree so they survive a restart and
@@ -17876,6 +17945,7 @@ impl Widget for ShellOverlayHost {
         if opened_for_new_tab {
             self.refresh_search_results(doc, path);
         }
+        steps.mark("harvest-changes");
         self.clear_stale_open_target();
         self.clear_stale_wifi_password();
         self.sync_status_from_bridge();
@@ -17889,6 +17959,7 @@ impl Widget for ShellOverlayHost {
         let capture_targets = self.capture_targets();
         self.capture_studio.set_candidates(capture_targets);
         self.dispatch_cross_strip_detaches();
+        steps.mark("presence-and-follow");
         // Offer every open tab's document to its own writer, debounced and
         // off-thread — without this the store never writes to disk.
         if let Some(chrome) = self.chrome.as_ref() {
@@ -17905,15 +17976,18 @@ impl Widget for ShellOverlayHost {
             drop(state);
             records.tick();
         }
+        steps.mark("documents-and-records");
         // Before the prompt pump, so a request arriving this frame is on
         // screen by the end of it, not one frame later.
         let portal_dirty = self.drain_portal_prompts();
         let picker_dirty = self.pump_file_picker();
         let dialog_dirty = self.pump_portal_dialogs();
         self.pump_permission_prompt();
+        steps.mark("prompts");
         let launch_dirty = self.drain_launch_events() | self.retire_notices_for_opened_windows();
         self.run_requested_session_actions();
         let session_action_dirty = self.drain_session_action_results();
+        steps.mark("launches-and-session-actions");
         // Also driven by the widget's own `update`, but routed here too so
         // chrome stays consistent for tests that never call the widget.
         let notifications_dropped = if let Some(chrome) = self.chrome.as_ref() {
@@ -17929,6 +18003,8 @@ impl Widget for ShellOverlayHost {
         if let Some(chrome) = self.chrome.as_ref() {
             chrome.borrow().tree_mut().commit_room_change();
         }
+        steps.mark("commit");
+        drop(steps);
         content_dirty
             || quick_settings_dirty
             || radio_dirty

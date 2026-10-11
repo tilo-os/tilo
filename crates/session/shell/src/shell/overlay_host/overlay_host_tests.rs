@@ -3866,3 +3866,24 @@ fn people_viewport_shared_scrollbar_uses_a_visible_only_idle_deadline() {
             .is_none()
     );
 }
+
+#[test]
+fn a_slow_host_update_names_the_step_that_took_the_time() {
+    let mut steps = UpdateSteps::start();
+    steps.mark("peer-sync");
+    steps.steps[0].1 = Duration::from_millis(3);
+    steps.mark("search-index");
+    steps.steps[1].1 = Duration::from_millis(900);
+    assert!(
+        steps
+            .report(SLOW_HOST_UPDATE - Duration::from_millis(1))
+            .is_none(),
+        "an update inside the budget is not reported"
+    );
+    let line = steps
+        .report(Duration::from_millis(903))
+        .expect("an update past the budget is reported");
+    assert!(line.starts_with("SLOW-HOST-UPDATE total=903ms ("), "{line}");
+    assert!(line.contains("search-index=900ms"), "{line}");
+    assert!(line.contains("peer-sync=3ms"), "{line}");
+}
