@@ -58,13 +58,12 @@ pub fn definition() -> &'static ui::application::ApplicationDefinition {
 /// them added, a thread without one starts in the person's locale.
 #[cfg(not(test))]
 pub(crate) static CATALOG: ui::i18n::EmbeddedCatalog =
-    ui::i18n::EmbeddedCatalog::new("en-US", LOCALES, "snippets-library").with_system_locale();
+    ui::i18n::EmbeddedCatalog::new("en-US", LOCALES).with_system_locale();
 
 /// Tests read the source copy on every machine.
 #[cfg(test)]
 pub(crate) static CATALOG: ui::i18n::EmbeddedCatalog =
-    ui::i18n::EmbeddedCatalog::new("en-US", LOCALES, "snippets-library")
-        .with_pinned_locale("en-US");
+    ui::i18n::EmbeddedCatalog::new("en-US", LOCALES).with_pinned_locale("en-US");
 
 /// A message of the app's catalogs in the person's language.
 pub(crate) fn tr(key: &str) -> String {

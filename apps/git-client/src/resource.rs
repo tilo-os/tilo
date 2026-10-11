@@ -66,7 +66,7 @@ pub struct SampleRepository {
     pub diffs: DiffMap,
 }
 
-ui::embedded_catalog!(static CATALOG, "git-remote-running", ["en-US", "de-DE"]);
+ui::embedded_catalog!(static CATALOG, ["en-US", "de-DE"]);
 
 /// Every `--scenario` the screenshot renderer stages.
 pub const SCENARIOS: &[&str] = &[

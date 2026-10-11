@@ -36,7 +36,7 @@ enum Vault {
 
 const CLOSED: &str = "the vault is not open in this window";
 
-ui::embedded_catalog!(pub(crate) static CATALOG, "passwords-credential-permission", ["en-US"]);
+ui::embedded_catalog!(pub(crate) static CATALOG, ["en-US"]);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct VaultHealth {

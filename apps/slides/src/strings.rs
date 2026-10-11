@@ -19,8 +19,7 @@ use ui::i18n::{ArgValue, EmbeddedCatalog, I18nManager, PseudoLocale};
 const EN_US: &str = include_str!("../locales/en-US.ftl");
 
 /// The app's messages.
-pub static CATALOG: EmbeddedCatalog =
-    EmbeddedCatalog::new("en-US", &[("en-US", EN_US)], "slides-present");
+pub static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new("en-US", &[("en-US", EN_US)]);
 
 /// Look up `key`. Loads the catalogue on first use on a thread whose host
 /// has not, so text is real rather than a raw key.
