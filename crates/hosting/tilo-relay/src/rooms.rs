@@ -21,6 +21,8 @@ mod admissions;
 mod applications;
 mod collaboration;
 mod pages;
+#[cfg(feature = "agents")]
+mod steward_endpoint;
 mod stewardship;
 #[cfg(test)]
 mod tests;
@@ -437,6 +439,12 @@ pub(crate) struct RoomHost {
     pub(crate) cert: DeviceCert,
     pub(crate) key: SigningKey,
     pub(crate) revocations: Arc<std::sync::RwLock<RevocationList>>,
+    /// The live handshake trust policy, for [`crate::room_access::decide`].
+    #[cfg(feature = "agents")]
+    pub(crate) trust_policy: Arc<std::sync::RwLock<crate::policy::TrustPolicy>>,
+    /// Agent delegations, for [`crate::room_access::decide`].
+    #[cfg(feature = "agents")]
+    pub(crate) agents: crate::peer::AgentRegistry,
 }
 
 /// The rooms this relay governs.
@@ -458,6 +466,10 @@ struct RoomsInner {
 pub(crate) struct RoomAuthority {
     rooms: std::sync::Weak<RoomsInner>,
     room: String,
+    /// The device governing the room: this relay's own, which also stewards
+    /// the room's channels. Read by the steward-key decision only.
+    #[cfg(any(test, feature = "agents"))]
+    governor: [u8; 32],
 }
 
 impl RoomAuthority {
@@ -469,6 +481,22 @@ impl RoomAuthority {
     /// The governed room.
     pub(crate) fn room(&self) -> &str {
         &self.room
+    }
+
+    /// The device governing the room, which stewards its channels.
+    #[cfg(any(test, feature = "agents"))]
+    pub(crate) const fn governor(&self) -> &[u8; 32] {
+        &self.governor
+    }
+
+    /// An authority governed by `governor`, for a test of the decision.
+    #[cfg(test)]
+    pub(crate) fn governed_by(room: &str, governor: [u8; 32]) -> Self {
+        Self {
+            rooms: std::sync::Weak::new(),
+            room: room.to_owned(),
+            governor,
+        }
     }
 }
 
@@ -669,6 +697,8 @@ impl Rooms {
         runtime.room_authority = Some(RoomAuthority {
             rooms: Arc::downgrade(&self.inner),
             room: room.room().to_owned(),
+            #[cfg(any(test, feature = "agents"))]
+            governor: host.cert.device_public_key,
         });
         if runtime.governor_tap.is_none() {
             let (tap, notices) = tokio::sync::mpsc::channel(RECORD_NOTICES);

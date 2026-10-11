@@ -87,10 +87,12 @@ plan. Sparse shader experiments below require the supported GPU/Area path.
 | `VELLO_CLIP_SINGLE_GROUP` | Exact-1 | GPU clip-leaf specialization only for 1–256 clips and exactly one clip-leaf workgroup `(1,1,1)`. Other clip shapes use the normal shader. |
 | `VELLO_DEFER_BUMP_READBACK` | Exact-1 | Moves the existing bump-counter readback after fine rasterization in synchronous GPU recording. Not full CPU or asynchronous rendering. Does not remove overflow validation or the readback bytes. |
 | `TILO_DRM_XRGB_DAMAGE` | Exact-1 | Opt-in damage-aware writes into DRM XRGB destinations, also exercised by `redraw_bench`. Per-buffer revision history must be valid; unknown/stale/invalid history and recovery boundaries require full refresh. This is distinct from GPU texture readback damage. |
+| `TILO_KMS_ATOMIC` | Unset: on; exact `0` off | `0` page-flips every output through the legacy `drmModePageFlip` instead of an atomic commit of the primary plane, without asking the driver for atomic (docs/architecture/compositor.md, "Page flips"). Restores the flips Tilo made before atomic presentation: the A/B baseline, or the switch-off for a driver whose atomic flips misbehave. Legacy flips cannot change format, so fullscreen `XBGR8888`/`ABGR8888` clients are composited. Latched at first use. |
 | `TILO_CLIENT_SCANOUT` | Unset: on; exact `0` off | `0` composites every frame instead of page-flipping a qualifying fullscreen client's own buffer (docs/architecture/compositor.md, "Fullscreen client scanout"). The composited baseline for an A/B measurement, or an escape hatch for a driver that misbehaves with client framebuffers. Latched at first use. |
 
 Sources: [shader selection](../vendor/vello/src/render.rs),
 [DRM scanout](../crates/session/shell/src/compositor/backend/drm/scanout.rs),
+[KMS flips](../crates/session/shell/src/compositor/backend/drm/kms_flip.rs),
 [XRGB history](../crates/session/shell/src/compositor/backend/drm/xrgb_history.rs).
 For the recorded `bounds-xrgb-ppt8` experiment, the additional controls were
 `VELLO_SPARSE_COARSE_AUTO=1 VELLO_SPARSE_TILE_BOUNDS=1
