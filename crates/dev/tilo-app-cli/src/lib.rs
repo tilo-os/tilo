@@ -94,6 +94,15 @@ impl Template {
         }
     }
 
+    fn surface(self) -> &'static str {
+        match self {
+            Self::Starter => include_str!("../templates/starter.surface.toml"),
+            Self::Document => include_str!("../templates/document.surface.toml"),
+            Self::Collection => include_str!("../templates/collection.surface.toml"),
+            Self::Graph => include_str!("../templates/graph.surface.toml"),
+        }
+    }
+
     fn catalog(self) -> &'static str {
         match self {
             Self::Starter => STARTER_APP_CATALOG,
@@ -9972,6 +9981,7 @@ fn render(spec: &AppSpec) -> Result<Vec<(PathBuf, String)>> {
         (PathBuf::from("README.md"), app_readme(spec)),
         (PathBuf::from("AGENTS.md"), APP_AGENT_GUIDE.to_owned()),
         (PathBuf::from("locales/en-US.ftl"), app_catalog(spec)),
+        (PathBuf::from(surface::FILE), app_surface(spec)),
     ];
     if spec.template == Template::Graph {
         files.push((PathBuf::from("ui/main.json"), graph_document()?));
@@ -10148,14 +10158,33 @@ fn headless_actions(spec: &AppSpec) -> String {
 /// The app's source catalog. A graph screen's static text is a message id
 /// too, so the graph template's catalog also names the screen it generates.
 fn app_catalog(spec: &AppSpec) -> String {
-    let catalog = spec.template.catalog();
+    // The templates key their history messages `generated-…`, as they name
+    // their kinds `generated.…`; the history looks them up under the app.
+    let prefix = format!("{}-", tilo_history::app_prefix(&spec.app_id));
+    let catalog: String = spec
+        .template
+        .catalog()
+        .lines()
+        .map(|line| {
+            line.strip_prefix("generated-")
+                .map_or_else(|| format!("{line}\n"), |rest| format!("{prefix}{rest}\n"))
+        })
+        .collect();
     if spec.template != Template::Graph {
-        return catalog.to_owned();
+        return catalog;
     }
     format!(
         "graph-title = {{ \"{}\" }}\ngraph-introduction = This screen is a serialized graph under ui/. Edit it while the app runs with tilo-app ui edit ui/main.json.\n{catalog}",
         escape_fluent_string(&spec.title)
     )
+}
+
+/// The app's committed public surface: what `tilo-app surface` writes for
+/// the template's code, under the app's own resource kinds.
+fn app_surface(spec: &AppSpec) -> String {
+    spec.template
+        .surface()
+        .replace("kind = \"generated.", &format!("kind = \"{}.", spec.app_id))
 }
 
 fn graph_document() -> Result<String> {

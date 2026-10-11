@@ -3218,8 +3218,9 @@ fn creation_inputs_are_validated_and_printed_safely() {
         let outcome = create_app(req).expect("preview app");
         assert!(outcome.dry_run);
         assert!(!destination.exists());
-        assert_eq!(outcome.files.len(), 14);
+        assert_eq!(outcome.files.len(), 15);
         assert!(outcome.files.contains(&PathBuf::from("AGENTS.md")));
+        assert!(outcome.files.contains(&PathBuf::from("surface.toml")));
     }
 
     // Phase: an_app_outside_every_repository_becomes_one.
