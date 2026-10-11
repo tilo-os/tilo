@@ -6,6 +6,7 @@ Archive SHA pins are reviewed source, not fields accepted from uploaded policy.
 """
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -167,15 +168,25 @@ def prepare(api, manifest, preserved, release):
     (preserved / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
 
 
+def pinned_verifier(tools, policy_path, policy_sha):
+    policy, adapter = final.preflight(tools / 'tilo-app-package', tools / 'tilo-runtime-bundle',
+                                      policy_path, policy_sha)
+    # Use the independently pinned bundle adapter, not the candidate checkout's
+    # same-named Python module. Preflight has already verified its exact digest.
+    channel.require(channel.sha(adapter) == policy['verifier_sha256'], 'pinned adapter changed')
+    spec = importlib.util.spec_from_file_location('recovery_pinned_verifier', adapter)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return policy, module.CanonicalVerifier(tools / 'tilo-app-package',
+                                            tools / 'tilo-runtime-bundle', policy)
+
+
 def verify(release, manifest, policy_path, policy_sha, tools):
     # Independent provisioned policy is the sole trust authority. In particular,
     # never load verification-policy.json from either downloaded archive.
     bundle.fetch(policy_path, policy_sha, tools, manifest['builder'],
                  os.environ.get('VERIFIER_BUNDLE_READ_TOKEN', ''))
-    policy, _ = final.preflight(tools / 'tilo-app-package', tools / 'tilo-runtime-bundle',
-                                policy_path, policy_sha)
-    from canonical_app_verifier import CanonicalVerifier
-    verifier = CanonicalVerifier(tools / 'tilo-app-package', tools / 'tilo-runtime-bundle', policy)
+    policy, verifier = pinned_verifier(tools, policy_path, policy_sha)
     proofs = []
     for artifact in manifest['artifacts']:
         tree = release / artifact['name']

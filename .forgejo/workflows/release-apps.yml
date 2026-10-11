@@ -1126,7 +1126,8 @@ jobs:
     # Same protected workflow/audience as normal publication. The source and
     # archive IDs/digests are reviewed constants, never dispatch parameters.
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.event.inputs.recover_97894 == 'true'
-    runs-on: runner-native-portable
+    # Existing provisioned verifier policy contains only native x86_64 tools.
+    runs-on: runner
     container:
       image: registry.tilo.so/tilo/tilo-release-tools@sha256:2a7292af48bf8074e27f95661a293b2c48c420c5522d465da7fb31b6e22562fa
     timeout-minutes: 60

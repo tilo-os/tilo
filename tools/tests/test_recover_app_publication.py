@@ -99,6 +99,20 @@ class RecoveryTests(unittest.TestCase):
             r.verify(Path('release'), self.manifest, Path('policy'), '1' * 64, Path('tools'))
         execution.assert_not_called()
 
+    def test_verifier_executes_only_the_digest_pinned_bundle_adapter(self):
+        with tempfile.TemporaryDirectory() as temp:
+            tools = Path(temp)
+            adapter = tools / 'canonical_app_verifier.py'
+            adapter.write_text('class CanonicalVerifier:\n'
+                               ' def __init__(self, *args): self.origin = "pinned bundle"\n')
+            policy = {'verifier_sha256': r.channel.sha(adapter)}
+            with patch.object(r.final, 'preflight', return_value=(policy, adapter)):
+                _, verifier = r.pinned_verifier(tools, Path('policy'), '1' * 64)
+                self.assertEqual(verifier.origin, 'pinned bundle')
+                adapter.write_text('raise AssertionError("untrusted adapter executed")\n')
+                with self.assertRaisesRegex(ValueError, 'pinned adapter changed'):
+                    r.pinned_verifier(tools, Path('policy'), '1' * 64)
+
     def test_verified_collision_is_idempotent_and_different_bytes_are_rejected(self):
         # Existing immutable publisher exercised using a fake curl executable:
         # no HTTP request or registry entry is submitted by this test.
