@@ -239,7 +239,13 @@ records of the same KPI and environment, and fails the run on
   and joins the baseline;
 - an enforced ceiling in `tools/perf/kpi-budgets.toml` (non-enforced ceilings
   are marketing targets and are only reported);
-- a selected benchmark that produced no record.
+- a selected benchmark that produced no record, reported as `missing` and
+  counted apart from regressions. A run is owed only its own workflow's KPIs:
+  `[lanes]` in `tools/perf/kpi-budgets.toml` names the workflow (`compare.py
+  --lane`) that produces each group, and a lane may claim a single KPI of
+  another lane's group, as VM acceptance claims `render.frame_cpu_ms`. A
+  budget no lane produces does not load, and `tools/perf/test_compare.py`
+  holds each workflow's selectable groups equal to its lane.
 
 The records, each with its verdict, are appended to the public generic package
 `tilo-perf-results` (one immutable file per run, a version per UTC month), so
@@ -255,8 +261,9 @@ them out (it says how many on stderr; `--synthetic` prints them too): their
 values are multiplied on purpose and their `regression` verdicts are the gate
 test, not a measurement.
 
-The installed desktop's groups, `boot`, `idle`, `memory`, `app` and `render`, come from
-**Dev / VM acceptance** (`vm-acceptance.yml`) instead: its nightly run already boots the
+The installed desktop's groups, `boot`, `session`, `idle`, `memory`, `disk` and `app`, and
+its one render KPI, `render.frame_cpu_ms` (compositor CPU per painted frame, R04), come from
+**Dev / VM acceptance** (`vm-acceptance.yml`, lane `vm-acceptance`) instead: its nightly run already boots the
 newest published dev disk in a KVM guest and opens a session on it, so its `perf` job
 compares that run's records (`scripts/vm-acceptance/run.py --records`) with the store
 and publishes them, under the same rules, rather than Perf / scheduled booting a second
@@ -284,7 +291,9 @@ To add a benchmark (a KPI group):
    build is a different environment from GPU, KVM or release, and is never
    compared with them.
 3. Add a job to `perf-scheduled.yml`, and add the group to `known` in its
-   `plan` job, to the `compare` job's `needs` and to its job-result loop.
+   `plan` job, to the `compare` job's `needs` and to its job-result loop, and
+   to `[lanes.perf-scheduled]` in `tools/perf/kpi-budgets.toml`. If the group
+   has an A/B (`tools/perf/ab.py` `GROUPS`), build the same benchmarks there.
    The job runs on the runner class the KPI is defined for and consumes
    artifacts that are already built: a published tapp or image, or an example
    built once in that job. It must not start a full build. It uploads its

@@ -189,7 +189,8 @@ def main(argv: list[str] | None = None) -> int:
     # Read-only: the store is consulted, nothing is uploaded. No --groups: one
     # run measures one refresh rate, so the other rate's budgets are not missing.
     return subprocess.run([sys.executable, str(REPO / "tools/perf/compare.py"), "--results", str(records_path),
-                           "--store", "https://code.tilo.so", "--summary", str(args.out / "summary.md")],
+                           "--store", "https://code.tilo.so", "--lane", "reference-hardware",
+                           "--summary", str(args.out / "summary.md")],
                           check=False).returncode
 
 
