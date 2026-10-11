@@ -838,6 +838,10 @@ pub(super) enum RelayActorMessage {
     /// Sent after a major network change to detect broken connections faster
     /// using RTT-based timeouts instead of the default 5s ping timeout.
     CheckConnectionAfterNetworkChange,
+    /// TILO PATCH: the relay map was emptied. No net report runs without
+    /// relays, so nothing would ever demote the home relay; clear it and let
+    /// its connection close on the inactivity timeout like any other.
+    ReleaseHomeRelay,
 }
 
 #[derive(Debug, Clone)]
@@ -1087,6 +1091,9 @@ impl RelayActor {
             RelayActorMessage::CheckConnectionAfterNetworkChange => {
                 self.check_connection_after_network_change().await;
             }
+            RelayActorMessage::ReleaseHomeRelay => {
+                self.release_home_relay().await;
+            }
         }
     }
 
@@ -1146,6 +1153,24 @@ impl RelayActor {
         } else {
             self.config.my_relay.clear();
         }
+    }
+
+    /// TILO PATCH: no relay is home any more. The URL is cleared first, so a
+    /// demoted actor's status writes are dropped (see [`HomeRelayWatch`]).
+    async fn release_home_relay(&mut self) {
+        if self.config.my_relay.get().is_none() {
+            return;
+        }
+        info!("relay map emptied, releasing the home relay");
+        self.config.my_relay.clear();
+        n0_future::join_all(self.active_relays.values().map(|handle| async move {
+            handle
+                .inbox_addr
+                .send(ActiveRelayMessage::SetHomeRelay(false))
+                .await
+                .ok()
+        }))
+        .await;
     }
 
     async fn set_home_relay(&mut self, home_url: RelayUrl) {

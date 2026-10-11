@@ -1533,7 +1533,13 @@ impl Actor {
                     self.sock.metrics.socket.actor_tick_msg.inc();
                     self.handle_actor_message(msg).await;
                 }
-                tick = self.periodic_re_stun_timer.tick() => {
+                // TILO PATCH: with no relays a net report is skipped (see
+                // `DirectAddrUpdateState::run`), so the periodic tick has
+                // nothing to do; leave the timer unpolled until a relay is
+                // added, which re-arms it (`handle_relay_map_change`).
+                tick = self.periodic_re_stun_timer.tick(),
+                    if !self.direct_addr_update_state.relay_map.is_empty() =>
+                {
                     trace!("tick: re_stun {:?}", tick);
                     self.sock.metrics.socket.actor_tick_re_stun.inc();
                     self.re_stun(UpdateReason::Periodic);
@@ -1761,6 +1767,19 @@ impl Actor {
     }
 
     fn handle_relay_map_change(&mut self) {
+        // TILO PATCH: the periodic timer is not polled while the map is
+        // empty; start it afresh so a stale deadline does not fire at once
+        // beside the run below.
+        #[cfg(not(wasm_browser))]
+        {
+            self.periodic_re_stun_timer = new_re_stun_timer(true);
+        }
+        // TILO PATCH: with no relays left nothing picks a new home relay, and
+        // a home relay is exempt from the inactivity close, so its
+        // connection and keepalive pings would outlive the map. Give it up.
+        if self.direct_addr_update_state.relay_map.is_empty() {
+            self.transports_network_change.release_home_relay();
+        }
         self.re_stun(UpdateReason::RelayMapChange);
     }
 
@@ -1768,6 +1787,15 @@ impl Actor {
         let state = self.local_interfaces_watcher.get();
         self.direct_addr_update_state
             .schedule_run(why, state.into());
+        // TILO PATCH: with no relays the run above only republishes "no
+        // report", and that notifies nobody when it equals the last one (the
+        // same reason twice), so the local addresses a link change brought
+        // were picked up only by the next periodic tick. Collect them now:
+        // the periodic tick no longer runs without relays.
+        #[cfg(not(wasm_browser))]
+        if self.direct_addr_update_state.relay_map.is_empty() {
+            self.update_direct_addresses(None);
+        }
     }
 
     /// Processes an incoming actor message.
