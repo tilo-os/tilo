@@ -824,6 +824,11 @@ pub struct ChatApp {
     /// pumps their one shared action transport.
     pub(crate) agent_tasks:
         HashMap<(Id, Id), Rc<RefCell<ui::agent_task_frontier::AgentTaskFrontiers>>>,
+    /// Opaque offer witness minted only while this view actually paints
+    /// an enabled Queue submit control. A parent refresh can run before the
+    /// detached child receives its next frame; that already-painted gesture
+    /// may consume the witness once, while the owner still admits the invoke.
+    pub(crate) painted_queue_offer: Option<ui::agent_task_frontier::AgentQueueOffer>,
     pub(crate) agent_task_actions: ui::remote_actions::RemoteActions,
     /// One bounded owner-progress reader shared by the attached and detached
     /// presentations. Only the parent pumps it; detached views render the same
@@ -1120,6 +1125,7 @@ impl ChatApp {
             room_agents: Vec::new(),
             direct_agent: None,
             agent_tasks: HashMap::new(),
+            painted_queue_offer: None,
             agent_task_actions: ui::remote_actions::RemoteActions::current(),
             agent_message_progress: Rc::new(RefCell::new(
                 ui::agent_message_progress::AgentMessageProgressReader::default(),
@@ -2116,6 +2122,7 @@ impl ChatApp {
         workspace: &str,
         agent: &str,
     ) -> Result<(), String> {
+        self.painted_queue_offer = None;
         if workspace != self.context_ws
             || !self
                 .workspaces
@@ -2384,7 +2391,8 @@ impl ChatApp {
             .is_some_and(|agent| self.room_agents.iter().any(|known| known == agent))
     }
 
-    pub(crate) fn set_direct_agent_intent(&self, intent: AgentComposerIntent) {
+    pub(crate) fn set_direct_agent_intent(&mut self, intent: AgentComposerIntent) {
+        self.painted_queue_offer = None;
         let Some(agent) = self.direct_agent.clone() else {
             return;
         };
@@ -6211,6 +6219,11 @@ impl Widget for ChatApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        // A painted offer is valid only for the exact frame which exposed its
+        // enabled Queue control. `draw_composer` remints it below when that
+        // control is still genuinely present; every covered/alternate page
+        // therefore withdraws the old gesture witness automatically.
+        self.painted_queue_offer = None;
         // Adopt this theme's chrome and advance the drawers for this frame.
         self.layout_text_scale = theme.text_scale;
         self.advance_flaps(theme);
@@ -6574,10 +6587,17 @@ impl Widget for ChatApp {
         if target.starts_with("context-menu:item:") {
             return self.perform_menu_semantic_action(target, action, state, path);
         }
-        let Some((hit_index, hit)) = self.semantic_hit(target) else {
+        let painted_queue_activate = matches!(action, ui::a11y::Action::Activate)
+            && target == Hit::Send.semantic_id()
+            && self.direct_agent_intent() == AgentComposerIntent::Queue
+            && self.painted_queue_offer.is_some();
+        let Some((hit_index, hit)) = self
+            .semantic_hit(target)
+            .or_else(|| painted_queue_activate.then_some((usize::MAX, Hit::Send)))
+        else {
             return false;
         };
-        if !self.semantic_hit_is_currently_available(&hit) {
+        if !self.semantic_hit_is_currently_available(&hit) && !painted_queue_activate {
             return false;
         }
         // These immediate-mode editors are real TextInputs, even though their

@@ -2993,6 +2993,14 @@ impl ChatApp {
             self.composer_main.set_placeholder(&placeholder);
         }
         let send_enabled = interactive && !draft.trim().is_empty();
+        self.painted_queue_offer = if send_enabled
+            && self.direct_agent_intent() == crate::app::AgentComposerIntent::Queue
+        {
+            self.direct_agent_tasks()
+                .and_then(|tasks| tasks.borrow().queue_offer())
+        } else {
+            None
+        };
         let inner = self.draw_input_box(
             PaintCtx::new(scene, tf, tr, theme),
             input,

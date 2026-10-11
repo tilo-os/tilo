@@ -106,6 +106,25 @@ pub enum AgentQueueState {
     Failed,
 }
 
+/// The exact Queue affordance painted for one authenticated reader context.
+/// This local gesture witness grants no authority; invocation still goes
+/// through the ordinary broker and owner admission checks.
+pub struct AgentQueueOffer {
+    identity: QueueOfferIdentity,
+    expires_at: Instant,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct QueueOfferIdentity {
+    reader: InvocationId,
+    epoch: u64,
+    workspace: String,
+    agent: String,
+    generation: u64,
+    observed: u64,
+    revision: String,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum AgentStopState {
     #[default]
@@ -247,6 +266,9 @@ pub struct AgentTaskFrontiers {
     controls: BTreeMap<(String, String), LocalState<CatalogueCall>>,
     control_response_until: Option<Instant>,
     queue_draft_revalidating: bool,
+    queue_offer_reader: InvocationId,
+    queue_offer_epoch: u64,
+    queue_offer_revalidating: Option<QueueOfferIdentity>,
     steer_draft_revalidating: Option<SteerDraftWitness>,
     draft_revalidation_until: Option<Instant>,
     current_consumed: bool,
@@ -303,6 +325,9 @@ impl AgentTaskFrontiers {
             controls: BTreeMap::new(),
             control_response_until: None,
             queue_draft_revalidating: false,
+            queue_offer_reader: InvocationId::new(),
+            queue_offer_epoch: 0,
+            queue_offer_revalidating: None,
             steer_draft_revalidating: None,
             draft_revalidation_until: None,
             current_consumed: false,
@@ -339,6 +364,8 @@ impl AgentTaskFrontiers {
         }
         workspace.clone_into(&mut self.workspace);
         agent.clone_into(&mut self.agent);
+        self.queue_offer_epoch = self.queue_offer_epoch.saturating_add(1);
+        self.queue_offer_revalidating = None;
         self.current = None;
         self.controls.clear();
         self.control_response_until = None;
@@ -382,6 +409,8 @@ impl AgentTaskFrontiers {
             return;
         }
         self.observation_active = active;
+        self.queue_offer_epoch = self.queue_offer_epoch.saturating_add(1);
+        self.queue_offer_revalidating = None;
         self.current = None;
         self.current_consumed = true;
         self.controls.clear();
@@ -571,9 +600,45 @@ impl AgentTaskFrontiers {
             && self.offers(&task_collection_target(&self.workspace, QUEUE_TASK_ACTION))
     }
 
+    /// Capture only when painting an enabled Queue control. Semantic action
+    /// publication continues to use [`Self::can_queue`].
+    #[must_use]
+    pub fn queue_offer(&self) -> Option<AgentQueueOffer> {
+        Some(AgentQueueOffer {
+            identity: self.queue_offer_identity()?,
+            expires_at: crate::background::Background::current()
+                .now()
+                .checked_add(CONTROL_RESPONSE_WINDOW)?,
+        })
+    }
+
+    fn queue_offer_identity(&self) -> Option<QueueOfferIdentity> {
+        if !self.observation_active || !self.can_queue() {
+            return None;
+        }
+        let target = task_collection_target(&self.workspace, QUEUE_TASK_ACTION);
+        let RemoteCall::Done(page) = self
+            .controls
+            .get(&(target.address.resource, target.address.action))?
+            .get()
+        else {
+            return None;
+        };
+        Some(QueueOfferIdentity {
+            reader: self.queue_offer_reader,
+            epoch: self.queue_offer_epoch,
+            workspace: self.workspace.clone(),
+            agent: self.agent.clone(),
+            generation: self.snapshot_generation,
+            observed: self.snapshot_observed,
+            revision: page.revision,
+        })
+    }
+
     /// Whether a previously-authorized Queue draft may keep accepting local
     /// editor input while its exact action offer is being revalidated.
-    /// Submission continues to require [`Self::can_queue`].
+    /// Semantic submission continues to require [`Self::can_queue`]; an
+    /// already-painted gesture can use its exact [`AgentQueueOffer`].
     #[must_use]
     pub fn can_edit_queue_draft(&self) -> bool {
         self.can_queue() || self.queue_draft_revalidating
@@ -639,6 +704,8 @@ impl AgentTaskFrontiers {
             self.controls.clear();
             self.control_response_until = None;
             self.queue_draft_revalidating = false;
+            self.queue_offer_epoch = self.queue_offer_epoch.saturating_add(1);
+            self.queue_offer_revalidating = None;
             self.steer_draft_revalidating = None;
             self.draft_revalidation_until = None;
             self.refresh_control_offers();
@@ -738,6 +805,51 @@ impl AgentTaskFrontiers {
         instruction: &str,
         title: Option<&str>,
     ) -> Result<InvocationId, String> {
+        self.queue_with_admission(instruction, title, self.can_queue())
+    }
+
+    /// Consume one painted Queue gesture during its exact pending owner
+    /// revalidation. A settled but unpolled read is not pending evidence.
+    pub fn queue_with_offer(
+        &mut self,
+        offer: AgentQueueOffer,
+        instruction: &str,
+        title: Option<&str>,
+    ) -> Result<InvocationId, String> {
+        let now = crate::background::Background::current().now();
+        let current = self.queue_offer_identity().as_ref() == Some(&offer.identity);
+        let pending = self.observation_active
+            && self.snapshot_complete
+            && !self.invalidated
+            && self.queue.is_none()
+            && !self.current_consumed
+            && offer.identity.reader == self.queue_offer_reader
+            && offer.identity.epoch == self.queue_offer_epoch
+            && offer.identity.workspace == self.workspace
+            && offer.identity.agent == self.agent
+            && (offer.identity.generation, offer.identity.observed)
+                == (self.snapshot_generation, self.snapshot_observed)
+            && self.queue_offer_revalidating.as_ref() == Some(&offer.identity)
+            && self
+                .draft_revalidation_until
+                .is_some_and(|until| now < until)
+            && self
+                .current
+                .as_ref()
+                .is_some_and(|call| matches!(call.get(), RemoteCall::Pending));
+        self.queue_with_admission(
+            instruction,
+            title,
+            current || (now < offer.expires_at && pending),
+        )
+    }
+
+    fn queue_with_admission(
+        &mut self,
+        instruction: &str,
+        title: Option<&str>,
+        offered: bool,
+    ) -> Result<InvocationId, String> {
         if instruction.trim().is_empty() {
             return Err("task instruction is blank".into());
         }
@@ -747,8 +859,16 @@ impl AgentTaskFrontiers {
         if self.queue.is_some() {
             return Err("a task is already being queued".into());
         }
-        if !self.can_queue() {
+        if !offered {
             return Err("the current caller is not offered task queueing".into());
+        }
+        // Invalidate every token minted from this offer before dispatch,
+        // including when the transport settles the receipt synchronously.
+        self.queue_offer_epoch = self.queue_offer_epoch.saturating_add(1);
+        self.queue_offer_revalidating = None;
+        self.queue_draft_revalidating = false;
+        if self.steer_draft_revalidating.is_none() {
+            self.draft_revalidation_until = None;
         }
         // The enabled Queue control is the caller's exact, already-observed
         // offer. Starting a periodic refresh here would clear that offer
@@ -931,6 +1051,7 @@ impl AgentTaskFrontiers {
             return;
         }
         self.queue_draft_revalidating = self.can_queue();
+        self.queue_offer_revalidating = self.queue_offer_identity();
         self.steer_draft_revalidating = if self.can_steer() {
             self.actionable_frontier().map(SteerDraftWitness::from)
         } else {
@@ -979,6 +1100,7 @@ impl AgentTaskFrontiers {
                 .is_some_and(|call| !call.get().is_pending())
             {
                 self.queue_draft_revalidating = false;
+                self.queue_offer_revalidating = None;
             }
         }
         if let Some(witness) = self.steer_draft_revalidating.clone() {
@@ -1008,6 +1130,7 @@ impl AgentTaskFrontiers {
 
     fn clear_draft_revalidation(&mut self) {
         self.queue_draft_revalidating = false;
+        self.queue_offer_revalidating = None;
         self.steer_draft_revalidating = None;
         self.draft_revalidation_until = None;
     }
@@ -3107,6 +3230,274 @@ mod tests {
                 .is_err()
         );
         assert_eq!(queue_requests(model.take_collab_requests()), 0);
+    }
+
+    fn pending_painted_queue_offer() -> (AgentTaskFrontiers, AgentQueueOffer) {
+        let host = Arc::new(FrontierHost::new(
+            vec![current_task("one", "Review release", "agent-a", 4, 4)],
+            [],
+        ));
+        let mut model = model(host, "room", "agent-a");
+        let offer = model.queue_offer().expect("painted enabled Queue");
+        model.remote = RemoteActions::session();
+        model.start_current_refresh(false);
+        assert!(!model.can_queue());
+        assert!(model.queue_offer().is_none());
+        (model, offer)
+    }
+
+    fn take_queue_mutations(model: &mut AgentTaskFrontiers) -> Vec<InvokeRequest> {
+        use crate::collaboration::CollabRequest;
+        use tilo_actions::remote::RemoteActionMessage;
+
+        model
+            .take_collab_requests()
+            .into_iter()
+            .filter_map(|request| match request {
+                CollabRequest::RemoteAction {
+                    message: RemoteActionMessage::Invoke(request),
+                } if request.target.address.action == QUEUE_TASK_ACTION => Some(request),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn painted_queue_offer_survives_only_its_exact_pending_refresh_once() {
+        use crate::collaboration::CollabEvent;
+        use tilo_actions::remote::RemoteActionMessage;
+
+        let host = Arc::new(FrontierHost::new(Vec::new(), []));
+        let mut model = model(host, "room", "agent-a");
+        let offer = model.queue_offer().unwrap();
+        // A second painted button from the same offer must not retry even
+        // after the first invocation receives an immediate negative receipt.
+        let second = model.queue_offer().unwrap();
+        model.remote = RemoteActions::session();
+        model.start_current_refresh(false);
+        let invocation = model
+            .queue_with_offer(offer, "Review the full release notes", None)
+            .expect("one painted gesture survives the in-flight owner read");
+        assert!(!model.can_queue());
+        assert!(model.queue_offer_revalidating.is_none());
+        let requests = take_queue_mutations(&mut model);
+        assert_eq!(requests.len(), 1);
+        assert_eq!(
+            requests[0].target,
+            task_collection_target("room", QUEUE_TASK_ACTION)
+        );
+        assert_eq!(
+            argument_json(&requests[0].argument).unwrap()["agent"],
+            "agent-a"
+        );
+
+        model.handle_collab_event(&CollabEvent::RemoteAction {
+            message: RemoteActionMessage::Receipt(InvocationReceipt {
+                invocation,
+                status: ReceiptStatus::Rejected {
+                    error: ActionHostError::NotPermitted,
+                },
+            }),
+        });
+        assert_eq!(model.queue_state(), &AgentQueueState::Failed);
+        assert!(
+            model
+                .queue_with_offer(second, "Do not retry", None)
+                .is_err()
+        );
+        assert!(take_queue_mutations(&mut model).is_empty());
+    }
+
+    #[test]
+    fn painted_queue_offer_is_consumed_before_a_synchronous_receipt() {
+        let host = Arc::new(FrontierHost::new(
+            vec![current_task("one", "Review release", "agent-a", 4, 4)],
+            [],
+        ));
+        let mut model = model(Arc::clone(&host), "room", "agent-a");
+        let first = model.queue_offer().unwrap();
+        let second = model.queue_offer().unwrap();
+        model
+            .queue_with_offer(first, "Review release notes", None)
+            .unwrap();
+        assert_eq!(
+            model.queue_state(),
+            &AgentQueueState::Queued {
+                task_id: "queued-task".into()
+            }
+        );
+        assert!(
+            model.can_queue(),
+            "the fresh owner offer remains independently available"
+        );
+        assert!(
+            model
+                .queue_with_offer(second, "Do not queue twice", None)
+                .is_err()
+        );
+        assert_eq!(
+            host.requests()
+                .iter()
+                .filter(|request| request.target.address.action == QUEUE_TASK_ACTION)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn painted_queue_offer_rejects_a_replacement_snapshot_or_catalogue_revision() {
+        for generation in [1, 2] {
+            let host = Arc::new(FrontierHost::with_snapshots(vec![
+                current_snapshot(1, Vec::new()),
+                current_snapshot(generation, Vec::new()),
+            ]));
+            let mut model = model(Arc::clone(&host), "room", "agent-a");
+            let offer = model.queue_offer().unwrap();
+            model.refresh();
+            assert!(model.can_queue());
+            assert!(
+                model
+                    .queue_with_offer(offer, "Stale painted snapshot", None)
+                    .is_err()
+            );
+            assert!(
+                !host
+                    .requests()
+                    .iter()
+                    .any(|request| request.target.address.action == QUEUE_TASK_ACTION)
+            );
+        }
+        let host = Arc::new(FrontierHost::new(Vec::new(), []));
+        let mut model = model(host, "room", "agent-a");
+        let offer = model.queue_offer().unwrap();
+        let key = (TASK_COLLECTION.into(), QUEUE_TASK_ACTION.into());
+        let call = model.controls.get(&key).unwrap();
+        let RemoteCall::Done(mut page) = call.get() else {
+            panic!("offered catalogue page")
+        };
+        page.revision.push_str("-replacement");
+        call.set(RemoteCall::Done(page));
+        assert!(model.can_queue());
+        assert!(
+            model
+                .queue_with_offer(offer, "Stale painted catalogue", None)
+                .is_err()
+        );
+        assert!(take_queue_mutations(&mut model).is_empty());
+    }
+
+    #[test]
+    fn painted_queue_offer_remains_usable_while_the_exact_offer_is_current() {
+        let clock = crate::background::Pumped::new();
+        let _entered = clock.background().enter();
+        let host = Arc::new(FrontierHost::new(Vec::new(), []));
+        let mut model = model(Arc::clone(&host), "room", "agent-a");
+        let offer = model.queue_offer().unwrap();
+        clock.advance(CONTROL_RESPONSE_WINDOW + Duration::from_millis(1));
+        assert!(model.can_queue(), "the exact owner offer is still current");
+
+        model
+            .queue_with_offer(offer, "Use the still-current painted offer", None)
+            .unwrap();
+
+        assert_eq!(
+            host.requests()
+                .iter()
+                .filter(|request| request.target.address.action == QUEUE_TASK_ACTION)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn painted_queue_offer_expires_without_polling_the_pending_read() {
+        let clock = crate::background::Pumped::new();
+        let _entered = clock.background().enter();
+        let (mut model, offer) = pending_painted_queue_offer();
+        let expiry = model.draft_revalidation_until.unwrap();
+        clock.advance(expiry.saturating_duration_since(clock.background().now()));
+        assert!(
+            model.queue_draft_revalidating,
+            "the grace has not been polled away"
+        );
+        assert!(
+            model
+                .queue_with_offer(offer, "Expired painted offer", None)
+                .is_err()
+        );
+        assert!(take_queue_mutations(&mut model).is_empty());
+    }
+
+    #[test]
+    fn painted_queue_offer_rejects_settled_unpolled_or_invalidated_owner_reads() {
+        for malformed in [false, true] {
+            let (mut model, offer) = pending_painted_queue_offer();
+            model.current = Some(LocalState::new(RemoteCall::Done(
+                InvocationUpdate::Succeeded {
+                    invocation: InvocationId::new(),
+                    output: ActionOutput {
+                        value: Some(if malformed {
+                            serde_json::json!({"not": "an owner snapshot"})
+                        } else {
+                            current_snapshot(1, Vec::new())
+                        }),
+                        resources: Vec::new(),
+                    },
+                },
+            )));
+            assert!(!model.current_consumed);
+            assert!(
+                model
+                    .queue_with_offer(offer, "Already settled owner read", None)
+                    .is_err()
+            );
+            assert!(take_queue_mutations(&mut model).is_empty());
+        }
+        let (mut model, offer) = pending_painted_queue_offer();
+        model.current = Some(LocalState::new(RemoteCall::Refused(
+            ActionHostError::NotPermitted,
+        )));
+        model.poll();
+        assert_eq!(model.discovery(), &AgentTaskDiscovery::Unavailable);
+        assert!(
+            model
+                .queue_with_offer(offer, "Refused owner read", None)
+                .is_err()
+        );
+        assert!(take_queue_mutations(&mut model).is_empty());
+    }
+
+    #[test]
+    fn painted_queue_offer_rejects_other_readers_context_aba_and_suspension() {
+        let (_, offer) = pending_painted_queue_offer();
+        let (mut other, _) = pending_painted_queue_offer();
+        assert!(
+            other
+                .queue_with_offer(offer, "Another reader's offer", None)
+                .is_err()
+        );
+        assert!(take_queue_mutations(&mut other).is_empty());
+
+        let host = Arc::new(FrontierHost::new(Vec::new(), []));
+        let mut first = model(host, "room", "agent-a");
+        let offer = first.queue_offer().unwrap();
+        first.observe("other-room", "agent-b");
+        first.observe("room", "agent-a");
+        assert!(first.can_queue());
+        assert!(
+            first
+                .queue_with_offer(offer, "Returned to the same labels", None)
+                .is_err()
+        );
+
+        let (mut model, offer) = pending_painted_queue_offer();
+        model.set_observation_active(false);
+        assert!(
+            model
+                .queue_with_offer(offer, "Hidden observation", None)
+                .is_err()
+        );
+        assert!(take_queue_mutations(&mut model).is_empty());
     }
 
     #[test]

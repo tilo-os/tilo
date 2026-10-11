@@ -950,7 +950,11 @@ impl ChatApp {
         reason = "single exhaustive hit router; splitting by surface would obscure the shared pointer/keyboard activation path"
     )]
     pub(crate) fn on_hit(&mut self, hit: Hit, doc: &mut ui::widget::Edits<'_>) {
-        if !self.semantic_hit_is_currently_available(&hit) {
+        let painted_queue_submit = matches!(hit, Hit::Send) && self.painted_queue_offer.is_some();
+        if !matches!(hit, Hit::Send) {
+            self.painted_queue_offer = None;
+        }
+        if !self.semantic_hit_is_currently_available(&hit) && !painted_queue_submit {
             return;
         }
         self.prepare_hit_activation();
@@ -1583,6 +1587,13 @@ impl ChatApp {
     }
 
     fn activate_keyboard_target(&mut self, doc: &mut ui::widget::Edits<'_>) -> bool {
+        if self.keyboard_target_semantic.as_deref() == Some(Hit::Send.semantic_id().as_str())
+            && self.direct_agent_intent() == crate::app::AgentComposerIntent::Queue
+            && self.painted_queue_offer.is_some()
+        {
+            self.on_hit(Hit::Send, doc);
+            return true;
+        }
         let targets = self.semantic_hits();
         let Some((_, hit, ..)) = self
             .reconcile_keyboard_target()
@@ -1705,14 +1716,45 @@ impl ChatApp {
         self.set_composer_focus();
     }
 
+    fn queue_agent_task(
+        &self,
+        instruction: &str,
+        painted_offer: Option<ui::agent_task_frontier::AgentQueueOffer>,
+    ) -> bool {
+        self.direct_agent_tasks()
+            .is_some_and(|tasks| match painted_offer {
+                Some(offer) => tasks
+                    .borrow_mut()
+                    .queue_with_offer(offer, instruction, None)
+                    .is_ok(),
+                None => tasks.borrow_mut().queue(instruction, None).is_ok(),
+            })
+    }
+
+    fn take_painted_queue_offer(
+        &mut self,
+        intent: crate::app::AgentComposerIntent,
+    ) -> Option<ui::agent_task_frontier::AgentQueueOffer> {
+        if intent == crate::app::AgentComposerIntent::Queue {
+            self.painted_queue_offer.take()
+        } else {
+            self.painted_queue_offer = None;
+            None
+        }
+    }
+
     fn send_agent_focused(&mut self, agent: Id) {
+        let intent = self.direct_agent_intent();
+        let painted_queue_offer = self.take_painted_queue_offer(intent);
         let text = self.composer_main.private_plain().unwrap_or_default();
-        if text.trim().is_empty() || !self.room_agents.iter().any(|known| known == &agent) {
+        if text.trim().is_empty()
+            || !self.direct_agent_is_available()
+            || !self.room_agents.iter().any(|known| known == &agent)
+        {
             return;
         }
         let workspace = self.active_ws.clone();
-        let intent = self.direct_agent_intent();
-        if !self.direct_agent_intent_action_allowed(intent) {
+        if !self.direct_agent_intent_action_allowed(intent) && painted_queue_offer.is_none() {
             return;
         }
         let Some(draft_revision) = self.composer_main.private_revision_for(&workspace, &agent)
@@ -1764,9 +1806,9 @@ impl ChatApp {
             return;
         }
         let submitted = match intent {
-            crate::app::AgentComposerIntent::Queue => self
-                .direct_agent_tasks()
-                .is_some_and(|tasks| tasks.borrow_mut().queue(&text, None).is_ok()),
+            crate::app::AgentComposerIntent::Queue => {
+                self.queue_agent_task(&text, painted_queue_offer)
+            }
             crate::app::AgentComposerIntent::Steer => self
                 .agent_task_context(&workspace, &agent)
                 .borrow_mut()
@@ -2244,6 +2286,104 @@ mod tests {
             );
             route_root_event(app, doc, &event, Modifiers::default());
             ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_event_source(app, None);
+        }
+    }
+
+    struct ScheduledQueuePress {
+        app: ChatApp,
+        doc: AutoCommit,
+        host: Arc<TaskControlHost>,
+        surface_id: String,
+        requests_before: usize,
+    }
+
+    fn scheduled_parent_sync_queue_press(clock: &ui::background::Pumped) -> ScheduledQueuePress {
+        let (mut app, mut doc, host) = agent_task_control_app();
+        render_frame(&mut app, 800.0, 600.0);
+        app.on_hit(
+            Hit::AgentIntent(crate::app::AgentComposerIntent::Queue),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
+        type_str(&mut app, &mut doc, "Queue across the scheduled sync");
+        app.on_hit(Hit::AgentWindow, &mut ui::widget::Edits::lend(&mut doc));
+        let request = ui::widget::FloatingSurfaceWidgetExt::take_floating_surface_request(&mut app)
+            .expect("Float requests one app-owned child");
+        let rect = request.initial_rect.expect("Float retains exact geometry");
+        adopt_agent_surface(&mut app, &request.id, rect);
+        draw_detached_agent_surface(&mut app, &request.id);
+        let accessible =
+            ui::widget::FloatingSurfaceWidgetExt::floating_surface_accessibility(&app, &request.id)
+                .expect("the painted child publishes its accessibility tree");
+        let queue = accessible
+            .children
+            .iter()
+            .find(|node| {
+                node.role == ui::a11y::Role::Button && node.name.as_deref() == Some("Queue task")
+            })
+            .expect("the painted child exposes Queue");
+        let center = queue
+            .bounds
+            .expect("the painted Queue control has geometry")
+            .to_rect()
+            .center();
+        let deadline = detached_agent_tasks(&app, &request.id)
+            .borrow()
+            .next_refresh_deadline()
+            .expect("the admitted Queue offer has a refresh deadline");
+        ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_event_source(
+            &mut app,
+            Some(&request.id),
+        );
+        let requests_before = host
+            .requests()
+            .iter()
+            .filter(|request| request.target.address.action == "queue")
+            .count();
+        assert!(route_root_event(
+            &mut app,
+            &mut doc,
+            &cursor_moved(center.x, center.y),
+            Modifiers::default(),
+        ));
+        ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_event_source(&mut app, None);
+        host.defer_current_reads();
+        clock.advance(
+            deadline
+                .saturating_duration_since(clock.background().now())
+                .saturating_add(std::time::Duration::from_millis(1)),
+        );
+        ui::Widget::sync(&mut app, &doc, &automerge::ROOT);
+        let child = app
+            .agent_surfaces
+            .values()
+            .find(|surface| surface.id == request.id)
+            .expect("the retained child whose offer is refreshing");
+        assert!(
+            !child.view.semantic_hit_is_currently_available(&Hit::Send),
+            "the refreshing offer is not republished as a current semantic action"
+        );
+        assert!(
+            child.view.painted_queue_offer.is_some(),
+            "the detached child has not repainted its already-visible control"
+        );
+        assert!(
+            app.painted_queue_offer.is_none(),
+            "the attached source withdrew its offer during handoff"
+        );
+        assert_eq!(
+            host.requests()
+                .iter()
+                .filter(|request| request.target.address.action == "queue")
+                .count(),
+            requests_before,
+            "a scheduled sync never dispatches without the user's press"
+        );
+        ScheduledQueuePress {
+            app,
+            doc,
+            host,
+            surface_id: request.id,
+            requests_before,
         }
     }
 
@@ -6065,6 +6205,54 @@ mod tests {
         ));
     }
 
+    fn pending_detached_queue_offer(
+        clock: &ui::background::Pumped,
+        instruction: &str,
+    ) -> (ChatApp, AutoCommit, Arc<TaskControlHost>, String) {
+        let (mut app, mut doc, host) = agent_task_control_app();
+        render_frame(&mut app, 800.0, 600.0);
+        app.on_hit(
+            Hit::AgentIntent(crate::app::AgentComposerIntent::Queue),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
+        type_str(&mut app, &mut doc, instruction);
+        app.on_hit(Hit::AgentWindow, &mut ui::widget::Edits::lend(&mut doc));
+        let request = ui::widget::FloatingSurfaceWidgetExt::take_floating_surface_request(&mut app)
+            .expect("Float requests one app-owned child");
+        adopt_agent_surface(
+            &mut app,
+            &request.id,
+            request.initial_rect.expect("Float retains exact geometry"),
+        );
+        draw_detached_agent_surface(&mut app, &request.id);
+        let view = &mut app
+            .agent_surfaces
+            .values_mut()
+            .find(|surface| surface.id == request.id)
+            .expect("the retained child")
+            .view;
+        let send = view
+            .semantic_hits()
+            .iter()
+            .position(|(_, hit, ..)| matches!(hit, Hit::Send))
+            .expect("painted Queue Send control");
+        view.focus_keyboard_target(send, &Hit::Send);
+        let deadline = view
+            .direct_agent_tasks()
+            .expect("the child shares its exact owner context")
+            .borrow()
+            .next_refresh_deadline()
+            .expect("the offer has a refresh deadline");
+        host.defer_current_reads();
+        clock.advance(
+            deadline
+                .saturating_duration_since(clock.background().now())
+                .saturating_add(std::time::Duration::from_millis(1)),
+        );
+        ui::Widget::sync(&mut app, &doc, &automerge::ROOT);
+        (app, doc, host, request.id)
+    }
+
     fn activate_detached_queue(app: &mut ChatApp, doc: &mut AutoCommit, surface_id: &str) -> bool {
         let target = format!(
             "agent-surface:{surface_id}|{}",
@@ -6607,6 +6795,145 @@ mod tests {
     }
 
     #[test]
+    fn detached_queue_pointer_survives_a_scheduled_parent_sync_between_motion_and_press() {
+        let clock = ui::background::Pumped::new();
+        let _entered = clock.background().enter();
+        let ScheduledQueuePress {
+            mut app,
+            mut doc,
+            host,
+            surface_id,
+            requests_before,
+        } = scheduled_parent_sync_queue_press(&clock);
+        ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_event_source(
+            &mut app,
+            Some(&surface_id),
+        );
+        assert!(route_root_event(
+            &mut app,
+            &mut doc,
+            &mouse(ElementState::Pressed, MouseButton::Left),
+            Modifiers::default(),
+        ));
+        ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_event_source(&mut app, None);
+        assert_eq!(
+            host.requests()
+                .iter()
+                .filter(|request| request.target.address.action == "queue")
+                .count(),
+            requests_before + 1,
+            "the accepted press dispatches exactly one Queue request"
+        );
+
+        ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_event_source(
+            &mut app,
+            Some(&surface_id),
+        );
+        assert!(
+            !route_root_event(
+                &mut app,
+                &mut doc,
+                &mouse(ElementState::Released, MouseButton::Left),
+                Modifiers::default(),
+            ),
+            "a plain release has no second Send or drag effect"
+        );
+        ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_event_source(&mut app, None);
+        assert_eq!(
+            host.requests()
+                .iter()
+                .filter(|request| request.target.address.action == "queue")
+                .count(),
+            requests_before + 1,
+            "release cannot duplicate the accepted Queue request"
+        );
+
+        let queue_requests = host
+            .requests()
+            .into_iter()
+            .filter(|request| request.target.address.action == "queue")
+            .collect::<Vec<_>>();
+        assert_eq!(queue_requests.len(), requests_before + 1);
+        let queued = queue_requests
+            .last()
+            .expect("one current-owner Queue request");
+        assert_eq!(queued.target.address.resource, "desktop:tasks");
+        assert_eq!(json_argument(queued)["agent"], "scribe");
+        assert_eq!(json_argument(queued)["route"], "model");
+        assert_eq!(
+            json_argument(queued)["instruction"],
+            "Queue across the scheduled sync"
+        );
+    }
+
+    #[test]
+    fn detached_queue_semantic_activate_consumes_only_its_painted_offer() {
+        let clock = ui::background::Pumped::new();
+        let _entered = clock.background().enter();
+        let (mut app, mut doc, host, surface_id) =
+            pending_detached_queue_offer(&clock, "Queue from stale accessibility");
+        let target = format!("agent-surface:{surface_id}|{}", Hit::Send.semantic_id());
+        let activate = |app: &mut ChatApp, doc: &mut AutoCommit, action| {
+            ui::widget::FloatingSurfaceWidgetExt::perform_floating_surface_accessibility_action(
+                app,
+                &surface_id,
+                &target,
+                action,
+                &mut ui::widget::Edits::lend(doc),
+                &automerge::ROOT,
+            )
+        };
+        assert!(!activate(&mut app, &mut doc, &ui::a11y::Action::Focus));
+        assert!(
+            !ui::widget::FloatingSurfaceWidgetExt::perform_floating_surface_accessibility_action(
+                &mut app,
+                &surface_id,
+                &format!("agent-surface:foreign|{}", Hit::Send.semantic_id()),
+                &ui::a11y::Action::Activate,
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+            )
+        );
+        assert!(activate(&mut app, &mut doc, &ui::a11y::Action::Activate));
+        assert!(!activate(&mut app, &mut doc, &ui::a11y::Action::Activate));
+        assert_eq!(
+            host.requests()
+                .iter()
+                .filter(|request| request.target.address.action == "queue")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn detached_queue_keyboard_enter_consumes_only_its_painted_offer() {
+        let clock = ui::background::Pumped::new();
+        let _entered = clock.background().enter();
+        let (mut app, mut doc, host, surface_id) =
+            pending_detached_queue_offer(&clock, "Queue from stale keyboard focus");
+        for _ in 0..2 {
+            ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_event_source(
+                &mut app,
+                Some(&surface_id),
+            );
+            route_root_event(
+                &mut app,
+                &mut doc,
+                &named_key(NamedKey::Enter),
+                Modifiers::default(),
+            );
+            ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_event_source(&mut app, None);
+        }
+        assert_eq!(
+            host.requests()
+                .iter()
+                .filter(|request| request.target.address.action == "queue")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
     fn queue_draft_becomes_read_only_when_async_revalidation_denies_authority() {
         let clock = ui::background::Pumped::new();
         let _entered = clock.background().enter();
@@ -6617,6 +6944,16 @@ mod tests {
         );
         type_str(&mut app, &mut doc, "private denied draft");
         app.composer_main.select(2, 9);
+        render_frame(&mut app, 1200.0, 800.0);
+        assert!(app.painted_queue_offer.is_some());
+        app.set_direct_agent_intent(crate::app::AgentComposerIntent::Message);
+        app.set_direct_agent_intent(crate::app::AgentComposerIntent::Queue);
+        assert!(
+            app.painted_queue_offer.is_none(),
+            "a Queue to Message to Queue mode change cannot revive an old painted offer"
+        );
+        render_frame(&mut app, 1200.0, 800.0);
+        assert!(app.painted_queue_offer.is_some());
         let tasks = app.direct_agent_tasks().expect("owner-backed task context");
         let deadline = tasks
             .borrow()
@@ -6632,6 +6969,11 @@ mod tests {
         ui::Widget::sync(&mut app, &doc, &automerge::ROOT);
         assert!(app.main_composer_can_edit());
         assert!(!tasks.borrow().can_queue());
+        render_frame(&mut app, 1200.0, 800.0);
+        assert!(
+            app.painted_queue_offer.is_none(),
+            "a child repaint withdraws its no-longer-current Queue offer"
+        );
 
         host.revoke_task_controls();
         host.complete_current_reads();

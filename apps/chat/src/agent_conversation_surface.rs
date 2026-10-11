@@ -23,6 +23,7 @@ pub(crate) struct AgentConversationSurface {
 
 impl AgentConversationSurface {
     pub(crate) fn from_attached(parent: &mut ChatApp, agent: &str) -> Self {
+        parent.painted_queue_offer = None;
         let mut view = ChatApp::conversation_instance(parent, agent);
         std::mem::swap(&mut view.composer_main, &mut parent.composer_main);
         parent
@@ -66,6 +67,8 @@ impl AgentConversationSurface {
         if !self.view_owns_editor {
             return;
         }
+        self.view.painted_queue_offer = None;
+        parent.painted_queue_offer = None;
         // Returning this exact editor retires the parent's old Float-control
         // ordinal. Do this at the ownership transfer, not on every later
         // surface reconciliation: a repeated sync may legitimately find a
@@ -83,6 +86,8 @@ impl AgentConversationSurface {
         if self.view_owns_editor {
             return;
         }
+        self.view.painted_queue_offer = None;
+        parent.painted_queue_offer = None;
         std::mem::swap(&mut self.view.composer_main, &mut parent.composer_main);
         parent
             .composer_main
