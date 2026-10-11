@@ -3402,6 +3402,11 @@ impl FrameBuilder {
         self.host.capture_studio_open()
     }
 
+    /// See [`ShellOverlayHost::capture_choosing_screenshot`].
+    pub fn capture_choosing_screenshot(&self) -> bool {
+        self.host.capture_choosing_screenshot()
+    }
+
     /// Drain app-originated call/navigation/media handoffs. The app keeps
     /// producing the source; the compositor chooses the shell presentation.
     pub fn take_floating_surface_requests(
