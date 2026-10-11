@@ -190,8 +190,8 @@ class CloseFixture:
     """VM boundary fixture; run the production close and process/window checks."""
     def __init__(self, extra_toast=None, cascade=False, processes="", keep_main=False):
         self.groups = [{"id": 1, "tabs": [{"title": "Existing"}]},
-                       {"id": 2, "tabs": [{"title": "Wine File"}]},
-                       {"id": 3, "tabs": [{"title": "Wine Mono Installer"}]}]
+                       {"id": 2, "tabs": [{"title": "Wine File", "tile": {"Foreign": {"app_id": "wineboot.exe"}}}]},
+                       {"id": 3, "tabs": [{"title": "Wine Mono Installer", "tile": {"Foreign": {"app_id": "control.exe"}}}]}]
         self.toasts = [undo_toast("Old notification")]
         self.extra_toast = extra_toast
         self.cascade = cascade
@@ -220,7 +220,9 @@ class CloseFixture:
         apps.expect(predicate(self.state()), why)
 
     def exec(self, script):
-        return self.processes
+        installer = any(g["id"] == 3 for g in self.groups)
+        return self.processes + ("\n" + row(4131, 900, 4101, "C:\\windows\\system32\\control.exe appwiz.cpl install_mono")
+                                 if installer else "")
 
 
 class CloseNotificationRegressionTests(unittest.TestCase):
@@ -260,6 +262,71 @@ class CloseNotificationRegressionTests(unittest.TestCase):
     def test_main_window_that_lingers_still_fails(self):
         with self.assertRaisesRegex(apps.CheckFailed, "window gone after close"):
             self.close(CloseFixture(keep_main=True))
+
+
+class LateWindowCloseTests(unittest.TestCase):
+    close = CloseNotificationRegressionTests.close
+    def test_installer_appearing_at_main_close_guard_is_closed_and_classified(self):
+        class LateInstaller(CloseFixture):
+            def __init__(self):
+                super().__init__()
+                self.installer = self.groups.pop()
+                self.reads = 0
+
+            def state(self):
+                self.reads += 1
+                if self.reads == 2:
+                    self.groups.append(self.installer)
+                return super().state()
+
+        ctx = LateInstaller()
+        try:
+            metrics = self.close(ctx)
+        except apps.CheckFailed as exc:
+            self.fail(str(exc))
+        self.assertEqual([g["id"] for g in ctx.groups], [1])
+        self.assertEqual(metrics["closed_titles"], ["Wine File", "Wine Mono Installer"])
+        self.assertEqual([t["title"] for t in metrics["undo_toasts"]],
+                         ["Closed Wine File", "Closed Wine Mono Installer"])
+        self.assertEqual(metrics["lingering_after_close"], [])
+
+    def test_new_unrelated_and_preexisting_same_app_windows_are_left_open(self):
+        ctx = CloseFixture()
+        ctx.groups[0]["tabs"][0]["tile"] = {"Foreign": {"app_id": "control.exe"}}
+        ctx.groups.append({"id": 4, "tabs": [{"title": "Unrelated editor", "tile": {"Foreign": {"app_id": "gedit"}}}]})
+        metrics = self.close(ctx)
+        self.assertEqual([g["id"] for g in ctx.groups], [1, 4])
+        self.assertEqual(metrics["closed_titles"], ["Wine File", "Wine Mono Installer"])
+
+    def test_ambiguous_app_identity_is_not_closed(self):
+        ctx = CloseFixture(processes=row(5001, 900, 5001, "C:\\windows\\system32\\control.exe unrelated-prefix"))
+        with self.assertRaisesRegex(apps.CheckFailed, "processes still running"):
+            self.close(ctx)
+        self.assertEqual([g["id"] for g in ctx.groups], [1, 3])
+
+    def test_group_containing_an_unrelated_tab_is_not_closed(self):
+        ctx = CloseFixture()
+        ctx.groups[2]["tabs"].append({"title": "Unrelated editor", "tile": {"Foreign": {"app_id": "gedit"}}})
+        with self.assertRaisesRegex(apps.CheckFailed, "processes still running"):
+            self.close(ctx)
+        self.assertEqual([g["id"] for g in ctx.groups], [1, 3])
+
+    def test_continually_created_app_windows_fail_within_the_close_budget(self):
+        class Reopening(CloseFixture):
+            def invoke(self, provider, action):
+                super().invoke(provider, action)
+                next_id = max(g["id"] for g in self.groups) + 1
+                if next_id > 30:
+                    raise AssertionError("close loop exceeded the fixture safety limit")
+                self.groups.append({"id": next_id, "tabs": [{"title": "New installer", "tile": {"Foreign": {"app_id": "control.exe"}}}]})
+
+            def exec(self, script):
+                return row(4131, 900, 4101, "C:\\windows\\system32\\control.exe")
+
+        tick = iter(range(0, 100, 2))
+        with patch.object(apps.time, "monotonic", lambda: next(tick)):
+            with self.assertRaisesRegex(apps.CheckFailed, "while closing A07-x11"):
+                self.close(Reopening())
 
 
 class FirstTexturedTests(unittest.TestCase):
