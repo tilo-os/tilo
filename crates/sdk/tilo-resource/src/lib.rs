@@ -128,6 +128,7 @@ pub mod schema;
 pub mod shape;
 pub mod storage;
 pub mod surface;
+pub mod table;
 pub mod text;
 pub mod vocabulary;
 
@@ -816,7 +817,7 @@ pub mod __private {
 
     /// The first non-empty line among `text`.
     #[inline(never)]
-    fn first_line_of(text: Vec<String>) -> Option<String> {
+    pub(crate) fn first_line_of(text: Vec<String>) -> Option<String> {
         text.into_iter()
             .map(|line| line.lines().next().unwrap_or_default().trim().to_owned())
             .find(|line| !line.is_empty())

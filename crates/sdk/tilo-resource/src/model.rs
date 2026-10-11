@@ -214,7 +214,7 @@ fn same_scalar(current: &ScalarValue, next: &ScalarValue) -> bool {
 }
 
 /// A typed value stored in a CRDT document. See the module docs.
-pub trait Model: Sized {
+pub trait Model: Sized + 'static {
     /// How the value is laid out in the document; see [`Shape`](crate::Shape).
     /// Types written whole keep the default.
     const SHAPE: crate::Shape = crate::Shape::Value;
@@ -232,6 +232,10 @@ pub trait Model: Sized {
     /// Whether `null` is a value of the type: an absent `Option`. A field
     /// edit setting any other type to `null` is refused.
     const NULLABLE: bool = false;
+
+    /// The type's functions as data, which a record holding it reaches it
+    /// through ([`crate::table`]): by default its own functions, erased.
+    const TABLE: &'static crate::table::ModelTable = &crate::table::TableOf::<Self>::TABLE;
 
     /// The typed paths into a value of this type, rooted in the record `R`:
     /// a struct of field paths for a record, the [`Path`] itself for a value
@@ -567,7 +571,7 @@ pub fn read_key<T: Model>(doc: &Doc, obj: &ObjId, key: &str) -> Result<T, ModelE
 /// generic lookup and op-tree walk with it; these are compiled once, into
 /// the shared runtime every app maps (TIL-765).
 #[inline(never)]
-fn get_slot<'doc>(
+pub(crate) fn get_slot<'doc>(
     doc: &'doc Doc,
     obj: &ObjId,
     key: &str,
@@ -619,7 +623,7 @@ pub fn read_slots<const N: usize>(doc: &Doc, obj: &ObjId, keys: [&str; N]) -> [M
 /// into the shared runtime rather than into every app that derives a
 /// [`Model`] with another number of fields (TIL-765).
 #[inline(never)]
-fn fill_slots(doc: &Doc, obj: &ObjId, keys: &[&str], slots: &mut [MapSlot]) {
+pub(crate) fn fill_slots(doc: &Doc, obj: &ObjId, keys: &[&str], slots: &mut [MapSlot]) {
     let mut missing = keys.len();
     if missing == 0 {
         return;
@@ -881,6 +885,7 @@ fn scalar<'v>(value: &'v Value<'_>) -> Option<&'v ScalarValue> {
 
 impl Settable for bool {}
 impl Model for bool {
+    crate::__own_table!(bool);
     fn value_schema() -> serde_json::Value {
         serde_json::json!({"type": "boolean"})
     }
@@ -922,6 +927,7 @@ macro_rules! integer_model {
     ($($ty:ty),*) => {$(
         impl Settable for $ty {}
         impl Model for $ty {
+            crate::__own_table!($ty);
             fn value_schema() -> serde_json::Value {
                 serde_json::json!({"type": "integer"})
             }
@@ -972,6 +978,7 @@ integer_model!(i8, i16, i32, i64, u8, u16, u32, u64, usize, isize);
 
 impl Settable for f64 {}
 impl Model for f64 {
+    crate::__own_table!(f64);
     fn value_schema() -> serde_json::Value {
         serde_json::json!({"type": "number"})
     }
@@ -1020,6 +1027,7 @@ impl Model for f64 {
 
 impl Settable for f32 {}
 impl Model for f32 {
+    crate::__own_table!(f32);
     fn value_schema() -> serde_json::Value {
         serde_json::json!({"type": "number"})
     }
@@ -1063,6 +1071,7 @@ impl Model for f32 {
 /// too and is upgraded on the first write.
 impl Settable for String {}
 impl Model for String {
+    crate::__own_table!(String);
     fn value_schema() -> serde_json::Value {
         serde_json::json!({"type": "string"})
     }
@@ -1219,6 +1228,7 @@ pub struct Atom(pub String);
 
 impl Settable for Atom {}
 impl Model for Atom {
+    crate::__own_table!(Atom);
     fn value_schema() -> serde_json::Value {
         serde_json::json!({"type": "string"})
     }
@@ -1255,6 +1265,7 @@ impl Model for Atom {
 
 impl Settable for uuid::Uuid {}
 impl Model for uuid::Uuid {
+    crate::__own_table!(uuid::Uuid);
     fn value_schema() -> serde_json::Value {
         serde_json::json!({"type": "string", "format": "uuid"})
     }
@@ -1944,10 +1955,13 @@ impl<T: Model> Model for BTreeMap<String, T> {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Json<T>(pub T);
 
-impl<T> Settable for Json<T> where T: serde::Serialize + serde::de::DeserializeOwned + Default {}
+impl<T> Settable for Json<T> where
+    T: serde::Serialize + serde::de::DeserializeOwned + Default + 'static
+{
+}
 impl<T> Model for Json<T>
 where
-    T: serde::Serialize + serde::de::DeserializeOwned + Default,
+    T: serde::Serialize + serde::de::DeserializeOwned + Default + 'static,
 {
     leaf_paths!();
     /// Any JSON value, `null` among them.

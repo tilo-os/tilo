@@ -18,6 +18,7 @@ use crate::path::{EditOp, Segment, Settable};
 /// Nothing: a value that stores nothing, for the members of a container that
 /// only orders ids (a [`Grid`]'s rows and columns).
 impl Model for () {
+    crate::__own_table!(());
     crate::model::leaf_paths!();
     #[inline(never)]
     fn to_json(&self) -> serde_json::Value {
@@ -69,6 +70,7 @@ impl fmt::Display for Counter {
 }
 
 impl Model for Counter {
+    crate::__own_table!(Counter);
     fn value_schema() -> serde_json::Value {
         serde_json::json!({"type": "integer"})
     }
@@ -446,6 +448,7 @@ impl Bytes {
 
 impl Settable for Bytes {}
 impl Model for Bytes {
+    crate::__own_table!(Bytes);
     crate::model::leaf_paths!();
     /// `null` is the empty value.
     const NULLABLE: bool = true;
@@ -1078,7 +1081,7 @@ impl<O: Default> Settled<O> {
 
 /// A settlement stores as one JSON value: it is written once, by the owning
 /// device.
-impl<O: Serialize + serde::de::DeserializeOwned> Model for Settled<O> {
+impl<O: Serialize + serde::de::DeserializeOwned + 'static> Model for Settled<O> {
     crate::model::leaf_paths!();
     #[inline(never)]
     fn to_json(&self) -> serde_json::Value {
@@ -1126,7 +1129,7 @@ fn settle_steps(doc: &mut Doc, steps: &[String]) {
     }
 }
 
-impl<T: Model, O: Serialize + serde::de::DeserializeOwned> Model for OutboxEntry<T, O> {
+impl<T: Model, O: Serialize + serde::de::DeserializeOwned + 'static> Model for OutboxEntry<T, O> {
     const CHECKS: bool = T::CHECKS;
     const OPS: bool = T::OPS;
     crate::model::leaf_paths!();
@@ -1313,7 +1316,7 @@ fn outbox_entry(doc: &mut Doc, slot: Slot<'_>, id: &Id) -> Result<(ObjId, ObjId)
     Ok((map, value))
 }
 
-impl<T: Model, O: Serialize + serde::de::DeserializeOwned> Model for Outbox<T, O> {
+impl<T: Model, O: Serialize + serde::de::DeserializeOwned + 'static> Model for Outbox<T, O> {
     const CHECKS: bool = T::CHECKS;
     const OPS: bool = T::OPS;
     crate::model::leaf_paths!();
