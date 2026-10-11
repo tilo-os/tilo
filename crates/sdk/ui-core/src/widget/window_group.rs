@@ -2999,12 +2999,7 @@ mod tests {
             dyn crate::component_lifecycle::ComponentLifecycle
         );
 
-        crate::testing::inert_widget_methods!(
-            apply_layout,
-            draw,
-            get_rect,
-            name = "RetainedTraversalProbe"
-        );
+        crate::testing::inert_widget_methods!(name = "RetainedTraversalProbe");
         #[allow(
             private_interfaces,
             reason = "focused retained-owner traversal regression"

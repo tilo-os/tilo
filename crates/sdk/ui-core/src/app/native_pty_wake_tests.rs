@@ -305,13 +305,7 @@ struct IdleCounts {
     wake: crate::WakeHandle,
 }
 impl Widget for IdleCounts {
-    crate::testing::inert_widget_methods!(
-        unregistered_leaf_layout,
-        apply_layout,
-        draw,
-        get_rect,
-        name = "idle-counts"
-    );
+    crate::testing::inert_widget_methods!(unregistered_leaf_layout, name = "idle-counts");
     fn update(&mut self, _: &AppModel, _: &ModelPath) -> bool {
         self.updates.set(self.updates.get() + 1);
         if self.wake_during_update.replace(false) {
