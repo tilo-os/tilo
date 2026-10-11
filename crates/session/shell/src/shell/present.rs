@@ -244,6 +244,8 @@ enum PresentMsg {
         /// The client frames `frame` draws, held until it was presented: their
         /// buffers do not go back to their clients while it can be rendered.
         pins: crate::shell::gpu_frames::FramePins,
+        /// The frame's share of the pipe's capacity, given back however the frame ends.
+        admission: Admission,
     },
     Resize((u32, u32)),
     Dpms(bool),
@@ -358,6 +360,40 @@ fn log_frame_lifecycle(serial: u64, revision: u64, timing: FrameLifecycle) {
     }
 }
 
+/// One admitted frame's share of the pipe's capacity (`inflight`), returned when this drops.
+///
+/// Releasing by drop makes "exactly once per admitted frame" structural: the render thread
+/// releases it when the frame's render returned ([`RetireBoard::release`]), and every other
+/// end of the frame gives it back as well. A presenter that panics unwinds the frame out of
+/// the thread, a pipe whose thread is gone drops its queued frames, and a send that fails
+/// returns the frame to the caller. A counter decremented only on the happy path would
+/// instead stay above zero for good, the loop would never be admitted to submit again, and
+/// it would never learn that its presenter is gone.
+struct Admission {
+    inflight: Arc<AtomicUsize>,
+}
+
+impl Admission {
+    /// Admit one frame; returns its share and how many frames are in flight with it.
+    fn admit(inflight: &Arc<AtomicUsize>) -> (Self, usize) {
+        let now = inflight.fetch_add(1, Ordering::AcqRel).saturating_add(1);
+        (
+            Self {
+                inflight: inflight.clone(),
+            },
+            now,
+        )
+    }
+}
+
+impl Drop for Admission {
+    fn drop(&mut self) {
+        // Release: whatever the render thread stored for the loop before giving the capacity
+        // back is visible to a loop that finds it.
+        self.inflight.fetch_sub(1, Ordering::Release);
+    }
+}
+
 /// The render thread's half of the state the logic thread reads after a frame.
 struct RetireBoard {
     physical_results: Arc<Mutex<VecDeque<PhysicalOutcome>>>,
@@ -365,7 +401,6 @@ struct RetireBoard {
     presented: Arc<AtomicU64>,
     queue_depth: Arc<AtomicUsize>,
     overlapping: Arc<AtomicBool>,
-    inflight: Arc<AtomicUsize>,
     unretired: Arc<AtomicUsize>,
 }
 
@@ -389,12 +424,18 @@ impl RetireBoard {
     /// One handed-over frame finished rendering: return its capacity. The depth
     /// and the flips still owed are stored first, so a loop that finds capacity
     /// already sees what that capacity was granted under.
-    fn release(&self, queue_depth: usize, overlapping: bool, unretired: usize) {
+    fn release(
+        &self,
+        queue_depth: usize,
+        overlapping: bool,
+        unretired: usize,
+        admission: Admission,
+    ) {
         self.queue_depth.store(queue_depth, Ordering::Release);
         self.overlapping.store(overlapping, Ordering::Release);
         self.unretired.store(unretired, Ordering::Release);
-        // Decrement *after* the present so the logic thread's capacity check reflects work actually finished, not work dequeued.
-        self.inflight.fetch_sub(1, Ordering::Release);
+        // Give the capacity back *after* the present so the logic thread's capacity check reflects work actually finished, not work dequeued.
+        drop(admission);
     }
 }
 
@@ -484,6 +525,17 @@ struct RenderThread {
     queue: RetireQueue<Rendered>,
 }
 
+impl Drop for RenderThread {
+    /// The thread is leaving, normally or by unwinding out of the presenter: the flips its
+    /// frames still owed will never be collected, so they are no longer between handoff and
+    /// the screen. Reporting them as owed would keep the pipe refusing frames for good, and
+    /// the loop would never submit again to find the channel closed and drop the presenter.
+    fn drop(&mut self) {
+        self.board.unretired.store(0, Ordering::Release);
+        (self.on_retire)();
+    }
+}
+
 impl RenderThread {
     fn run(mut self, rx: &Receiver<PresentMsg>) {
         self.presenter.prepare();
@@ -520,6 +572,7 @@ impl RenderThread {
                     input_age_at_enqueue,
                     inflight_at_enqueue,
                     pins,
+                    admission,
                 } => {
                     let render_started = Instant::now();
                     let queue_wait = render_started.saturating_duration_since(enqueued_at);
@@ -551,13 +604,20 @@ impl RenderThread {
                         physical,
                         display: self.presenter.display_timing(),
                     });
-                    // Flips that retired inside this present are earlier frames'.
-                    let earlier = self.presenter.retire_owed(Duration::ZERO);
-                    self.queue.settle(earlier);
+                    // The frame joins the queue before the presenter is asked what retired: a
+                    // flip that retired inside this present (the vblank fell between queueing
+                    // it and returning) is this frame's own, and an outcome with no frame
+                    // waiting for it would be dropped, leaving the frame owed for good.
                     self.queue.push(rendered, outcome);
+                    let retired = self.presenter.retire_owed(Duration::ZERO);
+                    self.queue.settle(retired);
                     self.publish_ready();
-                    self.board
-                        .release(self.presenter.queue_depth(), overlapped, self.queue.owed());
+                    self.board.release(
+                        self.presenter.queue_depth(),
+                        overlapped,
+                        self.queue.owed(),
+                        admission,
+                    );
                     // Then wake the loop — strictly after the decrement, so a loop that wakes on this signal is guaranteed to see the capacity.
                     (self.on_retire)();
                 }
@@ -689,7 +749,6 @@ impl PresentPipe {
             presented: presented_frames.clone(),
             queue_depth: queue_depth.clone(),
             overlapping: overlapping.clone(),
-            inflight: inflight.clone(),
             unretired: unretired.clone(),
         };
         let finished = Arc::new(AtomicBool::new(false));
@@ -877,14 +936,11 @@ impl PresentPipe {
             .submitted
             .fetch_add(1, Ordering::AcqRel)
             .saturating_add(1);
-        let inflight_at_enqueue = self
-            .inflight
-            .fetch_add(1, Ordering::AcqRel)
-            .saturating_add(1);
+        let (admission, inflight_at_enqueue) = Admission::admit(&self.inflight);
         let enqueued_at = Instant::now();
         let pins = frame.client_frame_pins();
-        if self
-            .tx
+        // A refused send hands the frame back; dropping it returns its admission.
+        self.tx
             .send(PresentMsg::Frame {
                 frame: Box::new(frame),
                 output,
@@ -893,12 +949,9 @@ impl PresentPipe {
                 input_age_at_enqueue,
                 inflight_at_enqueue,
                 pins,
+                admission,
             })
-            .is_err()
-        {
-            self.inflight.fetch_sub(1, Ordering::AcqRel);
-            return None;
-        }
+            .ok()?;
         Some(serial)
     }
 
@@ -1745,6 +1798,251 @@ mod tests {
         flip.send(flip_at(3, vblank))
             .expect("release frame 3's flip");
         tilo_test_env::wait_until("frame 3 to retire", || pipe.presented() == 3);
+        pipe.shutdown();
+    }
+
+    /// How a scripted frame ends for [`Scripted`].
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum Flip {
+        /// Nothing changed: no flip is queued, the previous one shows the frame.
+        None,
+        /// The flip retires some vblanks after the present returned.
+        Later,
+        /// The vblank falls between queueing the flip and the present returning, so the
+        /// presenter collects it in the same call, together with the one before it.
+        WithinPresent,
+    }
+
+    /// A presenter that follows the real one's order: a frame first retires the flip the
+    /// previous frame left owed, then queues its own, and flips retire oldest first.
+    struct Scripted {
+        plan: VecDeque<Flip>,
+        rendered: Arc<AtomicU64>,
+        flips: Receiver<OwedRetirement>,
+        /// The previous frame's flip is still owed.
+        owing: bool,
+        owes: bool,
+        serial: u64,
+        ready: VecDeque<OwedRetirement>,
+    }
+
+    impl Presenter for Scripted {
+        fn present(&mut self, _scene: &Scene, _output: OutputId) {
+            if self.owing {
+                // KMS takes one flip per CRTC: the previous one retires before this queues.
+                self.ready.push_back(
+                    self.flips
+                        .recv_timeout(tilo_test_env::hang_bound())
+                        .expect("the test releases the previous flip"),
+                );
+                self.owing = false;
+            }
+            self.serial += 1;
+            let step = self.plan.pop_front().unwrap_or(Flip::Later);
+            self.owes = step != Flip::None;
+            match step {
+                Flip::None => {}
+                Flip::Later => self.owing = true,
+                Flip::WithinPresent => self.ready.push_back(flip_at(self.serial, Instant::now())),
+            }
+            self.rendered.fetch_add(1, Ordering::Release);
+        }
+        fn queue_depth(&self) -> usize {
+            0
+        }
+        fn overlaps_presentation(&self) -> bool {
+            true
+        }
+        fn owes_retirement(&self) -> bool {
+            self.owes
+        }
+        fn retire_owed(&mut self, wait: Duration) -> Vec<OwedRetirement> {
+            let mut retired: Vec<_> = self.ready.drain(..).collect();
+            if !self.owing {
+                return retired;
+            }
+            if let Ok(flip) = self.flips.recv_timeout(wait) {
+                retired.push(flip);
+                self.owing = false;
+            }
+            retired
+        }
+    }
+
+    /// Run `plan` through a pipe, releasing each `Later` flip as the next frame is handed
+    /// over (and the last one at the end), and return the pipe once every frame retired.
+    fn run_scripted(plan: &[Flip]) -> PresentPipe {
+        let rendered = Arc::new(AtomicU64::new(0));
+        let (flip, flips) = channel();
+        let mut pipe = spawn_with_retire(Box::new(Scripted {
+            plan: plan.iter().copied().collect(),
+            rendered: rendered.clone(),
+            flips,
+            owing: false,
+            owes: false,
+            serial: 0,
+            ready: VecDeque::new(),
+        }));
+        let mut unreleased: Option<u64> = None;
+        for (index, step) in plan.iter().enumerate() {
+            let serial = u64::try_from(index).expect("small plan").saturating_add(1);
+            tilo_test_env::wait_until("the pipe to admit the next frame", || pipe.has_capacity());
+            assert!(pipe.submit(Scene::new(), OutputId(0)));
+            if let Some(owed) = unreleased.take() {
+                flip.send(flip_at(owed, Instant::now()))
+                    .expect("release the previous flip");
+            }
+            if *step == Flip::Later {
+                unreleased = Some(serial);
+            }
+            tilo_test_env::wait_until("the frame to render", || {
+                rendered.load(Ordering::Acquire) == serial && pipe.inflight() == 0
+            });
+        }
+        if let Some(owed) = unreleased {
+            flip.send(flip_at(owed, Instant::now()))
+                .expect("release the last flip");
+        }
+        let total = u64::try_from(plan.len()).expect("small plan");
+        tilo_test_env::wait_until("every frame to retire", || pipe.presented() == total);
+        pipe
+    }
+
+    /// Every admitted frame gives its capacity back once and retires once, whatever order
+    /// the flips of the frames before it retired in. A flip retiring inside the present that
+    /// queued it used to have no frame to settle: that frame stayed owed for good, `presented`
+    /// stopped and each later frame was admitted only as the one after it retired.
+    #[test]
+    fn a_flip_retiring_inside_its_own_present_still_retires_its_frame() {
+        let mut pipe = run_scripted(&[Flip::WithinPresent]);
+        assert_eq!(pipe.unretired(), 0);
+        assert_eq!(pipe.inflight(), 0);
+        assert!(pipe.has_capacity());
+        assert_eq!(
+            pipe.take_physical_results().len(),
+            1,
+            "the frame is published once"
+        );
+        pipe.shutdown();
+    }
+
+    #[test]
+    fn capacity_and_retirement_are_exact_for_every_order_flips_retire_in() {
+        // Every pair and a long mixed run: each step's flip retires later, inside its own
+        // present (together with the previous frame's), or does not exist.
+        let steps = [Flip::None, Flip::Later, Flip::WithinPresent];
+        let mut plans: Vec<Vec<Flip>> = Vec::new();
+        for first in steps {
+            for second in steps {
+                for third in steps {
+                    plans.push(vec![first, second, third]);
+                }
+            }
+        }
+        let mut seed = 0x2545_f491_u32;
+        plans.push(
+            (0..96)
+                .map(|_| {
+                    seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                    steps[usize::try_from(seed >> 16).expect("fits") % steps.len()]
+                })
+                .collect(),
+        );
+        for plan in plans {
+            let mut pipe = run_scripted(&plan);
+            assert_eq!(pipe.inflight(), 0, "{plan:?}");
+            assert_eq!(pipe.unretired(), 0, "{plan:?}");
+            assert!(pipe.has_capacity(), "{plan:?}");
+            assert_eq!(pipe.presented(), pipe.submitted(), "{plan:?}");
+            let results = pipe.take_physical_results();
+            let serials: Vec<u64> = results.iter().map(|(serial, _)| *serial).collect();
+            let expected: Vec<u64> = (1..=u64::try_from(plan.len()).expect("small")).collect();
+            assert_eq!(
+                serials, expected,
+                "each frame retires once, in order: {plan:?}"
+            );
+            for ((serial, physical), step) in results.iter().zip(&plan) {
+                let sequence = physical.map(|proof| proof.sequence);
+                match step {
+                    Flip::None => assert_eq!(sequence, None, "{plan:?}"),
+                    Flip::Later | Flip::WithinPresent => assert_eq!(
+                        sequence,
+                        Some(*serial),
+                        "a frame retires with its own flip: {plan:?}"
+                    ),
+                }
+            }
+            pipe.shutdown();
+        }
+    }
+
+    /// A presenter that panics takes the render thread, and the frame it was rendering, with
+    /// it. That frame's capacity must come back with it: left counted in flight, the loop is
+    /// refused every frame, never submits again, and never learns its presenter is gone.
+    #[test]
+    fn a_dead_render_thread_gives_back_the_capacity_of_the_frame_it_was_rendering() {
+        let mut pipe = spawn_with_retire(Box::new(PanickingPresenter));
+        assert!(pipe.submit(Scene::new(), OutputId(0)));
+        tilo_test_env::wait_until("the presenter panic to terminate its thread", || {
+            pipe.is_finished()
+        });
+        assert_eq!(pipe.inflight(), 0);
+        assert!(
+            pipe.has_capacity(),
+            "the loop must be let submit, to find the closed channel and drop the presenter"
+        );
+        assert!(!pipe.submit(Scene::new(), OutputId(0)));
+        assert_eq!(pipe.inflight(), 0, "a refused frame holds no capacity");
+        pipe.shutdown();
+    }
+
+    #[test]
+    fn a_dead_render_thread_owes_no_flips() {
+        let rendered = Arc::new(AtomicU64::new(0));
+        let (_flip, flips) = channel();
+        // The second frame panics once the first, which owes a flip, has been rendered.
+        struct DiesAfterOne(Scripted);
+        impl Presenter for DiesAfterOne {
+            fn present(&mut self, scene: &Scene, output: OutputId) {
+                assert!(self.0.serial < 1, "intentional presenter failure");
+                self.0.present(scene, output);
+            }
+            fn queue_depth(&self) -> usize {
+                0
+            }
+            fn overlaps_presentation(&self) -> bool {
+                true
+            }
+            fn owes_retirement(&self) -> bool {
+                self.0.owes
+            }
+            fn retire_owed(&mut self, _wait: Duration) -> Vec<OwedRetirement> {
+                Vec::new()
+            }
+        }
+        let mut pipe = spawn_with_retire(Box::new(DiesAfterOne(Scripted {
+            plan: VecDeque::from([Flip::Later]),
+            rendered: rendered.clone(),
+            flips,
+            owing: false,
+            owes: false,
+            serial: 0,
+            ready: VecDeque::new(),
+        })));
+        assert!(pipe.submit(Scene::new(), OutputId(0)));
+        tilo_test_env::wait_until("frame 1 to render", || {
+            rendered.load(Ordering::Acquire) == 1 && pipe.inflight() == 0
+        });
+        assert_eq!(pipe.unretired(), 1);
+        assert!(pipe.submit(Scene::new(), OutputId(0)));
+        tilo_test_env::wait_until("the render thread to die", || pipe.is_finished());
+        assert_eq!(pipe.inflight(), 0);
+        assert_eq!(
+            pipe.unretired(),
+            0,
+            "its owed flip can no longer be collected"
+        );
+        assert!(pipe.has_capacity());
         pipe.shutdown();
     }
 
