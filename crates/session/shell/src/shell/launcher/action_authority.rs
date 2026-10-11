@@ -363,6 +363,17 @@ impl Drop for Lease {
     }
 }
 
+/// What the published room policy currently holds for `room`, as a launch's
+/// sandbox registration sees it.
+#[cfg(test)]
+pub(crate) fn published_capabilities_for_test(room: RoomId) -> Vec<CapOverride> {
+    lock(&PUBLISHED)
+        .rooms
+        .get(&room)
+        .map(|policy| policy.capabilities.clone())
+        .unwrap_or_default()
+}
+
 pub(crate) fn next_deadline() -> Option<Instant> {
     lock(&PUBLISHED).next_refresh
 }

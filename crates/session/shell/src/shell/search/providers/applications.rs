@@ -895,6 +895,13 @@ pub(crate) fn grant_file_manager_home(
             .retain(|capability| !ids.contains(&capability.id));
         return false;
     }
+    // The launch that follows captures this grant, and the sandbox is only
+    // released once the published room policy contains every captured grant
+    // (`Lease::register_sandbox`). Nothing else saves the tree here, so
+    // without this the first Files launch after a start raced the next
+    // unrelated save and failed with "filesystem authority changed while the
+    // application launch was pending".
+    tree.queue_save();
     true
 }
 
@@ -1427,6 +1434,44 @@ mod tests {
         let handle: WorkspaceTreeHandle =
             crate::shell::state::WorkspaceTreeHandle::new(WorkspaceTree::default());
         ChromeState::new_with_handle(handle)
+    }
+
+    /// The launch captures the home grant, and its sandbox is only released
+    /// once the published room policy holds every captured grant. The grant
+    /// has to reach that publication on its own, not with whatever save
+    /// happens next: Files failed to start with "filesystem authority
+    /// changed while the application launch was pending" otherwise.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn granting_the_file_manager_its_home_publishes_the_grant_for_the_launch() {
+        let _home = tilo_test_env::TestHome::new().unwrap();
+        let mut tree = WorkspaceTree::bootstrap_default();
+        let workspace = tree.desktop.active;
+        let room = tree.desktop.active_workspace().unwrap().room;
+        assert!(grant_file_manager_home(
+            &mut tree,
+            workspace,
+            SYSTEM_FILE_MANAGER
+        ));
+        crate::shell::persist::wait_for_saves();
+        let granted: Vec<_> = tree
+            .desktop
+            .active_workspace()
+            .unwrap()
+            .capabilities
+            .iter()
+            .filter(|cap| cap.subject == crate::shell::state::Subject::app(SYSTEM_FILE_MANAGER))
+            .cloned()
+            .collect();
+        assert!(!granted.is_empty());
+        let published =
+            crate::shell::launcher::action_authority::published_capabilities_for_test(room);
+        for grant in &granted {
+            assert!(
+                published.contains(grant),
+                "the home grant must be published before the launch registers its sandbox"
+            );
+        }
     }
 
     #[test]
