@@ -361,14 +361,19 @@ This gives three deployments without three protocols:
   slot at most every 50 ms (`coedit::POINTER_GAP`, which is also the host's
   pace): a move after a pause at once, a move inside the gap held and
   replaced by newer ones, and the latest written when the gap ends, so the
-  resting position always arrives. Anything but a delta or another
+  resting position always arrives. A held move that has gone stale by then
+  waits up to 15 ms for the producer's next move, when that is due sooner
+  than the staleness it saves, and the fresher move goes in its place; a
+  30 Hz cursor so reaches peers a few milliseconds old rather than half a
+  producer period. Anything but a delta or another
   latest-state presence takes the held pointers ahead of it in the same
   write, so an app's `Left` never overtakes its last pointer. A move the host
   would only have coalesced away no longer costs an upstream packet or the
   acknowledgement it draws. The writer paces whatever session it serves,
   whoever the author is; the frames are unchanged. The host counts its own
   gap from when the previous move was due rather than from when its writer
-  got to it, so moves that already arrive a gap apart are forwarded as they
+  got to it, and a pointer does not wait the 5 ms batching window for
+  company, so moves that already arrive a gap apart are forwarded as they
   arrive and a late write never adds to the next move's wait.
 - Remote actions (v1): versioned JSON `RemoteActionFrame`s (`tilo_actions::remote`).
   A caller follows an invocation with one waiting request at a time —

@@ -13,13 +13,14 @@
 //! - **Pointers at most every [`MOTION_GAP`] (20 Hz) per slot.** Receivers
 //!   glide a peer's pointer over the gap between two samples
 //!   (`ui::presence::POINTER_EASE_MAX` caps it at 100 ms), so 20 Hz moves as
-//!   smoothly as the 30 Hz the shell publishes, for a third fewer frames. The
-//!   first move after a pause goes out within [`BATCH_WINDOW`]. Current
-//!   clients already write each pointer slot at most this often (the session
-//!   writer's pointer pacing in `tilo_relay_session::client`), so this pace
-//!   only bites on older clients and on jitter. The gap is counted from when
-//!   the previous move was due, not from when the writer got to it, so a
-//!   late write does not hold every later move of a paced client longer.
+//!   smoothly as the 30 Hz the shell publishes, for a third fewer frames. A
+//!   move goes as soon as its pace allows, without waiting [`BATCH_WINDOW`]
+//!   for company; whatever is pending rides with it. Current clients already
+//!   write each pointer slot at most this often (the session writer's pointer
+//!   pacing in `tilo_relay_session::client`), so this pace only bites on
+//!   older clients and on jitter. The gap is counted from when the previous
+//!   move was due, not from when the writer got to it, so a late write does
+//!   not hold every later move of a paced client longer.
 //! - **Carets, selections and typing on every change**, after at most
 //!   [`BATCH_WINDOW`] (5 ms), which is what lets a keystroke's `Typing` and
 //!   `Caret` travel as one frame.
@@ -147,12 +148,15 @@ fn due_at(
     } else {
         BATCH_WINDOW
     };
-    let batched = later(pending.since, window);
     if !pending.motion {
-        return batched;
+        return later(pending.since, window);
     }
-    sent.get(key)
-        .map_or(batched, |sent| batched.max(later(*sent, MOTION_GAP)))
+    // A pointer goes as soon as its pace allows: it does not wait the batch
+    // window for company, which would add to every move of a client that
+    // already sends at this pace. What is pending rides with it.
+    sent.get(key).map_or(pending.since, |sent| {
+        pending.since.max(later(*sent, MOTION_GAP))
+    })
 }
 
 /// Whether `pending` presence in slot `key` may go now with something else:
@@ -443,19 +447,24 @@ mod tests {
         let mailbox = PresenceMailbox::default();
         let t0 = Instant::now();
         mailbox.post(ROOM, ALICE, Some(pointer(1)), bytes("move 1"), t0, false);
-        assert_eq!(texts(&mailbox.take(t0 + BATCH_WINDOW, false)), ["move 1"]);
-        // A client paced to the gap: the next move arrives a gap later, falls
-        // due a gap after the first, and the writer gets to it 10 ms late.
+        assert_eq!(
+            mailbox.next_due(),
+            Some(t0),
+            "a pointer waits for no company"
+        );
+        assert_eq!(texts(&mailbox.take(t0, false)), ["move 1"]);
+        // A client paced to the gap: the next move arrives a gap later, is
+        // due as it arrives, and the writer gets to it 10 ms late.
         let t1 = t0 + MOTION_GAP;
         mailbox.post(ROOM, ALICE, Some(pointer(1)), bytes("move 2"), t1, false);
-        assert_eq!(mailbox.next_due(), Some(t1 + BATCH_WINDOW));
-        let late = t1 + BATCH_WINDOW + Duration::from_millis(10);
+        assert_eq!(mailbox.next_due(), Some(t1));
+        let late = t1 + Duration::from_millis(10);
         assert_eq!(texts(&mailbox.take(late, false)), ["move 2"]);
         // The third move, again a gap later, is due as soon as it arrives:
         // the late write is not added to its wait.
         let t2 = t1 + MOTION_GAP;
         mailbox.post(ROOM, ALICE, Some(pointer(1)), bytes("move 3"), t2, false);
-        assert_eq!(mailbox.next_due(), Some(t2 + BATCH_WINDOW));
+        assert_eq!(mailbox.next_due(), Some(t2));
     }
 
     #[test]
@@ -544,7 +553,8 @@ mod tests {
         let mailbox = PresenceMailbox::default();
         let t0 = Instant::now();
         mailbox.post(ROOM, ALICE, Some(pointer(1)), bytes("move"), t0, true);
-        assert_eq!(mailbox.next_due(), Some(t0 + BATCH_WINDOW));
+        // Neither for a delta nor for the batch window: it is due at once.
+        assert_eq!(mailbox.next_due(), Some(t0));
     }
 
     #[test]
