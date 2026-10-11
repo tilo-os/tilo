@@ -1,3 +1,7 @@
+use super::morning::{
+    MORNING_OPEN, MORNING_REMOVE, MORNING_SOURCE, MorningPreferences, MorningSource,
+};
+mod morning_sources;
 mod task_review_view;
 
 // Room activity — everything that has happened to this workspace, by
@@ -196,6 +200,7 @@ enum ActivityFocus {
     Author(Option<String>),
     MorePeople,
     Resume,
+    Morning(String, bool),
     Brief(usize),
     WorkSessionBoundary(WorkSessionBoundary),
     MoreBriefs,
@@ -280,6 +285,7 @@ struct AccessControl {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DetailAction {
+    MorningSource,
     Open,
     Compare,
     Restore,
@@ -292,6 +298,7 @@ enum DetailAction {
 impl DetailAction {
     fn label(self) -> String {
         t(match self {
+            Self::MorningSource => "activity-morning-choose",
             Self::Open => "activity-detail-open",
             Self::Compare => "activity-detail-compare",
             Self::Restore => "activity-detail-restore",
@@ -788,6 +795,9 @@ pub struct RoomActivityPane {
     /// Where the "you left off" card was drawn and what it reopens.
     resume_rect: Rect,
     resume_target: Option<ui::HistoryResourceTarget>,
+    morning_sources: HashMap<u64, MorningPreferences>,
+    morning_workspace: u64,
+    morning_rects: Vec<((String, bool), Rect)>,
     brief_more_advance: usize,
     brief_offset: usize,
     brief_expansion_started: Option<(usize, Instant)>,
@@ -886,6 +896,23 @@ impl RoomActivityPane {
     }
 
     fn detail_action_label(&self, action: DetailAction) -> String {
+        if action == DetailAction::MorningSource {
+            return t(
+                if self
+                    .selection_detail()
+                    .and_then(|detail| detail.resources.first().cloned())
+                    .is_some_and(|target| {
+                        self.chosen_morning_sources()
+                            .iter()
+                            .any(|source| source.matches(&target))
+                    })
+                {
+                    "activity-morning-remove"
+                } else {
+                    "activity-morning-choose"
+                },
+            );
+        }
         if action == DetailAction::Open
             && self.selection_detail().is_some_and(|detail| {
                 detail.resources.first().is_some_and(|resource| {
@@ -995,6 +1022,9 @@ impl RoomActivityPane {
             boundary_rects: Vec::new(),
             resume_rect: Rect::ZERO,
             resume_target: None,
+            morning_sources: HashMap::new(),
+            morning_workspace: 0,
+            morning_rects: Vec::new(),
             brief_more_advance: 0,
             brief_offset: 0,
             expanded_brief: None,
@@ -1062,6 +1092,7 @@ impl RoomActivityPane {
         self.persistent_frontiers = true;
         self.seen_frontiers = self.host.load_frontiers();
         self.departures = self.host.load_departures();
+        self.morning_sources = self.host.load_morning_sources();
     }
 
     /// Tests pin "now" so period windows don't depend on when the suite runs.
@@ -1485,6 +1516,12 @@ impl RoomActivityPane {
             return Vec::new();
         };
         let mut out = Vec::new();
+        if self.selected_morning_source().is_some() {
+            out.push((
+                MORNING_SOURCE,
+                self.detail_action_label(DetailAction::MorningSource),
+            ));
+        }
         if detail.can_compare {
             out.push((HISTORY_COMPARE, t("activity-history-compare")));
             out.push((HISTORY_RESTORE, t("activity-history-restore")));
@@ -1501,6 +1538,33 @@ impl RoomActivityPane {
         tree: &mut impl ActivityTree,
         records: Option<&RecordStore>,
     ) -> RoomActivityOutcome {
+        if let Some(room) = id.strip_prefix(&format!("{MORNING_SOURCE}.")) {
+            if room == self.task_room {
+                self.toggle_morning_selection();
+            }
+            return handled_outcome();
+        }
+        if id == MORNING_SOURCE {
+            self.toggle_morning_selection();
+            return handled_outcome();
+        }
+        if let Some((room, key)) = super::morning::decode_action(id, MORNING_OPEN) {
+            if room != self.task_room {
+                return handled_outcome();
+            }
+            return RoomActivityOutcome {
+                handled: true,
+                open_target: self.morning_target(key),
+                ..Default::default()
+            };
+        }
+        if let Some((room, key)) = super::morning::decode_action(id, MORNING_REMOVE) {
+            if room != self.task_room {
+                return handled_outcome();
+            }
+            self.remove_morning_source(key);
+            return handled_outcome();
+        }
         if id == ACTIVITY_TASKS {
             self.set_view(ActivityView::Tasks);
             return handled_outcome();
@@ -1516,6 +1580,11 @@ impl RoomActivityPane {
             _ => return RoomActivityOutcome::default(),
         };
         self.apply_detail_action(action, tree, records)
+    }
+
+    fn selected_resource_target(&self) -> Option<ui::HistoryResourceTarget> {
+        self.selection_detail()
+            .and_then(|detail| detail.resources.into_iter().next())
     }
 
     pub fn selection_detail(&self) -> Option<HistorySelectionDetail> {
@@ -2188,6 +2257,7 @@ impl RoomActivityPane {
             .active_workspace()
             .map(|workspace| workspace.room.to_string())
             .unwrap_or_default();
+        self.morning_workspace = tree.active.raw();
         let origin = self.refresh_task_review();
         let tree_tasks = tree
             .active_workspace()
@@ -3351,19 +3421,33 @@ impl RoomActivityPane {
                 self.draw_agent_task_detail(scene, transform, tr, theme, bounds, width, &indexed);
                 return;
             }
+            let gap = f64::from(theme.tokens.spacing.s2);
+            let title_style = theme.text(TextRole::Body);
+            let title = tr
+                .clamp_to_lines(&detail.title, &title_style, width, 2)
+                .join("\n");
+            let (_, heading_height) = tr.measure_style(&t("activity-provenance"), None, &style);
+            let title_y =
+                bounds.y0 + f64::from(theme.tokens.spacing.s3) + f64::from(heading_height) + gap;
+            let (_, title_height) = tr.measure_style(&title, Some(width), &title_style);
             tr.draw_style(
                 scene,
-                &detail.title,
+                &title,
                 theme.tokens.colors.text_primary,
-                at(transform, bounds.x0 + 12.0, bounds.y0 + 40.0),
+                at(transform, bounds.x0 + 12.0, title_y),
                 Some(width),
-                &theme.text(TextRole::Body),
+                &title_style,
             );
+            let provenance = tr
+                .clamp_to_lines(&detail_provenance(&detail), &style, width, 4)
+                .join("\n");
+            let provenance_y = title_y + f64::from(title_height) + gap;
+            let (_, provenance_height) = tr.measure_style(&provenance, Some(width), &style);
             tr.draw_style(
                 scene,
-                &detail_provenance(&detail),
+                &provenance,
                 theme.tokens.colors.text_dim,
-                at(transform, bounds.x0 + 12.0, bounds.y0 + 88.0),
+                at(transform, bounds.x0 + 12.0, provenance_y),
                 Some(width),
                 &style,
             );
@@ -3374,7 +3458,7 @@ impl RoomActivityPane {
                 theme,
                 bounds,
                 &detail,
-                bounds.y0 + 170.0,
+                provenance_y + f64::from(provenance_height) + gap,
             );
             self.draw_detail_comparison(
                 scene,
@@ -3567,10 +3651,15 @@ impl RoomActivityPane {
         detail: &HistorySelectionDetail,
         start_y: f64,
     ) -> f64 {
-        let mut x = bounds.x0 + 12.0;
+        let spacing = theme.tokens.spacing;
+        let inset = f64::from(spacing.s3);
+        let gap = f64::from(spacing.s2);
+        let mut row_height = 0.0_f64;
+        let mut x = bounds.x0 + inset;
         let mut y = start_y;
         let compared = self.comparison_attempted;
         for action in [
+            DetailAction::MorningSource,
             DetailAction::Open,
             DetailAction::Compare,
             DetailAction::Restore,
@@ -3580,11 +3669,15 @@ impl RoomActivityPane {
             DetailAction::Merge,
         ] {
             if !self.host.mutations_available()
-                && !matches!(action, DetailAction::Open | DetailAction::Compare)
+                && !matches!(
+                    action,
+                    DetailAction::MorningSource | DetailAction::Open | DetailAction::Compare
+                )
             {
                 continue;
             }
             let enabled = match action {
+                DetailAction::MorningSource => self.selected_morning_source().is_some(),
                 DetailAction::Open => !detail.resources.is_empty(),
                 DetailAction::Compare | DetailAction::Restore => detail.can_compare,
                 DetailAction::Undo => detail.can_undo && self.selected_agent_run().is_none(),
@@ -3596,17 +3689,21 @@ impl RoomActivityPane {
                 continue;
             }
             let label = self.detail_action_label(action);
-            let button_width = f64::from(
-                (tr.measure_style(&label, None, &theme.text(TextRole::Caption))
-                    .0
-                    + 20.0)
-                    .max(60.0),
+            let (label_width, label_height) =
+                tr.measure_style(&label, None, &theme.text(TextRole::Caption));
+            let button_width = (f64::from(label_width) + 2.0 * gap).max(
+                ui::widget::ButtonFace::height(ui::widget::ControlSize::Regular, theme),
             );
-            if x + button_width > bounds.x1 - 12.0 {
-                x = bounds.x0 + 12.0;
-                y += 34.0;
+            let button_height = (f64::from(label_height) + 2.0 * gap).max(
+                ui::widget::ButtonFace::height(ui::widget::ControlSize::Regular, theme),
+            );
+            if x + button_width > bounds.x1 - inset {
+                x = bounds.x0 + inset;
+                y += row_height + gap;
+                row_height = 0.0;
             }
-            let rect = Rect::new(x, y, x + button_width, y + 28.0);
+            row_height = row_height.max(button_height);
+            let rect = Rect::new(x, y, x + button_width, y + button_height);
             let is_active = action == DetailAction::Compare && compared;
             // Control role (HIG §9.1/§9.3): a chip at the Control radius. The
             // one that is "on" (Compare, while a comparison shows) is a lift
@@ -3622,14 +3719,14 @@ impl RoomActivityPane {
                 scene,
                 &label,
                 theme.tokens.colors.text_primary,
-                at(transform, rect.x0 + 8.0, rect.y0 + 8.0),
+                at(transform, rect.x0 + gap, rect.y0 + gap),
                 None,
                 &theme.text(TextRole::Caption),
             );
             self.detail_action_rects.push((action, rect));
-            x += button_width + 6.0;
+            x += button_width + gap;
         }
-        y + 28.0
+        y + row_height
     }
 
     #[allow(
@@ -4053,6 +4150,7 @@ impl RoomActivityPane {
         self.boundary_rects.clear();
         self.brief_more_rect = None;
         self.brief_more_advance = 0;
+        self.morning_rects.clear();
         self.resume_rect = Rect::ZERO;
         self.resume_target = None;
         let mut y = self.sheet.y0 + self.chrome_height() + 8.0;
@@ -4069,6 +4167,7 @@ impl RoomActivityPane {
             y = acknowledge.y1 + 8.0;
         }
         y = self.draw_catch_up_tasks(scene, transform, tr, theme, y);
+        y = self.draw_morning_sources(scene, transform, tr, theme, y);
         if let Some(resume) = local_resume_snapshot(self.timeline.entries(), &self.local_user()) {
             let (_, caption_h) = tr.measure_style("Mg", None, &theme.text(TextRole::Caption));
             let (_, title_h) = tr.measure_style("Mg", None, &theme.text(TextRole::Label));
@@ -5755,6 +5854,10 @@ impl RoomActivityPane {
             self.finish_view(tree.active.raw());
             return Some(handled_outcome());
         }
+        if let Some((key, remove)) = hit_value(&self.morning_rects, point) {
+            self.keyboard_focus = Some(ActivityFocus::Morning(key, remove));
+            return Some(self.activate_focus(tree, None));
+        }
         if self.resume_rect.contains(point)
             && let Some(open_target) = self.resume_target.clone()
         {
@@ -5847,6 +5950,7 @@ impl RoomActivityPane {
     ) -> RoomActivityOutcome {
         let mut outcome = handled_outcome();
         match action {
+            DetailAction::MorningSource => self.toggle_morning_selection(),
             DetailAction::Open => {
                 outcome.open_target = self
                     .selection_detail()
@@ -6168,6 +6272,11 @@ impl RoomActivityPane {
                         .iter()
                         .map(|(view, _)| ActivityFocus::View(*view)),
                 );
+                order.extend(
+                    self.morning_rects
+                        .iter()
+                        .map(|((key, remove), _)| ActivityFocus::Morning(key.clone(), *remove)),
+                );
                 if self.resume_target.is_some() && self.resume_rect.area() > 0.0 {
                     order.push(ActivityFocus::Resume);
                 }
@@ -6284,6 +6393,13 @@ impl RoomActivityPane {
                 .iter()
                 .find_map(|(item, rect)| (item == value).then_some(*rect)),
             ActivityFocus::MorePeople => self.author_more_rect,
+            ActivityFocus::Morning(key, remove) => {
+                self.morning_rects
+                    .iter()
+                    .find_map(|((id, is_remove), rect)| {
+                        (id == key && is_remove == remove).then_some(*rect)
+                    })
+            }
             ActivityFocus::Resume => Some(self.resume_rect),
             ActivityFocus::Brief(value) => self
                 .brief_rects
@@ -6381,6 +6497,9 @@ impl RoomActivityPane {
             ActivityFocus::Period(value) => self.set_period(value),
             ActivityFocus::Author(value) => self.set_author_filter(value),
             ActivityFocus::MorePeople => self.advance_people(),
+            ActivityFocus::Morning(key, remove) => {
+                outcome.open_target = self.activate_morning_source(&key, remove);
+            }
             ActivityFocus::Resume => outcome.open_target.clone_from(&self.resume_target),
             ActivityFocus::Brief(index) => {
                 if self.expanded_brief == Some(index) {
@@ -6410,10 +6529,9 @@ impl RoomActivityPane {
                 self.reinstall_filter();
             }
             ActivityFocus::MoreLenses => self.advance_lenses(),
+            ActivityFocus::Detail(DetailAction::MorningSource) => self.toggle_morning_selection(),
             ActivityFocus::Detail(DetailAction::Open) => {
-                outcome.open_target = self
-                    .selection_detail()
-                    .and_then(|detail| detail.resources.into_iter().next());
+                outcome.open_target = self.selected_resource_target();
             }
             ActivityFocus::Detail(DetailAction::Compare) => {
                 self.comparison_attempted = true;
@@ -6523,6 +6641,12 @@ impl RoomActivityPane {
             ) => Some(value.clone()),
             ActivityFocus::Author(None) => Some(t("a11y-shell-activity-everyone")),
             ActivityFocus::MorePeople => Some(t("a11y-shell-activity-more-people")),
+            ActivityFocus::Morning(key, remove) => Some(if *remove {
+                t("activity-morning-remove")
+            } else {
+                self.morning_target(key)
+                    .map_or_else(|| t("activity-morning-unavailable"), |target| target.label)
+            }),
             ActivityFocus::Resume => self.resume_target.as_ref().map(|target| {
                 t_args(
                     "a11y-shell-activity-resume",
@@ -6632,6 +6756,12 @@ impl RoomActivityPane {
                 false,
                 None,
                 t("a11y-shell-activity-more-people-description"),
+            ),
+            ActivityFocus::Morning(key, _) => control(
+                Role::Button,
+                false,
+                None,
+                self.morning_source_label(self.morning_evidence(key).as_ref()),
             ),
             ActivityFocus::Resume => {
                 let target = self.resume_target.as_ref()?;
@@ -7032,6 +7162,13 @@ impl RoomActivityPane {
                 .iter()
                 .find_map(|(item, rect)| (item == value).then_some(*rect)),
             ActivityFocus::MorePeople => self.author_more_rect,
+            ActivityFocus::Morning(key, remove) => {
+                self.morning_rects
+                    .iter()
+                    .find_map(|((id, is_remove), rect)| {
+                        (id == key && is_remove == remove).then_some(*rect)
+                    })
+            }
             ActivityFocus::Resume => Some(self.resume_rect),
             ActivityFocus::Brief(value) => self
                 .brief_rects

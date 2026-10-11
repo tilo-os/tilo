@@ -1058,3 +1058,12 @@ activity-task-run-executing = Agent is processing this run · last report { $tim
 
 topbar-cpu-reading = CPU { $value }
 topbar-monitor-summary = CPU { $cpu }, RAM { $ram }, temperature { $temperature }
+
+activity-morning-choose = Choose for morning
+activity-morning-remove = Remove morning source
+activity-morning-empty = Morning sources: choose a resource in Explore → Details. Up to eight sources; no sources connected automatically.
+activity-morning-description = Chosen morning sources · links to existing workspace resources. No external refresh is performed.
+activity-morning-unavailable = Source unavailable in this workspace · no current evidence
+activity-morning-source = { $source } · last recorded workspace activity: { $time } · external freshness unknown
+
+activity-morning-open = Open morning source

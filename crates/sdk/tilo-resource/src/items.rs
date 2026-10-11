@@ -243,8 +243,10 @@ pub fn item_resource_id<R: Resource>(field: &str, item: &Id) -> String {
     item_resource_id_in(R::KIND, field, item)
 }
 
-/// [`item_resource_id`] of a resource of the kind `kind`.
-pub(crate) fn item_resource_id_in(kind: &str, field: &str, item: &Id) -> String {
+/// [`item_resource_id`] of an item of a resource of kind `kind`: compiled
+/// once in the shared runtime rather than once per resource type in every
+/// app.
+pub fn item_resource_id_in(kind: &str, field: &str, item: &Id) -> String {
     format!("{kind}/{field}/{item}")
 }
 

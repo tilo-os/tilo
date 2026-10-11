@@ -52,6 +52,14 @@ pub(super) fn delivery_runtime() -> Result<&'static tokio::runtime::Runtime, Str
         .map_err(Clone::clone)
 }
 
+/// Keep overflow launches in the async task, where cancellation and the
+/// delivery deadline remain observable, rather than in the blocking queue.
+/// The host call owns its permit until it actually returns.
+pub(super) fn launch_permits() -> Arc<tokio::sync::Semaphore> {
+    static PERMITS: std::sync::OnceLock<Arc<tokio::sync::Semaphore>> = std::sync::OnceLock::new();
+    Arc::clone(PERMITS.get_or_init(|| Arc::new(tokio::sync::Semaphore::new(LAUNCH_CALLS))))
+}
+
 /// `(app_id, cluster_id, record_id)`: one retained surface.
 type SurfaceKey = (String, String, String);
 
@@ -1458,6 +1466,143 @@ mod tests {
         assert!(
             stream.try_recv().is_err(),
             "an abandoned invocation is not delivered"
+        );
+    }
+
+    type AdmissionAnswer = tilo_actions::remote::Pending<
+        Result<tilo_actions::remote::InvocationReceipt, ActionHostError>,
+    >;
+
+    fn launch_answer(state: &Arc<CapnpBrokerState>, room: &str) -> AdmissionAnswer {
+        let caller = Caller::local_person("owner").in_room(room);
+        let provider = offered_provider(state, &caller, "new-window").expect("offered");
+        state.action_invoke(
+            &caller,
+            None,
+            None,
+            &InvokeRequest {
+                on_behalf_of: None,
+                invocation: tilo_actions::InvocationId::new(),
+                target: RemoteActionTarget {
+                    provider,
+                    address: tilo_actions::ActionAddress::new("files.app", "new-window"),
+                },
+                argument: InvokeArgument::None,
+                context: None,
+                confirmation: None,
+                revision: None,
+                wait_ms: None,
+            },
+        )
+    }
+
+    struct OccupiedLaunchPool {
+        _serial: std::sync::MutexGuard<'static, ()>,
+        release: Arc<(Mutex<bool>, std::sync::Condvar)>,
+        _answers: Vec<AdmissionAnswer>,
+    }
+
+    impl Drop for OccupiedLaunchPool {
+        fn drop(&mut self) {
+            let (released, wake) = &*self.release;
+            *released.lock().expect("release") = true;
+            wake.notify_all();
+        }
+    }
+
+    /// Occupy the production delivery pool with four authorized host calls.
+    /// The guard releases them even when the regression assertion panics.
+    fn occupy_launch_pool() -> OccupiedLaunchPool {
+        static SATURATION: Mutex<()> = Mutex::new(());
+        let serial = SATURATION.lock().expect("saturation fixture");
+        let (state, room) = broker(&workspace());
+        state.launchable.retain(&surface(7, &room));
+        let release = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+        let held = release.clone();
+        let (started, launches) = std::sync::mpsc::channel();
+        state.launchable.replace_launcher_for_test(
+            Arc::new(move |_, _, _, _| {
+                started.send(()).expect("launch started");
+                let (released, wake) = &*held;
+                let guard = released.lock().expect("release");
+                drop(
+                    wake.wait_while(guard, |released| !*released)
+                        .expect("release wait"),
+                );
+                Ok(())
+            }),
+            tilo_test_env::hang_bound(),
+        );
+        let pool = OccupiedLaunchPool {
+            _serial: serial,
+            release,
+            _answers: (0..LAUNCH_CALLS)
+                .map(|_| launch_answer(&state, &room))
+                .collect(),
+        };
+        for _ in 0..LAUNCH_CALLS {
+            tilo_test_env::recv("every launcher worker to enter the host call", &launches);
+        }
+        pool
+    }
+
+    fn drain_launch_queue() {
+        // A following blocking job is a queue drain fence: a cancelled host
+        // call must not execute later when the occupied workers are released.
+        let (done, drained) = std::sync::mpsc::channel();
+        delivery_runtime()
+            .expect("runtime")
+            .spawn_blocking(move || {
+                done.send(()).expect("drained");
+            });
+        tilo_test_env::recv("the launch queue to drain", &drained);
+    }
+
+    #[test]
+    fn queued_launch_stops_before_submission_when_caller_abandons() {
+        let pool = occupy_launch_pool();
+        let (state, room) = broker(&workspace());
+        state.launchable.retain(&surface(7, &room));
+        let (_streams, launches) = app_comes_up_as(&state, 8);
+        let answer = launch_answer(&state, &room);
+        tilo_test_env::wait_until("the queued launch to subscribe", || {
+            state.surface_changes.receiver_count() == 1
+        });
+        drop(answer);
+        tilo_test_env::wait_until(
+            "queued abandonment before a launcher worker is free",
+            || state.surface_changes.receiver_count() == 0,
+        );
+        drop(pool);
+        drain_launch_queue();
+        assert!(
+            launches.lock().expect("launches").is_empty(),
+            "an abandoned queued invocation must never launch the app"
+        );
+    }
+
+    #[test]
+    fn queued_launch_reports_deadline_before_a_launcher_worker_is_free() {
+        let pool = occupy_launch_pool();
+        let (state, room) = broker(&workspace());
+        state.launchable.retain(&surface(7, &room));
+        let (_streams, launches) = app_comes_up_as(&state, 8);
+        *state.launchable.delivery_timeout.lock().expect("timeout") = Duration::from_millis(200);
+        let answer = launch_answer(&state, &room);
+        let result = answer
+            .wait_timeout(tilo_test_env::hang_bound())
+            .ok()
+            .flatten();
+        assert!(
+            matches!(result, Some(Err(ActionHostError::Unavailable { ref reason }))
+            if reason.contains("within 0.2 s")),
+            "the queued invocation must report its delivery deadline before pool release: {result:?}"
+        );
+        drop(pool);
+        drain_launch_queue();
+        assert!(
+            launches.lock().expect("launches").is_empty(),
+            "an expired queued invocation cannot launch the app"
         );
     }
 

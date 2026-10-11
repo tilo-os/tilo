@@ -478,6 +478,9 @@ pub(crate) struct TestHost {
 }
 
 impl ActivityHost for TestHost {
+    fn morning_sources_available(&self) -> bool {
+        true
+    }
     fn local_user(&self) -> String {
         LOCAL_USER.to_string()
     }

@@ -1461,6 +1461,13 @@ impl CapnpBrokerState {
         let address = &request.target.address;
         let timeout = self.launchable.delivery_timeout();
         let deadline = tokio::time::sleep(timeout);
+        let expired = || ActionHostError::Unavailable {
+            reason: format!(
+                "{app_id} was launched but did not offer \"{}\" within {:.1} s",
+                address.action,
+                timeout.as_secs_f32()
+            ),
+        };
         let abandoned = completer.abandoned();
         tokio::pin!(deadline, abandoned);
         // Taken before the first look, so a publication between that look
@@ -1472,6 +1479,9 @@ impl CapnpBrokerState {
             if completer.is_abandoned() {
                 return Err(stopped_waiting());
             }
+            if tokio::time::Instant::now() >= deadline.deadline() {
+                return Err(expired());
+            }
             if let Some(peer_id) =
                 self.ready_publisher(app_id, &room, destination.record.as_deref(), address)
             {
@@ -1480,7 +1490,22 @@ impl CapnpBrokerState {
                 return self.start_for(caller, None, None, origin, &delivered);
             }
             if !launched {
-                // Re-read the launch policy immediately before the actual host call.
+                let permit = tokio::select! {
+                    biased;
+                    () = &mut abandoned => return Err(stopped_waiting()),
+                    () = &mut deadline => return Err(expired()),
+                    seen = changes.changed() => {
+                        if seen.is_err() {
+                            return Err(ActionHostError::Unavailable { reason: "the broker stopped".into() });
+                        }
+                        continue;
+                    }
+                    permit = super::launchable::launch_permits().acquire_owned() => {
+                        permit.map_err(|_| ActionHostError::Unavailable { reason: "the launch queue stopped".into() })?
+                    }
+                };
+                // Re-read custody and launch policy after the queue wait.
+                self.check_launch_origin(caller, origin, &room)?;
                 let current = self.admit_launchable(caller, request)?;
                 if current.workspace.room != destination.workspace.room
                     || current.app_id != *app_id
@@ -1496,14 +1521,27 @@ impl CapnpBrokerState {
                     .record
                     .clone()
                     .filter(|record| !record.is_empty());
-                tokio::task::spawn_blocking(move || {
+                let mut launch = tokio::task::spawn_blocking(move || {
+                    let _permit = permit;
                     state.launch_retained(&app, &current.workspace, record.as_deref(), &place)
-                })
-                .await
-                .unwrap_or_else(|error| Err(error.to_string()))
-                .map_err(|reason| ActionHostError::Refused {
-                    reason: format!("{app_id} could not be launched: {reason}"),
-                })?;
+                });
+                let launched_result = tokio::select! {
+                    biased;
+                    () = &mut abandoned => {
+                        launch.abort();
+                        return Err(stopped_waiting());
+                    }
+                    () = &mut deadline => {
+                        launch.abort();
+                        return Err(expired());
+                    }
+                    result = &mut launch => result,
+                };
+                launched_result
+                    .unwrap_or_else(|error| Err(error.to_string()))
+                    .map_err(|reason| ActionHostError::Refused {
+                        reason: format!("{app_id} could not be launched: {reason}"),
+                    })?;
                 launched = true;
                 continue;
             }
@@ -1513,15 +1551,7 @@ impl CapnpBrokerState {
                         reason: "the broker stopped".into(),
                     });
                 },
-                () = &mut deadline => {
-                    return Err(ActionHostError::Unavailable {
-                        reason: format!(
-                            "{app_id} was launched but did not offer \"{}\" within {:.1} s",
-                            address.action,
-                            timeout.as_secs_f32()
-                        ),
-                    });
-                }
+                () = &mut deadline => return Err(expired()),
                 () = &mut abandoned => return Err(stopped_waiting()),
             }
         }
