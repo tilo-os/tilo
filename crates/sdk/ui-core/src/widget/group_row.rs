@@ -3145,7 +3145,11 @@ impl Widget for GroupRow {
             group.set_reduce_motion(theme.reduce_motion);
             let lane = lane_of.get(i).copied().unwrap_or(0);
             let dest_fits = snap_lane.get(lane).copied().unwrap_or(false);
-            if dest_fits || group.width_target_is_stale() {
+            if group.is_closing() && !theme.reduce_motion {
+                // A closing slot owns its width spring even when its destination
+                // fits the viewport. Snapping to zero would remove the animation.
+                group.step_width_spring();
+            } else if dest_fits || group.width_target_is_stale() {
                 group.snap_width_spring();
             } else {
                 group.step_width_spring();

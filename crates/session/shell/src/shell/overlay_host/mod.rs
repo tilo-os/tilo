@@ -4124,6 +4124,9 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
+        let closing_visual = self
+            .desktop_surface_mut()
+            .is_some_and(|surface| surface.close_animation_in_flight());
         let (desktop, failures) = {
             let st = chrome.borrow();
             let tree = st.tree();
@@ -4143,7 +4146,7 @@ impl ShellOverlayHost {
                 }
                 Some(cur)
                     if cur == active_raw
-                        && self.content_built_empty == Some(active_empty)
+                        && (self.content_built_empty == Some(active_empty) || closing_visual)
                         && self.rows_cover_active_strips(&tree) =>
                 {
                     return false;
@@ -4794,7 +4797,10 @@ impl ShellOverlayHost {
         chrome.borrow_mut().retry_new_tab_records();
         self.place_new_groups();
         let current_rev = chrome.borrow().revision;
-        if current_rev == self.last_chrome_revision {
+        let closing_visuals = self
+            .desktop_surface_mut()
+            .is_some_and(|surface| surface.has_closing_visuals());
+        if current_rev == self.last_chrome_revision && !closing_visuals {
             return false;
         }
         self.last_chrome_revision = current_rev;
@@ -8275,6 +8281,9 @@ impl ShellOverlayHost {
             // accessor.
             let row: &GroupRow = unsafe { &*ptr };
             for (idx, wg) in row.groups.iter().enumerate() {
+                if wg.is_closing() {
+                    continue;
+                }
                 live_active.insert(wg.id, wg.active_tab_id());
                 if !tree_ids.contains(&wg.id) {
                     writes.push((strip_id, idx, build_state_group_from_widget(wg)));
