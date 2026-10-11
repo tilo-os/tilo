@@ -131,8 +131,44 @@ impl SessionLifetime {
     /// # Errors
     /// Returns the descriptor duplication error.
     #[cfg(unix)]
-    pub fn clone_for_reader(&self) -> std::io::Result<std::os::unix::net::UnixStream> {
-        self.socket.try_clone()
+    pub fn clone_for_reader(&self) -> std::io::Result<ReaderLifetime> {
+        self.socket.try_clone().map(|socket| ReaderLifetime { socket })
+    }
+}
+
+/// A reader's duplicate of a [`SessionLifetime`] connection; it only observes
+/// whether the peer still holds the session open.
+#[cfg(unix)]
+pub struct ReaderLifetime {
+    socket: std::os::unix::net::UnixStream,
+}
+
+#[cfg(unix)]
+impl ReaderLifetime {
+    /// Whether the peer still holds the connection open. The probe peeks
+    /// without blocking and without changing the descriptor's flags, which it
+    /// shares with the owning [`SessionLifetime`].
+    #[must_use]
+    pub fn is_open(&self) -> bool {
+        use std::os::fd::AsRawFd as _;
+        let mut byte = 0u8;
+        // SAFETY: `byte` is valid writable storage for the one byte requested
+        // and the descriptor stays open for the duration of the call.
+        let received = unsafe {
+            libc::recv(
+                self.socket.as_raw_fd(),
+                (&raw mut byte).cast::<libc::c_void>(),
+                1,
+                libc::MSG_PEEK | libc::MSG_DONTWAIT,
+            )
+        };
+        if received >= 0 {
+            return received > 0;
+        }
+        matches!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::EAGAIN | libc::EINTR)
+        )
     }
 }
 
@@ -150,6 +186,17 @@ mod tests {
     use std::io::{Read, Write};
     use std::os::unix::net::UnixStream;
     use std::time::Duration;
+
+    #[test]
+    fn reader_lifetime_sees_the_peer_close_its_end() {
+        let (ours, peer) = UnixStream::pair().expect("socket pair");
+        let reader = SessionLifetime::new(ours)
+            .clone_for_reader()
+            .expect("reader duplicate");
+        assert!(reader.is_open());
+        peer.shutdown(std::net::Shutdown::Both).expect("peer closes");
+        assert!(!reader.is_open());
+    }
 
     #[test]
     fn cancellation_before_connection_registration_prevents_a_request() {

@@ -806,7 +806,7 @@ impl FilePicker {
                     name,
                     path,
                     is_dir,
-                    size: meta.as_ref().map_or(0, std::fs::Metadata::len),
+                    size: meta.as_ref().map_or(0, |m| m.len()),
                     modified: meta
                         .and_then(|m| m.modified().ok())
                         .map(|t| chrono::DateTime::<chrono::Utc>::from(t).timestamp()),
