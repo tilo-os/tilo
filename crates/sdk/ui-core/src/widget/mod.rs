@@ -3208,14 +3208,10 @@ pub mod conflict_banner;
 pub mod conflict_picker;
 pub mod merge_strategy;
 
-// Threshold-identity invite ceremony plus a QR widget; state machine entry
-// point is `identity_flow/mod.rs`.
-pub mod identity_flow;
 pub mod qr;
 pub mod resource_actions;
 pub use conflict_banner::ConflictBanner;
 pub use conflict_picker::{ConflictPicker, PickerOutcome};
-pub use identity_flow::{IdentityFlow, IdentityFlowScreen, ScreenOutcome};
 pub use merge_strategy::{
     Alternative, ConcurrentOp, ConflictKind, ConflictResolver, MergeStrategy, surface_banner,
 };
