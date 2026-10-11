@@ -1216,7 +1216,12 @@ impl Widget for ToastStack {
         Some(last + soonest)
     }
 
-    fn adjust_layout_style(&mut self, taffy: &mut TaffyTree<()>, node: NodeId) -> bool {
+    fn adjust_layout_style(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        node: NodeId,
+        _text: &mut crate::text_render::TextRenderer,
+    ) -> bool {
         let (w, h) = self.stack_size();
         let Ok(current) = taffy.style(node) else {
             return false;

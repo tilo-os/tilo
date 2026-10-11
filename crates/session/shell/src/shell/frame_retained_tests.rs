@@ -2035,6 +2035,19 @@ fn a_strip_pan_at_150_percent_composited_from_layers_matches_a_full_render() {
     });
 }
 
+/// A 1600×900 panel at 125 %: the desktop is laid out at 1280×720 and a
+/// device pixel is four fifths of a layout pixel.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_strip_pan_at_125_percent_composited_from_layers_matches_a_full_render() {
+    assert_pan_composites_like_full_renders(PanDesktop {
+        name: "125 %",
+        panel: (1600, 900),
+        scale: 1.25,
+        strips: 1,
+    });
+}
+
 /// A 1920×1080 panel at 200 % (laid out at 960×540): the output the
 /// tolerance is measured on, as at 150 %.
 #[cfg(target_os = "linux")]
@@ -2058,6 +2071,19 @@ fn a_pan_over_two_strips_composited_from_layers_matches_a_full_render() {
         name: "two strips",
         panel: (1280, 720),
         scale: 1.0,
+        strips: 2,
+    });
+}
+
+/// Two strips on a 1920×1080 panel at 150 %: the wheel and the strips
+/// step by a device pixel, two thirds of a layout pixel.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_pan_over_two_strips_at_150_percent_composited_from_layers_matches_a_full_render() {
+    assert_pan_composites_like_full_renders(PanDesktop {
+        name: "two strips at 150 %",
+        panel: (1920, 1080),
+        scale: 1.5,
         strips: 2,
     });
 }
@@ -2090,28 +2116,20 @@ fn assert_rests_in_screen_space(frame: &mut FrameBuilder, name: &str) {
     );
 }
 
-/// A layered pan steps by the fewest layout pixels that are whole device
-/// pixels.
+/// A layered pan steps by one device pixel, in layout pixels.
 #[test]
-fn layered_pans_step_by_whole_layout_and_device_pixels() {
+fn layered_pans_step_by_one_device_pixel() {
     assert_eq!(pan_step(1.0), Some(1.0));
-    assert_eq!(pan_step(2.0), Some(1.0));
-    assert_eq!(pan_step(3.0), Some(1.0));
-    assert_eq!(pan_step(1.5), Some(2.0));
-    assert_eq!(pan_step(2560.0 / 1920.0), Some(3.0));
-    assert_eq!(pan_step(1.25), Some(4.0));
-    assert_eq!(pan_step(1.75), Some(4.0));
-    assert_eq!(
-        pan_step(1.1),
-        None,
-        "past eight layout pixels pans stay exact"
-    );
+    assert_eq!(pan_step(2.0), Some(0.5));
+    assert_eq!(pan_step(1.5), Some(1.0 / 1.5));
+    assert_eq!(pan_step(1.25), Some(0.8));
+    assert_eq!(pan_step(0.0), None);
     assert_eq!(pan_step(f64::NAN), None);
 }
 
-/// On a 150 % panel the presenter gets pans on whole device pixels that are
-/// whole layout pixels too: the drawn pan is a multiple of two layout pixels
-/// (three device pixels), each strip's destination is its pan rect magnified
+/// On a 150 % panel the presenter gets pans on whole device pixels: the
+/// drawn pan is a multiple of two thirds of a layout pixel, each strip's
+/// destination is its pan rect magnified
 /// and rounded out to whole pixels, and its pan is the canvas shift in
 /// device pixels.
 #[cfg(target_os = "linux")]
@@ -2141,10 +2159,10 @@ fn a_scaled_display_gets_strip_pans_on_device_pixels() {
         frame.relayout();
         let painted = frame.paint_with_damage();
         let (id, scroll, max_scroll) = frame.host().strip_scroll_offsets()[0];
-        assert_eq!(
-            scroll % 2.0,
-            0.0,
-            "step {step}: the drawn pan {scroll} is a whole number of three-pixel steps"
+        let device = scroll * desktop.scale;
+        assert!(
+            (device - device.round()).abs() < 1e-5,
+            "step {step}: the drawn pan {scroll} is {device} device pixels"
         );
         let cache = painted
             .cache
@@ -2884,5 +2902,45 @@ fn typing_in_notes_repaints_what_changed_not_the_tile() {
             after.len() > before.len() && after.contains("fox jumps"),
             "{label}: the keys reached the note's text: {before:?} -> {after:?}"
         );
+    }
+}
+
+/// Moving focus to the other strip changes no geometry: the old and new
+/// focused windows' edges, the strip ribbon and the strip rail. The frame
+/// repaints those, not the stretch of desktop between the ribbon and the
+/// rail, and shows what a dense render shows, in every theme.
+#[cfg(target_os = "linux")]
+#[test]
+fn moving_to_another_strip_repaints_the_focus_and_the_strip_chrome() {
+    for (name, theme) in THEMES {
+        let mut clock = tilo_test_env::ScopedEnv::new();
+        clock.set("TILO_CLOCK", "09:41");
+        let mut frame = PopulatedShellFixture::with_tree(
+            (NATIVE_WIDTH, NATIVE_HEIGHT),
+            theme().with_reduce_motion(true),
+            two_strip_tree(),
+        );
+        for _ in 0..8 {
+            frame.relayout();
+            let _ = frame.paint_with_damage();
+        }
+        // The six Notes windows' startup writes, acknowledged before the
+        // move: Saving turning Saved is not what the move repaints.
+        acknowledge_notes_saves_of(&mut frame, 6);
+        frame.relayout();
+        let _ = frame.paint_with_damage();
+        for (direction, way) in [(1, "down"), (-1, "up")] {
+            let label = format!("moving {way} a strip, {name}");
+            // Two windows' edges (each about 4 % of a 4K output in its
+            // 16-pixel tiles), the ribbon and the rail; the whole stretch
+            // between the ribbon and the rail was another 26 %.
+            let damage = assert_change_repaints_under(&mut frame, &label, 12, |frame| {
+                let mut moved = false;
+                frame.with_chrome(|chrome| moved = chrome.switch_strip(direction));
+                assert!(moved, "{label}: the desktop has another strip to move to");
+                frame.relayout();
+            });
+            eprintln!("{label}: damage {damage:?}");
+        }
     }
 }

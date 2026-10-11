@@ -18,6 +18,8 @@
 mod admin;
 mod admissions;
 #[cfg(feature = "agents")]
+mod agent_members;
+#[cfg(feature = "agents")]
 mod applications;
 mod collaboration;
 mod pages;
@@ -559,12 +561,11 @@ impl Rooms {
     ///
     /// Returns why the room could not be created, persisted or bound.
     pub async fn create(&self, name: &str) -> Result<RoomSummary, String> {
-        let host = &self.inner.host;
         let room = GovernedRoom::create(
             &self.inner.dir,
             name,
-            &host.cert,
-            &host.key,
+            &self.inner.host.cert,
+            &self.inner.host.key,
             SystemTime::now(),
         )?;
         self.bind(&room).await?;
@@ -595,6 +596,20 @@ impl Rooms {
             summaries.push(room.lock().await.summary());
         }
         summaries
+    }
+
+    /// The delegated agents on `room`'s roster, acting or not now.
+    ///
+    /// # Errors
+    ///
+    /// Returns why the room's roster could not be read.
+    pub async fn agents(
+        &self,
+        room: &str,
+    ) -> Result<Vec<tilo_peer_state::GovernedAgent>, CollaborationError> {
+        let room = self.room(room).await?;
+        let agents = room.lock().await.peer().governed_agents(SystemTime::now());
+        agents.map_err(CollaborationError::new)
     }
 
     /// The device that governs every room here: this relay's own.

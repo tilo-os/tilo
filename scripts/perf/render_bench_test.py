@@ -81,6 +81,7 @@ class Timing(unittest.TestCase):
         self.assertEqual((pan["render.shell.pan_pixels.4k"].unit, pan["render.shell.pan_pixels.4k"].n),
                          ("pixels", 3))
         self.assertEqual(pan["render.shell.pan_us.4k"].p50, 4000)
+        self.assertEqual(pan["render.shell.strip_move_pixels.4k_s150"].unit, "pixels")
         self.assertTrue(pan["render.shell.pan_us.4k"].meta["adapter"].startswith("llvmpipe"))
 
     def test_a_failed_verification_records_nothing(self):

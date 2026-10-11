@@ -211,7 +211,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// open it.
     pub fn person<P: Resource>(&mut self) -> Option<super::PersonRecord<P>> {
         self.harness()
-            .with_widget_mut(|root: &mut ResourceRoot<A::Resource>| root.storage.person::<P>())
+            .with_widget_mut(|root: &mut ResourceRoot| root.storage.person::<P>())
             .flatten()
     }
 
@@ -220,9 +220,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         &mut self,
     ) -> Option<super::PersonRecord<P>> {
         self.harness()
-            .with_widget_mut(|root: &mut ResourceRoot<A::Resource>| {
-                root.storage.shared_person::<P>()
-            })
+            .with_widget_mut(|root: &mut ResourceRoot| root.storage.shared_person::<P>())
             .flatten()
     }
 
@@ -563,7 +561,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         let arguments: Vec<String> = arguments.iter().map(|&argument| argument.into()).collect();
         let outcome = self
             .harness()
-            .with_widget_mut(|root: &mut ResourceRoot<A::Resource>| root.run.open_here(&arguments))
+            .with_widget_mut(|root: &mut ResourceRoot| root.run.open_here(&arguments))
             .ok_or_else(|| format!("{} is not hosted here", A::TITLE))??;
         self.harness().relayout();
         outcome
@@ -592,7 +590,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// Returns an error if the framework root is absent.
     pub fn take_save_retry(&mut self) -> Result<bool, String> {
         self.harness()
-            .with_widget_mut(|root: &mut super::root::ResourceRoot<A::Resource>| {
+            .with_widget_mut(|root: &mut super::root::ResourceRoot| {
                 ui_core::widget::AppWidget::take_save_retry(root)
             })
             .ok_or_else(|| "the framework root is not mounted".to_owned())
@@ -651,7 +649,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
             widget.children_mut().into_iter().find_map(find::<S>)
         }
         self.harness()
-            .with_widget_mut(|root: &mut ResourceRoot<A::Resource>| {
+            .with_widget_mut(|root: &mut ResourceRoot| {
                 find::<S>(ui_core::widget::Decorator::inner_mut(root)).map(visit)
             })
             .flatten()
@@ -1008,7 +1006,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// `None` when the view has no such widget.
     pub fn with_widget<T: 'static, O>(&mut self, visit: impl FnOnce(&mut T) -> O) -> Option<O> {
         self.harness()
-            .with_widget_mut(|root: &mut super::root::ResourceRoot<A::Resource>| {
+            .with_widget_mut(|root: &mut super::root::ResourceRoot| {
                 find_mut::<T>(root.content.as_mut()).map(visit)
             })
             .flatten()
@@ -1273,7 +1271,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
             .read(&self.checkout().id, |doc| doc.clone().fork_at(heads))
             .ok_or("the record is not open")?
             .map_err(|error| error.to_string())?;
-        super::preview::render_past::<A>(past, A::shot_viewport(None))
+        super::preview::drawing::render_past::<A>(past, A::shot_viewport(None))
     }
 
     /// A collaborator's edit arriving: `edit` writes on their own replica of
@@ -1308,7 +1306,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// app's view is not an `S`.
     pub fn surface<S: 'static, O>(&mut self, visit: impl FnOnce(&mut S) -> O) -> Option<O> {
         self.harness()
-            .with_widget_mut(|root: &mut ResourceRoot<A::Resource>| {
+            .with_widget_mut(|root: &mut ResourceRoot| {
                 root.content
                     .as_any_mut()
                     .and_then(|any| any.downcast_mut::<S>())
@@ -1344,14 +1342,14 @@ pub fn with_surface<A: ResourceApp, S: 'static, T>(
     visit: impl FnOnce(&mut S) -> T,
 ) -> Option<T> {
     harness
-        .with_widget_mut(|root: &mut ResourceRoot<A::Resource>| surface_of::<A, S>(root).map(visit))
+        .with_widget_mut(|root: &mut ResourceRoot| surface_of::<A, S>(root).map(visit))
         .flatten()
 }
 
 /// The custom surface of type `S` that `A`'s view hosts in `harness`,
 /// without running a frame (see [`with_surface`]).
 pub fn surface_in<A: ResourceApp, S: 'static>(harness: &mut FrameHarness) -> Option<&mut S> {
-    surface_of::<A, S>(harness.widget_mut::<ResourceRoot<A::Resource>>()?)
+    surface_of::<A, S>(harness.widget_mut::<ResourceRoot>()?)
 }
 
 /// The custom surface of type `S` that `A`'s view hosts, when `widget` is
@@ -1360,14 +1358,12 @@ pub fn surface_in<A: ResourceApp, S: 'static>(harness: &mut FrameHarness) -> Opt
 pub fn surface_in_root<A: ResourceApp, S: 'static>(
     widget: &mut dyn ui_core::widget::Widget,
 ) -> Option<&mut S> {
-    surface_of::<A, S>(
-        widget
-            .as_any_mut()?
-            .downcast_mut::<ResourceRoot<A::Resource>>()?,
-    )
+    surface_of::<A, S>(widget.as_any_mut()?.downcast_mut::<ResourceRoot>()?)
 }
 
-fn surface_of<A: ResourceApp, S: 'static>(root: &mut ResourceRoot<A::Resource>) -> Option<&mut S> {
+fn surface_of<A: ResourceApp, S: 'static>(root: &mut ResourceRoot) -> Option<&mut S> {
+    // A root of another app's resource does not host `A`'s surfaces.
+    root.typed::<A::Resource>()?;
     root.content
         .as_mut()
         .as_any_mut()
@@ -1469,8 +1465,8 @@ pub fn resolve<R: Resource>(
     doc: &mut tilo_resource::Doc,
 ) -> Result<Vec<Vec<R::Action>>, String> {
     let mut applied = Vec::new();
-    while let Some((invocation, _)) = dispatcher.take_attributed() {
-        if invocation.address.resource != dispatcher.resource_id() {
+    while let Some((invocation, _)) = dispatcher.core().take_attributed() {
+        if invocation.address.resource != dispatcher.core().resource_id() {
             return Err(format!(
                 "`{}` on `{}` is not an action of {}",
                 invocation.address.action,
@@ -1497,7 +1493,7 @@ pub fn resolve<R: Resource>(
             }
         }
         match refused {
-            Some(reason) => dispatcher.refuse(&invocation.address.action, reason),
+            Some(reason) => dispatcher.core().refuse(&invocation.address.action, reason),
             None => applied.push(actions),
         }
     }

@@ -1727,7 +1727,7 @@ impl Inner {
             .find_map(|entry| entry.handler.poll(invocation, cancel))
     }
 
-    /// [`Effects::drain_projections`], `state` being the resource's state.
+    /// [`EffectsCore::drain_projections`], `state` being the resource's state.
     fn drain_projections(&mut self, state: &dyn Any, revision: u64) {
         if self.drains.is_empty() {
             return;
@@ -1881,30 +1881,10 @@ impl<R: Resource> Effects<R> {
         }
     }
 
-    /// The operation types of every published vocabulary.
-    pub(crate) fn operations(&self) -> Vec<&'static str> {
-        self.inner.borrow_mut().operations()
-    }
-
-    /// Every published effect, as callers see it now.
-    pub(crate) fn specs(&self) -> Vec<ActionSpec> {
-        self.inner.borrow_mut().specs()
-    }
-
-    /// Answer `op` with the view handler of its vocabulary.
-    pub(crate) fn start(
-        &self,
-        op: &ResourceOperation<'_>,
-    ) -> Result<Option<ResourceOperationStart>, String> {
-        self.inner.borrow_mut().start(op)
-    }
-
-    pub(crate) fn poll(&self, invocation: InvocationId, cancel: bool) -> Option<InvocationUpdate> {
-        self.inner.borrow_mut().poll(invocation, cancel)
-    }
-
-    pub(crate) fn has_causal_drains(&self) -> bool {
-        self.inner.borrow().causal.registered()
+    /// What the root keeps of these effects: everything that does not
+    /// depend on the resource type.
+    pub(crate) fn core(&self) -> EffectsCore {
+        EffectsCore(Rc::clone(&self.inner))
     }
 
     pub(crate) fn start_document_effects(
@@ -1931,11 +1911,45 @@ impl<R: Resource> Effects<R> {
                 .register(alive, env, pending, run);
         }
     }
+}
+
+/// The part of [`Effects`] the root keeps, which does not depend on the
+/// resource type: the published vocabularies, their handlers and the
+/// projection drains, compiled once in the shared runtime.
+#[derive(Clone)]
+pub(crate) struct EffectsCore(Rc<RefCell<Inner>>);
+
+impl EffectsCore {
+    /// The operation types of every published vocabulary.
+    pub(crate) fn operations(&self) -> Vec<&'static str> {
+        self.0.borrow_mut().operations()
+    }
+
+    /// Every published effect, as callers see it now.
+    pub(crate) fn specs(&self) -> Vec<ActionSpec> {
+        self.0.borrow_mut().specs()
+    }
+
+    /// Answer `op` with the view handler of its vocabulary.
+    pub(crate) fn start(
+        &self,
+        op: &ResourceOperation<'_>,
+    ) -> Result<Option<ResourceOperationStart>, String> {
+        self.0.borrow_mut().start(op)
+    }
+
+    pub(crate) fn poll(&self, invocation: InvocationId, cancel: bool) -> Option<InvocationUpdate> {
+        self.0.borrow_mut().poll(invocation, cancel)
+    }
+
+    pub(crate) fn has_causal_drains(&self) -> bool {
+        self.0.borrow().causal.registered()
+    }
 
     /// Settle finished projection jobs, then start what the document at
-    /// `revision` lists and is not running yet.
-    pub(crate) fn drain_projections(&self, state: &R::State, revision: u64) {
-        self.inner.borrow_mut().drain_projections(state, revision);
+    /// `revision` (`state`, the resource's) lists and is not running yet.
+    pub(crate) fn drain_projections(&self, state: &dyn Any, revision: u64) {
+        self.0.borrow_mut().drain_projections(state, revision);
     }
 }
 
@@ -2016,7 +2030,7 @@ mod tests {
             std::thread::yield_now();
         }
         dispatch.effect(&Work::Ping);
-        let continues = std::iter::from_fn(|| dispatch.take_attributed())
+        let continues = std::iter::from_fn(|| dispatch.core().take_attributed())
             .map(|(_, on_behalf_of)| on_behalf_of)
             .collect::<Vec<_>>();
         assert_eq!(

@@ -209,7 +209,7 @@ impl Widget for ShortcutRecorder {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    fn adjust_layout_with_measure(
+    fn adjust_layout_style(
         &mut self,
         tree: &mut TaffyTree<()>,
         node: NodeId,

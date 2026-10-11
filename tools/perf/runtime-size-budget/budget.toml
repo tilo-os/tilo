@@ -71,5 +71,5 @@ symbol_relocations = 9344
 [runtime.aarch64]
 bytes = 156696576
 relocation_bytes = 327680
-relocated_bytes = 5832704
+relocated_bytes = 5767168
 symbol_relocations = 9344

@@ -691,12 +691,12 @@ pub trait AgentHostLink: Send + Sync {
         done: ApprovalDone,
     ) -> Result<String, String>;
 
-    /// Admit the agent device of `delegation` to its rooms.
+    /// Admit the agent device `cert` of `delegation` to its rooms.
     ///
     /// # Errors
     ///
     /// Returns why the host refused the delegation.
-    fn register(&self, delegation: &AgentDelegation) -> Result<(), String>;
+    fn register(&self, cert: &DeviceCert, delegation: &AgentDelegation) -> Result<(), String>;
 
     /// Refuse the agent device from now on.
     fn withdraw(&self, agent_device_public_key: [u8; 32]);
@@ -972,7 +972,7 @@ impl AgentSupervisor {
         };
         match outcome {
             Ok((cert, delegation)) => {
-                let registered = link.map_or(Ok(()), |link| link.register(&delegation));
+                let registered = link.map_or(Ok(()), |link| link.register(&cert, &delegation));
                 match registered {
                     Ok(()) => {
                         grant.proposal.scope = delegation.scope.clone();
@@ -1205,10 +1205,9 @@ impl AgentSupervisor {
                             grant.settle(GrantState::Expired, "the grant expired");
                         }
                         Some(identity) => {
-                            match link
-                                .as_ref()
-                                .map_or(Ok(()), |link| link.register(&identity.delegation))
-                            {
+                            match link.as_ref().map_or(Ok(()), |link| {
+                                link.register(&identity.cert, &identity.delegation)
+                            }) {
                                 Ok(()) => grant.identity = Some(identity),
                                 Err(reason) => grant.settle(GrantState::Denied, &reason),
                             }

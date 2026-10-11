@@ -954,12 +954,6 @@ impl ContextMenu {
         self.hovered
     }
 
-    /// An unchanged opening pointer was replayed by the host. Keep its
-    /// hit-testing position without replacing the menu's keyboard focus.
-    pub(crate) fn remember_pointer(&mut self, point: Point) {
-        self.last_cursor = point;
-    }
-
     fn row_height(&self) -> f64 {
         self.row_height
     }
@@ -1882,13 +1876,6 @@ impl crate::widget::Decorator for MenuButton {
 
     // A host reaches its menu button in a tree it does not own (a shell
     // header) to refresh the rows or open it from a stage hook.
-    fn as_any(&self) -> Option<&dyn std::any::Any> {
-        Some(self)
-    }
-
-    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
-        Some(self)
-    }
 
     fn modal_capture(&self) -> Option<Rect> {
         self.menu.modal_capture()
@@ -2299,6 +2286,34 @@ mod tests {
         hover_tracks_cursor_row();
         touch_release_activates_once_and_keeps_the_capture();
         modal_capture_when_open();
+    }
+
+    /// Every widget that opens a menu at the pointer shares this: the
+    /// host's replay of the still pointer after a rebuild is not a hover,
+    /// so the keyboard keeps its row; the pointer's first real move takes
+    /// hover from there.
+    #[test]
+    fn a_still_pointer_replayed_where_the_menu_opened_keeps_the_keyboard_row() {
+        let (mut m, fired) = open_menu();
+        dispatch(&mut m, &named_key(NamedKey::ArrowDown));
+        dispatch(&mut m, &named_key(NamedKey::ArrowDown));
+        assert_eq!(m.hovered(), Some(2));
+        dispatch(&mut m, &cursor_at(Point::new(100.0, 100.0)));
+        assert_eq!(
+            m.hovered(),
+            Some(2),
+            "the replayed pointer where the menu opened leaves the keyboard row"
+        );
+        let first = m.item_rect(0).expect("first action row").center();
+        dispatch(&mut m, &cursor_at(first));
+        assert_eq!(
+            m.hovered(),
+            Some(0),
+            "hover follows the pointer once it moves"
+        );
+        dispatch(&mut m, &named_key(NamedKey::Enter));
+        assert_eq!(fired.load(Ordering::SeqCst), 1);
+        assert_eq!(m.take_selection(), Some(0));
     }
 
     #[test]

@@ -1108,7 +1108,7 @@ impl<C: Widget + 'static> Widget for Popover<C> {
         }
     }
 
-    fn adjust_layout_with_measure(
+    fn adjust_layout_style(
         &mut self,
         taffy: &mut TaffyTree<()>,
         node: NodeId,

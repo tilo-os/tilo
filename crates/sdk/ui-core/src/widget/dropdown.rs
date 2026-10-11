@@ -1329,7 +1329,7 @@ impl Widget for Dropdown {
         // overlay pass, so it doesn't reserve layout space.
         //
         // The control is as wide as its widest option (measured in
-        // `adjust_layout_with_measure`), or the row's width with `fill`. In
+        // `adjust_layout_style`), or the row's width with `fill`. In
         // both cases it is the item that gives when the row is short of
         // room, like `TextInput` and unlike fixed-size leaves such as
         // `Toggle`: with `flex_shrink: 0` a dropdown claimed the whole row
@@ -1417,7 +1417,7 @@ impl Widget for Dropdown {
         }
     }
 
-    fn adjust_layout_with_measure(
+    fn adjust_layout_style(
         &mut self,
         tree: &mut TaffyTree<()>,
         node: NodeId,
