@@ -24,14 +24,8 @@ use crate::app::SnippetsApp;
 use crate::doc::SnippetsDoc;
 use crate::model::Snippet;
 
-/// Snippets' Fluent catalogs, source locale first.
-pub const LOCALES: &[(&str, &str)] = &[
-    ("en-US", include_str!("../locales/en-US.ftl")),
-    ("de-DE", include_str!("../locales/de-DE.ftl")),
-];
-
-static CATALOG: EmbeddedCatalog =
-    EmbeddedCatalog::new("en-US", LOCALES, "snippets-body-placeholder").with_system_locale();
+// Snippets' Fluent catalogs, source locale first.
+ui::embedded_catalog!(pub(crate) static CATALOG, "snippets-library", ["en-US", "de-DE"]);
 
 /// The snippets library resource.
 pub struct Snippets;
