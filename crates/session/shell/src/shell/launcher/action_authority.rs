@@ -338,7 +338,10 @@ impl Lease {
             ));
         }
         let mut published = lock(accepted);
-        if !sandbox.authorized(&published) {
+        if let Err(reason) = sandbox.authorization_status(&published) {
+            // The reason is a static category: no path, peer or grant.
+            tracing::error!(room = %self.binding.0, package_id = %self.binding.1, authority_rejection = reason,
+                "application launch refused: its filesystem authority is not the accepted policy");
             return Err(std::io::Error::new(
                 std::io::ErrorKind::PermissionDenied,
                 "filesystem authority changed while the application launch was pending",

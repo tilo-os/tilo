@@ -52,7 +52,7 @@ impl Sandbox {
         self.authorization_status(published).is_ok()
     }
 
-    fn authorization_status(&self, published: &Published) -> Result<(), &'static str> {
+    pub(super) fn authorization_status(&self, published: &Published) -> Result<(), &'static str> {
         if self.capabilities.is_empty() {
             return Ok(());
         }
