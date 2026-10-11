@@ -49,6 +49,7 @@ use crate::browsing_mode::BrowsingMode;
 use crate::downloads::{DownloadStatus, Downloads};
 use crate::history::History;
 use crate::library::Bookmarks;
+use crate::omnibox;
 use crate::settings::{Settings, SettingsActionBindings, SettingsPane, SettingsPresentation};
 use ui::tilo_resource::Resource as _;
 
@@ -57,8 +58,6 @@ mod toolbar;
 
 const PIP_ID: &str = "browser.media-pip";
 const PIP_ELEMENT_REFRESH: std::time::Duration = std::time::Duration::from_millis(250);
-/// How many address-bar suggestions to show.
-const SUGGESTION_LIMIT: usize = 8;
 /// e2e id of the address input (also used internally to detect whether
 /// the user is editing it).
 const URL_INPUT_ID: &str = "browser.url_input";
@@ -123,6 +122,17 @@ fn is_supported_web_url(value: &str) -> bool {
     url::Url::parse(value.trim())
         .ok()
         .is_some_and(|url| matches!(url.scheme(), "http" | "https") && url.host().is_some())
+}
+
+/// The page that searches `query` with the engine `template` (a URL that
+/// takes the query after it, or holds `{query}`).
+fn search_url(template: &str, query: &str) -> String {
+    let query: String = url::form_urlencoded::byte_serialize(query.as_bytes()).collect();
+    if template.contains(SEARCH_QUERY_TOKEN) {
+        template.replace(SEARCH_QUERY_TOKEN, &query)
+    } else {
+        format!("{template}{query}")
+    }
 }
 
 /// Host-like text that users conventionally enter without a scheme. Bracketed
@@ -433,6 +443,22 @@ pub struct BrowserWidget {
     /// Last address-bar text a suggestion query ran for, to avoid
     /// re-querying every frame.
     last_query: Option<String>,
+    /// Visited pages prepared for per-keystroke matching.
+    omni_index: omnibox::HistoryIndex,
+    /// The index must be rebuilt: the history changed since it was built.
+    omni_stale: bool,
+    /// Quiet-period and supersede bookkeeping for the engine's suggestions.
+    suggest_debounce: omnibox::Debounce,
+    /// Fetches of the engine's suggestions, answering into `remote`.
+    suggest_fetcher: omnibox::SuggestFetcher,
+    /// The engine's suggestions for the text being typed.
+    remote: Vec<String>,
+    /// The text last typed by the person (not the inline completion).
+    last_typed: String,
+    /// An inline completion shown in the address field: `(typed, full)`.
+    inline: Option<(String, String)>,
+    /// Select the completed suffix of the address field on the next sync.
+    select_completion: Option<(usize, usize)>,
     /// Debug/`--shots-overlay`: keep forced suggestions visible without a
     /// real focus + query, so the overlay can be rendered headlessly.
     force_suggestions: bool,
@@ -648,6 +674,8 @@ impl BrowserWidget {
         if self.history_revision != Some(revision) {
             self.history_revision = Some(revision);
             self.history = (*record.get()).clone();
+            self.omni_stale = true;
+            self.last_query = None;
             self.search_index.invalidate();
             self.structure_dirty = true;
         }
@@ -759,6 +787,14 @@ impl BrowserWidget {
             library_filter: ui::LocalState::new(String::new()),
             structure_dirty: false,
             last_query: None,
+            omni_index: omnibox::HistoryIndex::default(),
+            omni_stale: true,
+            suggest_debounce: omnibox::Debounce::default(),
+            suggest_fetcher: omnibox::SuggestFetcher::default(),
+            remote: Vec::new(),
+            last_typed: String::new(),
+            inline: None,
+            select_completion: None,
             force_suggestions: false,
             content_rect: std::sync::Arc::new(std::sync::Mutex::new(None)),
             resource_navigation_invocation: None,
@@ -912,7 +948,8 @@ impl BrowserWidget {
     /// Test hook: pin a suggestion list into view (bypasses focus/query)
     /// so the overlay can be rendered headlessly for inspection.
     pub fn debug_force_suggestions(&mut self, items: Vec<crate::history::HistoryEntry>) {
-        self.suggestions.set_suggestions(items);
+        self.suggestions
+            .set_suggestions(items.iter().map(omnibox::Row::history).collect());
         self.force_suggestions = true;
     }
 
@@ -1626,20 +1663,12 @@ impl BrowserWidget {
             return self.reject_navigation("Browser can open only http:// or https:// addresses.");
         }
 
-        let candidate = if !input.chars().any(char::is_whitespace)
-            && looks_like_bare_web_host(input)
-        {
-            format!("https://{input}")
-        } else {
-            let query: String = url::form_urlencoded::byte_serialize(input.as_bytes()).collect();
-            if self.settings.search_engine.contains(SEARCH_QUERY_TOKEN) {
-                self.settings
-                    .search_engine
-                    .replace(SEARCH_QUERY_TOKEN, &query)
+        let candidate =
+            if !input.chars().any(char::is_whitespace) && looks_like_bare_web_host(input) {
+                format!("https://{input}")
             } else {
-                format!("{}{query}", self.settings.search_engine)
-            }
-        };
+                search_url(&self.settings.search_engine, input)
+            };
         let Ok(parsed) = url::Url::parse(&candidate) else {
             return self.reject_navigation("That web address is malformed.");
         };
@@ -2699,8 +2728,21 @@ impl BrowserWidget {
         }
     }
 
-    /// Refresh the address-bar suggestion list from history while the
-    /// address input is focused; hide it otherwise.
+    /// Forget everything the omnibox derived from the text being typed.
+    fn reset_omnibox(&mut self) {
+        self.suggestions.clear();
+        self.suggest_debounce.cancel();
+        self.remote.clear();
+        self.last_query = None;
+        self.last_typed.clear();
+        self.inline = None;
+        self.select_completion = None;
+    }
+
+    /// Refresh the address-bar suggestions while the address input is being
+    /// edited; hide them otherwise. Runs every frame, does bounded work, and
+    /// never waits on the network: the engine's suggestions arrive later
+    /// through `suggest_fetcher`.
     fn update_suggestions(&mut self) {
         if self.force_suggestions {
             return; // headless overlay render — keep the pinned list
@@ -2710,31 +2752,131 @@ impl BrowserWidget {
         } else {
             self.address.with(Clone::clone)
         };
-        let query = text.trim();
+        // The bar echoing the completion we put there is not new typing.
+        let typed = match &self.inline {
+            Some((typed, full)) if *full == text => typed.clone(),
+            _ => {
+                self.inline = None;
+                text
+            }
+        };
+        let query = typed.trim();
         // Only suggest while the user is editing a *query* — not when the
         // bar merely shows the loaded page's URL, and not for an empty bar.
-        // (Echoing the current page back at the user is what made the old
-        // overlay pointless.)
         let editing = !query.is_empty() && query != self.current_uri.trim();
         if !editing {
-            if self.last_query.is_some() {
-                self.suggestions.clear();
-                self.last_query = None;
+            if self.last_query.is_some() || self.suggestions.is_visible() {
+                self.reset_omnibox();
             }
             return;
         }
-        if self.last_query.as_deref() == Some(query) {
-            return;
+        let query = query.to_owned();
+        let mut dirty = self.last_query.as_deref() != Some(query.as_str());
+        if dirty {
+            self.on_query_changed(&query);
         }
-        self.last_query = Some(query.to_string());
-        // Fuzzy history matches, minus the page we're already on.
-        let items: Vec<_> = self
-            .history
-            .suggest(query, SUGGESTION_LIMIT)
-            .into_iter()
-            .filter(|e| e.url != self.current_uri)
-            .collect();
-        self.suggestions.set_suggestions(items);
+        if let Some(answer) = self.suggest_fetcher.take() {
+            if self.suggest_debounce.is_current(answer.generation) && answer.query == query {
+                self.remote = answer.suggestions;
+                dirty = true;
+            }
+        }
+        if let Some((generation, wanted)) = self
+            .suggest_debounce
+            .due(ui::time::now(), omnibox::DEBOUNCE)
+            && let Some(endpoint) = omnibox::suggest_endpoint(&self.settings.search_engine, &wanted)
+        {
+            self.suggest_fetcher.fetch(generation, wanted, endpoint);
+        }
+        if dirty || self.omni_stale {
+            self.rebuild_rows(&query);
+        }
+    }
+
+    /// The typed text changed: restart the quiet period for the engine's
+    /// suggestions and keep only the old ones that still fit.
+    fn on_query_changed(&mut self, query: &str) {
+        let lower = query.to_lowercase();
+        self.remote
+            .retain(|suggestion| suggestion.to_lowercase().starts_with(&lower));
+        if query.chars().count() >= 2 && !omnibox::looks_like_address(query) {
+            self.suggest_debounce.typed(query, ui::time::now());
+        } else {
+            self.suggest_debounce.cancel();
+            self.remote.clear();
+        }
+    }
+
+    /// Select the untyped tail of an inline completion, once the address
+    /// field holds the completed text.
+    fn select_inline_completion(&mut self) {
+        let Some((end, start)) = self.select_completion.take() else {
+            return;
+        };
+        fn select(widget: &mut dyn Widget, state: &str) -> bool {
+            if widget.test_id() == Some(URL_INPUT_ID) {
+                ui::undo::set_state(widget, state);
+                return true;
+            }
+            widget
+                .children_mut()
+                .into_iter()
+                .any(|child| select(child, state))
+        }
+        if let Some(c) = self.composed.element_mut() {
+            select(c, &format!("{end}:b:{start}"));
+        }
+    }
+
+    /// Match, merge and complete for `query`; set the dropdown's rows.
+    fn rebuild_rows(&mut self, query: &str) {
+        if self.omni_stale {
+            self.omni_index.rebuild(self.history.entries());
+            self.omni_stale = false;
+        }
+        let now = tilo_clock::unix_now();
+        let matches = self.omni_index.search(query, omnibox::MAX_ROWS, now);
+        let mut rows = omnibox::build_rows(
+            query,
+            &matches,
+            &self.remote,
+            &self.current_uri,
+            omnibox::MAX_ROWS,
+        );
+        // Complete inline only when the person is adding characters; after a
+        // deletion the text is theirs.
+        let growing = query.len() > self.last_typed.len() && query.starts_with(&self.last_typed);
+        if growing
+            && self.inline.is_none()
+            && let Some(full) = omnibox::inline_completion(query, matches.first())
+        {
+            self.select_completion = Some((full.len(), query.len()));
+            self.address.set(full.clone());
+            self.inline = Some((query.to_owned(), full));
+        }
+        if let Some((typed, full)) = &self.inline
+            && typed == query
+        {
+            omnibox::lead_with_address(&mut rows, full);
+        }
+        self.last_typed = query.to_owned();
+        self.last_query = Some(query.to_owned());
+        self.suggestions.set_suggestions(rows);
+    }
+
+    /// Open a chosen dropdown row.
+    fn choose_row(&mut self, row: omnibox::Row) {
+        self.suggestions.clear();
+        self.last_query = None;
+        self.inline = None;
+        let destination = match row.kind {
+            omnibox::RowKind::Search | omnibox::RowKind::Suggestion => {
+                search_url(&self.settings.search_engine, &row.url)
+            }
+            omnibox::RowKind::Go | omnibox::RowKind::History => row.url,
+        };
+        self.address.set(destination.clone());
+        self.queue_navigate(destination);
     }
 
     /// Rect of the address `TextInput` in the composed tree, for anchoring
@@ -3116,7 +3258,11 @@ impl BrowserWidget {
             && (modifiers.control_key() || modifiers.super_key())
             && !modifiers.alt_key()
             && matches!(&key.logical_key, WKey::Character(c) if c.eq_ignore_ascii_case("l"));
-        requested && !self.show_settings && !self.show_library && self.focus_address_input()
+        // F6 moves to the address bar on its own, as in every browser.
+        let f6 = key.state == ElementState::Pressed
+            && key.logical_key == WKey::Named(WNamedKey::F6)
+            && !modifiers.alt_key();
+        (requested || f6) && !self.show_settings && !self.show_library && self.focus_address_input()
     }
 
     /// Rect of the composed-tree widget with `test_id == id`, if present.
@@ -3633,6 +3779,8 @@ impl Widget for BrowserWidget {
 
     fn needs_animation_frame(&self) -> bool {
         self.navigation_hold.waiting()
+            || self.suggest_debounce.is_pending()
+            || self.suggest_fetcher.in_flight()
             || self
                 .composed
                 .element()
@@ -3874,11 +4022,8 @@ impl Widget for BrowserWidget {
                     ..ctx.reborrow(ctx.path, ctx.node_id)
                 },
             );
-            if let Some(entry) = self.suggestions.take_chosen() {
-                self.suggestions.clear();
-                self.last_query = None;
-                self.address.set(entry.url.clone());
-                self.queue_navigate(entry.url);
+            if let Some(row) = self.suggestions.take_chosen() {
+                self.choose_row(row);
                 *ctx.handled = true;
                 return;
             }
@@ -3888,11 +4033,28 @@ impl Widget for BrowserWidget {
             }
         }
 
+        // The first click into the address bar selects the whole address (a
+        // second click places the caret), as in every browser.
+        let click_into_address = matches!(
+            event,
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            }
+        ) && !self.url_input_focused()
+            && self
+                .find_rect(URL_INPUT_ID)
+                .is_some_and(|rect| rect.contains(self.cursor));
+
         if let Some(c) = self.composed.element_mut()
             && let Ok(children) = ctx.taffy.children(ctx.node_id)
             && let Some(&child_node) = children.first()
         {
             c.handle_event(event, &mut ctx.reborrow(ctx.path, child_node));
+        }
+        if click_into_address && self.url_input_focused() {
+            self.focus_address_input();
         }
 
         // Enter in the focused address bar submits it (no suggestion picked).
@@ -3902,8 +4064,7 @@ impl Widget for BrowserWidget {
             && self.url_input_focused()
         {
             self.navigate_to_input();
-            self.suggestions.clear();
-            self.last_query = None;
+            self.reset_omnibox();
             *ctx.handled = true;
         }
     }
@@ -3968,14 +4129,11 @@ impl Widget for BrowserWidget {
             .suggestions
             .perform_accessibility_action(target, action)
         {
-            if let Some(entry) = self.suggestions.take_chosen() {
-                self.suggestions.clear();
-                self.last_query = None;
-                self.address.set(entry.url.clone());
-                // This queues Browser's existing typed `browser.page/navigate`
-                // action — AT-SPI does not get a parallel imperative navigation
-                // route.
-                self.queue_navigate(entry.url);
+            // This queues Browser's existing typed `browser.page/navigate`
+            // action — AT-SPI does not get a parallel imperative navigation
+            // route.
+            if let Some(row) = self.suggestions.take_chosen() {
+                self.choose_row(row);
             }
             return true;
         }
@@ -4599,6 +4757,7 @@ impl BrowserWidget {
         if let Some(c) = self.composed.element_mut() {
             c.sync(state, path);
         }
+        self.select_inline_completion();
         self.poll_active_pip_element();
     }
 
@@ -6790,6 +6949,66 @@ mod tests {
             record.with(crate::history::History::is_empty),
             "leaving the workspace clears the history"
         );
+    }
+
+    #[test]
+    fn typing_in_the_address_bar_suggests_and_completes_visited_pages() {
+        let (_app, record) = person_history();
+        for (url, title, at) in [
+            ("https://www.youtube.com/watch?v=1", "Cats - YouTube", 10),
+            (
+                "https://blog.example.org/why-you-should",
+                "Why you should",
+                11,
+            ),
+        ] {
+            record
+                .apply(&crate::history::HistoryAction::Visit {
+                    url: url.into(),
+                    title: title.into(),
+                    at,
+                })
+                .unwrap();
+        }
+        // A later window of the same person sees the same visits.
+        let mut w = BrowserWidget::with_engine(TestEngine::new(), true);
+        w.attach_history(record);
+        let (doc, root) = synced(&mut w);
+        let mut tree = TaffyTree::new();
+        w.build_layout(
+            &mut tree,
+            &Theme::dark(),
+            &mut std::collections::HashMap::default(),
+        );
+        assert!(w.focus_address_input());
+        w.address.set("you".into());
+        w.sync(&doc, &root);
+        assert!(w.suggestions.is_visible(), "typing shows suggestions");
+        let rows = w.suggestions.items().to_vec();
+        assert_eq!(
+            rows[0].kind,
+            omnibox::RowKind::Go,
+            "Enter opens the bar's text"
+        );
+        assert_eq!(rows[0].url, "https://youtube.com");
+        assert!(
+            rows.iter()
+                .any(|row| row.kind == omnibox::RowKind::History && row.title == "Cats - YouTube"),
+            "visited pages show with their titles: {rows:?}"
+        );
+        assert!(
+            rows.iter().any(|row| row.kind == omnibox::RowKind::Search),
+            "searching the typed words is always offered"
+        );
+        assert_eq!(
+            w.address.with(Clone::clone),
+            "youtube.com",
+            "the host is completed inline"
+        );
+        // The echo of the completion is not new typing.
+        w.sync(&doc, &root);
+        assert_eq!(w.address.with(Clone::clone), "youtube.com");
+        assert_eq!(w.suggestions.items().len(), rows.len());
     }
 
     /// Address input focus, selection and draft preservation.
