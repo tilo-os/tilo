@@ -99,6 +99,8 @@ enum Desc {
     Vec(&'static VecDesc),
     /// A map of string keys.
     Map(&'static MapDesc),
+    /// A set of elements stored as map keys.
+    Set(&'static crate::storage::SetDesc),
 }
 
 impl ModelTable {
@@ -128,6 +130,24 @@ impl ModelTable {
             desc: Desc::Collection(collection),
             checks,
             has_ops,
+        }
+    }
+
+    pub(crate) const fn set(&self) -> Option<&'static crate::storage::SetDesc> {
+        match self.desc {
+            Desc::Set(set) => Some(set),
+            _ => None,
+        }
+    }
+
+    /// The table of a set.
+    #[must_use]
+    pub const fn of_set(set: &'static crate::storage::SetDesc, checks: bool) -> Self {
+        Self {
+            ops: &crate::storage::SET_OPS,
+            desc: Desc::Set(set),
+            checks,
+            has_ops: false,
         }
     }
 
@@ -2682,6 +2702,12 @@ pub trait MapEntries {
         key: String,
         fill: &mut dyn FnMut(&mut dyn Any) -> Result<(), ModelError>,
     ) -> Result<(), ModelError>;
+    /// Insert (or replace) `key` with the value moved out of `staged`, a
+    /// filled `Option` of the value type.
+    ///
+    /// # Errors
+    /// When `staged` is of another type or empty.
+    fn insert_moved(&mut self, key: String, staged: &mut dyn Any) -> Result<(), ModelError>;
 }
 
 impl<T: 'static> MapEntries for std::collections::BTreeMap<String, T> {
@@ -2715,6 +2741,15 @@ impl<T: 'static> MapEntries for std::collections::BTreeMap<String, T> {
         let mut slot: Option<T> = None;
         fill(&mut slot)?;
         self.insert(key, filled(slot)?);
+        Ok(())
+    }
+
+    fn insert_moved(&mut self, key: String, staged: &mut dyn Any) -> Result<(), ModelError> {
+        let value = staged
+            .downcast_mut::<Option<T>>()
+            .and_then(Option::take)
+            .ok_or_else(mismatch)?;
+        self.insert(key, value);
         Ok(())
     }
 }

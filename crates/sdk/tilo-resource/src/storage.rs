@@ -14,6 +14,8 @@ use crate::delta::Delta;
 use crate::model::LocatedAt as _;
 use crate::model::{Doc, Model, ModelError, Slot, edit_whole, read_key, refresh_key, write_key};
 use crate::path::{EditOp, Segment, Settable};
+use crate::table::{MapEntries, ModelOps, ModelTable, Run};
+use std::any::Any;
 
 /// Nothing: a value that stores nothing, for the members of a container that
 /// only orders ids (a [`Grid`]'s rows and columns).
@@ -140,14 +142,6 @@ fn element_key<T: Model>(value: &T) -> String {
     }
 }
 
-fn element_of_key<T: Model>(key: &str) -> Result<T, ModelError> {
-    T::from_json(&serde_json::Value::String(key.to_owned())).or_else(|_| {
-        serde_json::from_str::<serde_json::Value>(key)
-            .map_err(|error| ModelError::invalid(error.to_string()))
-            .and_then(|value| T::from_json(&value))
-    })
-}
-
 /// A set whose concurrent adds and removes merge per element. Stored as a map
 /// keyed by each element's JSON form.
 #[derive(Clone, Debug)]
@@ -221,54 +215,29 @@ impl<T: Model> Model for Set<T> {
     }
     const CHECKS: bool = T::CHECKS;
     const OPS: bool = T::OPS;
+    // Run by one set of functions for every set, over `T`'s table.
+    const TABLE: &'static ModelTable = &SetOf::<T>::TABLE;
     crate::model::leaf_paths!();
-    #[inline(never)]
+    #[inline]
     fn to_json(&self) -> serde_json::Value {
-        serde_json::Value::Array(self.elements.values().map(Model::to_json).collect())
+        Run(Self::TABLE).to_json(self)
     }
-    #[inline(never)]
+    #[inline]
     fn from_json(value: &serde_json::Value) -> Result<Self, ModelError> {
-        match value {
-            serde_json::Value::Array(values) => values
-                .iter()
-                .map(T::from_json)
-                .collect::<Result<Vec<_>, _>>()
-                .map(|values| values.into_iter().collect()),
-            serde_json::Value::Null => Ok(Self::new()),
-            _ => Err(ModelError::shape("a list of elements")),
-        }
+        Run(Self::TABLE).from_json(value)
     }
-    #[inline(never)]
+    #[inline]
     fn load(doc: &Doc, value: &Value<'_>, id: &ObjId) -> Result<Self, ModelError> {
-        if !matches!(value, Value::Object(ObjType::Map)) {
-            return Err(ModelError::shape("a set"));
-        }
-        doc.keys(id)
-            .map(|key| element_of_key::<T>(&key).map(|value| (key, value)))
-            .collect::<Result<BTreeMap<_, _>, _>>()
-            .map(|elements| Self { elements })
+        Run(Self::TABLE).load(doc, value, id)
     }
     fn missing() -> Result<Self, ModelError> {
         Ok(Self::new())
     }
-    #[inline(never)]
+    #[inline]
     fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
-        let map = slot.object(doc, ObjType::Map)?;
-        let stale: Vec<String> = doc
-            .keys(&map)
-            .filter(|key| !self.elements.contains_key(key))
-            .collect();
-        for key in stale {
-            doc.delete(&map, key.as_str())?;
-        }
-        for key in self.elements.keys() {
-            if doc.get(&map, key.as_str())?.is_none() {
-                doc.put(&map, key.as_str(), true)?;
-            }
-        }
-        Ok(())
+        Run(Self::TABLE).store(self, doc, slot)
     }
-    #[inline(never)]
+    #[inline]
     fn refresh(
         &mut self,
         doc: &Doc,
@@ -276,83 +245,300 @@ impl<T: Model> Model for Set<T> {
         id: &ObjId,
         delta: &Delta,
     ) -> Result<(), ModelError> {
-        let touched = delta.under(id);
-        if touched.is_all() {
-            *self = Self::load(doc, value, id)?;
-            return Ok(());
-        }
-        for key in touched.keys() {
-            if doc.get(id, key)?.is_some() {
-                self.elements
-                    .insert(key.to_owned(), element_of_key::<T>(key)?);
-            } else {
-                self.elements.remove(key);
-            }
-        }
-        Ok(())
+        Run(Self::TABLE).refresh(self, doc, value, id, delta)
     }
-    #[inline(never)]
+    #[inline]
     fn edit(
         doc: &mut Doc,
         slot: Slot<'_>,
         path: &[Segment],
         op: &EditOp,
-        _cx: &mut ActionCx,
+        cx: &mut ActionCx,
     ) -> Result<(), ModelError> {
+        Run(Self::TABLE).edit(doc, slot, path, op, cx)
+    }
+    #[inline]
+    fn check(&self) -> Result<(), Refusal> {
+        Run(Self::TABLE).check(self)
+    }
+    #[inline]
+    fn diff<R>(&self, after: &Self, path: &[Segment], out: &mut Vec<crate::Edit<R>>) {
+        Run(Self::TABLE).diff(self, after, path, out);
+    }
+    #[inline]
+    fn collect_text(&self, out: &mut Vec<String>) {
+        Run(Self::TABLE).collect_text(self, out);
+    }
+}
+
+/// What `Set<T>`'s table reaches into one with: its elements, a map from
+/// each element's stored key.
+#[allow(
+    clippy::type_complexity,
+    reason = "each field reaches into the set one way"
+)]
+pub struct SetDesc {
+    item: &'static ModelTable,
+    elements: for<'a> fn(&'a dyn Any) -> Option<&'a dyn MapEntries>,
+    elements_mut: for<'a> fn(&'a mut dyn Any) -> Option<&'a mut dyn MapEntries>,
+    /// Put an empty set into `out` (an `Option` of it), and hand back its
+    /// elements.
+    fresh: for<'a> fn(&'a mut dyn Any) -> Option<&'a mut dyn MapEntries>,
+    staged: (fn() -> Box<dyn Any>, crate::table::Unstage),
+    replace: fn(&mut dyn Any, &mut dyn Any) -> Result<(), ModelError>,
+    item_staged: (fn() -> Box<dyn Any>, crate::table::Unstage),
+}
+
+/// The [`SetDesc`] of `Set<T>`.
+pub struct SetOf<T>(std::marker::PhantomData<T>);
+
+impl<T: Model> SetOf<T> {
+    pub const DESC: SetDesc = SetDesc {
+        item: T::TABLE,
+        elements: |value| Some(&value.downcast_ref::<Set<T>>()?.elements as &dyn MapEntries),
+        elements_mut: |value| {
+            Some(&mut value.downcast_mut::<Set<T>>()?.elements as &mut dyn MapEntries)
+        },
+        fresh: |out| {
+            let out = out.downcast_mut::<Option<Set<T>>>()?;
+            Some(&mut out.insert(Set::default()).elements as &mut dyn MapEntries)
+        },
+        staged: (
+            crate::table::empty_of::<Set<T>>,
+            crate::table::unwrap_of::<Set<T>>,
+        ),
+        replace: crate::table::replace_of::<Set<T>>,
+        item_staged: (crate::table::empty_of::<T>, crate::table::unwrap_of::<T>),
+    };
+
+    pub const TABLE: ModelTable = ModelTable::of_set(&Self::DESC, T::CHECKS);
+}
+
+fn sets(table: &ModelTable) -> Result<&'static SetDesc, ModelError> {
+    table.set().ok_or_else(crate::table::mismatch)
+}
+
+/// The stored key of a value whose JSON form is `json`: a string as
+/// itself.
+fn key_of_json(json: serde_json::Value) -> String {
+    match json {
+        serde_json::Value::String(text) => text,
+        other => other.to_string(),
+    }
+}
+
+/// Put the element stored under `key` into `out`, an `Option` of its type:
+/// its JSON form is the key as a string, else the key parsed as JSON.
+fn element_into(item: &ModelTable, key: &str, out: &mut dyn Any) -> Result<(), ModelError> {
+    if (item.ops.from_json)(item, &serde_json::Value::String(key.to_owned()), out).is_ok() {
+        return Ok(());
+    }
+    let value = serde_json::from_str::<serde_json::Value>(key)
+        .map_err(|error| ModelError::invalid(error.to_string()))?;
+    (item.ops.from_json)(item, &value, out)
+}
+
+/// An element from its JSON form, staged, with the key it is stored under.
+fn staged_element(
+    desc: &SetDesc,
+    value: &serde_json::Value,
+) -> Result<(String, Box<dyn Any>), ModelError> {
+    let mut staged = (desc.item_staged.0)();
+    (desc.item.ops.from_json)(desc.item, value, staged.as_mut())?;
+    let made = (desc.item_staged.1)(staged.as_ref()).ok_or_else(crate::table::mismatch)?;
+    Ok((
+        key_of_json((desc.item.ops.to_json)(desc.item, made)),
+        staged,
+    ))
+}
+
+/// The functions of every [`Set`]: each element a key of a map.
+pub static SET_OPS: ModelOps = ModelOps {
+    to_json: |table, value| {
+        let mut out = Vec::new();
+        if let Some(set) = table.set()
+            && let Some(elements) = (set.elements)(value)
+        {
+            elements.each(&mut |_, value| out.push((set.item.ops.to_json)(set.item, value)));
+        }
+        serde_json::Value::Array(out)
+    },
+    from_json: |table, value, out| {
+        let set = sets(table)?;
+        match value {
+            serde_json::Value::Array(values) => {
+                let mut made = Vec::with_capacity(values.len());
+                for value in values {
+                    made.push(staged_element(set, value)?);
+                }
+                let elements = (set.fresh)(out).ok_or_else(crate::table::mismatch)?;
+                for (key, mut staged) in made {
+                    elements.insert_moved(key, staged.as_mut())?;
+                }
+                Ok(())
+            }
+            serde_json::Value::Null => {
+                (set.fresh)(out).ok_or_else(crate::table::mismatch)?;
+                Ok(())
+            }
+            _ => Err(ModelError::shape("a list of elements")),
+        }
+    },
+    load: |table, doc, value, id, out| {
+        let set = sets(table)?;
+        if !matches!(value, Value::Object(ObjType::Map)) {
+            return Err(ModelError::shape("a set"));
+        }
+        let elements = (set.fresh)(out).ok_or_else(crate::table::mismatch)?;
+        for key in doc.keys(id) {
+            elements.insert_filled(key.clone(), &mut |into| element_into(set.item, &key, into))?;
+        }
+        Ok(())
+    },
+    missing: |table, out| {
+        (sets(table)?.fresh)(out).ok_or_else(crate::table::mismatch)?;
+        Ok(())
+    },
+    reload: |table, target, doc, slot| {
+        let set = sets(table)?;
+        let mut staged = (set.staged.0)();
+        match slot {
+            Some((value, id)) => (SET_OPS.load)(table, doc, value, id, staged.as_mut())?,
+            None => (SET_OPS.missing)(table, staged.as_mut())?,
+        }
+        (set.replace)(target, staged.as_mut())
+    },
+    store: |table, value, doc, slot| {
+        let set = sets(table)?;
+        let elements = (set.elements)(value).ok_or_else(crate::table::mismatch)?;
+        let map = slot.object(doc, ObjType::Map)?;
+        let stale: Vec<String> = doc
+            .keys(&map)
+            .filter(|key| elements.value(key).is_none())
+            .collect();
+        for key in stale {
+            doc.delete(&map, key.as_str())?;
+        }
+        let mut keys = Vec::with_capacity(elements.count());
+        elements.each(&mut |key, _| keys.push(key.to_owned()));
+        for key in keys {
+            if doc.get(&map, key.as_str())?.is_none() {
+                doc.put(&map, key.as_str(), true)?;
+            }
+        }
+        Ok(())
+    },
+    stores_as: |_, _, _| false,
+    store_changed: |table, value, _, doc, slot, _| (SET_OPS.store)(table, value, doc, slot),
+    refresh: |table, target, doc, value, id, delta| {
+        let set = sets(table)?;
+        let touched = delta.under(id);
+        if touched.is_all() {
+            return (SET_OPS.reload)(table, target, doc, Some((value, id)));
+        }
+        let elements = (set.elements_mut)(target).ok_or_else(crate::table::mismatch)?;
+        for key in touched.keys() {
+            if doc.get(id, key)?.is_some() {
+                elements.insert_filled(key.to_owned(), &mut |into| {
+                    element_into(set.item, key, into)
+                })?;
+            } else {
+                elements.remove_key(key);
+            }
+        }
+        Ok(())
+    },
+    read_whole: |_, _, _| Ok(()),
+    edit: |table, doc, slot, path, op, _| {
+        let set = sets(table)?;
         match op {
             EditOp::Insert { value } if path.is_empty() => {
-                let value = T::from_json(value)?;
-                value.check().map_err(ModelError::refused)?;
+                let (key, staged) = staged_element(set, value)?;
+                let made =
+                    (set.item_staged.1)(staged.as_ref()).ok_or_else(crate::table::mismatch)?;
+                (set.item.ops.check)(set.item, made).map_err(ModelError::refused)?;
                 let map = slot.object(doc, ObjType::Map)?;
-                let key = element_key(&value);
                 if doc.get(&map, key.as_str())?.is_none() {
                     doc.put(&map, key.as_str(), true)?;
                 }
                 Ok(())
             }
             EditOp::Remove { value } if path.is_empty() => {
-                let value = T::from_json(value)?;
+                let (key, _) = staged_element(set, value)?;
                 let map = slot.object(doc, ObjType::Map)?;
-                Slot::Key(&map, &element_key(&value)).remove(doc)
+                Slot::Key(&map, &key).remove(doc)
             }
-            _ => edit_whole::<Self>(doc, slot, path, op),
+            _ => crate::table::edit_whole(
+                table,
+                ((set.staged.0)(), set.staged.1),
+                false,
+                doc,
+                slot,
+                path,
+                op,
+            ),
         }
-    }
-    fn check(&self) -> Result<(), Refusal> {
-        if T::CHECKS {
-            self.elements.values().try_for_each(Model::check)?;
-        }
-        Ok(())
-    }
-    #[inline(never)]
-    fn diff<R>(&self, after: &Self, path: &[Segment], out: &mut Vec<crate::Edit<R>>) {
-        for (key, value) in &self.elements {
-            if !after.elements.contains_key(key) {
+    },
+    diff: |table, before, after, path, out| {
+        let Some(set) = table.set() else {
+            return;
+        };
+        let (Some(was), Some(now)) = ((set.elements)(before), (set.elements)(after)) else {
+            return;
+        };
+        was.each(&mut |key, value| {
+            if now.value(key).is_none() {
                 out.push(crate::Edit::new(
                     path.to_vec(),
                     EditOp::Remove {
-                        value: value.to_json(),
+                        value: (set.item.ops.to_json)(set.item, value),
                     },
                 ));
             }
-        }
-        for (key, value) in &after.elements {
-            if !self.elements.contains_key(key) {
+        });
+        now.each(&mut |key, value| {
+            if was.value(key).is_none() {
                 out.push(crate::Edit::new(
                     path.to_vec(),
                     EditOp::Insert {
-                        value: value.to_json(),
+                        value: (set.item.ops.to_json)(set.item, value),
                     },
                 ));
             }
+        });
+    },
+    collect_text: |table, value, out| {
+        if let Some(set) = table.set()
+            && let Some(elements) = (set.elements)(value)
+        {
+            elements.each(&mut |_, value| (set.item.ops.collect_text)(set.item, value, out));
         }
-    }
-    fn collect_text(&self, out: &mut Vec<String>) {
-        for value in self.elements.values() {
-            value.collect_text(out);
+    },
+    check: |table, value| {
+        let Some(set) = table.set() else {
+            return Ok(());
+        };
+        if !set.item.checks {
+            return Ok(());
         }
-    }
-}
+        let Some(elements) = (set.elements)(value) else {
+            return Ok(());
+        };
+        let mut checked = Ok(());
+        elements.each(&mut |_, value| {
+            if checked.is_ok() {
+                checked = (set.item.ops.check)(set.item, value);
+            }
+        });
+        checked
+    },
+    get_at: |_, value, path| path.is_empty().then_some(value),
+    op_coalesces: |_, _, _, _| None,
+    op_continuable: |_, _, _| None,
+    op_describe: |_, _, _| None,
+    op_lands: |_, _, _, _| None,
+    op_schemas: |_, _, _| {},
+};
 
 /// Values up to this size are stored inside the document; larger ones by
 /// reference to their content.

@@ -163,15 +163,31 @@ impl fmt::Debug for Index {
 
 impl Index {
     fn get<T>(&self, items: &[Entry<T>], id: &Id) -> Option<usize> {
-        if self.0.get().is_none() {
-            let mut index = HashMap::with_capacity(items.len());
-            for position in 0..items.len() {
-                if let Some(entry) = items.get(position) {
-                    index.insert(entry.id.clone(), position);
-                }
-            }
-            let _ = self.0.set(index);
+        if let Some(index) = self.0.get() {
+            return index.get(id).copied();
         }
+        self.build(
+            items.len(),
+            &|position| items.get(position).map(|entry| &entry.id),
+            id,
+        )
+    }
+
+    /// Build the index of `count` ids (`id_at` each), then find `id`.
+    #[inline(never)]
+    fn build<'a>(
+        &self,
+        count: usize,
+        id_at: &dyn Fn(usize) -> Option<&'a Id>,
+        id: &Id,
+    ) -> Option<usize> {
+        let mut index = HashMap::with_capacity(count);
+        for position in 0..count {
+            if let Some(entry) = id_at(position) {
+                index.insert(entry.clone(), position);
+            }
+        }
+        let _ = self.0.set(index);
         self.0.get()?.get(id).copied()
     }
 
