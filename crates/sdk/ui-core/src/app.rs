@@ -2168,23 +2168,6 @@ impl App {
             .map(|(rect, label, _)| (rect, label))
     }
 
-    /// Where in the app the pointer would raise a tooltip: the centre of the
-    /// topmost, then leftmost, laid-out control that shows one there, in the
-    /// app's logical coordinates. For a test that hovers it.
-    #[cfg(all(feature = "native", any(test, feature = "test-support")))]
-    pub fn tooltip_region_for_test(&self) -> Option<Point> {
-        self.layout
-            .node_map
-            .keys()
-            .filter_map(|&node| {
-                let centre = self
-                    .inspect_node(node, |widget| widget.get_rect().center())
-                    .ok()?;
-                self.tooltip_target_at(centre).map(|_| centre)
-            })
-            .min_by(|a, b| a.y.total_cmp(&b.y).then(a.x.total_cmp(&b.x)))
-    }
-
     /// [`Self::tooltip_target_at`] with the side of its control the
     /// tooltip prefers.
     #[cfg(feature = "native")]

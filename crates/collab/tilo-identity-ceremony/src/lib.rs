@@ -1989,11 +1989,6 @@ impl RecoveryChallenge {
         })
     }
 
-    /// Drives the verify screen's correct-word border colour.
-    pub fn expected_word(&self, slot: usize) -> String {
-        self.expected.get(slot).cloned().unwrap_or_default()
-    }
-
     pub fn check(&self, answers: &[&str; 3]) -> bool {
         self.expected
             .iter()
