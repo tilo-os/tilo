@@ -246,6 +246,17 @@ fn scroll_and_present(
         );
         let previous = frame.last_produced_sections.clone();
         let painted = frame.paint_with_damage();
+        if painted.damage_regions.is_none() || painted.scroll_copies.is_none() {
+            eprintln!(
+                "{label}: frame {index} copies={} damage={:?}: {}",
+                painted.scroll_copies.is_some(),
+                painted
+                    .damage_regions
+                    .as_ref()
+                    .map(|damage| covered(damage, panel)),
+                part_refusals(previous.as_ref(), frame)
+            );
+        }
         if index == 0 {
             // What the workspace's comparison found, for a failure's log.
             let found = previous
