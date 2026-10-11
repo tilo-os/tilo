@@ -21,8 +21,33 @@ use ui_core::storage::{
 use super::live::Live;
 use super::record::{Held, RecordDoor};
 
-/// What a section's record does with the section's type: plain functions,
-/// one set per section type, over the section's settings ([`Self::settings`]).
+/// One thing a section's record asks of the section's type.
+enum SectionOp<'a> {
+    /// Make the document one of the section's model.
+    Initialize(&'a mut Doc),
+    /// Write the stored value into the document's fields.
+    Write(&'a mut Doc),
+    /// Store the value the document's fields hold, as the origin did.
+    Store(&'a Doc, &'a ChangeOrigin),
+    /// Whether the document's fields hold the stored value.
+    HoldsStored(&'a Doc),
+    /// The section the document holds, published under an id and a label.
+    Publish(&'a Doc, &'a str, &'a str),
+    /// The section's action an encoded one is.
+    Decode(&'a EncodedAction),
+}
+
+/// What a [`SectionOp`] answers.
+enum SectionOut {
+    Done,
+    Holds(bool),
+    Published(Box<tilo_actions::Resource>),
+    Decoded(Box<dyn Action>),
+}
+
+/// What a section's record does with the section's type: one function per
+/// section type ([`SectionOp`]), over the section's settings
+/// ([`Self::settings`]).
 pub(crate) struct SectionKind {
     pub(crate) kind: &'static str,
     pub(crate) label: &'static str,
@@ -33,18 +58,7 @@ pub(crate) struct SectionKind {
     /// The app whose settings the section is, and the document they live in.
     app_id: String,
     document: SettingsDocument,
-    /// Make `doc` a document of the section's model.
-    initialize: fn(&mut Doc) -> Result<(), String>,
-    /// Write the stored value into `doc`'s fields.
-    write: fn(&Self, &mut Doc) -> Result<(), String>,
-    /// Store the value `doc`'s fields hold, as `origin` did.
-    store: fn(&Self, &Doc, &ChangeOrigin) -> Result<(), String>,
-    /// Whether `doc`'s fields hold the stored value.
-    holds_stored: fn(&Self, &Doc) -> bool,
-    /// The section `doc` holds, published under `id` and `label`.
-    publish: fn(&Doc, &str, &str) -> Result<tilo_actions::Resource, String>,
-    /// The section's action an encoded one is.
-    decode: fn(&EncodedAction) -> Result<Box<dyn Action>, String>,
+    ops: fn(&Self, SectionOp<'_>) -> Result<SectionOut, String>,
 }
 
 impl SectionKind {
@@ -59,35 +73,7 @@ impl SectionKind {
             action_type: T::ACTION_TYPE,
             app_id: settings.app_id().to_owned(),
             document: settings.document().clone(),
-            initialize: |doc| T::initialize(doc).map_err(|error| error.to_string()),
-            write: |kind, doc| {
-                kind.settings::<T>()
-                    .get()
-                    .write_fields(doc, &tilo_resource::__private::ROOT)
-                    .map_err(|error| error.to_string())
-            },
-            store: |kind, doc, origin| {
-                let value = T::read_fields(doc, &tilo_resource::__private::ROOT)
-                    .map_err(|error| error.to_string())?;
-                kind.settings::<T>()
-                    .set_by(&value, Some(origin))
-                    .map_err(|error| error.to_string())
-            },
-            holds_stored: |kind, doc| {
-                T::read_fields(doc, &tilo_resource::__private::ROOT).is_ok_and(|held| {
-                    tilo_resource::Model::to_json(&held)
-                        == tilo_resource::Model::to_json(&kind.settings::<T>().get())
-                })
-            },
-            publish: |doc, id, label| {
-                let state = T::read(doc).map_err(|error| error.to_string())?;
-                Ok(tilo_resource::publish::<T>(id, label, &state))
-            },
-            decode: |action| {
-                tilo_actions::decode_json::<T::Action>(&action.payload)
-                    .map(|action| Box::new(action) as Box<dyn Action>)
-                    .map_err(|error| error.to_string())
-            },
+            ops: section_ops::<T>,
         })
     }
 
@@ -102,23 +88,82 @@ impl SectionKind {
 
     /// Make `doc` a document of the section holding its stored value.
     pub(crate) fn fill(&self, doc: &mut Doc) -> Result<(), String> {
-        (self.initialize)(doc)?;
-        (self.write)(self, doc)
+        (self.ops)(self, SectionOp::Initialize(doc))?;
+        self.write(doc)
     }
 
     fn write(&self, doc: &mut Doc) -> Result<(), String> {
-        (self.write)(self, doc)
+        (self.ops)(self, SectionOp::Write(doc)).map(drop)
     }
 
     fn holds_stored(&self, doc: &Doc) -> bool {
-        (self.holds_stored)(self, doc)
+        matches!(
+            (self.ops)(self, SectionOp::HoldsStored(doc)),
+            Ok(SectionOut::Holds(true))
+        )
     }
 
     /// Store what `doc` holds as the action `action` by `by` changed it.
     fn store(&self, doc: &Doc, action: &str, by: &str) -> Result<(), String> {
         let origin = ChangeOrigin::action(format!("{}/{action}", self.kind)).by(by.to_owned());
-        (self.store)(self, doc, &origin)
+        (self.ops)(self, SectionOp::Store(doc, &origin)).map(drop)
     }
+
+    fn publish(&self, doc: &Doc, id: &str) -> Result<tilo_actions::Resource, String> {
+        match (self.ops)(self, SectionOp::Publish(doc, id, self.label))? {
+            SectionOut::Published(resource) => Ok(*resource),
+            _ => Err("the section published nothing".into()),
+        }
+    }
+
+    fn decode(&self, action: &EncodedAction) -> Result<Box<dyn Action>, String> {
+        match (self.ops)(self, SectionOp::Decode(action))? {
+            SectionOut::Decoded(action) => Ok(action),
+            _ => Err("the section decoded nothing".into()),
+        }
+    }
+}
+
+/// Everything a section's record asks of the section type `T`.
+fn section_ops<T>(kind: &SectionKind, op: SectionOp<'_>) -> Result<SectionOut, String>
+where
+    T: Resource<State = T> + SettingsSchema + Fields,
+{
+    let root = &tilo_resource::__private::ROOT;
+    Ok(match op {
+        SectionOp::Initialize(doc) => {
+            T::initialize(doc).map_err(|error| error.to_string())?;
+            SectionOut::Done
+        }
+        SectionOp::Write(doc) => {
+            kind.settings::<T>()
+                .get()
+                .write_fields(doc, root)
+                .map_err(|error| error.to_string())?;
+            SectionOut::Done
+        }
+        SectionOp::Store(doc, origin) => {
+            let value = T::read_fields(doc, root).map_err(|error| error.to_string())?;
+            kind.settings::<T>()
+                .set_by(&value, Some(origin))
+                .map_err(|error| error.to_string())?;
+            SectionOut::Done
+        }
+        SectionOp::HoldsStored(doc) => {
+            SectionOut::Holds(T::read_fields(doc, root).is_ok_and(|held| {
+                tilo_resource::Model::to_json(&held)
+                    == tilo_resource::Model::to_json(&kind.settings::<T>().get())
+            }))
+        }
+        SectionOp::Publish(doc, id, label) => {
+            let state = T::read(doc).map_err(|error| error.to_string())?;
+            SectionOut::Published(Box::new(tilo_resource::publish::<T>(id, label, &state)))
+        }
+        SectionOp::Decode(action) => SectionOut::Decoded(Box::new(
+            tilo_actions::decode_json::<T::Action>(&action.payload)
+                .map_err(|error| error.to_string())?,
+        )),
+    })
 }
 
 /// The record a section is kept in.
@@ -275,7 +320,7 @@ impl SectionDoor {
             )));
         }
         self.follow();
-        let action = (self.kind.decode)(encoded).map_err(ActionError::Refused)?;
+        let action = self.kind.decode(encoded).map_err(ActionError::Refused)?;
         let id = action_id(&encoded.payload);
         match &self.kept {
             Kept::Window { doc, seen } => {
@@ -412,7 +457,7 @@ impl RecordDoor for SectionDoor {
     fn publish(&self) -> tilo_actions::Resource {
         self.follow();
         let published = self
-            .read(|doc| (self.kind.publish)(doc, &self.id, self.kind.label))
+            .read(|doc| self.kind.publish(doc, &self.id))
             .unwrap_or_else(|| Err("the section's record is unavailable".into()))
             .unwrap_or_else(|error| {
                 tracing::warn!(kind = self.kind.kind, %error, "settings section unreadable");

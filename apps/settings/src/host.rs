@@ -237,7 +237,7 @@ impl PaneCx {
     {
         match self
             .section::<T>()
-            .and_then(|actions| actions.edit_binding(path, ui::tilo_resource::Path::set))
+            .and_then(|actions| actions.field_binding(path))
         {
             Some(binding) => control.bind_action(binding),
             None => control.unavailable(),
@@ -260,9 +260,10 @@ impl PaneCx {
         I: 'static,
         C: ActionControl<I>,
     {
-        match self.section::<T>().and_then(|actions| {
-            actions.edit_binding_with(path, move |path, input| Ok(path.set(value(input)?)))
-        }) {
+        match self
+            .section::<T>()
+            .and_then(|actions| actions.set_binding(path, value))
+        {
             Some(binding) => control.bind_action(binding),
             None => control.unavailable(),
         }

@@ -266,6 +266,34 @@ impl ActionTable {
             .ok()
     }
 
+    /// The binding of setting the field at `segments` (described as `what`)
+    /// for a control with input `I`, each committed input becoming the value
+    /// `value` makes of it.
+    fn set_binding<I: 'static>(
+        &self,
+        what: &str,
+        edits: bool,
+        readonly: bool,
+        segments: &[tilo_resource::Segment],
+        value: Box<dyn Fn(I) -> Result<serde_json::Value, String> + Send + Sync>,
+    ) -> Option<ActionBinding<I>> {
+        let path = serde_json::to_value(segments).unwrap_or_default();
+        self.edit_binding(
+            what,
+            edits,
+            readonly,
+            Box::new(move |input| {
+                let value = value(input)?;
+                let mut edit = serde_json::to_value(tilo_resource::EditOp::Set { value })
+                    .map_err(|error| error.to_string())?;
+                if let serde_json::Value::Object(edit) = &mut edit {
+                    edit.insert("path".to_owned(), path.clone());
+                }
+                Ok(edit)
+            }),
+        )
+    }
+
     /// The resource as a binding names it, exporting the effect `spec`: an
     /// effect is published beside the resource's actions by the handler a
     /// view or surface registers, not by the resource type.
@@ -468,6 +496,34 @@ impl<R: Resource> Actions<R> {
         )
     }
 
+    /// The binding of the field at `path` for a control with input `I`:
+    /// each committed input sets the field to what `value` makes of it, or is
+    /// refused where `value` refuses it. What a settings row binds; the same
+    /// edit as [`Self::edit_binding_with`] and [`Path::set`].
+    pub fn set_binding<V, I>(
+        &self,
+        path: Path<R, V>,
+        value: impl Fn(I) -> Result<V, String> + Send + Sync + 'static,
+    ) -> Option<ActionBinding<I>>
+    where
+        V: tilo_resource::Settable + 'static,
+        I: 'static,
+    {
+        let what = format!("the field {path:?}");
+        let readonly = R::shape().is_some_and(|shape| shape.readonly_at(path.segments()));
+        let segments = path.into_segments();
+        self.table
+            .set_binding(&what, R::EDITS, readonly, &segments, json_of(value))
+    }
+
+    /// [`Self::set_binding`] of a control whose input is the field's value.
+    pub fn field_binding<V>(&self, path: Path<R, V>) -> Option<ActionBinding<V>>
+    where
+        V: tilo_resource::Settable + 'static,
+    {
+        self.set_binding(path, same::<V>)
+    }
+
     /// `control`, bound to `action`. An action the resource does not publish
     /// leaves it disabled, and fails tests and `tilo-app check`.
     pub fn bind<I: 'static, C: ActionControl<I>>(&self, control: C, action: impl Binds<R, I>) -> C {
@@ -531,4 +587,20 @@ impl<R: Resource> Actions<R> {
             None => control.unavailable(),
         }
     }
+}
+
+/// `value` with its result in its JSON form, the same for every resource.
+fn json_of<V: tilo_resource::Model, I>(
+    value: impl Fn(I) -> Result<V, String> + Send + Sync + 'static,
+) -> Box<dyn Fn(I) -> Result<serde_json::Value, String> + Send + Sync> {
+    Box::new(move |input| value(input).map(|value| value.to_json()))
+}
+
+/// A control's value, set as it is.
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "the shape every value conversion has"
+)]
+fn same<V>(value: V) -> Result<V, String> {
+    Ok(value)
 }
