@@ -167,34 +167,69 @@ fn field_options(attrs: &[Attribute]) -> syn::Result<FieldOptions> {
     Ok(options)
 }
 
-/// `#[model(check = path, label = "first last")]` on the type: its
-/// invariant, and the fields whose texts, joined by spaces, name a value.
-fn container_options(attrs: &[Attribute]) -> syn::Result<(Option<syn::Path>, Vec<String>)> {
-    let mut check = None;
-    let mut label = Vec::new();
+/// What `#[model(..)]` on a record type says.
+#[derive(Default)]
+struct ContainerOptions {
+    /// `check = path`: its invariant.
+    check: Option<syn::Path>,
+    /// `label = "first last"`: the fields whose texts, joined by spaces,
+    /// name a value.
+    label: Vec<String>,
+    /// `check_reads = "a b"`: the fields the invariant reads; an edit of
+    /// none of them (nor of an item of `check_items`) cannot break it.
+    check_reads: Option<Vec<String>>,
+    /// `check_items = "c"`: the collections whose items the invariant
+    /// counts (not reads): adding or removing one can break it, an edit
+    /// inside one cannot.
+    check_items: Vec<String>,
+}
+
+/// Fields named by a space-separated `"a b"` list.
+fn field_list(meta: &syn::meta::ParseNestedMeta<'_>) -> syn::Result<Vec<String>> {
+    let fields = meta.value()?.parse::<syn::LitStr>()?;
+    Ok(fields
+        .value()
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect())
+}
+
+/// `#[model(check = path, label = "first last")]` on the type.
+fn container_options(attrs: &[Attribute]) -> syn::Result<ContainerOptions> {
+    let mut options = ContainerOptions::default();
     for attr in attrs.iter().filter(|attr| attr.path().is_ident("model")) {
         attr.parse_nested_meta(|meta| {
             if meta.path.is_ident("check") {
-                check = Some(meta.value()?.parse::<syn::Path>()?);
+                options.check = Some(meta.value()?.parse::<syn::Path>()?);
+                Ok(())
+            } else if meta.path.is_ident("check_reads") {
+                options.check_reads = Some(field_list(&meta)?);
+                Ok(())
+            } else if meta.path.is_ident("check_items") {
+                options.check_items = field_list(&meta)?;
                 Ok(())
             } else if meta.path.is_ident("label") {
-                let fields = meta.value()?.parse::<syn::LitStr>()?;
-                label = fields
-                    .value()
-                    .split_whitespace()
-                    .map(str::to_owned)
-                    .collect();
-                if label.is_empty() {
+                options.label = field_list(&meta)?;
+                if options.label.is_empty() {
                     return Err(meta.error("`label = \"..\"` names the fields that make the label"));
                 }
                 Ok(())
             } else {
-                Err(meta
-                    .error("expected `check = path` or `label = \"field field ..\"` on the type"))
+                Err(meta.error(
+                    "expected `check = path`, `check_reads = \"field ..\"`, \
+                     `check_items = \"field ..\"` or `label = \"field field ..\"` on the type",
+                ))
             }
         })?;
     }
-    Ok((check, label))
+    if options.check.is_none() && (options.check_reads.is_some() || !options.check_items.is_empty())
+    {
+        return Err(syn::Error::new(
+            Span::call_site(),
+            "`check_reads` and `check_items` say what a `check = path` reads",
+        ));
+    }
+    Ok(options)
 }
 
 #[allow(
@@ -479,7 +514,14 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
     let name = &input.ident;
     let vis = &input.vis;
     let (impl_generics, type_generics, where_clause) = input.generics.split_for_impl();
-    let (check, label_parts) = container_options(&input.attrs)?;
+    let ContainerOptions {
+        check,
+        label: label_parts,
+        check_reads,
+        check_items,
+    } = container_options(&input.attrs)?;
+    // Each stored field's key by its name, for what the check reads.
+    let mut keys: Vec<(String, String)> = Vec::new();
     let own_check_const = check.is_some();
     let paths_name = format_ident!("{}Paths", name);
     let mut paths_generics = input.generics.clone();
@@ -536,6 +578,9 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
         let field_vis = &field.vis;
         let options = field_options(&field.attrs)?;
         let key = options.rename.clone().unwrap_or_else(|| ident.to_string());
+        if !options.skip {
+            keys.push((ident.to_string(), key.clone()));
+        }
         if options.skip {
             // The containing type's default when it has one, which may
             // differ from the field type's (`is_admin: true`).
@@ -645,6 +690,41 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
             ),
         ));
     }
+    let key_of = |field: &String| {
+        keys.iter()
+            .find(|(name, _)| name == field)
+            .map(|(_, key)| key.clone())
+            .ok_or_else(|| {
+                syn::Error::new(
+                    Span::call_site(),
+                    format!("`{name}` has no stored field `{field}` for its check to read"),
+                )
+            })
+    };
+    let check_reads = match check_reads {
+        Some(fields) => {
+            let fields = fields.iter().map(key_of).collect::<syn::Result<Vec<_>>>()?;
+            let items = check_items
+                .iter()
+                .map(key_of)
+                .collect::<syn::Result<Vec<_>>>()?;
+            quote!(::core::option::Option::Some(#table::CheckReads {
+                fields: &[#(#fields),*],
+                items: &[#(#items),*],
+            }))
+        }
+        None if !check_items.is_empty() => {
+            let items = check_items
+                .iter()
+                .map(key_of)
+                .collect::<syn::Result<Vec<_>>>()?;
+            quote!(::core::option::Option::Some(#table::CheckReads {
+                fields: &[],
+                items: &[#(#items),*],
+            }))
+        }
+        None => quote!(::core::option::Option::None),
+    };
     label_fields.sort_by_key(|(part, _)| *part);
     let label_positions: Vec<proc_macro2::Literal> = label_fields
         .iter()
@@ -676,6 +756,7 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
                 quote!(::core::option::Option::Some(#table::OwnCheck {
                     check: Self::__own_check,
                     read: Self::__read_record,
+                    reads: #check_reads,
                 })),
                 quote! {
                     fn __own_check(

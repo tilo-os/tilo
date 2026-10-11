@@ -219,7 +219,7 @@ pub struct Comment {
 
 /// One sheet of the workbook.
 #[derive(Model, Clone, Debug, PartialEq)]
-#[model(check = Sheet::valid)]
+#[model(check = Sheet::valid, check_reads = "name color charts")]
 pub struct Sheet {
     /// Name
     #[model(label)]
@@ -546,7 +546,7 @@ fn extension(line: &[Id], index: u32, prefix: char) -> Vec<Id> {
 
 /// The workbook: its sheets in order and its locale overrides.
 #[derive(Model, Clone, Debug, PartialEq)]
-#[model(check = Workbook::valid)]
+#[model(check = Workbook::valid, check_items = "sheets")]
 pub struct Workbook {
     /// Sheets
     pub sheets: Collection<Sheet>,

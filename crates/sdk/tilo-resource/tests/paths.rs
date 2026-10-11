@@ -259,6 +259,81 @@ fn a_check_refuses_every_way_in() {
     edit(&mut library, &title.set("Deploy prod".into())).unwrap();
 }
 
+thread_local! {
+    /// How often `Shelf::valid` ran on this thread.
+    static SHELF_CHECKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// A record whose invariant reads its name and counts its books.
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+#[model(check = Shelf::valid, check_reads = "name", check_items = "books")]
+pub struct Shelf {
+    pub name: String,
+    pub note: String,
+    pub books: Collection<Book>,
+}
+
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Book {
+    pub title: String,
+}
+
+impl Shelf {
+    fn valid(&self) -> Result<(), Refusal> {
+        SHELF_CHECKS.with(|checks| checks.set(checks.get() + 1));
+        if self.name == "bad" {
+            return Err(Refusal::new("no shelf is called bad"));
+        }
+        Ok(())
+    }
+}
+
+#[resource(kind = "test.shelf", label = "Shelf")]
+impl Shelf {
+    /// Shelve a book.
+    #[action]
+    pub fn shelve(&mut self, cx: &mut ActionCx, title: String) {
+        self.books.push(cx.id(), Book { title });
+    }
+}
+
+#[test]
+fn an_edit_outside_what_a_check_reads_does_not_read_the_record_to_check_it() {
+    let mut shelf = Replica::<Shelf>::new();
+    shelf.apply(Shelf::SHELVE.with("Dune")).unwrap();
+    let id = shelf.state().unwrap().books.ids().next().unwrap().clone();
+    let apply = |shelf: &mut Replica<Shelf>, edit: &Edit<Shelf>| {
+        shelf
+            .apply(Invoke::edit(edit).map_err(|error| error.to_string())?)
+            .map(drop)
+            .map_err(|error| error.to_string())
+    };
+    let checks = || SHELF_CHECKS.with(std::cell::Cell::get);
+    let before = checks();
+    apply(&mut shelf, &Shelf::paths().note.set("by the door".into())).unwrap();
+    apply(
+        &mut shelf,
+        &Shelf::paths()
+            .books
+            .item(&id)
+            .title
+            .set("Dune Messiah".into()),
+    )
+    .unwrap();
+    assert_eq!(
+        checks(),
+        before,
+        "neither edit touches what the check reads"
+    );
+    let refused = apply(&mut shelf, &Shelf::paths().name.set("bad".into())).unwrap_err();
+    assert!(refused.contains("called bad"), "{refused}");
+    assert!(checks() > before);
+    let state = shelf.state().unwrap();
+    assert_eq!(state.note, "by the door");
+    assert_eq!(state.books[&id].title, "Dune Messiah");
+    assert_eq!(state.name, "");
+}
+
 #[test]
 fn readonly_fields_change_only_through_verbs() {
     let mut library = Replica::<Library>::new();
