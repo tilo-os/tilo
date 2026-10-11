@@ -8,6 +8,36 @@ use tilo_contact_directory::ContactDirectory;
 use ui::framework::testing::TestApp;
 use ui::tilo_resource::Id;
 
+#[test]
+fn private_group_action_contracts_preserve_read_and_outside_grants() {
+    use ui::tilo_actions::{ActionKind, LOCAL_DEVICE_ONLY, OperationKind};
+
+    let specs = <MessagesEffect as ui::framework::Effect>::specs();
+    for (id, kind) in [
+        ("list-groups", ActionKind::Read),
+        ("read-group-membership", ActionKind::Read),
+        ("read-group-history", ActionKind::Read),
+        ("send-group-text", ActionKind::Outside),
+        ("add-group-member", ActionKind::Outside),
+        ("remove-group-member", ActionKind::Outside),
+        ("leave-group", ActionKind::Outside),
+    ] {
+        let spec = specs
+            .iter()
+            .find(|spec| spec.id == id)
+            .expect("every private group action must be exported");
+        assert_eq!(spec.contract.kind, kind, "grant kind for {id}");
+        assert_eq!(spec.kind, OperationKind::Effect, "effect kind for {id}");
+        assert!(
+            spec.contract
+                .tags
+                .iter()
+                .any(|tag| tag == LOCAL_DEVICE_ONLY),
+            "private group action {id} must remain on the original device"
+        );
+    }
+}
+
 #[derive(Clone)]
 struct GroupHostFixture {
     revoked: std::sync::Arc<std::sync::atomic::AtomicBool>,
