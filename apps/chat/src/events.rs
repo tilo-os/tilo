@@ -993,10 +993,8 @@ impl ChatApp {
             Hit::Channel(id) => self.on_hit_channel(id, doc),
             Hit::Agent(agent) if self.room_agents.iter().any(|known| known == &agent) => {
                 self.detached_agent_placeholder = None;
-                self.direct_agent = Some(agent.clone());
-                self.active_channel =
-                    crate::doc::ChatDoc::agent_conversation_channel_id(&self.active_ws, &agent);
                 let workspace = self.active_ws.clone();
+                self.select_agent_conversation(&workspace, &agent);
                 self.agent_task_context(&workspace, &agent);
                 self.thread_open = None;
                 self.reset_timeline_to_latest();
@@ -3242,6 +3240,71 @@ mod tests {
             )
             .is_empty(),
             "the composer never bypasses the published action with a local CRDT write"
+        );
+    }
+
+    #[test]
+    fn agent_navigation_atomically_presents_each_private_editor_before_sync() {
+        let mut doc = AutoCommit::new();
+        ChatDoc::seed_starter(&mut doc, "u_alice", "Alice", "AL");
+        let mut app = peer("u_alice", "Alice", "AL", 0);
+        app.room_agents = vec!["tide".into(), "reed".into()];
+        app.room_names.insert("agent:tide".into(), "Tide".into());
+        app.room_names.insert("agent:reed".into(), "Reed".into());
+        app.reload(&doc);
+
+        app.open_agent_conversation("ws_home", "tide")
+            .expect("Tide is admitted");
+        app.composer_main.stage_private_text("Tide private draft");
+        app.composer_main.select(18, 16);
+        let tide_selection = app.composer_main.selection();
+        render_frame(&mut app, 1200.0, 800.0);
+
+        app.answer_effect(crate::effects::ChatEffect::OpenAgentConversation {
+            workspace: "ws_home".into(),
+            agent: "tide".into(),
+        })
+        .expect("reopening the same Agent remains idempotent");
+        assert_eq!(app.composer_main.value(), "Tide private draft");
+        assert_eq!(app.composer_main.selection(), tide_selection);
+
+        app.answer_effect(crate::effects::ChatEffect::OpenAgentConversation {
+            workspace: "ws_home".into(),
+            agent: "reed".into(),
+        })
+        .expect("the semantic OpenAgentConversation effect selects Reed");
+        assert_eq!(app.direct_agent.as_deref(), Some("reed"));
+        assert_eq!(app.composer_main.value(), "");
+        let reed_accessibility = ui::Widget::accessibility(&app)
+            .expect("Chat remains accessible")
+            .children
+            .into_iter()
+            .find(|node| node.action_target.as_deref() == Some("chat.composer"))
+            .expect("the newly selected Agent editor is accessible before sync");
+        assert_eq!(reed_accessibility.value.as_deref(), Some(""));
+
+        type_str(&mut app, &mut doc, "Separate Reed draft");
+        app.composer_main.select(19, 14);
+        let reed_selection = app.composer_main.selection();
+        app.answer_effect(crate::effects::ChatEffect::OpenAgentConversation {
+            workspace: "ws_home".into(),
+            agent: "tide".into(),
+        })
+        .expect("the semantic OpenAgentConversation effect restores Tide");
+        assert_eq!(app.composer_main.value(), "Tide private draft");
+        assert_eq!(app.composer_main.selection(), tide_selection);
+
+        app.on_hit(
+            Hit::Agent("reed".into()),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
+        assert_eq!(app.composer_main.value(), "Separate Reed draft");
+        assert_eq!(app.composer_main.selection(), reed_selection);
+        assert_eq!(
+            app.composer_main
+                .private_plain_for("ws_home", "tide")
+                .as_deref(),
+            Some("Tide private draft")
         );
     }
 

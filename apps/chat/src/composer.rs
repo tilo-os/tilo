@@ -125,10 +125,18 @@ impl RichTextSource for DraftField {
 pub struct ComposerSource {
     shared: DraftField,
     private: LocalState<HashMap<String, Draft>>,
+    private_editor_states: LocalState<HashMap<String, PrivateEditorState>>,
     private_key: Option<String>,
     read_only: bool,
     revision: u64,
     observed: Option<u64>,
+}
+
+#[derive(Clone)]
+struct PrivateEditorState {
+    focused_block: Option<usize>,
+    focused_line: Option<String>,
+    selection: Option<[usize; 4]>,
 }
 
 impl ComposerSource {
@@ -136,6 +144,7 @@ impl ComposerSource {
         Self {
             shared: DraftField::new(),
             private: LocalState::new(HashMap::new()),
+            private_editor_states: LocalState::new(HashMap::new()),
             private_key: None,
             read_only: false,
             revision: 0,
@@ -365,6 +374,7 @@ impl DraftComposer {
 
     /// Edit the draft stored under `key` (a channel, or a thread).
     pub fn set_key(&mut self, key: &str) {
+        self.remember_private_editor_state();
         let source = self.host.widget_mut().source_mut();
         source.use_shared();
         if source.shared.key != key {
@@ -390,10 +400,101 @@ impl DraftComposer {
     /// Edit the private draft belonging to one direct-agent conversation.
     /// The key is a local routing key only; it is never written to the room.
     pub fn set_agent_draft(&mut self, workspace: &str, agent: &str) {
+        let key = agent_draft_key(workspace, agent);
+        let current = self.host.widget().source().private_key.clone();
+        if current.as_deref() == Some(key.as_str()) {
+            return;
+        }
+        let keep_focused = Widget::is_focused(self.host.widget());
+        let state = self.private_editor_state();
+        if let Some(current) = current {
+            self.host
+                .widget()
+                .source()
+                .private_editor_states
+                .update(|states| {
+                    states.insert(current, state);
+                });
+        }
+        let saved = self
+            .host
+            .widget()
+            .source()
+            .private_editor_states
+            .with(|states| states.get(&key).cloned());
+        self.host.widget_mut().source_mut().use_private(key);
+        self.host.widget_mut().present_now();
+        self.restore_private_editor_state(saved.as_ref(), keep_focused);
+    }
+
+    fn private_editor_state(&self) -> PrivateEditorState {
+        let surface = self.host.widget();
+        let editor = surface.editor();
+        PrivateEditorState {
+            focused_block: editor.focused_index(),
+            focused_line: editor
+                .focused_index()
+                .and_then(|index| editor.blocks().get(index))
+                .and_then(|block| ui::undo::get_state(block.line.inner())),
+            selection: editor.document_selection().map(|selection| {
+                [
+                    selection.anchor.block,
+                    selection.anchor.byte,
+                    selection.cursor.block,
+                    selection.cursor.byte,
+                ]
+            }),
+        }
+    }
+
+    fn remember_private_editor_state(&self) {
+        let Some(key) = self.host.widget().source().private_key.clone() else {
+            return;
+        };
+        let state = self.private_editor_state();
         self.host
-            .widget_mut()
-            .source_mut()
-            .use_private(agent_draft_key(workspace, agent));
+            .widget()
+            .source()
+            .private_editor_states
+            .update(|states| {
+                states.insert(key, state);
+            });
+    }
+
+    fn restore_private_editor_state(
+        &mut self,
+        saved: Option<&PrivateEditorState>,
+        keep_focused: bool,
+    ) {
+        let surface = self.host.widget_mut();
+        let editor = surface.editor_mut();
+        editor.clear_document_selection();
+        if let Some(saved) = saved {
+            if let Some(index) = saved.focused_block {
+                editor.focus_block(index, ui::widget::CursorPlacement::Start);
+                if let Some(line) = &saved.focused_line
+                    && let Some(block) = editor.blocks_mut().get_mut(index)
+                {
+                    ui::undo::set_state(block.line.inner_mut(), line);
+                }
+            }
+            if let Some([anchor_block, anchor_byte, cursor_block, cursor_byte]) = saved.selection {
+                editor.select_document_range(
+                    ui::widget::DocumentPosition {
+                        block: anchor_block,
+                        byte: anchor_byte,
+                    },
+                    ui::widget::DocumentPosition {
+                        block: cursor_block,
+                        byte: cursor_byte,
+                    },
+                );
+            }
+            Widget::set_focus(surface, keep_focused);
+        } else {
+            editor.focus_block(usize::MAX, ui::widget::CursorPlacement::End);
+            Widget::set_focus(surface, keep_focused);
+        }
     }
 
     /// Put sample text in the attached peer-local draft for a named capture.
@@ -480,7 +581,9 @@ impl DraftComposer {
     /// The retained editor itself moves between attached and floated views;
     /// the inactive view only needs the same keyed store for later routes.
     pub(crate) fn share_private_store_from(&mut self, other: &Self) {
-        self.host.widget_mut().source_mut().private = other.host.widget().source().private.clone();
+        let source = self.host.widget_mut().source_mut();
+        source.private = other.host.widget().source().private.clone();
+        source.private_editor_states = other.host.widget().source().private_editor_states.clone();
     }
 }
 

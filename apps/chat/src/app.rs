@@ -2133,10 +2133,8 @@ impl ChatApp {
         {
             return Err("agent is not admitted to this workspace".into());
         }
-        workspace.clone_into(&mut self.active_ws);
+        self.select_agent_conversation(workspace, agent);
         self.detached_agent_placeholder = None;
-        self.active_channel = ChatDoc::agent_conversation_channel_id(workspace, agent);
-        self.direct_agent = Some(agent.into());
         self.agent_task_context(workspace, agent);
         self.inbox_open = false;
         self.thread_open = None;
@@ -2145,6 +2143,14 @@ impl ChatApp {
         let channel = self.active_channel.clone();
         self.restore_attached_agent_surface(&channel);
         Ok(())
+    }
+
+    pub(crate) fn select_agent_conversation(&mut self, workspace: &str, agent: &str) {
+        workspace.clone_into(&mut self.active_ws);
+        self.active_channel = ChatDoc::agent_conversation_channel_id(workspace, agent);
+        self.direct_agent = Some(agent.into());
+        self.composer_main.set_agent_draft(workspace, agent);
+        self.draft_main = self.composer_main.private_plain().unwrap_or_default();
     }
 
     pub(crate) fn conversation_instance(parent: &Self, agent: &str) -> Self {
