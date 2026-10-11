@@ -75,6 +75,10 @@ media = { package = "tilo-media", path = "../../platform/tilo-media" }
 tilo-files = { path = "../../platform/tilo-files" }
 # The person's contact directory: Contacts, Mail and Messages each read it.
 tilo-contact-directory = { path = "../../platform/tilo-contact-directory" }
+# The rich-text document engine and its editor: the office apps, Notes, Chat,
+# Calendar, Ebook and PDF Viewer each carried a copy of about 300 KB.
+tilo-document = { path = "../../doc/tilo-document" }
+tilo-rich-text = { path = "../../sdk/tilo-rich-text" }
 # Versioned format/network engines used by system apps. Keeping these in the
 # runtime bundle lets tapps contain policy and UI while the replaceable engine
 # implementations are stored once per runtime generation.
