@@ -229,6 +229,17 @@ impl<A: ResourceApp> HeadlessApp<A> {
         )
     }
 
+    /// How many of the person's records the window holds open, the records
+    /// a settings section keeps among them: a section's opens only when it
+    /// is first written or stepped.
+    pub fn open_person_records(&mut self) -> usize {
+        self.harness()
+            .with_widget_mut(|root: &mut ResourceRoot<A::Resource>| {
+                root.storage.person_owners().len()
+            })
+            .unwrap_or_default()
+    }
+
     /// The person's own record of `P` the running app keeps, as its views
     /// open it.
     pub fn person<P: Resource>(&mut self) -> Option<super::PersonRecord<P>> {
