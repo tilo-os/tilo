@@ -37,7 +37,7 @@ use wayland_client::{Connection, Dispatch, QueueHandle, WEnum, delegate_noop};
 use wayland_protocols::wp::linux_dmabuf::zv1::client::{
     zwp_linux_buffer_params_v1, zwp_linux_dmabuf_feedback_v1, zwp_linux_dmabuf_v1,
 };
-use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
+use wayland_protocols::xdg::shell::client::{xdg_toplevel, xdg_wm_base};
 
 const WIDTH: i32 = 64;
 const HEIGHT: i32 = 48;
@@ -85,23 +85,7 @@ struct Client {
     batches: Vec<Batch>,
 }
 
-crate::support::wayland::test_client!(Client: registry, ping);
-
-impl Dispatch<xdg_surface::XdgSurface, ()> for Client {
-    fn event(
-        state: &mut Self,
-        surface: &xdg_surface::XdgSurface,
-        event: xdg_surface::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        if let xdg_surface::Event::Configure { serial } = event {
-            surface.ack_configure(serial);
-            state.configured = true;
-        }
-    }
-}
+crate::support::wayland::test_client!(Client: registry, ping, configured);
 
 fn dev_t(bytes: &[u8]) -> u64 {
     let mut buf = [0_u8; 8];

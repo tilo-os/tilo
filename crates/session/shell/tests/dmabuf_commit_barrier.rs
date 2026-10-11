@@ -18,12 +18,12 @@ use std::os::fd::{AsFd, FromRawFd, OwnedFd};
 use std::sync::mpsc;
 
 use vello::kurbo::Rect;
+use wayland_client::delegate_noop;
 use wayland_client::protocol::{wl_buffer, wl_compositor, wl_surface};
-use wayland_client::{Connection, Dispatch, QueueHandle, delegate_noop};
 use wayland_protocols::wp::linux_dmabuf::zv1::client::{
     zwp_linux_buffer_params_v1, zwp_linux_dmabuf_v1,
 };
-use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
+use wayland_protocols::xdg::shell::client::{xdg_toplevel, xdg_wm_base};
 
 /// `DRM_FORMAT_ARGB8888`, one of the formats the compositor advertises.
 const DRM_FORMAT_ARGB8888: u32 = 0x3432_5241;
@@ -38,23 +38,7 @@ struct Client {
     configured: bool,
 }
 
-crate::support::wayland::test_client!(Client: registry, ping);
-
-impl Dispatch<xdg_surface::XdgSurface, ()> for Client {
-    fn event(
-        state: &mut Self,
-        surface: &xdg_surface::XdgSurface,
-        event: xdg_surface::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        if let xdg_surface::Event::Configure { serial } = event {
-            surface.ack_configure(serial);
-            state.configured = true;
-        }
-    }
-}
+crate::support::wayland::test_client!(Client: registry, ping, configured);
 
 delegate_noop!(Client: ignore wl_compositor::WlCompositor);
 delegate_noop!(Client: ignore wl_surface::WlSurface);
