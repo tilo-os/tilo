@@ -6,6 +6,7 @@ use super::{
     ActionFailure, ActionOutput, InvocationId, InvocationUpdate, ResourceOperation,
     ResourceOperationStart, failed, failure,
 };
+use std::any::Any;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::{Rc, Weak};
@@ -41,11 +42,13 @@ impl Completion {
 
 pub(super) type Group = Rc<RefCell<Completion>>;
 
-pub(super) trait CausalDrainer<R: Resource> {
+/// A causal drain, type-erased for the root: the states it starts from are
+/// the resource's.
+pub(super) trait CausalDrainer {
     fn start(
         &mut self,
-        before: &R::State,
-        after: &R::State,
+        before: &dyn Any,
+        after: &dyn Any,
         operation: &ResourceOperation<'_>,
         group: &Group,
     ) -> Result<(), String>;
@@ -54,27 +57,22 @@ pub(super) trait CausalDrainer<R: Resource> {
     fn retire(&mut self);
 }
 
-struct RegisteredCausal<R: Resource> {
+struct RegisteredCausal {
     alive: Weak<()>,
-    drain: Box<dyn CausalDrainer<R>>,
+    drain: Box<dyn CausalDrainer>,
 }
 
-pub(super) struct CausalEffects<R: Resource> {
-    drains: Vec<RegisteredCausal<R>>,
+#[derive(Default)]
+pub(super) struct CausalEffects {
+    drains: Vec<RegisteredCausal>,
     groups: HashMap<InvocationId, Group>,
 }
 
-impl<R: Resource> Default for CausalEffects<R> {
-    fn default() -> Self {
-        Self {
-            drains: Vec::new(),
-            groups: HashMap::new(),
-        }
-    }
-}
+/// Reads the resource's state from a document.
+pub(super) type ReadState = fn(&tilo_resource::Doc) -> Result<Box<dyn Any>, String>;
 
-impl<R: Resource> CausalEffects<R> {
-    pub(super) fn register_drainer(&mut self, alive: Weak<()>, drain: Box<dyn CausalDrainer<R>>) {
+impl CausalEffects {
+    pub(super) fn register_drainer(&mut self, alive: Weak<()>, drain: Box<dyn CausalDrainer>) {
         self.drains.push(RegisteredCausal { alive, drain });
     }
 
@@ -88,6 +86,7 @@ impl<R: Resource> CausalEffects<R> {
         &mut self,
         operation: &ResourceOperation<'_>,
         applied: &AppliedDocument<'_>,
+        read: ReadState,
     ) -> Result<Option<ResourceOperationStart>, String> {
         if !self.registered() {
             return Ok(None);
@@ -102,8 +101,8 @@ impl<R: Resource> CausalEffects<R> {
         let before_doc = snapshot
             .fork_at(applied.before())
             .map_err(|error| error.to_string())?;
-        let before = R::read(&before_doc).map_err(|error| error.to_string())?;
-        let after = R::read(applied.document()).map_err(|error| error.to_string())?;
+        let before = read(&before_doc)?;
+        let after = read(applied.document())?;
         let group = Rc::new(RefCell::new(Completion {
             remaining: 0,
             admitted: 0,
@@ -115,7 +114,7 @@ impl<R: Resource> CausalEffects<R> {
             if entry.alive.strong_count() == 0 {
                 continue;
             }
-            if let Err(error) = entry.drain.start(&before, &after, operation, &group) {
+            if let Err(error) = entry.drain.start(&*before, &*after, operation, &group) {
                 group
                     .borrow_mut()
                     .error
@@ -188,7 +187,7 @@ impl<R: Resource> CausalEffects<R> {
 
 /// An outbox whose entries an admitted local invocation queues run at once
 /// under that invocation, which completes once they settled.
-impl<R, T, O> CausalDrainer<R> for Rc<RefCell<super::OutboxDrain<R, T, O>>>
+impl<R, T, O> CausalDrainer for Rc<RefCell<super::OutboxDrain<R, T, O>>>
 where
     R: Resource<State = R> + tilo_resource::Model + 'static,
     T: tilo_resource::Model + Clone + 'static,
@@ -196,11 +195,15 @@ where
 {
     fn start(
         &mut self,
-        before: &R::State,
-        after: &R::State,
+        before: &dyn Any,
+        after: &dyn Any,
         operation: &ResourceOperation<'_>,
         group: &Group,
     ) -> Result<(), String> {
+        let (Some(before), Some(after)) = (before.downcast_ref::<R>(), after.downcast_ref::<R>())
+        else {
+            return Err("a document consequence read another resource".into());
+        };
         let mut drain = self.borrow_mut();
         let previous: HashSet<tilo_resource::Id> =
             drain.owned(before).into_iter().map(|(id, _)| id).collect();
