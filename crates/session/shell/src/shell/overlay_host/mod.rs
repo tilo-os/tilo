@@ -3446,6 +3446,8 @@ impl ShellOverlayHost {
     #[must_use]
     pub fn with_chrome(mut self, chrome: Chrome) -> Self {
         chrome.borrow_mut().peer_sync_enabled = self.peer_sync_enabled;
+        self.projection_overlay
+            .bind_shared_display_authority(chrome.clone());
         self.chrome = Some(chrome);
         self
     }
