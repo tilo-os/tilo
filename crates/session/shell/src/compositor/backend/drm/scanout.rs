@@ -2000,7 +2000,7 @@ impl DrmScanout {
 
         // Best-effort: failure leaves `hw_cursor_active = false` and the software cursor takes over.
         let cursor_size =
-            super::input_config::AccessibilityInputSettings::load().effective_cursor_size();
+            settings_store::accessibility::AccessibilitySettings::load().effective_cursor_size();
         let cursor_dim = Self::cursor_plane_dim(&card);
         let (cursor_buffer, hw_cursor_active) =
             match Self::setup_hw_cursor(&card, crtc, cursor_size, cursor_dim) {

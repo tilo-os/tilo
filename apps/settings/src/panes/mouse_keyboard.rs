@@ -1540,10 +1540,10 @@ impl InputArea {
             }),
             document: cx.storage().settings_document().clone(),
             osk_always: cx
-                .settings::<crate::prefs::AccessibilityPrefs>()
+                .settings::<settings_store::accessibility::AccessibilitySettings>()
                 .get()
                 .on_screen_keyboard
-                == crate::prefs::OnScreenKeyboard::Always,
+                == settings_store::accessibility::OnScreenKeyboard::Always,
         }
     }
 
