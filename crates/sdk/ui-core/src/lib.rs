@@ -210,6 +210,7 @@ pub mod pen;
 pub mod permissions;
 pub mod persist;
 pub mod platform;
+pub mod pointer_replay;
 pub mod portable_storage;
 pub mod presence;
 pub mod priority_contacts;

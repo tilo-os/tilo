@@ -89,6 +89,9 @@ pub(super) struct InputRuntime {
     pub(super) tab_order_continues_in_host: bool,
     /// The pointer buttons held down, one bit each; see `input_publication`.
     pub(super) pointer_buttons: u32,
+    /// Where the pointer last moved, replayed before a press or release
+    /// that follows a rebuild under a still pointer.
+    pub(super) pointer_replay: crate::pointer_replay::PointerReplay,
 }
 
 impl InputRuntime {
@@ -104,6 +107,7 @@ impl InputRuntime {
             pen: crate::pen::PenInput::default(),
             tab_order_continues_in_host: false,
             pointer_buttons: 0,
+            pointer_replay: crate::pointer_replay::PointerReplay::default(),
         }
     }
 }
