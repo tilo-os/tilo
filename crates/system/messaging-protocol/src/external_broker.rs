@@ -332,64 +332,7 @@ impl ExternalBroker {
         source: Arc<whatsapp_rust::Client>,
         events: Vec<whatsapp_rust::wacore::types::events::InboundMessage>,
     ) -> Result<usize, SendError> {
-        if self.owner.service != crate::Service::Whatsapp || events.is_empty() || events.len() > 64
-        {
-            return Err(SendError::InvalidRequest);
-        }
-        let broker = self.clone();
-        tokio::task::spawn_blocking(move || {
-            let mut worker = broker.worker.blocking_lock();
-            if !worker.adapter.whatsapp_source(&source) {
-                return Err(SendError::Revoked);
-            }
-            let mut projected = Vec::with_capacity(events.len());
-            for event in &events {
-                let recipient = event.info.source.sender.to_string();
-                let proposed = broker.authority.incoming(&recipient)?;
-                let auth = broker.authorized(&proposed.route)?;
-                if auth.route.recipient != recipient {
-                    return Err(SendError::Revoked);
-                }
-                let native = crate::Route::new(
-                    crate::Service::Whatsapp,
-                    broker.owner.account.clone(),
-                    recipient,
-                )
-                .map_err(|_| SendError::Revoked)?;
-                let incoming = worker.adapter.whatsapp_incoming(
-                    &crate::whatsapp_runtime::IncomingContext {
-                        accounts: &auth.accounts,
-                        binding: &auth.binding,
-                        source: &source,
-                        route: &native,
-                    },
-                    event,
-                )?;
-                projected.push((auth, incoming));
-            }
-            for (auth, _) in &mut projected {
-                *auth = broker.authorized(&auth.route)?;
-            }
-            let batch: Vec<_> = projected
-                .iter()
-                .map(
-                    |(auth, incoming)| crate::signal_broker::history::IncomingRecord {
-                        route: &auth.route,
-                        id: &incoming.id,
-                        text: &incoming.text,
-                        timestamp_ms: incoming.timestamp_ms,
-                    },
-                )
-                .collect();
-            let count = worker.history.incoming_batch(&batch)?;
-            drop(worker);
-            if count > 0 {
-                broker.observers.publish();
-            }
-            Ok(count)
-        })
-        .await
-        .map_err(|_| SendError::Unavailable)?
+        self.observe_mixed(source, events, Vec::new(), None).await
     }
     /// Project a receipt delivered by the supervisor's account-owned SDK.
     /// This is a host API; apps receive only the private Messaging client.
@@ -600,6 +543,8 @@ mod incoming_tests;
 
 #[cfg(feature = "whatsapp-sdk")]
 mod whatsapp_hook;
+#[cfg(feature = "whatsapp-sdk")]
+mod whatsapp_mixed;
 #[cfg(feature = "whatsapp-sdk")]
 pub use whatsapp_hook::WhatsappInboxHook;
 

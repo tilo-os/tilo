@@ -32,7 +32,7 @@ use crate::certify::{
     PendingCertification, PendingConfirmation,
 };
 use crate::frame::{read_frame, read_frame_or_eof, write_frame};
-use crate::handshake::{EndpointTrust, ServerAuth};
+use crate::handshake::{EndpointTrust, LiveIdentity};
 use tilo_relay_protocol::agents::{AgentDelegation, AgentProposal};
 
 /// How long a final answer may wait for the requester to read it.
@@ -74,10 +74,7 @@ type Queued = ([u8; 32], String, watch::Receiver<Option<CertifyReply>>);
 /// The certification ALPN handler.
 #[derive(Clone)]
 pub struct CertificationProtocol {
-    own_user_pk: [u8; 32],
-    own_cert: DeviceCert,
-    own_sk: ed25519_dalek::SigningKey,
-    revocations: Arc<std::sync::RwLock<RevocationList>>,
+    identity: LiveIdentity,
     policy: CertificationPolicy,
     pending: Arc<Mutex<HashMap<[u8; 32], Pending>>>,
     confirmations: Arc<Mutex<HashMap<[u8; 32], Asked>>>,
@@ -98,17 +95,9 @@ fn encode<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, AcceptError> {
 }
 
 impl CertificationProtocol {
-    pub(crate) fn new(
-        own_user_pk: [u8; 32],
-        own_cert: DeviceCert,
-        own_sk: ed25519_dalek::SigningKey,
-        revocations: Arc<std::sync::RwLock<RevocationList>>,
-    ) -> Self {
+    pub(crate) fn new(identity: LiveIdentity) -> Self {
         Self {
-            own_user_pk,
-            own_cert,
-            own_sk,
-            revocations,
+            identity,
             policy: CertificationPolicy::browser(),
             pending: Arc::new(Mutex::new(HashMap::new())),
             confirmations: Arc::new(Mutex::new(HashMap::new())),
@@ -116,7 +105,8 @@ impl CertificationProtocol {
     }
 
     fn revocations(&self) -> RevocationList {
-        self.revocations
+        self.identity
+            .revocations
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
@@ -240,7 +230,7 @@ impl CertificationProtocol {
         request
             .verify_at(now_ns)
             .map_err(|error| error.to_string())?;
-        if request.user_public_key != self.own_user_pk {
+        if request.user_public_key != self.identity.user_public_key {
             return Err("this host serves another user identity".into());
         }
         if self.revocations().is_revoked(&request.device_public_key) {
@@ -343,13 +333,7 @@ impl CertificationProtocol {
     ) -> Result<(), AcceptError> {
         // Only the owner's devices that may admit devices approve, checked
         // before the relay signs anything for the approver.
-        let server = ServerAuth {
-            own_user: &self.own_user_pk,
-            cert: &self.own_cert,
-            key: &self.own_sk,
-            revocations: &self.revocations,
-        };
-        server
+        self.identity
             .authenticate_hello(
                 EndpointTrust::Fixed(HandshakeTrust::OwnerDeviceAdmitters),
                 &hello,
@@ -457,7 +441,9 @@ impl CertificationProtocol {
                         {
                             return refused("the delegation names another device");
                         }
-                        if let Err(error) = delegation.verify(&self.own_user_pk, now_ns) {
+                        if let Err(error) =
+                            delegation.verify(&self.identity.user_public_key, now_ns)
+                        {
                             return refused(&error.to_string());
                         }
                         if let Err(reason) = proposal.admits(&delegation) {
@@ -466,7 +452,7 @@ impl CertificationProtocol {
                         entry.delegation = Some(delegation);
                         CertifyReply::Issued {
                             cert,
-                            host_cert: self.own_cert.clone(),
+                            host_cert: self.identity.cert.clone(),
                         }
                     }
                     ApproverDecision::Issue(cert) => {
@@ -481,7 +467,7 @@ impl CertificationProtocol {
                         }
                         CertifyReply::Issued {
                             cert,
-                            host_cert: self.own_cert.clone(),
+                            host_cert: self.identity.cert.clone(),
                         }
                     }
                 };
@@ -549,12 +535,12 @@ mod confirmation_tests {
             signature: [0; 64],
         };
         sign_device_cert(&mut cert, &root).unwrap();
-        CertificationProtocol::new(
-            root.verifying_key().to_bytes(),
+        CertificationProtocol::new(LiveIdentity {
+            user_public_key: root.verifying_key().to_bytes(),
             cert,
-            key,
-            Arc::new(std::sync::RwLock::new(RevocationList::new())),
-        )
+            signing_key: key,
+            revocations: Arc::new(std::sync::RwLock::new(RevocationList::new())),
+        })
     }
 
     fn question(id: u8, wait: Duration) -> PendingConfirmation {

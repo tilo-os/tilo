@@ -244,30 +244,8 @@ pub struct WorkspaceAuthorityEnvelope {
     pub room_members: std::collections::BTreeMap<String, Vec<collab_types::RoomMember>>,
     pub tombstoned: bool,
     pub governor: [u8; 32],
-    #[serde(with = "serde_bytes_64")]
+    #[serde(with = "serde_bytes")]
     pub signature: [u8; 64],
-}
-
-mod serde_bytes_64 {
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
-    pub fn serialize<S>(value: &[u8; 64], serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serde_bytes::Bytes::new(value).serialize(serializer)
-    }
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<[u8; 64], D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let value = serde_bytes::ByteBuf::deserialize(deserializer)?;
-        value
-            .as_ref()
-            .try_into()
-            .map_err(|_| serde::de::Error::invalid_length(value.len(), &"64 bytes"))
-    }
 }
 
 impl WorkspaceAuthorityEnvelope {

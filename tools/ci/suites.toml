@@ -205,6 +205,7 @@ suites = [
   "os/tests/test_download_dev_installer.py",
   "os/tests/windows_direct_install_orchestrator_test.py",
   "os/tests/nearby_privileged_processes_test.sh",
+  "os/tests/nearby_cleanup_test.py",
   "os/tests/vm_firmware_selection.sh",
   "os/tests/vm_release_gate_invariants.sh",
   "os/tests/windows_guest_powershell_syntax.py",
