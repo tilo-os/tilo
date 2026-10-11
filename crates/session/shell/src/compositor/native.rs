@@ -4518,9 +4518,16 @@ fn write_snapshot_png(
                 }
             }
         }
-        let Some(rgba) = slot.as_mut().map(|renderer| renderer.render_rgba(&scene)) else {
+        // A shot is one render with no next frame to repair it, so it waits
+        // out Vello growing its buffers: one that did not fit drops the paths
+        // encoded last, and the scene draws every display in turn, so the
+        // second display came back empty while the first looked whole.
+        let Some(rendered) = slot.as_mut().map(|renderer| {
+            renderer.try_render_resilient(&scene, vello::peniko::Color::TRANSPARENT)
+        }) else {
             return Err("no offscreen renderer".to_string());
         };
+        let rgba = rendered?;
         // `rgba` is now an owned buffer with no tie to the renderer, so the
         // mutex guard can go before the encode/write work below.
         drop(slot);
