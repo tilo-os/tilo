@@ -684,6 +684,24 @@ pub struct Banner {
 }
 
 impl Banner {
+    /// Show or hide this node with the banner. True when the style changed.
+    fn style_visibility(&self, taffy: &mut TaffyTree<()>, node: NodeId) -> bool {
+        let display = if self.visible() {
+            taffy::Display::Flex
+        } else {
+            taffy::Display::None
+        };
+        let Ok(current) = taffy.style(node) else {
+            return false;
+        };
+        if current.display == display {
+            return false;
+        }
+        let mut style = current.clone();
+        style.display = display;
+        taffy.set_style(node, style).is_ok()
+    }
+
     pub fn new(kind: BannerKind, title: impl Into<String>) -> Self {
         Self::from_notice(Some(BannerNotice::new(kind, title)))
     }
@@ -1025,13 +1043,13 @@ impl Widget for Banner {
         node
     }
 
-    fn adjust_layout_with_measure(
+    fn adjust_layout_style(
         &mut self,
         taffy: &mut TaffyTree<()>,
         node: NodeId,
         text: &mut TextRenderer,
     ) -> bool {
-        let mut changed = self.adjust_layout_style(taffy, node);
+        let mut changed = self.style_visibility(taffy, node);
         // The body's height depends on the buttons' widths: measure them.
         let widths = [
             self.secondary.as_mut().map(|b| button_width(b, text)),
@@ -1045,23 +1063,6 @@ impl Widget for Banner {
             changed = true;
         }
         changed
-    }
-
-    fn adjust_layout_style(&mut self, taffy: &mut TaffyTree<()>, node: NodeId) -> bool {
-        let display = if self.visible() {
-            taffy::Display::Flex
-        } else {
-            taffy::Display::None
-        };
-        let Ok(current) = taffy.style(node) else {
-            return false;
-        };
-        if current.display == display {
-            return false;
-        }
-        let mut style = current.clone();
-        style.display = display;
-        taffy.set_style(node, style).is_ok()
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {

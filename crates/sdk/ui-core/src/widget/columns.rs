@@ -148,7 +148,12 @@ impl Widget for Columns {
     }
 
     /// Stack below the breakpoint, side by side above it.
-    fn adjust_layout_style(&mut self, tree: &mut TaffyTree<()>, node: NodeId) -> bool {
+    fn adjust_layout_style(
+        &mut self,
+        tree: &mut TaffyTree<()>,
+        node: NodeId,
+        _text: &mut crate::text_render::TextRenderer,
+    ) -> bool {
         let Ok(width) = tree.layout(node).map(|layout| layout.size.width) else {
             return false;
         };

@@ -812,7 +812,7 @@ impl<R: Resource> Widget for Each<R> {
 
     // Measured rows move the rows after them: read what Taffy measured and
     // place the mounted rows (and the list's height) to match.
-    fn adjust_layout_with_measure(
+    fn adjust_layout_style(
         &mut self,
         taffy: &mut TaffyTree<()>,
         node: NodeId,

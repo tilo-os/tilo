@@ -438,7 +438,12 @@ impl Widget for SplitHandle {
         taffy.widget_leaf(self.layout_style(), node_map, self)
     }
 
-    fn adjust_layout_style(&mut self, taffy: &mut TaffyTree<()>, node: NodeId) -> bool {
+    fn adjust_layout_style(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        node: NodeId,
+        _text: &mut crate::text_render::TextRenderer,
+    ) -> bool {
         let style = self.layout_style();
         if taffy.style(node).is_ok_and(|current| *current != style) {
             return taffy.set_style(node, style).is_ok();
@@ -862,7 +867,12 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
     }
 
     /// The panes follow a moved divider without rebuilding the tree.
-    fn adjust_layout_style(&mut self, taffy: &mut TaffyTree<()>, node: NodeId) -> bool {
+    fn adjust_layout_style(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        node: NodeId,
+        text: &mut crate::text_render::TextRenderer,
+    ) -> bool {
         let Ok(children) = taffy.children(node) else {
             return false;
         };
@@ -874,7 +884,7 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
         }
         let mut changed = self.style_panes(taffy, left, right);
         if let Some(&divider) = children.get(2) {
-            changed |= self.handle.adjust_layout_style(taffy, divider);
+            changed |= self.handle.adjust_layout_style(taffy, divider, text);
         }
         changed
     }
@@ -1198,7 +1208,7 @@ mod tests {
         width: f32,
         height: f32,
     ) {
-        split.adjust_layout_style(tree, node);
+        split.adjust_layout_style(tree, node, &mut crate::text_render::TextRenderer::new());
         tree.compute_layout(
             node,
             taffy::Size {
