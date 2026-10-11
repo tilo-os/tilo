@@ -553,6 +553,20 @@ impl MainPanel {
         self.editor.editor_mut().set_local_author(author);
     }
 
+    /// Give an explicitly opened note its body focus without discarding a
+    /// pending title edit or moving the existing caret.
+    pub(crate) fn focus_note_body(&mut self) {
+        if self.title_label.is_editing() {
+            self.title_label.commit();
+            if let EditOutcome::Committed(title) = self.title_label.take_outcome() {
+                self.pending_rename = Some(title);
+            }
+        }
+        self.editor.set_focus(true);
+        self.scroll_focused = false;
+        self.dirty = true;
+    }
+
     /// Route the window-level Find command into the shared structured editor,
     /// even when the note title or another sibling currently owns focus.
     pub fn open_find(&mut self, focus_target: &mut Option<NodeId>) -> bool {
@@ -964,6 +978,10 @@ impl MainPanel {
     /// etc.).
     pub fn editor(&self) -> &BlockEditor {
         self.editor.editor()
+    }
+
+    pub(crate) fn editor_route_available(&self) -> bool {
+        self.editor_node.is_some()
     }
 
     /// Test/internal mutable accessor for the editor — used by the

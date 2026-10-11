@@ -464,6 +464,11 @@ impl NotesApp {
             })
         });
         let rect = editor.get_rect();
+        let sidebar_drawer_open = self.shell.geometry().sidebar == SidebarPlacement::Drawer
+            && self.shell.is_sidebar_open();
+        let active_line = editor
+            .focused_index()
+            .and_then(|index| editor.blocks().get(index));
         serde_json::json!({
             "app": "so.tilo.notes",
             "editor_id": "block_editor",
@@ -481,6 +486,16 @@ impl NotesApp {
             "rendered_body_hash": blake3::hash(rendered.as_bytes()).to_hex().to_string(),
             "rendered_body_chars": rendered.chars().count(),
             "editor_focused": editor.is_focused(),
+            "active_line_present": active_line.is_some(),
+            "active_line_focused": active_line.is_some_and(|block| block.line.is_focused()),
+            "active_line_disabled": active_line.is_some_and(|block| block.line.is_disabled()),
+            "editor_read_only": editor.is_read_only(),
+            "editor_composing": editor.is_composing(),
+            "editor_route_available": self.main_node.is_some() && self.main.editor_route_available() && !sidebar_drawer_open,
+            "sidebar_drawer_open": sidebar_drawer_open,
+            "sidebar_renaming": self.sidebar.is_renaming(),
+            "sidebar_menu_open": self.sidebar.menu_is_open(),
+            "editor_menu_open": editor.slash_menu_visible() || editor.link_popover().is_visible(),
             "caret": caret,
             "editor_rect": [rect.x0, rect.y0, rect.x1, rect.y1],
         })
@@ -1645,6 +1660,21 @@ impl NotesApp {
 
     /// Open note `id` on the next sync, where its body binds.
     fn open_page(&mut self, id: PageId) {
+        // Explicit note navigation gives the body the keyboard. Keep a docked
+        // tree visible, but dismiss its modal drawer, including saved intent
+        // that has not yet been resolved against the first measured width.
+        self.pending_responsive_view = Some((false, false));
+        if self.shell.geometry().sidebar == SidebarPlacement::Drawer {
+            self.set_drawer_open(false);
+        }
+        self.sidebar.set_focus(false);
+        let outgoing_page = self.main.page_id();
+        self.main.focus_note_body();
+        if let Some(new_title) = self.main.take_title_rename()
+            && let Some(id) = outgoing_page
+        {
+            self.pending_events.push(OutEvent::Rename { id, new_title });
+        }
         self.pending_events.push(OutEvent::Select(id));
     }
 
