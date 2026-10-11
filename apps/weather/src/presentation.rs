@@ -91,3 +91,59 @@ fn glyph(sky: Option<(Sky, bool)>) -> GlyphPainter {
 pub(crate) fn row_height(text: &mut TextRenderer, theme: &Theme) -> f64 {
     ListRowFace::new("Ag").secondary("Ag").height(text, theme)
 }
+
+/// The same provider-owned observation as the forecast, published as bounded data.
+/// Zero timestamps are explicit capture fixtures, never reported as a live fetch.
+pub(crate) fn morning_preview(
+    snapshot: &WeatherSnapshot,
+    units: Units,
+    notice: Option<crate::core::ForecastNotice>,
+) -> ui::tilo_actions::ResourcePresentation {
+    use ui::i18n::{ArgValue, EmbeddedCatalog};
+    const CATALOGS: &[(&str, &str)] = &[
+        ("en-US", include_str!("../locales/en-US.ftl")),
+        ("de-DE", include_str!("../locales/de-DE.ftl")),
+    ];
+    static CATALOG: EmbeddedCatalog =
+        EmbeddedCatalog::new("en-US", CATALOGS, "weather-morning-summary").with_system_locale();
+    let temperature = format!(
+        "{:.0}{}",
+        snapshot.temp_in(snapshot.current.temperature, units),
+        units.temp_suffix()
+    );
+    let preview = CATALOG.t_args(
+        "weather-morning-summary",
+        &[
+            ("temperature", ArgValue::from(temperature)),
+            (
+                "condition",
+                ArgValue::from(Sky::label(snapshot.current.weather_code)),
+            ),
+            ("time", ArgValue::from(snapshot.current.time.clone())),
+        ],
+    );
+    let detail = CATALOG.t_args(
+        "weather-morning-source",
+        &[(
+            "fetched",
+            ArgValue::from(
+                i64::try_from(snapshot.fetched_at)
+                    .ok()
+                    .and_then(|seconds| chrono::DateTime::from_timestamp(seconds, 0))
+                    .map_or_else(|| snapshot.fetched_at.to_string(), |time| time.to_rfc3339()),
+            ),
+        )],
+    );
+    let badge = CATALOG.t(if snapshot.fetched_at == 0 {
+        "weather-morning-fixture"
+    } else if notice.is_some() {
+        "weather-morning-stale"
+    } else {
+        "weather-morning-freshness"
+    });
+    ui::tilo_actions::ResourcePresentation {
+        detail: Some(detail),
+        badge: Some(badge),
+        preview: Some(preview),
+    }
+}

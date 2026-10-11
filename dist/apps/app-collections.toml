@@ -20,3 +20,5 @@ tube = ["live", "media", "grayjay-sync"]
 mail = ["live"]
 disks = ["live"]
 video-editor = ["decode", "gst"]
+# Typst from its engine library beside the runtime.
+typst-editor = ["runtime-engine"]

@@ -1478,6 +1478,9 @@ struct ScanoutFrame<'a> {
     /// The client buffer on top of everything on one output, which that
     /// output may scan out instead of rendering `scene`.
     scanout: Option<&'a crate::shell::scanout_candidate::ScanoutCandidate>,
+    /// The frame as layers, which an output that is the whole scene
+    /// composites a strip pan from.
+    layers: Option<&'a crate::shell::frame::FrameCache>,
 }
 
 // These two constructors are the only places a frame is translated for the scanouts, so a field
@@ -1491,6 +1494,7 @@ impl<'a> ScanoutFrame<'a> {
             hdr_layers: &[],
             backdrop: None,
             scanout: None,
+            layers: None,
         }
     }
 }
@@ -1509,6 +1513,7 @@ impl<'a> From<&'a FramePaint> for ScanoutFrame<'a> {
             hdr_layers: &frame.hdr_layers,
             backdrop: frame.backdrop.as_ref(),
             scanout: frame.scanout_candidate(),
+            layers: frame.cache.as_ref(),
         }
     }
 }
@@ -1652,9 +1657,13 @@ fn paint_scanouts(
     frame: ScanoutFrame<'_>,
     phase_window: Option<&mut PhaseWindow>,
 ) -> PaintScanoutSample {
-    let had_renderer = paint.is_some();
     let sample = paint_scanouts_with(scanouts, outputs, paint, cpu, pointer, frame, phase_window);
-    if !had_renderer && paint.is_some() {
+    // The presenter usually builds the renderer before its first frame (`prepare`), so this
+    // asks the renderer rather than whether this call built it.
+    if paint
+        .as_mut()
+        .is_some_and(paint::VelloDrmBridge::take_first_frame)
+    {
         // A new renderer has compiled its pipelines and drawn its first frame. The driver's
         // compile scratch is free now, but glibc would keep it (TIL-705).
         crate::shell::heap_trim::request();
@@ -2262,6 +2271,7 @@ fn present_direct(
             sdr_white_nits,
             hdr_layers: frame.hdr_layers,
             color_lut: entry.color_lut.as_ref(),
+            layers: frame.layers,
         },
     );
     let stats = match painted {
@@ -2681,6 +2691,7 @@ fn render_combined_readback(
         hdr_layers,
         backdrop: _,
         scanout: _,
+        layers: _,
     } = frame;
     let Some(bridge) = paint.as_mut() else {
         return PaintScanoutSample::default();
@@ -3247,6 +3258,12 @@ impl Backend for DrmBackend {
 
     fn pixel_aligned_strip_pan(&self) -> bool {
         cpu_present::cpu_render_reason().is_some()
+    }
+
+    /// The GPU presenter composites a lone unmagnified output's strip pans
+    /// from retained layers (`RetainedGpuTarget::render_layers_until`).
+    fn composites_strip_layers(&self) -> bool {
+        cpu_present::cpu_render_reason().is_none()
     }
 
     /// Inline presentation, reached only when the presenter hasn't been split off yet — kept so a caller that never splits still paints.
@@ -4193,6 +4210,7 @@ mod lone_output_tests {
                     sdr_white_nits: crate::shell::color_pipeline::SDR_REFERENCE_WHITE_NITS,
                     hdr_layers: &[],
                     color_lut: None,
+                    layers: None,
                 },
             )
             .expect("the output's frame renders")

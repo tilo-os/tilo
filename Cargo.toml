@@ -274,6 +274,8 @@ members = [
     "crates/runtime/runtime-collab",
     # Opt-in dynamic SDK; excluded from default-members.
     "crates/runtime/runtime-dylib",
+    # Single-app engines shipped beside it in the runtime bundle.
+    "crates/runtime/engines/typst",
     "crates/runtime/runtime-fs",
     "crates/runtime/runtime-identity",
     "crates/runtime/runtime-portal",

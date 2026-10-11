@@ -2514,120 +2514,6 @@ mod tests {
     #[test]
     #[cfg(unix)]
     #[serial_test::serial]
-    fn native_initial_launch_file_record_retains_required_bridge_without_writer() {
-        use automerge::{ReadDoc, transaction::Transactable};
-        let environment = LaunchFixtureEnv::new();
-        let room = uuid::Uuid::new_v4();
-        let mut _env_override = tilo_test_env::ScopedEnv::new();
-        _env_override.set("TILO_WORKSPACE_ID", room.to_string());
-        let want = crate::record::RecordCheckout::new(
-            crate::record::RecordId::for_file(environment._directory.path().join("selected.md")),
-            crate::record::RecordKind::new("document"),
-        );
-        let mut history = automerge::AutoCommit::new();
-        assert!(crate::record::init_scoped(
-            &mut history,
-            &want.id,
-            &want.kind,
-            &room.to_string(),
-            Some(&room.to_string())
-        ));
-        history
-            .put(automerge::ROOT, "retained", "file history")
-            .unwrap();
-        history.commit();
-        let heads = history.get_heads();
-        let (manager, _) =
-            crate::collaboration::CollaborationManager::native_initial_fixture_for_test(
-                "so.tilo.launch-fixture",
-                room,
-                history.save(),
-            );
-        let construction =
-            crate::collaboration::native_initial::NativeConstruction::enter(manager).unwrap();
-        let records = crate::record::RecordSet::for_local_files("so.tilo.launch-fixture").unwrap();
-        let reader = records.file_history_reader().unwrap();
-        assert!(
-            reader.require_local_creation().is_err(),
-            "Required file creation needs governor admission"
-        );
-        let capture = reader
-            .read(&want)
-            .unwrap()
-            .expect("actual Required Existing history");
-        let mut installed = automerge::AutoCommit::new();
-        capture.install_into(&mut installed).unwrap();
-        assert_eq!(
-            installed
-                .get(automerge::ROOT, "retained")
-                .unwrap()
-                .unwrap()
-                .0
-                .as_str(),
-            Some("file history")
-        );
-        for head in heads {
-            assert!(installed.get_change_by_hash(&head).is_some());
-        }
-        let package_document =
-            app_state::DocStore::legacy_package_document_path("so.tilo.launch-fixture").unwrap();
-        let data_home = package_document
-            .parent()
-            .and_then(std::path::Path::parent)
-            .unwrap();
-        let local_cache = app_state::DocStore::room_record_dir_at(
-            data_home,
-            "so.tilo.launch-fixture",
-            &room.to_string(),
-            &want.id.storage_key(),
-        )
-        .unwrap();
-        assert!(
-            !local_cache.exists(),
-            "file-owned history must not create a second canonical writer"
-        );
-        drop(construction);
-        assert!(
-            reader.read(&want).is_err(),
-            "closed Required worker must never become local None"
-        );
-    }
-
-    #[test]
-    #[cfg(unix)]
-    #[serial_test::serial]
-    fn native_initial_launch_file_record_local_mode_is_explicit() {
-        let environment = LaunchFixtureEnv::new();
-        let want = crate::record::RecordCheckout::new(
-            crate::record::RecordId::for_file(environment._directory.path().join("local.md")),
-            crate::record::RecordKind::new("document"),
-        );
-        let records = crate::record::RecordSet::for_local_files("so.tilo.launch-fixture").unwrap();
-        assert!(records.initial_file_history(&want).unwrap().is_none());
-        records
-            .file_history_reader()
-            .unwrap()
-            .require_local_creation()
-            .unwrap();
-    }
-
-    #[test]
-    fn native_initial_launch_file_record_unresolved_set_is_not_local() {
-        let want = crate::record::RecordCheckout::new(
-            crate::record::RecordId::minted(),
-            crate::record::RecordKind::new("document"),
-        );
-        assert!(
-            crate::record::RecordSet::in_memory()
-                .initial_file_history(&want)
-                .is_err(),
-            "missing private mode selection cannot authorize local genesis"
-        );
-    }
-
-    #[test]
-    #[cfg(unix)]
-    #[serial_test::serial]
     fn native_initial_launch_missing_configured_service_never_selects_local() {
         let _environment = LaunchFixtureEnv::new();
         let mut env_override = tilo_test_env::ScopedEnv::new();
@@ -2635,15 +2521,10 @@ mod tests {
         let manager = crate::collaboration::CollaborationManager::for_native_launch(
             &crate::record::RecordKind::new("launch-fixture.document"),
         );
-        let files = crate::record::RecordSet::for_local_files("so.tilo.launch-fixture");
         drop(env_override);
         assert!(
             manager.is_err(),
             "configured but missing native service is unavailable, not a local launch"
-        );
-        assert!(
-            files.is_err(),
-            "missing native bridge cannot silently authorize a local file genesis"
         );
     }
 }

@@ -1724,7 +1724,6 @@ pub struct MouseKeyboardPane {
     /// Attached drawing tablets and pads, one card each.
     tablets: Vec<InputDeviceSnapshot>,
     pads: Vec<InputDeviceSnapshot>,
-    structure_dirty: bool,
     composed: ui::widget::Composed,
     composed_text_growth_bits: u32,
     source_row_height: f32,
@@ -1763,7 +1762,6 @@ impl MouseKeyboardPane {
             sections: InputSections::for_devices(None),
             tablets: Vec::new(),
             pads: Vec::new(),
-            structure_dirty: false,
             composed: ui::widget::Composed::default(),
             composed_text_growth_bits: 1.0_f32.to_bits(),
             source_row_height: ui::tokens::Metrics::default().panel_row_height,
@@ -1787,7 +1785,6 @@ impl MouseKeyboardPane {
             pane.editor.set(editor);
         }
         pane.observe_devices(area.devices().as_ref());
-        pane.structure_dirty = false;
         pane
     }
 
@@ -1997,7 +1994,7 @@ impl MouseKeyboardPane {
                 self.editor.set(editor);
             }
             self.composed.clear();
-            self.structure_dirty = true;
+            self.composed.invalidate();
         }
         let sections = InputSections::for_devices(snapshot);
         let owned = |kind| {
@@ -2011,7 +2008,7 @@ impl MouseKeyboardPane {
             self.sections = sections;
             self.tablets = tablets;
             self.pads = pads;
-            self.structure_dirty = true;
+            self.composed.invalidate();
             self.composed.clear();
         }
     }
@@ -2750,7 +2747,7 @@ impl Widget for MouseKeyboardPane {
         let editor = self.editor.get();
         if editor != self.last_editor {
             self.last_editor = editor;
-            self.structure_dirty = true;
+            self.composed.invalidate();
             self.composed.clear();
         }
         let identity = ui::local_identity::bound().map(|identity| identity.group_public_key);
@@ -2773,7 +2770,7 @@ impl Widget for MouseKeyboardPane {
                             .any(|entry| &entry.spelling == word && &entry.language == language)
                     })
                 });
-            self.structure_dirty = true;
+            self.composed.invalidate();
             self.composed.clear();
         }
         // The controls are built from the values: a change rebuilds them.
@@ -2781,11 +2778,11 @@ impl Widget for MouseKeyboardPane {
             let mut last = self.input.get().clone();
             last.normalise_keyboard_sources();
             self.last = last;
-            self.structure_dirty = true;
+            self.composed.invalidate();
             self.composed.clear();
         }
         if self.text.refresh() {
-            self.structure_dirty = true;
+            self.composed.invalidate();
             self.composed.clear();
         }
         self.composed.sync(state, root);
@@ -2834,12 +2831,6 @@ impl Widget for MouseKeyboardPane {
 
     fn name(&self) -> &'static str {
         "MouseKeyboardPane"
-    }
-
-    fn take_structure_dirty(&mut self) -> bool {
-        let own = std::mem::take(&mut self.structure_dirty);
-        let child = self.composed.take_structure_dirty();
-        own || child
     }
 }
 

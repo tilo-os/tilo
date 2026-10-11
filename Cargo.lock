@@ -550,7 +550,6 @@ dependencies = [
  "capnp-rpc",
  "clap",
  "ed25519-dalek 3.0.0",
- "futures-util",
  "getrandom 0.4.3",
  "hex",
  "install",
@@ -566,7 +565,6 @@ dependencies = [
  "tilo-app-package",
  "tilo-paths",
  "tokio",
- "tokio-util",
  "tracing",
  "tracing-subscriber",
  "wire-frame",
@@ -2164,8 +2162,6 @@ dependencies = [
  "taffy",
  "tilo-app",
  "tilo-test-env",
- "tilo-vello",
- "tilo-winit",
  "tracing",
  "uuid",
  "workspace-hack",
@@ -4645,14 +4641,13 @@ dependencies = [
  "capnp",
  "capnp-rpc",
  "format-provider-abi",
- "futures",
  "getrandom 0.4.3",
  "notify",
+ "runtime-portal",
  "serde",
  "tempfile",
  "tilo-paths",
  "tokio",
- "tokio-util",
  "toml 1.0.6+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
@@ -11748,7 +11743,6 @@ dependencies = [
  "tilo-ocr",
  "tilo-thumbnail",
  "tilo-vello",
- "tilo-winit",
  "workspace-hack",
 ]
 
@@ -13035,7 +13029,6 @@ dependencies = [
  "tilo-clock",
  "tilo-test-env",
  "tokio",
- "tokio-util",
  "workspace-hack",
 ]
 
@@ -13049,7 +13042,6 @@ dependencies = [
  "async-imap",
  "chrono-tz",
  "collab-types",
- "comemo",
  "desktop-policy",
  "mime_guess",
  "os-actions",
@@ -13078,12 +13070,6 @@ dependencies = [
  "tilo-ui",
  "tilo-user-identity",
  "tilo-wet-media",
- "tiny-skia",
- "typst",
- "typst-assets",
- "typst-layout",
- "typst-pdf",
- "typst-render",
  "vte",
  "workspace-hack",
  "xattr",
@@ -13107,7 +13093,6 @@ dependencies = [
  "tilo-files",
  "tilo-test-env",
  "tokio",
- "tokio-util",
  "uuid",
  "wire-frame",
  "workspace-hack",
@@ -14303,6 +14288,7 @@ dependencies = [
  "iroh-base",
  "iroh-gossip",
  "iroh-mdns-address-lookup",
+ "iroh-relay",
  "launcher",
  "legacy-agent-protocol",
  "libc",
@@ -15809,7 +15795,6 @@ dependencies = [
  "rand_core 0.10.0",
  "serde",
  "serde_bytes",
- "sha2 0.11.0",
  "thiserror 2.0.21",
  "uuid",
  "workspace-hack",
@@ -18275,6 +18260,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-typst-engine"
+version = "0.1.0"
+dependencies = [
+ "comemo",
+ "runtime-dylib",
+ "typst",
+ "typst-assets",
+ "typst-layout",
+ "typst-pdf",
+ "typst-render",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-typst-fonts"
 version = "0.1.0"
 dependencies = [
@@ -18376,7 +18375,6 @@ dependencies = [
  "tilo-vello-encoding",
  "tilo-winit",
  "tokio",
- "tokio-util",
  "tracing",
  "tracing-subscriber",
  "two-face",
@@ -18521,7 +18519,6 @@ dependencies = [
  "sha2 0.11.0",
  "thiserror 2.0.21",
  "tilo-model-gateway",
- "url",
  "workspace-hack",
 ]
 
@@ -19449,6 +19446,7 @@ dependencies = [
  "tilo-app",
  "tilo-automerge-fork",
  "tilo-files",
+ "tilo-typst-engine",
  "tilo-typst-fonts",
  "tilo-vello",
  "tilo-winit",
@@ -19795,18 +19793,14 @@ dependencies = [
  "accesskit",
  "chrono",
  "collab-types",
- "getrandom 0.4.3",
  "image",
  "serde_json",
  "taffy",
  "tempfile",
- "threshold-identity",
  "tilo-actions",
  "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-doc",
- "tilo-files",
- "tilo-identity-ceremony",
  "tilo-resource",
  "tilo-ui",
  "tilo-vello",
@@ -22260,7 +22254,6 @@ dependencies = [
  "tracing-core",
  "tracing-subscriber",
  "ttf-parser",
- "typst-assets",
  "unic-langid",
  "unic-langid-impl",
  "unicode-bidi",

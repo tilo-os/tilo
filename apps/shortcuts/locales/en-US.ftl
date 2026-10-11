@@ -51,3 +51,12 @@ shortcuts-drafting = The agent is drafting…
 shortcuts-draft-failed = The agent could not draft it
 shortcuts-draft-problems = Check these before saving
 shortcuts-open-drafted = Open as a draft
+
+shortcuts-schedule = Daily schedule
+shortcuts-schedule-enabled = Enable a daily local-time schedule
+shortcuts-schedule-hour = Local hour
+shortcuts-schedule-minute = Local minute
+shortcuts-schedule-description = This edits the unsaved draft. Review its permissions and save to arm it. A missed run executes once when the device returns. Disable and save to stop this daily schedule. Other triggers are retained.
+shortcuts-schedule-review = { $time } · this device’s local time
+shortcuts-schedule-missed-once = Missed runs execute once.
+shortcuts-schedule-missed-skip = Missed runs are skipped.

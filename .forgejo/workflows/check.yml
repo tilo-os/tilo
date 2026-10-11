@@ -829,6 +829,9 @@ jobs:
     container:
       image: ${{ needs.builder.outputs.image }}
     env:
+      # As Release / apps: sccache must not download an unused +stable
+      # toolchain while identifying the image's pinned rustup proxy.
+      RUSTUP_AUTO_INSTALL: "0"
       CARGO_PROFILE_RELEASE_LTO: thin
       CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
       # Release / apps' compiler-cache namespace (its TILO_SCCACHE_KEY_PREFIX,
@@ -856,7 +859,11 @@ jobs:
       - name: Package the selected tapps
         env:
           TILO_RELEASE_APPS: ${{ needs.select.outputs.tapp_apps }}
+          # Cargo records unit/rmeta/codegen timing without changing compile flags.
+          EXTRA_CARGO_ARGS: --timings
         run: |
+          # A failed build must not upload a previous command's timing report.
+          rm -f target/cargo-timings/cargo-timing.html
           # As Release / apps: every core, bounded by 2 GiB of memory per job.
           cpus=$(nproc)
           if read -r quota period 2>/dev/null < /sys/fs/cgroup/cpu.max && [[ $quota != max ]]; then
@@ -883,6 +890,15 @@ jobs:
         run: >-
           python3 tools/perf/tapp_size_ratchet.py measure dist/app-release
           --arch "${{ matrix.arch }}" --summary "$GITHUB_STEP_SUMMARY"
+
+      - name: Save package compiler timings
+        if: always()
+        uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        with:
+          name: package-compiler-timings-${{ matrix.arch }}
+          path: target/cargo-timings/cargo-timing.html
+          retention-days: 7
+          if-no-files-found: error
 
   checks:
     if: always()
@@ -1016,8 +1032,12 @@ jobs:
           # checkout keeps the write-capable repository token. Every other
           # checkout reads this public repository with the job token.
           token: ${{ secrets.REGISTRY_TOKEN }}
-          fetch-depth: 0
-          filter: blob:none
+          # Recording needs the tested commit and the receipt script, not
+          # ancestry or other branches. receipt.sh fetches its notes ref.
+          fetch-depth: 1
+          fetch-tags: false
+          sparse-checkout: tools/ci/receipt.sh
+          sparse-checkout-cone-mode: false
       - name: Record an observable CI receipt without touching a branch
         if: always() && steps.receipt-checkout.outcome == 'success'
         continue-on-error: true

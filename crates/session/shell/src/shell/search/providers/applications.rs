@@ -7,13 +7,13 @@
 //! revalidated install action; palette activation never downloads software.
 
 use crate::shell::state::WorkspaceAuthority as _;
-use std::cell::{Ref, RefCell};
+use std::cell::Ref;
 use std::collections::HashSet;
 use std::rc::Rc;
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError};
 #[cfg(test)]
 use std::sync::{Arc, Mutex};
 
+use super::background_index::BackgroundIndex;
 use crate::portal::desktop_services::DynamicLauncherRecord;
 use crate::shell::catalogue::{self, CatalogueApp};
 use crate::shell::chrome_state::{Chrome, OpenTarget};
@@ -140,19 +140,9 @@ fn catalogue_app_detail(needle: &str, app: &CatalogueApp) -> String {
 
 pub struct ApplicationsProvider {
     kinds: Vec<ResourceKind>,
-    snapshot: RefCell<Option<ApplicationsSnapshot>>,
-    build: RefCell<Option<Receiver<ApplicationsSnapshot>>>,
+    index: BackgroundIndex<(u64, u64, u64, u128), ApplicationsSnapshot>,
     #[cfg(test)]
     source: Option<Arc<ApplicationsTestSource>>,
-    #[cfg(test)]
-    build_probe: Arc<BuildProbe>,
-}
-
-#[cfg(test)]
-#[derive(Default)]
-struct BuildProbe {
-    builds: std::sync::atomic::AtomicUsize,
-    thread: Mutex<Option<std::thread::ThreadId>>,
 }
 
 #[cfg(test)]
@@ -224,7 +214,6 @@ enum ApplicationEntry {
 }
 
 struct ApplicationsSnapshot {
-    source_generation: (u64, u64, u64, u128),
     entries: Vec<ApplicationEntry>,
     /// Canonical lower-cased identities make the warm catalogue membership
     /// check O(1).  Re-walking either complete source for every indexed row
@@ -239,12 +228,9 @@ impl ApplicationsProvider {
     pub fn new() -> Self {
         Self {
             kinds: vec![ResourceKind::Application],
-            snapshot: RefCell::new(None),
-            build: RefCell::new(None),
+            index: BackgroundIndex::new("tilo-app-search-index"),
             #[cfg(test)]
             source: None,
-            #[cfg(test)]
-            build_probe: Arc::new(BuildProbe::default()),
         }
     }
 
@@ -276,25 +262,13 @@ impl ApplicationsProvider {
     /// first keystroke into an indexing job.
     fn build_snapshot(
         #[cfg(test)] source: Option<Arc<ApplicationsTestSource>>,
-        #[cfg(test)] probe: &BuildProbe,
-    ) -> ApplicationsSnapshot {
-        #[cfg(test)]
-        {
-            probe
-                .builds
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            *probe.thread.lock().expect("application build thread lock") =
-                Some(std::thread::current().id());
-        }
+    ) -> ((u64, u64, u64, u128), ApplicationsSnapshot) {
         #[cfg(test)]
         if let Some(source) = source {
             let (generation, installed, catalogue_apps, host_apps, dynamic) = source.snapshot();
-            return Self::snapshot_from_parts(
+            return (
                 (generation, generation, generation, u128::from(generation)),
-                &installed,
-                catalogue_apps,
-                &host_apps,
-                dynamic,
+                Self::snapshot_from_parts(&installed, catalogue_apps, &host_apps, dynamic),
             );
         }
         let (installed_generation, installed) = launcher::gui_apps_snapshot();
@@ -302,22 +276,18 @@ impl ApplicationsProvider {
         let (host_generation, host_apps) = crate::shell::host_apps::host_apps_snapshot();
         let (dynamic_generation, dynamic) =
             crate::portal::desktop_services::dynamic_launcher_snapshot();
-        Self::snapshot_from_parts(
+        (
             (
                 installed_generation,
                 catalogue_generation,
                 host_generation,
                 dynamic_generation,
             ),
-            &installed,
-            catalogue_apps,
-            &host_apps,
-            dynamic,
+            Self::snapshot_from_parts(&installed, catalogue_apps, &host_apps, dynamic),
         )
     }
 
     fn snapshot_from_parts(
-        source_generation: (u64, u64, u64, u128),
         installed: &[InstalledApp],
         catalogue_apps: Vec<CatalogueApp>,
         host_apps: &[crate::shell::host_apps::HostApp],
@@ -351,11 +321,6 @@ impl ApplicationsProvider {
         );
         let index = index_entries(&entries);
         ApplicationsSnapshot {
-            // Never stamp a completed mixed read with a generation fetched
-            // afterwards: a source can change while this worker builds.
-            // `snapshot()` compares these captured generations to current
-            // source generations and rejects a stale worker result.
-            source_generation,
             entries,
             installed_ids,
             host_app_ids,
@@ -363,82 +328,24 @@ impl ApplicationsProvider {
         }
     }
 
-    /// Start/poll one source-owned worker.  The worker reads and clones every
-    /// source itself; this UI-tick method never flattens an application
-    /// corpus before spawn, and a query never starts it.
-    fn refresh_snapshot(&self) {
-        let receiver = self.build.borrow_mut().take();
-        if let Some(receiver) = receiver {
-            match receiver.try_recv() {
-                Ok(snapshot) => *self.snapshot.borrow_mut() = Some(snapshot),
-                Err(TryRecvError::Empty) => *self.build.borrow_mut() = Some(receiver),
-                Err(TryRecvError::Disconnected) => {}
-            }
-        }
-        let current = self.source_generation();
-        if self
-            .snapshot
-            .borrow()
-            .as_ref()
-            .is_some_and(|snapshot| snapshot.source_generation == current)
-            || self.build.borrow().is_some()
-        {
-            return;
-        }
-        let (sender, receiver) = mpsc::sync_channel(1);
-        let spawned = std::thread::Builder::new()
-            .name("tilo-app-search-index".into())
-            .spawn({
+    /// The worker reads and clones every source itself; the UI tick never
+    /// flattens an application corpus before spawn, and a query never starts it.
+    #[allow(clippy::unused_self, reason = "test builds use the injected source")]
+    fn builder(
+        &self,
+    ) -> impl FnOnce() -> ((u64, u64, u64, u128), ApplicationsSnapshot) + Send + 'static {
+        #[cfg(test)]
+        let source = self.source.clone();
+        move || {
+            Self::build_snapshot(
                 #[cfg(test)]
-                let source = self.source.clone();
-                #[cfg(test)]
-                let probe = Arc::clone(&self.build_probe);
-                move || {
-                    let _ = sender.send(Self::build_snapshot(
-                        #[cfg(test)]
-                        source,
-                        #[cfg(test)]
-                        &probe,
-                    ));
-                }
-            });
-        if spawned.is_ok() {
-            *self.build.borrow_mut() = Some(receiver);
-        }
-    }
-
-    /// Wait, at most `bound`, for the index build [`Self::refresh_snapshot`]
-    /// starts. An invocation by address may be a session's first request,
-    /// with no earlier search whose build it could take in; refusing it while
-    /// a worker still reads the app list would make an address valid only
-    /// after some unrelated listing ran first.
-    fn settle_snapshot(&self, bound: std::time::Duration) {
-        let started = std::time::Instant::now();
-        loop {
-            self.refresh_snapshot();
-            if self.snapshot().is_some() {
-                return;
-            }
-            let Some(receiver) = self.build.borrow_mut().take() else {
-                return;
-            };
-            match receiver.recv_timeout(bound.saturating_sub(started.elapsed())) {
-                Ok(snapshot) => *self.snapshot.borrow_mut() = Some(snapshot),
-                Err(RecvTimeoutError::Timeout) => {
-                    *self.build.borrow_mut() = Some(receiver);
-                    return;
-                }
-                Err(RecvTimeoutError::Disconnected) => return,
-            }
+                source,
+            )
         }
     }
 
     fn snapshot(&self) -> Option<Ref<'_, ApplicationsSnapshot>> {
-        let generation = self.source_generation();
-        let snapshot = self.snapshot.borrow();
-        Ref::filter_map(snapshot, Option::as_ref)
-            .ok()
-            .filter(|snapshot| snapshot.source_generation == generation)
+        self.index.current(&self.source_generation())
     }
 
     /// Score `apps` against `needle`, as [`Self::installed_rows`].
@@ -1157,7 +1064,8 @@ impl SearchProvider for ApplicationsProvider {
     }
 
     fn refresh_search_index(&self, _ctx: &SearchContext<'_>) {
-        self.refresh_snapshot();
+        self.index
+            .refresh(&self.source_generation(), self.builder());
     }
 
     fn search_revision(&self, _ctx: &SearchContext<'_>) -> String {
@@ -1172,7 +1080,11 @@ impl SearchProvider for ApplicationsProvider {
             return None;
         }
         if self.snapshot().is_none() {
-            self.settle_snapshot(crate::shell::search::RESOLVE_INDEX_WAIT);
+            self.index.settle(
+                crate::shell::search::RESOLVE_INDEX_WAIT,
+                || self.source_generation(),
+                || self.builder(),
+            );
         }
         let snapshot = self.snapshot()?;
         snapshot
@@ -1319,9 +1231,7 @@ impl ApplicationsProvider {
 
     fn revision(&self) -> String {
         let (installed, catalogue, host, dynamic) = self.source_generation();
-        let ready = self.snapshot.borrow().as_ref().is_some_and(|snapshot| {
-            snapshot.source_generation == (installed, catalogue, host, dynamic)
-        });
+        let ready = self.index.is_ready(&(installed, catalogue, host, dynamic));
         format!(
             "{}:{installed}:{catalogue}:{host}:{dynamic}",
             if ready { "ready" } else { "indexing" }
@@ -2392,7 +2302,7 @@ mod tests {
                 .is_empty()
         );
         assert!(
-            cold.build.borrow().is_none(),
+            !cold.index.building(),
             "a public cold query must not start or clone a full application corpus"
         );
 
@@ -2418,13 +2328,15 @@ mod tests {
             })
             .collect::<Vec<_>>();
         let index = index_entries(&entries);
-        *provider.snapshot.borrow_mut() = Some(ApplicationsSnapshot {
-            source_generation: provider.source_generation(),
-            entries,
-            installed_ids: HashSet::new(),
-            host_app_ids: HashSet::new(),
-            index,
-        });
+        provider.index.set_ready(
+            provider.source_generation(),
+            ApplicationsSnapshot {
+                entries,
+                installed_ids: HashSet::new(),
+                host_app_ids: HashSet::new(),
+                index,
+            },
+        );
         let page = provider.query_page(
             SearchContext {
                 query_scope: None,
@@ -2445,7 +2357,7 @@ mod tests {
         assert_eq!(page.results.len(), 1);
         assert_eq!(page.results[0].title, "Open unique-tail");
         assert!(page.exhausted, "the rare posting needs one warm inspection");
-        assert!(provider.build.borrow().is_none());
+        assert!(!provider.index.building());
     }
 
     #[test]
@@ -2651,7 +2563,8 @@ mod tests {
         );
         assert_eq!(
             provider
-                .build_probe
+                .index
+                .probe
                 .builds
                 .load(std::sync::atomic::Ordering::Relaxed),
             0
@@ -2662,7 +2575,7 @@ mod tests {
                 .load(std::sync::atomic::Ordering::Relaxed),
             0
         );
-        assert!(provider.build.borrow().is_none());
+        assert!(!provider.index.building());
 
         for _ in 0..6_000 {
             provider.refresh_search_index(&ctx);
@@ -2674,17 +2587,19 @@ mod tests {
         assert!(provider.search_revision(&ctx).starts_with("ready:"));
         assert_eq!(
             provider
-                .build_probe
+                .index
+                .probe
                 .builds
                 .load(std::sync::atomic::Ordering::Relaxed),
             1
         );
         assert_ne!(
             *provider
-                .build_probe
+                .index
+                .probe
                 .thread
                 .lock()
-                .expect("application build thread lock"),
+                .expect("index build probe lock"),
             Some(query_thread)
         );
         let page = provider.query_page(

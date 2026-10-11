@@ -261,8 +261,16 @@ pub struct GroupRow {
     /// Pan state of the whole row, or of the lane being worked on while
     /// [`Self::lanes`] is populated (see [`Pan`]).
     pan: Pan,
-    /// A CPU presenter may move existing pixels only at whole layout pixels.
-    pixel_aligned_scroll: bool,
+    /// The step a presenter that moves existing pixels needs the drawn pan
+    /// on, in layout pixels: one device pixel (`1 / scale`), or one layout
+    /// pixel for a CPU presenter. `None` draws the exact pan.
+    scroll_quantum: Option<f64>,
+    /// The row is drawn into a scene of its own ([`Self::draw_apart`]):
+    /// its parent's draw only records the transform it would have drawn
+    /// with.
+    drawn_apart: bool,
+    /// The transform the parent's draw passed while [`Self::drawn_apart`].
+    apart_transform: Option<Affine>,
     /// One per display the strip is partitioned across, left to right.
     /// Empty when the strip is one continuous row (a single display).
     lanes: Vec<Lane>,
@@ -821,6 +829,20 @@ impl Lane {
     }
 }
 
+/// Steps per layout pixel of [`on_binary_grid`].
+const BINARY_GRID: f64 = 1_048_576.0;
+
+/// `value` rounded to a multiple of 2⁻²⁰ layout pixels. A device-pixel pan
+/// step (two thirds of a layout pixel at 150 %) is no binary fraction, so
+/// moving a strip to canvas coordinates and back would round differently
+/// at every pan, and the canvas a presenter keeps would never be the same
+/// twice. On this grid the sums are exact (a desktop is far narrower than
+/// 2³² layout pixels), and the pan is off a device pixel by under 10⁻⁶ of
+/// one.
+fn on_binary_grid(value: f64) -> f64 {
+    (value * BINARY_GRID).round() / BINARY_GRID
+}
+
 /// Whether a strip panned to `scroll` (whole pixels) can be drawn in canvas
 /// coordinates: the retained canvas spans the content from no pan to the
 /// furthest, plus `pad` past either end for the rubber band.
@@ -900,7 +922,9 @@ impl GroupRow {
             tab_drop_target: None,
             cross_strip_drop_target: None,
             pan: Pan::default(),
-            pixel_aligned_scroll: false,
+            scroll_quantum: None,
+            drawn_apart: false,
+            apart_transform: None,
             lanes: Vec::new(),
             group_lanes: HashMap::new(),
             focus_lane: 0,
@@ -1758,19 +1782,39 @@ impl GroupRow {
         self.leading_pan().scroll_x
     }
 
-    /// Select the presenter's strip-pan precision. Fractional motion is the default.
-    pub fn set_pixel_aligned_scroll(&mut self, enabled: bool) {
-        if self.pixel_aligned_scroll != enabled {
-            self.pixel_aligned_scroll = enabled;
+    /// Select the presenter's strip-pan precision: the drawn pan lands on
+    /// multiples of `quantum` layout pixels (`1 / scale` puts it on whole
+    /// device pixels), or exactly where the gesture put it with `None`, the
+    /// default. A quantum that is not finite and positive is ignored.
+    pub fn set_scroll_quantum(&mut self, quantum: Option<f64>) {
+        let quantum = quantum.filter(|step| step.is_finite() && *step > 0.0);
+        if self.scroll_quantum != quantum {
+            self.scroll_quantum = quantum;
             self.scroll_dirty = true;
         }
     }
 
+    /// `value` on the presenter's pan step: the nearest multiple of the
+    /// quantum, or `value` itself without one.
+    fn quantized(&self, value: f64) -> f64 {
+        match self.scroll_quantum {
+            Some(step) => on_binary_grid((value / step).round() * step),
+            None => value,
+        }
+    }
+
     fn drawn_pan_x(&self, pan: &Pan) -> f64 {
-        if self.pixel_aligned_scroll {
-            pan.scroll_x.round()
-        } else {
-            pan.scroll_x
+        self.quantized(pan.scroll_x)
+    }
+
+    /// [`Pan::canvas_pad`] on the presenter's pan step, rounded up so the
+    /// canvas keeps at least that much room: with whole-device-pixel pans,
+    /// a canvas shift (`pan + pad`) is then whole device pixels too.
+    fn lane_canvas_pad(&self, pan: &Pan) -> f64 {
+        let pad = pan.canvas_pad();
+        match self.scroll_quantum {
+            Some(step) => on_binary_grid((pad / step).ceil() * step),
+            None => pad,
         }
     }
 
@@ -1811,7 +1855,35 @@ impl GroupRow {
     /// Room a retained canvas keeps left of the content and right of the
     /// furthest pan, in layout pixels.
     pub fn canvas_pad(&self) -> f64 {
-        self.leading_pan().canvas_pad()
+        self.lane_canvas_pad(self.leading_pan())
+    }
+
+    /// Have the parent's draw skip this row, recording only its transform,
+    /// so its owner draws it into a scene of its own with
+    /// [`Self::draw_apart`]: a presenter that pans each strip on its own
+    /// needs each strip's drawing apart from the others'.
+    pub fn set_drawn_apart(&mut self, apart: bool) {
+        self.drawn_apart = apart;
+        self.apart_transform = None;
+    }
+
+    /// Draw the row into `scene` with the transform its parent's draw
+    /// passed, once that draw skipped it ([`Self::set_drawn_apart`]).
+    /// `false`, drawing nothing, when the parent did not draw it.
+    pub fn draw_apart(
+        &mut self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) -> bool {
+        let Some(transform) = self.apart_transform.take() else {
+            return false;
+        };
+        self.drawn_apart = false;
+        self.draw(scene, transform, tr, theme, presence);
+        self.drawn_apart = true;
+        true
     }
 
     /// Set the real strip viewport to an absolute finite offset. Browser and
@@ -3552,6 +3624,10 @@ impl Widget for GroupRow {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        if self.drawn_apart {
+            self.apart_transform = Some(transform);
+            return;
+        }
         self.reduce_motion = theme.reduce_motion;
         self.sync_sibling_fade(theme);
         if self.external_navigation && self.hidden {
@@ -3589,7 +3665,7 @@ impl Widget for GroupRow {
             let pan = self.pan_of_lane(k);
             let scroll = self.drawn_pan_x(pan);
             let max_scroll = pan.max_scroll_x();
-            let pad = pan.canvas_pad();
+            let pad = self.lane_canvas_pad(pan);
             let unbake = crate::retained_present::unbake_scroll()
                 && pan_within_canvas(scroll, max_scroll, pad);
             let clip_right = if unbake {
@@ -6705,13 +6781,52 @@ mod tests {
         row.set_scroll_x_for_test(120.5);
         relayout_strip(&mut row, 800.0);
         assert_eq!(row.groups[0].get_rect().x0, initial - 120.5);
-        row.set_pixel_aligned_scroll(true);
+        row.set_scroll_quantum(Some(1.0));
         relayout_strip(&mut row, 800.0);
         assert_eq!(row.groups[0].get_rect().x0, initial - 121.0);
         assert_eq!(row.scroll_x(), 120.5, "the gesture retains its precision");
-        row.set_pixel_aligned_scroll(false);
+        row.set_scroll_quantum(None);
         relayout_strip(&mut row, 800.0);
         assert_eq!(row.groups[0].get_rect().x0, initial - 120.5);
+    }
+
+    /// At 150 % a device pixel is two thirds of a layout pixel: the drawn
+    /// pan and the canvas pad land on its multiples, so a canvas shift is a
+    /// whole number of device pixels and a presenter can move the strip's
+    /// pixels by copying them.
+    #[test]
+    fn a_device_pixel_quantum_puts_pan_and_canvas_shift_on_device_pixels() {
+        let scale = 1.5;
+        let mut row = strip_at(3, 800.0, 0.0, 1000);
+        let initial = row.groups[0].get_rect().x0;
+        let unaligned_pad = row.canvas_pad();
+        row.set_scroll_quantum(Some(1.0 / scale));
+        row.set_scroll_x_for_test(120.5);
+        relayout_strip(&mut row, 800.0);
+        let drawn = row.drawn_scroll_x();
+        let device = drawn * scale;
+        assert!(
+            (device - device.round()).abs() < 1e-5,
+            "the drawn pan {drawn} is {device} device pixels"
+        );
+        assert!(
+            (drawn - 120.5).abs() <= 1.0 / 3.0,
+            "the nearest step: {drawn}"
+        );
+        assert!((row.groups[0].get_rect().x0 - (initial - drawn)).abs() < 1e-9);
+        let pad = row.canvas_pad();
+        let pad_device = pad * scale;
+        assert!(
+            (pad_device - pad_device.round()).abs() < 1e-5 && pad >= unaligned_pad,
+            "the canvas pad {pad} (was {unaligned_pad}) is {pad_device} device pixels"
+        );
+        let _scope = crate::retained_present::RetainedScene::begin(true);
+        let shift = row.canvas_shift() * scale;
+        assert!(
+            (shift - shift.round()).abs() < 1e-5,
+            "the canvas shift is {shift} device pixels"
+        );
+        assert_eq!(row.scroll_x(), 120.5, "the gesture retains its precision");
     }
 
     fn set_strip_permille(row: &mut GroupRow, permille: u16) {

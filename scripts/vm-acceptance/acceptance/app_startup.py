@@ -47,6 +47,21 @@ SOFTWARE_BUDGET_MS = 3000
 HISTORY_BUDGET_MS = 1000
 
 
+# A warm open on a CPU rasterizer, judged by the median of A15's ten opens: well under
+# the per-launch software budget, which also covers a session's cold first launches.
+# Since apps stopped starting OpenGL beside Vulkan and a GPU-less session pins
+# lavapipe, the median is 0.6-0.8 s on a quiet runner and was at most ~1.2 s on a
+# contended one before either change.
+WARM_OPEN_SOFTWARE_BUDGET_MS = 1500
+
+
+def warm_open_budget_ms(app: str, renderer: str = "gpu") -> int:
+    """The median warm open's budget (A15): tighter than a launch's on a CPU rasterizer."""
+    if renderer == "cpu":
+        return WARM_OPEN_SOFTWARE_BUDGET_MS
+    return budget_ms(app, renderer)
+
+
 def budget_ms(app: str, renderer: str = "gpu") -> int:
     if renderer == "cpu":
         return SOFTWARE_BUDGET_MS

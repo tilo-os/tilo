@@ -585,6 +585,11 @@ pub struct RetainedGpuTarget {
     /// available when that submission overflows and is followed by a dense recovery, so
     /// diagnostics describe the submitted sparse work rather than guessing from capability.
     last_sparse_render_stats: Option<vello::SparseRenderStats>,
+    /// The layers strip pans are composited from, allocated by the first
+    /// frame that comes as layers ([`Self::render_layers_until`]).
+    strip_layers: Option<super::strip_layers::StripLayers>,
+    /// The work the latest layered frame did.
+    last_layer_work: Option<super::strip_layers::LayerWork>,
 }
 
 /// Whether this process has published its pipelines for apps (see [`ui::pipeline_seed`]).
@@ -720,6 +725,8 @@ impl RetainedGpuTarget {
             last_clip_single_group_full_attempts: 0,
             last_clip_single_group_sparse_attempts: 0,
             last_sparse_render_stats: None,
+            strip_layers: None,
+            last_layer_work: None,
         };
         if gpu.adapter.get_info().device_type == wgpu::DeviceType::Cpu {
             // Lavapipe compiles each pipeline on its first dispatch: on a cold shader cache,
@@ -813,6 +820,10 @@ impl RetainedGpuTarget {
         if self.base_color != color {
             self.base_color = color;
             self.invalidate();
+            // The backdrop layer is rendered over the base colour.
+            if let Some(layers) = self.strip_layers.as_mut() {
+                layers.shown = None;
+            }
         }
     }
 
@@ -970,6 +981,303 @@ impl RetainedGpuTarget {
             framebuffer_copy_bytes: 0,
             framebuffer_staging_bytes: 0,
         })
+    }
+
+    /// Whether [`Self::render_layers_until`] can present `cache`: a target
+    /// rendered whole, in one piece, of the size the layers are drawn at.
+    pub fn layers_eligible(&self, cache: &crate::shell::frame::FrameCache) -> bool {
+        !cache.strips.is_empty()
+            && cache.strips.len() == cache.layers.strips.len()
+            && Self::band_rows(self.size).is_none()
+            && cache.width >= self.size.0
+            && self.hdr_pass.is_none()
+            && self.backdrop.is_none()
+    }
+
+    /// Render a frame that came as layers ([`crate::shell::frame::FramePaint::cache`])
+    /// by compositing retained layer textures: a strip pan copies what stays
+    /// on screen and rasterises only what it uncovered (see
+    /// [`super::strip_layers`]). `post_render` then reads the composited
+    /// target, as after [`Self::render_until`]. Waits for completion.
+    ///
+    /// # Errors
+    /// As [`Self::render_until`]; [`BridgeError::InvalidSize`] when the
+    /// layers are not [`Self::layers_eligible`]. A failure forgets the
+    /// layers, so the next layered frame rasterises them whole.
+    pub fn render_layers_until(
+        &mut self,
+        cache: &crate::shell::frame::FrameCache,
+        revision: u64,
+        deadline: Instant,
+        post_render: impl Fn(&wgpu::Device, &mut wgpu::CommandEncoder, &wgpu::TextureView),
+    ) -> Result<GpuFrameStats, BridgeError> {
+        if !self.layers_eligible(cache) {
+            return Err(BridgeError::InvalidSize(format!(
+                "layers {} wide with {} strips cannot be composited into a {}x{} target",
+                cache.width,
+                cache.strips.len(),
+                self.size.0,
+                self.size.1
+            )));
+        }
+        let policy = CompletionPolicy::Absolute(deadline);
+        crate::shell::gpu_frames::apply(
+            &mut self.renderer,
+            self.present_generation,
+            &mut self.client_frames,
+        );
+        self.reset_attempts();
+        self.check_live(policy)?;
+        if self
+            .strip_layers
+            .as_ref()
+            .is_none_or(|layers| layers.size != self.size)
+        {
+            self.strip_layers = Some(super::strip_layers::StripLayers::new(
+                &self.device,
+                self.size,
+            ));
+        }
+        let shown = self.strip_layers.as_ref().and_then(|layers| {
+            layers.shown.as_ref().map(|shown| {
+                let current = self.retained_target_valid
+                    && self.last_successful_revision == Some(shown.revision);
+                (shown, current)
+            })
+        });
+        let work = match shown {
+            Some((shown, current)) => {
+                super::strip_layers::plan(Some(shown), cache, self.size, current)
+            }
+            None => super::strip_layers::plan(None, cache, self.size, false),
+        };
+        // The target holds this frame only once the composite lands.
+        self.invalidate();
+        let result = self.run_layer_work(cache, &work, policy, post_render);
+        match &result {
+            Ok(()) => {
+                self.retained_target_valid = true;
+                self.last_successful_revision = Some(revision);
+                if let Some(layers) = self.strip_layers.as_mut() {
+                    layers.shown = Some(super::strip_layers::Shown::of(cache, revision));
+                }
+            }
+            Err(error) => {
+                if let Some(layers) = self.strip_layers.as_mut() {
+                    layers.shown = None;
+                }
+                if !matches!(error, BridgeError::RecoveryExhausted { .. }) {
+                    self.poisoned = true;
+                }
+            }
+        }
+        self.last_layer_work = Some(work);
+        result?;
+        Ok(GpuFrameStats {
+            revision,
+            damage_admitted: true,
+            render_attempts: self.last_render_attempts,
+            sparse_attempts: self.last_sparse_render_attempts,
+            full_attempts: self.last_full_render_attempts,
+            completion_markers: self.completion_markers,
+            framebuffer_copy_bytes: 0,
+            framebuffer_staging_bytes: 0,
+        })
+    }
+
+    /// The target's pixels, RGBA, row by row: what the final pass reads.
+    #[cfg(test)]
+    pub(crate) fn read_rgba_for_test(&self) -> Vec<u8> {
+        let (width, height) = self.size;
+        let row = width.saturating_mul(4);
+        let padded = row
+            .div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
+            .saturating_mul(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+        let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("tilo-target-readback-for-test"),
+            size: u64::from(padded).saturating_mul(u64::from(height)),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        encoder.copy_texture_to_buffer(
+            self.texture.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded),
+                    rows_per_image: Some(height),
+                },
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        self.queue.submit([encoder.finish()]);
+        let slice = buffer.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            tx.send(result).ok();
+        });
+        self.device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: Some(tilo_test_env::hang_bound()),
+            })
+            .expect("the readback copy completes");
+        rx.recv().expect("map callback").expect("map succeeds");
+        let mapped = slice.get_mapped_range();
+        let (padded, row) = (
+            usize::try_from(padded).expect("row pitch fits usize"),
+            usize::try_from(row).expect("row bytes fit usize"),
+        );
+        mapped
+            .chunks_exact(padded)
+            .flat_map(|line| &line[..row])
+            .copied()
+            .collect()
+    }
+
+    /// The work the latest [`Self::render_layers_until`] planned.
+    #[cfg(test)]
+    pub(crate) fn last_layer_work_for_test(&self) -> Option<&super::strip_layers::LayerWork> {
+        self.last_layer_work.as_ref()
+    }
+
+    /// The work the latest [`Self::render_layers_until`] did, for counters.
+    pub fn last_layer_raster_pixels(&self) -> Option<(u64, u64)> {
+        self.last_layer_work
+            .as_ref()
+            .map(|work| (work.raster_pixels(self.size), work.composite_pixels()))
+    }
+
+    fn run_layer_work(
+        &mut self,
+        cache: &crate::shell::frame::FrameCache,
+        work: &super::strip_layers::LayerWork,
+        policy: CompletionPolicy,
+        post_render: impl Fn(&wgpu::Device, &mut wgpu::CommandEncoder, &wgpu::TextureView),
+    ) -> Result<(), BridgeError> {
+        use super::strip_layers::{Layer, WorkspaceWork};
+        let transparent = Color::TRANSPARENT;
+        if work.backdrop {
+            let base = self.base_color;
+            self.render_layer(Layer::Backdrop, &cache.layers.backdrop, None, base, policy)?;
+        }
+        if work.chrome {
+            self.render_layer(
+                Layer::Chrome,
+                &cache.layers.chrome,
+                None,
+                transparent,
+                policy,
+            )?;
+        }
+        if let (Some(_), Some(wheel)) = (work.wheel, cache.layers.wheel.as_ref()) {
+            if let Some(layers) = self.strip_layers.as_mut() {
+                layers.size_wheel(&self.device, (wheel.width, wheel.height));
+            }
+            self.render_layer(Layer::Wheel, &wheel.scene, None, transparent, policy)?;
+        }
+        let panned = || {
+            let mut scene = Scene::new();
+            super::strip_layers::append_panned(&mut scene, &cache.layers, &cache.strips);
+            scene
+        };
+        match &work.workspace {
+            WorkspaceWork::Unchanged => {}
+            WorkspaceWork::Whole => {
+                let scene = panned();
+                self.render_layer(Layer::Workspace, &scene, None, transparent, policy)?;
+            }
+            WorkspaceWork::Pan { copies, uncovered } => {
+                if !copies.is_empty() {
+                    let mut encoder =
+                        self.device
+                            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                                label: Some("tilo-strip-layer-pan"),
+                            });
+                    if let Some(layers) = self.strip_layers.as_mut() {
+                        layers.encode_copies(&self.device, &mut encoder, copies);
+                    }
+                    self.queue.submit([encoder.finish()]);
+                }
+                if !uncovered.is_empty() {
+                    let scene = panned();
+                    let regions = self
+                        .renderer
+                        .sparse_fine_supported()
+                        .then(|| uncovered.clone());
+                    self.render_layer(Layer::Workspace, &scene, regions, transparent, policy)?;
+                }
+            }
+        }
+        self.check_live(policy)?;
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("tilo-strip-layer-composite"),
+            });
+        if let (Some(layers), Some(rect)) = (self.strip_layers.as_ref(), work.composite) {
+            layers.encode_composite(
+                super::strip_layers::CompositeTarget {
+                    device: &self.device,
+                    queue: &self.queue,
+                    encoder: &mut encoder,
+                    output: &self.view,
+                },
+                cache.layers.wheel.as_ref(),
+                rect,
+            );
+        }
+        post_render(&self.device, &mut encoder, &self.view);
+        let submission = self.queue.submit([encoder.finish()]);
+        self.wait_submission(submission, policy)
+    }
+
+    /// Render `scene` into one layer's texture, through the target's own
+    /// render path (its recovery from vello's budget overflow included):
+    /// the layer's texture stands in for the target's for the render.
+    fn render_layer(
+        &mut self,
+        layer: super::strip_layers::Layer,
+        scene: &Scene,
+        regions: Option<Vec<vello::FineDamageRect>>,
+        base_color: Color,
+        policy: CompletionPolicy,
+    ) -> Result<(), BridgeError> {
+        self.swap_layer(layer);
+        let base_color = std::mem::replace(&mut self.base_color, base_color);
+        // Each layer has the recovery attempts a frame has.
+        let earlier_attempts = std::mem::take(&mut self.last_render_attempts);
+        let rendered = self.render_attempts(
+            scene,
+            regions,
+            FrameOutput::GpuOnly,
+            policy,
+            None,
+            |_, _, _| {},
+        );
+        self.last_render_attempts = self.last_render_attempts.saturating_add(earlier_attempts);
+        self.base_color = base_color;
+        self.swap_layer(layer);
+        rendered.map(|_| ())
+    }
+
+    /// Exchange the target's texture with `layer`'s, size included: the
+    /// wheel's texture is the wheel's size, not the output's.
+    fn swap_layer(&mut self, layer: super::strip_layers::Layer) {
+        if let Some(layers) = self.strip_layers.as_mut() {
+            let slot = layers.texture_mut(layer);
+            std::mem::swap(&mut self.texture, &mut slot.texture);
+            std::mem::swap(&mut self.view, &mut slot.view);
+            std::mem::swap(&mut self.size, &mut slot.size);
+        }
     }
 
     /// Completed output for read-only sampling, never a display presentation claim.
@@ -1682,146 +1990,17 @@ impl RetainedGpuTarget {
         Ok(())
     }
 
-    /// Forward existing Vello renderer diagnostics.
+    /// The Vello renderer underneath, for its feature and diagnostic
+    /// queries.
     #[doc(hidden)]
-    pub fn gpu_dispatch_timestamp_status(&mut self) -> vello::GpuDispatchTimestampStatus {
-        self.renderer.gpu_dispatch_timestamp_status()
+    pub fn vello(&self) -> &Renderer {
+        &self.renderer
     }
 
-    /// Forward existing Vello renderer diagnostics.
+    /// The Vello renderer underneath, for the queries that take samples.
     #[doc(hidden)]
-    pub fn take_gpu_dispatch_timestamp_sample(
-        &mut self,
-    ) -> Option<vello::GpuDispatchTimestampSample> {
-        self.renderer.take_gpu_dispatch_timestamp_sample()
-    }
-
-    /// Forward existing Vello renderer diagnostics.
-    #[doc(hidden)]
-    pub fn gpu_dispatch_timestamp_latest_submission_id(&self) -> Option<u64> {
-        self.renderer.gpu_dispatch_timestamp_latest_submission_id()
-    }
-
-    /// Forward existing Vello renderer diagnostics.
-    #[doc(hidden)]
-    pub fn gpu_dispatch_timestamp_buffer_bytes(&self) -> u64 {
-        self.renderer.gpu_dispatch_timestamp_buffer_bytes()
-    }
-
-    /// Forward existing Vello renderer diagnostics.
-    #[doc(hidden)]
-    pub fn direct_path_workgroups(&self) -> u32 {
-        self.renderer.direct_path_workgroups()
-    }
-
-    /// Forward existing Vello renderer diagnostics.
-    #[doc(hidden)]
-    pub fn diagnostic_packed_scene(&self) -> &[u8] {
-        self.renderer.diagnostic_packed_scene()
-    }
-
-    /// Forward existing Vello renderer diagnostics.
-    #[doc(hidden)]
-    pub fn diagnostic_geometry_input(
-        &self,
-    ) -> Result<vello::GeometryInput<'_>, vello::GeometryInputError> {
-        self.renderer.diagnostic_geometry_input()
-    }
-
-    /// Forward existing Vello renderer diagnostics.
-    #[doc(hidden)]
-    pub fn sparse_tile_bounds_requested(&self) -> bool {
-        self.renderer.sparse_tile_bounds_requested()
-    }
-
-    /// Forward existing Vello renderer diagnostics.
-    #[doc(hidden)]
-    pub fn sparse_tile_bounds_available(&self) -> bool {
-        self.renderer.sparse_tile_bounds_available()
-    }
-
-    /// Forward existing Vello renderer diagnostics.
-    #[doc(hidden)]
-    pub fn sparse_fine_quad_skip_requested(&self) -> bool {
-        self.renderer.sparse_fine_quad_skip_requested()
-    }
-
-    /// Forward existing Vello renderer diagnostics.
-    #[doc(hidden)]
-    pub fn sparse_fine_quad_skip_available(&self) -> bool {
-        self.renderer.sparse_fine_quad_skip_available()
-    }
-
-    /// Forward existing Vello renderer diagnostics.
-    #[doc(hidden)]
-    pub fn sparse_opaque_prune_requested(&self) -> bool {
-        self.renderer.sparse_opaque_prune_requested()
-    }
-
-    /// Forward existing Vello renderer diagnostics.
-    #[doc(hidden)]
-    pub fn sparse_opaque_prune_available(&self) -> bool {
-        self.renderer.sparse_opaque_prune_available()
-    }
-
-    /// Forward existing Vello renderer diagnostics.
-    #[doc(hidden)]
-    pub fn sparse_solid_fuse_requested(&self) -> bool {
-        self.renderer.sparse_solid_fuse_requested()
-    }
-
-    /// Forward existing Vello renderer diagnostics.
-    #[doc(hidden)]
-    pub fn sparse_solid_fuse_available(&self) -> bool {
-        self.renderer.sparse_solid_fuse_available()
-    }
-
-    /// Forward existing Vello renderer diagnostics.
-    #[doc(hidden)]
-    pub fn sparse_segment_row_mask_requested(&self) -> bool {
-        self.renderer.sparse_segment_row_mask_requested()
-    }
-
-    /// Forward existing Vello renderer diagnostics.
-    #[doc(hidden)]
-    pub fn sparse_segment_row_mask_available(&self) -> bool {
-        self.renderer.sparse_segment_row_mask_available()
-    }
-
-    /// Forward existing Vello renderer diagnostics.
-    #[doc(hidden)]
-    pub fn canonical_segment_order_requested(&self) -> bool {
-        self.renderer.canonical_segment_order_requested()
-    }
-
-    /// Forward existing Vello renderer diagnostics.
-    #[doc(hidden)]
-    pub fn canonical_segment_order_available(&self) -> bool {
-        self.renderer.canonical_segment_order_available()
-    }
-
-    /// Forward existing Vello renderer diagnostics.
-    #[doc(hidden)]
-    pub fn area_ppt8_requested(&self) -> bool {
-        self.renderer.area_ppt8_requested()
-    }
-
-    /// Forward existing Vello renderer diagnostics.
-    #[doc(hidden)]
-    pub fn area_ppt8_available(&self) -> bool {
-        self.renderer.area_ppt8_available()
-    }
-
-    /// Forward existing Vello renderer diagnostics.
-    #[doc(hidden)]
-    pub fn clip_single_group_requested(&self) -> bool {
-        self.renderer.clip_single_group_requested()
-    }
-
-    /// Forward existing Vello renderer diagnostics.
-    #[doc(hidden)]
-    pub fn clip_single_group_available(&self) -> bool {
-        self.renderer.clip_single_group_available()
+    pub fn vello_mut(&mut self) -> &mut Renderer {
+        &mut self.renderer
     }
 
     /// Actual statistics from the latest normal render transaction.
@@ -1858,30 +2037,6 @@ impl RetainedGpuTarget {
             #[cfg(target_os = "linux")]
             drm_device: ui::dmabuf_import::vulkan_drm_device_identity(&self.device),
         }
-    }
-    /// Existing Vello resource accounting; framebuffer staging is owned by the bridge.
-    pub fn memory_stats(&self) -> vello::RendererMemoryStats {
-        self.renderer.memory_stats()
-    }
-    /// The image atlas and the CPU pixels its residents keep alive.
-    pub fn image_cache_stats(&self) -> vello::ImageCacheStats {
-        self.renderer.image_cache_stats()
-    }
-    /// Existing opt-in timestamp status.
-    pub fn gpu_timestamp_status(&mut self) -> vello::GpuTimestampStatus {
-        self.renderer.gpu_timestamp_status()
-    }
-    /// Consume existing opt-in timestamp data without conflating it with completion.
-    pub fn take_gpu_timestamp_sample(&mut self) -> Option<vello::GpuTimestampSample> {
-        self.renderer.take_gpu_timestamp_sample()
-    }
-    /// Latest Vello timestamp recording identity.
-    pub fn gpu_timestamp_latest_submission_id(&self) -> Option<u64> {
-        self.renderer.gpu_timestamp_latest_submission_id()
-    }
-    /// Existing opt-in timestamp resource bytes.
-    pub fn gpu_timestamp_buffer_bytes(&self) -> u64 {
-        self.renderer.gpu_timestamp_buffer_bytes()
     }
 
     fn allocate_texture(
@@ -1974,6 +2129,55 @@ impl DispatchStageObserver {
     }
 }
 
+/// The presenting renderer's wgpu context and the index of its device.
+///
+/// Every backend but OpenGL first: a hardware adapter there needs no OpenGL, whose EGL
+/// driver otherwise stays loaded and initialised for the whole session — on a machine
+/// without a GPU, Mesa's llvmpipe beside lavapipe with a second rasteriser thread pool
+/// (`ui::gpu`'s own choice keeps OpenGL for a process that sees a render node and has no
+/// pinned Vulkan driver, which the compositor is). Only when those backends offer no
+/// hardware adapter and OpenGL does is the context's own instance used, for a GPU only
+/// OpenGL drives, exactly as before. `WGPU_BACKEND` still decides alone.
+fn open_render_context() -> Option<(RenderContext, usize)> {
+    let mut context = RenderContext::new();
+    if wgpu::Backends::from_env().is_some() {
+        let id = context.device(None).block_on()?;
+        return Some((context, id));
+    }
+    let hardware =
+        |adapter: &wgpu::Adapter| adapter.get_info().device_type != wgpu::DeviceType::Cpu;
+    let own = std::mem::replace(
+        &mut context.instance,
+        wgpu::Instance::new(wgpu::InstanceDescriptor {
+            display: None,
+            backends: wgpu::Backends::all().difference(wgpu::Backends::GL),
+            flags: wgpu::InstanceFlags::from_build_config().with_env(),
+            memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
+            backend_options: wgpu::BackendOptions::from_env_or_default(),
+        }),
+    );
+    let found = context.device(None).block_on();
+    let found_hardware = found
+        .and_then(|id| context.devices.get(id))
+        .is_some_and(|handle| hardware(&handle.adapter));
+    if let Some(id) = found
+        && (found_hardware
+            || !own
+                .enumerate_adapters(wgpu::Backends::all())
+                .block_on()
+                .iter()
+                .any(hardware))
+    {
+        return Some((context, id));
+    }
+    // No adapter without OpenGL, or a GPU only the context's own backends drive: open it
+    // there instead, as before.
+    context.devices.clear();
+    context.instance = own;
+    let id = context.device(None).block_on()?;
+    Some((context, id))
+}
+
 /// CPU-fallback bridge between a vello `Scene` and an RGBA byte buffer. Owns its wgpu device +
 /// offscreen texture + readback buffer so callers can reuse it across frames. Single-output by design — multi-output is one bridge per output.
 #[cfg_attr(
@@ -2010,6 +2214,8 @@ pub struct VelloDrmBridge {
 
     retained_staging_valid: bool,
     staging_content: Option<(u64, Option<u64>)>,
+    /// No frame has been painted through this bridge yet ([`Self::take_first_frame`]).
+    first_frame_pending: bool,
 
     /// Process-unique identity and monotonic content epoch for opt-in destination histories.
     xrgb_history_generation: Option<u64>,
@@ -2054,8 +2260,7 @@ impl VelloDrmBridge {
         }
 
         let xrgb_history_generation = Self::next_xrgb_history_generation();
-        let mut context = RenderContext::new();
-        let dev_id = context.device(None).block_on().ok_or_else(|| {
+        let (context, dev_id) = open_render_context().ok_or_else(|| {
             BridgeError::NoAdapter(
                 "no wgpu adapter (install vulkan/llvmpipe drivers in the runtime)".to_owned(),
             )
@@ -2110,6 +2315,7 @@ impl VelloDrmBridge {
 
             retained_staging_valid: false,
             staging_content: None,
+            first_frame_pending: true,
 
             xrgb_history_generation,
             xrgb_history_epoch: Some(1),
@@ -2129,6 +2335,13 @@ impl VelloDrmBridge {
     /// `None` draws them opaque.
     pub fn set_backdrop(&mut self, backdrop: Option<Arc<ui::backdrop::BackdropFrame>>) {
         self.target.backdrop = backdrop;
+    }
+
+    /// `true` exactly once: on the first call after this bridge was built, which its owner
+    /// makes once the bridge's first frame was painted. The pipelines' compile scratch is
+    /// free by then.
+    pub fn take_first_frame(&mut self) -> bool {
+        std::mem::take(&mut self.first_frame_pending)
     }
 
     /// Whether [`Self::paint`] has stored a complete tight RGBA frame.
@@ -2401,6 +2614,7 @@ impl VelloDrmBridge {
                 sdr_white_nits,
                 hdr_layers,
                 color_lut: None,
+                layers: None,
             },
         )
     }
@@ -2460,6 +2674,61 @@ impl VelloDrmBridge {
     /// composite when there are layers) otherwise, each turned by `output.orientation`.
     /// Waits for the completion marker.
     fn paint_final_pass(
+        &mut self,
+        scene: &Scene,
+        damage: SceneDamage<'_>,
+        output: OutputTarget<'_>,
+        deadline: Instant,
+        signal: OutputSignal<'_>,
+    ) -> Result<GpuFrameStats, BridgeError> {
+        // A strip pan of a plain SDR output is composited from the retained
+        // layers; the layers hold SDR pixels only, unturned and uncalibrated.
+        let plain = output.format == wgpu::TextureFormat::Bgra8Unorm
+            && output.orientation == OutputTransform::Normal
+            && signal.color_lut.is_none();
+        if let Some(cache) = signal
+            .layers
+            .filter(|cache| plain && self.target.layers_eligible(cache))
+        {
+            return self.paint_layers_final_pass(cache, damage.revision, output, deadline);
+        }
+        self.paint_scene_final_pass(scene, damage, output, deadline, signal)
+    }
+
+    /// [`Self::paint_final_pass`] for a frame that came as layers: the
+    /// target composites it ([`RetainedGpuTarget::render_layers_until`]),
+    /// then the plain copy writes `output`.
+    fn paint_layers_final_pass(
+        &mut self,
+        cache: &crate::shell::frame::FrameCache,
+        revision: u64,
+        output: OutputTarget<'_>,
+        deadline: Instant,
+    ) -> Result<GpuFrameStats, BridgeError> {
+        self.last_phase_timing = None;
+        if let Some(error) = self.take_device_error() {
+            return Err(error);
+        }
+        if self.target.poisoned {
+            let (width, height) = self.target.size;
+            self.reconstruct_target(width, height)?;
+        }
+        output.check_shows(self.target.size)?;
+        let blitter = &self.bgra_blitter;
+        let view = output.view;
+        let rendered = self.target.render_layers_until(
+            cache,
+            revision,
+            deadline,
+            |device, encoder, source| {
+                blitter.copy(device, encoder, source, view);
+            },
+        );
+        rendered.and_then(|stats| self.take_device_error().map_or(Ok(stats), Err))
+    }
+
+    /// [`Self::paint_final_pass`] for a frame rendered from its scene.
+    fn paint_scene_final_pass(
         &mut self,
         scene: &Scene,
         damage: SceneDamage<'_>,
@@ -4541,12 +4810,12 @@ impl VelloDrmBridge {
 
     /// The image atlas and the CPU pixels its residents keep alive.
     pub fn image_cache_stats(&self) -> vello::ImageCacheStats {
-        self.target.image_cache_stats()
+        self.target.vello().image_cache_stats()
     }
 
     /// GPU allocations the renderer accounts for, the image atlas included.
     pub fn renderer_memory_stats(&self) -> vello::RendererMemoryStats {
-        self.target.memory_stats()
+        self.target.vello().memory_stats()
     }
 
     /// After each frame (TIL-731). When a window closed since the last
@@ -4563,7 +4832,7 @@ impl VelloDrmBridge {
             self.target.renderer.shrink_image_atlas_soon();
         }
         let atlas_before = self.logged_memory.map(|mark| mark[0]);
-        let atlas_now = u64::from(self.target.image_cache_stats().atlas_side);
+        let atlas_now = u64::from(self.target.vello().image_cache_stats().atlas_side);
         if atlas_before.is_some_and(|was| atlas_now < was) {
             self.target.renderer.trim_pooled_buffers();
             crate::shell::heap_trim::request();
@@ -4577,8 +4846,8 @@ impl VelloDrmBridge {
     /// left still holds.
     fn log_memory_changes(&mut self) {
         const STEP: u64 = 8 << 20;
-        let memory = self.target.memory_stats();
-        let images = self.target.image_cache_stats();
+        let memory = self.target.vello().memory_stats();
+        let images = self.target.vello().image_cache_stats();
         let mark = [
             u64::from(images.atlas_side),
             memory.image_bytes,
@@ -5509,6 +5778,7 @@ mod tests {
                     sdr_white_nits: crate::shell::color_pipeline::SDR_REFERENCE_WHITE_NITS,
                     hdr_layers: &[],
                     color_lut,
+                    layers: None,
                 },
             )
             .expect("the output's frame renders");
@@ -6284,7 +6554,8 @@ mod tests {
             }
             scene
         };
-        let pooled = |bridge: &VelloDrmBridge| bridge.target.memory_stats().pooled_buffer_bytes;
+        let pooled =
+            |bridge: &VelloDrmBridge| bridge.target.vello().memory_stats().pooled_buffer_bytes;
         let mut bridge = required_bridge(1024, 768);
         let mut pixels = vec![0; 1024 * 768 * 4];
         let scene = busy(1024, 768);
@@ -6904,11 +7175,11 @@ mod tests {
                     Err(BridgeError::DeadlineExceeded)
                 ));
                 assert_eq!(
-                    target.gpu_timestamp_latest_submission_id(),
+                    target.vello().gpu_timestamp_latest_submission_id(),
                     None,
                     "aborted recording must not advertise a submitted timestamp identity"
                 );
-                assert!(target.take_gpu_timestamp_sample().is_none());
+                assert!(target.vello_mut().take_gpu_timestamp_sample().is_none());
                 assert!(target.completed_view().is_none());
             }
 

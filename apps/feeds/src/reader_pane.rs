@@ -46,19 +46,6 @@ pub(crate) fn fill_leaf<W: Widget + 'static>(
     node
 }
 
-/// The rect taffy placed `node` at, in window coordinates.
-pub(crate) fn leaf_rect(taffy: &TaffyTree<()>, node: NodeId, origin: Point) -> Rect {
-    let layout = taffy.layout(node).copied().unwrap_or_default();
-    let x = origin.x + f64::from(layout.location.x);
-    let y = origin.y + f64::from(layout.location.y);
-    Rect::new(
-        x,
-        y,
-        x + f64::from(layout.size.width),
-        y + f64::from(layout.size.height),
-    )
-}
-
 /// What the reader painted last frame, for hit-testing and scrolling.
 pub(crate) struct ReaderState {
     pub(crate) rect: Rect,
@@ -602,7 +589,7 @@ impl Widget for ReaderPane {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = leaf_rect(taffy, node, origin);
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
     }
 
     fn draw(

@@ -2891,10 +2891,7 @@ impl Widget for CameraApp {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let Ok(layout) = taffy.layout(node) else {
-            return;
-        };
-        self.rect = ui::widget::placed(layout, origin);
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         if self.built_with_document {
             let placed = Self::document_layout(self.rect, &self.layout_theme);
             for (field, rect) in self.document_controls.fields.iter_mut().zip(placed.fields) {

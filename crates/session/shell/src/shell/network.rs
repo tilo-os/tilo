@@ -8,6 +8,8 @@ use crate::shell::state::WorkspaceAuthority as _;
 mod boot_join;
 #[cfg(test)]
 mod display_input_tests;
+#[cfg(test)]
+mod display_observation_refresh_tests;
 mod display_observations;
 mod governor_actions;
 mod hosted_topology;
@@ -527,15 +529,20 @@ enum Reach {
     /// deferral).
     #[cfg(test)]
     LoopbackHoldingRelays,
+    /// Only this machine's, holding back these relays (a test's own, which
+    /// it runs) the way [`Self::Internet`] holds back the public ones.
+    #[cfg(test)]
+    LoopbackHolding(&'static iroh::RelayMap),
 }
 
-/// Why someone could need to dial this device as its session starts, from
-/// what is already recorded: a room it shares (one it joined, a peer it
-/// named or admitted, a relay-governed or continuation room), an invite
-/// still open, or another of the person's devices in its fabric (they
-/// continue, sync and disk-unlock through it). Hosts, enrolled home peers
-/// and the person's paired devices are dialled at start, which wakes the
-/// relays in the actor, as does every relationship that begins later.
+/// Why someone could need to dial this device, from what its session has
+/// recorded: a room it shares (one it joined, a peer it names in it, a
+/// relay-governed or continuation room), an invite still open, or another of
+/// the person's devices in its fabric (they continue, sync and disk-unlock
+/// through it). Read as the session starts and again while it ticks; while
+/// it holds, the relays stay up. Hosts, enrolled home peers and the person's
+/// paired devices are dialled at start, which holds the relays up in the
+/// actor, as does every relationship that begins later.
 fn needs_reachability(
     tree: &WorkspaceTree,
     local_endpoint: &str,
@@ -555,11 +562,10 @@ fn needs_reachability(
         .room_peer_names
         .values()
         .any(|peers| peers.keys().any(someone_else))
-        || tree
-            .room_peer_identities
-            .values()
-            .any(|peers| peers.keys().any(someone_else))
     {
+        // A peer's certified identity is only admitted under its name, and
+        // outlives an un-naming as revocation evidence: a peer no longer
+        // named is no longer a member, and nobody to stay reachable for.
         Some("a room shared with a peer")
     } else if !tree.native_authority.is_empty() {
         Some("a relay-governed room")
@@ -826,6 +832,14 @@ fn personal_room_ids(path: &Path) -> Vec<RoomId> {
 /// snapshot for a change to publish. Local work; nothing goes out unless
 /// something changed.
 const SYNC_KICK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+/// How often a ticking shell re-reads whether what it has recorded (a shared
+/// room, an open invitation, another device) still needs its relays up.
+/// Local work over a few maps; a parked compositor does not tick at all.
+const SESSION_REACH_RECHECK: std::time::Duration = std::time::Duration::from_secs(1);
+/// The longest an invite minted on this device waits for a home relay to
+/// name in it, when the relays were not already running: about what a net
+/// report and a relay handshake take.
+const INVITE_RELAY_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 /// How long after a room changed, here or by a peer's batch, a shell asks
 /// its rooms for anything it is missing. Local changes are pushed the tick
 /// they land ([`ShellNetwork::push_room_changes`]); this pull, made once a
@@ -1202,6 +1216,9 @@ pub struct ShellNetwork {
     /// be approved after this shell started, so startup-only loading is not
     /// sufficient.
     last_home_peer_refresh: Mutex<Option<std::time::Instant>>,
+    /// When [`Self::note_session_reachability`] last told the relays what
+    /// the session has recorded. `None` until the first tick.
+    session_reach_checked: Mutex<Option<std::time::Instant>>,
     /// When [`Self::kick_periodic_sync`] last did its local upkeep. `None`
     /// until the first tick.
     last_sync_kick: Mutex<Option<std::time::Instant>>,
@@ -1582,10 +1599,13 @@ impl ShellNetwork {
         // reachable, when `reachability` adds the held-back relays.
         let held_back = iroh::RelayMode::Custom(iroh::RelayMap::empty());
         let internet = matches!(reach, Reach::Internet);
-        let (builder, deferred_relays) = match reach {
+        // How long the relays stay up once nothing needs them: minutes in a
+        // session, moments in a test of it.
+        let (builder, deferred_relays, rest_after) = match reach {
             Reach::Internet => (
                 iroh::Endpoint::builder(presets::N0).relay_mode(held_back),
                 iroh::endpoint::default_relay_mode().relay_map(),
+                crate::network::reachability::REST_AFTER,
             ),
             #[cfg(test)]
             Reach::Loopback => (
@@ -1594,6 +1614,7 @@ impl ShellNetwork {
                     .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
                     .map_err(|e| std::io::Error::other(format!("iroh bind: {e}")))?,
                 iroh::RelayMap::empty(),
+                crate::network::reachability::REST_AFTER,
             ),
             #[cfg(test)]
             Reach::LoopbackHoldingRelays => (
@@ -1602,6 +1623,16 @@ impl ShellNetwork {
                     .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
                     .map_err(|e| std::io::Error::other(format!("iroh bind: {e}")))?,
                 reachability_tests::unused_relays(),
+                reachability_tests::REST_AFTER,
+            ),
+            #[cfg(test)]
+            Reach::LoopbackHolding(relays) => (
+                iroh::Endpoint::builder(presets::Minimal)
+                    .relay_mode(held_back)
+                    .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
+                    .map_err(|e| std::io::Error::other(format!("iroh bind: {e}")))?,
+                relays.clone(),
+                reachability_tests::REST_AFTER,
             ),
         };
         let endpoint = runtime
@@ -1617,6 +1648,7 @@ impl ShellNetwork {
             &endpoint,
             &deferred_relays,
             runtime.handle().clone(),
+            rest_after,
         );
         let mdns = if internet {
             init_lan_discovery(&endpoint)
@@ -1759,14 +1791,15 @@ impl ShellNetwork {
             .snapshots()
             .keys()
             .any(|device| Some(device) != personal_continuity_device.as_ref());
-        if let Some(why) = needs_reachability(
-            &tree_for_reachability.read(),
-            &local_peer_id.to_string(),
-            !pending_identity_admissions.is_empty(),
-            other_devices,
-        ) {
-            reachability.wake(why);
-        }
+        reachability.need(
+            crate::network::reachability::Need::Session,
+            needs_reachability(
+                &tree_for_reachability.read(),
+                &local_peer_id.to_string(),
+                !pending_identity_admissions.is_empty(),
+                other_devices,
+            ),
+        );
 
         let network = Self {
             cmd_tx,
@@ -1791,6 +1824,7 @@ impl ShellNetwork {
             registered_home_device_ids: Mutex::new(home_device_ids),
             personal_device_peers: Mutex::default(),
             last_home_peer_refresh: Mutex::new(None),
+            session_reach_checked: Mutex::new(None),
             last_sync_kick: Mutex::new(None),
             next_sync_pull: Mutex::new(None),
             peers_joined: std::sync::atomic::AtomicU64::new(0),
@@ -3795,6 +3829,67 @@ impl ShellNetwork {
         addrs.first().cloned()
     }
 
+    /// Start this device's relays because someone is about to invite: the
+    /// invite composer opened. By the time the invite is minted the
+    /// endpoint has a home relay to put in it, and if nobody sends one the
+    /// relays rest again ([`crate::network::reachability::REST_AFTER`]).
+    /// Answers the composer's bridge request, which carries nothing back.
+    pub fn prepare_invitation(&self) -> crate::shell::overlay_host::PeerSyncResponse {
+        self.reachability.wake("the invite composer opened");
+        crate::shell::overlay_host::PeerSyncResponse::Message(String::new())
+    }
+
+    /// Why what this session has recorded needs this device reachable, if
+    /// it does ([`needs_reachability`]).
+    fn session_reachability_need(&self) -> Option<&'static str> {
+        let tree = self.replica.lock().ok()?.tree.clone();
+        let now = tilo_clock::unix_now();
+        let open_invitations = self
+            .pending_identity_admissions
+            .lock()
+            .is_ok_and(|pending| pending.values().any(|invite| !invite.is_expired(now)));
+        let other_devices = self.device_fabric.lock().is_ok_and(|fabric| {
+            fabric
+                .snapshots()
+                .keys()
+                .any(|device| Some(device) != self.personal_continuity_device.as_ref())
+        });
+        let tree = tree.read();
+        needs_reachability(
+            &tree,
+            &self.local_peer_id.to_string(),
+            open_invitations,
+            other_devices,
+        )
+    }
+
+    /// Tell the relays what the session has recorded, so they stay up while
+    /// a shared room, an open invitation or another of the person's devices
+    /// lasts and may rest once none does. At most once a second from the
+    /// frame tick; `now` after a change this session made itself.
+    fn note_session_reachability(&self, now: bool) {
+        if !self.reachability.holds_relays() {
+            return;
+        }
+        let at = std::time::Instant::now();
+        {
+            let Ok(mut checked) = self.session_reach_checked.lock() else {
+                return;
+            };
+            if !now
+                && checked
+                    .is_some_and(|last| at.saturating_duration_since(last) < SESSION_REACH_RECHECK)
+            {
+                return;
+            }
+            *checked = Some(at);
+        }
+        self.reachability.need(
+            crate::network::reachability::Need::Session,
+            self.session_reachability_need(),
+        );
+    }
+
     /// The tally of every application message this device's peers and
     /// hosts delivered to it. Blocks until the actor answers, so it must
     /// not be called from inside the network's runtime.
@@ -3871,6 +3966,8 @@ impl ShellNetwork {
         if let Some(path) = self.pending_invitations_path.as_deref() {
             persist_pending_invitations(path, &pending);
         }
+        drop(pending);
+        self.note_session_reachability(true);
         true
     }
 
@@ -4057,11 +4154,17 @@ impl ShellNetwork {
                 expiry_seconds_from_now,
             );
         }
-        // The invitee will dial this device. Until its address names a home
-        // relay, the invitee's dial finds the relay through address lookup.
+        // The invitee will dial this device, so the invite names its home
+        // relay: from behind a NAT a direct address alone may not reach it,
+        // and address lookup finds the relay only later. The composer
+        // started the relays when it opened; an invite minted straight away
+        // waits a moment for one, and goes out with direct addresses if
+        // none comes (no network to the relays).
         self.reachability.wake("an invitation was issued");
         let addr = self
-            .dial_addr()
+            .reachability
+            .relay_addr_within(INVITE_RELAY_WAIT)
+            .or_else(|| self.dial_addr())
             .ok_or_else(|| "peer-sync is not listening yet; try again in a moment".to_string())?;
         let (token, room) = {
             let hosts = self
@@ -4153,6 +4256,7 @@ impl ShellNetwork {
             persist_pending_invitations(path, &pending);
         }
         drop(pending);
+        self.note_session_reachability(true);
         Ok(token)
     }
 
@@ -5989,6 +6093,7 @@ impl ShellNetwork {
     /// render loop even on a starved channel.
     pub fn tick(&self) {
         self.remote_action_replies.expire(std::time::Instant::now());
+        self.note_session_reachability(false);
         // Local room changes go out the tick they land; the periodic pull
         // repairs whatever a peer missed.
         self.push_room_changes();
@@ -7650,6 +7755,7 @@ pub(crate) fn shell_network_for_test(
         registered_home_device_ids: Mutex::new(std::collections::HashSet::new()),
         personal_device_peers: Mutex::default(),
         last_home_peer_refresh: Mutex::new(None),
+        session_reach_checked: Mutex::new(None),
         last_sync_kick: Mutex::new(None),
         next_sync_pull: Mutex::new(None),
         peers_joined: std::sync::atomic::AtomicU64::new(0),

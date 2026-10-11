@@ -43,7 +43,7 @@ the ceremony persists that seed, and `IdentityRecord::into_threshold_identity` r
 whose secret does not derive its recorded public key. The mismatch is fatal in `runtime-identity`
 in every build profile. Firstboot now goes through the same encoder, so there is one writer of
 the format. Held by
-`crates/sdk/ui-core/src/widget/identity_flow/mod.rs::tests::identity_record_serialization_and_signing_round_trips`
+`crates/collab/tilo-identity-ceremony/src/lib.rs::tests::identity_record_serialization_and_signing_round_trips`
 (phase `ceremony_minted_record_signs_for_its_own_recorded_public_key`)
 and
 `crates/runtime/runtime-identity/src/unix.rs::tests::a_local_secret_must_derive_the_recorded_key_to_sign`

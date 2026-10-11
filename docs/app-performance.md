@@ -339,6 +339,54 @@ are 2.75 million text ops), the collection read 21 % (one object lookup each
 for the entry, the item and its title text), layout and the bound-control
 refresh 18 %, and closing the previous window 10 %.
 
+### Typing in a note repaints its line
+
+`apps/notes/tests/typing_damage.rs` drives the real Notes window (its record
+and saver included) the way the desktop runs an in-process tile: input through
+`App::surface_input`, frames through `App::surface_frame_with_damage`, and the
+app's scene appended to a host part hinted with its damage and compared part
+by part (`ui::scene_parts`). Every frame is presented sparsely over the one
+before it and compared with a full render, in dark, light and high contrast.
+Pixels repainted per frame of a 1280×900 app (1,152,000 px):
+
+| Change | Before | After |
+|---|---:|---:|
+| A key after the previous key's save landed | 1,152,000 (a rebuilt tree) | ≈ 48,000 (the line, the caret, the save bubble) |
+| The save landing between keys | 1,152,000 (a rebuilt tree) | ≈ 25,000 (the bubble) |
+| A key a minute after the last edit ("Edited" turns over) | 1,152,000 (a rebuilt tree) | ≈ 81,600 (the line, the bubble, the dates line) |
+| A key in the title | ≈ 816,000 (the page panel) | ≈ 62,500 (the title's band) |
+| The pointer onto a toolbar button | ≈ 1,131,000 (the app below the header) | ≈ 1,200 (the button) |
+
+The desktop's 4K Notes tile repainted 7,022,592 of 8,294,400 px per key
+before (`frame_retained_tests::typing_in_notes_repaints_what_changed_not_the_tile`
+now holds a key and a title letter under 5 % of the output).
+
+What was behind it:
+
+- A record's save status flipping (Saved → Saving on a key, back when the
+  saver lands) marked a framework root's *structure* dirty, so the next frame
+  rebuilt the widget tree and repainted the window. The root now syncs again
+  with a changed status in the same pass, and an `App` presents it with a relayout
+  (`component_lifecycle::take_save_status_presentation`); a component mounted
+  straight in a `TileHost` still sees it as a structure change.
+- Notes drew its shell, page tree, save bubble and toasts as one opaque scene
+  beside the note, so the bubble or a hover in the shell repainted the app.
+  Each is now a damage part with its own proof; the shell's empty column
+  slots no longer claim their columns as needing a redraw.
+- The page's title was outside its parts. It is a part of its own now.
+- The "Created … · Edited …" line rebuilt the header's widgets (and so the
+  tree) whenever its words changed. Same-length changes now retext the built
+  line (`NoteHeader::retext_captions`).
+- A text field's correction chip floats outside the field, where neither the
+  block editor's per-paragraph damage nor the title's covered it: sparse
+  frames left it out or left it behind. Fields report it (`TextInput::overhang`)
+  and the editor and the title damage it where it is and was.
+
+Headings, quotes, list and checklist items and rules now damage their row of
+the editor too. A key still rebuilds the tree when it adds or removes a header
+line or a tag, and still repaints the whole editor in a note with a code block
+or a table.
+
 ## Verified shared-list CPU workload
 
 The `ui-perf perf_scenario --count 1200 --json` list case now checks the real

@@ -258,11 +258,11 @@ pub struct State {
     pub shm_state:            ShmState,
     pub seat_state:           SeatState<Self>,
     pub output_manager_state: OutputManagerState,
-    // … per-workspace bridge sockets, shell chrome handle, frame builder, …
+    // … shell chrome handle, frame builder, …
 }
 ```
 
-Each protocol handler attaches via `delegate_compositor!`, `delegate_xdg_shell!`, `delegate_shm!`, `delegate_seat!`, `delegate_output!`. The main socket is registered via `ListeningSocketSource`; per-workspace bridge sockets register additional sources on the same loop (see `docs/architecture/security.md`).
+Each protocol handler attaches via `delegate_compositor!`, `delegate_xdg_shell!`, `delegate_shm!`, `delegate_seat!`, `delegate_output!`. The main socket is registered via `ListeningSocketSource`; each accepted client is attributed from its peer credentials (see `docs/architecture/security.md`).
 
 The Wayland state is decoupled from the graphical backend so the compositor's logic can run in the headless integration test harness (`crates/session/shell/tests/interaction_test.rs`, `compositor_test.rs`) without a GPU.
 
@@ -318,8 +318,30 @@ its tile. A tile's edge and the tab list's focus ring are parts too. Foreign
 buffer swaps keep their
 client-reported damage, from `wl_surface.damage_buffer` as from
 `wl_surface.damage` (scaled to buffer pixels unless a viewport crops or
-scales the buffer). Strip pans still repaint every pixel of the strip: no
-presenter composites the retained strip layer (`FrameCache`). Night light and the
+scales the buffer). A strip pan moves pixels instead of repainting them:
+while a strip pans, the producer draws the desktop as layers
+(`FramePaint::cache`: what is behind the windows, each strip on its own in
+canvas coordinates, the docked wheel on its own, the chrome above), in device
+pixels, and the DRM GPU presenter keeps the backdrop, the strips and the
+chrome in textures of the output's size and the wheel in one of its own size
+(`render/strip_layers.rs`). A pure pan copies the pixels whose strips all
+moved by the same distance, rasterises only the columns it uncovered and the
+band where a moving strip's shadows meet a strip that stayed, and composites
+from the textures; the wheel, which rides the top strip over the strips below,
+is only composited at its new place, and a layer is rasterised again only when
+its scene changes (a strip whose drawing changed, only inside its own row).
+On a scaled display pans land on whole device pixels that are also whole
+layout pixels: the drawn pan is the gesture's rounded to the fewest layout
+pixels that make whole device pixels (one at 100 % and 200 %, two — three
+device pixels — at 150 %, four at 125 %; scales needing more than eight keep
+exact pans and the scene path). A pan then moves strip pixels by whole pixels
+without resampling them, and the panned frame is exactly what the desktop
+drawn without layers shows: chrome that snaps to layout pixels (the docked
+wheel's cached drawing, app icons) would land a fraction of a pixel apart at
+a finer step and twitch when the pan ends. Layout and input use the same
+drawn pan. Frames at rest keep the screen-space damage above, and a rotated,
+calibrated, HDR, blurred or multi-display output renders the scene as before.
+Night light and the
 colour filters are per-pixel tints drawn into the same scene, so frames under
 them stay sparse while the tint is unchanged; the magnifier and the
 crosshair, which follow the pointer, keep every frame dense.
@@ -722,7 +744,7 @@ Fallback if bare DRM init fails: relaunch under `cage` as a single-window Waylan
 
 ## What's not here
 
-- **Sandboxing protocol details and the per-workspace Wayland bridge socket** — `docs/architecture/security.md`.
+- **Sandboxing protocol details and Wayland client attribution** — `docs/architecture/security.md`.
 - **Peer sync, foreign-surface streaming, remote input replay** — `docs/architecture/collaboration.md`.
 - **xdg-desktop-portal backend** — `docs/architecture/security.md` and `crates/session/shell/src/portal/`.
 - **WorkspaceTree CRDT shape** — `docs/architecture/overview.md` plus `docs/superpowers/specs/2026-05-04-workspace-tree-automerge-design.md`.

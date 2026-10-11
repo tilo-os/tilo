@@ -91,6 +91,7 @@ mod local_person;
 pub mod magnifier;
 pub mod media_keys;
 pub(crate) mod membership;
+pub mod memory_report;
 pub mod mls_vault;
 pub mod mpris;
 pub(crate) mod native_media;
@@ -142,6 +143,7 @@ pub mod search;
 pub mod service_members;
 pub mod session_audio_policy;
 pub mod session_policy;
+pub(crate) mod shared_display_actions;
 pub mod shell_narrator;
 pub mod spatial_calibration;
 pub mod speaker_calibration;
@@ -1471,3 +1473,5 @@ pub fn install_approved_checks_from_args(
 ) -> Result<(), String> {
     broker_services::approved_checks::install_from_args(arguments)
 }
+
+pub(crate) mod morning_sources;
