@@ -1299,6 +1299,41 @@ impl OpSet {
         self.get_op_id_pos(id)
     }
 
+    // TILO(seq-apply-skip): lookups a list or text apply uses to jump over
+    // elements it cannot change (vendor/automerge/TILO-PATCH.md).
+
+    /// Where the sequence element holding the op at `pos` starts (its
+    /// insert op), if that lies in `range` with `pos`.
+    pub(crate) fn element_start(&self, pos: usize, range: Range<usize>) -> Option<usize> {
+        if !range.contains(&pos) {
+            return None;
+        }
+        let inserts = self.cols.insert.get_total(pos);
+        if inserts == 0 {
+            return None;
+        }
+        let start = self.cols.insert.get_index_for_total(inserts);
+        (range.start <= start && start <= pos).then_some(start)
+    }
+
+    /// The visible width of the sequence elements in `range`, as the
+    /// sequence's patches count it: one per element of a list, the width of
+    /// the element's text in a text.
+    pub(crate) fn visible_width(&self, range: Range<usize>, seq_type: SequenceType) -> usize {
+        match seq_type {
+            SequenceType::List => self.cols.index.top.sum_range(range),
+            SequenceType::Text => self.cols.index.text.sum_range(range) as usize,
+        }
+    }
+
+    /// The first mark op in `range`.
+    pub(crate) fn next_mark(&self, range: Range<usize>) -> Option<usize> {
+        self.cols
+            .action
+            .iter_range(range)
+            .scan_to_value(Action::Mark)
+    }
+
     pub(crate) fn iter_obj<'a>(&'a self, obj: &ObjId) -> OpIter<'a> {
         let range = self.scope_to_obj(obj);
         self.iter_range(&range)
