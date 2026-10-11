@@ -13,6 +13,16 @@ use super::WorkspaceTree;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 
+/// The newest policy revision handed out, across every tree of the process.
+static POLICY_REVISION: AtomicU64 = AtomicU64::new(0);
+
+/// A policy revision later than every one handed out before.
+pub fn next_policy_revision() -> u64 {
+    POLICY_REVISION
+        .fetch_add(1, Ordering::AcqRel)
+        .wrapping_add(1)
+}
+
 /// Shared handle to a single [`WorkspaceTree`], cloned by the compositor,
 /// portal and peer-sync so every mutation lands on the same tree.
 /// `parking_lot::RwLock` rather than a `Mutex`: readers vastly outnumber
@@ -175,6 +185,11 @@ impl WorkspaceTreeHandle {
         self.0.generation.load(Ordering::Acquire)
     }
 
+    /// The revision of the authorization state the tree holds now.
+    pub fn policy_revision(&self) -> u64 {
+        self.read().policy_revision
+    }
+
     /// A weak handle to the same tree.
     pub fn downgrade(&self) -> WeakWorkspaceTreeHandle {
         WeakWorkspaceTreeHandle(Arc::downgrade(&self.0))
@@ -257,6 +272,13 @@ impl Drop for WorkspaceTreeWriteGuard<'_> {
             changed
         };
         if changed {
+            // A later state than any published or captured before it. Taken
+            // while the write lock is held, so a reader sees this value with
+            // the state it names.
+            self.guard.policy_revision = next_policy_revision();
+            // And the save that publishes it, submitted now rather than left
+            // to whichever caller mutated the tree remembering to save.
+            self.guard.queue_save();
             tilo_identity_host::policy_change::announce();
         }
     }
@@ -285,6 +307,29 @@ mod tests {
 
         drop(handle.try_write().expect("nobody holds the tree"));
         assert_eq!(handle.generation(), start.wrapping_add(2));
+    }
+
+    #[test]
+    fn only_a_write_that_changes_authorization_advances_the_policy_revision() {
+        let handle = WorkspaceTreeHandle::new(WorkspaceTree::default());
+        let start = handle.policy_revision();
+        handle.write().desktop.external_revision = 11;
+        assert_eq!(
+            handle.policy_revision(),
+            start,
+            "a layout write is no new policy"
+        );
+        let _ = handle.write().append_empty_workspace("Granted");
+        let first = handle.policy_revision();
+        assert!(first > start, "a new workspace is a new policy");
+        handle.write().desktop.workspaces[0].capabilities.push(
+            collab_types::caps::CapOverride::grant(
+                collab_types::caps::Subject::app("so.tilo.revision"),
+                collab_types::caps::Scope::FsPath("/disposable/revision".into()),
+                collab_types::caps::Verb::Read,
+            ),
+        );
+        assert!(handle.policy_revision() > first, "a grant is a new policy");
     }
 
     /// TIL-707: the collaboration broker re-checks rosters, roles and

@@ -184,6 +184,13 @@ impl DurableWriter {
         self.flush_within(Instant::now().checked_add(limit))
     }
 
+    /// How many submitted writes are on disk: it advances whenever the
+    /// writer completes one, so two equal readings a while apart mean it
+    /// completed nothing in between.
+    pub fn progress(&self) -> u64 {
+        self.shared.queue.lock().durable_through()
+    }
+
     #[allow(
         clippy::significant_drop_tightening,
         reason = "the queue lock is what the condition variable waits on"
@@ -263,6 +270,17 @@ mod tests {
         });
         running.recv().expect("blocker started");
         (writer, release)
+    }
+
+    #[test]
+    fn progress_advances_only_as_writes_complete() {
+        let (writer, release) = blocked_writer();
+        let before = writer.progress();
+        writer.submit(PathBuf::from("queued"), || {});
+        assert_eq!(writer.progress(), before, "nothing completes while blocked");
+        release.send(()).unwrap();
+        writer.flush();
+        assert!(writer.progress() > before);
     }
 
     #[test]
