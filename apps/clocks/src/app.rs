@@ -15,11 +15,7 @@ use crate::resource::ClocksEffect;
 use crate::schedule::{DueEvent, OnThisDevice, shell_activity};
 use crate::transport::{ShellCommand, ShellSnapshot};
 use chrono::Utc;
-use std::{
-    collections::{BTreeSet, HashMap},
-    time::Duration,
-};
-use taffy::{NodeId, TaffyTree};
+use std::{collections::BTreeSet, time::Duration};
 use ui::framework::{Actions, Dispatcher, Setting};
 use ui::icons::Icon;
 use ui::prelude::Id;
@@ -27,11 +23,6 @@ use ui::widget::{AppModel, ModelPath};
 use ui::widget::{
     Button, Card, CardGrid, Column, Container, Element, ModelView, ProgressBar, Row, Scrollable,
     Spacer, Text, TextInput, TextInputKind, TimePicker, TimeValue, Widget,
-};
-use ui::{presence::PresenceCtx, text_render::TextRenderer, theme::Theme};
-use vello::{
-    Scene,
-    kurbo::{Affine, Point, Rect},
 };
 
 /// What the window shows: the person's clocks and this device's choices.
@@ -1392,7 +1383,15 @@ fn schedules_notifications() -> bool {
     )
 }
 
-impl Widget for ClocksApp {
+impl ui::widget::Decorator for ClocksApp {
+    type Inner = dyn Widget;
+
+    fn inner(&self) -> &(dyn Widget + 'static) {
+        self.inner.as_ref()
+    }
+    fn inner_mut(&mut self) -> &mut (dyn Widget + 'static) {
+        self.inner.as_mut()
+    }
     fn sync(&mut self, d: &AppModel, p: &ModelPath) {
         let tick_base = ui::time::now();
         self.next_clock_tick = tick_base
@@ -1419,45 +1418,8 @@ impl Widget for ClocksApp {
         }
         self.inner.sync(d, p);
     }
-    fn build_layout(
-        &mut self,
-        t: &mut TaffyTree<()>,
-        th: &Theme,
-        m: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        self.inner.build_layout(t, th, m)
-    }
-    fn apply_layout(&mut self, t: &TaffyTree<()>, n: NodeId, o: Point) {
-        self.inner.apply_layout(t, n, o);
-    }
-    fn draw(
-        &mut self,
-        s: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        th: &Theme,
-        p: &PresenceCtx,
-    ) {
-        self.inner.draw(s, tf, tr, th, p);
-    }
-    fn handle_event(
-        &mut self,
-        event: &winit::event::WindowEvent,
-        ctx: &mut ui::widget::EventCtx<'_>,
-    ) {
-        self.inner.handle_event(event, ctx);
-    }
-    fn children(&self) -> Vec<&dyn Widget> {
-        vec![self.inner.as_ref()]
-    }
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        vec![self.inner.as_mut()]
-    }
     fn name(&self) -> &'static str {
         "ClocksApp"
-    }
-    fn get_rect(&self) -> Rect {
-        self.inner.get_rect()
     }
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
         Some(
@@ -1467,12 +1429,6 @@ impl Widget for ClocksApp {
                     inner.min(self.next_clock_tick)
                 }),
         )
-    }
-    fn take_structure_dirty(&mut self) -> bool {
-        self.inner.take_structure_dirty()
-    }
-    fn take_focus_reset(&mut self) -> bool {
-        self.inner.take_focus_reset()
     }
 }
 

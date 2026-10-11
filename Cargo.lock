@@ -2161,8 +2161,6 @@ dependencies = [
  "tilo-app",
  "tilo-history",
  "tilo-test-env",
- "tilo-vello",
- "tilo-winit",
  "tracing",
  "uuid",
  "workspace-hack",
@@ -11758,7 +11756,6 @@ dependencies = [
  "tilo-ocr",
  "tilo-thumbnail",
  "tilo-vello",
- "tilo-winit",
  "workspace-hack",
 ]
 

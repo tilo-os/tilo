@@ -1210,10 +1210,7 @@ pub async fn serve_with_inhibit_and_clipboard(
         InputCaptureBackend::new(ctx.clone(), lifecycle.clone(), connection.clone());
     let input_capture_sessions = input_capture.session_handle();
     let clipboard = ClipboardBackend::with_session_providers(
-        vec![
-            clipboard::ClipboardSessionProviderHandle::new(Arc::new(remote_sessions)),
-            clipboard::ClipboardSessionProviderHandle::new(Arc::new(input_capture_sessions)),
-        ],
+        vec![Arc::new(remote_sessions), Arc::new(input_capture_sessions)],
         clipboard_broker,
     )
     .with_session_wake(lifecycle.wake.clone());

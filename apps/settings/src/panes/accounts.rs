@@ -30,12 +30,13 @@
 
 use std::rc::Rc;
 
+use accounts::email::AccountConfig;
 use tracing::warn;
 use ui::framework::{EffectAnswer, EffectCx, Effected, LiveRow};
 use ui::tilo_resource::{self, Effect};
 use ui::widget::{Button, Column, Row, Spacer, Text, TextInput, TextInputKind, Widget};
 
-use crate::accounts::{AccountConfig, AccountDirectory, AccountKind, AccountRoot, AccountView};
+use crate::accounts::{AccountDirectory, AccountKind, AccountRoot, AccountView};
 use crate::effects::SettingsEffect;
 use crate::host::PaneCx;
 use crate::i18n::{t, t_args};

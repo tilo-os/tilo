@@ -1419,16 +1419,17 @@ pub fn load_metadata() -> Result<IdentityMetadata, NotAvailable> {
 
 fn load_from_service(fd: std::os::fd::RawFd) -> Result<SigningIdentity, NotAvailable> {
     let identity = shared_service_connection(fd)?;
+    let metadata = identity.metadata();
     Ok(SigningIdentity {
-        display_name: identity.display_name().to_owned(),
-        avatar_color: identity.avatar_color(),
-        group_public_key: identity.group_public_key(),
-        signing_public_key: identity.signing_public_key(),
-        device_certificate: identity.device_certificate().map(<[u8]>::to_vec),
-        threshold: identity.threshold(),
-        total_shares: identity.total_shares(),
-        share_index: identity.share_index(),
-        single_device: identity.is_single_device(),
+        display_name: metadata.display_name().to_owned(),
+        avatar_color: metadata.avatar_color(),
+        group_public_key: metadata.group_public_key(),
+        signing_public_key: metadata.signing_public_key(),
+        device_certificate: metadata.device_certificate().map(<[u8]>::to_vec),
+        threshold: metadata.threshold(),
+        total_shares: metadata.total_shares(),
+        share_index: metadata.share_index(),
+        single_device: metadata.is_single_device(),
         source: SigningSource::ActionBroker(identity),
     })
 }

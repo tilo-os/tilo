@@ -21,9 +21,7 @@ serde_json.workspace = true
 tracing.workspace = true
 uuid.workspace = true
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
-vello.workspace = true
 taffy.workspace = true
-winit.workspace = true
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 
 [features]
