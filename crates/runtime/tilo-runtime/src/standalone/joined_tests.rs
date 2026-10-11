@@ -876,6 +876,17 @@ fn a_live_sdk_app_in_a_joined_room_gets_keys_from_the_governors_steward() {
         .unwrap()
         .and_then(|(value, _)| value.into_string().ok());
     assert_eq!(text.as_deref(), Some(SDK_WRITTEN));
+    session.joined.owner.with_current(governing.room, |view| {
+        let bytes = view.peer().document(SDK_APP, "")
+            .ok_or("joined owner has no parsed committed document")?;
+        let committed = AutoCommit::load(&bytes).map_err(|error| error.to_string())?;
+        let text = automerge::ReadDoc::get(&committed, ROOT, "text")
+            .map_err(|error| error.to_string())?
+            .and_then(|(value, _)| value.into_string().ok());
+        assert_eq!(text.as_deref(), Some(SDK_WRITTEN),
+            "the key-holding joined owner must parse the exact sealed write before durable acknowledgement");
+        Ok(())
+    }).unwrap();
     tilo_rt::app()
         .block_on(async {
             publisher.close().await;

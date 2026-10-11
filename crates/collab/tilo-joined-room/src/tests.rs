@@ -577,7 +577,7 @@ fn task_action_admission_and_direction_commit_are_one_serialized_owner_turn() {
 
 fn sealed_edit(
     joined: &Enrolled,
-    plaintext: Option<Vec<u8>>,
+    plaintext: Option<&[u8]>,
 ) -> (OwnerCommitRequest, channel_crypto::ChannelContentKeys) {
     let mut request = edit(&joined.owner, joined.room, joined.now);
     let CommitOperation::Document { envelope, .. } = &mut request.operation else {
@@ -588,7 +588,7 @@ fn sealed_edit(
         .seal_content(
             envelope.artifact,
             collab_types::ContentRetention::Delta,
-            plaintext.as_deref().unwrap_or(&envelope.payload),
+            plaintext.unwrap_or(&envelope.payload),
         )
         .unwrap();
     envelope.payload = ciphertext;
@@ -619,7 +619,7 @@ fn opened_sealed_local_write_refuses_bad_plaintext_without_publication() {
     let malformed = collab_types::DocumentMutation::Incremental(b"not Automerge storage".to_vec())
         .encode()
         .unwrap();
-    let (request, keys) = sealed_edit(&joined, Some(malformed));
+    let (request, keys) = sealed_edit(&joined, Some(&malformed));
     let before = std::fs::read(&joined.path).unwrap();
     let mut opened = 0;
     let result = joined.owner.commit_document_with_opening(
@@ -654,7 +654,7 @@ fn opened_sealed_local_write_refuses_missing_dependencies_without_publication() 
     let plaintext = collab_types::DocumentMutation::Incremental(alien.save_after(&basis))
         .encode()
         .unwrap();
-    let (request, keys) = sealed_edit(&joined, Some(plaintext));
+    let (request, keys) = sealed_edit(&joined, Some(&plaintext));
     assert!(
         joined
             .owner
