@@ -3,7 +3,7 @@
 use super::*;
 use crate::shell::chrome_state::{ChromeState, WsTab};
 use crate::shell::state::WorkspaceTree;
-use automerge::{ReadDoc as _, ScalarValue};
+use automerge::ReadDoc as _;
 use ui::widget::TaffyTreeExt;
 
 #[test]
