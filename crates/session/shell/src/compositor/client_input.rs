@@ -1418,11 +1418,16 @@ pub fn publish_remote_input_view(state: &mut State, fb: &FrameBuilder, session_l
             .collect();
         drop(tree);
         drop(chrome);
-        tiles.extend(
-            fb.floating_surface_rects()
-                .into_iter()
-                .filter(|(surface_id, _)| state.client_input.surfaces.contains_key(surface_id)),
-        );
+        // Floating widgets paint back-to-front and hit-test in reverse. Their
+        // interactive frames must precede tiles in this front-to-back view.
+        let mut floating = fb
+            .floating_surface_rects()
+            .into_iter()
+            .rev()
+            .filter(|(surface_id, _)| state.client_input.surfaces.contains_key(surface_id))
+            .collect::<Vec<_>>();
+        floating.append(&mut tiles);
+        tiles = floating;
         tiles.extend(state.output_presentation_remote_tiles());
         let offscreen = state.offscreen_stream_tiles(&tiles);
         tiles.extend(offscreen);
@@ -1441,6 +1446,7 @@ pub fn publish_remote_input_view(state: &mut State, fb: &FrameBuilder, session_l
         fb.host().palette_visible(),
     )
     .chrome_regions(chrome_regions)
+    .input_regions(fb.floating_surface_input_rects())
     .locked(session_locked)
     .pointer_held(state.pointer_lock.is_engaged());
     state.remote_input_firewall.publish_view(view);

@@ -36,6 +36,7 @@ pub struct PendingFloatingToplevel {
     pub public_id: String,
     pub app_id: String,
     pub content_rect: vello::kurbo::Rect,
+    pub input_rect: Option<vello::kurbo::Rect>,
     pub rect: vello::kurbo::Rect,
     pub transfer_frame: Option<FloatingTransferFrame>,
     pub transfer_source: Option<FloatingTransferSource>,
@@ -51,6 +52,7 @@ pub struct FloatingToplevel {
     pub public_id: String,
     pub app_id: String,
     pub content_rect: vello::kurbo::Rect,
+    pub input_rect: Option<vello::kurbo::Rect>,
     pub rect: vello::kurbo::Rect,
     pub transfer_frame: Option<FloatingTransferFrame>,
     pub transfer_source: Option<FloatingTransferSource>,
@@ -65,7 +67,7 @@ pub struct FloatingToplevel {
 
 #[derive(Clone, Debug)]
 pub enum FloatingToplevelEvent {
-    Mapped(FloatingToplevel),
+    Mapped(Box<FloatingToplevel>),
     Destroyed { connection: u64, public_id: String },
 }
 
@@ -108,6 +110,21 @@ pub fn resume_floating_entries(
         .iter_mut()
         .find(|surface| surface.connection == connection && surface.public_id == public_id)
     {
+        let input_rect = ui::floating_surface::translate_input_rect(
+            surface.input_rect,
+            surface.content_rect.origin(),
+            content_rect.origin(),
+        )
+        .map(|input| input.intersect(rect));
+        if ui::floating_surface::protocol_input_rect(
+            rect,
+            input_rect.map(ui::floating_surface::protocol_rect_array),
+        )
+        .is_err()
+        {
+            return None;
+        }
+        surface.input_rect = input_rect;
         surface.rect = rect;
         surface.content_rect = content_rect;
         surface.transfer_frame = transfer_frame;
@@ -122,6 +139,21 @@ pub fn resume_floating_entries(
         .iter_mut()
         .find(|pending| pending.connection == connection && pending.public_id == public_id)
     {
+        let input_rect = ui::floating_surface::translate_input_rect(
+            pending.input_rect,
+            pending.content_rect.origin(),
+            content_rect.origin(),
+        )
+        .map(|input| input.intersect(rect));
+        if ui::floating_surface::protocol_input_rect(
+            rect,
+            input_rect.map(ui::floating_surface::protocol_rect_array),
+        )
+        .is_err()
+        {
+            return None;
+        }
+        pending.input_rect = input_rect;
         pending.rect = rect;
         pending.content_rect = content_rect;
         pending.transfer_frame = transfer_frame;
@@ -213,6 +245,7 @@ mod floating_lifecycle_tests {
             public_id: "maps-navigation:active".into(),
             app_id: "so.tilo.maps".into(),
             content_rect: vello::kurbo::Rect::new(100.0, 80.0, 420.0, 260.0),
+            input_rect: None,
             rect: vello::kurbo::Rect::new(92.0, 72.0, 428.0, 268.0),
             transfer_frame: None,
             transfer_source: None,

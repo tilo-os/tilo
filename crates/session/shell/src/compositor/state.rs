@@ -1214,6 +1214,7 @@ impl State {
             public_id: pending.public_id,
             app_id: pending.app_id,
             content_rect: pending.content_rect,
+            input_rect: pending.input_rect,
             rect: pending.rect,
             transfer_frame: pending.transfer_frame,
             transfer_source: pending.transfer_source,
@@ -1305,7 +1306,7 @@ impl State {
         surface.presented = true;
         if !surface.suspended {
             self.floating_toplevel_events
-                .push(FloatingToplevelEvent::Mapped(surface.clone()));
+                .push(FloatingToplevelEvent::Mapped(Box::new(surface.clone())));
         }
     }
 
@@ -1315,15 +1316,27 @@ impl State {
         public_id: &str,
         rect: vello::kurbo::Rect,
         content_rect: vello::kurbo::Rect,
+        input_rect: Option<vello::kurbo::Rect>,
     ) -> bool {
+        if ui::floating_surface::protocol_input_rect(
+            rect,
+            input_rect.map(ui::floating_surface::protocol_rect_array),
+        )
+        .is_err()
+        {
+            return false;
+        }
         if let Some(surface) = self
             .floating_toplevels
             .iter_mut()
             .find(|surface| surface.connection == connection && surface.public_id == public_id)
         {
-            let changed = surface.rect != rect || surface.content_rect != content_rect;
+            let changed = surface.rect != rect
+                || surface.content_rect != content_rect
+                || surface.input_rect != input_rect;
             surface.rect = rect;
             surface.content_rect = content_rect;
+            surface.input_rect = input_rect;
             return changed;
         }
         if let Some(pending) = self
@@ -1331,12 +1344,48 @@ impl State {
             .iter_mut()
             .find(|pending| pending.connection == connection && pending.public_id == public_id)
         {
-            let changed = pending.rect != rect || pending.content_rect != content_rect;
+            let changed = pending.rect != rect
+                || pending.content_rect != content_rect
+                || pending.input_rect != input_rect;
             pending.rect = rect;
             pending.content_rect = content_rect;
+            pending.input_rect = input_rect;
             return changed;
         }
         false
+    }
+
+    /// Suspend carries geometry, not a new input declaration. Preserve and
+    /// translate the last authenticated constraint rather than widening it.
+    pub(crate) fn update_retained_floating_geometry(
+        &mut self,
+        connection: u64,
+        public_id: &str,
+        rect: vello::kurbo::Rect,
+        content_rect: vello::kurbo::Rect,
+    ) -> bool {
+        let previous = self
+            .floating_toplevels
+            .iter()
+            .find(|surface| surface.connection == connection && surface.public_id == public_id)
+            .map(|surface| (surface.content_rect, surface.input_rect))
+            .or_else(|| {
+                self.pending_floating_toplevels
+                    .iter()
+                    .find(|surface| {
+                        surface.connection == connection && surface.public_id == public_id
+                    })
+                    .map(|surface| (surface.content_rect, surface.input_rect))
+            });
+        let Some((previous_content, input_rect)) = previous else {
+            return false;
+        };
+        let input_rect = ui::floating_surface::translate_input_rect(
+            input_rect,
+            previous_content.origin(),
+            content_rect.origin(),
+        );
+        self.update_floating_toplevel_rect(connection, public_id, rect, content_rect, input_rect)
     }
 
     /// Hide one app-owned surface without invalidating its capability or
@@ -1424,6 +1473,38 @@ impl State {
             transfer_frame,
             transfer_source,
         )
+    }
+
+    /// Distinguish a fresh request from a refused retained capability. Callers
+    /// must not mint replacement authority after incompatible retained geometry.
+    pub(crate) fn resume_floating_request(
+        &mut self,
+        connection: u64,
+        public_id: &str,
+        geometry: (vello::kurbo::Rect, vello::kurbo::Rect),
+        transfer_frame: Option<FloatingTransferFrame>,
+        transfer_source: Option<FloatingTransferSource>,
+    ) -> Result<Option<String>, &'static str> {
+        let retained =
+            self.floating_toplevels
+                .iter()
+                .any(|surface| surface.connection == connection && surface.public_id == public_id)
+                || self.pending_floating_toplevels.iter().any(|surface| {
+                    surface.connection == connection && surface.public_id == public_id
+                });
+        let resumed = self.resume_floating_toplevel(
+            connection,
+            public_id,
+            geometry.0,
+            geometry.1,
+            transfer_frame,
+            transfer_source,
+        );
+        if retained && resumed.is_none() {
+            Err("floating resume rejected incompatible input geometry")
+        } else {
+            Ok(resumed)
+        }
     }
 
     pub(crate) fn dismiss_floating_toplevel(&mut self, connection: u64, public_id: &str) -> bool {

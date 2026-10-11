@@ -4125,10 +4125,10 @@ impl FrameBuilder {
     /// Reconcile authenticated app-owned toplevels with the compositor's
     /// presentation pass. Widgets are retained by surface id so a geometry
     /// update never resets buffer sequence, mapping state, or opening chrome.
-    pub fn set_floating_surfaces(&mut self, surfaces: &[(u64, String, Rect)]) {
+    pub fn set_floating_surfaces(&mut self, surfaces: &[(u64, String, Rect, Option<Rect>)]) {
         self.floating_overlays
-            .retain(|(surface_id, _)| surfaces.iter().any(|(id, _, _)| id == surface_id));
-        for (surface_id, app_id, rect) in surfaces {
+            .retain(|(surface_id, _)| surfaces.iter().any(|(id, _, _, _)| id == surface_id));
+        for (surface_id, app_id, rect, input_rect) in surfaces {
             let index = self
                 .floating_overlays
                 .iter()
@@ -4142,6 +4142,7 @@ impl FrameBuilder {
                 });
             if let Some((_, surface)) = self.floating_overlays.get_mut(index) {
                 surface.place_floating(*rect);
+                surface.set_floating_input_rect(*input_rect);
             }
         }
     }
@@ -4270,7 +4271,10 @@ impl FrameBuilder {
             .rev()
             .find_map(|(surface_id, surface)| {
                 let rect = surface.get_rect();
-                (surface.is_mapped() && rect.contains(point)).then_some((*surface_id, rect))
+                (surface.is_mapped()
+                    && rect.contains(point)
+                    && surface.floating_input_contains(point))
+                .then_some((*surface_id, rect))
             })
     }
 
@@ -4313,6 +4317,15 @@ impl FrameBuilder {
             .iter()
             .filter(|(_, surface)| surface.is_mapped())
             .map(|(id, surface)| (*id, surface.get_rect()))
+            .collect()
+    }
+
+    /// Declared input bounds only; surface origins remain full window bounds.
+    pub fn floating_surface_input_rects(&self) -> Vec<(u64, Rect)> {
+        self.floating_overlays
+            .iter()
+            .filter(|(_, surface)| surface.is_mapped())
+            .filter_map(|(id, surface)| surface.floating_input_rect().map(|rect| (*id, rect)))
             .collect()
     }
 

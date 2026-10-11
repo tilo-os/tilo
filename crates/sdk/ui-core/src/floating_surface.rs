@@ -103,12 +103,32 @@ pub fn paint_material(
     crate::backdrop::fill(scene, transform, shape, material, theme);
 }
 
-/// Paint one interactive app-owned native surface on the ordinary opaque
-/// window ground, clipped to its authenticated content region.
+/// The native allocation around retained interactive content, including the
+/// shared floating silhouette, its rim and the themed elevation. Content
+/// geometry stays unchanged: the extra pixels are a transparent frame gutter,
+/// not padding inserted into the app's layout or input coordinates.
+#[must_use]
+pub fn app_owned_content_window_rect(
+    content_rect: Rect,
+    shadow: &crate::tokens::Shadow,
+    rim_width: f64,
+) -> Rect {
+    use vello::kurbo::Shape;
+
+    let frame = crate::surface::soft_outline(content_rect)
+        .bounding_box()
+        .inflate(rim_width / 2.0, rim_width / 2.0)
+        .union(content_rect);
+    crate::surface::shadow_bounds(content_rect, shadow).map_or(frame, |bounds| frame.union(bounds))
+}
+
+/// Paint the framework-owned frame around one interactive app-owned surface.
 ///
-/// The native window allocation remains transparent because `window_rect`
-/// may later include app-drawn shadows around `content_rect`. Only pixels
-/// inside the content contract receive the opaque ground.
+/// Retained app content stands on the ordinary opaque Object ground, not a
+/// translucent Panel material. The shared floating silhouette clips every app
+/// paint, and its rim is drawn last so square app backgrounds cannot erase the
+/// frame. The native allocation remains transparent outside the silhouette and
+/// its shadow; hosts allocate it with [`app_owned_content_window_rect`].
 pub fn paint_app_owned_content(
     scene: &mut vello::Scene,
     transform: Affine,
@@ -116,8 +136,28 @@ pub fn paint_app_owned_content(
     theme: &crate::theme::Theme,
     draw: impl FnOnce(&mut vello::Scene) -> bool,
 ) -> bool {
+    use vello::kurbo::Stroke;
     use vello::peniko::{BlendMode, Fill};
 
+    let body = crate::surface::soft_outline(content_rect);
+    crate::surface::shadow(
+        scene,
+        transform,
+        content_rect,
+        f64::from(theme.tokens.radii.tile),
+        &theme.tokens.elevation.floating,
+    );
+    scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &body);
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        theme.tokens.colors.surfaces.content,
+        None,
+        &body,
+    );
+    // The shared soft silhouette has a slight outward bow. Its framework
+    // ground may occupy that frame, but app paints still cannot escape the
+    // authenticated content rectangle.
     scene.push_layer(
         Fill::NonZero,
         BlendMode::default(),
@@ -125,15 +165,16 @@ pub fn paint_app_owned_content(
         transform,
         &content_rect,
     );
-    scene.fill(
-        Fill::NonZero,
-        transform,
-        theme.tokens.colors.surfaces.content,
-        None,
-        &content_rect,
-    );
     let drawn = draw(scene);
     scene.pop_layer();
+    scene.pop_layer();
+    scene.stroke(
+        &Stroke::new(f64::from(theme.tokens.metrics.chrome_rule_px)),
+        transform,
+        theme.tokens.colors.window_edge(),
+        None,
+        &body,
+    );
     drawn
 }
 
@@ -280,6 +321,9 @@ pub enum FloatingSurfaceClientMessage {
         rect: [f64; 4],
         /// Shared placement/hit geometry inside that transparent window.
         content_rect: [f64; 4],
+        /// Interactive frame excluding shadow; absent means legacy window input.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        input_rect: Option<[f64; 4]>,
     },
     /// The primary window has presented a frame with the transferred pixels
     /// removed. The shell may now move its proxy/native surface away from the
@@ -931,6 +975,9 @@ pub struct FloatingSurfacePresentation {
     pub id: String,
     pub content_rect: Rect,
     pub window_rect: Rect,
+    /// Includes interactive chrome, not just media; excludes shadow.
+    /// `None` preserves legacy whole-window hit testing.
+    pub input_rect: Option<Rect>,
     /// The pointer crossed back into the parent app, but the shell still owns
     /// the visible pixels until it acknowledges suspension. Keeping this
     /// presentation alive for that interval supplies the exact final geometry
@@ -1101,6 +1148,31 @@ pub fn protocol_rect(coords: [f64; 4]) -> Result<Rect, String> {
         return Err("floating-surface rect must be finite with positive area".into());
     }
     Ok(Rect::new(x0, y0, x1, y1))
+}
+
+/// Validate optional interactive geometry without enlarging the native window.
+///
+/// # Errors
+/// Returns an error for malformed geometry or an input region outside `window`.
+pub fn protocol_input_rect(window: Rect, coords: Option<[f64; 4]>) -> Result<Option<Rect>, String> {
+    coords
+        .map(|coords| {
+            let rect = protocol_rect(coords)?;
+            if !rect.width().is_finite()
+                || !rect.height().is_finite()
+                || rect.intersect(window) != rect
+            {
+                return Err("floating input rect must be contained in its window".into());
+            }
+            Ok(rect)
+        })
+        .transpose()
+}
+
+/// Move a declared interactive region with its host geometry.
+#[must_use]
+pub fn translate_input_rect(input: Option<Rect>, from: Point, to: Point) -> Option<Rect> {
+    input.map(|rect| rect + (to - from))
 }
 
 /// Where the floating surface currently belongs.
@@ -1813,9 +1885,130 @@ mod tests {
     use super::*;
 
     #[test]
+    fn floating_input_rect_is_optional_bounded_and_finite() {
+        let window = Rect::new(0.0, 0.0, 100.0, 80.0);
+        assert_eq!(protocol_input_rect(window, None).unwrap(), None);
+        assert_eq!(
+            protocol_input_rect(window, Some([10.0, 10.0, 90.0, 70.0])).unwrap(),
+            Some(Rect::new(10.0, 10.0, 90.0, 70.0))
+        );
+        for invalid in [
+            [f64::NAN, 10.0, 90.0, 70.0],
+            [10.0, 10.0, f64::INFINITY, 70.0],
+            [10.0, 10.0, 10.0, 70.0],
+            [-1.0, 10.0, 90.0, 70.0],
+            [10.0, 10.0, 101.0, 70.0],
+        ] {
+            assert!(protocol_input_rect(window, Some(invalid)).is_err());
+        }
+        let legacy: FloatingSurfaceClientMessage = serde_json::from_str(r#"{"type":"surface_geometry","id":"float","rect":[0,0,100,80],"content_rect":[10,10,90,70]}"#).unwrap();
+        assert!(matches!(
+            legacy,
+            FloatingSurfaceClientMessage::SurfaceGeometry {
+                input_rect: None,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn app_owned_frame_survives_square_content_in_normal_and_compact_themes() {
+        use crate::offscreen::OffscreenRenderer;
+        use vello::kurbo::Stroke;
+        use vello::peniko::{Color, Fill};
+
+        for (name, theme) in [
+            ("dark", crate::theme::Theme::dark()),
+            ("light", crate::theme::Theme::light()),
+            (
+                "high-contrast-200",
+                crate::theme::Theme::high_contrast().with_text_scale(2.0),
+            ),
+        ] {
+            for (size, content) in [
+                ("normal", Rect::new(64.0, 64.0, 576.0, 424.0)),
+                ("compact", Rect::new(64.0, 64.0, 384.0, 304.0)),
+            ] {
+                let draw_square = |scene: &mut vello::Scene| {
+                    scene.fill(
+                        Fill::NonZero,
+                        Affine::IDENTITY,
+                        theme.tokens.colors.surfaces.content,
+                        None,
+                        &content,
+                    );
+                    true
+                };
+                let mut scene = vello::Scene::new();
+                assert!(paint_app_owned_content(
+                    &mut scene,
+                    Affine::IDENTITY,
+                    content,
+                    &theme,
+                    draw_square,
+                ));
+                let mut renderer = OffscreenRenderer::new(640, 480);
+                let pixels = renderer.render_rgba_resilient(&scene);
+                // Compare to exactly the same production painter with only
+                // its rim disabled. Restrict the comparison to the actual
+                // shared path's stroke footprint, including antialiased
+                // boundary pixels rather than assuming an opaque sample.
+                let mut without_rim = theme.clone();
+                without_rim.tokens.metrics.chrome_rule_px = 0.0;
+                let mut ground = vello::Scene::new();
+                assert!(paint_app_owned_content(
+                    &mut ground,
+                    Affine::IDENTITY,
+                    content,
+                    &without_rim,
+                    draw_square
+                ));
+                let ground_pixels = renderer.render_rgba_resilient(&ground);
+                let mut edge = vello::Scene::new();
+                edge.stroke(
+                    &Stroke::new(f64::from(theme.tokens.metrics.chrome_rule_px)),
+                    Affine::IDENTITY,
+                    Color::WHITE,
+                    None,
+                    &crate::surface::soft_outline(content),
+                );
+                let edge_pixels = renderer.render_rgba_resilient(&edge);
+                let has_rim = edge_pixels
+                    .chunks_exact(4)
+                    .zip(pixels.chunks_exact(4))
+                    .zip(ground_pixels.chunks_exact(4))
+                    .any(|((mask, actual), baseline)| {
+                        mask.last().copied().unwrap_or_default() > 0
+                            && actual.iter().zip(baseline).any(|(a, b)| a.abs_diff(*b) > 1)
+                    });
+                let center = OffscreenRenderer::sample(&pixels, 640, 200, 200);
+                let corner = OffscreenRenderer::sample(&pixels, 640, 65, 65);
+                let shadow = OffscreenRenderer::sample(&pixels, 640, 56, 180);
+                let outside = OffscreenRenderer::sample(&pixels, 640, 4, 4);
+                assert_eq!(center.3, u8::MAX, "retained content stays opaque");
+                assert!(corner.3 < u8::MAX, "square app paint cannot erase corners");
+                assert!(
+                    has_rim,
+                    "{size} {name} framework rim survives app paint beyond AA tolerance"
+                );
+                assert!(
+                    shadow.3 > 0 && shadow.3 < u8::MAX,
+                    "floating elevation is visible without an opaque gutter"
+                );
+                assert_eq!(outside.3, 0, "pixels beyond the frame stay transparent");
+            }
+        }
+    }
+
+    #[test]
     fn app_owned_content_ground_is_opaque_inside_and_transparent_outside_its_clip() {
         let theme = crate::theme::Theme::dark();
-        let content = Rect::new(10.0, 12.0, 70.0, 68.0);
+        let content = Rect::new(64.0, 64.0, 124.0, 120.0);
+        let allocation = app_owned_content_window_rect(
+            content,
+            &theme.tokens.elevation.floating,
+            f64::from(theme.tokens.metrics.chrome_rule_px),
+        );
         let mut scene = vello::Scene::new();
         assert!(paint_app_owned_content(
             &mut scene,
@@ -1824,11 +2017,20 @@ mod tests {
             &theme,
             |_| true,
         ));
-        let pixels = crate::offscreen::OffscreenRenderer::new(80, 80).render_rgba(&scene);
-        let inside = crate::offscreen::OffscreenRenderer::sample(&pixels, 80, 40, 40);
-        let outside = crate::offscreen::OffscreenRenderer::sample(&pixels, 80, 4, 4);
+        let pixels =
+            crate::offscreen::OffscreenRenderer::new(192, 192).render_rgba_resilient(&scene);
+        let inside = crate::offscreen::OffscreenRenderer::sample(&pixels, 192, 90, 90);
+        let outside = crate::offscreen::OffscreenRenderer::sample(
+            &pixels,
+            192,
+            u32::try_from(crate::num::usize_of_f64(allocation.x0 / 2.0)).unwrap(),
+            u32::try_from(crate::num::usize_of_f64(allocation.y0 / 2.0)).unwrap(),
+        );
         assert_eq!(inside.3, u8::MAX, "app content cannot expose the desktop");
-        assert_eq!(outside.3, 0, "shadow margins remain transparent");
+        assert_eq!(
+            outside.3, 0,
+            "pixels beyond the shadow allocation stay transparent"
+        );
     }
 
     #[test]
@@ -2492,6 +2694,7 @@ mod tests {
                 id: "call".into(),
                 rect: [192.0, 72.0, 588.0, 328.0],
                 content_rect: [200.0, 80.0, 580.0, 320.0],
+                input_rect: Some([200.0, 80.0, 580.0, 320.0]),
             };
             let json = serde_json::to_string(&geometry).unwrap();
             assert_eq!(

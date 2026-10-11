@@ -64,6 +64,7 @@ impl Fixture {
                 public_id: "conversation".into(),
                 app_id: "so.tilo.chat".into(),
                 content_rect: Rect::new(0.0, 0.0, 400.0, 400.0),
+                input_rect: None,
                 rect: Rect::new(0.0, 0.0, 400.0, 400.0),
                 transfer_frame: None,
                 transfer_source: None,

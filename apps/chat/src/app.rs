@@ -5259,6 +5259,7 @@ impl FloatingSurfaceProvider for ChatApp {
     ) {
         let desktop = self.desktop_floating_bounds();
         for surface in self.agent_surfaces.values_mut() {
+            surface.update_frame_theme(theme);
             surface.view.perms = self.perms.clone();
             surface.view.room_agents.clone_from(&self.room_agents);
             surface.view.room_names.clone_from(&self.room_names);
@@ -5269,9 +5270,18 @@ impl FloatingSurfaceProvider for ChatApp {
             ) || surface.placement.is_return_pending()
             {
                 surface.view.rect = surface.placement.rect(surface.source, desktop);
-                surface
-                    .view
-                    .draw(scene, transform, text_renderer, theme, presence);
+                ui::floating_surface::paint_app_owned_content(
+                    scene,
+                    transform,
+                    surface.view.rect,
+                    theme,
+                    |scene| {
+                        surface
+                            .view
+                            .draw(scene, transform, text_renderer, theme, presence);
+                        true
+                    },
+                );
             }
         }
         if !self.call.active
@@ -5311,6 +5321,7 @@ impl FloatingSurfaceProvider for ChatApp {
             {
                 return false;
             }
+            surface.update_frame_theme(theme);
             surface.view.perms = self.perms.clone();
             surface.view.room_agents.clone_from(&self.room_agents);
             surface.view.room_names.clone_from(&self.room_names);
@@ -5369,6 +5380,7 @@ impl FloatingSurfaceProvider for ChatApp {
         presentations.push(ui::floating_surface::FloatingSurfacePresentation {
             id: format!("chat-call:{}", self.call.channel),
             content_rect: self.call_video_rect(),
+            input_rect: Some(self.huddle_panel()),
             window_rect: self.huddle_panel().inflate(8.0, 8.0),
             returning_to_app,
         });
@@ -6243,6 +6255,9 @@ impl Widget for ChatApp {
         // therefore withdraws the old gesture witness automatically.
         self.painted_queue_offer = None;
         // Adopt this theme's chrome and advance the drawers for this frame.
+        for surface in self.agent_surfaces.values_mut() {
+            surface.update_frame_theme(theme);
+        }
         self.layout_text_scale = theme.text_scale;
         self.advance_flaps(theme);
         self.reconcile_huddle_motion(tr, theme);

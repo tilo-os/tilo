@@ -2750,6 +2750,7 @@ mod generic_floating_activity_tests {
                     id: "chat-call:huddle".into(),
                     content_rect: Rect::new(40.0, 40.0, 400.0, 260.0),
                     window_rect: Rect::new(32.0, 32.0, 408.0, 268.0),
+                    input_rect: None,
                     returning_to_app: false,
                 },
             )]);

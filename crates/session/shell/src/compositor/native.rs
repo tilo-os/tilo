@@ -1881,19 +1881,18 @@ fn pump_floating_surface_service(
                                         fallback_size,
                                     );
                                 let transfer_covered = transfer_frame.is_some();
-                                if let Some(owner) = owner.as_ref() {
-                                    state.arm_floating_focus(connection, &public_id, source_surface_id, owner.clone());
-                                }
-                                let token = state
-                                    .resume_floating_toplevel(
+                                let Ok(resumed) = state
+                                    .resume_floating_request(
                                         connection,
                                         &public_id,
-                                        rect,
-                                        content_rect,
+                                        (rect, content_rect),
                                         transfer_frame.clone(),
                                         transfer_source,
-                                    )
-                                    .unwrap_or_else(|| {
+                                    ) else {
+                                        tracing::warn!("floating resume rejected incompatible input geometry");
+                                        continue;
+                                    };
+                                let token = resumed.unwrap_or_else(|| {
                                         let token = uuid::Uuid::new_v4().simple().to_string();
                                         state.authorize_floating_toplevel(
                                             crate::compositor::state::PendingFloatingToplevel {
@@ -1903,6 +1902,7 @@ fn pump_floating_surface_service(
                                                 public_id: public_id.clone(),
                                                 app_id: app_id.clone(),
                                                 content_rect,
+                                                input_rect: None,
                                                 rect,
                                                 transfer_frame,
                                                 transfer_source,
@@ -1911,6 +1911,9 @@ fn pump_floating_surface_service(
                                         );
                                         token
                                     });
+                                if let Some(owner) = owner.as_ref() {
+                                    state.arm_floating_focus(connection, &public_id, source_surface_id, owner.clone());
+                                }
                                 service.send(
                                     connection,
                                     &ui::floating_surface::FloatingSurfaceHostMessage::PrepareSurface {
@@ -1993,22 +1996,30 @@ fn pump_floating_surface_service(
                     id,
                     rect,
                     content_rect,
+                    input_rect,
                 } => match (
                     ui::floating_surface::protocol_rect(rect),
                     ui::floating_surface::protocol_rect(content_rect),
                 ) {
                     (Ok(window_rect), Ok(content_rect)) => {
+                        let Ok(input_rect) = ui::floating_surface::protocol_input_rect(window_rect, input_rect) else {
+                            tracing::warn!("floating geometry has invalid input bounds");
+                            continue;
+                        };
+                        let previous_origin = window_rect.union(content_rect).origin();
                         let (rect, content_rect) = clamp_external_floating_geometry_to_outputs(
                             window_rect,
                             content_rect,
                             outputs,
                             fallback_size,
                         );
+                        let input_rect = ui::floating_surface::translate_input_rect(input_rect, previous_origin, rect.origin());
                         changed |= state.update_floating_toplevel_rect(
                             connection,
                             &id,
                             rect,
                             content_rect,
+                            input_rect,
                         );
                     }
                     (Err(error), _) | (_, Err(error)) => {
@@ -2036,7 +2047,7 @@ fn pump_floating_surface_service(
                             outputs,
                             fallback_size,
                         );
-                        changed |= state.update_floating_toplevel_rect(
+                        changed |= state.update_retained_floating_geometry(
                             connection,
                             &id,
                             rect,
@@ -2317,6 +2328,11 @@ fn rehome_native_floating_surfaces(
         changed |= rect != surface.rect || content_rect != surface.content_rect;
         surface.rect = rect;
         surface.content_rect = content_rect;
+        surface.input_rect = ui::floating_surface::translate_input_rect(
+            surface.input_rect,
+            previous.origin(),
+            rect.origin(),
+        );
         if let Some(source) = surface.transfer_source.as_mut() {
             source.rect = source.rect + offset;
         }
@@ -2333,6 +2349,11 @@ fn rehome_native_floating_surfaces(
         changed |= rect != surface.rect || content_rect != surface.content_rect;
         surface.rect = rect;
         surface.content_rect = content_rect;
+        surface.input_rect = ui::floating_surface::translate_input_rect(
+            surface.input_rect,
+            previous.origin(),
+            rect.origin(),
+        );
         if let Some(source) = surface.transfer_source.as_mut() {
             source.rect = source.rect + offset;
         }
@@ -11970,7 +11991,14 @@ pub fn run() {
             .filter(|surface| {
                 !surface.suspended && surface.presented && surface.transfer_source.is_none()
             })
-            .map(|surface| (surface.surface_id, surface.app_id.clone(), surface.rect))
+            .map(|surface| {
+                (
+                    surface.surface_id,
+                    surface.app_id.clone(),
+                    surface.rect,
+                    surface.input_rect,
+                )
+            })
             .collect::<Vec<_>>();
         frame_builder.set_floating_surfaces(&floating_surfaces);
         state.sync_capture_protection();
@@ -18242,6 +18270,7 @@ mod tests {
                 public_id: "chat.agent-direct:scribe".into(),
                 app_id: "so.tilo.chat".into(),
                 content_rect: rect,
+                input_rect: None,
                 rect,
                 transfer_frame: None,
                 transfer_source: None,
@@ -19996,8 +20025,14 @@ mod gesture_wireup_tests {
 #[cfg(test)]
 #[cfg(test)]
 mod output_geometry_tests {
-    use super::{input_capture_zones, output_geometry, select_fullscreen_output};
+    use super::{
+        input_capture_zones, output_geometry, rehome_native_floating_surfaces,
+        select_fullscreen_output,
+    };
     use crate::compositor::backend::{Output, OutputId};
+    use crate::compositor::state::State;
+    use smithay::reexports::calloop::EventLoop;
+    use vello::kurbo::Rect;
 
     /// A 2x 2560x1600 laptop panel with a 1x 2560x1440 monitor to its right:
     /// logically the monitor starts at 1280, in the scene at 2560.
@@ -20059,6 +20094,82 @@ mod output_geometry_tests {
                 .collect::<Vec<_>>(),
             vec![(0, 0, 1280, 800), (1280, 0, 2560, 1440)]
         );
+    }
+
+    #[test]
+    fn floating_input_regions_rehome_with_pending_and_live_windows() {
+        use crate::shell::floating::{FloatingToplevel, PendingFloatingToplevel};
+        let event_loop = EventLoop::try_new().expect("event loop");
+        let display = smithay::reexports::wayland_server::Display::<State>::new().expect("display");
+        let mut state = State::new(event_loop.handle(), display.handle());
+        let rect = Rect::new(900.0, 80.0, 1300.0, 380.0);
+        let body = Rect::new(940.0, 120.0, 1260.0, 340.0);
+        state
+            .pending_floating_toplevels
+            .push(PendingFloatingToplevel {
+                owner: None,
+                token: "pending".into(),
+                connection: 7,
+                public_id: "pending".into(),
+                app_id: "so.tilo.chat".into(),
+                rect,
+                content_rect: body,
+                input_rect: Some(body),
+                transfer_frame: None,
+                transfer_source: None,
+                suspended: true,
+            });
+        state.floating_toplevels.push(FloatingToplevel {
+            owner: None,
+            surface_id: 9,
+            token: "live".into(),
+            connection: 7,
+            public_id: "live".into(),
+            app_id: "so.tilo.chat".into(),
+            rect,
+            content_rect: body,
+            input_rect: Some(body),
+            transfer_frame: None,
+            transfer_source: None,
+            suspended: false,
+            presented: true,
+        });
+        assert!(rehome_native_floating_surfaces(&mut state, &[], (800, 600)));
+        for (window, content, input) in [
+            (
+                state.pending_floating_toplevels[0].rect,
+                state.pending_floating_toplevels[0].content_rect,
+                state.pending_floating_toplevels[0].input_rect,
+            ),
+            (
+                state.floating_toplevels[0].rect,
+                state.floating_toplevels[0].content_rect,
+                state.floating_toplevels[0].input_rect,
+            ),
+        ] {
+            assert_ne!(window, rect);
+            assert_eq!(
+                input,
+                ui::floating_surface::translate_input_rect(
+                    Some(body),
+                    rect.origin(),
+                    window.origin()
+                )
+            );
+            assert_eq!(input, Some(content));
+            assert!(
+                ui::floating_surface::protocol_input_rect(
+                    window,
+                    input.map(ui::floating_surface::protocol_rect_array)
+                )
+                .is_ok()
+            );
+        }
+        assert!(!rehome_native_floating_surfaces(
+            &mut state,
+            &[],
+            (800, 600)
+        ));
     }
 
     #[test]

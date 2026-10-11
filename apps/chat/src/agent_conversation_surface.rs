@@ -17,6 +17,10 @@ pub(crate) struct AgentConversationSurface {
     pub(crate) placement: FloatingPlacement,
     pub(crate) source: Rect,
     compact_size: Size,
+    // Last painted frame geometry. Defaults bootstrap a surface before its
+    // first frame; both hosts refresh this cache from the live render theme.
+    frame_shadow: ui::tokens::Shadow,
+    frame_rim_width: f64,
     view_owns_editor: bool,
     closed: bool,
 }
@@ -58,6 +62,8 @@ impl AgentConversationSurface {
             placement,
             source,
             compact_size,
+            frame_shadow: ui::tokens::Elevation::default().floating,
+            frame_rim_width: f64::from(ui::tokens::Metrics::default().chrome_rule_px),
             view_owns_editor: true,
             closed: false,
         }
@@ -111,6 +117,11 @@ impl AgentConversationSurface {
         self.closed
     }
 
+    pub(crate) fn update_frame_theme(&mut self, theme: &ui::theme::Theme) {
+        self.frame_shadow = theme.tokens.elevation.floating;
+        self.frame_rim_width = f64::from(theme.tokens.metrics.chrome_rule_px);
+    }
+
     pub(crate) fn request(&self, desktop: Rect) -> FloatingSurfaceRequest {
         FloatingSurfaceRequest {
             id: self.id.clone(),
@@ -143,7 +154,12 @@ impl AgentConversationSurface {
         Some(FloatingSurfacePresentation {
             id: self.id.clone(),
             content_rect: rect,
-            window_rect: rect,
+            input_rect: Some(rect),
+            window_rect: ui::floating_surface::app_owned_content_window_rect(
+                rect,
+                &self.frame_shadow,
+                self.frame_rim_width,
+            ),
             returning_to_app: self.placement.is_return_pending(),
         })
     }

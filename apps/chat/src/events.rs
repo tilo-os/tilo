@@ -10024,6 +10024,24 @@ mod tests {
             theme,
             &ui::presence::PresenceCtx::empty(),
         ));
+        let painted = ui::widget::FloatingSurfaceWidgetExt::floating_surface_presentations(app)
+            .into_iter()
+            .find(|surface| surface.id == id)
+            .expect("painting retains the exact native surface");
+        assert_eq!(
+            painted.input_rect,
+            Some(painted.content_rect),
+            "the shared frame's shadow gutter is never interactive"
+        );
+        assert_eq!(
+            painted.window_rect,
+            ui::floating_surface::app_owned_content_window_rect(
+                painted.content_rect,
+                &theme.tokens.elevation.floating,
+                f64::from(theme.tokens.metrics.chrome_rule_px),
+            ),
+            "native allocation includes the actual render theme's shared frame"
+        );
         (scene, presentation.content_rect)
     }
 
@@ -10264,7 +10282,7 @@ mod tests {
                     ("initial", &initial, initial_content),
                     ("settled", &settled, settled_content),
                 ] {
-                    let transparent = renderer.render_rgba(scene);
+                    let transparent = renderer.render_rgba_resilient(scene);
                     let inside = OffscreenRenderer::sample(
                         &transparent,
                         width,
@@ -10272,6 +10290,16 @@ mod tests {
                         u32::try_from(ui::num::usize_of_f64(content.center().y)).unwrap(),
                     );
                     assert_eq!(inside.3, u8::MAX, "{stage} {size} {name} content is opaque");
+                    let corner = OffscreenRenderer::sample(
+                        &transparent,
+                        width,
+                        u32::try_from(ui::num::usize_of_f64(content.x0)).unwrap() + 1,
+                        u32::try_from(ui::num::usize_of_f64(content.y0)).unwrap() + 1,
+                    );
+                    assert!(
+                        corner.3 < u8::MAX,
+                        "{stage} {size} {name} app paint preserves frame corners"
+                    );
                     assert!(
                         content.intersect(vello::kurbo::Rect::new(
                             0.0,
@@ -10291,6 +10319,40 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn native_agent_frame_allocation_tracks_the_current_render_theme() {
+        let mut theme = ui::theme::Theme::dark().with_ui_scale(2.0);
+        theme.tokens.elevation.floating.blur *= 2.0;
+        let mut prepared = prepare_native_agent_float(
+            vello::kurbo::Rect::new(0.0, 0.0, 1600.0, 900.0),
+            vello::kurbo::Rect::new(0.0, 0.0, 1600.0, 900.0),
+            &theme,
+        );
+        let before =
+            ui::widget::FloatingSurfaceWidgetExt::floating_surface_presentations(&prepared.app)
+                .into_iter()
+                .find(|surface| surface.id == prepared.request.id)
+                .unwrap();
+        native_agent_float_frame(
+            &mut prepared.app,
+            &prepared.request.id,
+            &ui::theme::Theme::light(),
+        );
+        let after =
+            ui::widget::FloatingSurfaceWidgetExt::floating_surface_presentations(&prepared.app)
+                .into_iter()
+                .find(|surface| surface.id == prepared.request.id)
+                .unwrap();
+        assert_eq!(
+            before.content_rect, after.content_rect,
+            "theme changes never move or resize the retained editor"
+        );
+        assert_ne!(
+            before.window_rect, after.window_rect,
+            "native shadow allocation follows the changed live theme"
+        );
     }
 
     #[test]

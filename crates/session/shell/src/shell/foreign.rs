@@ -4035,6 +4035,7 @@ pub struct ForeignSurfaceWidget {
     /// never showed a usable frame. The lookup consults launches then installed manifests, so it's not repeated on every rebuild.
     name: std::cell::OnceCell<String>,
     preserve_transparency: bool,
+    floating_input_rect: Option<Rect>,
     last_draw: Option<std::time::Instant>,
 }
 
@@ -4052,6 +4053,7 @@ impl ForeignSurfaceWidget {
             test_id: format!("foreign-surface-{surface_id}"),
             name: std::cell::OnceCell::new(),
             preserve_transparency: false,
+            floating_input_rect: None,
             last_draw: None,
         }
     }
@@ -4061,6 +4063,20 @@ impl ForeignSurfaceWidget {
             preserve_transparency: true,
             ..Self::new(surface_id, app_id)
         }
+    }
+
+    pub fn set_floating_input_rect(&mut self, rect: Option<Rect>) {
+        self.floating_input_rect = rect;
+    }
+
+    pub fn floating_input_contains(&self, point: Point) -> bool {
+        self.floating_input_rect
+            .unwrap_or(self.rect)
+            .contains(point)
+    }
+
+    pub fn floating_input_rect(&self) -> Option<Rect> {
+        self.floating_input_rect
     }
 
     /// The app's name, as the tab above this surface says it.

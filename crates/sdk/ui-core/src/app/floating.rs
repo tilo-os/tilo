@@ -677,6 +677,9 @@ impl App {
                         content_rect: crate::floating_surface::protocol_rect_array(
                             presentation.content_rect,
                         ),
+                        input_rect: presentation
+                            .input_rect
+                            .map(crate::floating_surface::protocol_rect_array),
                     },
                 )?;
             }

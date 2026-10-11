@@ -120,6 +120,10 @@ impl Fixture {
     }
 
     fn float(&mut self) -> FrameBuilder {
+        self.float_with_input(None)
+    }
+
+    fn float_with_input(&mut self, input_rect: Option<Rect>) -> FrameBuilder {
         let [source, child, _] = self.ids;
         let owner = self
             .state
@@ -136,6 +140,7 @@ impl Fixture {
                 public_id: "conversation".into(),
                 app_id: "so.tilo.chat".into(),
                 content_rect: Rect::new(0.0, 0.0, 400.0, 300.0),
+                input_rect,
                 rect: Rect::new(0.0, 0.0, 400.0, 300.0),
                 transfer_frame: None,
                 transfer_source: Some(FloatingTransferSource { rect: Rect::ZERO }),
@@ -161,6 +166,7 @@ impl Fixture {
             self.ids[1],
             "so.tilo.chat".into(),
             Rect::new(0.0, 0.0, 400.0, 300.0),
+            None,
         )]);
     }
 }
@@ -171,6 +177,339 @@ impl Drop for Fixture {
             crate::compositor::foreign::store().forget(id);
         }
     }
+}
+
+fn route_float_pointer(fixture: &mut Fixture, fb: &mut FrameBuilder, point: (f64, f64)) {
+    let moved = winit::event::WindowEvent::CursorMoved {
+        device_id: winit::event::DeviceId::dummy(),
+        position: winit::dpi::PhysicalPosition::new(point.0, point.1),
+    };
+    assert!(crate::compositor::client_input::route_input(
+        &mut fixture.state,
+        fb,
+        &moved,
+        &winit::event::Modifiers::default()
+    ));
+}
+
+fn assert_floating_input_routes(
+    fixture: &mut Fixture,
+    fb: &mut FrameBuilder,
+    point: (f64, f64),
+    expected: (u64, (f64, f64)),
+) {
+    use crate::compositor::backend::{
+        BackendEvent, TabletDevice, TabletInput, TabletPhase, TabletTool, TabletToolKind,
+        TouchEvent,
+    };
+    use crate::compositor::client_input::{
+        publish_remote_input_view, route_tablet_event, touch_target,
+    };
+    route_float_pointer(fixture, fb, point);
+    assert_eq!(fixture.state.client_input.pointer_focus(), Some(expected.0));
+    assert_eq!(
+        fixture.state.client_input.pointer_focus_origin(),
+        Some(expected.1)
+    );
+    assert_eq!(
+        touch_target(
+            &fixture.state,
+            fb,
+            &TouchEvent::Down {
+                slot: 0,
+                x: point.0,
+                y: point.1
+            }
+        ),
+        Some(expected)
+    );
+    let pen = TabletInput {
+        device: TabletDevice {
+            name: "test pen".into(),
+            usb_id: None,
+            syspath: None,
+        },
+        tool: TabletTool {
+            kind: TabletToolKind::Pen,
+            serial: 1,
+            wacom_id: 1,
+            pressure: true,
+            distance: false,
+            tilt: false,
+            rotation: false,
+            slider: false,
+            wheel: false,
+        },
+        phase: TabletPhase::Motion,
+        position: point,
+        pressure: 0.0,
+        distance: 0.0,
+        tilt: (0.0, 0.0),
+        rotation: 0.0,
+        slider: 0.0,
+        wheel: (0.0, 0),
+        time_msec: 7,
+    };
+    // Ordinary native apps take the production tablet-to-pointer fallback.
+    let events = route_tablet_event(&mut fixture.state, fb, &pen, false);
+    assert!(!events.is_empty());
+    for event in events {
+        let BackendEvent::Input(event) = event else {
+            panic!("tablet fallback must route input");
+        };
+        assert!(crate::compositor::client_input::route_input(
+            &mut fixture.state,
+            fb,
+            &event,
+            &winit::event::Modifiers::default()
+        ));
+    }
+    assert_eq!(fixture.state.client_input.pointer_focus(), Some(expected.0));
+    assert_eq!(
+        fixture.state.client_input.pointer_focus_origin(),
+        Some(expected.1)
+    );
+    publish_remote_input_view(&mut fixture.state, fb, false);
+    assert_eq!(
+        fixture.state.remote_input_firewall.view().topmost_at(point),
+        Some(expected.0)
+    );
+}
+
+#[test]
+fn floating_input_gutter_routes_pointer_touch_and_remote_to_lower_float() {
+    use crate::network::input_firewall::{Denial, RemoteInputFirewall};
+    use crate::network::streaming::InputEvent;
+
+    let mut fixture = Fixture::new();
+    let [source, child, lower] = fixture.ids;
+    let mut fb = fixture.float();
+    fixture.ready(&mut fb);
+    let window = Rect::new(60.0, 60.0, 560.0, 460.0);
+    let body = Rect::new(120.0, 120.0, 500.0, 380.0);
+    let video = Rect::new(150.0, 160.0, 480.0, 300.0);
+    assert!(fixture.state.update_floating_toplevel_rect(
+        7,
+        "conversation",
+        window,
+        video,
+        Some(body)
+    ));
+    let token = uuid::Uuid::new_v4().simple().to_string();
+    let lower_window = Rect::new(80.0, 80.0, 650.0, 450.0);
+    fixture
+        .state
+        .authorize_floating_toplevel(PendingFloatingToplevel {
+            owner: Some(fixture.state.floating_owner_for_surface(source).unwrap()),
+            token: token.clone(),
+            connection: 7,
+            public_id: "lower".into(),
+            app_id: "so.tilo.chat".into(),
+            rect: lower_window,
+            content_rect: lower_window,
+            input_rect: None,
+            transfer_frame: None,
+            transfer_source: None,
+            suspended: false,
+        });
+    assert!(fixture.state.promote_floating_toplevel(
+        lower,
+        &format!(
+            "{}{token}",
+            ui::floating_surface::FLOATING_SURFACE_APP_ID_PREFIX
+        )
+    ));
+    let store = crate::compositor::foreign::store();
+    // The first native buffer must answer the actual lower window's allocation.
+    store.publish_rgba(lower, &vec![255; 570 * 370 * 4], 570, 370);
+    assert!(store.mark_presented(lower, lower_window));
+    fixture.state.mark_floating_toplevel_presented(lower);
+    // Rebuild from the production back-to-front order, rather than preserving
+    // the child overlay inserted by ready() ahead of a newly inserted lower.
+    fb.set_floating_surfaces(&[]);
+    fb.set_floating_surfaces(&[
+        (lower, "so.tilo.chat".into(), lower_window, None),
+        (child, "so.tilo.chat".into(), window, Some(body)),
+    ]);
+    for (point, expected, origin) in [
+        ((90.0, 90.0), lower, (80.0, 80.0)),
+        ((130.0, 130.0), child, (60.0, 60.0)),
+    ] {
+        assert_floating_input_routes(&mut fixture, &mut fb, point, (expected, origin));
+    }
+    drop(fb);
+    let mut firewall = RemoteInputFirewall::new();
+    firewall.publish_view(fixture.state.remote_input_firewall.view().clone());
+    assert_eq!(
+        firewall
+            .review(
+                9,
+                lower,
+                &InputEvent::PointerMotion { x: 10.0, y: 10.0 },
+                std::time::Instant::now()
+            )
+            .unwrap(),
+        InputEvent::PointerMotion { x: 90.0, y: 90.0 }
+    );
+    assert_eq!(
+        firewall.review(
+            9,
+            child,
+            &InputEvent::PointerMotion { x: 30.0, y: 30.0 },
+            std::time::Instant::now()
+        ),
+        Err(Denial::Occluded)
+    );
+    assert_eq!(
+        firewall
+            .review(
+                9,
+                child,
+                &InputEvent::PointerMotion { x: 70.0, y: 70.0 },
+                std::time::Instant::now()
+            )
+            .unwrap(),
+        InputEvent::PointerMotion { x: 130.0, y: 130.0 }
+    );
+}
+
+#[test]
+fn floating_input_gutter_falls_through_to_the_workspace_tile() {
+    use crate::shell::input_policy::{foreign_tiles, insert_foreign_group};
+    let mut fixture = Fixture::new();
+    let [source, child, _] = fixture.ids;
+    let mut fb = fixture.float();
+    fixture.ready(&mut fb);
+    fb.with_chrome(|chrome| {
+        insert_foreign_group(&mut chrome.tree_mut(), source, Some("so.tilo.chat"))
+            .expect("source tile");
+        chrome.bump();
+    });
+    let _ = fb.paint_settled();
+    let tile = {
+        let chrome = fb.chrome();
+        foreign_tiles(&chrome.tree(), fb.host())
+            .into_iter()
+            .find(|tile| tile.surface_id == source)
+            .expect("laid out source tile")
+    };
+    let point = (tile.rect.center().x, tile.rect.center().y);
+    let window = Rect::from_center_size(tile.rect.center(), (160.0, 120.0));
+    let body = ui::floating_surface::translate_input_rect(
+        Some(Rect::new(8.0, 8.0, 48.0, 112.0)),
+        vello::kurbo::Point::ZERO,
+        window.origin(),
+    )
+    .expect("body geometry");
+    assert!(fixture.state.update_floating_toplevel_rect(
+        7,
+        "conversation",
+        window,
+        body,
+        Some(body)
+    ));
+    fb.set_floating_surfaces(&[(child, "so.tilo.chat".into(), window, Some(body))]);
+    assert!(
+        fb.floating_surface_hit(point).is_none(),
+        "transparent gutter is not an overlay hit"
+    );
+    assert_floating_input_routes(
+        &mut fixture,
+        &mut fb,
+        point,
+        (source, (tile.rect.x0, tile.rect.y0)),
+    );
+    // An absent declaration retains the old full-window behavior.
+    assert!(
+        fixture
+            .state
+            .update_floating_toplevel_rect(7, "conversation", window, body, None)
+    );
+    fb.set_floating_surfaces(&[(child, "so.tilo.chat".into(), window, None)]);
+    assert_floating_input_routes(
+        &mut fixture,
+        &mut fb,
+        point,
+        (child, (window.x0, window.y0)),
+    );
+    drop(fb);
+}
+
+#[test]
+fn floating_input_validation_and_resume_preserve_last_valid_region() {
+    let mut fixture = Fixture::new();
+    let body = Rect::new(40.0, 40.0, 360.0, 260.0);
+    let _fb = fixture.float_with_input(Some(body));
+    assert_eq!(
+        fixture.state.floating_toplevels[0].input_rect,
+        Some(body),
+        "promotion copies the declared region"
+    );
+    let window = Rect::new(0.0, 0.0, 400.0, 300.0);
+    for invalid in [
+        Rect::new(-1.0, 40.0, 360.0, 260.0),
+        Rect::new(40.0, 40.0, f64::INFINITY, 260.0),
+        Rect::new(40.0, 40.0, 40.0, 260.0),
+    ] {
+        assert!(!fixture.state.update_floating_toplevel_rect(
+            7,
+            "conversation",
+            window,
+            window,
+            Some(invalid)
+        ));
+        assert_eq!(fixture.state.floating_toplevels[0].input_rect, Some(body));
+        assert_eq!(fixture.state.floating_toplevels[0].rect, window);
+    }
+    assert!(
+        !fixture
+            .state
+            .update_floating_toplevel_rect(99, "conversation", window, window, None)
+    );
+    assert_eq!(fixture.state.floating_toplevels[0].input_rect, Some(body));
+    fixture
+        .state
+        .suspend_floating_toplevel(7, "conversation", None);
+    let tiny = Rect::new(0.0, 0.0, 8.0, 8.0);
+    assert!(
+        fixture
+            .state
+            .resume_floating_request(7, "conversation", (tiny, tiny), None, None)
+            .is_err()
+    );
+    assert!(
+        fixture.state.pending_floating_toplevels.is_empty(),
+        "refused retained geometry cannot authorize a replacement"
+    );
+    assert!(
+        fixture.state.floating_toplevels[0].suspended,
+        "invalid resume remains suspended rather than widening input"
+    );
+    assert_eq!(fixture.state.floating_toplevels[0].input_rect, Some(body));
+    assert_eq!(fixture.state.floating_toplevels[0].rect, window);
+    assert!(
+        !fixture
+            .state
+            .update_retained_floating_geometry(7, "conversation", tiny, tiny)
+    );
+    assert_eq!(fixture.state.floating_toplevels[0].input_rect, Some(body));
+    assert!(
+        fixture
+            .state
+            .resume_floating_toplevel(
+                7,
+                "conversation",
+                Rect::new(100.0, 80.0, 500.0, 380.0),
+                Rect::new(100.0, 80.0, 500.0, 380.0),
+                None,
+                None
+            )
+            .is_some()
+    );
+    assert_eq!(
+        fixture.state.floating_toplevels[0].input_rect,
+        Some(Rect::new(140.0, 120.0, 460.0, 340.0))
+    );
 }
 
 #[test]
