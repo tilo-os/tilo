@@ -2259,27 +2259,37 @@ pub(crate) fn control_draft_identity(
 }
 
 /// The item resources the action in `envelope` created: the ids it minted
-/// that its change stored as keys of a collection, in minting order.
+/// that its change stored as keys of a collection, in minting order. Read
+/// from the action's own changes since `before`, never a diff of the whole
+/// document, so an edit costs the same however large the record is.
 fn minted_items(
     doc: &mut AutoCommit,
     kind: &str,
     envelope: &tilo_actions::ActionEnvelope,
     before: &[ChangeHash],
 ) -> Vec<String> {
-    let after = doc.get_heads();
     let mut stored = std::collections::HashMap::new();
-    for patch in doc.diff(before, &after) {
-        if let automerge::PatchAction::PutMap { key, .. } = patch.action
-            && let Some((_, automerge::Prop::Map(field))) = patch.path.last()
-        {
-            stored.entry(key).or_insert_with(|| field.clone());
+    for change in doc.get_changes(before) {
+        for op in change.decode().operations {
+            if let automerge::legacy::Key::Map(key) = op.key {
+                stored.entry(key).or_insert(op.obj);
+            }
         }
+    }
+    if stored.is_empty() {
+        return Vec::new();
     }
     tilo_resource::minted_ids(envelope)
         .map_while(|id| {
-            stored
-                .get(id.as_str())
-                .map(|field| format!("{kind}/{field}/{id}"))
+            let obj = doc.import_obj(&stored.get(id.as_str())?.to_string()).ok()?;
+            automerge::ReadDoc::get(&*doc, &obj, id.as_str())
+                .ok()
+                .flatten()?;
+            let field = automerge::ReadDoc::parents(&*doc, &obj).ok()?.next()?.prop;
+            match field {
+                automerge::Prop::Map(field) => Some(format!("{kind}/{field}/{id}")),
+                automerge::Prop::Seq(_) => None,
+            }
         })
         .collect()
 }

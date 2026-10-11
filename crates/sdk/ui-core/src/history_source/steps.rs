@@ -221,7 +221,122 @@ fn kind_of(doc: &AutoCommit, version: &Version) -> Kind {
     kind_in(doc.committed_document(), version)
 }
 
+/// What `version` was, read from the change's own operations: its writes to
+/// [`UNDONE_KEY`] root keys, and whether it touches anything outside the
+/// bookkeeping root keys. Never a diff of the document, so classifying a
+/// change costs the same however large the document is.
 fn kind_in(doc: &automerge::Automerge, version: &Version) -> Kind {
+    use automerge::legacy::{Key, ObjectId, OpType};
+    if tilo_doc::model::is_schema_genesis(version)
+        || version
+            .context
+            .as_ref()
+            .is_some_and(|context| !context.change.is_step())
+    {
+        return Kind::Bookkeeping;
+    }
+    let Some(change) = doc.get_change_by_hash(&version.hash) else {
+        return Kind::Bookkeeping;
+    };
+    let change = change.decode();
+    let start = change.start_op.get();
+    let own = |id: &automerge::legacy::OpId| {
+        id.actor() == &change.actor_id
+            && id
+                .counter()
+                .checked_sub(start)
+                .is_some_and(|at| usize::try_from(at).is_ok_and(|at| at < change.operations.len()))
+    };
+    // What the change wrote and took back again itself (a key put and
+    // deleted, a value overwritten) is no effect of it.
+    let superseded: HashSet<u64> = change
+        .operations
+        .iter()
+        .filter(|op| !matches!(op.action, OpType::Increment(_)))
+        .flat_map(|op| op.pred.iter())
+        .filter(|pred| own(pred))
+        .map(automerge::legacy::OpId::counter)
+        .collect();
+    let mut undone: Vec<String> = Vec::new();
+    let mut redone: Vec<String> = Vec::new();
+    let mut edits = false;
+    // The root key each object the change writes into sits under.
+    let mut roots: std::collections::HashMap<ObjectId, Option<String>> =
+        std::collections::HashMap::new();
+    for (counter, op) in (start..).zip(&change.operations) {
+        let visible = match op.action {
+            // A delete shows only where it removes what was there before.
+            OpType::Delete => op.pred.iter().any(|pred| !own(pred)),
+            _ => !superseded.contains(&counter),
+        };
+        if !visible {
+            continue;
+        }
+        let root = match (&op.obj, &op.key) {
+            (ObjectId::Root, Key::Map(key)) => match &op.action {
+                // Native Redo is an intent on the canonical original, not a
+                // new document patch whose inverse could bypass native
+                // compensation.
+                OpType::Put(value)
+                    if key.starts_with(UNDONE_KEY)
+                        && value.as_i64().is_some_and(|attempt| attempt > 0) =>
+                {
+                    return Kind::Bookkeeping;
+                }
+                OpType::Put(_) | OpType::Make(_) | OpType::Delete => {
+                    let ledger = if matches!(op.action, OpType::Delete) {
+                        &mut redone
+                    } else {
+                        &mut undone
+                    };
+                    if let Some(hash) = key.strip_prefix(UNDONE_KEY)
+                        && !ledger.iter().any(|known| known == hash)
+                    {
+                        ledger.push(hash.to_owned());
+                    }
+                    Some(key.to_string())
+                }
+                // A counter or mark on the root names no key of its own.
+                _ => None,
+            },
+            (ObjectId::Root, Key::Seq(_)) => None,
+            (obj, _) => roots
+                .entry(obj.clone())
+                .or_insert_with(|| root_key_of(doc, obj))
+                .clone(),
+        };
+        if !root.is_some_and(|key| key.starts_with(BOOKKEEPING_PREFIX)) {
+            edits = true;
+        }
+    }
+    // In the order the document keeps its root keys, as a reading of the
+    // document lists them.
+    undone.sort_unstable();
+    redone.sort_unstable();
+    if !undone.is_empty() {
+        Kind::Undo(undone)
+    } else if !redone.is_empty() {
+        Kind::Redo(redone)
+    } else if edits {
+        Kind::Edit
+    } else {
+        Kind::Bookkeeping
+    }
+}
+
+/// The root key the object `obj` sits under, if it is still in `doc`.
+fn root_key_of(doc: &automerge::Automerge, obj: &automerge::legacy::ObjectId) -> Option<String> {
+    let id = doc.import_obj(&obj.to_string()).ok()?;
+    match doc.parents(&id).ok()?.last()?.prop {
+        Prop::Map(key) => Some(key),
+        Prop::Seq(_) => None,
+    }
+}
+
+/// [`kind_in`] as a diff of the change against its dependencies reads it:
+/// the reference its reading of the change's own operations must equal.
+#[cfg(test)]
+fn kind_by_diff(doc: &automerge::Automerge, version: &Version) -> Kind {
     if tilo_doc::model::is_schema_genesis(version)
         || version
             .context

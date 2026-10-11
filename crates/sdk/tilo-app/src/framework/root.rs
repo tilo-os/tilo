@@ -40,10 +40,8 @@ use super::stage::Stages;
 use super::surface::SurfacePublication;
 use super::view::{Bindings, ViewCx};
 
-struct PublicationCache {
-    revision: (u64, u64, String),
-    tree: tilo_actions::Resource,
-}
+mod shared_tree;
+use shared_tree::{ItemChildren, NestedViews, PublishedChildren, SharedTreeCache};
 
 pub(crate) struct ResourceRoot<R: Resource> {
     title: &'static str,
@@ -84,15 +82,22 @@ pub(crate) struct ResourceRoot<R: Resource> {
     presentation: Vec<tilo_actions::ActionSpec>,
     /// The resource's and its surfaces' search entries, indexed.
     search: std::cell::RefCell<Option<SearchCache>>,
-    /// The document-owned tree at one live and translation revision. Surface bindings, local
-    /// rows and effect availability are decorated afresh for every caller.
-    publication_tree: std::cell::RefCell<Option<PublicationCache>>,
+    /// The document-owned tree at one live and translation revision, shared
+    /// with the last one wherever the change left it as it was. Surface
+    /// bindings, local rows and effect availability are decorated afresh
+    /// for every caller.
+    publication_tree: std::cell::RefCell<Option<SharedTreeCache>>,
+    /// The item children last published, kept so the next tree builds only
+    /// the items whose label changed.
+    item_children: std::cell::RefCell<Option<ItemChildren>>,
+    /// The document children as the shared publication last carried them.
+    published_children: std::cell::RefCell<Option<PublishedChildren>>,
     /// The head bound controls were last refreshed from, kept between syncs
     /// for a resource whose publication may be reused
     /// ([`Resource::publication_cache_epoch`]).
     binding_head: std::cell::RefCell<Option<BindingHead>>,
     /// The view operation types of the nested resources at one live revision.
-    nested_views: std::cell::RefCell<Option<(u64, Rc<HashSet<String>>)>>,
+    nested_views: std::cell::RefCell<Option<NestedViews>>,
     /// Whether the resource keeps document state History shows.
     history: bool,
     /// Platform presentation actions; the browser implementation has no state.
@@ -319,6 +324,8 @@ impl<R: Resource> ResourceRoot<R> {
             presentation: Vec::new(),
             search: std::cell::RefCell::new(None),
             publication_tree: std::cell::RefCell::new(None),
+            item_children: std::cell::RefCell::new(None),
+            published_children: std::cell::RefCell::new(None),
             binding_head: std::cell::RefCell::new(None),
             nested_views: std::cell::RefCell::new(None),
             history: true,
@@ -469,44 +476,8 @@ impl<R: Resource> ResourceRoot<R> {
         #[cfg(feature = "test-support")]
         let _profile = super::profiling::Scope::start("framework.publication");
         let state = self.live.get();
-        let tree = self.document_tree(&state, tilo_actions::Resource::clone);
+        let tree = self.shared_document_tree(&state).to_resource();
         self.decorate_publication(&state, tree, Decoration::Tree)
-    }
-
-    /// `take` of the document-owned tree of the live `state`: the cached one
-    /// when the resource opts in to reuse
-    /// ([`Resource::publication_cache_epoch`]), else built afresh.
-    #[inline(never)]
-    fn document_tree(
-        &self,
-        state: &R::State,
-        // A function, not a closure: one copy of this per resource type.
-        take: fn(&tilo_actions::Resource) -> tilo_actions::Resource,
-    ) -> tilo_actions::Resource {
-        let Some(epoch) = R::publication_cache_epoch(state) else {
-            let tree = self.resource_tree(state);
-            return take(&tree);
-        };
-        let revision = (
-            self.live.revision(),
-            ui_core::i18n::I18nManager::revision(),
-            epoch,
-        );
-        let mut cached = self.publication_tree.borrow_mut();
-        if cached
-            .as_ref()
-            .is_some_and(|cached| cached.revision != revision)
-        {
-            *cached = None;
-        }
-        take(
-            &cached
-                .get_or_insert_with(|| PublicationCache {
-                    revision,
-                    tree: self.resource_tree(state),
-                })
-                .tree,
-        )
     }
 
     /// The document-owned part of what controls bind to: the live
@@ -524,7 +495,7 @@ impl<R: Resource> ResourceRoot<R> {
                 .borrow()
                 .as_ref()
                 .filter(|cached| cached.revision == (revision.0, revision.1, epoch.clone()))
-                .map(|cached| without_children(&cached.tree))
+                .map(|cached| cached.tree.head().clone())
         });
         let resource = cached.unwrap_or_else(|| {
             #[cfg(feature = "test-support")]
@@ -585,10 +556,7 @@ impl<R: Resource> ResourceRoot<R> {
             // Validate its nested views against this same state, rather than
             // withdrawing the new resource tree using the previous frame's
             // handler table. The next live revision replaces this cache.
-            *self.nested_views.borrow_mut() = Some((
-                self.live.revision(),
-                Rc::new(nested_view_types(&R::children(&current))),
-            ));
+            self.pin_nested_views(&current);
             return self.publication_of(&current);
         }
         self.publication()
@@ -598,14 +566,8 @@ impl<R: Resource> ResourceRoot<R> {
     fn publication_of(&self, state: &R::State) -> tilo_actions::Resource {
         #[cfg(feature = "test-support")]
         let _profile = super::profiling::Scope::start("framework.publication");
-        self.decorate_publication(state, self.resource_tree(state), Decoration::Tree)
-    }
-
-    #[inline(never)]
-    fn resource_tree(&self, state: &R::State) -> tilo_actions::Resource {
-        #[cfg(feature = "test-support")]
-        let _profile = super::profiling::Scope::start("framework.resource_tree");
-        tilo_resource::publish::<R>(self.dispatch.resource_id(), &self.label, state)
+        let tree = self.shared_document_tree(state).to_resource();
+        self.decorate_publication(state, tree, Decoration::Tree)
     }
 
     /// Add to `resource`, the document-owned tree, what the view and the
@@ -720,23 +682,6 @@ impl<R: Resource> ResourceRoot<R> {
         resource
     }
 
-    /// The operation types of the views the resource's nested resources
-    /// publish (the editor of a note's rich-text body): presentations of the
-    /// resource this root has mounted, answered like its own.
-    #[inline(never)]
-    fn nested_views(&self) -> Rc<HashSet<String>> {
-        let revision = self.live.revision();
-        let mut cached = self.nested_views.borrow_mut();
-        match cached.as_ref() {
-            Some((at, views)) if *at == revision => Rc::clone(views),
-            _ => {
-                let views = Rc::new(nested_view_types(&R::children(&self.live.get())));
-                *cached = Some((revision, Rc::clone(&views)));
-                views
-            }
-        }
-    }
-
     /// Show why the record does not read as the resource instead of the
     /// view while it does not, never the last state as if it were current,
     /// and refuse submissions with the same reason.
@@ -836,6 +781,7 @@ struct BindingHead {
 }
 
 /// `resource` without its children, cloning nothing of them.
+#[cfg(all(test, not(target_arch = "wasm32")))]
 fn without_children(resource: &tilo_actions::Resource) -> tilo_actions::Resource {
     let tilo_actions::Resource {
         id,
@@ -857,24 +803,6 @@ fn without_children(resource: &tilo_actions::Resource) -> tilo_actions::Resource
         actions: actions.clone(),
         views: views.clone(),
     }
-}
-
-fn nested_view_types(resources: &[tilo_actions::Resource]) -> HashSet<String> {
-    fn collect(resources: &[tilo_actions::Resource], views: &mut HashSet<String>) {
-        for resource in resources {
-            views.extend(
-                resource
-                    .actions
-                    .iter()
-                    .filter(|spec| spec.kind == tilo_actions::OperationKind::View)
-                    .filter_map(|spec| spec.operation_type.clone()),
-            );
-            collect(&resource.children, views);
-        }
-    }
-    let mut views = HashSet::new();
-    collect(resources, &mut views);
-    views
 }
 
 /// Every document action of `resource` and its children, unavailable for
@@ -1693,6 +1621,13 @@ impl<R: Resource> ui_core::search::capability::SearchSource for ResourceRoot<R> 
 impl<R: Resource> ui_core::resources::PublishesResources for ResourceRoot<R> {
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
         ui_core::resources::PublishesResources::resources_for(self, None, doc)
+    }
+    fn shared_resources_for(
+        &self,
+        participant: Option<&tilo_actions::ParticipantId>,
+        doc: &AutoCommit,
+    ) -> Option<Vec<ui_core::published::SharedResource>> {
+        self.shared_resources(participant, doc)
     }
     fn resources_for(
         &self,
