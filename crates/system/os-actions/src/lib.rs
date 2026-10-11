@@ -135,8 +135,8 @@ pub use session::{
     user_switching_supported,
 };
 pub use time::{
-    TimeSyncStatus, get_ntp, get_time_sync_status, list_timezones, now_clock, now_date, set_ntp,
-    set_timezone, valid_timezone,
+    TimeSyncStatus, get_ntp, get_time_sync_status, list_timezones, set_ntp, set_timezone,
+    valid_timezone,
 };
 // Typed tool requests are a sandbox service client, kept with the others in
 // runtime-portal; the shell and Settings name them through this crate.

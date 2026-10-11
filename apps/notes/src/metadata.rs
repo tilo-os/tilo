@@ -41,13 +41,16 @@ impl NoteDates {
             value
                 .and_then(|seconds| chrono::DateTime::from_timestamp(seconds, 0))
                 .map(|date| {
-                    date.with_timezone(zone)
-                        .format(if compact {
-                            "%Y-%m-%d"
-                        } else {
-                            "%d %b %Y, %H:%M"
-                        })
-                        .to_string()
+                    let date = date.with_timezone(zone);
+                    if compact {
+                        date.format("%Y-%m-%d").to_string()
+                    } else {
+                        format!(
+                            "{}, {}",
+                            date.format("%d %b %Y"),
+                            ui::clock::time_of_day(&date)
+                        )
+                    }
                 })
         };
         let mut labels = Vec::new();
@@ -103,7 +106,7 @@ impl NoteDates {
 /// One moment as a person says it: the time today, else the day (with its
 /// year when it is not this one), in the local time zone.
 fn when(seconds: i64, now: chrono::DateTime<chrono::Local>) -> String {
-    use chrono::{Datelike, TimeZone, Timelike};
+    use chrono::{Datelike, TimeZone};
     use ui::i18n::I18nManager;
     let Some(moment) = chrono::Local.timestamp_opt(seconds, 0).single() else {
         return String::new();
@@ -111,7 +114,7 @@ fn when(seconds: i64, now: chrono::DateTime<chrono::Local>) -> String {
     // A moment the clock has not reached yet (a peer's skewed clock) still
     // reads as today rather than as a date in the future.
     if moment.date_naive() >= now.date_naive() {
-        let time = format!("{:02}:{:02}", moment.hour(), moment.minute());
+        let time = ui::clock::time_of_day(&moment);
         return I18nManager::format("notes-date-today", &[("time", time.into())]);
     }
     let month = ui::format::month_abbrev(moment.month0() as usize);

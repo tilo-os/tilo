@@ -1153,6 +1153,25 @@ impl RetainedGpuTarget {
         self.last_layer_work.as_ref()
     }
 
+    /// Keep the frame `damage` describes without rendering it, as the DRM
+    /// presenter keeps a lone output's image for a frame proven unchanged
+    /// (empty damage) relative to the one this target holds: the target then
+    /// holds this revision. `false`, and nothing kept, for any other frame.
+    pub fn keep_unchanged(&mut self, damage: SceneDamage<'_>) -> bool {
+        let unchanged = damage.regions.is_some_and(<[_]>::is_empty);
+        let holds_previous = damage.previous_revision.is_some()
+            && self.last_successful_revision == damage.previous_revision;
+        if !unchanged
+            || !holds_previous
+            || !self.retained_target_valid
+            || !self.owed_damage.is_empty()
+        {
+            return false;
+        }
+        self.last_successful_revision = Some(damage.revision);
+        true
+    }
+
     /// The work the latest [`Self::render_layers_until`] did, for counters.
     pub fn last_layer_raster_pixels(&self) -> Option<(u64, u64)> {
         self.last_layer_work
@@ -6814,6 +6833,49 @@ mod tests {
         assert!(
             after_resize < before_resize,
             "a mode change must not keep the old size's scratch: {after_resize} >= {before_resize}"
+        );
+    }
+
+    /// A target keeps a frame proven unchanged relative to the one it holds,
+    /// as the DRM presenter keeps a lone output's image, so the next change
+    /// renders sparse; it keeps nothing else.
+    #[test]
+    fn gpu_target_keeps_an_unchanged_frame_and_the_next_change_renders_sparse() {
+        let mut target = required_target(128, 128);
+        let deadline = || Instant::now() + Duration::from_secs(10);
+        target
+            .render_until(&Scene::new(), version(1, None, None), deadline())
+            .expect("seed");
+        let changed = [vello::FineDamageRect {
+            x: 16,
+            y: 16,
+            width: 16,
+            height: 16,
+        }];
+        assert!(
+            !target.keep_unchanged(version(2, Some(1), Some(&changed))),
+            "a frame that changes pixels is rendered"
+        );
+        assert!(
+            !target.keep_unchanged(version(2, Some(7), Some(&[]))),
+            "a frame unchanged from a revision the target does not hold is rendered"
+        );
+        assert!(
+            !target.keep_unchanged(version(2, Some(1), None)),
+            "a frame without damage authority is rendered"
+        );
+        assert!(target.keep_unchanged(version(2, Some(1), Some(&[]))));
+        let stats = target
+            .render_until(
+                &Scene::new(),
+                version(3, Some(2), Some(&changed)),
+                deadline(),
+            )
+            .expect("change after the kept frame");
+        assert_eq!(
+            (stats.sparse_attempts, stats.full_attempts),
+            (1, 0),
+            "the change after a kept frame repairs only its damage"
         );
     }
 

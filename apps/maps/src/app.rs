@@ -2302,9 +2302,9 @@ fn on_panel(theme: &Theme) -> Theme {
     theme.on_ground(ui::chrome::panel_ground(theme))
 }
 
-/// A travel time read as a clock: `10:57`.
+/// A travel time read as a clock: `10:57` or `10:57 AM`.
 fn clock_label(at: chrono::DateTime<chrono::Local>) -> String {
-    at.format("%H:%M").to_string()
+    ui::clock::time_of_day(&at)
 }
 
 // ===========================================================================

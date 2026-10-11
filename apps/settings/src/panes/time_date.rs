@@ -39,7 +39,8 @@ use crate::i18n::{t, t_args};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{caption, card, choice_row, error_row, rows, setting_row, value_row};
-use tilo_locale::{Locale, TimeStyle};
+use tilo_locale::Locale;
+use ui::clock::TimeStyle;
 use ui::i18n::ArgValue;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -606,8 +607,6 @@ pub trait Clock: Send + Sync {
     ///
     /// Why the zone list could not be read.
     fn zones(&self) -> Result<Vec<String>, String>;
-    /// The time and the date now, formatted, or why each could not be read.
-    fn now(&self, h24: bool) -> (Result<String, String>, Result<String, String>);
     /// # Errors
     ///
     /// The underlying `timedatectl set-ntp` failure text when automatic time
@@ -639,10 +638,6 @@ impl Clock for SystemClock {
         os_actions::list_timezones()
     }
 
-    fn now(&self, h24: bool) -> (Result<String, String>, Result<String, String>) {
-        (os_actions::now_clock(h24), os_actions::now_date())
-    }
-
     fn set_ntp(&self, enabled: bool) -> Result<(), String> {
         os_actions::set_ntp(enabled)
     }
@@ -652,7 +647,7 @@ impl Clock for SystemClock {
     }
 }
 
-/// The clock a capture shows: a fixed time in a fixed zone, which the
+/// The clock a capture shows: a fixed zone, which the
 /// effects change in memory only.
 pub struct SampleClock {
     status: Mutex<os_actions::TimeSyncStatus>,
@@ -698,14 +693,6 @@ impl Clock for SampleClock {
         ]
         .map(str::to_owned)
         .to_vec())
-    }
-
-    fn now(&self, h24: bool) -> (Result<String, String>, Result<String, String>) {
-        let time = if h24 { "14:05" } else { "2:05 PM" };
-        (
-            Ok(time.to_owned()),
-            Ok("Wednesday 15 March 2023".to_owned()),
-        )
     }
 
     fn set_ntp(&self, enabled: bool) -> Result<(), String> {
@@ -951,16 +938,17 @@ impl TimeDatePane {
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
-        let clock_row = |label: &str, read: Result<String, String>| match read {
-            Ok(value) => value_row(label, &value),
-            Err(error) => error_row(
-                label,
-                &t_args("time-clock-error", &[("error", error.into())]),
-            ),
+        let style = if self.h24 {
+            TimeStyle::H24
+        } else {
+            TimeStyle::H12
         };
-        let (now, today) = self.clock.now(self.h24);
-        let now = clock_row(&t("time-current-time"), now);
-        let today = clock_row(&t("time-current-date"), today);
+        let moment = ui::clock::local_now();
+        let now = value_row(&t("time-current-time"), &style.format(&moment));
+        let today = value_row(
+            &t("time-current-date"),
+            &moment.format("%A, %-d %B %Y").to_string(),
+        );
         let auto_row = self.auto_row();
         let zone_row = self.zone_row();
 
@@ -1226,9 +1214,6 @@ mod tests {
         fn zones(&self) -> Result<Vec<String>, String> {
             Err("timedatectl not installed".into())
         }
-        fn now(&self, _: bool) -> (Result<String, String>, Result<String, String>) {
-            (Ok("14:05".into()), Ok("Wednesday 15 March 2023".into()))
-        }
         fn set_ntp(&self, _: bool) -> Result<(), String> {
             Err("timedatectl not installed".into())
         }
@@ -1303,7 +1288,9 @@ mod tests {
         ))
         .expect("the clock format is the locale's");
         assert_eq!(app.settings::<Locale>().get().time_format, TimeStyle::H12);
+        let before = TimeStyle::H12.format(&ui::clock::local_now());
         let frame = app.harness().inspection_json().unwrap();
-        assert!(frame.contains("2:05 PM"), "{frame}");
+        let after = TimeStyle::H12.format(&ui::clock::local_now());
+        assert!(frame.contains(&before) || frame.contains(&after), "{frame}");
     }
 }

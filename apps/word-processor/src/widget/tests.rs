@@ -6081,10 +6081,10 @@ fn regenerating_the_toc_replaces_it_and_confirms() {
     {
         let mut framed = doc_with_headings(1000, 700);
         let (wp, state) = Framed::split(&mut framed);
-        assert!(wp.toast.is_none(), "no toast before the action");
+        assert!(!wp.toast.is_shown(), "no toast before the action");
         wp.apply_tool(&mut edits(&mut state.doc), ToolAction::InsertToc);
         assert!(
-            wp.toast.is_some(),
+            wp.toast.is_shown(),
             "generating a TOC surfaces a confirmation toast"
         );
         // And it actually produced TOC lines.

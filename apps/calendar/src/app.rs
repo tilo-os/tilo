@@ -4586,7 +4586,7 @@ impl CalendarApp {
             "You’re invited to {} on {} at {} ({}).\n\nReview the attached calendar invitation for details.",
             event.display_title(),
             event.start.format("%A, %d %B %Y"),
-            event.start.format("%H:%M"),
+            ui::clock::time_of_day(&event.start),
             event.timezone
         );
         let calendar_ics = crate::ics::invitation_request(event);

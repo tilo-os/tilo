@@ -18,6 +18,13 @@
 //! asks the renderer to rasterise: the area of its damage rects, or the whole
 //! output for a dense frame.
 //!
+//! Every motion starts from a desktop at rest: two frames in a row that
+//! change nothing, with nothing animating, each kept rather than rendered as
+//! the DRM presenter keeps it. A pan also reports, apart from its samples,
+//! its first frame from rest (`start`, which builds the presenter's layers)
+//! and the first frame of a second pan once the desktop came to rest again
+//! (`restart`).
+//!
 //! The windows are the in-process apps the populated fixture supports
 //! (Notes, Files, Terminal, Document): vector content the compositor draws
 //! itself, the case where a pan costs most.
@@ -65,6 +72,11 @@ const WARM_UP_FRAMES: usize = 8;
 const STRIP_MOVES: usize = 8;
 /// Longest a strip move may animate, in frames.
 const MAX_MOVE_FRAMES: usize = 120;
+/// Most frames the desktop may take to come to rest before a motion.
+const SETTLE_FRAMES: usize = 60;
+/// Frames in a row that change nothing, with nothing animating, that make
+/// the desktop at rest.
+const QUIET_FRAMES: usize = 2;
 /// Layout pixels a pan travels per frame: about 1,000 px/s at 60 Hz, never
 /// a whole pixel, as a touchpad reports it.
 const PAN_STEP: f64 = 17.3;
@@ -342,6 +354,12 @@ struct Samples {
     paths: Vec<u64>,
     dense: usize,
     layered: usize,
+    /// A pan's first frame from rest, before the warm-up: the one that
+    /// builds the presenter's layers. Frame time and raster pixels.
+    start: Option<(u64, u64)>,
+    /// The first frame of a second pan, once the desktop came to rest after
+    /// the first: what a pan from rest costs once the layers exist.
+    restart: Option<(u64, u64)>,
 }
 
 fn micros(duration: Duration) -> u64 {
@@ -366,12 +384,13 @@ fn damage_pixels(paint: &FramePaint, size: (u32, u32)) -> u64 {
 }
 
 /// Lay out, produce and render one frame; record it when `samples` is given.
+/// `true` when the frame changed nothing on screen.
 fn frame(
     fixture: &mut Fixture,
     target: &mut RetainedGpuTarget,
     size: (u32, u32),
     samples: Option<&mut Samples>,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let started = Instant::now();
     fixture.frame.relayout();
     let laid_out = Instant::now();
@@ -384,17 +403,20 @@ fn frame(
         .cache
         .as_ref()
         .filter(|cache| target.layers_eligible(cache));
+    let damage = SceneDamage {
+        revision: paint.revision,
+        previous_revision: paint.previous_revision,
+        regions: paint.damage_regions.as_deref(),
+    };
+    // A frame that changes nothing is kept, not rendered, as the DRM
+    // presenter keeps it: motions are measured from a desktop at rest the
+    // way a session reaches it.
+    if cache.is_none() && samples.is_none() && target.keep_unchanged(damage) {
+        return Ok(true);
+    }
     let stats = match cache {
         Some(cache) => target.render_layers_until(cache, paint.revision, deadline, |_, _, _| {}),
-        None => target.render_until(
-            &paint.scene,
-            SceneDamage {
-                revision: paint.revision,
-                previous_revision: paint.previous_revision,
-                regions: paint.damage_regions.as_deref(),
-            },
-            deadline,
-        ),
+        None => target.render_until(&paint.scene, damage, deadline),
     }
     .map_err(|error| format!("render: {error}"))?;
     let rendered = Instant::now();
@@ -430,21 +452,34 @@ fn frame(
             .paths
             .push(u64::from(paint.scene.encoding().n_paths));
     }
-    Ok(())
+    Ok(paint.damage_regions.as_ref().is_some_and(Vec::is_empty))
 }
 
+/// Draw frames until the desktop is at rest: [`QUIET_FRAMES`] frames in a
+/// row that change nothing, with nothing animating. Nothing animating alone
+/// is not rest: the in-process apps paint their first content a frame or two
+/// after the desktop's first, so the next frame would repaint the whole
+/// output whatever the motion measured after it.
 fn settle(
     fixture: &mut Fixture,
     target: &mut RetainedGpuTarget,
     size: (u32, u32),
 ) -> Result<(), String> {
-    for _ in 0..30 {
-        frame(fixture, target, size, None)?;
-        if !fixture.frame.needs_animation_frame() {
-            break;
+    let mut quiet = 0_usize;
+    for _ in 0..SETTLE_FRAMES {
+        let unchanged = frame(fixture, target, size, None)?;
+        quiet = if unchanged && !fixture.frame.needs_animation_frame() {
+            quiet.saturating_add(1)
+        } else {
+            0
+        };
+        if quiet >= QUIET_FRAMES {
+            return Ok(());
         }
     }
-    Ok(())
+    Err(format!(
+        "the desktop did not come to rest in {SETTLE_FRAMES} frames"
+    ))
 }
 
 fn active_strip_max_scroll(frame: &FrameBuilder) -> f64 {
@@ -482,7 +517,11 @@ fn pan(
             .frame
             .host_mut()
             .update_active_strip_pan(travel, false);
-        frame(
+        if index == 0 {
+            samples.start = single_frame(fixture, target, size)?;
+            continue;
+        }
+        let _ = frame(
             fixture,
             target,
             size,
@@ -493,7 +532,33 @@ fn pan(
         .frame
         .host_mut()
         .end_active_strip_pan(Instant::now());
+    settle(fixture, target, size)?;
+    fixture.frame.host_mut().update_active_strip_pan(0.0, true);
+    fixture
+        .frame
+        .host_mut()
+        .update_active_strip_pan(PAN_STEP, false);
+    samples.restart = single_frame(fixture, target, size)?;
+    fixture
+        .frame
+        .host_mut()
+        .end_active_strip_pan(Instant::now());
     Ok(samples)
+}
+
+/// One frame, measured on its own: its frame time and raster pixels.
+fn single_frame(
+    fixture: &mut Fixture,
+    target: &mut RetainedGpuTarget,
+    size: (u32, u32),
+) -> Result<Option<(u64, u64)>, String> {
+    let mut one = Samples::default();
+    let _ = frame(fixture, target, size, Some(&mut one))?;
+    Ok(one
+        .frame_us
+        .first()
+        .copied()
+        .zip(one.pixels.first().copied()))
 }
 
 fn strip_move(
@@ -513,7 +578,7 @@ fn strip_move(
             return Err("the fixture has no second strip to move to".into());
         }
         for _ in 0..MAX_MOVE_FRAMES {
-            frame(fixture, target, size, Some(&mut samples))?;
+            let _ = frame(fixture, target, size, Some(&mut samples))?;
             if !fixture.frame.needs_animation_frame() {
                 break;
             }
@@ -553,13 +618,20 @@ fn summary(values: &[u64]) -> String {
     )
 }
 
+/// ` name[frame_us=… pixels=…]` for a frame measured on its own, if any.
+fn one_frame(name: &str, measured: Option<(u64, u64)>) -> String {
+    measured.map_or_else(String::new, |(frame_us, pixels)| {
+        format!(" {name}[frame_us={frame_us} pixels={pixels}]")
+    })
+}
+
 fn report(label: &str, size: (u32, u32), samples: &Samples) {
     let output = output_pixels(size);
     let pixels_p50 = percentile(&samples.pixels, 500);
     println!(
         "{label}: frames={} dense={} layered={} frame_us[{}] layout_us[{}] scene_us[{}] \
          render_us[{}] pixels[p50={pixels_p50} p99={} output={output} share_p50={}%] \
-         composited_p50={} paths_p50={}",
+         composited_p50={} paths_p50={} first[frame_us={} pixels={}]{}{}",
         samples.frame_us.len(),
         samples.dense,
         samples.layered,
@@ -571,6 +643,10 @@ fn report(label: &str, size: (u32, u32), samples: &Samples) {
         percent(pixels_p50, output),
         percentile(&samples.composited, 500),
         percentile(&samples.paths, 500),
+        samples.frame_us.first().copied().unwrap_or(0),
+        samples.pixels.first().copied().unwrap_or(0),
+        one_frame("start", samples.start),
+        one_frame("restart", samples.restart),
     );
 }
 

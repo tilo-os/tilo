@@ -2419,7 +2419,7 @@ enum Unit {
     /// A date serial.
     Date(tilo_locale::DateStyle),
     /// A time/duration serial.
-    Time(tilo_locale::TimeStyle),
+    Time(ui::clock::TimeStyle),
     /// Conflicting units (e.g. USD + EUR) — render plain.
     Mixed,
 }
@@ -2547,7 +2547,7 @@ fn unit_of_call<S: BuildHasher>(
         // Date/time builders render as dates/times so a bare `=TODAY()` shows
         // a date rather than its underlying serial number.
         "DATE" | "TODAY" | "NOW" => Unit::Date(tilo_locale::DateStyle::Iso),
-        "TIME" => Unit::Time(tilo_locale::TimeStyle::H24),
+        "TIME" => Unit::Time(ui::clock::TimeStyle::H24),
         // Counting / text / logical / lookup functions are unitless.
         _ => Unit::Scalar,
     }

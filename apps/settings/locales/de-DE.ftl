@@ -1762,7 +1762,6 @@ net-profiles-error = Gespeicherte Netzwerke können nicht gelesen werden: { $err
 net-sims-error = SIM-Karten können nicht gelesen werden: { $error }
 upd-status-error = Nach Updates kann nicht gesucht werden: { $error }
 upd-rollback-error = Das vorherige System-Image kann nicht gelesen werden: { $error }
-time-clock-error = Uhr kann nicht gelesen werden: { $error }
 time-status-error = Zeiteinstellungen können nicht gelesen werden: { $error }
 time-zones-error = Zeitzonen können nicht aufgelistet werden: { $error }
 time-zone-unread = Aktuelle Zeitzone unbekannt
