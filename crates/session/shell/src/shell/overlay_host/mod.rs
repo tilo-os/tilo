@@ -10626,9 +10626,13 @@ impl ShellOverlayHost {
         let st = chrome.borrow();
         let records = st.records().clone();
         let mut tree = st.tree_mut();
-        let _ = self
-            .room_activity
-            .apply_selection_history_action(&id, &mut *tree, Some(&records));
+        self.room_activity.refresh(&mut *tree);
+        let outcome =
+            self.room_activity
+                .apply_selection_history_action(&id, &mut *tree, Some(&records));
+        drop(tree);
+        drop(st);
+        self.apply_room_activity_outcome(&chrome, outcome);
     }
 
     fn refresh_room_activity(&mut self) {

@@ -709,7 +709,10 @@ impl EmojiPicker {
         }
         match event {
             WindowEvent::KeyboardInput { event: key, .. } if key.state == ElementState::Pressed => {
-                self.key(&key.logical_key, modifiers);
+                // Opening a tone chooser and confirming it are separate presses.
+                if !key.repeat || key.logical_key != Key::Named(NamedKey::Enter) {
+                    self.key(&key.logical_key, modifiers);
+                }
             }
             WindowEvent::MouseInput { state, button, .. } => {
                 if let Some(p) = cursor {
@@ -2144,5 +2147,123 @@ mod tests {
         restarted.attach_store(Box::new(store));
         restarted.open(VIEWPORT, "en-US");
         assert_eq!(restarted.recents(), ["🎉".to_string(), "👍".to_string()]);
+    }
+}
+
+#[cfg(test)]
+mod held_submit_tests {
+    use super::*;
+
+    fn send(picker: &mut EmojiPicker, key: Key, repeat: bool, modifiers: ModifiersState) {
+        let mut event = ui::synthetic_input::key_event(key, None, ElementState::Pressed);
+        event.repeat = repeat;
+        picker.handle_event(
+            &ui::synthetic_input::keyboard_input(event),
+            1.0,
+            modifiers,
+            None,
+            Instant::now(),
+        );
+    }
+
+    fn thumbs_up() -> EmojiPicker {
+        let mut picker = EmojiPicker::new();
+        picker.open(Rect::new(0.0, 0.0, 800.0, 700.0), "en-US");
+        for character in "thumbs up".chars() {
+            send(
+                &mut picker,
+                Key::Character(character.to_string().into()),
+                false,
+                ModifiersState::empty(),
+            );
+        }
+        assert_eq!(picker.selected(), Some("👍"));
+        picker
+    }
+
+    #[test]
+    fn held_shift_enter_does_not_confirm_the_tone_chooser() {
+        let mut picker = thumbs_up();
+        send(
+            &mut picker,
+            Key::Named(NamedKey::Enter),
+            false,
+            ModifiersState::SHIFT,
+        );
+        let forms = picker
+            .tone_forms()
+            .expect("first press opens tones")
+            .to_vec();
+        send(
+            &mut picker,
+            Key::Named(NamedKey::Enter),
+            true,
+            ModifiersState::SHIFT,
+        );
+        assert!(
+            picker.is_open(),
+            "held opening key must not insert and close"
+        );
+        assert!(picker.take_commits().is_empty());
+        send(
+            &mut picker,
+            Key::Named(NamedKey::ArrowRight),
+            true,
+            ModifiersState::empty(),
+        );
+        send(
+            &mut picker,
+            Key::Named(NamedKey::Enter),
+            false,
+            ModifiersState::empty(),
+        );
+        assert_eq!(picker.take_commits(), [forms[1].clone()]);
+        assert!(!picker.is_open());
+    }
+
+    #[test]
+    fn reopened_picker_requires_fresh_submit_and_retains_nested_escape() {
+        let mut picker = thumbs_up();
+        send(
+            &mut picker,
+            Key::Named(NamedKey::Enter),
+            false,
+            ModifiersState::SHIFT,
+        );
+        send(
+            &mut picker,
+            Key::Named(NamedKey::Escape),
+            false,
+            ModifiersState::empty(),
+        );
+        assert!(picker.is_open() && picker.tone_forms().is_none());
+        assert!(picker.take_commits().is_empty());
+        send(
+            &mut picker,
+            Key::Named(NamedKey::Escape),
+            false,
+            ModifiersState::empty(),
+        );
+        assert!(!picker.is_open());
+        picker.open(Rect::new(0.0, 0.0, 800.0, 700.0), "en-US");
+        let selected = picker.selected().expect("a selected emoji").to_owned();
+        send(
+            &mut picker,
+            Key::Named(NamedKey::Enter),
+            true,
+            ModifiersState::empty(),
+        );
+        assert!(
+            picker.is_open(),
+            "orphan repeat must not submit a reopened picker"
+        );
+        assert!(picker.take_commits().is_empty());
+        send(
+            &mut picker,
+            Key::Named(NamedKey::Enter),
+            false,
+            ModifiersState::empty(),
+        );
+        assert_eq!(picker.take_commits(), [selected]);
     }
 }
