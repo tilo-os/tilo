@@ -21,7 +21,7 @@ fn device() -> PersonRecord {
     let mut owners = RecordOwners::with_store(Rc::new(durable_store::MemoryStore::new()));
     PersonRecords::open(&mut owners, APP, person())
         .unwrap()
-        .open_record(RecordKind::new("test.watched"), |doc| {
+        .open_record(RecordKind::new("test.watched"), &|doc| {
             doc.put_object(automerge::ROOT, "watched", automerge::ObjType::Map)
                 .map(|_| ())
                 .map_err(|error| error.to_string())
@@ -197,7 +197,7 @@ fn without_a_root_identity_the_persons_records_stay_on_the_device() {
         PersonRecords::open(&mut owners, APP, crate::permissions::UserId("local".into())).unwrap();
     assert_eq!(records.room(), None);
     let record = records
-        .open_record(RecordKind::new("test.watched"), |doc| {
+        .open_record(RecordKind::new("test.watched"), &|doc| {
             doc.put_object(automerge::ROOT, "watched", automerge::ObjType::Map)
                 .map(|_| ())
                 .map_err(|error| error.to_string())
@@ -272,7 +272,7 @@ fn a_second_window_holding_an_in_memory_copy_hears_what_reaches_the_route() {
         let mut owners = RecordOwners::with_store(Rc::clone(store));
         PersonRecords::open(&mut owners, APP, person())
             .unwrap()
-            .open_record(RecordKind::new("test.watched"), |doc| {
+            .open_record(RecordKind::new("test.watched"), &|doc| {
                 doc.put_object(automerge::ROOT, "watched", automerge::ObjType::Map)
                     .map(|_| ())
                     .map_err(|error| error.to_string())

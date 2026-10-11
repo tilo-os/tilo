@@ -362,30 +362,12 @@ impl PersonState {
                 .map(|shared| PersonRecord { shared });
         }
         let own = owner == self.app_id;
-        let records = if own {
-            self.records.clone()
-        } else {
-            let mut others = self.others.borrow_mut();
-            if let Some(records) = others.get(owner) {
-                records.clone()
-            } else {
-                let records = self
-                    .records
-                    .of_package(owner)
-                    .map_err(|error| {
-                        tracing::warn!(owner, %error, "the person's records of another app are unavailable");
-                    })
-                    .ok()?;
-                others.insert(owner, records.clone());
-                records
-            }
-        };
-        let record = records
-            .open_record(RecordKind::new(P::KIND), |doc| {
-                P::initialize(doc).map_err(|error| error.to_string())
-            })
-            .map_err(|error| tracing::warn!(kind = P::KIND, %error, "person record unavailable"))
-            .ok()?;
+        let record = open_record(
+            &self.records_of(owner)?,
+            P::KIND.to_owned(),
+            P::KIND,
+            &|doc| P::initialize(doc).map_err(|error| error.to_string()),
+        )?;
         let shared = self.shared_of::<P>(record, (!edits).then_some(owner))?;
         let held = Rc::new(held::<P>(&shared, edits));
         *shared.held.borrow_mut() = Some(Rc::clone(&held));
@@ -397,20 +379,20 @@ impl PersonState {
             return Some(PersonRecord { shared });
         }
         let weak = Rc::downgrade(&shared);
-        self.published.borrow_mut().push(Published {
-            id: resource_id(P::KIND),
-            label: P::LABEL.to_owned(),
-            door: held,
-            step: Box::new(move |undo, _| {
-                weak.upgrade().is_some_and(|shared| {
-                    let record = PersonRecord { shared };
-                    if undo { record.undo() } else { record.redo() }
-                })
-            }),
-        });
-        self.opened.borrow_mut().insert(
+        self.publish(
             (owner, P::KIND.to_owned()),
             Rc::clone(&shared) as Rc<dyn Any>,
+            Published {
+                id: resource_id(P::KIND),
+                label: P::LABEL.to_owned(),
+                door: held,
+                step: Box::new(move |undo, _| {
+                    weak.upgrade().is_some_and(|shared| {
+                        let record = PersonRecord { shared };
+                        if undo { record.undo() } else { record.redo() }
+                    })
+                }),
+            },
         );
         Some(PersonRecord { shared })
     }
@@ -457,38 +439,18 @@ impl PersonState {
     where
         T: Resource<State = T> + Fields + SettingsSchema,
     {
-        // A record kind is a plain label: letters, digits, `.`, `_`, `-`.
-        let kind = match (T::SCOPE, device) {
-            (Scope::DeviceLocal, Some(device)) => {
-                let device: String = device
-                    .chars()
-                    .map(|c| {
-                        if c.is_ascii_alphanumeric() || c == '-' {
-                            c
-                        } else {
-                            '_'
-                        }
-                    })
-                    .collect();
-                format!("settings.{}.device-{device}", T::KIND)
-            }
-            _ => format!("settings.{}", T::KIND),
-        };
+        let kind = section_kind(T::KIND, matches!(T::SCOPE, Scope::DeviceLocal), device);
         let key = (self.app_id, kind.clone());
         if let Some(open) = self.opened.borrow().get(&key) {
             return Rc::clone(open).downcast::<Held<T>>().ok();
         }
         let current = settings.get();
-        let record = self
-            .records
-            .open_record(RecordKind::new(kind), |doc| {
-                T::initialize(doc).map_err(|error| error.to_string())?;
-                current
-                    .write_fields(doc, &tilo_resource::__private::ROOT)
-                    .map_err(|error| error.to_string())
-            })
-            .map_err(|error| tracing::warn!(kind = T::KIND, %error, "settings record unavailable"))
-            .ok()?;
+        let record = open_record(&self.records, kind, T::KIND, &|doc| {
+            T::initialize(doc).map_err(|error| error.to_string())?;
+            current
+                .write_fields(doc, &tilo_resource::__private::ROOT)
+                .map_err(|error| error.to_string())
+        })?;
         let shared = self.shared_of::<T>(record, None)?;
         let section = Rc::new(Section {
             settings,
@@ -497,26 +459,55 @@ impl PersonState {
         // The section's record lives as long as the section is held.
         let held = Rc::new(section_held(&shared, &section));
         let stepping = Rc::downgrade(&shared);
-        self.published.borrow_mut().push(Published {
-            id: held.id().to_owned(),
-            label: T::LABEL.to_owned(),
-            door: Rc::clone(&held) as Rc<dyn RecordDoor>,
-            step: Box::new(move |undo, by| {
-                stepping.upgrade().is_some_and(|shared| {
-                    let record = PersonRecord { shared };
-                    let stepped = if undo { record.undo() } else { record.redo() };
-                    if stepped {
-                        let action = if undo { "undo" } else { "redo" };
-                        section.write(&record.shared, action, by);
-                    }
-                    stepped
-                })
-            }),
-        });
-        self.opened
-            .borrow_mut()
-            .insert(key, Rc::clone(&held) as Rc<dyn Any>);
+        self.publish(
+            key,
+            Rc::clone(&held) as Rc<dyn Any>,
+            Published {
+                id: held.id().to_owned(),
+                label: T::LABEL.to_owned(),
+                door: Rc::clone(&held) as Rc<dyn RecordDoor>,
+                step: Box::new(move |undo, by| {
+                    stepping.upgrade().is_some_and(|shared| {
+                        let record = PersonRecord { shared };
+                        let stepped = if undo { record.undo() } else { record.redo() };
+                        if stepped {
+                            let action = if undo { "undo" } else { "redo" };
+                            section.write(&record.shared, action, by);
+                        }
+                        stepped
+                    })
+                }),
+            },
+        );
         Some(held)
+    }
+
+    /// The person's records `owner` keeps: this app's own, or another app's,
+    /// opened once.
+    fn records_of(&self, owner: &'static str) -> Option<PersonRecords> {
+        if owner == self.app_id {
+            return Some(self.records.clone());
+        }
+        let mut others = self.others.borrow_mut();
+        if let Some(records) = others.get(owner) {
+            return Some(records.clone());
+        }
+        let records = self
+            .records
+            .of_package(owner)
+            .map_err(|error| {
+                tracing::warn!(owner, %error, "the person's records of another app are unavailable");
+            })
+            .ok()?;
+        others.insert(owner, records.clone());
+        Some(records)
+    }
+
+    /// Keep the record opened under `key`, publishing its door and its undo
+    /// and redo.
+    fn publish(&self, key: OpenKey, open: Rc<dyn Any>, published: Published) {
+        self.published.borrow_mut().push(published);
+        self.opened.borrow_mut().insert(key, open);
     }
 
     /// Read every open record that moved. Whether one did.
@@ -599,6 +590,42 @@ impl PersonState {
     /// The routes of the open records, which the runtime syncs.
     pub(crate) fn owners(&self) -> Vec<HistoryOwner> {
         self.owners.borrow().clone()
+    }
+}
+
+/// Open the record `kind` of `records`, created by `initialize` where it does
+/// not exist yet; a failure is logged for the resource `of`.
+fn open_record(
+    records: &PersonRecords,
+    kind: String,
+    of: &str,
+    initialize: &dyn Fn(&mut ui_core::automerge::AutoCommit) -> Result<(), String>,
+) -> Option<StoredRecord> {
+    records
+        .open_record(RecordKind::new(kind), initialize)
+        .map_err(|error| tracing::warn!(kind = of, %error, "person record unavailable"))
+        .ok()
+}
+
+/// The record kind a settings section of `kind` is kept in: one per device
+/// for a device-local section. A record kind is a plain label: letters,
+/// digits, `.`, `_`, `-`.
+fn section_kind(kind: &str, device_local: bool, device: Option<&str>) -> String {
+    match device.filter(|_| device_local) {
+        Some(device) => {
+            let device: String = device
+                .chars()
+                .map(|c| {
+                    if c.is_ascii_alphanumeric() || c == '-' {
+                        c
+                    } else {
+                        '_'
+                    }
+                })
+                .collect();
+            format!("settings.{kind}.device-{device}")
+        }
+        None => format!("settings.{kind}"),
     }
 }
 
