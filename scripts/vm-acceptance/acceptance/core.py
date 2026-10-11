@@ -160,7 +160,9 @@ def session_restart(ctx, during: str) -> str | None:
 
 def adopt_session(ctx) -> None:
     """Take the slot session as it is now as the guard's baseline: for a check that ends
-    the session on purpose, the way a crash would (A17), once it has recovered."""
+    the session on purpose, the way a crash would (A17), once it has recovered. Counted in
+    `session_restarts_caused`, so P03 does not report that restart either."""
+    ctx.facts["session_restarts_caused"] = ctx.facts.get("session_restarts_caused", 0) + 1
     ctx.facts["session_unit"] = session_unit.show(ctx)
     ctx.facts["session_requested"] = getattr(ctx.vm, "requested_restarts", 0)
     ctx.facts["session_pending"] = False

@@ -619,18 +619,22 @@ def files_after_session_crash(ctx, res):
     if len(pids) != 1 or not pids[0].isdigit():
         raise Unobservable(f"no single compositor process under {unit} to end: {pids}")
     ctx.vm.exec(f"tilo-control actions invoke applications {shlex.quote(FILES)} >/dev/null")
-    ctx.vm.root_exec(f"kill -SEGV {pids[0]}")
+    wrapper = (session_unit.show(ctx) or {}).get("MainPID", "")
+    # Rust's own SIGSEGV handler returns from a signal no fault raised, resetting the default
+    # action: the second one ends the compositor as a fault does.
+    ctx.vm.root_exec(f"kill -SEGV {pids[0]}; sleep 0.5; kill -SEGV {pids[0]} 2>/dev/null; true")
 
     def answering():
         try:
             fields = session_unit.show(ctx)
-            moved = fields and fields.get("MainPID", "0") not in ("0", "")
+            moved = fields and fields.get("MainPID", "0") not in ("0", "", wrapper)
             return ctx.vm.state() if moved else None
         except VmError:
             return None
 
     if wait_until(answering, RECOVERY_WAIT_S, 2.0) is None:
-        raise CheckFailed(f"the session did not come back within {RECOVERY_WAIT_S} s of its compositor ending")
+        raise CheckFailed(f"no new session answered within {RECOVERY_WAIT_S} s of the compositor's SIGSEGV "
+                          f"(session main process before: {wrapper or '?'})")
     core.adopt_session(ctx)
     res.metrics["ended_compositor_pid"] = int(pids[0])
     ctx.reset()
