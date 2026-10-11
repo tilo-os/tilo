@@ -109,6 +109,13 @@ crates.io release, and only the optional `presentation-feedback` feature
 needs the patched Metal observer (now part of the `metal` feature, since a
 published crate cannot name a feature the release lacks).
 
+`vendor/wgpu-hal/src/vulkan/adapter.rs` also asks for
+`VK_EXT_image_drm_format_modifier` (Vulkan 1.2+, next to the external-memory
+extensions it already enables) when the device has it. `ui::dmabuf_import`
+reads `Device::enabled_device_extensions` and, with the extension, imports a
+client dma-buf with the producer's exact plane offset and row pitch; on the
+crates.io release, which lacks it, the import keeps its linear-only path.
+
 The `wgpu` patch is a `[patch]` too: `Device::poll` reports a lost device
 instead of panicking (vendor/wgpu/TILO-PATCH.md). The compositor needs it to
 survive a GPU reset; an SDK app built on the crates.io release still panics on
