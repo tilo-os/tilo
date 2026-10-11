@@ -128,81 +128,101 @@ pub fn stage<A: ResourceApp>(
     harness: &mut FrameHarness,
     scenario: Option<&str>,
 ) -> Result<(), LaunchError> {
-    let root = root_instance::<A>(harness)?;
-    // A scenario's actions are the app's own fixture, declared in code, not a
-    // request from a person or an agent: they are applied as confirmed, so a
-    // scenario that replaces a whole project stages without a prompt.
-    for invoke in A::scenario(scenario) {
-        let address = BoundActionAddress {
-            instance_id: root,
-            address: tilo_actions::ActionAddress::new(<A::Resource as Resource>::KIND, invoke.id),
-        };
-        harness
-            .invoke_bound_action_confirmed(&address, &invoke.arguments)
-            .map_err(|error| LaunchError::Operation(error.to_string()))?;
-    }
-    harness.relayout();
-    let collaborators = harness
-        .with_widget_mut(|root: &mut ResourceRoot<A::Resource>| root.stage(scenario))
-        .ok_or_else(|| LaunchError::Operation(format!("{} is not hosted here", A::TITLE)))?;
-    if !collaborators.is_empty() {
-        harness.update_presence(|presence| {
-            for (name, key, payload) in collaborators {
-                let user = ui_core::permissions::UserId(name.clone());
-                presence.set_display_name(user, name.clone());
-                presence.apply_remote_presence(name, key, payload);
-            }
-            true
-        });
-    }
-    // The surfaces stage on this sync; the input meets the staged scene.
-    harness.relayout();
-    A::scenario_input(scenario, harness).map_err(|error| {
-        LaunchError::Operation(format!(
-            "{} scenario {:?} input failed: {error}",
-            A::TITLE,
-            scenario.unwrap_or("default")
-        ))
-    })?;
-    // Project acknowledged scenario edits before awaiting asynchronous
-    // rendering. Transient save feedback belongs to the captured scene;
-    // its lifetime is separate from unfinished placeholder work.
-    harness
-        .flush_component_records()
-        .map_err(LaunchError::Operation)?;
-    harness
-        .wait_for_visuals(SETTLE)
-        .map_err(|error| match scenario {
-            Some(name) => LaunchError::Operation(format!(
-                "{} scenario {name:?} did not settle: {error}",
-                A::TITLE
-            )),
-            None => LaunchError::Operation(format!("{} did not settle: {error}", A::TITLE)),
+    let staged = Staged {
+        title: A::TITLE,
+        kind: <A::Resource as Resource>::KIND,
+        actions: A::scenario(scenario)
+            .into_iter()
+            .map(|invoke| (invoke.id, invoke.arguments))
+            .collect(),
+        input: A::scenario_input,
+    };
+    staged.stage(harness, scenario)
+}
+
+/// What [`stage`] stages of an app, without its type: the app's title and
+/// resource kind, the scenario's actions and its input.
+struct Staged {
+    title: &'static str,
+    kind: &'static str,
+    actions: Vec<(&'static str, serde_json::Map<String, serde_json::Value>)>,
+    input: fn(Option<&str>, &mut FrameHarness) -> Result<(), String>,
+}
+
+impl Staged {
+    /// [`stage`] of this app.
+    fn stage(self, harness: &mut FrameHarness, scenario: Option<&str>) -> Result<(), LaunchError> {
+        let root = harness
+            .component_instance_id()
+            .ok_or_else(|| LaunchError::Operation(format!("{} is not hosted here", self.title)))?;
+        // A scenario's actions are the app's own fixture, declared in code, not a
+        // request from a person or an agent: they are applied as confirmed, so a
+        // scenario that replaces a whole project stages without a prompt.
+        for (id, arguments) in &self.actions {
+            let address = BoundActionAddress {
+                instance_id: root,
+                address: tilo_actions::ActionAddress::new(self.kind, *id),
+            };
+            harness
+                .invoke_bound_action_confirmed(&address, arguments)
+                .map_err(|error| LaunchError::Operation(error.to_string()))?;
+        }
+        harness.relayout();
+        let collaborators = harness
+            .with_widget_mut(|root: &mut ResourceRoot| root.stage(scenario))
+            .ok_or_else(|| LaunchError::Operation(format!("{} is not hosted here", self.title)))?;
+        if !collaborators.is_empty() {
+            harness.update_presence(|presence| {
+                for (name, key, payload) in collaborators {
+                    let user = ui_core::permissions::UserId(name.clone());
+                    presence.set_display_name(user, name.clone());
+                    presence.apply_remote_presence(name, key, payload);
+                }
+                true
+            });
+        }
+        // The surfaces stage on this sync; the input meets the staged scene.
+        harness.relayout();
+        (self.input)(scenario, harness).map_err(|error| {
+            LaunchError::Operation(format!(
+                "{} scenario {:?} input failed: {error}",
+                self.title,
+                scenario.unwrap_or("default")
+            ))
         })?;
-    // The scenario's edits are saved before the frame is taken, as they would
-    // be by the time anyone looked: a capture shows the record saved, not a
-    // write still in flight.
-    harness
-        .flush_component_records()
-        .map_err(LaunchError::Operation)?;
-    harness.relayout();
-    // Navigation replacement has coherent first-frame geometry. Capture the
-    // acknowledged production frame after its visual work above completes;
-    // a live progress spinner intentionally never reaches animation idle.
-    Ok(())
+        // Project acknowledged scenario edits before awaiting asynchronous
+        // rendering. Transient save feedback belongs to the captured scene;
+        // its lifetime is separate from unfinished placeholder work.
+        harness
+            .flush_component_records()
+            .map_err(LaunchError::Operation)?;
+        harness
+            .wait_for_visuals(SETTLE)
+            .map_err(|error| match scenario {
+                Some(name) => LaunchError::Operation(format!(
+                    "{} scenario {name:?} did not settle: {error}",
+                    self.title
+                )),
+                None => LaunchError::Operation(format!("{} did not settle: {error}", self.title)),
+            })?;
+        // The scenario's edits are saved before the frame is taken, as they would
+        // be by the time anyone looked: a capture shows the record saved, not a
+        // write still in flight.
+        harness
+            .flush_component_records()
+            .map_err(LaunchError::Operation)?;
+        harness.relayout();
+        // Navigation replacement has coherent first-frame geometry. Capture the
+        // acknowledged production frame after its visual work above completes;
+        // a live progress spinner intentionally never reaches animation idle.
+        Ok(())
+    }
 }
 
 /// How long a capture waits for its surfaces' asynchronous work (a page
 /// render, a decode, a fixture read) before refusing to capture a
 /// placeholder.
 const SETTLE: ui_core::time::Duration = ui_core::time::Duration::from_secs(30);
-
-/// The instance the harness hosts `A` under.
-fn root_instance<A: ResourceApp>(harness: &FrameHarness) -> Result<u64, LaunchError> {
-    harness
-        .component_instance_id()
-        .ok_or_else(|| LaunchError::Operation(format!("{} is not hosted here", A::TITLE)))
-}
 
 /// How long each of `frames` frames of `A`'s capture of `scenario` takes to
 /// sync, lay out and draw, after one frame that warms the text caches: what

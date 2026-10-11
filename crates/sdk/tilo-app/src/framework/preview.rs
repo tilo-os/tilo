@@ -201,27 +201,29 @@ fn readable<R: Resource>(doc: &AutoCommit) -> Result<(), String> {
     R::read(doc).map(drop).map_err(|error| error.to_string())
 }
 
+/// `A`'s root over `doc`, a frozen past version, read-only.
+fn past_root<A: ResourceApp>(doc: &AutoCommit) -> Result<ResourceRoot, String> {
+    let reader = Reader::<A::Resource>::read(doc).map_err(|error| error.to_string())?;
+    Ok(build_root::<A>(
+        reader,
+        Editing::ReadOnly,
+        AppStorage::for_app(A::ID),
+        super::settings::Hosted::default(),
+    ))
+}
+
 fn preview<A: ResourceApp>(input: PreviewInput) -> Result<Box<dyn HistoryPreview>, String> {
     let doc = AutoCommit::load(input.snapshot.bytes()).map_err(|error| error.to_string())?;
-    let reader = Reader::<A::Resource>::read(&doc).map_err(|error| error.to_string())?;
-    Ok(Box::new(ViewPreview {
-        root: build_root::<A>(
-            reader,
-            Editing::ReadOnly,
-            AppStorage::for_app(A::ID),
-            super::settings::Hosted::default(),
-        ),
-        doc: Some(doc),
-        bounds: Rect::ZERO,
-        view: input.initial_view,
-    }))
+    let root = past_root::<A>(&doc)?;
+    Ok(ViewPreview::boxed(root, doc, input.initial_view))
 }
 
 /// A past version drawn by the app's own view, exactly as History mode's
 /// preview draws it: read-only, over the frozen document. Built by
 /// [`HeadlessApp::past_version`](super::testing::HeadlessApp::past_version).
 pub struct PastVersion<R: Resource> {
-    preview: ViewPreview<R>,
+    preview: ViewPreview,
+    live: super::live::Live<R>,
 }
 
 impl<R: Resource> PastVersion<R> {
@@ -233,7 +235,7 @@ impl<R: Resource> PastVersion<R> {
 
     /// The state the view was presented.
     pub fn state(&self) -> std::rc::Rc<R::State> {
-        self.preview.root.live().get()
+        self.live.get()
     }
 
     /// The drawn size of the view.
@@ -249,25 +251,19 @@ pub(crate) fn render_past<A: ResourceApp>(
     doc: AutoCommit,
     size: (u32, u32),
 ) -> Result<PastVersion<A::Resource>, String> {
-    let reader = Reader::<A::Resource>::read(&doc).map_err(|error| error.to_string())?;
-    let mut preview = ViewPreview {
-        root: build_root::<A>(
-            reader,
-            Editing::ReadOnly,
-            AppStorage::for_app(A::ID),
-            super::settings::Hosted::default(),
-        ),
-        doc: Some(doc),
-        bounds: Rect::ZERO,
-        view: PreviewView::default(),
-    };
-    let theme = Theme::dark();
-    let mut text = TextRenderer::new();
+    let root = past_root::<A>(&doc)?;
+    let live = root
+        .typed::<A::Resource>()
+        .map(|typed| typed.live.clone())
+        .ok_or_else(|| format!("{} drew another resource", A::TITLE))?;
     let bounds = Rect::new(0.0, 0.0, f64::from(size.0), f64::from(size.1));
-    preview.layout(bounds, &mut text, &theme)?;
-    let mut scene = Scene::new();
-    preview.draw(&mut scene, Affine::IDENTITY, &mut text, &theme);
-    Ok(PastVersion { preview })
+    let preview = ViewPreview::new(root, doc, PreviewView::default()).drawn(
+        bounds,
+        &mut Scene::new(),
+        Affine::IDENTITY,
+        &Theme::dark(),
+    )?;
+    Ok(PastVersion { preview, live })
 }
 
 /// Lay out `A`'s view over `doc`, a frozen past version, in `bounds` and
@@ -280,32 +276,62 @@ pub(crate) fn draw_past<A: ResourceApp>(
     transform: Affine,
     theme: &Theme,
 ) -> Result<(), String> {
-    let reader = Reader::<A::Resource>::read(&doc).map_err(|error| error.to_string())?;
-    let mut preview = ViewPreview {
-        root: build_root::<A>(
-            reader,
-            Editing::ReadOnly,
-            AppStorage::for_app(A::ID),
-            super::settings::Hosted::default(),
-        ),
-        doc: Some(doc),
-        bounds: Rect::ZERO,
-        view: PreviewView::default(),
-    };
-    let mut text = TextRenderer::new();
-    preview.layout(bounds, &mut text, theme)?;
-    preview.draw(scene, transform, &mut text, theme);
-    Ok(())
+    let root = past_root::<A>(&doc)?;
+    ViewPreview::draw_once(root, doc, bounds, (scene, transform), theme)
 }
 
-struct ViewPreview<R: Resource> {
-    root: ResourceRoot<R>,
+struct ViewPreview {
+    root: ResourceRoot,
     doc: Option<AutoCommit>,
     bounds: Rect,
     view: PreviewView,
 }
 
-impl<R: Resource> HistoryPreview for ViewPreview<R> {
+impl ViewPreview {
+    fn new(root: ResourceRoot, doc: AutoCommit, view: PreviewView) -> Self {
+        Self {
+            root,
+            doc: Some(doc),
+            bounds: Rect::ZERO,
+            view,
+        }
+    }
+
+    /// [`Self::new`] as History mode holds a preview.
+    fn boxed(root: ResourceRoot, doc: AutoCommit, view: PreviewView) -> Box<dyn HistoryPreview> {
+        Box::new(Self::new(root, doc, view))
+    }
+
+    /// This preview laid out in `bounds` and drawn into `scene`.
+    #[cfg(not(target_family = "wasm"))]
+    fn drawn(
+        mut self,
+        bounds: Rect,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+    ) -> Result<Self, String> {
+        let mut text = TextRenderer::new();
+        self.layout(bounds, &mut text, theme)?;
+        self.draw(scene, transform, &mut text, theme);
+        Ok(self)
+    }
+
+    /// Lay out `root` over `doc` in `bounds` and draw it into `target`.
+    #[cfg(not(target_family = "wasm"))]
+    fn draw_once(
+        root: ResourceRoot,
+        doc: AutoCommit,
+        bounds: Rect,
+        (scene, transform): (&mut Scene, Affine),
+        theme: &Theme,
+    ) -> Result<(), String> {
+        Self::new(root, doc, PreviewView::default())
+            .drawn(bounds, scene, transform, theme)
+            .map(drop)
+    }
+}
+impl HistoryPreview for ViewPreview {
     #[allow(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
@@ -374,7 +400,7 @@ impl<R: Resource> HistoryPreview for ViewPreview<R> {
         // that one is showing.
         let heading = ui_core::i18n::I18nManager::format(
             "history-preview-description",
-            &[("resource", R::LABEL.into())],
+            &[("resource", self.root.resource_label().into())],
         );
         let description = std::iter::once(heading)
             .chain(ui_core::a11y::texts(&self.root))
@@ -568,7 +594,7 @@ mod tests {
         }
     }
 
-    fn shown(root: &ResourceRoot<Page>) -> Vec<String> {
+    fn shown(root: &ResourceRoot) -> Vec<String> {
         fn visit(widget: &dyn Widget, out: &mut Vec<String>) {
             if let Some(node) = widget.accessibility()
                 && let Some(label) = node.name

@@ -347,30 +347,122 @@ struct DefinitionKey<A>(std::marker::PhantomData<A>);
 pub fn definition<A: ResourceApp>() -> &'static ApplicationDefinition {
     leaked(TypeId::of::<DefinitionKey<A>>(), || {
         super::kinds::register::<A>();
-        definition_of::<A>()
+        definition_of(hooks::<A>(), create::<A>)
     })
 }
 
-fn definition_of<A: ResourceApp>() -> ApplicationDefinition {
+fn definition_of(
+    app: &'static AppHooks,
+    create: ui_core::application::ComponentFactory,
+) -> ApplicationDefinition {
     ApplicationDefinition {
-        app_id: A::ID,
-        title: A::TITLE,
-        icon: icon::<A>(),
-        record_kind: RecordKind::new(<A::Resource as Resource>::KIND),
+        app_id: app.id,
+        title: app.title,
+        icon: icon(app),
+        record_kind: RecordKind::new(app.kind),
         required: vec![],
         optional: vec![],
-        opens: A::OPENS,
-        room_record: A::ROOM_RECORD,
-        create: create::<A>,
+        opens: app.opens,
+        room_record: app.room_record,
+        create,
     }
 }
 
-fn icon<A: ResourceApp>() -> IconDescriptor {
+fn icon(app: &AppHooks) -> IconDescriptor {
     IconDescriptor::Named(
-        A::ICON
-            .unwrap_or_else(|| A::ID.rsplit('.').next().unwrap_or(A::ID))
+        app.icon
+            .unwrap_or_else(|| app.id.rsplit('.').next().unwrap_or(app.id))
             .to_owned(),
     )
+}
+
+/// What the framework's launch path reads of an app: its constants, and
+/// the few functions that name its types. The path itself takes this table
+/// rather than the app's type, so it is compiled once in the shared runtime;
+/// each app compiles only the functions the table points to.
+pub(crate) struct AppHooks {
+    id: &'static str,
+    title: &'static str,
+    icon: Option<&'static str>,
+    /// [`Resource::KIND`] of the app's resource.
+    kind: &'static str,
+    opens: &'static [&'static str],
+    room_record: bool,
+    behaviour: ComponentBehaviour,
+    document_history: bool,
+    file_history: bool,
+    #[cfg(tilo_native_runner)]
+    private_windows: bool,
+    #[cfg(tilo_native_runner)]
+    options: &'static [&'static str],
+    #[cfg(tilo_native_runner)]
+    flags: &'static [&'static str],
+    catalog: fn() -> Option<&'static EmbeddedCatalog>,
+    definition: fn() -> &'static ApplicationDefinition,
+    launch_record: fn(&LaunchInput<'_>) -> Option<RecordId>,
+    local_operations: fn() -> Vec<tilo_actions::ActionSpec>,
+    /// Initialize a record the launch created: the resource's own
+    /// initialization, the launch's genesis and the creator's seed.
+    new_record: NewRecord,
+    /// The capture's run, from the app's fixture.
+    prepare_capture: fn(&mut HostContext, Option<&str>) -> Result<Run, LaunchError>,
+    /// Read the record `context` opened and build the root over it.
+    open_root: fn(&mut HostContext, Editing) -> Result<ResourceRoot, LaunchError>,
+    /// Take the launch's actions on the root built for it.
+    launch: fn(&ResourceRoot, bool, bool),
+    action_registry: fn() -> tilo_actions::ActionRegistry,
+    history: fn() -> &'static ui_core::history_mode::HistoryDefinition,
+    file_history_witness: fn() -> &'static ui_core::history_mode::HistoryDefinition,
+    #[cfg(not(target_family = "wasm"))]
+    draw_past: crate::runner::DrawPast,
+}
+
+/// [`AppHooks::new_record`]: the context, and what the launch named.
+type NewRecord = fn(
+    &mut HostContext,
+    &[String],
+    Option<&ui_core::application::OpenFile>,
+    &[ui_core::application::LaunchOption],
+) -> Result<(), LaunchError>;
+
+struct Hooks<A>(std::marker::PhantomData<A>);
+
+impl<A: ResourceApp> Hooks<A> {
+    const HOOKS: AppHooks = AppHooks {
+        id: A::ID,
+        title: A::TITLE,
+        icon: A::ICON,
+        kind: <A::Resource as Resource>::KIND,
+        opens: A::OPENS,
+        room_record: A::ROOM_RECORD,
+        behaviour: A::BEHAVIOUR,
+        document_history: A::DOCUMENT_HISTORY,
+        file_history: A::FILE_HISTORY.is_some(),
+        #[cfg(tilo_native_runner)]
+        private_windows: A::PRIVATE_WINDOWS,
+        #[cfg(tilo_native_runner)]
+        options: A::OPTIONS,
+        #[cfg(tilo_native_runner)]
+        flags: A::FLAGS,
+        catalog: A::catalog,
+        definition: definition::<A>,
+        launch_record: A::launch_record,
+        local_operations: A::local_operations,
+        new_record: new_record::<A>,
+        prepare_capture: prepare_capture::<A>,
+        open_root: open_root::<A>,
+        launch: launch_actions::<A>,
+        action_registry: action_registry::<A>,
+        history: super::preview::history_definition::<A>,
+        file_history_witness: super::preview::file_history_witness::<A>,
+        #[cfg(not(target_family = "wasm"))]
+        draw_past: super::preview::draw_past::<A>,
+    };
+}
+
+/// `A`'s [`AppHooks`].
+pub(crate) fn hooks<A: ResourceApp>() -> &'static AppHooks {
+    &Hooks::<A>::HOOKS
 }
 
 /// Who may edit the resource a root shows, and what it is built for.
@@ -386,9 +478,77 @@ pub(crate) enum Editing {
     ReadOnly,
 }
 
-/// The permission that makes an app's resource editable.
-fn write_scope<A: ResourceApp>() -> PermissionScope {
-    PermissionScope::app(A::ID, Verb::Write)
+/// What a root is built with besides its resource type: who edits it and
+/// how, what it was built for, and where its settings are kept.
+struct RootShell {
+    /// The permission that makes the app's resource editable.
+    scope: PermissionScope,
+    permissions: Option<LivePermissions>,
+    read_only: bool,
+    me: Option<String>,
+    run: Run,
+    storage: Rc<super::settings::ViewStorage>,
+}
+
+impl RootShell {
+    fn new(
+        app: &AppHooks,
+        editing: Editing,
+        storage: AppStorage,
+        hosted: super::settings::Hosted,
+    ) -> Self {
+        let scope = PermissionScope::app(app.id, Verb::Write);
+        let (permissions, read_only, me, run) = match editing {
+            Editing::Live {
+                permissions,
+                me,
+                run,
+            } => {
+                let read_only = !permissions.check(&scope);
+                (Some(permissions), read_only, Some(me), run)
+            }
+            Editing::ReadOnly => (None, true, None, Run::past()),
+        };
+        let run = run.for_participant(me.as_deref());
+        let storage = super::settings::ViewStorage::new(storage, hosted.attach(app.id, app.title));
+        Self {
+            scope,
+            permissions,
+            read_only,
+            me,
+            run,
+            storage,
+        }
+    }
+
+    /// Whether effects and projection drains run: in a window someone uses
+    /// only. History shows a past version, and a capture reaches nothing
+    /// outside.
+    fn runs_effects(&self) -> bool {
+        self.permissions.is_some() && self.run.mode.is_live()
+    }
+
+    /// `root` following the participant, with the app's presentation and
+    /// its History.
+    fn finish(
+        app: &AppHooks,
+        root: ResourceRoot,
+        permissions: Option<LivePermissions>,
+        scope: PermissionScope,
+    ) -> ResourceRoot {
+        let live = permissions.is_some();
+        let root = root
+            .following(permissions, scope)
+            .with_presentation((app.local_operations)());
+        if !app.document_history {
+            return root.without_history();
+        }
+        if live {
+            #[cfg(not(target_family = "wasm"))]
+            return root.drawing_past(app.draw_past);
+        }
+        root
+    }
 }
 
 /// Build the framework root for a resource state: the live handle, the
@@ -398,55 +558,37 @@ pub(crate) fn build_root<A: ResourceApp>(
     editing: Editing,
     storage: AppStorage,
     hosted: super::settings::Hosted,
-) -> ResourceRoot<A::Resource> {
-    let scope = write_scope::<A>();
-    let (permissions, read_only, me, run) = match editing {
-        Editing::Live {
-            permissions,
-            me,
-            run,
-        } => {
-            let read_only = !permissions.check(&scope);
-            (Some(permissions), read_only, Some(me), run)
-        }
-        Editing::ReadOnly => (None, true, None, Run::past()),
-    };
-    let run = run.for_participant(me.as_deref());
+) -> ResourceRoot {
+    let app = hooks::<A>();
+    let shell = RootShell::new(app, editing, storage, hosted);
+    let runs_effects = shell.runs_effects();
+    let RootShell {
+        scope,
+        permissions,
+        read_only,
+        me,
+        run,
+        storage,
+    } = shell;
     let label = A::label(reader.state());
-    let resource_id = <A::Resource as Resource>::KIND;
-    let published = tilo_resource::publish::<A::Resource>(resource_id, &label, reader.state());
+    let published = tilo_resource::publish::<A::Resource>(app.kind, &label, reader.state());
     let live = Live::new(reader);
     let alive = Rc::new(());
-    let dispatch = Dispatcher::new(A::ID, resource_id, read_only, me.as_deref());
+    let dispatch = Dispatcher::new(A::ID, app.kind, read_only, me.as_deref());
     let dispatch = if permissions.is_none() {
         dispatch.past()
     } else {
         dispatch
     };
-    let storage = super::settings::ViewStorage::new(storage, hosted.attach(A::ID, A::TITLE));
-    // Effects and projection drains run in a window someone uses only:
-    // History shows a past version, and a capture reaches nothing outside.
-    let effects = (permissions.is_some() && run.mode.is_live())
-        .then(|| Effects::live(dispatch.clone(), live.clone()));
+    let effects = runs_effects.then(|| Effects::live(dispatch.clone(), live.clone()));
     let mut cx = ViewCx::root(live, &alive, dispatch, published, run, storage);
     if let Some(effects) = effects {
         cx.effects = effects;
     }
     let content = A::view(&mut cx);
-    let live = permissions.is_some();
-    let root = ResourceRoot::new(A::TITLE, icon::<A>(), label, cx, alive, content)
-        .following(permissions, scope)
-        .with_presentation(A::local_operations());
-    if !A::DOCUMENT_HISTORY {
-        return root.without_history();
-    }
-    if live {
-        #[cfg(not(target_family = "wasm"))]
-        return root.drawing_past(super::preview::draw_past::<A>);
-    }
-    root
+    let root = ResourceRoot::new(app.title, icon(app), label, cx, alive, content);
+    RootShell::finish(app, root, permissions, scope)
 }
-
 /// The decoders of every edit `A`'s document takes: its resource's actions
 /// and History's restores.
 pub(crate) fn action_registry<A: ResourceApp>() -> tilo_actions::ActionRegistry {
@@ -526,11 +668,115 @@ fn write_genesis<A: ResourceApp>(
     reason = "the toolkit's ComponentFactory signature passes the target owned"
 )]
 fn create<A: ResourceApp>(
-    mut context: HostContext,
+    context: HostContext,
     target: LaunchTarget,
     _restore: RestoreInput,
 ) -> Result<AppComponent, LaunchError> {
-    if let Some(catalog) = A::catalog() {
+    create_component(hooks::<A>(), context, &target)
+}
+
+/// Initialize a record a launch of `A` created: the resource's own
+/// initialization and the launch's [`ResourceApp::genesis`] in the
+/// genesis, then the creator's [`ResourceApp::seed`].
+fn new_record<A: ResourceApp>(
+    context: &mut HostContext,
+    arguments: &[String],
+    file: Option<&ui_core::application::OpenFile>,
+    options: &[ui_core::application::LaunchOption],
+) -> Result<(), LaunchError> {
+    let genesis = A::genesis(
+        &LaunchInput::new(arguments, file)
+            .with_options(options)
+            .with_content(context.content()),
+    );
+    let author = context.author().0.clone();
+    let seed = A::seed(&SeedCx {
+        me: &author,
+        device: context.device_id(),
+        host: Some(context),
+        room: None,
+    });
+    initialize_record(
+        context,
+        &mut |doc| {
+            <A::Resource as Resource>::initialize(doc).map_err(|error| error.to_string())?;
+            write_genesis::<A>(doc, &genesis)
+        },
+        &mut |doc| apply_seed::<A>(doc, &author, &seed),
+    )
+}
+
+/// What initializing a new record writes into it.
+type RecordWrite<'a> = &'a mut dyn FnMut(&mut tilo_resource::Doc) -> Result<(), String>;
+
+/// Initialize the new record `context` opened: `genesis` into its genesis,
+/// then `seed`. Not generic over the app, so the record store's
+/// initialization is compiled once in the shared runtime.
+fn initialize_record(
+    context: &mut HostContext,
+    genesis: RecordWrite<'_>,
+    seed: RecordWrite<'_>,
+) -> Result<(), LaunchError> {
+    context
+        .initialize_new_record_seeded(|doc| genesis(doc), |doc| seed(doc))
+        .map_err(LaunchError::Record)
+}
+
+/// Read the record `context` opened as `A`'s resource and build its root.
+fn open_root<A: ResourceApp>(
+    context: &mut HostContext,
+    editing: Editing,
+) -> Result<ResourceRoot, LaunchError> {
+    let reader = context
+        .read_record(Reader::<A::Resource>::read)
+        .map_err(LaunchError::Record)?
+        .map_err(|error| LaunchError::Operation(error.to_string()))?;
+    Ok(build_root::<A>(
+        reader,
+        editing,
+        context.storage(),
+        hosted(context),
+    ))
+}
+
+/// What a window's root keeps of the person and the device.
+fn hosted(context: &HostContext) -> super::settings::Hosted {
+    super::settings::Hosted {
+        // A private window keeps nothing of the person's: their own
+        // records are not even opened.
+        person: (!context.is_private())
+            .then(|| context.person_records().cloned())
+            .flatten(),
+        device: Some(context.device_id().to_owned()),
+    }
+}
+
+/// Take the actions a launch of `A` takes ([`ResourceApp::launch`]) on
+/// `root`; `created` when the launch created the record. A capture launched
+/// on nothing is staged by its scenario alone: what a launch on nothing
+/// takes reads from this device (a library, the last folder), which a
+/// screenshot must not depend on. A capture launched on a file takes that
+/// file, as the command line does.
+fn launch_actions<A: ResourceApp>(root: &ResourceRoot, capture: bool, created: bool) {
+    let Some(typed) = root.typed::<A::Resource>() else {
+        return;
+    };
+    let record = typed.live.get();
+    let launch = root.launch().with_record(&*record);
+    if !capture || !launch.is_empty() {
+        for invoke in A::launch(&launch, created) {
+            typed.dispatch.invoke(invoke);
+        }
+    }
+}
+
+/// [`create`] of the app `app` describes.
+fn create_component(
+    app: &'static AppHooks,
+    mut context: HostContext,
+    target: &LaunchTarget,
+) -> Result<AppComponent, LaunchError> {
+    if let Some(catalog) = (app.catalog)() {
         catalog.ensure();
     }
     // A record of its own, or the room's record an app keeps one of
@@ -542,43 +788,22 @@ fn create<A: ResourceApp>(
     let arguments = context.take_launch_arguments();
     let options = context.take_launch_options();
     if created {
-        let genesis = A::genesis(
-            &LaunchInput::new(&arguments, file.as_ref())
-                .with_options(&options)
-                .with_content(context.content()),
-        );
-        let author = context.author().0.clone();
-        let seed = A::seed(&SeedCx {
-            me: &author,
-            device: context.device_id(),
-            host: Some(&context),
-            room: None,
-        });
-        context
-            .initialize_new_record_seeded(
-                |doc| {
-                    <A::Resource as Resource>::initialize(doc)
-                        .map_err(|error| error.to_string())?;
-                    write_genesis::<A>(doc, &genesis)
-                },
-                |doc| apply_seed::<A>(doc, &author, &seed),
-            )
-            .map_err(LaunchError::Record)?;
+        (app.new_record)(&mut context, &arguments, file.as_ref(), &options)?;
     }
     let capture = context.capture().is_some();
-    let file_history = A::FILE_HISTORY.map(|_| FileHistorySource::default());
+    let file_history = app.file_history.then(FileHistorySource::default);
     // A window someone uses can open another record in its place; a
     // capture shows the one it staged.
     let opener = (!capture).then(|| {
         let reopener = context.reopener();
-        super::launch::OpenHere::new(move |arguments| open_in_place::<A>(&reopener, arguments))
+        super::launch::OpenHere::new(move |arguments| open_in_place(app, &reopener, arguments))
     });
     let run = match context.capture().cloned() {
-        Some(capture) => prepare_capture::<A>(&mut context, capture.scenario())?,
+        Some(capture) => (app.prepare_capture)(&mut context, capture.scenario())?,
         None => Run::live(context.content().cloned()).in_private(context.is_private()),
     };
     if let Some(file) = &file {
-        file.report_opened(<A::Resource as Resource>::KIND);
+        file.report_opened(app.kind);
     }
     let run = run
         .launched(Launched {
@@ -593,46 +818,23 @@ fn create<A: ResourceApp>(
         .showing_file_history(
             file_history
                 .clone()
-                .map(|source| (source, super::preview::file_history_witness::<A>())),
+                .map(|source| (source, (app.file_history_witness)())),
         );
     let permissions = context.live_permissions();
-    let reader = context
-        .read_record(Reader::<A::Resource>::read)
-        .map_err(LaunchError::Record)?
-        .map_err(|error| LaunchError::Operation(error.to_string()))?;
     let me = context.author().0.clone();
-    let root = build_root::<A>(
-        reader,
+    let root = (app.open_root)(
+        &mut context,
         Editing::Live {
             permissions,
             me,
             run,
         },
-        context.storage(),
-        super::settings::Hosted {
-            // A private window keeps nothing of the person's: their own
-            // records are not even opened.
-            person: (!context.is_private())
-                .then(|| context.person_records().cloned())
-                .flatten(),
-            device: Some(context.device_id().to_owned()),
-        },
-    );
-    // A capture launched on nothing is staged by its scenario alone: what a
-    // launch on nothing takes reads from this device (a library, the last
-    // folder), which a screenshot must not depend on. A capture launched on
-    // a file takes that file, as the command line does.
-    let record = root.live().get();
-    let launch = root.launch().with_record(&*record);
-    if !capture || !launch.is_empty() {
-        for invoke in A::launch(&launch, created) {
-            root.dispatcher().invoke(invoke);
-        }
-    }
-    let mut component = AppComponent::new(context, Box::new(root), action_registry::<A>());
-    component.set_behaviour(A::BEHAVIOUR);
-    if A::DOCUMENT_HISTORY {
-        let history = super::preview::history_definition::<A>();
+    )?;
+    (app.launch)(&root, capture, created);
+    let mut component = AppComponent::new(context, Box::new(root), (app.action_registry)());
+    component.set_behaviour(app.behaviour);
+    if app.document_history {
+        let history = (app.history)();
         match file_history {
             Some(files) => component.register_document_and_file_history(history, files),
             None => component.register_document_history(history),
@@ -641,7 +843,6 @@ fn create<A: ResourceApp>(
     }
     Ok(component)
 }
-
 /// Join the content store the host lent a window to its record's route:
 /// content the record references and this device lacks is asked of the
 /// route, and content the app stores reaches the record's other readers.
@@ -675,17 +876,27 @@ fn prepare_capture<A: ResourceApp>(
         context.provide_content(content.clone());
     }
     if fixture.has_history() {
-        let mut peer = context
-            .read_record(|doc| doc.clone().fork())
-            .map_err(LaunchError::Record)?;
-        fixture
-            .write_history(&mut peer, &action_registry::<A>())
-            .map_err(LaunchError::Operation)?;
-        context
-            .merge_peer_document(peer.save())
-            .map_err(LaunchError::Operation)?;
+        merge_peer(context, &mut |peer| {
+            fixture.write_history(peer, &action_registry::<A>())
+        })?;
     }
     Ok(fixture.into_run())
+}
+
+/// Merge into the record `context` opened what `write` writes into a fork
+/// of it, as another participant's changes arrive.
+fn merge_peer(
+    context: &mut HostContext,
+    write: &mut dyn FnMut(&mut tilo_resource::Doc) -> Result<(), String>,
+) -> Result<(), LaunchError> {
+    let mut peer = context
+        .read_record(|doc| doc.clone().fork())
+        .map_err(LaunchError::Record)?;
+    write(&mut peer).map_err(LaunchError::Operation)?;
+    context
+        .merge_peer_document(peer.save())
+        .map_err(LaunchError::Operation)?;
+    Ok(())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -762,10 +973,20 @@ fn prepare_app<A: ResourceApp>(
     definition: &ApplicationDefinition,
     args: &LaunchArgs,
 ) -> Result<PreparedComponentInputs, LaunchError> {
+    prepare_app_with(hooks::<A>(), definition, args)
+}
+
+/// [`prepare_app`] of the app `app` describes.
+#[cfg(tilo_native_runner)]
+fn prepare_app_with(
+    app: &AppHooks,
+    definition: &ApplicationDefinition,
+    args: &LaunchArgs,
+) -> Result<PreparedComponentInputs, LaunchError> {
     let arguments = args.positionals();
-    let options = launch_options::<A>(args);
-    let named = A::launch_record(&LaunchInput::new(arguments, None).with_options(&options));
-    let private = A::PRIVATE_WINDOWS && args.has(PRIVATE_FLAG);
+    let options = launch_options(app, args);
+    let named = (app.launch_record)(&LaunchInput::new(arguments, None).with_options(&options));
+    let private = app.private_windows && args.has(PRIVATE_FLAG);
     let mut prepared = prepare_named(definition, args, named, private)?;
     hand_launch(definition, arguments, &mut prepared)?;
     prepared.context.provide_launch_options(options);
@@ -796,17 +1017,18 @@ fn process_handoff() -> Option<ui_core::application::PlaybackHandoff> {
     })
 }
 
-/// The options of `A`'s own that `args` named, in declaration order.
+/// The options of the app's own that `args` named, in declaration order.
 #[cfg(tilo_native_runner)]
-fn launch_options<A: ResourceApp>(args: &LaunchArgs) -> Vec<ui_core::application::LaunchOption> {
-    let options = A::OPTIONS.iter().filter_map(|&name| {
+fn launch_options(app: &AppHooks, args: &LaunchArgs) -> Vec<ui_core::application::LaunchOption> {
+    let options = app.options.iter().filter_map(|&name| {
         args.value(name)
             .map(|value| ui_core::application::LaunchOption {
                 name: name.to_owned(),
                 value: Some(value.to_owned()),
             })
     });
-    let flags = A::FLAGS
+    let flags = app
+        .flags
         .iter()
         .filter(|&&name| args.has(name))
         .map(|&name| ui_core::application::LaunchOption {
@@ -859,22 +1081,23 @@ fn hand_launch_to(
     Ok(())
 }
 
-/// Open, in the window `reopener` belongs to, what a launch of `A` naming
+/// Open, in the window `reopener` belongs to, what a launch of `app` naming
 /// `arguments` opens ([`ResourceApp::launch_record`], [`ResourceApp::launch`]):
 /// the component built for that record takes the window, its own record and
 /// history with it. The store's refusal of the record, an unreadable file
 /// or the app's refusal to build leaves the window as it is, and is the
 /// answer the returned outcome gives.
-fn open_in_place<A: ResourceApp>(
+fn open_in_place(
+    app: &'static AppHooks,
     reopener: &ui_core::application::Reopener,
     arguments: Vec<String>,
 ) -> ui_core::application::ReplacementOutcome {
     // Built when the host takes it: the record store is busy while the
     // asking view handles the event or operation that asked.
     reopener.replace_with(move |reopener| {
-        let definition = definition::<A>();
-        let record =
-            A::launch_record(&LaunchInput::new(&arguments, None)).unwrap_or_else(RecordId::minted);
+        let definition = (app.definition)();
+        let record = (app.launch_record)(&LaunchInput::new(&arguments, None))
+            .unwrap_or_else(RecordId::minted);
         let (mut context, target) = reopener.prepare(definition, record)?;
         hand_launch_to(definition, &arguments, &mut context)?;
         let component = definition.instantiate(context, target, RestoreInput::None)?;
