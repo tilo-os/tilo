@@ -95,6 +95,21 @@ fi
 runtime_dylib="$thin_app_dir/libruntime_dylib.so"
 rust_libstd=$(find "$(rustc --print target-libdir)" -maxdepth 1 -name 'libstd-*.so' -print -quit)
 [[ -f $runtime_dylib && -f $rust_libstd ]]
+# The runtime engines build-thin-apps.sh built with this runtime, whichever
+# apps were selected: each is signed beside the runtime, which is
+# what makes the runtime id cover it, and only its app loads it.
+[[ -f $thin_app_dir/runtime-engines ]] || {
+    printf 'build-thin-apps.sh left no runtime engine list in %s\n' "$thin_app_dir" >&2
+    exit 1
+}
+runtime_engines=()
+while IFS= read -r engine; do
+    [[ $engine =~ ^lib[a-z0-9_]+\.so$ && -f $thin_app_dir/$engine ]] || {
+        printf 'runtime engine %s is not a built library in %s\n' "$engine" "$thin_app_dir" >&2
+        exit 1
+    }
+    runtime_engines+=("$thin_app_dir/$engine")
+done < "$thin_app_dir/runtime-engines"
 # The default SDK also serves osk/settings's native keyboard-map dependency.
 # Include this fixed platform root for every selection: using only the emitted
 # apps' dependencies would change the SDK identity for a partial release.
@@ -119,7 +134,7 @@ OUT_DIR="$out/runtime" RUNTIME_RELEASE="$runtime_release" FROM=/ \
     ARCH="$(uname -m)" IDENTITY_JSON="$runtime_identity" \
     BUNDLE_BIN="$release_dir/tilo-runtime-bundle" \
     FONT_CATALOG_ROOT="$runtime_fonts" \
-    EXTRA_LIBS="$runtime_dylib $rust_libstd $keyboard_library" \
+    EXTRA_LIBS="$runtime_dylib ${runtime_engines[*]} $rust_libstd $keyboard_library" \
     "$repo_root/os/scripts/bake-runtime-bundle.sh"
 # Every app below links this exact runtime build and names it.
 runtime_version=$(<"$out/work/runtime-version")
