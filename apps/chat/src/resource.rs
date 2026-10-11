@@ -466,6 +466,56 @@ impl ResourceApp for ChatShell {
         invokes
     }
 
+    fn scenario_input(
+        name: Option<&str>,
+        input: &mut ui::headless::FrameHarness,
+    ) -> Result<(), String> {
+        let Some(scenario) = name else {
+            return Ok(());
+        };
+        let agent_name = if scenario.starts_with("agent-long-content") {
+            Some("Documentation and Accessibility Specialist")
+        } else if scenario.starts_with("agent-lifecycle-before")
+            || scenario.starts_with("agent-message-refused")
+            || scenario.starts_with("agent-permission-revoked")
+            || matches!(
+                scenario,
+                "agent-direct"
+                    | "agent-direct-compact"
+                    | "agent-direction-saved"
+                    | "agent-direction-saved-closed"
+                    | "agent-direction-saved-compact"
+                    | "agent-direction-saved-floating"
+                    | "agent-stopping"
+                    | "agent-stopping-compact"
+            )
+        {
+            Some("Scribe")
+        } else {
+            None
+        };
+        let mut collaborators = vec![ui::collaboration::Collaborator {
+            id: crate::model::ME.into(),
+            name: "You".into(),
+            colour: None,
+            is_agent: false,
+            is_self: true,
+        }];
+        if let Some(name) = agent_name {
+            collaborators.push(ui::collaboration::Collaborator {
+                id: "agent:scribe".into(),
+                name: name.into(),
+                colour: None,
+                is_agent: true,
+                is_self: false,
+            });
+        } else if !scenario.starts_with("agent-membership-removed") {
+            return Ok(());
+        }
+        input.set_collaboration_context(collaborators);
+        Ok(())
+    }
+
     /// A new record's first workspace, owned by its creator. A capture's
     /// record is its scenario's instead.
     fn seed(cx: &SeedCx<'_>) -> Vec<Invoke<Chat>> {
@@ -853,11 +903,19 @@ mod tests {
     fn agent_presentation_actions(
         app: &mut TestApp<ChatShell>,
     ) -> Vec<ui::tilo_actions::ActionDescriptor> {
+        agent_presentation_actions_for(app, "tide")
+    }
+
+    fn agent_presentation_actions_for(
+        app: &mut TestApp<ChatShell>,
+        agent: &str,
+    ) -> Vec<ui::tilo_actions::ActionDescriptor> {
+        let resource = format!("chat.person:{agent}");
         app.actions()
             .unwrap()
             .into_iter()
             .filter(|action| {
-                action.address.resource == "chat.person:tide"
+                action.address.resource == resource
                     && matches!(
                         action.address.action.as_str(),
                         "float-agent-conversation" | "return-agent-conversation"
@@ -1588,6 +1646,56 @@ mod tests {
                 .is_err())
                 .unwrap(),
             "the handler independently rechecks current Agent membership"
+        );
+    }
+
+    #[test]
+    fn agent_capture_scenarios_use_complete_authenticated_rosters() {
+        for scenario in ["agent-direct", "agent-direct-compact"] {
+            let mut app = TestApp::<ChatShell>::capture(Some(scenario)).unwrap();
+            assert_eq!(
+                app.with_surface::<ChatApp, _>(|chat| (
+                    chat.room_agents.clone(),
+                    chat.direct_agent.clone(),
+                )),
+                Some((vec!["scribe".into()], Some("scribe".into()))),
+                "{scenario} retains the authenticated Agent through the canonical draw"
+            );
+            assert_eq!(
+                agent_presentation_actions_for(&mut app, "scribe")
+                    .iter()
+                    .map(|action| action.address.action.as_str())
+                    .collect::<Vec<_>>(),
+                ["float-agent-conversation"],
+                "{scenario} exposes the real semantic Float door"
+            );
+        }
+
+        let mut removed = TestApp::<ChatShell>::capture(Some("agent-membership-removed")).unwrap();
+        assert_eq!(
+            removed.with_surface::<ChatApp, _>(|chat| chat.room_agents.clone()),
+            Some(Vec::new()),
+            "the complete self-only Context withdraws the Agent roster"
+        );
+        assert!(agent_presentation_actions_for(&mut removed, "scribe").is_empty());
+        assert!(
+            removed
+                .actions()
+                .unwrap()
+                .iter()
+                .all(|action| action.address.resource != "chat.person:scribe"),
+            "membership removal cannot leave an Agent action door behind"
+        );
+        assert!(
+            removed
+                .with_surface::<ChatApp, _>(|chat| chat
+                    .answer_effect(ChatEffect::FloatAgentConversation {
+                        workspace: chat.context_ws.clone(),
+                        agent: "scribe".into(),
+                    })
+                    .is_err())
+                .unwrap(),
+            "the effect handler independently rejects the removed Agent"
         );
     }
 

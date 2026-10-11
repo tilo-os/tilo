@@ -2320,8 +2320,8 @@ mod tests {
     }
 
     fn scheduled_parent_sync_queue_press(clock: &ui::background::Pumped) -> ScheduledQueuePress {
-        let (mut app, mut doc, host) = agent_task_control_app();
-        render_frame(&mut app, 800.0, 600.0);
+        let (mut app, mut doc, host, presence) = agent_task_control_app();
+        render_agent_task_frame(&mut app, 800.0, 600.0, &presence);
         app.on_hit(
             Hit::AgentIntent(crate::app::AgentComposerIntent::Queue),
             &mut ui::widget::Edits::lend(&mut doc),
@@ -2332,7 +2332,7 @@ mod tests {
             .expect("Float requests one app-owned child");
         let rect = request.initial_rect.expect("Float retains exact geometry");
         adopt_agent_surface(&mut app, &request.id, rect);
-        draw_detached_agent_surface(&mut app, &request.id);
+        draw_detached_agent_surface(&mut app, &request.id, &presence);
         let accessible =
             ui::widget::FloatingSurfaceWidgetExt::floating_surface_accessibility(&app, &request.id)
                 .expect("the painted child publishes its accessibility tree");
@@ -2475,8 +2475,8 @@ mod tests {
 
     #[test]
     fn chat_actionable_accessibility_ids_follow_semantics_across_dynamic_inventory() {
-        let (mut app, _doc, host) = agent_task_control_app();
-        render_frame(&mut app, 1280.0, 800.0);
+        let (mut app, _doc, host, presence) = agent_task_control_app();
+        render_agent_task_frame(&mut app, 1280.0, 800.0, &presence);
         let float = Hit::AgentWindow.semantic_id();
         let queue = Hit::AgentIntent(AgentComposerIntent::Queue).semantic_id();
         let send = Hit::Send.semantic_id();
@@ -2496,7 +2496,7 @@ mod tests {
         }
 
         app.left_flap.close();
-        render_frame(&mut app, 1280.0, 800.0);
+        render_agent_task_frame(&mut app, 1280.0, 800.0, &presence);
         let reordered = actionable_accessibility_keys(&app);
         for target in [&float, &queue, &send] {
             assert_eq!(
@@ -2511,7 +2511,7 @@ mod tests {
         let tasks = app.direct_agent_tasks().expect("owner-backed task context");
         tasks.borrow_mut().refresh();
         app.poll_agent_tasks();
-        render_frame(&mut app, 1280.0, 800.0);
+        render_agent_task_frame(&mut app, 1280.0, 800.0, &presence);
         let retired = actionable_accessibility_keys(&app);
         assert!(!retired.contains_key(&queue));
         assert_eq!(semantic_hit_index(&app, &queue), None);
@@ -3248,9 +3248,8 @@ mod tests {
         let mut doc = AutoCommit::new();
         ChatDoc::seed_starter(&mut doc, "u_alice", "Alice", "AL");
         let mut app = peer("u_alice", "Alice", "AL", 0);
-        app.room_agents = vec!["tide".into(), "reed".into()];
-        app.room_names.insert("agent:tide".into(), "Tide".into());
-        app.room_names.insert("agent:reed".into(), "Reed".into());
+        let presence = agent_presence(&[("tide", "Tide"), ("reed", "Reed")]);
+        app.adopt_room(&presence);
         app.reload(&doc);
 
         app.open_agent_conversation("ws_home", "tide")
@@ -3258,7 +3257,13 @@ mod tests {
         app.composer_main.stage_private_text("Tide private draft");
         app.composer_main.select(18, 16);
         let tide_selection = app.composer_main.selection();
-        render_frame(&mut app, 1200.0, 800.0);
+        render_frame_with_theme_and_presence(
+            &mut app,
+            1200.0,
+            800.0,
+            &ui::theme::Theme::dark(),
+            &presence,
+        );
 
         app.answer_effect(crate::effects::ChatEffect::OpenAgentConversation {
             workspace: "ws_home".into(),
@@ -3313,9 +3318,8 @@ mod tests {
         let mut doc = AutoCommit::new();
         ChatDoc::seed_starter(&mut doc, "u_alice", "Alice", "AL");
         let mut app = peer("u_alice", "Alice", "AL", 0);
-        app.room_agents.push("scribe".into());
-        app.room_names
-            .insert("agent:scribe".into(), "Scribe".into());
+        let presence = agent_task_presence();
+        app.adopt_room(&presence);
         let host = Arc::new(TaskControlHost::default());
         host.refuse_message();
         app.agent_task_actions = ui::remote_actions::RemoteActions::with_host(
@@ -3329,7 +3333,7 @@ mod tests {
         );
         type_str(&mut app, &mut doc, "Keep after refusal");
         app.composer_main.select(5, 10);
-        render_frame(&mut app, 1200.0, 800.0);
+        render_agent_task_frame(&mut app, 1200.0, 800.0, &presence);
         app.on_hit(Hit::AgentWindow, &mut ui::widget::Edits::lend(&mut doc));
         let channel = ChatDoc::agent_conversation_channel_id("ws_home", "scribe");
         app.agent_surfaces
@@ -3358,7 +3362,7 @@ mod tests {
             vello::kurbo::Affine::IDENTITY,
             &mut text,
             &ui::theme::Theme::dark(),
-            &ui::presence::PresenceCtx::empty(),
+            &presence,
         );
         let accessible = ui::Widget::accessibility(&*app.agent_surfaces[&channel].view)
             .expect("detached Chat accessibility tree");
@@ -3637,11 +3641,10 @@ mod tests {
         let mut doc = AutoCommit::new();
         ChatDoc::seed_starter(&mut doc, "u_alice", "Alice", "AL");
         let mut app = peer("u_alice", "Alice", "AL", 0);
-        app.room_agents.push("scribe".into());
-        app.room_names
-            .insert("agent:scribe".into(), "Scribe".into());
+        let presence = agent_task_presence();
+        app.adopt_room(&presence);
         app.reload(&doc);
-        render_frame(&mut app, 1280.0, 800.0);
+        render_agent_task_frame(&mut app, 1280.0, 800.0, &presence);
 
         assert_eq!(
             count_hits(
@@ -3655,7 +3658,7 @@ mod tests {
             Hit::Agent("scribe".into()),
             &mut ui::widget::Edits::lend(&mut doc),
         );
-        render_frame(&mut app, 1280.0, 800.0);
+        render_agent_task_frame(&mut app, 1280.0, 800.0, &presence);
         assert_eq!(
             count_hits(&app, |hit| matches!(hit, Hit::StartCall)),
             0,
@@ -3668,13 +3671,45 @@ mod tests {
         );
     }
 
-    fn agent_task_control_app() -> (ChatApp, AutoCommit, Arc<TaskControlHost>) {
+    fn agent_presence(agents: &[(&str, &str)]) -> ui::presence::PresenceCtx {
+        let mut presence = ui::presence::PresenceCtx::empty();
+        let mut collaborators = vec![ui::collaboration::Collaborator {
+            id: "u_alice".into(),
+            name: "Alice".into(),
+            colour: None,
+            is_agent: false,
+            is_self: true,
+        }];
+        collaborators.extend(
+            agents
+                .iter()
+                .map(|(id, name)| ui::collaboration::Collaborator {
+                    id: format!("agent:{id}"),
+                    name: (*name).into(),
+                    colour: None,
+                    is_agent: true,
+                    is_self: false,
+                }),
+        );
+        presence.apply_test_collaboration_snapshot(&collaborators);
+        presence
+    }
+
+    fn agent_task_presence() -> ui::presence::PresenceCtx {
+        agent_presence(&[("scribe", "Scribe")])
+    }
+
+    fn agent_task_control_app() -> (
+        ChatApp,
+        AutoCommit,
+        Arc<TaskControlHost>,
+        ui::presence::PresenceCtx,
+    ) {
         let mut doc = AutoCommit::new();
         ChatDoc::seed_starter(&mut doc, "u_alice", "Alice", "AL");
         let mut app = peer("u_alice", "Alice", "AL", 0);
-        app.room_agents.push("scribe".into());
-        app.room_names
-            .insert("agent:scribe".into(), "Scribe".into());
+        let presence = agent_task_presence();
+        app.adopt_room(&presence);
         let host = Arc::new(TaskControlHost::default());
         app.agent_task_actions = ui::remote_actions::RemoteActions::with_host(
             Arc::clone(&host) as Arc<dyn ActionHost + Send + Sync>,
@@ -3686,19 +3721,19 @@ mod tests {
             &mut ui::widget::Edits::lend(&mut doc),
         );
         app.poll_agent_tasks();
-        (app, doc, host)
+        (app, doc, host, presence)
     }
 
     #[test]
     fn agent_task_status_opens_task_center_by_keyboard_pointer_and_accessibility() {
-        let (mut app, mut doc, _host) = agent_task_control_app();
+        let (mut app, mut doc, _host, presence) = agent_task_control_app();
         app.perms = crate::permissions::ChatPermissions::from_context(
             ui::permissions::PermissionContext::from_capabilities(
                 ui::permissions::Actor::person(Some(ui::permissions::Role::Viewer), model::ME),
                 vec![],
             ),
         );
-        render_frame(&mut app, 1280.0, 800.0);
+        render_agent_task_frame(&mut app, 1280.0, 800.0, &presence);
         assert_eq!(
             count_hits(&app, |hit| matches!(hit, Hit::AgentIntent(_))),
             2,
@@ -3797,7 +3832,7 @@ mod tests {
     fn agent_task_changed_single_task_requires_the_exact_repainted_frontier() {
         use ui::agent_task_frontier::AgentTaskChoice;
 
-        let (mut app, mut doc, host) = agent_task_control_app();
+        let (mut app, mut doc, host, presence) = agent_task_control_app();
         type_str(&mut app, &mut doc, "Keep this selected draft");
         app.composer_main.select(5, 18);
         let draft = app.composer_main.private_plain();
@@ -3813,7 +3848,7 @@ mod tests {
             crate::render_chat::agent_task_status_lines(&tasks.borrow(), false).primary,
             "Task changed — confirm a current task"
         );
-        render_frame(&mut app, 1280.0, 800.0);
+        render_agent_task_frame(&mut app, 1280.0, 800.0, &presence);
         let stale = painted_agent_task(&app, 8, 5);
         let target = stale.semantic_id();
         let stale_index = app
@@ -3828,7 +3863,7 @@ mod tests {
             app.keyboard_target_semantic.as_deref(),
             Some(target.as_str())
         );
-        write_frontier_shots(&mut app, "changed-unconfirmed");
+        write_frontier_shots(&mut app, "changed-unconfirmed", &presence);
 
         host.replace_current_task(9, 6);
         tasks.borrow_mut().set_observation_active(false);
@@ -3848,7 +3883,7 @@ mod tests {
         assert_eq!(app.composer_main.selection(), selection);
         assert_eq!(app.composer_main.caret(), caret);
 
-        render_frame(&mut app, 1280.0, 800.0);
+        render_agent_task_frame(&mut app, 1280.0, 800.0, &presence);
         let fresh = painted_agent_task(&app, 9, 6);
         assert_ne!(fresh.semantic_id(), target);
         assert!(
@@ -3878,12 +3913,12 @@ mod tests {
         assert_eq!(app.composer_main.private_plain(), draft);
         assert_eq!(app.composer_main.selection(), selection);
         assert_eq!(app.composer_main.caret(), caret);
-        write_frontier_shots(&mut app, "confirmed");
+        write_frontier_shots(&mut app, "confirmed", &presence);
     }
 
     #[test]
     fn agent_task_status_distinguishes_ready_multiple_and_incomplete_reads() {
-        let (app, _doc, host) = agent_task_control_app();
+        let (app, _doc, host, _presence) = agent_task_control_app();
         let tasks = app.direct_agent_tasks().expect("owner-backed task context");
 
         host.set_current_projection(serde_json::json!({
@@ -3988,9 +4023,8 @@ mod tests {
         let mut doc = AutoCommit::new();
         ChatDoc::seed_starter(&mut doc, "u_alice", "Alice", "AL");
         let mut app = peer("u_alice", "Alice", "AL", 0);
-        app.room_agents.push("scribe".into());
-        app.room_names
-            .insert("agent:scribe".into(), "Scribe".into());
+        let presence = agent_task_presence();
+        app.adopt_room(&presence);
         let host = Arc::new(TaskControlHost::default());
         app.agent_task_actions = ui::remote_actions::RemoteActions::with_host(
             Arc::clone(&host) as Arc<dyn ActionHost + Send + Sync>,
@@ -4008,7 +4042,7 @@ mod tests {
             Hit::AgentIntent(crate::app::AgentComposerIntent::Queue),
             &mut ui::widget::Edits::lend(&mut doc),
         );
-        render_frame(&mut app, 1280.0, 800.0);
+        render_agent_task_frame(&mut app, 1280.0, 800.0, &presence);
         type_str(&mut app, &mut doc, "Inspect the compact layout");
         let send = Hit::Send.semantic_id();
         assert!(ui::Widget::perform_semantic_action(
@@ -4045,7 +4079,7 @@ mod tests {
             Hit::AgentIntent(crate::app::AgentComposerIntent::Steer),
             &mut ui::widget::Edits::lend(&mut doc),
         );
-        render_frame(&mut app, 1280.0, 800.0);
+        render_agent_task_frame(&mut app, 1280.0, 800.0, &presence);
         type_str(&mut app, &mut doc, "Include keyboard evidence");
         assert!(ui::Widget::perform_semantic_action(
             &mut app,
@@ -4079,8 +4113,14 @@ mod tests {
         intent: AgentComposerIntent,
         instruction: &str,
         expected_status: &str,
-    ) -> (ChatApp, AutoCommit, Arc<TaskControlHost>, String) {
-        let (mut app, mut doc, host) = agent_task_control_app();
+    ) -> (
+        ChatApp,
+        AutoCommit,
+        Arc<TaskControlHost>,
+        String,
+        ui::presence::PresenceCtx,
+    ) {
+        let (mut app, mut doc, host, presence) = agent_task_control_app();
         host.fail_task_submissions(true);
         app.on_hit(
             Hit::AgentIntent(intent),
@@ -4088,14 +4128,18 @@ mod tests {
         );
         type_str(&mut app, &mut doc, instruction);
         app.composer_main.select(2, 9);
-        render_frame(&mut app, 1280.0, 800.0);
+        render_agent_task_frame(&mut app, 1280.0, 800.0, &presence);
         let shot_intent = match intent {
             AgentComposerIntent::Queue => "queue",
             AgentComposerIntent::Steer => "steer",
             AgentComposerIntent::Message => "message",
         };
-        write_frontier_shots(&mut app, &format!("{shot_intent}-failure-before"));
-        render_frame(&mut app, 1280.0, 800.0);
+        write_frontier_shots(
+            &mut app,
+            &format!("{shot_intent}-failure-before"),
+            &presence,
+        );
+        render_agent_task_frame(&mut app, 1280.0, 800.0, &presence);
         assert!(ui::Widget::perform_semantic_action(
             &mut app,
             &Hit::Send.semantic_id(),
@@ -4104,8 +4148,8 @@ mod tests {
             &automerge::ROOT,
         ));
         settle_agent_submissions(&mut app);
-        write_frontier_shots(&mut app, &format!("{shot_intent}-failure-after"));
-        render_frame(&mut app, 1280.0, 800.0);
+        write_frontier_shots(&mut app, &format!("{shot_intent}-failure-after"), &presence);
+        render_agent_task_frame(&mut app, 1280.0, 800.0, &presence);
 
         assert!(app.agent_submissions.get().is_empty());
         assert_eq!(
@@ -4141,7 +4185,7 @@ mod tests {
             &request.id,
             request.initial_rect.expect("Float retains exact geometry"),
         );
-        draw_detached_agent_surface(&mut app, &request.id);
+        draw_detached_agent_surface(&mut app, &request.id, &presence);
         let surface = app
             .agent_surfaces
             .values()
@@ -4157,16 +4201,17 @@ mod tests {
         assert!(child_accessibility.children.iter().any(|node| {
             node.role == ui::a11y::Role::StaticText && node.name.as_deref() == Some(expected_status)
         }));
-        (app, doc, host, request.id)
+        (app, doc, host, request.id, presence)
     }
 
     #[test]
     fn failed_queue_and_steer_receipts_keep_private_drafts_and_explain_the_failure() {
-        let (mut queue, mut queue_doc, queue_host, queue_surface) = failed_agent_task_submission(
-            AgentComposerIntent::Queue,
-            "Queue this exact instruction",
-            "Queue not confirmed. Your draft is kept.",
-        );
+        let (mut queue, mut queue_doc, queue_host, queue_surface, queue_presence) =
+            failed_agent_task_submission(
+                AgentComposerIntent::Queue,
+                "Queue this exact instruction",
+                "Queue not confirmed. Your draft is kept.",
+            );
         let _steer = failed_agent_task_submission(
             AgentComposerIntent::Steer,
             "Steer with this exact direction",
@@ -4174,7 +4219,7 @@ mod tests {
         );
 
         queue_host.fail_task_submissions(false);
-        draw_detached_agent_surface(&mut queue, &queue_surface);
+        draw_detached_agent_surface(&mut queue, &queue_surface, &queue_presence);
         assert!(
             ui::widget::FloatingSurfaceWidgetExt::perform_floating_surface_accessibility_action(
                 &mut queue,
@@ -4491,9 +4536,8 @@ mod tests {
         let mut doc = AutoCommit::new();
         ChatDoc::seed_starter(&mut doc, "u_alice", "Alice", "AL");
         let mut app = peer("u_alice", "Alice", "AL", 0);
-        app.room_agents.push("scribe".into());
-        app.room_names
-            .insert("agent:scribe".into(), "Scribe".into());
+        let presence = agent_task_presence();
+        app.adopt_room(&presence);
         let host = Arc::new(TaskControlHost::default());
         host.revoke_task_controls();
         app.agent_task_actions = ui::remote_actions::RemoteActions::with_host(
@@ -4506,7 +4550,7 @@ mod tests {
             &mut ui::widget::Edits::lend(&mut doc),
         );
         app.poll_agent_tasks();
-        render_frame(&mut app, 1280.0, 800.0);
+        render_agent_task_frame(&mut app, 1280.0, 800.0, &presence);
 
         assert_eq!(
             count_hits(&app, |hit| matches!(
@@ -4536,16 +4580,15 @@ mod tests {
         let mut doc = AutoCommit::new();
         ChatDoc::seed_starter(&mut doc, "u_alice", "Alice", "AL");
         let mut app = peer("u_alice", "Alice", "AL", 0);
-        app.room_agents.push("scribe".into());
-        app.room_names
-            .insert("agent:scribe".into(), "Scribe".into());
+        let presence = agent_task_presence();
+        app.adopt_room(&presence);
         app.reload(&doc);
         app.on_hit(
             Hit::Agent("scribe".into()),
             &mut ui::widget::Edits::lend(&mut doc),
         );
         app.focus = Focus::Thread;
-        render_frame(&mut app, 1280.0, 800.0);
+        render_agent_task_frame(&mut app, 1280.0, 800.0, &presence);
         assert_eq!(count_hits(&app, |hit| matches!(hit, Hit::FocusMain)), 1);
 
         app.on_hit(Hit::FocusMain, &mut ui::widget::Edits::lend(&mut doc));
@@ -4566,9 +4609,8 @@ mod tests {
         let mut doc = AutoCommit::new();
         ChatDoc::seed_starter(&mut doc, "u_alice", "Alice", "AL");
         let mut app = peer("u_alice", "Alice", "AL", 0);
-        app.room_agents.push("scribe".into());
-        app.room_names
-            .insert("agent:scribe".into(), "Scribe".into());
+        let presence = agent_task_presence();
+        app.adopt_room(&presence);
         let host = Arc::new(TaskControlHost::default());
         app.agent_task_actions = ui::remote_actions::RemoteActions::with_host(
             Arc::clone(&host) as Arc<dyn ActionHost + Send + Sync>,
@@ -4600,7 +4642,7 @@ mod tests {
         assert!(status.receipt.is_none());
         assert!(status.queue.is_none());
         drop(tasks);
-        render_frame(&mut app, 1280.0, 800.0);
+        render_agent_task_frame(&mut app, 1280.0, 800.0, &presence);
         assert_eq!(
             count_hits(&app, |hit| matches!(
                 hit,
@@ -4658,7 +4700,8 @@ mod tests {
         assert!(status.queue.is_none());
 
         let theme = ui::theme::Theme::high_contrast().with_text_scale(2.0);
-        render_frame_with_theme(&mut app, 560.0, 360.0, &theme);
+        let removed_presence = agent_presence(&[]);
+        render_frame_with_theme_and_presence(&mut app, 560.0, 360.0, &theme, &removed_presence);
         assert!(
             !app.agent_notice_in_empty_hero,
             "a constrained hero cannot suppress the only unavailable notice"
@@ -4671,7 +4714,7 @@ mod tests {
             constrained,
             "Scribe is unavailable"
         ));
-        render_frame_with_theme(&mut app, 800.0, 600.0, &theme);
+        render_frame_with_theme_and_presence(&mut app, 800.0, 600.0, &theme, &removed_presence);
         assert!(app.agent_notice_in_empty_hero);
         let compact_height = app.composer_height(&mut text, &theme);
         app.agent_notice_in_empty_hero = false;
@@ -4694,14 +4737,15 @@ mod tests {
     fn compact_large_text_agent_controls_keep_header_editor_and_send_in_view() {
         let (mut app, mut doc) = app_with_doc();
         app.stage_scenario("agent-direction-saved-compact");
+        let presence = agent_task_presence();
         assert!(
             app.composer_main.value().is_empty(),
             "legacy Agent status captures must not inherit the adverse-lifecycle draft"
         );
         type_str(&mut app, &mut doc, "Keep the evidence concise");
         let theme = ui::theme::Theme::high_contrast().with_text_scale(2.0);
-        render_frame_with_theme(&mut app, 800.0, 600.0, &theme);
-        render_frame_with_theme(&mut app, 800.0, 600.0, &theme);
+        render_frame_with_theme_and_presence(&mut app, 800.0, 600.0, &theme, &presence);
+        render_frame_with_theme_and_presence(&mut app, 800.0, 600.0, &theme, &presence);
 
         assert_hit_in_view(&app, "header Float", |hit| matches!(hit, Hit::AgentWindow));
         assert_hit_in_view(&app, "composer editor", |hit| matches!(hit, Hit::FocusMain));
@@ -4718,10 +4762,11 @@ mod tests {
     fn compact_large_text_agent_modes_reuse_the_private_editor() {
         let (mut app, mut doc) = app_with_doc();
         app.stage_scenario("agent-direction-saved-compact");
+        let presence = agent_task_presence();
         type_str(&mut app, &mut doc, "Keep this selected draft");
         app.composer_main.select(5, 18);
         let theme = ui::theme::Theme::high_contrast().with_text_scale(2.0);
-        render_frame_with_theme(&mut app, 344.0, 472.0, &theme);
+        render_frame_with_theme_and_presence(&mut app, 344.0, 472.0, &theme, &presence);
 
         let draft = app.composer_main.private_plain();
         let selection = app.composer_main.selection();
@@ -4740,7 +4785,7 @@ mod tests {
                 ),
                 "the shared semantic mode control activates {intent:?}"
             );
-            render_frame_with_theme(&mut app, 344.0, 472.0, &theme);
+            render_frame_with_theme_and_presence(&mut app, 344.0, 472.0, &theme, &presence);
             assert_eq!(app.direct_agent_intent(), intent);
             assert_eq!(app.composer_main.private_plain(), draft);
             assert_eq!(app.composer_main.selection(), selection);
@@ -4759,8 +4804,10 @@ mod tests {
 
         let (mut app, _doc) = app_with_doc();
         app.stage_scenario("agent-long-content-floating");
+        let long_presence =
+            agent_presence(&[("scribe", "Documentation and Accessibility Specialist")]);
         let theme = ui::theme::Theme::high_contrast().with_text_scale(2.0);
-        render_frame_with_theme(&mut app, 560.0, 560.0, &theme);
+        render_frame_with_theme_and_presence(&mut app, 560.0, 560.0, &theme, &long_presence);
 
         let tree = app.accessibility().expect("Chat accessibility tree");
         let names = tree
@@ -4792,7 +4839,8 @@ mod tests {
 
         let (mut saved, _doc) = app_with_doc();
         saved.stage_scenario("agent-direction-saved-compact");
-        render_frame_with_theme(&mut saved, 800.0, 600.0, &theme);
+        let saved_presence = agent_task_presence();
+        render_frame_with_theme_and_presence(&mut saved, 800.0, 600.0, &theme, &saved_presence);
         let saved_tree = saved.accessibility().expect("saved direction tree");
         let saved_names = saved_tree
             .children
@@ -4811,8 +4859,9 @@ mod tests {
 
         let (mut app, _doc) = app_with_doc();
         app.stage_scenario("agent-long-content-floating");
+        let presence = agent_presence(&[("scribe", "Documentation and Accessibility Specialist")]);
         let theme = ui::theme::Theme::high_contrast().with_text_scale(2.0);
-        render_frame_with_theme(&mut app, 560.0, 560.0, &theme);
+        render_frame_with_theme_and_presence(&mut app, 560.0, 560.0, &theme, &presence);
 
         let identity = app.header_identity_text();
         assert_eq!(identity.name, "Documentation and Accessibility Specialist");
@@ -4870,7 +4919,7 @@ mod tests {
         );
 
         app.sharing_context = true;
-        render_frame_with_theme(&mut app, 800.0, 600.0, &theme);
+        render_frame_with_theme_and_presence(&mut app, 800.0, 600.0, &theme, &presence);
         let sharing = app.header_identity_text();
         assert_eq!(sharing.kind.as_deref(), Some("Agent"));
         assert_eq!(sharing.context, "Sharing live Chat context");
@@ -4887,7 +4936,7 @@ mod tests {
 
         app.sharing_context = false;
         app.following_context = true;
-        render_frame_with_theme(&mut app, 800.0, 600.0, &theme);
+        render_frame_with_theme_and_presence(&mut app, 800.0, 600.0, &theme, &presence);
         let following = app.header_identity_text();
         assert_eq!(following.kind.as_deref(), Some("Agent"));
         assert!(following.context.starts_with("Following live Chat context"));
@@ -4905,9 +4954,10 @@ mod tests {
         for (width, height) in [(800.0, 600.0), (560.0, 560.0)] {
             let (mut app, _doc) = app_with_doc();
             app.stage_scenario("agent-message-refused-floating");
+            let presence = agent_task_presence();
             let theme = ui::theme::Theme::high_contrast().with_text_scale(2.0);
-            render_frame_with_theme(&mut app, width, height, &theme);
-            render_frame_with_theme(&mut app, width, height, &theme);
+            render_frame_with_theme_and_presence(&mut app, width, height, &theme, &presence);
+            render_frame_with_theme_and_presence(&mut app, width, height, &theme, &presence);
 
             let composer = app.composer_rect(
                 &mut ui::text_render::TextRenderer::new(),
@@ -4945,16 +4995,15 @@ mod tests {
         let mut doc = AutoCommit::new();
         ChatDoc::seed_starter(&mut doc, "u_alice", "Alice", "AL");
         let mut app = peer("u_alice", "Alice", "AL", 0);
-        app.room_agents.push("scribe".into());
-        app.room_names
-            .insert("agent:scribe".into(), "Scribe".into());
+        let presence = agent_task_presence();
+        app.adopt_room(&presence);
         app.reload(&doc);
         app.on_hit(
             Hit::Agent("scribe".into()),
             &mut ui::widget::Edits::lend(&mut doc),
         );
         type_str(&mut app, &mut doc, "Keep the exact private selection");
-        render_frame(&mut app, 800.0, 600.0);
+        render_agent_task_frame(&mut app, 800.0, 600.0, &presence);
         let handle = app
             .hits
             .iter()
@@ -5033,15 +5082,14 @@ mod tests {
         let mut doc = AutoCommit::new();
         ChatDoc::seed_starter(&mut doc, "u_alice", "Alice", "AL");
         let mut app = peer("u_alice", "Alice", "AL", 0);
-        app.room_agents.push("scribe".into());
-        app.room_names
-            .insert("agent:scribe".into(), "Scribe".into());
+        let presence = agent_task_presence();
+        app.adopt_room(&presence);
         app.reload(&doc);
         app.on_hit(
             Hit::Agent("scribe".into()),
             &mut ui::widget::Edits::lend(&mut doc),
         );
-        render_frame(&mut app, 800.0, 600.0);
+        render_agent_task_frame(&mut app, 800.0, 600.0, &presence);
 
         let drag = Widget::accessibility(&app)
             .expect("Chat accessibility tree")
@@ -5086,15 +5134,14 @@ mod tests {
         let mut doc = AutoCommit::new();
         ChatDoc::seed_starter(&mut doc, "u_alice", "Alice", "AL");
         let mut app = peer("u_alice", "Alice", "AL", 0);
-        app.room_agents.push("scribe".into());
-        app.room_names
-            .insert("agent:scribe".into(), "Scribe".into());
+        let presence = agent_task_presence();
+        app.adopt_room(&presence);
         app.reload(&doc);
         app.on_hit(
             Hit::Agent("scribe".into()),
             &mut ui::widget::Edits::lend(&mut doc),
         );
-        render_frame(&mut app, 800.0, 600.0);
+        render_agent_task_frame(&mut app, 800.0, 600.0, &presence);
         let grip_index = app
             .semantic_hits()
             .iter()
@@ -5117,11 +5164,10 @@ mod tests {
         let mut doc = AutoCommit::new();
         ChatDoc::seed_starter(&mut doc, "u_alice", "Alice", "AL");
         let mut app = peer("u_alice", "Alice", "AL", 0);
-        app.room_agents.push("scribe".into());
-        app.room_names
-            .insert("agent:scribe".into(), "Scribe".into());
+        let presence = agent_task_presence();
+        app.adopt_room(&presence);
         app.reload(&doc);
-        render_frame(&mut app, 1200.0, 800.0);
+        render_agent_task_frame(&mut app, 1200.0, 800.0, &presence);
         app.on_hit(
             Hit::Agent("scribe".into()),
             &mut ui::widget::Edits::lend(&mut doc),
@@ -5149,7 +5195,7 @@ mod tests {
         );
 
         let surface = app.agent_surfaces.get_mut(&channel).unwrap();
-        render_frame(&mut surface.view, 520.0, 640.0);
+        render_agent_task_frame(&mut surface.view, 520.0, 640.0, &presence);
         assert_eq!(
             count_hits(&surface.view, |hit| matches!(
                 hit,
@@ -5187,7 +5233,7 @@ mod tests {
             vello::kurbo::Affine::IDENTITY,
             &mut prepared_text,
             &ui::theme::Theme::dark(),
-            &ui::presence::PresenceCtx::empty(),
+            &presence,
         );
         assert!(
             !prepared.encoding().is_empty(),
@@ -5304,7 +5350,8 @@ mod tests {
         );
     }
 
-    fn agent_with_only_direct_text_channel() -> (ChatApp, AutoCommit, String) {
+    fn agent_with_only_direct_text_channel()
+    -> (ChatApp, AutoCommit, String, ui::presence::PresenceCtx) {
         let mut doc = AutoCommit::new();
         ChatDoc::seed_starter(&mut doc, "u_alice", "Alice", "AL");
         assert!(ChatDoc::post_agent_message(
@@ -5321,9 +5368,8 @@ mod tests {
             },
         ));
         let mut app = peer("u_alice", "Alice", "AL", 0);
-        app.room_agents.push("scribe".into());
-        app.room_names
-            .insert("agent:scribe".into(), "Scribe".into());
+        let presence = agent_task_presence();
+        app.adopt_room(&presence);
         app.reload(&doc);
         let ordinary_text_channels = app
             .channels
@@ -5341,23 +5387,23 @@ mod tests {
         assert!(app.channels.iter().any(|candidate| {
             candidate.id == channel && candidate.conversation_with.as_deref() == Some("scribe")
         }));
-        (app, doc, channel)
+        (app, doc, channel, presence)
     }
 
     #[test]
     fn detached_agent_channel_is_not_an_ordinary_fallback_and_keeps_one_editor() {
         use ui::Widget;
 
-        let (mut app, mut doc, channel) = agent_with_only_direct_text_channel();
-        render_frame(&mut app, 800.0, 600.0);
+        let (mut app, mut doc, channel, presence) = agent_with_only_direct_text_channel();
+        render_agent_task_frame(&mut app, 800.0, 600.0, &presence);
         app.on_hit(
             Hit::Agent("scribe".into()),
             &mut ui::widget::Edits::lend(&mut doc),
         );
         type_str(&mut app, &mut doc, "Private draft stays singular");
         app.composer_main.select(8, 13);
-        write_progress_shots(&mut app, "detached-placeholder-before");
-        render_frame(&mut app, 800.0, 600.0);
+        write_progress_shots(&mut app, "detached-placeholder-before", &presence);
+        render_agent_task_frame(&mut app, 800.0, 600.0, &presence);
         app.float_agent_conversation("ws_home", "scribe")
             .expect("the exact retained conversation floats");
         let request = ui::widget::FloatingSurfaceWidgetExt::take_floating_surface_request(&mut app)
@@ -5370,10 +5416,10 @@ mod tests {
             "Prepare is a moving handoff, not proof of native presentation"
         );
 
-        render_frame(&mut app, 800.0, 600.0);
+        render_agent_task_frame(&mut app, 800.0, 600.0, &presence);
         assert_agent_placeholder_controls(&app, 0);
         assert_agent_placeholder_accessibility(&app, "Moving Scribe’s conversation", false);
-        write_progress_shots(&mut app, "detached-placeholder-moving");
+        write_progress_shots(&mut app, "detached-placeholder-moving", &presence);
 
         let rect = request.initial_rect.expect("exact source rect");
         adopt_agent_surface(&mut app, &request.id, rect);
@@ -5381,7 +5427,7 @@ mod tests {
             app.detached_agent_placeholder_status(),
             Some(("Scribe".into(), true))
         );
-        render_frame(&mut app, 800.0, 600.0);
+        render_agent_task_frame(&mut app, 800.0, 600.0, &presence);
         assert_agent_placeholder_controls(&app, 2);
         assert!(app.hits.iter().any(|(rect, hit)| {
             matches!(hit, Hit::AgentWindow) && rect.y0 >= app.header_rect().y1
@@ -5392,9 +5438,11 @@ mod tests {
             true,
         )
         .expect("the adopted placeholder exposes one Return action");
-        write_progress_shots(&mut app, "detached-placeholder-adopted");
+        write_progress_shots(&mut app, "detached-placeholder-adopted", &presence);
 
-        app.room_agents.clear();
+        let removed_presence = agent_presence(&[]);
+        render_agent_task_frame(&mut app, 800.0, 600.0, &removed_presence);
+        assert!(app.room_agents.is_empty());
         assert!(Widget::perform_semantic_action(
             &mut app,
             &target,
@@ -5434,11 +5482,10 @@ mod tests {
         let mut doc = AutoCommit::new();
         ChatDoc::seed_starter(&mut doc, "u_alice", "Alice", "AL");
         let mut app = peer("u_alice", "Alice", "AL", 0);
-        app.room_agents.push("scribe".into());
-        app.room_names
-            .insert("agent:scribe".into(), "Scribe".into());
+        let presence = agent_task_presence();
+        app.adopt_room(&presence);
         app.reload(&doc);
-        render_frame(&mut app, 1200.0, 800.0);
+        render_agent_task_frame(&mut app, 1200.0, 800.0, &presence);
         app.floating_surface_bounds = vello::kurbo::Rect::new(0.0, 0.0, 1600.0, 900.0);
         app.on_hit(
             Hit::Agent("scribe".into()),
@@ -5471,7 +5518,7 @@ mod tests {
             &mut app,
             Some(&request.id),
         );
-        render_detached_surfaces(&mut app);
+        render_detached_surfaces_with_presence(&mut app, &presence);
 
         let channel = ChatDoc::agent_conversation_channel_id("ws_home", "scribe");
         let handle = app.agent_surfaces[&channel]
@@ -5566,6 +5613,7 @@ mod tests {
         doc: &mut AutoCommit,
         id: &str,
         parent_float_target: usize,
+        presence: &ui::presence::PresenceCtx,
     ) {
         let return_target = format!("agent-surface:{id}|{}", Hit::AgentWindow.semantic_id());
         app.keyboard_target = Some(parent_float_target);
@@ -5646,15 +5694,16 @@ mod tests {
             ui::undo::UndoRequest::Redo
         ));
         assert_eq!(app.composer_main.value(), "東京");
-        assert_attached_send_focus_survives_surface_reconciliation(app, doc);
-        assert_refloated_editor_accessibility(app, doc, id);
+        assert_attached_send_focus_survives_surface_reconciliation(app, doc, presence);
+        assert_refloated_editor_accessibility(app, doc, id, presence);
     }
 
     fn assert_attached_send_focus_survives_surface_reconciliation(
         app: &mut ChatApp,
         doc: &mut AutoCommit,
+        presence: &ui::presence::PresenceCtx,
     ) {
-        render_frame(app, 1200.0, 800.0);
+        render_agent_task_frame(app, 1200.0, 800.0, presence);
         assert!(ui::Widget::perform_semantic_action(
             app,
             &Hit::Send.semantic_id(),
@@ -5668,7 +5717,7 @@ mod tests {
             .semantic_hits()
             .iter()
             .position(|(_, hit, ..)| matches!(hit, Hit::ComposerEmoji(_)));
-        render_frame(app, 1200.0, 800.0);
+        render_agent_task_frame(app, 1200.0, 800.0, presence);
         assert_eq!(app.keyboard_target_semantic, send_semantic);
         assert_eq!(
             app.resolved_keyboard_target(),
@@ -5718,9 +5767,14 @@ mod tests {
         assert!(!encoded.contains("Original draft"));
     }
 
-    fn assert_refloated_editor_accessibility(app: &mut ChatApp, doc: &mut AutoCommit, id: &str) {
+    fn assert_refloated_editor_accessibility(
+        app: &mut ChatApp,
+        doc: &mut AutoCommit,
+        id: &str,
+        presence: &ui::presence::PresenceCtx,
+    ) {
         let before_selection = app.composer_main.selection();
-        render_frame(app, 1200.0, 800.0);
+        render_agent_task_frame(app, 1200.0, 800.0, presence);
         app.on_hit(Hit::AgentWindow, &mut ui::widget::Edits::lend(doc));
         let request = ui::widget::FloatingSurfaceWidgetExt::take_floating_surface_request(app)
             .expect("the returned retained conversation can Float again");
@@ -5734,7 +5788,7 @@ mod tests {
             Some(id),
             true,
         );
-        render_detached_surfaces(app);
+        render_detached_surfaces_with_presence(app, presence);
 
         let composer_target = format!("agent-surface:{id}|chat.composer");
         let composer =
@@ -5879,9 +5933,16 @@ mod tests {
         let mut doc = AutoCommit::new();
         ChatDoc::seed_starter(&mut doc, "u_alice", "Alice", "AL");
         let mut app = peer("u_alice", "Alice", "AL", 0);
-        app.room_agents.push("scribe".into());
+        let presence = agent_presence(&[("scribe", "Scribe"), ("other", "Other")]);
+        app.adopt_room(&presence);
         app.reload(&doc);
-        render_frame(&mut app, 1200.0, 800.0);
+        render_frame_with_theme_and_presence(
+            &mut app,
+            1200.0,
+            800.0,
+            &ui::theme::Theme::dark(),
+            &presence,
+        );
         app.on_hit(
             Hit::Agent("scribe".into()),
             &mut ui::widget::Edits::lend(&mut doc),
@@ -5910,7 +5971,6 @@ mod tests {
         ));
         assert_eq!(app.composer_main.value(), "draft");
         assert_eq!(app.composer_main.selection(), (1, 4));
-        app.room_agents.push("other".into());
         app.on_hit(
             Hit::Agent("other".into()),
             &mut ui::widget::Edits::lend(&mut doc),
@@ -6013,9 +6073,10 @@ mod tests {
         let mut doc = AutoCommit::new();
         ChatDoc::seed_starter(&mut doc, "u_alice", "Alice", "AL");
         let mut app = peer("u_alice", "Alice", "AL", 0);
-        app.room_agents.push("scribe".into());
+        let presence = agent_task_presence();
+        app.adopt_room(&presence);
         app.reload(&doc);
-        render_frame(&mut app, 1200.0, 800.0);
+        render_agent_task_frame(&mut app, 1200.0, 800.0, &presence);
         app.on_hit(
             Hit::Agent("scribe".into()),
             &mut ui::widget::Edits::lend(&mut doc),
@@ -6042,8 +6103,8 @@ mod tests {
             Some(&id),
             true,
         );
-        render_frame(&mut app, 1200.0, 800.0);
-        render_detached_surfaces(&mut app);
+        render_agent_task_frame(&mut app, 1200.0, 800.0, &presence);
+        render_detached_surfaces_with_presence(&mut app, &presence);
         assert!(!main_composer_is_accessibility_focused(&app));
         assert!(app.agent_surfaces[&channel].view.composer_main.is_focused());
         let child_target = format!("agent-surface:{id}|chat.composer");
@@ -6161,14 +6222,21 @@ mod tests {
         let mut doc = AutoCommit::new();
         ChatDoc::seed_starter(&mut doc, "u_alice", "Alice", "AL");
         let mut app = peer("u_alice", "Alice", "AL", 0);
-        app.room_agents.extend(["scribe".into(), "tide".into()]);
+        let presence = agent_presence(&[("scribe", "Scribe"), ("tide", "Tide")]);
+        app.adopt_room(&presence);
         app.reload(&doc);
         let mut children = Vec::new();
         for (agent, draft, selection) in [
             ("scribe", "Scribe draft", (1, 3)),
             ("tide", "Tide draft", (2, 4)),
         ] {
-            render_frame(&mut app, 1200.0, 800.0);
+            render_frame_with_theme_and_presence(
+                &mut app,
+                1200.0,
+                800.0,
+                &ui::theme::Theme::dark(),
+                &presence,
+            );
             app.on_hit(
                 Hit::Agent(agent.into()),
                 &mut ui::widget::Edits::lend(&mut doc),
@@ -6200,7 +6268,7 @@ mod tests {
             Floating::on_floating_surface_ime_source_changed(&mut app, Some(id));
             assert_eq!(app.focused_agent_surface.as_deref(), Some(id.as_str()));
             assert_eq!(app.ime_source_agent_surface.as_deref(), Some(id.as_str()));
-            render_detached_surfaces(&mut app);
+            render_detached_surfaces_with_presence(&mut app, &presence);
             assert_exact_agent_child_focus(&app, &children, id);
             Floating::on_floating_surface_event_source(&mut app, Some(id));
             feed_root_mods(&mut app, &mut doc, &char_key("!"), Modifiers::default());
@@ -6219,7 +6287,7 @@ mod tests {
                 app.agent_surfaces[channel].view.composer_main.selection(),
                 (0, 1)
             );
-            render_detached_surfaces(&mut app);
+            render_detached_surfaces_with_presence(&mut app, &presence);
             assert_exact_agent_child_focus(&app, &children, id);
             let other = &app.agent_surfaces[other_channel].view.composer_main;
             assert_eq!((other.value(), other.selection()), other_before);
@@ -6249,9 +6317,10 @@ mod tests {
         let mut doc = AutoCommit::new();
         ChatDoc::seed_starter(&mut doc, "u_alice", "Alice", "AL");
         let mut app = peer("u_alice", "Alice", "AL", 0);
-        app.room_agents.push("scribe".into());
+        let presence = agent_task_presence();
+        app.adopt_room(&presence);
         app.reload(&doc);
-        render_frame(&mut app, 1200.0, 800.0);
+        render_agent_task_frame(&mut app, 1200.0, 800.0, &presence);
         app.on_hit(
             Hit::Agent("scribe".into()),
             &mut ui::widget::Edits::lend(&mut doc),
@@ -6349,11 +6418,10 @@ mod tests {
         let mut doc = AutoCommit::new();
         ChatDoc::seed_starter(&mut doc, "u_alice", "Alice", "AL");
         let mut app = peer("u_alice", "Alice", "AL", 0);
-        app.room_agents.push("scribe".into());
-        app.room_names
-            .insert("agent:scribe".into(), "Scribe".into());
+        let presence = agent_task_presence();
+        app.adopt_room(&presence);
         app.reload(&doc);
-        render_frame(&mut app, 1200.0, 800.0);
+        render_agent_task_frame(&mut app, 1200.0, 800.0, &presence);
         app.on_hit(
             Hit::Agent("scribe".into()),
             &mut ui::widget::Edits::lend(&mut doc),
@@ -6367,7 +6435,7 @@ mod tests {
             Modifiers::default(),
         );
         assert!(app.composer_main.is_composing());
-        render_frame(&mut app, 1200.0, 800.0);
+        render_agent_task_frame(&mut app, 1200.0, 800.0, &presence);
         let parent_float_target = app
             .semantic_hits()
             .iter()
@@ -6406,7 +6474,7 @@ mod tests {
             false,
         );
         ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_event_source(&mut app, Some(&id));
-        render_detached_surfaces(&mut app);
+        render_detached_surfaces_with_presence(&mut app, &presence);
 
         let channel = ChatDoc::agent_conversation_channel_id("ws_home", "scribe");
         assert!(
@@ -6428,7 +6496,13 @@ mod tests {
         commit_detached_ime_and_undo(&mut app, &mut doc, &channel, &id);
         assert_detached_private_history(&mut app, &mut doc, &channel, &id);
         assert_invalid_ime_source_retires_composition(&mut app, &mut doc, &channel, &id);
-        return_detached_editor_through_accessibility(&mut app, &mut doc, &id, parent_float_target);
+        return_detached_editor_through_accessibility(
+            &mut app,
+            &mut doc,
+            &id,
+            parent_float_target,
+            &presence,
+        );
     }
 
     #[test]
@@ -6436,11 +6510,10 @@ mod tests {
         let mut doc = AutoCommit::new();
         ChatDoc::seed_starter(&mut doc, "u_alice", "Alice", "AL");
         let mut app = peer("u_alice", "Alice", "AL", 0);
-        app.room_agents.push("scribe".into());
-        app.room_names
-            .insert("agent:scribe".into(), "Scribe".into());
+        let presence = agent_task_presence();
+        app.adopt_room(&presence);
         app.reload(&doc);
-        render_frame(&mut app, 1200.0, 800.0);
+        render_agent_task_frame(&mut app, 1200.0, 800.0, &presence);
         app.on_hit(
             Hit::Agent("scribe".into()),
             &mut ui::widget::Edits::lend(&mut doc),
@@ -6471,7 +6544,7 @@ mod tests {
             },
         );
 
-        app.room_agents.clear();
+        let removed_presence = agent_presence(&[]);
         let mut scene = vello::Scene::new();
         let mut text = ui::text_render::TextRenderer::new();
         ui::widget::FloatingSurfaceWidgetExt::draw_floating_surfaces(
@@ -6480,7 +6553,7 @@ mod tests {
             vello::kurbo::Affine::IDENTITY,
             &mut text,
             &ui::theme::Theme::dark(),
-            &ui::presence::PresenceCtx::empty(),
+            &removed_presence,
         );
         type_str(
             &mut app
@@ -6517,7 +6590,13 @@ mod tests {
         assert_eq!(app.direct_agent.as_deref(), Some("scribe"));
         assert_eq!(app.composer_main.value(), "Private draft after removal");
         assert_eq!(app.composer_main.selection(), (4, 12));
-        render_frame(&mut app, 1200.0, 800.0);
+        render_frame_with_theme_and_presence(
+            &mut app,
+            1200.0,
+            800.0,
+            &ui::theme::Theme::dark(),
+            &removed_presence,
+        );
         assert_no_agent_composer_controls(&app);
         let accessible = ui::Widget::accessibility(&app).expect("Chat accessibility tree");
         assert!(accessible.children.iter().any(|node| {
@@ -6534,14 +6613,15 @@ mod tests {
         let mut doc = AutoCommit::new();
         ChatDoc::seed_starter(&mut doc, "u_alice", "Alice", "AL");
         let mut app = peer("u_alice", "Alice", "AL", 0);
-        app.room_agents.push("scribe".into());
+        let presence = agent_task_presence();
+        app.adopt_room(&presence);
         let host = Arc::new(TaskControlHost::default());
         app.agent_task_actions = ui::remote_actions::RemoteActions::with_host(
             Arc::clone(&host) as Arc<dyn ActionHost + Send + Sync>,
             Caller::local_app("so.tilo.chat").in_room("ws_home"),
         );
         app.reload(&doc);
-        render_frame(&mut app, 1200.0, 800.0);
+        render_agent_task_frame(&mut app, 1200.0, 800.0, &presence);
         app.on_hit(
             Hit::Agent("scribe".into()),
             &mut ui::widget::Edits::lend(&mut doc),
@@ -6570,7 +6650,7 @@ mod tests {
             vello::kurbo::Affine::IDENTITY,
             &mut text,
             &ui::theme::Theme::dark(),
-            &ui::presence::PresenceCtx::empty(),
+            &presence,
         );
         let surface = &app.agent_surfaces[&channel];
         assert!(!surface.view.can_participate());
@@ -6622,7 +6702,11 @@ mod tests {
         );
     }
 
-    fn draw_detached_agent_surface(app: &mut ChatApp, surface_id: &str) {
+    fn draw_detached_agent_surface(
+        app: &mut ChatApp,
+        surface_id: &str,
+        presence: &ui::presence::PresenceCtx,
+    ) {
         let mut scene = vello::Scene::new();
         let mut text = ui::text_render::TextRenderer::new();
         assert!(ui::widget::FloatingSurfaceWidgetExt::draw_floating_surface(
@@ -6632,7 +6716,7 @@ mod tests {
             vello::kurbo::Affine::IDENTITY,
             &mut text,
             &ui::theme::Theme::dark(),
-            &ui::presence::PresenceCtx::empty(),
+            presence,
         ));
     }
 
@@ -6640,8 +6724,8 @@ mod tests {
         clock: &ui::background::Pumped,
         instruction: &str,
     ) -> (ChatApp, AutoCommit, Arc<TaskControlHost>, String) {
-        let (mut app, mut doc, host) = agent_task_control_app();
-        render_frame(&mut app, 800.0, 600.0);
+        let (mut app, mut doc, host, presence) = agent_task_control_app();
+        render_agent_task_frame(&mut app, 800.0, 600.0, &presence);
         app.on_hit(
             Hit::AgentIntent(crate::app::AgentComposerIntent::Queue),
             &mut ui::widget::Edits::lend(&mut doc),
@@ -6655,7 +6739,7 @@ mod tests {
             &request.id,
             request.initial_rect.expect("Float retains exact geometry"),
         );
-        draw_detached_agent_surface(&mut app, &request.id);
+        draw_detached_agent_surface(&mut app, &request.id, &presence);
         let view = &mut app
             .agent_surfaces
             .values_mut()
@@ -6715,8 +6799,9 @@ mod tests {
         host: &TaskControlHost,
         channel: &str,
         surface_id: &str,
+        presence: &ui::presence::PresenceCtx,
     ) {
-        draw_detached_agent_surface(app, surface_id);
+        draw_detached_agent_surface(app, surface_id, presence);
         let surface = &app.agent_surfaces[channel];
         assert!(!surface.view.can_participate());
         assert_eq!(
@@ -6779,7 +6864,8 @@ mod tests {
         let mut doc = AutoCommit::new();
         ChatDoc::seed_starter(&mut doc, "u_alice", "Alice", "AL");
         let mut app = peer("u_alice", "Alice", "AL", 0);
-        app.room_agents.push("scribe".into());
+        let presence = agent_task_presence();
+        app.adopt_room(&presence);
         let host = Arc::new(TaskControlHost::default());
         app.agent_task_actions = ui::remote_actions::RemoteActions::with_host(
             Arc::clone(&host) as Arc<dyn ActionHost + Send + Sync>,
@@ -6794,7 +6880,7 @@ mod tests {
             ),
         ));
         app.reload(&doc);
-        render_frame(&mut app, 1200.0, 800.0);
+        render_agent_task_frame(&mut app, 1200.0, 800.0, &presence);
         app.on_hit(
             Hit::Agent("scribe".into()),
             &mut ui::widget::Edits::lend(&mut doc),
@@ -6808,7 +6894,7 @@ mod tests {
         let detached = request.initial_rect.expect("Float retains its geometry");
         adopt_agent_surface(&mut app, &request.id, detached);
         let surface_id = request.id;
-        draw_detached_agent_surface(&mut app, &surface_id);
+        draw_detached_agent_surface(&mut app, &surface_id, &presence);
         let editor_target = format!(
             "agent-surface:{surface_id}|{}",
             Hit::FocusMain.semantic_id()
@@ -6841,9 +6927,10 @@ mod tests {
             &host,
             &channel,
             &surface_id,
+            &presence,
         );
         assert!(activate_detached_queue(&mut app, &mut doc, &surface_id));
-        draw_detached_agent_surface(&mut app, &surface_id);
+        draw_detached_agent_surface(&mut app, &surface_id, &presence);
         assert!(
             ui::widget::FloatingSurfaceWidgetExt::perform_floating_surface_accessibility_action(
                 &mut app,
@@ -6866,10 +6953,10 @@ mod tests {
 
     #[test]
     fn stale_message_semantics_refuse_currently_denied_chat_write_without_repaint() {
-        let (mut app, mut doc, _host) = agent_task_control_app();
+        let (mut app, mut doc, _host, presence) = agent_task_control_app();
         type_str(&mut app, &mut doc, "Keep this private draft");
         app.composer_main.select(5, 12);
-        render_frame(&mut app, 1280.0, 800.0);
+        render_agent_task_frame(&mut app, 1280.0, 800.0, &presence);
         let editor = Hit::FocusMain.semantic_id();
         let send = Hit::Send.semantic_id();
         let queue = Hit::AgentIntent(crate::app::AgentComposerIntent::Queue).semantic_id();
@@ -6938,8 +7025,8 @@ mod tests {
 
     #[test]
     fn stale_task_semantics_refuse_currently_denied_controls_but_keep_message() {
-        let (mut app, mut doc, host) = agent_task_control_app();
-        render_frame(&mut app, 1280.0, 800.0);
+        let (mut app, mut doc, host, presence) = agent_task_control_app();
+        render_agent_task_frame(&mut app, 1280.0, 800.0, &presence);
         let editor = Hit::FocusMain.semantic_id();
         let send = Hit::Send.semantic_id();
         let queue = Hit::AgentIntent(crate::app::AgentComposerIntent::Queue).semantic_id();
@@ -6982,7 +7069,7 @@ mod tests {
     fn queue_draft_selection_survives_an_unchanged_async_authority_refresh() {
         let clock = ui::background::Pumped::new();
         let _entered = clock.background().enter();
-        let (mut app, mut doc, host) = agent_task_control_app();
+        let (mut app, mut doc, host, presence) = agent_task_control_app();
         app.on_hit(
             Hit::AgentIntent(crate::app::AgentComposerIntent::Queue),
             &mut ui::widget::Edits::lend(&mut doc),
@@ -7003,7 +7090,7 @@ mod tests {
         );
         ui::Widget::sync(&mut app, &doc, &automerge::ROOT);
         assert!(!tasks.borrow().can_queue());
-        render_frame(&mut app, 1200.0, 800.0);
+        render_agent_task_frame(&mut app, 1200.0, 800.0, &presence);
         let accessible = ui::Widget::accessibility(&app).expect("Chat accessibility tree");
         assert_eq!(
             accessible
@@ -7065,7 +7152,7 @@ mod tests {
     fn queue_send_uses_the_exact_displayed_offer_across_due_refresh() {
         let clock = ui::background::Pumped::new();
         let _entered = clock.background().enter();
-        let (mut app, mut doc, host) = agent_task_control_app();
+        let (mut app, mut doc, host, _presence) = agent_task_control_app();
         app.on_hit(
             Hit::AgentIntent(crate::app::AgentComposerIntent::Queue),
             &mut ui::widget::Edits::lend(&mut doc),
@@ -7132,8 +7219,8 @@ mod tests {
     fn detached_queue_button_routes_pointer_through_the_exact_child_surface() {
         let clock = ui::background::Pumped::new();
         let _entered = clock.background().enter();
-        let (mut app, mut doc, host) = agent_task_control_app();
-        render_frame(&mut app, 800.0, 600.0);
+        let (mut app, mut doc, host, presence) = agent_task_control_app();
+        render_agent_task_frame(&mut app, 800.0, 600.0, &presence);
         app.on_hit(
             Hit::AgentIntent(crate::app::AgentComposerIntent::Queue),
             &mut ui::widget::Edits::lend(&mut doc),
@@ -7144,7 +7231,7 @@ mod tests {
             .expect("Float requests one app-owned child");
         let rect = request.initial_rect.expect("Float retains exact geometry");
         adopt_agent_surface(&mut app, &request.id, rect);
-        draw_detached_agent_surface(&mut app, &request.id);
+        draw_detached_agent_surface(&mut app, &request.id, &presence);
 
         let accessible =
             ui::widget::FloatingSurfaceWidgetExt::floating_surface_accessibility(&app, &request.id)
@@ -7368,14 +7455,14 @@ mod tests {
     fn queue_draft_becomes_read_only_when_async_revalidation_denies_authority() {
         let clock = ui::background::Pumped::new();
         let _entered = clock.background().enter();
-        let (mut app, mut doc, host) = agent_task_control_app();
+        let (mut app, mut doc, host, presence) = agent_task_control_app();
         app.on_hit(
             Hit::AgentIntent(crate::app::AgentComposerIntent::Queue),
             &mut ui::widget::Edits::lend(&mut doc),
         );
         type_str(&mut app, &mut doc, "private denied draft");
         app.composer_main.select(2, 9);
-        render_frame(&mut app, 1200.0, 800.0);
+        render_agent_task_frame(&mut app, 1200.0, 800.0, &presence);
         assert!(app.painted_queue_offer.is_some());
         app.set_direct_agent_intent(crate::app::AgentComposerIntent::Message);
         app.set_direct_agent_intent(crate::app::AgentComposerIntent::Queue);
@@ -7383,7 +7470,7 @@ mod tests {
             app.painted_queue_offer.is_none(),
             "a Queue to Message to Queue mode change cannot revive an old painted offer"
         );
-        render_frame(&mut app, 1200.0, 800.0);
+        render_agent_task_frame(&mut app, 1200.0, 800.0, &presence);
         assert!(app.painted_queue_offer.is_some());
         let tasks = app.direct_agent_tasks().expect("owner-backed task context");
         let deadline = tasks
@@ -7400,7 +7487,7 @@ mod tests {
         ui::Widget::sync(&mut app, &doc, &automerge::ROOT);
         assert!(app.main_composer_can_edit());
         assert!(!tasks.borrow().can_queue());
-        render_frame(&mut app, 1200.0, 800.0);
+        render_agent_task_frame(&mut app, 1200.0, 800.0, &presence);
         assert!(
             app.painted_queue_offer.is_none(),
             "a child repaint withdraws its no-longer-current Queue offer"
@@ -7410,7 +7497,7 @@ mod tests {
         host.revoke_task_controls();
         host.complete_current_reads();
         ui::Widget::sync(&mut app, &doc, &automerge::ROOT);
-        render_frame(&mut app, 1200.0, 800.0);
+        render_agent_task_frame(&mut app, 1200.0, 800.0, &presence);
 
         assert!(!tasks.borrow().can_queue());
         assert!(!app.main_composer_can_edit());
@@ -7443,13 +7530,13 @@ mod tests {
     fn detached_task_controls_expire_on_the_production_refresh_deadline() {
         let clock = ui::background::Pumped::new();
         let _entered = clock.background().enter();
-        let (mut app, mut doc, host) = agent_task_control_app();
+        let (mut app, mut doc, host, presence) = agent_task_control_app();
         let tasks = app
             .direct_agent_tasks()
             .expect("the attached conversation owns its task context");
         type_str(&mut app, &mut doc, "Keep this Queue draft private");
         app.composer_main.select(5, 15);
-        render_frame(&mut app, 1200.0, 800.0);
+        render_agent_task_frame(&mut app, 1200.0, 800.0, &presence);
         app.on_hit(Hit::AgentWindow, &mut ui::widget::Edits::lend(&mut doc));
         let request = ui::widget::FloatingSurfaceWidgetExt::take_floating_surface_request(&mut app)
             .expect("Float publishes the retained conversation");
@@ -7458,9 +7545,9 @@ mod tests {
             .expect("the detached conversation keeps its geometry");
         let surface_id = request.id;
         adopt_agent_surface(&mut app, &surface_id, rect);
-        render_detached_surfaces(&mut app);
+        render_detached_surfaces_with_presence(&mut app, &presence);
         assert!(activate_detached_queue(&mut app, &mut doc, &surface_id));
-        render_detached_surfaces(&mut app);
+        render_detached_surfaces_with_presence(&mut app, &presence);
 
         let initial_queue = detached_queue_roles(&app, &surface_id);
         assert_eq!(initial_queue.len(), 2);
@@ -7494,7 +7581,7 @@ mod tests {
                 .saturating_add(std::time::Duration::from_millis(1)),
         );
         ui::Widget::sync(&mut app, &doc, &automerge::ROOT);
-        render_detached_surfaces(&mut app);
+        render_detached_surfaces_with_presence(&mut app, &presence);
 
         assert!(
             !tasks.borrow().can_queue(),
@@ -7543,11 +7630,10 @@ mod tests {
         let mut doc = AutoCommit::new();
         ChatDoc::seed_starter(&mut doc, "u_alice", "Alice", "AL");
         let mut app = peer("u_alice", "Alice", "AL", 0);
-        app.room_agents.push("scribe".into());
-        app.room_names
-            .insert("agent:scribe".into(), "Scribe".into());
+        let presence = agent_task_presence();
+        app.adopt_room(&presence);
         app.reload(&doc);
-        render_frame(&mut app, 1200.0, 800.0);
+        render_agent_task_frame(&mut app, 1200.0, 800.0, &presence);
         app.on_hit(
             Hit::Agent("scribe".into()),
             &mut ui::widget::Edits::lend(&mut doc),
@@ -7984,7 +8070,8 @@ mod tests {
         let mut direct_doc = AutoCommit::new();
         ChatDoc::seed_starter(&mut direct_doc, "u_alice", "Alice", "AL");
         let mut direct = peer("u_alice", "Alice", "AL", 0);
-        direct.room_agents.push("scribe".into());
+        let direct_presence = agent_task_presence();
+        direct.adopt_room(&direct_presence);
         direct.agent_task_actions = ui::remote_actions::RemoteActions::with_host(
             Arc::new(TaskControlHost::default()) as Arc<dyn ActionHost + Send + Sync>,
             Caller::local_app("so.tilo.chat").in_room("ws_home"),
@@ -7995,7 +8082,13 @@ mod tests {
             &mut ui::widget::Edits::lend(&mut direct_doc),
         );
         type_str(&mut direct, &mut direct_doc, "Asynchronous message");
-        render_frame(&mut direct, 1280.0, 720.0);
+        render_frame_with_theme_and_presence(
+            &mut direct,
+            1280.0,
+            720.0,
+            &ui::theme::Theme::dark(),
+            &direct_presence,
+        );
         let direct_send = Hit::Send.semantic_id();
         assert!(ui::Widget::perform_semantic_action(
             &mut direct,
@@ -8018,7 +8111,7 @@ mod tests {
         assert_eq!(direct.agent_submission_acceptances.get(), 1);
     }
 
-    fn write_progress_shots(app: &mut ChatApp, state: &str) {
+    fn write_progress_shots(app: &mut ChatApp, state: &str, presence: &ui::presence::PresenceCtx) {
         let Some(output) = std::env::var_os("TILO_CHAT_PROGRESS_SHOTS") else {
             return;
         };
@@ -8042,7 +8135,7 @@ mod tests {
                     vello::kurbo::Affine::IDENTITY,
                     &mut text,
                     &theme,
-                    &ui::presence::PresenceCtx::empty(),
+                    presence,
                 );
                 ui::offscreen::OffscreenRenderer::new(width, height).render_png(
                     &scene,
@@ -8053,7 +8146,7 @@ mod tests {
         }
     }
 
-    fn write_frontier_shots(app: &mut ChatApp, state: &str) {
+    fn write_frontier_shots(app: &mut ChatApp, state: &str, presence: &ui::presence::PresenceCtx) {
         let Some(output) = std::env::var_os("TILO_CHAT_FRONTIER_SHOTS") else {
             return;
         };
@@ -8077,7 +8170,7 @@ mod tests {
                     vello::kurbo::Affine::IDENTITY,
                     &mut text,
                     &theme,
-                    &ui::presence::PresenceCtx::empty(),
+                    presence,
                 );
                 ui::offscreen::OffscreenRenderer::new(width, height).render_png(
                     &scene,
@@ -8102,6 +8195,7 @@ mod tests {
         channel: String,
         fixture_ts: i64,
         reply_row: &'static str,
+        presence: ui::presence::PresenceCtx,
     }
 
     fn progress_fixture_waiting() -> ProgressFixture {
@@ -8112,9 +8206,8 @@ mod tests {
         ChatDoc::seed_workspace(&mut doc, room, "Fixture room", "u_alice", "Alice", "AL", 0)
             .unwrap();
         let mut app = peer("u_alice", "Alice", "AL", 0);
-        app.room_agents.push("scribe".into());
-        app.room_names
-            .insert("agent:scribe".into(), "Scribe".into());
+        let presence = agent_task_presence();
+        app.adopt_room(&presence);
         let original = uuid::Uuid::parse_str("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee").unwrap();
         let request_row = format!("m_{}", original.simple());
         let fixture_ts = 1_791_244_800;
@@ -8162,7 +8255,7 @@ mod tests {
                 _ => None,
             })
             .expect("the mounted direct conversation requests public owner progress");
-        write_progress_shots(&mut app, "before");
+        write_progress_shots(&mut app, "before", &presence);
         app.handle_collab_event(&ui::collaboration::CollabEvent::AgentMessageProgress {
             request_id,
             result: Ok(Some(
@@ -8181,12 +8274,12 @@ mod tests {
             app.agent_message_progress_label(request).as_deref(),
             Some("Waiting for reply")
         );
-        render_frame(&mut app, 1280.0, 800.0);
+        render_agent_task_frame(&mut app, 1280.0, 800.0, &presence);
         assert!(
             has_progress(&ui::Widget::accessibility(&app).expect("Chat accessibility tree")),
             "the painted milestone is exposed through the mounted Chat accessibility tree"
         );
-        write_progress_shots(&mut app, "waiting");
+        write_progress_shots(&mut app, "waiting", &presence);
         let snapshot = ui::Widget::native_input_snapshot(&app, &doc, &automerge::ROOT)
             .expect("sanitized Chat snapshot");
         assert_eq!(snapshot["agent_message_progress"][0]["generation"], 4);
@@ -8203,6 +8296,7 @@ mod tests {
             channel: ChatDoc::agent_conversation_channel_id(room, "scribe"),
             fixture_ts,
             reply_row: "m_11111111111111111111111111111111",
+            presence,
         }
     }
 
@@ -8216,6 +8310,7 @@ mod tests {
             channel,
             fixture_ts,
             reply_row,
+            presence,
         } = fixture;
         app.on_hit(Hit::AgentWindow, &mut ui::widget::Edits::lend(&mut doc));
         let surface = app
@@ -8272,6 +8367,7 @@ mod tests {
         write_progress_shots(
             &mut app.agent_surfaces.get_mut(&channel).unwrap().view,
             "unavailable-detached",
+            &presence,
         );
 
         ProgressFixture {
@@ -8281,6 +8377,7 @@ mod tests {
             channel,
             fixture_ts,
             reply_row,
+            presence,
         }
     }
 
@@ -8294,8 +8391,9 @@ mod tests {
             channel,
             fixture_ts,
             reply_row,
+            presence,
         } = fixture;
-        render_detached_surfaces(&mut app);
+        render_detached_surfaces_with_presence(&mut app, &presence);
         let refresh = Hit::AgentMessageRefresh.semantic_id();
         let surface = app
             .agent_surfaces
@@ -8342,6 +8440,7 @@ mod tests {
             channel,
             fixture_ts,
             reply_row,
+            presence,
         }
     }
 
@@ -8355,8 +8454,9 @@ mod tests {
             channel,
             fixture_ts,
             reply_row,
+            presence,
         } = fixture;
-        render_detached_surfaces(&mut app);
+        render_detached_surfaces_with_presence(&mut app, &presence);
         let refresh = Hit::AgentMessageRefresh.semantic_id();
         let surface = app
             .agent_surfaces
@@ -8420,6 +8520,7 @@ mod tests {
         write_progress_shots(
             &mut app.agent_surfaces.get_mut(&channel).unwrap().view,
             "committed-detached",
+            &presence,
         );
         let committed = ui::Widget::native_input_snapshot(&app, &doc, &automerge::ROOT)
             .expect("committed sanitized Chat snapshot");
@@ -8436,6 +8537,7 @@ mod tests {
             channel,
             fixture_ts,
             reply_row,
+            presence,
         }
     }
 
@@ -8447,6 +8549,7 @@ mod tests {
             channel,
             fixture_ts,
             reply_row,
+            presence,
         } = fixture;
         assert!(ChatDoc::reply_agent_message(
             &mut doc,
@@ -8482,8 +8585,21 @@ mod tests {
                 .as_deref(),
             Some("Reply saved; waiting for conversation")
         );
-        assert_reply_visibility_uses_meaningful_bounds(&mut app, &channel, &request_row, reply_row);
-        return_progress_surface(&mut app, &mut doc, &channel, &request_row, float.id);
+        assert_reply_visibility_uses_meaningful_bounds(
+            &mut app,
+            &channel,
+            &request_row,
+            reply_row,
+            &presence,
+        );
+        return_progress_surface(
+            &mut app,
+            &mut doc,
+            &channel,
+            &request_row,
+            float.id,
+            &presence,
+        );
     }
 
     fn assert_reply_visibility_uses_meaningful_bounds(
@@ -8491,6 +8607,7 @@ mod tests {
         channel: &str,
         request_row: &str,
         reply_row: &str,
+        presence: &ui::presence::PresenceCtx,
     ) {
         let _ = app
             .agent_surfaces
@@ -8498,7 +8615,7 @@ mod tests {
             .unwrap()
             .view
             .take_relayout_request();
-        render_detached_surfaces(app);
+        render_detached_surfaces_with_presence(app, presence);
         let surface = &app.agent_surfaces[channel];
         assert!(
             surface.view.visible_message_rows.contains(reply_row),
@@ -8523,7 +8640,7 @@ mod tests {
             .view
             .visible_message_rows
             .clone();
-        render_detached_surfaces(app);
+        render_detached_surfaces_with_presence(app, presence);
         assert_eq!(
             app.agent_surfaces[channel].view.visible_message_rows, visible,
             "an unchanged adopted frame preserves exact row visibility"
@@ -8539,8 +8656,9 @@ mod tests {
         write_progress_shots(
             &mut app.agent_surfaces.get_mut(channel).unwrap().view,
             "reply-visible-detached",
+            presence,
         );
-        assert_clipped_reply_retains_progress(app, channel, request_row, reply_row);
+        assert_clipped_reply_retains_progress(app, channel, request_row, reply_row, presence);
     }
 
     fn assert_clipped_reply_retains_progress(
@@ -8548,13 +8666,15 @@ mod tests {
         channel: &str,
         request_row: &str,
         reply_row: &str,
+        presence: &ui::presence::PresenceCtx,
     ) {
         let theme = ui::theme::Theme::high_contrast().with_text_scale(2.0);
-        render_frame_with_theme(
+        render_frame_with_theme_and_presence(
             &mut app.agent_surfaces.get_mut(channel).unwrap().view,
             512.0,
             360.0,
             &theme,
+            presence,
         );
         assert!(
             !app.agent_surfaces[channel]
@@ -8563,11 +8683,12 @@ mod tests {
                 .contains(reply_row),
             "an unpaintable compact HC200 timeline cannot retain the dark frame's visible reply"
         );
-        render_frame_with_theme(
+        render_frame_with_theme_and_presence(
             &mut app.agent_surfaces.get_mut(channel).unwrap().view,
             720.0,
             640.0,
             &theme,
+            presence,
         );
         let view = &mut app.agent_surfaces.get_mut(channel).unwrap().view;
         let max_scroll = (view.scroll_content - view.scroll_viewport).max(0.0);
@@ -8577,7 +8698,7 @@ mod tests {
             view.scroll_viewport
         );
         view.scroll = max_scroll;
-        render_frame_with_theme(view, 720.0, 640.0, &theme);
+        render_frame_with_theme_and_presence(view, 720.0, 640.0, &theme, presence);
         let surface = &app.agent_surfaces[channel];
         assert!(
             !surface.view.visible_message_rows.contains(reply_row),
@@ -8593,11 +8714,12 @@ mod tests {
                 .take_relayout_request(),
             "the clipped visibility transition propagates once"
         );
-        render_frame_with_theme(
+        render_frame_with_theme_and_presence(
             &mut app.agent_surfaces.get_mut(channel).unwrap().view,
             720.0,
             640.0,
             &theme,
+            presence,
         );
         assert!(
             !app.agent_surfaces
@@ -8632,6 +8754,7 @@ mod tests {
         channel: &str,
         request_row: &str,
         surface_id: String,
+        presence: &ui::presence::PresenceCtx,
     ) {
         let view = &mut app.agent_surfaces.get_mut(channel).unwrap().view;
         view.on_hit(Hit::AgentWindow, &mut ui::widget::Edits::lend(doc));
@@ -8640,7 +8763,7 @@ mod tests {
             app,
             &ui::floating_surface::FloatingSurfaceHostMessage::Suspended { id: surface_id },
         );
-        render_frame(app, 1280.0, 800.0);
+        render_agent_task_frame(app, 1280.0, 800.0, presence);
         let request = app
             .messages
             .iter()
@@ -8702,7 +8825,8 @@ mod tests {
 
         let (mut doc, newest) = agent_progress_history_fixture();
         let mut app = peer("u_alice", "Alice", "AL", 0);
-        app.room_agents.push("scribe".into());
+        let presence = agent_task_presence();
+        app.adopt_room(&presence);
         app.reload(&doc);
         app.on_hit(
             Hit::Agent("scribe".into()),
@@ -8761,9 +8885,9 @@ mod tests {
             None,
             "an ordinary-channel row cannot borrow the direct Agent milestone"
         );
-        render_frame(&mut app, 960.0, 720.0);
+        render_agent_task_frame(&mut app, 960.0, 720.0, &presence);
         let _ = app.take_relayout_request();
-        render_frame(&mut app, 960.0, 720.0);
+        render_agent_task_frame(&mut app, 960.0, 720.0, &presence);
         assert!(
             !app.take_relayout_request(),
             "ordinary history visibility changes do not schedule progress relayout frames"
@@ -8810,9 +8934,8 @@ mod tests {
         );
 
         let mut app = peer("u_alice", "Alice", "AL", 0);
-        app.room_agents.push("scribe".into());
-        app.room_names
-            .insert("agent:scribe".into(), "Scribe".into());
+        let presence = agent_task_presence();
+        app.adopt_room(&presence);
         app.direct_agent = Some("scribe".into());
         app.active_ws = "ws_home".into();
         app.reload(&doc);
@@ -8824,7 +8947,7 @@ mod tests {
             status: model::Presence::Online,
             is_agent: true,
         });
-        render_frame(&mut app, 1280.0, 800.0);
+        render_agent_task_frame(&mut app, 1280.0, 800.0, &presence);
 
         assert!(
             app.hits
@@ -10039,7 +10162,19 @@ mod tests {
         render_frame_with_theme(app, w, h, &ui::theme::Theme::dark());
     }
 
-    fn render_detached_surfaces(app: &mut ChatApp) {
+    fn render_agent_task_frame(
+        app: &mut ChatApp,
+        w: f64,
+        h: f64,
+        presence: &ui::presence::PresenceCtx,
+    ) {
+        render_frame_with_theme_and_presence(app, w, h, &ui::theme::Theme::dark(), presence);
+    }
+
+    fn render_detached_surfaces_with_presence(
+        app: &mut ChatApp,
+        presence: &ui::presence::PresenceCtx,
+    ) {
         let mut scene = vello::Scene::new();
         ui::widget::FloatingSurfaceWidgetExt::draw_floating_surfaces(
             app,
@@ -10047,28 +10182,37 @@ mod tests {
             vello::kurbo::Affine::IDENTITY,
             &mut ui::text_render::TextRenderer::new(),
             &ui::theme::Theme::dark(),
-            &ui::presence::PresenceCtx::empty(),
+            presence,
         );
     }
 
     fn render_frame_with_theme(app: &mut ChatApp, w: f64, h: f64, theme: &ui::theme::Theme) {
+        render_frame_with_theme_and_presence(app, w, h, theme, &ui::presence::PresenceCtx::empty());
+    }
+
+    fn render_frame_with_theme_and_presence(
+        app: &mut ChatApp,
+        w: f64,
+        h: f64,
+        theme: &ui::theme::Theme,
+        presence: &ui::presence::PresenceCtx,
+    ) {
         use ui::Widget;
-        use ui::presence::PresenceCtx;
         use ui::text_render::TextRenderer;
         use vello::Scene;
         use vello::kurbo::Affine;
         app.rect = vello::kurbo::Rect::new(0.0, 0.0, w, h);
-        let presence = PresenceCtx::empty();
         let mut tr = TextRenderer::new();
         tr.set_text_scale(theme.text_scale);
         let mut scene = Scene::new();
-        app.draw(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
+        app.draw(&mut scene, Affine::IDENTITY, &mut tr, theme, presence);
     }
 
     fn native_agent_float_frame(
         app: &mut ChatApp,
         id: &str,
         theme: &ui::theme::Theme,
+        presence: &ui::presence::PresenceCtx,
     ) -> (vello::Scene, vello::kurbo::Rect) {
         let presentation =
             ui::widget::FloatingSurfaceWidgetExt::floating_surface_presentations(app)
@@ -10085,7 +10229,7 @@ mod tests {
             vello::kurbo::Affine::IDENTITY,
             &mut text,
             theme,
-            &ui::presence::PresenceCtx::empty(),
+            presence,
         ));
         let painted = ui::widget::FloatingSurfaceWidgetExt::floating_surface_presentations(app)
             .into_iter()
@@ -10117,6 +10261,7 @@ mod tests {
         draft: Option<String>,
         selection: (usize, usize),
         revision: Option<u64>,
+        presence: ui::presence::PresenceCtx,
     }
 
     fn prepare_native_agent_float(
@@ -10127,9 +10272,8 @@ mod tests {
         let mut doc = AutoCommit::new();
         ChatDoc::seed_starter(&mut doc, "u_alice", "Alice", "AL");
         let mut app = peer("u_alice", "Alice", "AL", 0);
-        app.room_agents.push("scribe".into());
-        app.room_names
-            .insert("agent:scribe".into(), "Scribe".into());
+        let presence = agent_task_presence();
+        app.adopt_room(&presence);
         app.reload(&doc);
         app.rect = app_rect;
         ui::widget::FloatingSurfaceWidgetExt::set_floating_surface_bounds(&mut app, desktop);
@@ -10141,7 +10285,7 @@ mod tests {
             vello::kurbo::Affine::IDENTITY,
             &mut attached_text,
             theme,
-            &ui::presence::PresenceCtx::empty(),
+            &presence,
         );
         app.on_hit(
             Hit::Agent("scribe".into()),
@@ -10177,7 +10321,7 @@ mod tests {
             },
         );
         let (initial_scene, initial_content) =
-            native_agent_float_frame(&mut app, &request.id, theme);
+            native_agent_float_frame(&mut app, &request.id, theme, &presence);
         assert_eq!(initial_content, rect, "Prepare preserves transfer geometry");
         PreparedNativeAgentFloat {
             app,
@@ -10188,6 +10332,7 @@ mod tests {
             draft,
             selection,
             revision,
+            presence,
         }
     }
 
@@ -10211,6 +10356,7 @@ mod tests {
             draft,
             selection,
             revision,
+            presence,
         } = prepare_native_agent_float(app_rect, desktop, theme);
         let rect = request.initial_rect.expect("prepared geometry");
         ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_host_message(
@@ -10255,7 +10401,7 @@ mod tests {
             "geometry settlement retains the exact private editor revision"
         );
         let (settled_scene, painted_settled_content) =
-            native_agent_float_frame(&mut app, &request.id, theme);
+            native_agent_float_frame(&mut app, &request.id, theme, &presence);
         assert_eq!(painted_settled_content, settled_content);
         let mut sibling = vello::Scene::new();
         let mut text = ui::text_render::TextRenderer::new();
@@ -10402,6 +10548,7 @@ mod tests {
             &mut prepared.app,
             &prepared.request.id,
             &ui::theme::Theme::light(),
+            &prepared.presence,
         );
         let after =
             ui::widget::FloatingSurfaceWidgetExt::floating_surface_presentations(&prepared.app)
@@ -10624,12 +10771,11 @@ mod tests {
         .expect("native Chat workspace");
         let mut app = ChatApp::new_ephemeral();
         app.reload(&doc);
-        app.room_agents = vec!["reed".into(), "tide".into()];
-        app.room_names.insert("agent:reed".into(), "reed".into());
-        app.room_names.insert("agent:tide".into(), "tide".into());
-        render_frame_with_theme(&mut app, width, height, theme);
+        let presence = agent_presence(&[("reed", "Reed"), ("tide", "Tide")]);
+        app.adopt_room(&presence);
+        render_frame_with_theme_and_presence(&mut app, width, height, theme, &presence);
         app.left_flap.snap(true);
-        render_frame_with_theme(&mut app, width, height, theme);
+        render_frame_with_theme_and_presence(&mut app, width, height, theme, &presence);
         app
     }
 
@@ -10637,10 +10783,11 @@ mod tests {
         app: &mut ChatApp,
         clock: &ui::background::Pumped,
         theme: &ui::Theme,
+        presence: &ui::presence::PresenceCtx,
     ) {
         for _ in 0..120 {
             clock.advance(std::time::Duration::from_millis(16));
-            render_frame_with_theme(app, 800.0, 600.0, theme);
+            render_frame_with_theme_and_presence(app, 800.0, 600.0, theme, presence);
             if !app.left_flap.is_animating() {
                 return;
             }
@@ -10654,7 +10801,7 @@ mod tests {
     fn rich_navigation_fixture(
         clock: &ui::background::Pumped,
         theme: &ui::Theme,
-    ) -> (ChatApp, AutoCommit) {
+    ) -> (ChatApp, AutoCommit, ui::presence::PresenceCtx) {
         use ui::Widget;
         use ui::a11y::Action;
         let (mut app, mut doc) = app_with_doc();
@@ -10674,7 +10821,7 @@ mod tests {
         app.adopt_room(&presence);
         assert_eq!(app.room_agents, ["reed", "tide"]);
         app.call.join("c_huddle");
-        render_frame_with_theme(&mut app, 800.0, 600.0, theme);
+        render_frame_with_theme_and_presence(&mut app, 800.0, 600.0, theme, &presence);
         if !app.left_flap_open() {
             assert!(app.perform_semantic_action(
                 &Hit::ToggleLeftFlap.semantic_id(),
@@ -10683,8 +10830,8 @@ mod tests {
                 &automerge::ROOT
             ));
         }
-        settle_navigation_drawer(&mut app, clock, theme);
-        (app, doc)
+        settle_navigation_drawer(&mut app, clock, theme, &presence);
+        (app, doc, presence)
     }
 
     #[test]
@@ -10695,7 +10842,7 @@ mod tests {
         let clock = ui::background::Pumped::new();
         let _entered = clock.background().enter();
         let theme = ui::Theme::high_contrast().with_text_scale(2.0);
-        let (mut app, mut doc) = rich_navigation_fixture(&clock, &theme);
+        let (mut app, mut doc, presence) = rich_navigation_fixture(&clock, &theme);
         assert!(app.navigation_scroll.vertical_overflows());
         let timeline = app.scroll;
         let viewport = app.navigation_scroll.content_viewport_rect();
@@ -10710,7 +10857,7 @@ mod tests {
             &cursor_moved(viewport.center().x, viewport.center().y),
         );
         feed(&mut app, &mut doc, &wheel(-100.0));
-        render_frame_with_theme(&mut app, 800.0, 600.0, &theme);
+        render_frame_with_theme_and_presence(&mut app, 800.0, 600.0, &theme, &presence);
         assert_eq!(navigation_hit_rect(&app, &Hit::CallMute), mute);
         let tide = navigation_hit_rect(&app, &Hit::Agent("tide".into()));
         assert!(viewport.contains_rect(tide));
@@ -10750,7 +10897,7 @@ mod tests {
             app.apply_primary_vertical_scroll(PrimaryScrollAction::Start),
             PrimaryScrollResult::Changed(_)
         ));
-        render_frame_with_theme(&mut app, 800.0, 600.0, &theme);
+        render_frame_with_theme_and_presence(&mut app, 800.0, 600.0, &theme, &presence);
         assert!(
             navigation_access_node(
                 &app.accessibility().unwrap(),
@@ -10759,7 +10906,7 @@ mod tests {
             .is_none()
         );
         feed(&mut app, &mut doc, &wheel(-100.0));
-        render_frame_with_theme(&mut app, 800.0, 600.0, &theme);
+        render_frame_with_theme_and_presence(&mut app, 800.0, 600.0, &theme, &presence);
         assert!(app.perform_semantic_action(
             &Hit::Agent("tide".into()).semantic_id(),
             &Action::Activate,
@@ -10769,7 +10916,7 @@ mod tests {
         type_str(&mut app, &mut doc, "Retain this Agent draft");
         let draft = app.composer_main.private_plain();
         let selection = app.composer_main.selection();
-        settle_navigation_drawer(&mut app, &clock, &theme);
+        settle_navigation_drawer(&mut app, &clock, &theme, &presence);
         if !app.left_flap_open() {
             assert!(app.perform_semantic_action(
                 &Hit::ToggleLeftFlap.semantic_id(),
@@ -10778,7 +10925,7 @@ mod tests {
                 &automerge::ROOT
             ));
         }
-        settle_navigation_drawer(&mut app, &clock, &theme);
+        settle_navigation_drawer(&mut app, &clock, &theme, &presence);
         assert!(
             app.navigation_scroll
                 .content_viewport_rect()
@@ -10795,7 +10942,7 @@ mod tests {
         let clock = ui::background::Pumped::new();
         let _entered = clock.background().enter();
         let theme = ui::Theme::high_contrast().with_text_scale(2.0);
-        let (mut app, mut doc) = rich_navigation_fixture(&clock, &theme);
+        let (mut app, mut doc, presence) = rich_navigation_fixture(&clock, &theme);
         let viewport = app.navigation_scroll.content_viewport_rect();
         feed(
             &mut app,
@@ -10803,7 +10950,7 @@ mod tests {
             &cursor_moved(viewport.center().x, viewport.center().y),
         );
         feed(&mut app, &mut doc, &wheel(-100.0));
-        render_frame_with_theme(&mut app, 800.0, 600.0, &theme);
+        render_frame_with_theme_and_presence(&mut app, 800.0, 600.0, &theme, &presence);
         assert!(app.perform_semantic_action(
             &Hit::Agent("tide".into()).semantic_id(),
             &ui::a11y::Action::Focus,
@@ -10814,7 +10961,7 @@ mod tests {
         let timeline = app.scroll;
         for key in [NamedKey::Home, NamedKey::End, NamedKey::Home, NamedKey::End] {
             feed(&mut app, &mut doc, &named_key(key));
-            render_frame_with_theme(&mut app, 800.0, 600.0, &theme);
+            render_frame_with_theme_and_presence(&mut app, 800.0, 600.0, &theme, &presence);
             assert!(app.navigation_owns_scroll());
             assert_eq!(app.primary_vertical_scroll().unwrap().key, "navigation");
             assert_eq!(app.scroll, timeline);
@@ -10841,7 +10988,7 @@ mod tests {
         let clock = ui::background::Pumped::new();
         let _entered = clock.background().enter();
         let theme = ui::Theme::high_contrast().with_text_scale(2.0);
-        let (mut app, mut doc) = rich_navigation_fixture(&clock, &theme);
+        let (mut app, mut doc, presence) = rich_navigation_fixture(&clock, &theme);
         let viewport = app.navigation_scroll.content_viewport_rect();
         feed(
             &mut app,
@@ -10849,7 +10996,7 @@ mod tests {
             &cursor_moved(viewport.center().x, viewport.center().y),
         );
         feed(&mut app, &mut doc, &wheel(-100.0));
-        render_frame_with_theme(&mut app, 800.0, 600.0, &theme);
+        render_frame_with_theme_and_presence(&mut app, 800.0, 600.0, &theme, &presence);
         assert!(app.perform_semantic_action(
             &Hit::Agent("tide".into()).semantic_id(),
             &ui::a11y::Action::Focus,
@@ -10858,16 +11005,8 @@ mod tests {
         ));
         assert!(app.navigation_owns_scroll());
         let before = app.navigation_scroll.offset_y();
-        let mut presence = ui::presence::PresenceCtx::empty();
-        presence.apply_test_collaboration_snapshot(&[ui::collaboration::Collaborator {
-            id: "u_alice".into(),
-            name: "Alice".into(),
-            colour: None,
-            is_agent: false,
-            is_self: true,
-        }]);
-        app.adopt_room(&presence);
-        render_frame_with_theme(&mut app, 800.0, 600.0, &theme);
+        let removed_presence = agent_presence(&[]);
+        render_frame_with_theme_and_presence(&mut app, 800.0, 600.0, &theme, &removed_presence);
         assert!(app.room_agents.is_empty());
         assert!(app.navigation_scroll.offset_y() < before);
         assert!(app.keyboard_target_semantic.is_none());

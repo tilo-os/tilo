@@ -36,13 +36,32 @@ fn observed_tasks(host: &TaskControlHost, applied: u64, executing: bool) {
     drop(reads);
 }
 
+fn execution_presence() -> ui::presence::PresenceCtx {
+    let mut presence = ui::presence::PresenceCtx::empty();
+    presence.apply_test_collaboration_snapshot(&[
+        ui::collaboration::Collaborator {
+            id: "u_alice".into(),
+            name: "Alice".into(),
+            colour: None,
+            is_agent: false,
+            is_self: true,
+        },
+        ui::collaboration::Collaborator {
+            id: "agent:scribe".into(),
+            name: "Scribe".into(),
+            colour: None,
+            is_agent: true,
+            is_self: false,
+        },
+    ]);
+    presence
+}
+
 fn execution_fixture() -> (ChatApp, AutoCommit, Arc<TaskControlHost>) {
     let mut doc = AutoCommit::new();
     ChatDoc::seed_starter(&mut doc, "u_alice", "Alice", "AL");
     let mut app = peer("u_alice", "Alice", "AL", 0);
-    app.room_agents.push("scribe".into());
-    app.room_names
-        .insert("agent:scribe".into(), "Scribe".into());
+    app.adopt_room(&execution_presence());
     let host = Arc::new(TaskControlHost::default());
     app.agent_task_actions = ui::remote_actions::RemoteActions::with_host(
         Arc::clone(&host) as Arc<dyn ActionHost + Send + Sync>,
@@ -133,7 +152,7 @@ fn write_execution_frame(
         vello::kurbo::Affine::IDENTITY,
         &mut text,
         theme,
-        &ui::presence::PresenceCtx::empty(),
+        &execution_presence(),
     );
     let width = u32::try_from(ui::num::usize_of_f64(app.rect.width())).unwrap();
     let height = u32::try_from(ui::num::usize_of_f64(app.rect.height())).unwrap();
@@ -144,11 +163,17 @@ fn write_execution_frame(
     );
 }
 
-fn write_native_execution_frame(app: &mut ChatApp, id: &str, name: &str, theme: &ui::Theme) {
+fn write_native_execution_frame(
+    app: &mut ChatApp,
+    id: &str,
+    name: &str,
+    theme: &ui::Theme,
+    presence: &ui::presence::PresenceCtx,
+) {
     let Some(output) = std::env::var_os("TILO_CHAT_EXECUTION_SHOTS") else {
         return;
     };
-    let (_, content) = native_agent_float_frame(app, id, theme);
+    let (_, content) = native_agent_float_frame(app, id, theme, presence);
     let mut scene = vello::Scene::new();
     let mut text = ui::text_render::TextRenderer::new();
     text.set_text_scale(theme.text_scale);
@@ -159,7 +184,7 @@ fn write_native_execution_frame(app: &mut ChatApp, id: &str, name: &str, theme: 
         vello::kurbo::Affine::translate(-content.origin().to_vec2()),
         &mut text,
         theme,
-        &ui::presence::PresenceCtx::empty(),
+        presence,
     ));
     let width = u32::try_from(ui::num::usize_of_f64(content.width())).unwrap();
     let height = u32::try_from(ui::num::usize_of_f64(content.height())).unwrap();
@@ -182,7 +207,8 @@ fn actual_detached_executing_and_applied_keep_task_receipts_and_private_steer_ed
         ),
     ] {
         let (mut app, mut doc, host) = execution_fixture();
-        render_frame_with_theme(&mut app, 1600.0, 900.0, &theme);
+        let presence = execution_presence();
+        render_frame_with_theme_and_presence(&mut app, 1600.0, 900.0, &theme, &presence);
         let draft = app.composer_main.private_plain();
         let selection = app.composer_main.selection();
         for (state, executing, applied) in [
@@ -198,7 +224,7 @@ fn actual_detached_executing_and_applied_keep_task_receipts_and_private_steer_ed
         }
         // This is the actual compact host allocation from the native journey,
         // not a primary Chat render with a compact filename.
-        render_frame_with_theme(&mut app, 344.0, 472.0, &theme);
+        render_frame_with_theme_and_presence(&mut app, 344.0, 472.0, &theme, &presence);
         ui::widget::FloatingSurfaceWidgetExt::set_floating_surface_bounds(
             &mut app,
             vello::kurbo::Rect::new(0.0, 0.0, 800.0, 600.0),
@@ -222,7 +248,7 @@ fn actual_detached_executing_and_applied_keep_task_receipts_and_private_steer_ed
                 .into_iter()
                 .find(|p| p.id == request.id && p.content_rect.size() == request.preferred_size)
         });
-        let (scene, content) = native_agent_float_frame(&mut app, &request.id, &theme);
+        let (scene, content) = native_agent_float_frame(&mut app, &request.id, &theme, &presence);
         assert!(!scene.encoding().is_empty());
         assert!(content.width() <= 344.0 && content.height() <= 472.0);
         let channel = ChatDoc::agent_conversation_channel_id("ws_home", "scribe");
@@ -232,6 +258,6 @@ fn actual_detached_executing_and_applied_keep_task_receipts_and_private_steer_ed
         assert_eq!(view.composer_main.selection(), selection);
         assert_hit_in_view(view, "Steer editor", |hit| matches!(hit, Hit::FocusMain));
         assert_hit_in_view(view, "Save direction", |hit| matches!(hit, Hit::Send));
-        write_native_execution_frame(&mut app, &request.id, name, &theme);
+        write_native_execution_frame(&mut app, &request.id, name, &theme, &presence);
     }
 }
