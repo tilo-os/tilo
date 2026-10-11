@@ -282,6 +282,39 @@ impl super::App {
         changed
     }
 
+    /// Record a semantic host-authority transition for the native frame that
+    /// will synchronize its filtered resource tree. Publication is consumed
+    /// only after that sync, so an authority-only wake cannot leave the broker
+    /// on the prior successful (possibly empty) surface.
+    pub(super) fn observe_native_action_authority_change(&mut self) -> bool {
+        if !self.refresh_hosted_authority() {
+            return false;
+        }
+        self.needs_sync = true;
+        self.invalidate_widget_resource_cache();
+        // An existing bounded retry already owns publication liveness. Do not
+        // let repeated unobservable samples bypass its deadline/exhaustion.
+        if self.actions.action_surface_retry.is_none() {
+            self.actions.authority_publication_pending = true;
+        }
+        true
+    }
+
+    /// Publish a native authority transition after its widget/model sync.
+    /// A disconnected owner retains the demand for its real Ready transition;
+    /// discovery/transport failures hand responsibility to the existing
+    /// bounded fail-closed retry path.
+    pub(super) fn publish_pending_native_action_authority(&mut self) -> bool {
+        if !self.actions.authority_publication_pending
+            || !self.collaboration.manager.is_connected()
+            || !self.published_action_history_ready_after_refresh()
+        {
+            return false;
+        }
+        self.publish_action_surface();
+        true
+    }
+
     /// `None` whenever publication cannot be proven current: disconnected,
     /// nothing published yet, an evicted directory snapshot or stamp, or an
     /// exhausted generation that no longer distinguishes later mutations.

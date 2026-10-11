@@ -4056,9 +4056,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 app.last_theme_store_check = due;
             }
         }
-        if (authority_event || authority_due) && app.refresh_hosted_authority() {
-            app.needs_sync = true;
-            app.invalidate_widget_resource_cache();
+        if (authority_event || authority_due) && app.observe_native_action_authority_change() {
+            let _ = app.update_native_model();
+            let _ = app.sync_model(false);
+            app.publish_pending_native_action_authority();
             request_primary_redraw();
             for surface in &self.floating_windows {
                 surface.window.request_redraw();
@@ -4108,6 +4109,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         if idle_model.changed {
             request_primary_redraw();
         }
+        // A prior authority transition may have synchronized while its route
+        // or history was not ready. Service that retained demand on ordinary
+        // owner turns; the empty fast path neither surveys nor publishes.
+        app.publish_pending_native_action_authority();
 
         if app.reconcile_fullscreen(&window) {
             request_primary_redraw();

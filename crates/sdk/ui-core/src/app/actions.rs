@@ -820,6 +820,10 @@ impl App {
         {
             return;
         }
+        // Any ready publication attempt consumes a pending authority demand.
+        // A failed observation/send below transfers responsibility to the
+        // bounded retry state instead of causing an immediate idle loop.
+        self.actions.authority_publication_pending = false;
         if self.collaboration.manager.take_action_surface_failed() {
             // The broker did not install the last surface: nothing counts as
             // published until it acknowledges one.

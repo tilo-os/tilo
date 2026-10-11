@@ -665,6 +665,15 @@ fn assert_counter_read_surface(app: &App) {
     );
 }
 
+fn assert_counter_permissioned_surface_withdrawn(app: &App) {
+    let published = app.actions.last_published_actions.as_ref().unwrap();
+    assert!(
+        published.iter().all(|action| {
+            action.address.action != "inspect" && action.address.action != "bump"
+        })
+    );
+}
+
 fn action_publication_batches(
     sent: &Rc<RefCell<Vec<CollabRequest>>>,
 ) -> Vec<Vec<crate::collaboration::ExportedAction>> {
@@ -715,6 +724,21 @@ fn install_transient_read_authority(
     (observable, samples, sent)
 }
 
+fn denied_counter_authority() -> crate::permissions::PermissionContext {
+    crate::permissions::PermissionContext::from_capabilities(
+        crate::permissions::Actor::person(None, "fixture-user"),
+        Vec::new(),
+    )
+}
+
+fn apply_native_authority_transition(app: &mut App) -> (bool, bool) {
+    assert!(app.observe_native_action_authority_change());
+    let updated = app.update_native_model();
+    let synced = app.sync_model(false);
+    assert!(app.publish_pending_native_action_authority());
+    (updated, synced)
+}
+
 #[test]
 fn hosted_owner_read_ceiling_keeps_read_publication_and_disables_write_control() {
     let mut fixture = hosted_owned_counter();
@@ -747,6 +771,80 @@ fn hosted_owner_read_ceiling_keeps_read_publication_and_disables_write_control()
             .iter()
             .all(|action| action.address.action != "bump")
     );
+}
+
+#[test]
+fn native_authority_repair_republishes_read_without_model_or_layout_change() {
+    let mut fixture = hosted_owned_counter();
+    let sent = Rc::new(RefCell::new(Vec::new()));
+    fixture.app.collaboration.manager =
+        CollaborationManager::with_peer_transport(HostedPumpTransport {
+            sent: Rc::clone(&sent),
+            events: Rc::new(RefCell::new(Vec::new())),
+            directory: Rc::new(RefCell::new(Vec::new())),
+        });
+    let current = Arc::new(std::sync::Mutex::new(counter_owner_read_permissions()));
+    let sampled = Arc::clone(&current);
+    let deadline = Arc::new(std::sync::atomic::AtomicU64::new(
+        crate::time::try_unix_now_ms().unwrap() + 60_000,
+    ));
+    *fixture.permissions.borrow_mut() = counter_owner_read_permissions()
+        .with_live_action_authority(
+            "test.directory".into(),
+            Arc::new(move || Ok(sampled.lock().unwrap().clone())),
+            deadline,
+        );
+
+    assert!(fixture.app.pump_hosted_model_as(false).published);
+    assert_counter_read_surface(&fixture.app);
+    fixture.app.layout.layout_dirty = false;
+    let document = fixture.app.state.doc.get_heads();
+    *current.lock().unwrap() = denied_counter_authority();
+    fixture.app.collaboration.manager = CollaborationManager::disabled();
+    assert!(fixture.app.observe_native_action_authority_change());
+    let updated = fixture.app.update_native_model();
+    let synced = fixture.app.sync_model(false);
+    assert!(!updated && synced);
+    assert!(!fixture.app.layout.layout_dirty);
+    assert_eq!(fixture.app.state.doc.get_heads(), document);
+    assert!(!fixture.app.publish_pending_native_action_authority());
+    assert!(fixture.app.actions.authority_publication_pending);
+    fixture.app.collaboration.manager =
+        CollaborationManager::with_peer_transport(HostedPumpTransport {
+            sent: Rc::clone(&sent),
+            events: Rc::new(RefCell::new(Vec::new())),
+            directory: Rc::new(RefCell::new(Vec::new())),
+        });
+    assert!(fixture.app.publish_pending_native_action_authority());
+    assert_counter_permissioned_surface_withdrawn(&fixture.app);
+
+    *current.lock().unwrap() = counter_owner_read_permissions();
+    let (updated, synced) = apply_native_authority_transition(&mut fixture.app);
+    assert!(!updated && synced);
+    assert!(!fixture.app.layout.layout_dirty);
+    assert_eq!(fixture.app.state.doc.get_heads(), document);
+    assert_counter_read_surface(&fixture.app);
+    assert!(fixture.app.actions.action_surface_retry.is_none());
+    assert!(!fixture.app.actions.authority_publication_pending);
+    let settled_attempts = fixture.app.actions.action_surface_publication_attempts;
+    assert!(!fixture.app.observe_native_action_authority_change());
+    assert!(!fixture.app.publish_pending_native_action_authority());
+    assert_eq!(
+        fixture.app.actions.action_surface_publication_attempts, settled_attempts,
+        "an unchanged authority observation cannot start an idle publication loop"
+    );
+    drop(fixture);
+    let batches = action_publication_batches(&sent);
+    assert_eq!(batches.len(), 3);
+    assert!(!batches[0].is_empty());
+    assert!(
+        batches[1]
+            .iter()
+            .all(|action| action.action != "inspect" && action.action != "bump"),
+        "deny-all withdraws both permissioned actions while retaining unrelated public doors"
+    );
+    assert!(batches[2].iter().any(|action| action.action == "inspect"));
+    assert!(batches[2].iter().all(|action| action.action != "bump"));
 }
 
 #[test]
@@ -877,6 +975,13 @@ fn hosted_persistent_bound_discovery_failure_exhausts_without_polling_forever() 
     assert_eq!(
         fixture.app.actions.action_surface_publication_attempts, attempts_at_exhaustion,
         "required authority validation must not become another publication/discovery attempt"
+    );
+    assert!(fixture.app.observe_native_action_authority_change());
+    assert!(!fixture.app.actions.authority_publication_pending);
+    assert!(!fixture.app.publish_pending_native_action_authority());
+    assert_eq!(
+        fixture.app.actions.action_surface_publication_attempts, attempts_at_exhaustion,
+        "a repeated unobservable native sample cannot bypass exhausted retry admission"
     );
     assert!(
         fixture
