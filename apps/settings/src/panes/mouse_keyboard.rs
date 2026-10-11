@@ -2824,9 +2824,6 @@ impl Widget for MouseKeyboardPane {
         let child = self
             .composed
             .build_layout(composition, taffy, theme, node_map);
-        // `child` was just created in this same tree, so this call is not
-        // reachable to fail; if it (impossibly) did, wrap it in itself
-        // rather than panic this panic=abort process.
         crate::panes::pane_node(taffy, child, node_map, self)
     }
 

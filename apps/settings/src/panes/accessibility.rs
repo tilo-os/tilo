@@ -13,15 +13,11 @@
 //!   [`crate::prefs::AccessibilityPrefs`], read by the compositor's input +
 //!   accessibility layer, each set by an [`AccessibilityEffect`].
 
-use std::collections::HashMap;
-
 use settings_store::dictation::DictationLanguage;
 use settings_store::magnifier;
 use settings_store::screen_reader::ScreenReaderVoice;
-use taffy::{NodeId, TaffyTree};
 use ui::LocalState;
 use ui::framework::{EffectAnswer, EffectCx, EffectStatus};
-use ui::theme::Theme;
 use ui::tilo_resource::{self, ActionRef};
 use ui::widget::{AppModel, Dropdown, ModelPath, Toggle, Widget};
 
@@ -862,20 +858,7 @@ impl Widget for AccessibilityPane {
         self.composed.sync(state, root);
     }
 
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let composition = self.build_composition();
-        let child = self
-            .composed
-            .build_layout(composition, taffy, theme, node_map);
-        crate::panes::pane_node(taffy, child, node_map, self)
-    }
-
-    ui::forward_to_composed!(composed);
+    crate::panes::composed_pane!();
 
     fn name(&self) -> &'static str {
         "AccessibilityPane"
@@ -887,7 +870,10 @@ impl Widget for AccessibilityPane {
 mod tests {
     use super::*;
     use crate::resource::SettingsShell;
+    use std::collections::HashMap;
+    use taffy::{NodeId, TaffyTree};
     use ui::prelude::TestApp;
+    use ui::theme::Theme;
 
     fn set(app: &mut TestApp<SettingsShell>, effect: impl Into<SettingsEffect>) {
         app.effect(&effect.into())
