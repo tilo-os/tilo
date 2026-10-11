@@ -1,5 +1,5 @@
 //! End-to-end interaction and render tests for the containers app, driven
-//! through the production frame host (`ui::headless::Driver`): real layout,
+//! through the production frame host (`ui::headless::FrameHarness`): real layout,
 //! real event routing, real accessibility, and pixels read back from the
 //! renderer `--shots` uses.
 //!
@@ -22,7 +22,7 @@ use containers::app::ContainersApp;
 use containers::doc::{CreateDraft, CreateField};
 use containers::model::{DetailTab, Section, sample_engine};
 use containers::terminal;
-use ui::headless::Driver as FrameDriver;
+use ui::headless::FrameHarness as FrameDriver;
 use ui::prelude::TestApp;
 use ui::theme::Theme;
 

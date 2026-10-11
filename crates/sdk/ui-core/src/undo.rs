@@ -151,7 +151,7 @@ impl UndoRequest {
 /// Which history verb, if any, a command-modified character key means.
 ///
 /// Both the live host ([`App`](crate::app::App)) and the headless
-/// [`Driver`](crate::headless::Driver) resolve the key through this, so an app
+/// [`FrameHarness`](crate::headless::FrameHarness) resolve the key through this, so an app
 /// driven by a test scenario undoes on the same keystroke the user's fingers
 /// do. The binding itself is the host-shortcut table in
 /// [`platform`](crate::platform::HostShortcut). `character` is winit's logical
@@ -184,7 +184,7 @@ pub fn shortcut(
 /// The counterpart of [`shortcut`] for the *other* direction: the single place
 /// "an edit became an undo boundary" is written down, so a widget behaves
 /// identically under the live host ([`App`](crate::app::App)) and under the
-/// headless [`Driver`](crate::headless::Driver). Both call this once per tick.
+/// headless [`FrameHarness`](crate::headless::FrameHarness). Both call this once per tick.
 ///
 /// It matters that there is only one of these, because there are two separate
 /// ways to get it wrong and both are silent:
@@ -221,7 +221,7 @@ pub fn shortcut(
 ///
 /// `root` and the `node_map` pointers must point at widgets that are alive for
 /// the call — the invariant every `node_map` sweep in
-/// [`App`](crate::app::App) and [`Driver`](crate::headless::Driver) already
+/// [`App`](crate::app::App) and [`FrameHarness`](crate::headless::FrameHarness) already
 /// relies on. Exactly one `&mut` is live at a time, so a widget that is both
 /// the root and registered in the map is safe (and yields its bracket once,
 /// because reading clears it).

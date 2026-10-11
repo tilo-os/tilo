@@ -307,7 +307,7 @@ pub(crate) const HANG_BOUND: time::Duration = time::Duration::from_secs(30);
 
 // `kurbo` and `peniko` come through `vello`, where the geometry and paint
 // types in every `draw` signature live.
-/// The AccessKit types the bridge and [`headless::Driver`] hand back,
+/// The AccessKit types the bridge and [`headless::FrameHarness`] hand back,
 /// re-exported so an app crate can name them (`tilo_ui::accesskit::Role`) without
 /// taking its own dependency on a version that must match this one exactly.
 pub use accesskit;

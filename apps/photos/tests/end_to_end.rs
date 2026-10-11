@@ -160,7 +160,7 @@ fn library_accessibility_is_certified_and_album_actions_are_canonical() {
             .with_text_scale(2.0)
             .with_reduce_motion(true);
         let mut driver =
-            ui::headless::Driver::new_with_theme(state, Box::new(app), (390, 844), theme);
+            ui::headless::FrameHarness::new_with_theme(state, Box::new(app), (390, 844), theme);
         register(driver.action_registry_mut());
         let audit = driver.native_app_audit();
         assert!(

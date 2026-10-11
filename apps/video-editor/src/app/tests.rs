@@ -156,12 +156,12 @@ fn app_with_sample() -> VideoEditorApp {
 // ---- Accessibility: the editor's synthetic tree ----------------------
 //
 // Everything here is asserted against the REAL exported tree and the REAL
-// routed-action path, through `ui::headless::Driver` — the same bridge that
+// routed-action path, through `ui::headless::FrameHarness` — the same bridge that
 // reaches AT-SPI2 and Orca. A test that inspected `accessibility()`'s return
 // value directly would prove the app builds nodes, not that a screen reader
 // can reach or operate them.
 
-fn a11y_driver() -> ui::headless::Driver {
+fn a11y_driver() -> ui::headless::FrameHarness {
     let mut doc = AutoCommit::new();
     VideoDoc::seed_sample(&mut doc);
     let mut state = ui::State::new();
@@ -169,12 +169,12 @@ fn a11y_driver() -> ui::headless::Driver {
     let mut app = editor();
     app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
     present(&mut app, &state.doc);
-    ui::headless::Driver::for_root(state, app, (1280, 800), Theme::dark())
+    ui::headless::FrameHarness::for_root(state, app, (1280, 800), Theme::dark())
 }
 
 /// Every exported node's `(role, label)`, so a test can state what a reader
 /// would find without caring where it sits.
-fn exported(d: &ui::headless::Driver) -> Vec<(ui::accesskit::Role, String)> {
+fn exported(d: &ui::headless::FrameHarness) -> Vec<(ui::accesskit::Role, String)> {
     d.a11y_nodes()
         .into_iter()
         .map(|(_, n)| (n.role(), n.label().unwrap_or_default().to_string()))
@@ -395,7 +395,7 @@ fn clip_activation_and_held_ids_survive_deletes() {
         // pair we pick is genuinely two clips on ONE track — which is the
         // arrangement where deleting the earlier one renumbers the later one.
         let clip_nodes =
-            |d: &ui::headless::Driver| -> Vec<(ui::accesskit::NodeId, String, String)> {
+            |d: &ui::headless::FrameHarness| -> Vec<(ui::accesskit::NodeId, String, String)> {
                 d.a11y_nodes()
                     .into_iter()
                     .filter_map(|(id, n)| {
@@ -5943,11 +5943,11 @@ fn render_status_is_painted_cached_and_announced() {
     // dialog took the render off the accessibility tree with it: no progress,
     // no outcome, no failure. The only evidence was a file appearing on disk.
     //
-    // Driven through `ui::headless::Driver`, so this is the AccessKit tree a
+    // Driven through `ui::headless::FrameHarness`, so this is the AccessKit tree a
     // screen reader actually receives, dismissed the ways a user actually
     // dismisses it — including by pressing the exported Close button itself.
     {
-        type Dismiss = fn(&mut ui::headless::Driver);
+        type Dismiss = fn(&mut ui::headless::FrameHarness);
         let dismissals: [(&str, Dismiss); 3] = [
             // Outside the card: the card is centred, so the far left is clear
             // of it at this size.
@@ -5971,7 +5971,7 @@ fn render_status_is_painted_cached_and_announced() {
             // A render in flight, with the dialog that started it up.
             app.presentation.export_open = true;
             app.export_status = ExportStatus::Rendering { progress: 0.42 };
-            let mut d = ui::headless::Driver::new(state, Box::new(app), (1280, 800));
+            let mut d = ui::headless::FrameHarness::new(state, Box::new(app), (1280, 800));
             assert!(
                 d.a11y_node_named("Close export").is_some(),
                 "{how}: the dialog is up to begin with",
@@ -9498,7 +9498,8 @@ fn keyboard_and_reader_walks_follow_what_is_painted() {
             let (app, doc) = app_and_doc();
             let mut state = ui::State::new();
             state.doc = doc;
-            let mut driver = ui::headless::Driver::for_root(state, app, (w, h), theme.clone());
+            let mut driver =
+                ui::headless::FrameHarness::for_root(state, app, (w, h), theme.clone());
             let (on, off) = place(driver.root_mut::<VideoEditorApp>());
             driver.relayout();
             let bound = ui::time::Duration::from_secs(30);

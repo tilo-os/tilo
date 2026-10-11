@@ -114,7 +114,7 @@ fn reports_keep_numeric_contrast_spacing_and_visibility_evidence() {
     }
 }
 
-fn scrolling_driver(nested: bool) -> crate::headless::Driver {
+fn scrolling_driver(nested: bool) -> crate::headless::FrameHarness {
     use crate::widget::{Column, Scrollable, Text};
     let mut content = Column::new().with_intrinsic_height();
     for i in 0..40 {
@@ -134,10 +134,10 @@ fn scrolling_driver(nested: bool) -> crate::headless::Driver {
     } else {
         Box::new(inner)
     };
-    crate::headless::Driver::new(crate::State::new(), root, (400, 300))
+    crate::headless::FrameHarness::new(crate::State::new(), root, (400, 300))
 }
 
-fn wheel(driver: &mut crate::headless::Driver, physical_y: f64, scale: f64) {
+fn wheel(driver: &mut crate::headless::FrameHarness, physical_y: f64, scale: f64) {
     use winit::{
         dpi::PhysicalPosition,
         event::{DeviceId, MouseScrollDelta, TouchPhase, WindowEvent},

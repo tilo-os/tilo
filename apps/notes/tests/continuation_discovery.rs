@@ -171,7 +171,7 @@ fn notes_continuation_component_discovery_and_model_pass_are_read_only() {
     assert!(declared.iter().any(|row| row.address == address(&f, true)));
     assert!(declared.iter().any(|row| row.address == address(&f, false)));
     for _ in 0..3 {
-        live.relayout(); // Real Driver update/sync/owned component lifecycle.
+        live.relayout(); // Real FrameHarness update/sync/owned component lifecycle.
         assert_eq!(tilo_actions::door::survey(&live.resources()), declared);
         assert_eq!(snapshot(&f, &checkout), before);
         assert_eq!(revision(&f, &checkout), history);
