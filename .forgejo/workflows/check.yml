@@ -886,6 +886,15 @@ jobs:
             bash scripts/ci-run.sh "package-apps.sh ($TILO_RELEASE_APPS)" -- \
             dist/apps/package-apps.sh
 
+      - name: Report package compiler cache
+        if: always()
+        run: |
+          if [[ -n ${RUSTC_WRAPPER:-} && -x $RUSTC_WRAPPER ]]; then
+            "$RUSTC_WRAPPER" --show-stats || echo 'compiler cache statistics unavailable'
+          else
+            echo 'compiler cache disabled; no hit rate established'
+          fi
+
       - name: Selected tapps within their size budget
         run: >-
           python3 tools/perf/tapp_size_ratchet.py measure dist/app-release

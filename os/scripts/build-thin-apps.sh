@@ -82,6 +82,11 @@ unset CARGO_PROFILE_RELEASE_CODEGEN_UNITS CARGO_PROFILE_RELEASE_LTO \
 # front end, including one that builds on another machine and forwards only
 # its own allowlist of variables.
 cd "$REPO"
+# Cargo otherwise passes an absolute rustc path to the workspace wrapper.
+# Nested under sccache 0.17, that becomes a second input file and makes every
+# workspace library uncacheable. The literal name selects the same pinned
+# toolchain through rustup; retain an explicit compiler supplied by the caller.
+export RUSTC="${RUSTC:-rustc}"
 read -r -a extra_cargo_args <<< "${EXTRA_CARGO_ARGS:-}"
 if [ -n "${SDK_COMPILER_UNITS:-}" ]; then
     extra_cargo_args+=(--message-format=json-render-diagnostics)
