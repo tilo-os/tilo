@@ -4375,10 +4375,15 @@ impl Continuable for BooksApp {
             .and_then(|v| usize::try_from(v).ok())
             .unwrap_or(0);
         self.book_idx = index;
+        self.view = View::Reader;
         self.chapter = chapter;
         self.page = 0;
         self.pending_jump_block = Some(block);
+        // The accepted passage is explicit presentation. Ordinary sync must
+        // not replace it with the record's older saved reading progress.
+        self.adopt_position = false;
         self.layout = None;
+        self.dirty = true;
         true
     }
 }
