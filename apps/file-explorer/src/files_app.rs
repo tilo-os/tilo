@@ -9081,19 +9081,8 @@ impl Widget for FileExplorerWidget {
         // recovery route. The button's `on_effect` publishes a typed local
         // control action; draining it below enters the ordinary Refresh path.
         if self.error.is_some() {
-            self.state_retry.handle_event(
-                event,
-                &mut ui::widget::EventCtx {
-                    scale_factor: ctx.scale_factor,
-                    modifiers: ctx.modifiers,
-                    state: state.reborrow(),
-                    path,
-                    handled: ctx.handled,
-                    focus_target: ctx.focus_target,
-                    node_id: ctx.node_id,
-                    taffy: ctx.taffy,
-                },
-            );
+            self.state_retry
+                .handle_event(event, &mut ctx.reborrow(path, ctx.node_id));
             if *ctx.handled {
                 self.structure_dirty |= self.drain_commands();
                 return;
