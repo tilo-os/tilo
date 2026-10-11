@@ -4,7 +4,7 @@
 //! integration test run.
 use serde_json::{Value, json};
 use std::{
-    io::{BufRead, BufReader, Write},
+    io::{BufRead, BufReader, Read, Write},
     os::unix::net::UnixStream,
     path::Path,
     process::{Child, Command, Stdio},
@@ -123,16 +123,47 @@ fn first_launch_reuse_and_stale_socket_recovery() {
 #[test]
 fn simultaneous_first_launch_has_one_owner_and_mcp_eof_keeps_it_alive() {
     let profile = DaemonProfile::new();
-    let mut children: Vec<Child> = (0..5)
-        .map(|_| {
-            host(profile.path())
-                .args(["--run-app", "dev.tilo.race", "--", "/usr/bin/true"])
-                .spawn()
-                .unwrap()
-        })
-        .collect();
-    for child in &mut children {
-        assert!(child.wait().unwrap().success());
+    // Spawn every launcher before waiting, preserving simultaneous first launch.
+    let mut children = Vec::with_capacity(5);
+    for _ in 0..5 {
+        let stderr = tempfile::NamedTempFile::new_in(profile.path()).unwrap();
+        let child = host(profile.path())
+            .env("RUST_LOG", "info,tilo_runtime::daemon=debug")
+            .args(["--run-app", "dev.tilo.race", "--", "/usr/bin/true"])
+            .stderr(Stdio::from(stderr.reopen().unwrap()))
+            .spawn()
+            .unwrap();
+        children.push((child, stderr));
+    }
+    // Reap every launcher before asserting, so teardown cannot cause resets
+    // in the remaining launchers and obscure the first actual failure.
+    let mut outcomes = Vec::with_capacity(children.len());
+    for (mut child, stderr) in children {
+        let pid = child.id();
+        let status = child.wait().unwrap();
+        let mut diagnostic = Vec::new();
+        stderr
+            .reopen()
+            .unwrap()
+            .take(4096)
+            .read_to_end(&mut diagnostic)
+            .unwrap();
+        outcomes.push((pid, status, diagnostic));
+    }
+    if outcomes.iter().any(|(_, status, _)| !status.success()) {
+        for (index, (pid, status, stderr)) in outcomes.iter().enumerate() {
+            eprintln!(
+                "launcher {index}, pid {pid}, status {status}; stderr (first 4096 bytes): {}",
+                String::from_utf8_lossy(stderr)
+            );
+        }
+    }
+    for (index, (pid, status, stderr)) in outcomes.iter().enumerate() {
+        assert!(
+            status.success(),
+            "launcher {index}, pid {pid}, status {status}; stderr (first 4096 bytes): {}",
+            String::from_utf8_lossy(stderr)
+        );
     }
     let before = status(profile.path());
     let mut proxy = host(profile.path())
