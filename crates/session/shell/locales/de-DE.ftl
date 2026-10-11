@@ -2540,8 +2540,7 @@ device-fabric-error-input-cleanup-pending = Vorherige Eingaben werden noch freig
 search-provider-system-settings = Systemeinstellungen
 search-badge-settings = Einstellungen
 setting-never = Nie
-setting-minutes =
-    { $minutes ->
+setting-minutes = { $minutes ->
         [one] 1 Minute
        *[other] { $minutes } Minuten
     }
