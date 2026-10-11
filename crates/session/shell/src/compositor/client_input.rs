@@ -928,7 +928,7 @@ fn surface_at(state: &State, fb: &FrameBuilder, point: (f64, f64)) -> Option<(u6
     {
         return Some((
             surface_id,
-            crate::compositor::foreign::store().surface_origin(surface_id, rect),
+            crate::compositor::foreign::store().surface_origin(surface_id, rect, point),
         ));
     }
     if let Some((surface_id, rect)) = fb.transient_surface_hit((*x, *y))
@@ -936,7 +936,7 @@ fn surface_at(state: &State, fb: &FrameBuilder, point: (f64, f64)) -> Option<(u6
     {
         return Some((
             surface_id,
-            crate::compositor::foreign::store().surface_origin(surface_id, rect),
+            crate::compositor::foreign::store().surface_origin(surface_id, rect, point),
         ));
     }
     if let Some((surface_id, rect)) = fb.fullscreen_surface_hit((*x, *y))
@@ -944,7 +944,7 @@ fn surface_at(state: &State, fb: &FrameBuilder, point: (f64, f64)) -> Option<(u6
     {
         return Some((
             surface_id,
-            crate::compositor::foreign::store().surface_origin(surface_id, rect),
+            crate::compositor::foreign::store().surface_origin(surface_id, rect, point),
         ));
     }
     if let Some((surface_id, rect)) = fb.floating_surface_hit((*x, *y))
@@ -952,7 +952,7 @@ fn surface_at(state: &State, fb: &FrameBuilder, point: (f64, f64)) -> Option<(u6
     {
         return Some((
             surface_id,
-            crate::compositor::foreign::store().surface_origin(surface_id, rect),
+            crate::compositor::foreign::store().surface_origin(surface_id, rect, point),
         ));
     }
     let hit = {
@@ -971,7 +971,7 @@ fn surface_at(state: &State, fb: &FrameBuilder, point: (f64, f64)) -> Option<(u6
 /// over it. `None` when a modal sheet swallows the point.
 fn route_tile_point(root: u64, tile: Rect, (x, y): (f64, f64)) -> Option<(u64, (f64, f64))> {
     let store = crate::compositor::foreign::store();
-    let origin = store.surface_origin(root, tile);
+    let origin = store.surface_origin(root, tile, (x, y));
     match store.route_point(root, x - origin.0, y - origin.1) {
         crate::compositor::foreign::PointRoute::Root => Some((root, origin)),
         crate::compositor::foreign::PointRoute::Surface {
