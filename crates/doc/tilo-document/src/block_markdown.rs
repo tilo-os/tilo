@@ -24,6 +24,7 @@
 //! carry (a table, an image) read as `[kind] ^id` and are kept as they are.
 
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 
 use tilo_doc::document::{MarkSpan, MarkValue};
 use tilo_doc::snapshot::{AttrVal, BlockView};
@@ -111,7 +112,6 @@ impl Shape {
     /// How this shape is stored.
     pub(crate) fn stored(&self) -> Stored {
         use AttrVal::{Bool, Int, Str};
-        let clear = |_: ()| Want::Clear;
         match self {
             Self::Paragraph | Self::Quote | Self::Divider => Stored {
                 kind: match self {
@@ -120,23 +120,23 @@ impl Shape {
                     _ => "paragraph",
                 },
                 attrs: [
-                    ("level", clear(())),
-                    ("ordered", clear(())),
-                    ("checked", clear(())),
-                    ("code", clear(())),
-                    ("lang", clear(())),
-                    ("code_group", clear(())),
+                    ("level", Want::Clear),
+                    ("ordered", Want::Clear),
+                    ("checked", Want::Clear),
+                    ("code", Want::Clear),
+                    ("lang", Want::Clear),
+                    ("code_group", Want::Clear),
                 ],
             },
             Self::Heading(level) => Stored {
                 kind: "heading",
                 attrs: [
                     ("level", Want::Set(Int(*level))),
-                    ("ordered", clear(())),
-                    ("checked", clear(())),
-                    ("code", clear(())),
-                    ("lang", clear(())),
-                    ("code_group", clear(())),
+                    ("ordered", Want::Clear),
+                    ("checked", Want::Clear),
+                    ("code", Want::Clear),
+                    ("lang", Want::Clear),
+                    ("code_group", Want::Clear),
                 ],
             },
             Self::Bullet(indent) | Self::Numbered(indent) | Self::Checklist(indent, _) => Stored {
@@ -154,17 +154,17 @@ impl Shape {
                             _ => Want::Clear,
                         },
                     ),
-                    ("code", clear(())),
-                    ("lang", clear(())),
-                    ("code_group", clear(())),
+                    ("code", Want::Clear),
+                    ("lang", Want::Clear),
+                    ("code_group", Want::Clear),
                 ],
             },
             Self::Code(lang) => Stored {
                 kind: "paragraph",
                 attrs: [
-                    ("level", clear(())),
-                    ("ordered", clear(())),
-                    ("checked", clear(())),
+                    ("level", Want::Clear),
+                    ("ordered", Want::Clear),
+                    ("checked", Want::Clear),
                     ("code", Want::Set(Bool(true))),
                     (
                         "lang",
@@ -491,7 +491,7 @@ pub fn render(blocks: &[BlockView], shown: &BTreeMap<&str, String>, ids: bool) -
             } else {
                 view.kind.as_str()
             };
-            out.push_str(&format!("[{kind}]{}\n", id_of(view)));
+            let _ = writeln!(out, "[{kind}]{}", id_of(view));
             continue;
         };
         let Shape::Code(lang) = &shape else {
@@ -661,6 +661,30 @@ fn block_start(line: &str) -> (Shape, &str) {
     (Shape::Paragraph, rest)
 }
 
+/// The code blocks the lines of one fence say: a line is a block, named by
+/// the `^id` it ends in.
+fn code_lines(body: &[&str], lang: &str, fence: usize, ids: &Ids<'_>) -> Vec<Parsed> {
+    body.iter()
+        .map(|line| {
+            let (text, token) = split_id(line);
+            let (text, id) = match ids {
+                Ids::Known(known) => match token.and_then(known) {
+                    Some(id) => (text, Some(id)),
+                    None => (*line, None),
+                },
+                Ids::Discard => (text, None),
+            };
+            Parsed::Block(Item {
+                shape: Shape::Code((!lang.is_empty()).then(|| lang.to_owned())),
+                text: text.to_owned(),
+                marks: Vec::new(),
+                id,
+                fence: Some(fence),
+            })
+        })
+        .collect()
+}
+
 /// Parse `markdown` as the blocks it says.
 ///
 /// # Errors
@@ -688,23 +712,7 @@ pub(crate) fn parse(markdown: &str, ids: &Ids<'_>) -> Result<Vec<Parsed>, String
                 }
                 body.push(line);
             }
-            for line in body {
-                let (text, token) = split_id(line);
-                let (text, id) = match ids {
-                    Ids::Known(known) => match token.and_then(known) {
-                        Some(id) => (text, Some(id)),
-                        None => (line, None),
-                    },
-                    Ids::Discard => (text, None),
-                };
-                out.push(Parsed::Block(Item {
-                    shape: Shape::Code((!lang.is_empty()).then(|| lang.to_owned())),
-                    text: text.to_owned(),
-                    marks: Vec::new(),
-                    id,
-                    fence: Some(fence),
-                }));
-            }
+            out.extend(code_lines(&body, lang, fence, ids));
             continue;
         }
         let mut joined = String::new();
@@ -879,7 +887,7 @@ fn emphasis_end(chars: &[char], from: usize, c: char, len: usize) -> Option<usiz
         if current == '`' {
             let run = run_of(chars, at, '`');
             at = code_end(chars, at, run)
-                .map_or(at.saturating_add(run), |end| end.saturating_add(run));
+                .map_or_else(|| at.saturating_add(run), |end| end.saturating_add(run));
             continue;
         }
         if current == c {
@@ -1113,7 +1121,7 @@ mod tests {
             .iter()
             .map(|line| match line {
                 Parsed::Block(item) => (item.text.clone(), item.id.clone(), item.fence),
-                Parsed::Keep(_) => unreachable!(),
+                Parsed::Keep(_) => panic!("a block"),
             })
             .collect();
         assert_eq!(
@@ -1189,7 +1197,7 @@ mod tests {
             .into_iter()
             .map(|line| match line {
                 Parsed::Block(item) => item,
-                Parsed::Keep(_) => unreachable!(),
+                Parsed::Keep(_) => panic!("a block"),
             })
             .collect();
         let shapes: Vec<_> = items.iter().map(|item| item.shape.clone()).collect();

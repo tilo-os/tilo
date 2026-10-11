@@ -174,6 +174,10 @@ fn shifted(args: &ActionArgs, direction: i64) -> Result<RichTextAction, String> 
 }
 
 /// The declared document actions, each answering the ids it touched.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the published action table: one independent declaration per action"
+)]
 pub(crate) fn declarations() -> Vec<ActionDecl<RichText>> {
     let mut insert = vec![kind_param(false)];
     insert.push(optional(

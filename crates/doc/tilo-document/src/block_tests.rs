@@ -32,11 +32,12 @@ fn call_enveloped(
     arguments: serde_json::Value,
 ) -> Result<(serde_json::Value, tilo_actions::ActionEnvelope), String> {
     let serde_json::Value::Object(arguments) = arguments else {
-        panic!("arguments are an object")
+        return Err("arguments are an object".to_owned());
     };
     let action = tilo_resource::build_action::<RichText>(id, &arguments, 0)?;
     let before = replica.heads();
-    let encoded = tilo_actions::EncodedAction::encode(RICH_TEXT_ACTION_TYPE, &action).unwrap();
+    let encoded = tilo_actions::EncodedAction::encode(RICH_TEXT_ACTION_TYPE, &action)
+        .map_err(|error| error.to_string())?;
     let context = tilo_actions::ActionContext::for_resource(
         id,
         RichText::KIND,
@@ -54,11 +55,9 @@ fn call_enveloped(
     .map_err(|error| error.to_string())?;
     let after = replica.heads();
     let changes = replica.doc_mut().diff(&before, &after);
-    Ok((
-        block_actions::action_result_under(replica.doc(), &automerge::ROOT, id, &changes)
-            .unwrap_or_else(|| panic!("{id} answers")),
-        envelope,
-    ))
+    let answer = block_actions::action_result_under(replica.doc(), &automerge::ROOT, id, &changes)
+        .ok_or_else(|| format!("{id} answers"))?;
+    Ok((answer, envelope))
 }
 
 fn read(replica: &Replica<RichText>) -> String {
@@ -82,8 +81,10 @@ fn id_of(replica: &Replica<RichText>, prefix: &str) -> String {
         .lines()
         .find(|line| line.trim_start().starts_with(prefix))
         .and_then(|line| line.rsplit_once(" ^"))
-        .map(|(_, id)| id.to_owned())
-        .unwrap_or_else(|| panic!("no line starts with {prefix:?} in\n{}", read(replica)))
+        .map_or_else(
+            || panic!("no line starts with {prefix:?} in\n{}", read(replica)),
+            |(_, id)| id.to_owned(),
+        )
 }
 
 fn blocks(replica: &Replica<RichText>) -> Vec<tilo_doc::snapshot::BlockView> {

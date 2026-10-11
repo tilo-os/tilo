@@ -167,8 +167,8 @@ impl Resource for Notebook {
             "title": page.title,
             "parent": page.parent.map(crate::actions::page_resource_id),
             "body": crate::actions::page_body_id(page.id),
-            "markdown": read["markdown"],
-            "blocks": read["blocks"],
+            "markdown": read.get("markdown"),
+            "blocks": read.get("blocks"),
         }))
     }
 
