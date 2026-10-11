@@ -30,6 +30,7 @@ use shell::compositor::lock_screen::{self, LockOutput, LockView};
 use shell::compositor::tab_binding;
 use shell::shell::capture_protection;
 use shell::shell::state::WorkspaceTree;
+use ui::num::u32_of_f64;
 use ui::offscreen::OffscreenRenderer;
 use ui::widget::{
     AudioCaptureMode, CaptureDestination, CaptureExtent, CaptureIntent, CaptureMode, PipLayout,
@@ -43,15 +44,6 @@ const H: u32 = 900;
 /// A colour no theme paints, so a match can only be the client's pixels.
 const CLIENT: (u8, u8, u8) = (0xE0, 0x18, 0xA0);
 const TOLERANCE: u8 = 4;
-
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "float-to-int `as` saturates in Rust (no UB/wrap/panic); nothing here can misbehave"
-)]
-fn as_u32(v: f64) -> u32 {
-    v as u32
-}
 
 fn near(pixel: (u8, u8, u8, u8), rgb: (u8, u8, u8)) -> bool {
     pixel.0.abs_diff(rgb.0) <= TOLERANCE
@@ -74,8 +66,8 @@ fn interior_samples(rgba: &[u8], width: u32, rect: Rect) -> Vec<(u8, u8, u8, u8)
             samples.push(OffscreenRenderer::sample(
                 rgba,
                 width,
-                as_u32(rect.x0 + rect.width() * fx),
-                as_u32(rect.y0 + rect.height() * fy),
+                u32_of_f64(rect.x0 + rect.width() * fx),
+                u32_of_f64(rect.y0 + rect.height() * fy),
             ));
         }
     }
@@ -416,15 +408,15 @@ fn assert_prompt_withheld(
     let mut samples = 0_usize;
     let mut shown = 0_usize;
     let mut withheld = 0_usize;
-    for row in 0..as_u32(area.height() / 3.0) {
+    for row in 0..u32_of_f64(area.height() / 3.0) {
         let y = area.y0 + f64::from(row) * 3.0;
-        for column in 0..as_u32(area.width() / 3.0) {
+        for column in 0..u32_of_f64(area.width() / 3.0) {
             let x = area.x0 + f64::from(column) * 3.0;
             if mark.contains(vello::kurbo::Point::new(x, y)) {
                 continue;
             }
             samples += 1;
-            let (px, py) = (as_u32(x), as_u32(y));
+            let (px, py) = (u32_of_f64(x), u32_of_f64(y));
             if !near(OffscreenRenderer::sample(local, W, px, py), fill) {
                 shown += 1;
             }
@@ -716,4 +708,68 @@ fn disconnect_retains_the_displayed_secret_until_its_surface_is_destroyed() {
         !store().is_capture_protected(SURFACE, APP),
         "destroying the surface clears its protection latch"
     );
+}
+
+/// A popup is part of the window that opened it. While that window's app is
+/// protected, the compositor's per-wakeup pass withholds the popup from the
+/// first wakeup after it maps; once the app's protection is released, the
+/// next wakeup lets it through again. Both changes reach the pass only
+/// through its change signals (the popup list and the store's protection
+/// epoch), so a skipped re-derivation would fail here.
+#[test]
+fn a_protected_windows_popup_is_withheld_from_the_wakeup_it_maps_until_its_app_is_released() {
+    use super::closing_window_frames::{APP_ID, Harness, shown_window};
+    use shell::compositor::state::surface_id;
+    const CONNECTION: u64 = 0xCA97_0188;
+    // One wakeup, in the loop's order: fold tree writes in, then protect.
+    fn wakeup(h: &mut Harness) {
+        let state = &mut h.state;
+        state.client_input.refresh_from_tree(&state.workspace_tree);
+        state.sync_capture_protection();
+    }
+    store().release_capture_protection(CONNECTION);
+
+    let mut h = Harness::new();
+    let qh = h.queue.handle();
+    let (compositor, wm, _window, xdg, _buffer) = shown_window(&mut h);
+    store().request_app_capture_protection(CONNECTION, APP_ID, true);
+    wakeup(&mut h);
+
+    let positioner = wm.create_positioner(&qh, ());
+    positioner.set_size(32, 32);
+    positioner.set_anchor_rect(0, 0, 8, 8);
+    let menu = compositor.create_surface(&qh, ());
+    let menu_xdg = wm.get_xdg_surface(&menu, &qh, ());
+    let _popup = menu_xdg.get_popup(Some(&xdg), &positioner, &qh, ());
+    menu.commit();
+    h.pump();
+    let popups = h
+        .state
+        .xdg_popups()
+        .map(|popup| surface_id(popup.wl_surface()))
+        .collect::<Vec<_>>();
+    let [popup] = popups.as_slice() else {
+        panic!("one popup is mapped, got {popups:?}");
+    };
+
+    wakeup(&mut h);
+    assert!(
+        store().is_capture_protected(*popup, ""),
+        "the menu of a protected window is withheld from captures"
+    );
+    for _ in 0..3 {
+        wakeup(&mut h);
+        assert!(
+            store().is_capture_protected(*popup, ""),
+            "wakeups that change nothing keep it withheld"
+        );
+    }
+
+    store().release_capture_protection(CONNECTION);
+    wakeup(&mut h);
+    assert!(
+        !store().is_capture_protected(*popup, ""),
+        "once the app is no longer protected, neither is its menu"
+    );
+    store().forget(*popup);
 }

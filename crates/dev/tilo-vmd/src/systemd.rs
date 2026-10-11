@@ -366,6 +366,37 @@ fn uid_of(user: &str) -> Option<u32> {
 }
 
 impl Apply for SystemdApply {
+    fn device_action_owner(&mut self, session: &Session) -> bool {
+        let Some(home) =
+            home_of(&session.user).and_then(|home| PathBuf::from(home).canonicalize().ok())
+        else {
+            return false;
+        };
+        if !crate::disk_unlock::account_is_admin(&session.user) {
+            return false;
+        }
+        let config = self
+            .session_environment(session)
+            .into_iter()
+            .find(|(name, _)| name == "XDG_CONFIG_HOME")
+            .map_or_else(|| home.join(".config"), |(_, value)| PathBuf::from(value));
+        let Ok(identity) = config.join("tilo/identity").canonicalize() else {
+            return false;
+        };
+        identity.starts_with(&home)
+            && tilo_identity_host::provisioning::active_identity_owns_device(
+                &identity,
+                &tilo_user_identity::IdentityPaths::under(Path::new("/var/lib/tilo")),
+            )
+            .unwrap_or(false)
+    }
+    fn enroll_device_unlock(
+        &mut self,
+        uid: u32,
+        request: &tilo_vm_protocol::DeviceUnlockEnrol,
+    ) -> Result<tilo_vm_protocol::DeviceUnlockEnrolResult, DaemonError> {
+        crate::disk_unlock::enroll(uid, request)
+    }
     fn session_layer_dropin(
         &mut self,
         slot: &str,
@@ -1137,11 +1168,12 @@ fn start_input_server(
     })
 }
 
-/// The desktop layout under `~/.config/tilo`: the tree, its document and
-/// the document's meta, and the action invocations recorded against it.
-const DESKTOP_STATE: [&str; 4] = [
+/// The desktop layout under `~/.config/tilo`: the tree, its document, the
+/// document's log and meta, and the action invocations recorded against it.
+const DESKTOP_STATE: [&str; 5] = [
     "state.json",
     "state.automerge",
+    "state.automerge.log",
     "state.automerge.meta",
     "state.json.invocations",
 ];

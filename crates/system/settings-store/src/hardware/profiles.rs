@@ -42,12 +42,14 @@ impl<'a> From<&'a OutputDescriptor> for AttachedOutput<'a> {
 /// The monitors attached right now, and the key their layout is saved
 /// under.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(remote = "Self", default)]
 pub struct DisplaySet {
     pub key: String,
     /// Persistence key of each attached output → its identity token.
     pub members: BTreeMap<String, String>,
 }
+
+crate::read_through_json_value!(DisplaySet);
 
 impl DisplaySet {
     pub fn of<'a>(outputs: impl IntoIterator<Item = AttachedOutput<'a>>) -> Self {

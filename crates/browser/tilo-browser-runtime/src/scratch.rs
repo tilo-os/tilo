@@ -187,18 +187,6 @@ impl Widget for Page {
     fn wants_pointer_capture(&self) -> bool {
         self.root.wants_pointer_capture()
     }
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut ui::vello::Scene,
-        transform: ui::kurbo::Affine,
-        text: &mut ui::TextRenderer,
-        theme: &Theme,
-        presence: &ui::presence::PresenceCtx,
-        permissions: &ui::permissions::PermissionContext,
-    ) {
-        self.root
-            .draw_with_presence(scene, transform, text, theme, presence, permissions);
-    }
     fn build_layout(
         &mut self,
         tree: &mut ui::taffy::TaffyTree<()>,
@@ -228,11 +216,7 @@ impl Widget for Page {
         node: ui::taffy::NodeId,
         origin: ui::kurbo::Point,
     ) {
-        let location = tree.layout(node).map(|l| l.location).unwrap_or_default();
-        let inner = ui::kurbo::Point::new(
-            origin.x + f64::from(location.x),
-            origin.y + f64::from(location.y),
-        );
+        let inner = ui::widget::layout_rect(tree, node, origin).origin();
         if let Some(&child) = tree.children(node).unwrap_or_default().first() {
             self.root.apply_layout(tree, child, inner);
         }

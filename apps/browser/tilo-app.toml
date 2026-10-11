@@ -16,7 +16,7 @@ category = "Network"
 version  = "0.1.0"
 kind     = "app"
 runtime  = "tilo-runtime/2026.07"
-optional-runtimes = ["tilo-runtime/2026.10.4-chromium"]
+optional-runtimes = ["tilo-runtime/2026.10.9-chromium"]
 platforms = ["linux", "macos"]
 platform-reason = "Embeds a WebView engine."
 

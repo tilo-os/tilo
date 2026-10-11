@@ -15,11 +15,7 @@ use crate::resource::ClocksEffect;
 use crate::schedule::{DueEvent, OnThisDevice, shell_activity};
 use crate::transport::{ShellCommand, ShellSnapshot};
 use chrono::Utc;
-use std::{
-    collections::{BTreeSet, HashMap},
-    time::Duration,
-};
-use taffy::{NodeId, TaffyTree};
+use std::{collections::BTreeSet, time::Duration};
 use ui::framework::{Actions, Dispatcher, Setting};
 use ui::icons::Icon;
 use ui::prelude::Id;
@@ -27,11 +23,6 @@ use ui::widget::{AppModel, ModelPath};
 use ui::widget::{
     Button, Card, CardGrid, Column, Container, Element, ModelView, ProgressBar, Row, Scrollable,
     Spacer, Text, TextInput, TextInputKind, TimePicker, TimeValue, Widget,
-};
-use ui::{presence::PresenceCtx, text_render::TextRenderer, theme::Theme};
-use vello::{
-    Scene,
-    kurbo::{Affine, Point, Rect},
 };
 
 /// What the window shows: the person's clocks and this device's choices.
@@ -171,9 +162,12 @@ fn city_time(zone: &str, now: chrono::DateTime<Utc>) -> String {
     zone.parse::<chrono_tz::Tz>().map_or_else(
         |_| "Time unavailable".into(),
         |z| {
-            now.with_timezone(&z)
-                .format("%H:%M on %a %-d %b (%Z, UTC%:z)")
-                .to_string()
+            let there = now.with_timezone(&z);
+            format!(
+                "{} on {}",
+                ui::clock::time_of_day(&there),
+                there.format("%a %-d %b (%Z, UTC%:z)")
+            )
         },
     )
 }
@@ -264,7 +258,7 @@ fn world_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element {
                 &format!("clocks.world.add.{id}"),
                 &label,
                 move || {
-                    add.invoke(Clocks::ADD_WORLD_CLOCK.with((city.clone(), zone.clone())));
+                    add.submit(Clocks::ADD_WORLD_CLOCK.with((city.clone(), zone.clone())));
                     clear.set(String::new());
                 },
             ));
@@ -295,7 +289,7 @@ fn world_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element {
                                     .with_intrinsic_height()
                                     .with_rhythm(ui::tokens::Rhythm::Tight)
                                     .push(Box::new(
-                                        Text::new(&here.format("%H:%M").to_string())
+                                        Text::new(&ui::clock::time_of_day(&here))
                                             .with_role(ui::TextRole::Display),
                                     ))
                                     .push(Box::new(
@@ -357,7 +351,7 @@ fn alarms_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element 
             let repeat = repeat_summary(&alarm.weekdays());
             let row = Row::new()
                 .push(Box::new(
-                    Text::new(&alarm.local_time().format("%H:%M").to_string())
+                    Text::new(&ui::clock::time_of_day(&alarm.local_time()))
                         .with_role(ui::TextRole::LargeTitle),
                 ))
                 .push(Box::new(
@@ -468,7 +462,7 @@ fn alarms_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element 
                         )))
                         .push(primary_button("clocks.alarm.add", "Add alarm", move || {
                             let time = add_draft.get();
-                            add.invoke(Clocks::ADD_ALARM.with((
+                            add.submit(Clocks::ADD_ALARM.with((
                                 bounded_label(&add_label.get(), "Alarm"),
                                 time.hours,
                                 time.minutes,
@@ -750,7 +744,7 @@ fn timers_screen(
                                 return;
                             };
                             if secs > 0 {
-                                add.invoke(
+                                add.submit(
                                     Clocks::ADD_TIMER
                                         .with((bounded_label(&add_label.get(), "Timer"), secs)),
                                 );
@@ -1255,7 +1249,7 @@ impl ClocksApp {
         }
         for alarm in tick.finished_alarms {
             self.dispatcher
-                .invoke(Clocks::SET_ALARM_ENABLED.with((alarm, false)));
+                .submit(Clocks::SET_ALARM_ENABLED.with((alarm, false)));
         }
         for event in tick.due {
             self.remember_due(event);
@@ -1281,9 +1275,9 @@ impl ClocksApp {
                 } else {
                     Clocks::START_STOPWATCH.invoke()
                 };
-                self.dispatcher.invoke(invoke);
+                self.dispatcher.submit(invoke);
             }
-            ("lap-stopwatch", _) => self.dispatcher.invoke(Clocks::LAP.invoke()),
+            ("lap-stopwatch", _) => self.dispatcher.submit(Clocks::LAP.invoke()),
             ("close-stopwatch", _) => self.update_device(|device| {
                 device.floating_stopwatch = false;
             }),
@@ -1293,9 +1287,9 @@ impl ClocksApp {
                 } else {
                     Clocks::RESUME_TIMER.with(id)
                 };
-                self.dispatcher.invoke(invoke);
+                self.dispatcher.submit(invoke);
             }
-            ("add-minute", Some(id)) => self.dispatcher.invoke(Clocks::ADD_MINUTE.with(id)),
+            ("add-minute", Some(id)) => self.dispatcher.submit(Clocks::ADD_MINUTE.with(id)),
             ("close", Some(id)) => self.update_device(|device| {
                 device.floating_timers.remove(id.as_str());
             }),
@@ -1392,7 +1386,15 @@ fn schedules_notifications() -> bool {
     )
 }
 
-impl Widget for ClocksApp {
+impl ui::widget::Decorator for ClocksApp {
+    type Inner = dyn Widget;
+
+    fn inner(&self) -> &(dyn Widget + 'static) {
+        self.inner.as_ref()
+    }
+    fn inner_mut(&mut self) -> &mut (dyn Widget + 'static) {
+        self.inner.as_mut()
+    }
     fn sync(&mut self, d: &AppModel, p: &ModelPath) {
         let tick_base = ui::time::now();
         self.next_clock_tick = tick_base
@@ -1419,45 +1421,8 @@ impl Widget for ClocksApp {
         }
         self.inner.sync(d, p);
     }
-    fn build_layout(
-        &mut self,
-        t: &mut TaffyTree<()>,
-        th: &Theme,
-        m: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        self.inner.build_layout(t, th, m)
-    }
-    fn apply_layout(&mut self, t: &TaffyTree<()>, n: NodeId, o: Point) {
-        self.inner.apply_layout(t, n, o);
-    }
-    fn draw(
-        &mut self,
-        s: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        th: &Theme,
-        p: &PresenceCtx,
-    ) {
-        self.inner.draw(s, tf, tr, th, p);
-    }
-    fn handle_event(
-        &mut self,
-        event: &winit::event::WindowEvent,
-        ctx: &mut ui::widget::EventCtx<'_>,
-    ) {
-        self.inner.handle_event(event, ctx);
-    }
-    fn children(&self) -> Vec<&dyn Widget> {
-        vec![self.inner.as_ref()]
-    }
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        vec![self.inner.as_mut()]
-    }
     fn name(&self) -> &'static str {
         "ClocksApp"
-    }
-    fn get_rect(&self) -> Rect {
-        self.inner.get_rect()
     }
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
         Some(
@@ -1467,12 +1432,6 @@ impl Widget for ClocksApp {
                     inner.min(self.next_clock_tick)
                 }),
         )
-    }
-    fn take_structure_dirty(&mut self) -> bool {
-        self.inner.take_structure_dirty()
-    }
-    fn take_focus_reset(&mut self) -> bool {
-        self.inner.take_focus_reset()
     }
 }
 

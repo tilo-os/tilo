@@ -19,6 +19,63 @@ fn loaded_fixture() -> (
 }
 
 #[test]
+fn dictation_ime_final_uses_native_code_actions_and_system_undo() {
+    let (_directory, mut app, manifest) = loaded_fixture();
+    app.harness()
+        .perform_named("editor_view", &ui::a11y::Action::Focus)
+        .unwrap();
+    crate::test_support::editor(&mut app, |app| {
+        app.editor.set_caret_for_test(0, 0);
+    });
+    assert_eq!(
+        app.harness()
+            .ime_window()
+            .expect("focused native code field")
+            .purpose,
+        winit::window::ImePurpose::Normal
+    );
+    app.harness()
+        .send(&WindowEvent::Ime(winit::event::Ime::Preedit(
+            "temporary draft".into(),
+            None,
+        )));
+    assert_eq!(
+        cold_editor_snapshot(&mut app)["body_hash"],
+        manifest.body_hash
+    );
+    app.harness()
+        .send(&WindowEvent::Ime(winit::event::Ime::Commit(
+            "日本語 café العربية".into(),
+        )));
+    let changed = cold_editor_snapshot(&mut app);
+    assert_ne!(changed["body_hash"], manifest.body_hash);
+    assert!(crate::test_support::editor(&mut app, |app| {
+        app.editor
+            .text_for_test()
+            .starts_with("日本語 café العربية")
+    }));
+    assert!(app.undo(), "the final must be a system history action");
+    assert_eq!(
+        cold_editor_snapshot(&mut app)["body_hash"],
+        manifest.body_hash
+    );
+    assert!(app.redo());
+    assert_eq!(
+        cold_editor_snapshot(&mut app)["body_hash"],
+        changed["body_hash"]
+    );
+    crate::test_support::editor(&mut app, |app| app.editor.set_focus(false));
+    app.harness()
+        .send(&WindowEvent::Ime(winit::event::Ime::Commit(
+            "must not reach the unfocused editor".into(),
+        )));
+    assert_eq!(
+        cold_editor_snapshot(&mut app)["body_hash"],
+        changed["body_hash"]
+    );
+}
+
+#[test]
 fn native_snapshot_reports_readiness_durable_edits_and_wheel_input() {
     // Each phase builds a fresh app/fixture: edits and scroll must not leak.
     native_snapshot_of_unopened_editor_is_not_ready();
@@ -129,7 +186,7 @@ fn bottom_panel_availability_tracks_its_real_host_mode() {
         assert!(bindings.iter().any(|binding| matches!(
             &binding.kind,
             ui::widget::ControlBindingKind::Action(address)
-                if address.resource.as_str() == crate::resource::PROJECT_KIND
+                if address.resource.as_str() == <crate::project::Project as ui::tilo_resource::Resource>::KIND
                     && address.action == "toggle-bottom-panel"
         )));
         app.panel_visible
@@ -344,14 +401,10 @@ fn cold_live_continuation_opens_existing_text_and_preserves_local_focus() {
     assert_eq!(document.get_heads(), heads);
     let position: ui::text_position::TextPosition =
         serde_json::from_slice(&metadata.bytes).unwrap();
-    let file = EditorDoc::file(&document, &position.resource_id).unwrap();
-    crate::actions::CodeEditorAction::DeleteFile {
-        id: position.resource_id,
-        kind: crate::actions::EntryKind::File,
-        expected_revision: file.deletion_revision,
-    }
-    .apply(&mut document)
-    .unwrap();
+    assert!(EditorDoc::file(&document, &position.resource_id).is_some());
+    crate::actions::delete_action(&position.resource_id)
+        .apply(&mut document)
+        .unwrap();
     let deleted_heads = document.get_heads();
     assert!(!target.restore_live_continuation_metadata(&metadata, &document, &automerge::ROOT));
     assert!(target.active_file_node().is_none());

@@ -7,6 +7,9 @@ use std::path::{Path, PathBuf};
 pub struct LocalFile {
     pub path: PathBuf,
     pub track: crate::model::Track,
+    /// Decoder metadata retained when the finished pipeline is torn down.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_duration_ms: Option<u64>,
 }
 
 impl LocalFile {
@@ -75,6 +78,7 @@ impl LocalFile {
                 plays: 0,
             },
             path,
+            observed_duration_ms: None,
         })
     }
 }

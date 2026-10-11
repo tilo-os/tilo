@@ -419,7 +419,7 @@ mod tests {
             ArtifactId::new(),
             collab_types::Ed25519PublicKey::from_bytes([1; 32]),
             collab_types::AttestationId::new(),
-            collab_types::OpClass::Splice,
+            collab_types::OpKind::Change,
             std::time::SystemTime::now(),
             1,
         )

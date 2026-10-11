@@ -1,6 +1,6 @@
 //! Whole-block commands through the mounted Notes body and canonical history.
 use crate::component_support::*;
-use notes::{actions, doc::NotesDoc};
+use notes::read;
 use ui::widget::BlockContent;
 
 fn duplicate(source: &str, target: usize, group: std::ops::Range<usize>, keyboard: bool) {
@@ -9,26 +9,16 @@ fn duplicate(source: &str, target: usize, group: std::ops::Range<usize>, keyboar
     let checkout = notebook(&fixture);
     let before = fixture
         .records
-        .read(&checkout.id, |doc| {
-            NotesDoc::page_blocks(doc, fixture.child)
-        })
+        .read(&checkout.id, |doc| read::page_blocks(doc, fixture.child))
         .unwrap();
     let mut live = driver(&fixture, 97, &checkout);
-    invoke(
-        &mut live,
-        97,
-        actions::block_resource_id(fixture.child, &before[target].id),
-        "open",
-        None,
-    );
+    open_note(&mut live, 97, fixture.child, Some(&before[target].id));
     let rect = semantic_rect(&live, &format!("notes.block:{}", before[target].id));
     live.click_at(rect.x0 + 8.0, rect.center().y);
     let before_focus = before;
     let before = fixture
         .records
-        .read(&checkout.id, |doc| {
-            NotesDoc::page_blocks(doc, fixture.child)
-        })
+        .read(&checkout.id, |doc| read::page_blocks(doc, fixture.child))
         .unwrap();
     let mut expected_focus = before_focus;
     if matches!(
@@ -56,9 +46,7 @@ fn duplicate(source: &str, target: usize, group: std::ops::Range<usize>, keyboar
     }
     let after = fixture
         .records
-        .read(&checkout.id, |doc| {
-            NotesDoc::page_blocks(doc, fixture.child)
-        })
+        .read(&checkout.id, |doc| read::page_blocks(doc, fixture.child))
         .unwrap();
     assert_eq!(
         revision(&fixture, &checkout),
@@ -72,10 +60,7 @@ fn duplicate(source: &str, target: usize, group: std::ops::Range<usize>, keyboar
     assert_eq!(
         fixture
             .records
-            .read(&checkout.id, |doc| NotesDoc::page_blocks(
-                doc,
-                fixture.child
-            ))
+            .read(&checkout.id, |doc| read::page_blocks(doc, fixture.child))
             .unwrap(),
         before
     );
@@ -85,10 +70,7 @@ fn duplicate(source: &str, target: usize, group: std::ops::Range<usize>, keyboar
     assert_eq!(
         fixture
             .records
-            .read(&checkout.id, |doc| NotesDoc::page_blocks(
-                doc,
-                fixture.child
-            ))
+            .read(&checkout.id, |doc| read::page_blocks(doc, fixture.child))
             .unwrap(),
         after
     );
@@ -183,18 +165,10 @@ fn duplicate_selection_then_type(semantic: bool) {
     let checkout = notebook(&fixture);
     let before = fixture
         .records
-        .read(&checkout.id, |doc| {
-            NotesDoc::page_blocks(doc, fixture.child)
-        })
+        .read(&checkout.id, |doc| read::page_blocks(doc, fixture.child))
         .unwrap();
     let mut live = driver(&fixture, 97, &checkout);
-    invoke(
-        &mut live,
-        97,
-        actions::block_resource_id(fixture.child, &before[1].id),
-        "open",
-        None,
-    );
+    open_note(&mut live, 97, fixture.child, Some(&before[1].id));
     live.perform_named(
         "block_editor",
         &ui::a11y::Action::SetSelection {
@@ -218,9 +192,7 @@ fn duplicate_selection_then_type(semantic: bool) {
     live.type_text("!");
     let after = fixture
         .records
-        .read(&checkout.id, |doc| {
-            NotesDoc::page_blocks(doc, fixture.child)
-        })
+        .read(&checkout.id, |doc| read::page_blocks(doc, fixture.child))
         .unwrap();
     assert_eq!(
         &after[..3],
@@ -248,20 +220,12 @@ fn duplicate_refuses_viewers_and_composition_then_converges_with_peer_text() {
     use ui::tilo_resource::Invoke;
     let mut app = TestApp::<notes::NotesShell>::new().unwrap();
     let page = notes::PageId::new_v4();
-    app.invoke(
-        Invoke::apply(&notes::actions::new_page_action(
-            page,
-            None,
-            "a".into(),
-            "Copy",
-        ))
-        .unwrap(),
-    )
-    .unwrap();
+    app.invoke(Invoke::apply(&notes::actions::create_page_action(page, None, "Copy")).unwrap())
+        .unwrap();
     let rect = app.harness().targets()["block_editor"];
     app.harness().click_at(rect.x0 + 20.0, rect.y0 + 10.0);
     app.harness().type_text("Original é😀");
-    let before = app.read_document(|doc| NotesDoc::page_blocks(doc, page));
+    let before = app.read_document(|doc| read::page_blocks(doc, page));
     app.harness().send(&ui::winit::event::WindowEvent::Ime(
         ui::winit::event::Ime::Preedit("日本".into(), Some((6, 6))),
     ));
@@ -269,7 +233,7 @@ fn duplicate_refuses_viewers_and_composition_then_converges_with_peer_text() {
     app.harness().key("d");
     app.harness().set_modifiers(&[]);
     assert_eq!(
-        app.read_document(|doc| NotesDoc::page_blocks(doc, page)),
+        app.read_document(|doc| read::page_blocks(doc, page)),
         before
     );
     assert!(
@@ -290,12 +254,12 @@ fn duplicate_refuses_viewers_and_composition_then_converges_with_peer_text() {
     app.harness().key("d");
     app.harness().set_modifiers(&[]);
     assert_eq!(
-        app.read_document(|doc| NotesDoc::page_blocks(doc, page)),
+        app.read_document(|doc| read::page_blocks(doc, page)),
         before
     );
     app.set_role(ui::permissions::Role::Editor);
     let mut peer = app.peer_document();
-    NotesDoc::edit_page_body(
+    crate::component_support::edit_page_body(
         &mut peer,
         page,
         &tilo_document::RichTextAction::SpliceText {
@@ -312,14 +276,14 @@ fn duplicate_refuses_viewers_and_composition_then_converges_with_peer_text() {
     app.harness().key("d");
     app.harness().set_modifiers(&[]);
     app.merge_peer(&mut peer).unwrap();
-    let copied = app.read_document(|doc| NotesDoc::page_blocks(doc, page));
+    let copied = app.read_document(|doc| read::page_blocks(doc, page));
     assert_eq!(copied.len(), 2);
     assert_eq!(copied[0].text, "Peer Original é😀");
     assert_eq!(copied[1].text, "Original é😀");
     assert_ne!(copied[0].id, copied[1].id);
-    assert_eq!(copied, NotesDoc::page_blocks(&peer, page));
+    assert_eq!(copied, read::page_blocks(&peer, page));
     assert!(app.undo());
-    let undone = app.read_document(|doc| NotesDoc::page_blocks(doc, page));
+    let undone = app.read_document(|doc| read::page_blocks(doc, page));
     assert_eq!(undone.len(), 1);
     assert_eq!(undone[0].text, "Peer Original é😀");
 }
@@ -344,18 +308,10 @@ fn visual_table_composition_keeps_keyboard_and_semantic_copy_out_of_the_cell() {
     let checkout = notebook(&fixture);
     let before = fixture
         .records
-        .read(&checkout.id, |doc| {
-            NotesDoc::page_blocks(doc, fixture.child)
-        })
+        .read(&checkout.id, |doc| read::page_blocks(doc, fixture.child))
         .unwrap();
     let mut live = driver(&fixture, 97, &checkout);
-    invoke(
-        &mut live,
-        97,
-        actions::block_resource_id(fixture.child, &before[0].id),
-        "open",
-        None,
-    );
+    open_note(&mut live, 97, fixture.child, Some(&before[0].id));
     let id = &before[0].id;
     live.perform_semantic_named(
         "block_editor",
@@ -372,10 +328,7 @@ fn visual_table_composition_keeps_keyboard_and_semantic_copy_out_of_the_cell() {
     assert_eq!(
         fixture
             .records
-            .read(&checkout.id, |doc| NotesDoc::page_blocks(
-                doc,
-                fixture.child
-            ))
+            .read(&checkout.id, |doc| read::page_blocks(doc, fixture.child))
             .unwrap(),
         before
     );
@@ -393,9 +346,7 @@ fn visual_table_composition_keeps_keyboard_and_semantic_copy_out_of_the_cell() {
     ));
     let after = fixture
         .records
-        .read(&checkout.id, |doc| {
-            NotesDoc::page_blocks(doc, fixture.child)
-        })
+        .read(&checkout.id, |doc| read::page_blocks(doc, fixture.child))
         .unwrap();
     assert_eq!(after.len(), 1);
     assert_eq!(after[0].id, *id);

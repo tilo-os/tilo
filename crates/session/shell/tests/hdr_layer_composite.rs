@@ -22,8 +22,11 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use settings_store::hardware::OutputTransform;
 use shell::collab::colorimetry::Colorimetry;
-use shell::compositor::backend::drm::paint::{SceneDamage, VelloDrmBridge};
+use shell::compositor::backend::drm::paint::{
+    OutputSignal, OutputTarget, OutputView, SceneDamage, VelloDrmBridge,
+};
 use shell::shell::color_pipeline::{pq_eotf, pq_inverse_eotf, srgb_eotf};
 use shell::shell::hdr_surface::{
     CompositeTarget, HdrLayer, HdrLayerRecording, HdrPlane, SurfaceSignal, composite_hdr_pixel,
@@ -32,6 +35,7 @@ use shell::shell::hdr_surface::{
 use shell::shell::hdr_tonemap::{
     HdrTonemapConfig, tonemap_rgb_signal_to_sdr_linear, tonemap_rgb_signal_to_srgb8,
 };
+use shell::shell::render::OutputId;
 use ui::dmabuf_import::ImportedRenderTarget;
 use vello::Scene;
 use vello::kurbo::{Affine, Rect, RoundedRect};
@@ -498,12 +502,13 @@ fn the_hdr_composite_fits_the_frame_budget() {
     // Pipelines and the plane upload are paid once, not per frame.
     time(&[], 1);
     time(&layers, 2);
-    let median = |mut samples: Vec<Duration>| {
-        samples.sort();
-        samples[samples.len() / 2]
-    };
-    let plain = median((0..5).map(|i| time(&[], 10 + i)).collect());
-    let composited = median((0..5).map(|i| time(&layers, 20 + i)).collect());
+    // Alternate the two so load on a shared runner lands on both, and keep
+    // each one's fastest frame: noise only ever adds time.
+    let (mut plain, mut composited) = (Duration::MAX, Duration::MAX);
+    for i in 0..5 {
+        plain = plain.min(time(&[], 10 + 2 * i));
+        composited = composited.min(time(&layers, 11 + 2 * i));
+    }
     let extra = composited.saturating_sub(plain);
     let adapter = bridge.adapter_info().expect("adapter");
     eprintln!(
@@ -522,4 +527,71 @@ fn the_hdr_composite_fits_the_frame_budget() {
         "the HDR composite adds {extra:?} per frame on {} (allowance {allowance:?})",
         adapter.name
     );
+}
+
+/// The scanout pixel that shows scene pixel `(x, y)` of a `WIDTH`×`HEIGHT` output turned by
+/// `transform` (`scanout::logical_to_physical_point`).
+fn scanout_pixel((x, y): (u32, u32), transform: OutputTransform) -> (u32, u32) {
+    match transform {
+        OutputTransform::Normal => (x, y),
+        OutputTransform::Rotate90 => (HEIGHT - 1 - y, x),
+        OutputTransform::Rotate180 => (WIDTH - 1 - x, HEIGHT - 1 - y),
+        OutputTransform::Rotate270 => (y, WIDTH - 1 - x),
+    }
+}
+
+#[test]
+fn a_rotated_output_composites_hdr_layers_where_the_scene_puts_them() {
+    // A rotated HDR output renders direct: its surface is upright and the composite reads
+    // each scanout pixel from the surface pixel (and the layer texel) it shows. Every probe
+    // keeps its light at its turned position, so a layer tested or sampled at the unturned
+    // position shows up as the wrong light.
+    let mut bridge = VelloDrmBridge::new(WIDTH, HEIGHT).expect("a real wgpu adapter");
+    let (scene, layers) = scene();
+    let probes = probes();
+    for (revision, transform) in (1..).zip([
+        OutputTransform::Normal,
+        OutputTransform::Rotate90,
+        OutputTransform::Rotate180,
+        OutputTransform::Rotate270,
+    ]) {
+        let view = OutputView::at(OutputId(0), (0, 0), (WIDTH, HEIGHT)).oriented(transform);
+        let (width, height) = view.target_size();
+        let target = target(&bridge, width, height);
+        bridge
+            .paint_output_into(
+                &scene,
+                &view,
+                SceneDamage {
+                    revision,
+                    previous_revision: None,
+                    regions: None,
+                },
+                OutputTarget {
+                    view: &target.view,
+                    format: target.format,
+                    size: (width, height),
+                    orientation: transform,
+                },
+                Instant::now() + Duration::from_secs(30),
+                OutputSignal {
+                    sdr_white_nits: SDR_WHITE,
+                    hdr_layers: &layers,
+                    color_lut: None,
+                    layers: None,
+                },
+            )
+            .expect("the frame renders");
+        let nits = read_nits(&bridge, &target);
+        for probe in &probes {
+            let (x, y) = scanout_pixel(probe.at, transform);
+            assert_close(
+                &format!("{transform:?} GPU composite, {}", probe.name),
+                nits[(y * width + x) as usize],
+                probe.hdr,
+                0.04,
+                0.5,
+            );
+        }
+    }
 }

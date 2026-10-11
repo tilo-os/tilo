@@ -15,7 +15,7 @@ use crate::{
 use automerge::AutoCommit;
 use std::{
     cell::{Cell, RefCell},
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     rc::Rc,
 };
 use taffy::{Dimension, FlexDirection, NodeId, Size, Style, TaffyTree};
@@ -35,7 +35,7 @@ enum Command {
     NextPage,
     Scope(usize),
     Review(review::ReviewCommand),
-    FileParent(collab_types::FileVersionId),
+    FileParent(fs_protocol::FileVersionId),
     FileUndo,
     FileRedo,
     FileCheck,
@@ -91,7 +91,7 @@ pub struct HistoryHost {
     controller: Option<HistoryController>,
     files: Option<super::files_session::FileController>,
     retired_files: Vec<super::files_session::FileController>,
-    requested_file_version: Option<collab_types::FileVersionId>,
+    requested_file_version: Option<fs_protocol::FileVersionId>,
     observed_file_binding: Option<uuid::Uuid>,
     file_target_resolved: bool,
     toolbar: Column,
@@ -142,6 +142,12 @@ pub struct HistoryHost {
     body_node: Option<NodeId>,
     timeline_node: Option<NodeId>,
     canvas_node: Option<NodeId>,
+    /// What the frame being drawn painted ([`Self::draw_compared`]), and
+    /// what the last presented frame did ([`Self::paint_presented`]).
+    #[cfg(feature = "native")]
+    painting: Option<Scene>,
+    #[cfg(feature = "native")]
+    painted: Option<Scene>,
 }
 impl HistoryHost {
     /// Request the same read-only presentation as the History button. Restore
@@ -280,7 +286,7 @@ impl HistoryHost {
             review: None,
             review_request: None,
             review_node: None,
-            clock: review::unix_now,
+            clock: crate::time::try_unix_now,
             controller,
             files: None,
             retired_files: vec![],
@@ -327,9 +333,46 @@ impl HistoryHost {
             control_domain: None,
             control_lease: None,
             invalid_owner: false,
+            #[cfg(feature = "native")]
+            painting: None,
+            #[cfg(feature = "native")]
+            painted: None,
         };
         host.rebuild_toolbar();
         Ok(host)
+    }
+
+    /// Draw into a scene of its own, append that to `scene`, and say whether
+    /// it differs from what the last presented frame painted: a window that
+    /// shows the live app under an unchanged History toolbar repaints only
+    /// what the app's widgets damage.
+    #[cfg(feature = "native")]
+    pub(crate) fn draw_compared(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut crate::text_render::TextRenderer,
+        (theme, presence): (&crate::theme::Theme, &crate::presence::PresenceCtx),
+    ) -> bool {
+        let mut own = self.painting.take().unwrap_or_default();
+        own.reset();
+        Widget::draw(self, &mut own, transform, text, theme, presence);
+        scene.append(&own, None);
+        let changed = self.painted.as_ref().map_or_else(
+            || !own.encoding().draw_tags.is_empty(),
+            |was| !was.encoding_eq(&own),
+        );
+        self.painting = Some(own);
+        changed
+    }
+
+    /// The frame drawn last was presented: what the next frame's paint is
+    /// compared with.
+    #[cfg(feature = "native")]
+    pub(crate) fn paint_presented(&mut self) {
+        if let Some(painting) = self.painting.take() {
+            self.painted = Some(painting);
+        }
     }
     pub(crate) fn set_control_domain(&mut self, domain: &crate::ControlDomain) {
         self.control_domain = Some(domain.clone());
@@ -656,7 +699,7 @@ impl HistoryHost {
                     super::owner::OwnerKind::Component(binding) => {
                         let origin = super::pending_controls::PendingControlOrigin::Component(
                             crate::bound_dispatch::BoundActionTarget {
-                                physical_text: false,
+                                input: crate::bound_dispatch::Input::Discrete,
                                 binding: binding.clone(),
                                 address: crate::bound_dispatch::BoundActionAddress {
                                     instance_id: binding.instance_id,
@@ -871,17 +914,14 @@ impl HistoryHost {
     #[cfg(test)]
     pub(crate) fn activate_retained_control_for_test(&mut self, id: &str) -> bool {
         fn activate(widget: &mut dyn Widget, id: &str) -> bool {
-            if widget.test_id() == Some(id) {
-                return widget.perform_action(
+            crate::widget::find_test_id_mut(widget, id).is_some_and(|widget| {
+                widget.perform_action(
                     &crate::a11y::Action::Activate,
+                    &[],
                     &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
                     &automerge::ROOT,
-                );
-            }
-            widget
-                .children_mut()
-                .into_iter()
-                .any(|child| activate(child, id))
+                )
+            })
         }
         // Invokes the retained production button callback. No phase, lease,
         // descriptor, or producer behavior is replaced by this access seam.
@@ -986,17 +1026,40 @@ impl HistoryHost {
     pub(crate) fn returning_live(&self) -> bool {
         self.returning_live
     }
-    pub(crate) fn owns_node(&self, node: NodeId, tree: &TaffyTree<()>) -> bool {
-        let mut pending: Vec<_> = [
+    fn owned_layout_roots(&self) -> [Option<NodeId>; 5] {
+        [
             self.toolbar_node,
             self.timeline_node,
             self.canvas_node,
             self.unavailable_node,
             self.review_node,
         ]
-        .into_iter()
-        .flatten()
-        .collect();
+    }
+    pub(crate) fn extend_focus_denials(&self, tree: &TaffyTree<()>, denied: &mut HashSet<NodeId>) {
+        if !self.captures_input() && !self.has_saved_focus() {
+            return;
+        }
+        let mut owned = HashSet::new();
+        let mut pending: Vec<_> = self.owned_layout_roots().into_iter().flatten().collect();
+        while let Some(node) = pending.pop() {
+            if owned.insert(node) {
+                pending.extend(tree.children(node).unwrap_or_default());
+            }
+        }
+        let mut pending: Vec<_> = self.chrome_node.into_iter().collect();
+        while let Some(node) = pending.pop() {
+            if owned.contains(&node) {
+                continue;
+            }
+            // Ownership is exempted per surface, before combining denials.
+            // An already denied parent may still have descendants exempted by
+            // another surface, so its children must always be visited here.
+            denied.insert(node);
+            pending.extend(tree.children(node).unwrap_or_default());
+        }
+    }
+    pub(crate) fn owns_node(&self, node: NodeId, tree: &TaffyTree<()>) -> bool {
+        let mut pending: Vec<_> = self.owned_layout_roots().into_iter().flatten().collect();
         while let Some(candidate) = pending.pop() {
             if candidate == node {
                 return true;
@@ -1454,7 +1517,7 @@ impl HistoryHost {
                                 .with_spellcheck(false)
                                 .with_autocorrect(false)
                                 .with_id(&format!("{id}-phrase"))
-                                .with_placeholder(&I18nManager::format(
+                                .with_placeholder(I18nManager::format(
                                     "history-mode-type-to-confirm",
                                     &[("phrase", expected.into())],
                                 ))
@@ -1679,6 +1742,7 @@ pub(super) fn unavailable_state(reason: &str) -> crate::widget::EmptyState {
         .with_icon(crate::icons::Icon::History)
         .with_message(I18nManager::lookup_plain(reason))
 }
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 #[path = "refresh_heads_tests.rs"]
 mod refresh_heads_tests;

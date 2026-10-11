@@ -7,6 +7,7 @@ import {resolve, join, extname} from 'node:path';
 import {createInterface} from 'node:readline';
 import {launch} from '../../../../../tools/web/chrome.mjs';
 import {mountChat} from './mount-chat.mjs';
+import {observe} from './observe.mjs';
 
 const bundle = resolve(process.argv[2]);
 assert.ok(existsSync(join(bundle, 'resource.html')), 'built resource entry is required');
@@ -33,12 +34,22 @@ const fixture = JSON.parse((await lines.next()).value);
 if (fixture.encryptedRestart) assert.notEqual(process.getuid?.(), 0, 'cold encrypted resource requires an unprivileged sandboxed browser');
 process.env.CHROME ??= '/usr/bin/chromium-browser';
 let browser;
+let tab;
+let observer;
 const stages = [];
-const stage = name => {stages.push(name); process.stdout.write(JSON.stringify({stage: name}) + '\n');};
+const stage = name => {stages.push(name); observer?.mark(name); process.stdout.write(JSON.stringify({stage: name}) + '\n');};
 const evidence = resolve(fixture.encryptedRestart ? 'target/mounted-resource-encrypted' : fixture.disconnectRetry ? 'target/mounted-resource-recovery' : 'target/mounted-resource');
 mkdirSync(evidence, {recursive:true});
 const deadline = setTimeout(async () => {
+  const pageStatus = await Promise.race([
+    tab?.evaluate('document.querySelector("#status")?.textContent ?? ""', {timeout:250})
+      .catch(() => 'status unavailable'),
+    new Promise(resolve => setTimeout(() => resolve('status observation unavailable'), 250)),
+  ]);
+  writeFileSync(join(evidence, 'failure.json'), JSON.stringify({phase:'timeout',
+    lastStage:stages.at(-1) ?? null, pageStatus: String(pageStatus ?? '').slice(0, 500)}, null, 2) + '\n');
   console.error('Mounted resource journey exceeded its 130-second bound');
+  await observer?.finish().catch(error => console.error('main-thread evidence unavailable', error));
   await browser?.close();
   server.close();
   process.exit(1);
@@ -49,7 +60,8 @@ try {
   browser = await launch({args: ['--ignore-certificate-errors', '--enable-features=Vulkan',
     '--use-vulkan=swiftshader', '--use-angle=swiftshader',
     ...(process.getuid?.() === 0 ? ['--no-sandbox'] : [])]});
-  const tab = await browser.tab();
+  tab = await browser.tab();
+  observer = await observe(browser, tab, evidence);
   await tab.navigate(origin + '/fixture.html');
   await tab.waitFor('document.readyState === "complete"');
   await tab.send('Page.bringToFront');
@@ -58,10 +70,21 @@ try {
   assert.equal(permission.error, undefined, JSON.stringify(permission.error));
   const supplied = await tab.send('Runtime.evaluate', {expression:`window.fixture = ${JSON.stringify(fixture)}; void 0`});
   assert.equal(supplied.result?.exceptionDetails, undefined, 'fixture bootstrap could not be supplied');
+  observer.mark('mount-start');
   const initialized = await mountChat(tab);
   assert.equal(initialized.error, undefined, JSON.stringify(initialized));
   await tab.waitFor('document.querySelector("canvas")?.width > 0');
   assert.ok((await tab.evaluate('mount.actions(fixture.reference.id)')).some(action => action.address.action === 'reveal-message-range'));
+  if (fixture.encryptedRestart) {
+    const read = await tab.evaluate("mount.invokeAction(fixture.channel, 'read-messages', {pageSize:32})");
+    assert.equal(read.state, 'completed');
+    const original = read.output.value.content.messages.find(message => message.id === fixture.reference.id.split('/').pop());
+    assert.ok(original, 'the exact original message must be readable');
+    assert.equal(original.author, fixture.sourceAuthor, 'remote message retains the certified foreign writer identity');
+    assert.notEqual(original.author, fixture.root, 'the original author must differ from the viewing person');
+    assert.notEqual(fixture.sourcePeople.find(person => person.id === original.author)?.name, 'You', 'an unnamed writer must not persist the current-reader label as a shared name');
+    writeFileSync(join(evidence, 'identity-boundary.json'), JSON.stringify({writer:original.author, viewer:fixture.root, sourcePeople:fixture.sourcePeople, semantics:await tab.evaluate('mount.state().semantics')}, null, 2));
+  }
   stage('compiled-native-chat-mounted-exact-range');
   const initialShot = await tab.screenshot();
   assert.ok(initialShot?.length, 'the mounted fixture must produce a rendered frame');
@@ -131,7 +154,7 @@ try {
       message.text === 'Native fixture while browser disconnected').length, 0,
     'the disconnected browser must not already have received the new native post');
     const queued = await tab.evaluate(`mount.invokeAction(fixture.channel, 'post',
-      {value:'Browser fixture queued during disconnect'})`);
+      {text:'Browser fixture queued during disconnect'})`);
     assert.equal(queued.state, 'completed', 'the original local post must complete once');
     await tab.evaluate('mount.flush()');
     await tab.waitFor('peer.getSnapshot().outgoingPending > 0 && !peer.getSnapshot().health.transport.authenticated');
@@ -164,13 +187,17 @@ try {
   }
   await tab.evaluate('(async()=>{await (await import("/resource-session.mjs")).closeResourceOperation(operation); return document.querySelectorAll("canvas").length;})()');
   const link = await tab.evaluate('link');
+  observer.mark('navigate-link');
   await tab.navigate(link);
   await tab.waitFor('document.querySelector("select")?.options.length === 2');
   await tab.evaluate('document.querySelector("select").value = Array.from(document.querySelector("select").options).find(option=>option.textContent.includes("Unadmitted")).value; document.querySelector("#open").requestSubmit();');
   await tab.waitFor('document.querySelector("#status").textContent.includes("no existing browser device")');
   stage('explicit-unadmitted-account-refused-without-enrollment');
+  observer.mark('reader-submit');
   await tab.evaluate('document.querySelector("select").value = Array.from(document.querySelector("select").options).find(option=>option.textContent === "Fixture reader").value; document.querySelector("#open").requestSubmit();');
-  await tab.waitFor('document.querySelector("#status").textContent === "Shared resource open. Leave to close this session."');
+  await tab.waitFor('document.querySelector("#status").textContent !== "Checking your existing admission…" && document.querySelector("#status").textContent !== ""');
+  assert.equal(await tab.evaluate('document.querySelector("#status").textContent'),
+    'Shared resource open. Leave to close this session.', 'the admitted reader must reopen the shared resource');
   assert.ok(await tab.evaluate('document.querySelector("#surface canvas")?.width > 0'));
   stage('production-account-choice-and-resource-page-mount');
   await tab.evaluate('document.querySelector("#leave").click()');
@@ -182,17 +209,35 @@ try {
   stage('page-navigation-reopens-existing-account-picker');
   stage('revoke');
   assert.equal(JSON.parse((await lines.next()).value).revoked, true);
+  observer.mark('revoked-reader-submit');
   await tab.evaluate('document.querySelector("select").value = Array.from(document.querySelector("select").options).find(option=>option.textContent === "Fixture reader").value; document.querySelector("#open").requestSubmit();');
   await tab.waitFor('document.querySelector("#status").textContent !== "Checking your existing admission…" && document.querySelector("#status").textContent !== ""', {timeout:45_000});
   assert.equal(await tab.evaluate('document.querySelectorAll("canvas").length'), 0);
   assert.notEqual(await tab.evaluate('document.querySelector("#status").textContent'), 'Shared resource open. Leave to close this session.');
   stage('governed-revocation-refuses-link-reopen');
+  // A page that cannot run is not open. Created synchronously, vello's
+  // pipelines held the browser's GPU thread and blocked the reopened page
+  // for 24-31 s here; what remains under SwiftShader is a few seconds.
+  assert.ok(observer.presentedMounts() >= 2, 'the main-thread observer must see both mounts present');
+  const longest = observer.longestStall();
+  assert.ok(longest.ms < 15_000, `the page's main thread stalled ${longest.ms} ms on ${longest.url}`);
   writeFileSync(join(evidence, 'journey.json'), JSON.stringify({mode: fixture.encryptedRestart ? 'certified-browser-encrypted-cold' : fixture.disconnectRetry ? 'certified-browser-disconnect-retry' : 'certified-browser-viewer',
     app:'so.tilo.chat', stages}, null, 2) + '\n');
+} catch (error) {
+  const pageStatus = await Promise.race([
+    tab?.evaluate('document.querySelector("#status")?.textContent ?? ""', {timeout:250})
+      .catch(() => 'status unavailable'),
+    new Promise(resolve => setTimeout(() => resolve('status observation unavailable'), 250)),
+  ]);
+  writeFileSync(join(evidence, 'failure.json'), JSON.stringify({phase:'error',
+    lastStage:stages.at(-1) ?? null, pageStatus:String(pageStatus ?? '').slice(0, 500),
+    error:String(error).slice(0, 500)}, null, 2) + '\n');
+  throw error;
 } finally {
   clearTimeout(deadline);
   input.close();
   process.stdin.pause();
+  await observer?.finish().catch(error => console.error('main-thread evidence unavailable', error));
   await browser?.close();
   await new Promise(done => server.close(done));
 }

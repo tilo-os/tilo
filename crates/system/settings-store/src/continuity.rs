@@ -28,10 +28,6 @@ pub enum SettingScope {
     Derived,
 }
 
-/// Backwards-compatible name for consumers that only ask the continuity
-/// question. New code should use [`SettingScope`].
-pub type ContinuityClass = SettingScope;
-
 /// One reviewed leaf in the shared settings schema.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ContinuityPolicy {
@@ -54,6 +50,9 @@ policies! {
         "tilo.accessibility.cursor_size",
         "tilo.accessibility.screen_reader",
         "tilo.accessibility.on_screen_keyboard",
+        // Recognition language describes the person, not a microphone or grant.
+        "tilo.accessibility.dictation_language",
+        "tilo.accessibility.dictation_literal",
         "tilo.accessibility.sticky_keys",
         "tilo.accessibility.slow_keys",
         "tilo.accessibility.bounce_keys",
@@ -72,7 +71,6 @@ policies! {
         "tilo.accessibility.switch_scan_ms",
         "tilo.accessibility.screen_reader_rate",
         "tilo.accessibility.screen_reader_voice",
-        "tilo.appearance.theme",
         "tilo.appearance.mode",
         "tilo.appearance.dark_theme",
         "tilo.appearance.light_theme",
@@ -106,7 +104,6 @@ policies! {
         "tilo.notifications.show_badges",
         "tilo.notifications.focus",
         "tilo.notifications.per_app",
-        "tilo.input.natural_scroll",
         "tilo.input.touchpad_natural_scroll",
         "tilo.input.mouse_natural_scroll",
         "tilo.input.tap_to_click",
@@ -137,6 +134,9 @@ policies! {
         "tilo.display.night_light",
         "tilo.display.night_light_schedule",
         "tilo.display.night_light_temperature",
+        // Where each of the person's displays sits across their devices.
+        // Each device's own modes and screen layout stay device-local.
+        "tilo.display.arrangement",
         "tilo.shortcuts.bindings",
         "tilo.desktop_controls.vim_mode",
         "tilo.quick_settings.controls",
@@ -157,6 +157,8 @@ policies! {
         "tilo.input.touchpad_enabled",
         "tilo.input.host_input_migration_version",
         // Physical model and explicit inspection choices stay with this device.
+        // Assignments identify physical devices on this host, unlike personal source order.
+        "tilo.input.keyboard_assignments",
         "tilo.input.keyboard_model",
         "tilo.input.keyboard_preview",
         "tilo.input.keyboard_preview_extra_levels",
@@ -191,6 +193,7 @@ policies! {
         "tilo.continuity.wifi_settings",
         "tilo.continuity.media",
         "tilo.continuity.display_input",
+        "tilo.continuity.automatic_display_input",
         "tilo.continuity.file_transfer",
         "tilo.continuity.realtime_sessions",
         "tilo.continuity.typed_gamepad",
@@ -407,16 +410,17 @@ mod tests {
                 "tilo.continuity.wifi_settings",
                 "tilo.continuity.media",
                 "tilo.continuity.display_input",
+                "tilo.continuity.automatic_display_input",
                 "tilo.continuity.file_transfer",
                 "tilo.continuity.realtime_sessions",
                 "tilo.continuity.typed_gamepad",
                 "tilo.continuity.app_continuations",
             ] {
-                assert_eq!(classify(key), Some(ContinuityClass::DeviceLocal), "{key}");
+                assert_eq!(classify(key), Some(SettingScope::DeviceLocal), "{key}");
             }
             assert_eq!(
                 classify("tilo.continuity.audit"),
-                Some(ContinuityClass::Derived)
+                Some(SettingScope::Derived)
             );
         }
         // Phase `unknown_settings_fail_closed`.

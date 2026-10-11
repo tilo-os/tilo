@@ -11,7 +11,7 @@
 //! whatever notification surface the host prefers.
 
 use std::collections::VecDeque;
-use ui::clock::{Duration, Instant};
+use ui::time::{Duration, Instant};
 
 use crate::i18n::t_args;
 

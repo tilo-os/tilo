@@ -20,6 +20,11 @@ pub struct ExecutingPeer {
     credentials: UCred,
     pidfd: OwnedFd,
 }
+impl AsFd for ExecutingPeer {
+    fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> {
+        self.pidfd.as_fd()
+    }
+}
 impl ExecutingPeer {
     /// Kernel process ID, meaningful only while the retained pidfd is current.
     #[must_use]
@@ -41,6 +46,33 @@ impl ExecutingPeer {
     #[must_use]
     pub fn into_pidfd(self) -> OwnedFd {
         self.pidfd
+    }
+
+    /// Receive one bounded message only from this still-live executing task.
+    ///
+    /// The owner arms credentials before handing out the connected descriptor.
+    /// A descendant inheriting the FD cannot impersonate its pinned producer.
+    /// This proves process custody, not resource or application authority.
+    ///
+    /// # Errors
+    /// Refuses a changed/dead sender, rights, truncation or an empty message.
+    pub fn receive_packet(&self, socket: &impl AsFd, message: &mut [u8]) -> io::Result<usize> {
+        if message.is_empty() || message.len() > 16384 {
+            return Err(refused("native message bound is invalid"));
+        }
+        let chunk = receive_chunk(socket, message)?;
+        if chunk.invalid
+            || chunk.count == 0
+            || chunk.count > message.len()
+            || !chunk.rights.is_empty()
+            || chunk.credentials != Some(self.credentials)
+            || !self.current()
+        {
+            return Err(refused(
+                "native message does not belong to its pinned producer",
+            ));
+        }
+        Ok(chunk.count)
     }
 
     /// Confirm this pinned task belongs to this still-live launch instance.

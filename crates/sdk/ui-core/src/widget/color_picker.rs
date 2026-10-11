@@ -246,14 +246,6 @@ impl ColorPicker {
         self
     }
 
-    /// Replace the swatch palette (see [`Self::with_swatches`]).
-    pub fn set_swatches(&mut self, swatches: impl IntoIterator<Item = ColorSwatch>) {
-        self.swatches = swatches.into_iter().collect();
-        if self.rect != Rect::ZERO {
-            self.apply_layout_external(self.rect);
-        }
-    }
-
     /// Confirm mode: paint `title` above the picker and *Cancel* / *Done*
     /// below it. Edits stay pending — [`Self::color`] follows them and
     /// [`Self::take_changed`] still reports them for a live preview — while
@@ -551,18 +543,6 @@ impl ColorPicker {
         self
     }
 
-    /// Narrows a layout/measurement value to `f32` for vello/taffy. Every
-    /// call site here is a screen-space coordinate or a fraction already
-    /// clamped to `0.0..=1.0`, always far below `f32::MAX`, so the
-    /// truncation the lint warns about can't actually occur.
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "screen-space pixel values and 0.0..=1.0 fractions in this widget never approach f32::MAX"
-    )]
-    fn px(v: f64) -> f32 {
-        v as f32
-    }
-
     /// Round a float already known to sit in `0.0..=255.0` down to its
     /// `u8` channel value. Callers clamp immediately before calling this,
     /// so the cast can never truncate or lose a sign.
@@ -650,8 +630,12 @@ impl ColorPicker {
     /// Map a press inside `sv_rect` to saturation (x) and value (y): top
     /// left is sat=0/value=1, matching the standard SV-square convention.
     fn sv_from_point(&self, p: Point) -> (f32, f32) {
-        let sx = Self::px(((p.x - self.sv_rect.x0) / self.sv_rect.width()).clamp(0.0, 1.0));
-        let sy = Self::px(((p.y - self.sv_rect.y0) / self.sv_rect.height()).clamp(0.0, 1.0));
+        let sx = crate::num::f32_of_f64(
+            ((p.x - self.sv_rect.x0) / self.sv_rect.width()).clamp(0.0, 1.0),
+        );
+        let sy = crate::num::f32_of_f64(
+            ((p.y - self.sv_rect.y0) / self.sv_rect.height()).clamp(0.0, 1.0),
+        );
         let s = sx;
         let v = 1.0 - sy;
         (s, v)
@@ -659,11 +643,13 @@ impl ColorPicker {
 
     /// Hue from cursor y in the hue strip rect, 0..1 top to bottom.
     fn hue_from_point(&self, p: Point) -> f32 {
-        Self::px(((p.y - self.hue_strip_rect.y0) / self.hue_strip_rect.height()).clamp(0.0, 1.0))
+        crate::num::f32_of_f64(
+            ((p.y - self.hue_strip_rect.y0) / self.hue_strip_rect.height()).clamp(0.0, 1.0),
+        )
     }
 
     fn channel_from_point(slider_rect: Rect, p: Point) -> f32 {
-        Self::px(crate::widget::SliderFace::new(slider_rect, 0.0).value_at(p))
+        crate::num::f32_of_f64(crate::widget::SliderFace::new(slider_rect, 0.0).value_at(p))
     }
 
     fn target_at(&self, p: Point) -> Option<DragTarget> {
@@ -887,7 +873,7 @@ impl ColorPicker {
             title,
             theme.tokens.colors.text_primary,
             transform.pre_translate(Vec2::new(self.title_rect.x0, y)),
-            Some(Self::px(self.title_rect.width())),
+            Some(crate::num::f32_of_f64(self.title_rect.width())),
             &style.clone().with_weight(TextWeight::Semibold),
         );
     }
@@ -1004,10 +990,12 @@ impl Widget for ColorPicker {
     ) -> NodeId {
         // Its preferred size, narrowed to what the parent gives; the height
         // then follows the width it got (`adjust_layout_style`).
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
-                width: Dimension::length(Self::px(PICKER_WIDTH)),
-                height: Dimension::length(Self::px(self.content_height(PICKER_WIDTH))),
+                width: Dimension::length(crate::num::f32_of_f64(PICKER_WIDTH)),
+                height: Dimension::length(crate::num::f32_of_f64(
+                    self.content_height(PICKER_WIDTH),
+                )),
             },
             max_size: Size {
                 width: Dimension::percent(1.0),
@@ -1015,13 +1003,17 @@ impl Widget for ColorPicker {
             },
             flex_shrink: 1.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     /// A picker narrowed by its parent is as tall as that width needs.
-    fn adjust_layout_style(&mut self, taffy: &mut TaffyTree<()>, node: NodeId) -> bool {
+    fn adjust_layout_style(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        node: NodeId,
+        _text: &mut crate::text_render::TextRenderer,
+    ) -> bool {
         let Ok(layout) = taffy.layout(node) else {
             return false;
         };
@@ -1033,7 +1025,7 @@ impl Widget for ColorPicker {
             return false;
         };
         let mut style = current.clone();
-        style.size.height = Dimension::length(Self::px(self.content_height(width)));
+        style.size.height = Dimension::length(crate::num::f32_of_f64(self.content_height(width)));
         if style == *current {
             return false;
         }
@@ -1041,12 +1033,7 @@ impl Widget for ColorPicker {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        let x0 = origin.x + f64::from(layout.location.x);
-        let y0 = origin.y + f64::from(layout.location.y);
-        let x1 = x0 + f64::from(layout.size.width);
-        let y1 = y0 + f64::from(layout.size.height);
-        self.apply_layout_external(Rect::new(x0, y0, x1, y1));
+        self.apply_layout_external(crate::widget::layout_rect(taffy, node, origin));
     }
 
     fn draw(
@@ -1353,7 +1340,7 @@ impl Widget for ColorPicker {
                 self.confirm();
                 true
             }
-            (TARGET_VALUE, _) => self.perform_action(action, state, root),
+            (TARGET_VALUE, _) => self.perform_action(action, &[], state, root),
             _ => false,
         }
     }
@@ -1361,6 +1348,7 @@ impl Widget for ColorPicker {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        _key_path: &[u64],
         _state: &mut crate::widget::Edits<'_>,
         _root: &ModelPath,
     ) -> bool {
@@ -1386,6 +1374,7 @@ fn parse_hex(s: &str) -> Option<Color> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::dispatch;
     use crate::theme::Theme;
     use automerge::AutoCommit;
 
@@ -1398,50 +1387,11 @@ mod tests {
         p
     }
 
-    fn cursor_moved(x: f64, y: f64) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: winit::dpi::PhysicalPosition::new(x, y),
-        }
-    }
+    use crate::synthetic_input::cursor_moved;
 
-    fn mouse_press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
+    use crate::synthetic_input::mouse_press;
 
-    fn mouse_release() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        }
-    }
-
-    fn dispatch(p: &mut ColorPicker, event: &WindowEvent) {
-        let mut tree = TaffyTree::<()>::new();
-        let node = tree.leaf_node(Style::default());
-        let mut handled = false;
-        let mut focus_target = None;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        p.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &tree,
-            },
-        );
-    }
+    use crate::synthetic_input::mouse_release;
 
     #[test]
     fn picker_surfaces_edit_hue_saturation_value_and_rgb() {
@@ -1709,6 +1659,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut picker,
                 &crate::a11y::Action::SetValue("#36A2EB".into()),
+                &[],
                 &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
@@ -1722,6 +1673,7 @@ mod tests {
             assert!(!Widget::perform_action(
                 &mut picker,
                 &crate::a11y::Action::SetValue("blue".into()),
+                &[],
                 &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
@@ -1792,22 +1744,11 @@ mod tests {
     }
 
     fn key(p: &mut ColorPicker, named: NamedKey) {
-        // SAFETY: KeyEvent has private fields in winit 0.30; the public ones
-        // tolerate the zero bit pattern and `handle_event` only inspects
-        // `logical_key` + `state`.
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Named(named);
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = None;
+        let ev = crate::synthetic_input::key_event(Key::Named(named), None, ElementState::Pressed);
         dispatch(
             p,
             &WindowEvent::KeyboardInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 event: ev,
                 is_synthetic: false,
             },

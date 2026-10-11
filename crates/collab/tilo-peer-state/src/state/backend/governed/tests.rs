@@ -35,6 +35,7 @@ fn bounded_governed_import_matches_real_legacy_import_and_retains_fresh_certific
         admission: None,
         admissions: vec![],
         workspace_delegations: vec![],
+        agent: None,
     };
     room.put(
         &identities,
@@ -141,7 +142,7 @@ fn original_import(
     let mut certificates = peer.core.certificates.clone();
     let mut revocations = peer.core.revocations.clone();
     let identities = room::governance_of(Some(doc))
-        .3
+        .identities
         .into_iter()
         .map(|(id, bytes)| {
             serde_json::from_slice::<GovernedIdentity>(&bytes)
@@ -288,6 +289,7 @@ fn row(cert: DeviceCert) -> GovernedIdentity {
         admission: None,
         admissions: vec![],
         workspace_delegations: vec![],
+        agent: None,
     }
 }
 

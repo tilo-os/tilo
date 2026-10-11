@@ -18,6 +18,12 @@ use vello::kurbo::Rect;
 pub enum OskToolbarAction {
     /// Paste literal text from the shared host clipboard into the focused field.
     Paste,
+    /// Send the real indentation key to the focused field.
+    Indent,
+    /// Insert literal text through the trusted input-method commit route.
+    Insert(String),
+    /// Opaque focused-field slot; the authenticated session resolves its action.
+    Contextual { generation: u32, slot: u32 },
     /// Move the caret one unit left; a custom host may extend its selection.
     SelectionLeft,
     /// Move the caret one unit right; a custom host may extend its selection.
@@ -43,6 +49,15 @@ pub struct OskToolbarItem {
 }
 
 impl OskToolbarItem {
+    pub(crate) fn semantic_target(&self, index: usize) -> String {
+        match self.action {
+            OskToolbarAction::Contextual { generation, slot } => {
+                format!("osk:context:{generation}:{slot}:{}", self.label)
+            }
+            _ => format!("osk:tool:{index}:{}", self.label),
+        }
+    }
+
     pub fn new(id: &str, icon: Option<Icon>, label: &str, action: OskToolbarAction) -> Self {
         Self {
             id: id.to_string(),
@@ -50,6 +65,31 @@ impl OskToolbarItem {
             label: label.to_string(),
             action,
         }
+    }
+
+    /// Literal editing tools for a field declaring terminal/code input.
+    pub fn terminal_set() -> Vec<Self> {
+        let mut items = vec![Self::new(
+            "indent",
+            Some(Icon::ArrowRight),
+            &ui::i18n::I18nManager::lookup_plain("osk-toolbar-indent"),
+            OskToolbarAction::Indent,
+        )];
+        for symbol in ["{", "}", "(", ")", ";"] {
+            items.push(Self::new(
+                symbol,
+                None,
+                symbol,
+                OskToolbarAction::Insert(symbol.into()),
+            ));
+        }
+        items.push(Self::new(
+            "dismiss",
+            Some(Icon::ChevronDown),
+            &ui::i18n::I18nManager::lookup_plain("osk-toolbar-dismiss"),
+            OskToolbarAction::Dismiss,
+        ));
+        items
     }
 
     /// The default toolbar: paste, selection-left, selection-right, dismiss.

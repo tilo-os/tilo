@@ -4,20 +4,8 @@
 //! and a live session resolve the same strings with no runtime file I/O.
 
 use ui::ArgValue;
-use ui::i18n::EmbeddedCatalog;
 
-/// Loaded per thread on first use; a host's manager is joined, never replaced.
-/// The probe is a key every catalogue revision defines.
-static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new(
-    "en-US",
-    &[("en-US", include_str!("../locales/en-US.ftl"))],
-    "backups-health-ok",
-);
-
-/// Resolve a string that takes no arguments.
-pub fn t(key: &str) -> String {
-    CATALOG.t(key)
-}
+ui::embedded_catalog!(pub fn, "backups-health-ok", ["en-US"]);
 
 /// Resolve a counted string: `count` picks the plural form and is offered
 /// to the message both as `$count` and, digit-grouped, as `$files` and

@@ -136,6 +136,400 @@ shared allocation experiment had no measurable benefit. Shared-layer stall is
 still unproven: next measure other widget families using the existing list and
 gallery diagnostic workloads before selecting app-specific changes.
 
+### Pointer motion keeps the published tree (TIL-628)
+
+Every input event used to drop the resource cache, and for a framework app
+every mutable record loan (each event dispatch takes one) advanced the bound
+owner's admission generation, which keys the bound resource cache. Each pointer
+move therefore rebuilt the whole publication and reprojected every control's
+availability. Now bare pointer motion (no button held, nothing handled, no
+focus change) keeps the tree when neither the app's document nor any bound
+owner's record moved and no widget reported a presentation change
+(`widget::note_resource_presentation_changed`, which the context menu calls
+when hover opens or closes a nested menu). The bound snapshot is carried to the
+owner's new generation. Hover also skips the pre-dispatch availability
+projection, since hover activates nothing and every frame refreshes
+availability again before it paints. Every other event republishes as before
+(key releases and modifiers keep the tree too since TIL-751, below).
+
+`cargo run --release -p tilo-app --features test-support --example
+framework-scaling` mounts a checklist of N tasks (title and checkbox per row) in
+a real `App` and sends 100 `CursorMoved` events through `App::surface_input`.
+Run on an Apple M5 Max, macOS 27, release build. Publication p50 is one full
+`resources_for` of the root:
+
+| Tasks | Resources | Publication p50 | Move p50 before | Publications per 100 moves before | Move p50 after | Publications per 100 moves after |
+|---:|---:|---:|---:|---:|---:|---:|
+| 10 | 11 | 0.010 ms | 0.046 ms | 100 | 0.007 ms | 0 |
+| 250 | 261 | 0.83 ms | 1.08 ms | 100 | 0.091 ms | 0 |
+| 1,000 | 1,251 | 17.5 ms | 12.7 ms | 100 | 0.37 ms | 0 |
+
+With `TILO_PROFILE_RESOURCES=1` at 1,000 tasks, the resource work left per move
+is the two `input_carry` spans: 8 µs before dispatch and 8 µs after it, p50,
+with all 100 decisions `hit`. Before the change each move spent 11.4 ms in
+`bound_discovery` and 0.55 ms in `bound_control_projection`. The 0.37 ms that
+remains is widget dispatch and hit-testing, which also grows with the number of
+rows. Each frame still runs the full availability refresh in
+`draw_frame_content`. With an unchanged tree that refresh hits every cache, but
+discovery still walks the bound owners and projection still visits every
+control.
+
+### A keystroke publishes twice (TIL-751)
+
+Traced through the hosted path (`App::surface_input` for the key's press and
+release, each followed by the host's frame, `App::surface_frame`, and its
+accessibility walk, as `EmbeddedApp` runs them), one keystroke into a bound
+field built the whole published tree four times: the bound-action door's
+broker-routing pre-check resolved the edit in a tree of its own, the door
+resolved it again, the frame after the edit republished, and the key's release
+dropped the tree so the frame after it republished once more. Now the door
+resolves the action once and asks the host, before anything runs, whether it
+goes through the broker (`ResourceActionRequest::route`); a broker-bound action
+comes back unexecuted and takes the broker path as before. A key's release, a
+modifier key's press and a modifier change are inert input like hover: unless
+consumed, and when no document, bound record, focus or reported presentation
+moved, they keep the tree. A local invocation of a bound action (a control,
+the palette, an agent) therefore builds the tree once.
+
+The `framework-scaling` example types 20 keys into the draft of the same
+checklist, press → host frame → release → host frame, and reports p50 from
+press to the end of the frame showing the key, the most publications one
+keystroke ran, and p50 of the time one keystroke spent publishing. Apple M5
+Max, macOS 27, release build, median of three interleaved runs on a shared,
+loaded machine:
+
+| Tasks | Publications before | after | Publishing per keystroke before | after | Keystroke→frame before | after |
+|---:|---:|---:|---:|---:|---:|---:|
+| 10 | 4 | 2 | 0.027 ms | 0.019 ms | 0.47 ms | 0.47 ms |
+| 250 | 4 | 2 | 0.248 ms | 0.194 ms | 1.67 ms | 1.65 ms |
+| 1,000 | 4 | 2 | 1.045 ms | 0.793 ms | 5.42 ms | 5.11 ms |
+
+The first keystroke after pointer input publishes once more: it moves the
+window to keyboard modality, which may change what it presents. The headless
+`FrameHarness` still counts three, because its undo-status discovery after
+every relayout is uncached. Publication is 0.8 ms of the 5 ms a keystroke
+takes at 1,000 tasks; the rest of the frame was not profiled here.
+
+The hosted input-cost regression scopes monotonic time to one instant while
+it drives the real press/frame/release/frame path. The record-save status
+poll is an independent 100 ms idle deadline; under CI load it can otherwise
+fall inside that observation and add a publication unrelated to input. A
+separate regression advances that scoped clock to the deadline and requires
+the real save-status frame to publish while preserving the typed draft. The
+clock override is test-support only, thread-local, and restored on unwind;
+production save sampling and clock readings keep their existing behaviour.
+
+### A frame that changes nothing no longer walks the published tree (TIL-761)
+
+`sample` on the keystroke loop at 10,000 tasks
+(`TILO_SCALING_KEYSTROKES=400`) put layout and draw at 0.4 % of the samples.
+92 % went to two consumers of the bound resource snapshot that ran on every
+frame, changed or not: control availability (before each non-hover input and
+in every `surface_frame`) deep-copied the cached snapshot, re-filtered every
+action by permission and built a descriptor per action to learn which
+addresses are available; the host's accessibility refresh copied it again and
+rebuilt and diffed a semantic node per resource. Now the snapshot's tree is
+shared (`Rc`), so a cache hit copies nothing; the controls' allowed addresses
+are derived once per snapshot, permission witness and host doors, read in
+place; and the semantic tree keeps each component's resource nodes while the
+component hands over the same snapshot. A frame that changes nothing costs
+the same at 10,000 tasks as at 10.
+
+The bench now also prints p99 from press to frame and p50 from the key's
+release to the end of the frame after it. Same machine and method as above:
+
+| Tasks | Keystroke→frame p50 before | after | p99 before | after | Release→frame p50 before | after |
+|---:|---:|---:|---:|---:|---:|---:|
+| 10 | 0.42 ms | 0.39 ms | 0.54 ms | 0.54 ms | 0.23 ms | 0.18 ms |
+| 250 | 1.37 ms | 1.01 ms | 1.56 ms | 1.15 ms | 0.79 ms | 0.22 ms |
+| 1,000 | 4.60 ms | 3.10 ms | 4.93 ms | 3.35 ms | 2.63 ms | 0.25 ms |
+| 10,000 | 59.9 ms | 42.9 ms | 64.2 ms | 45.8 ms | 35.5 ms | 0.40 ms |
+
+`publication_per_keystroke::a_hosted_frame_that_changes_nothing_costs_the_same_whatever_the_list`
+holds the release frame at 1,000 tasks within 2× of 100 (it measured 4.2×
+before). The frame that shows a key still grows with the list: the edit
+changes the snapshot, so it publishes twice (TIL-751), rebuilds the
+accessibility tree's resource nodes and the controls' allowed addresses once,
+and `ResourceRoot::nested_views` builds every child once more. Making that
+flat needs publication that shares unchanged children between snapshots.
+
+### The frame that shows a key stays flat: a shared published tree (TIL-766)
+
+After TIL-761 the frame that shows a typed key still grew with the list,
+although the key edits the draft, which no item depends on. `sample` at
+10,000 tasks: 58 % rebuilding and diffing a semantic node per item, 25 %
+rebuilding, copying and permission-filtering every item resource on the
+frame's cache miss, 12 % the same in the door that resolves the draft's edit,
+14 % `nested_views` building every item once more. `tilo_actions::Resource`
+owns its children inline, so no consumer could tell an unchanged item from a
+changed one.
+
+`ui_core::published::SharedResource` holds the same tree with its children
+behind `Rc`s, beside `tilo_actions::Resource` (whose shape does not change):
+
+* **Publication.** `ResourceRoot` builds the document tree from
+  `Resource::children_parts` (`#[resource]` splits its item collections from
+  its other children) and keeps each item child while its collection field,
+  id and label are the ones it was built with; collections unchanged since
+  the last version reuse the whole list. It answers
+  `PublishesResources::shared_resources_for` when nothing in the view
+  decorates the children (no surface, no content resource joining the root),
+  and the ordinary tree is materialised from the shared one.
+* **Snapshot and filtering.** A bound component's cached snapshot is the
+  shared forest; the ordinary trees are materialised on first use for the
+  palette, agents and search. Filtering keeps its result on each input node
+  and list of children under a token that stands for the component's
+  permission witness, so a subtree an edit did not touch is not filtered
+  again. A new witness (a grant changing or expiring) takes a new token.
+* **Controls and accessibility.** The controls' allowed addresses (counted per
+  address) and a component's semantic nodes move from one forest to the next
+  by a pointer diff: shared subtrees are skipped, nodes whose own part changed
+  are rebuilt and compared, added and removed subtrees are visited. A
+  repeated id rebuilds the component, as the full walk reports it.
+* **The door.** A local document edit resolves its node in the shared tree,
+  exactly the one the filtered tree would give, without building or
+  filtering the rest; every check after resolution runs as before. Other
+  kinds, participants' trees and the unbound fallbacks take the whole tree.
+
+M5 Max, release, `TILO_SCALING_KEYSTROKES=40`; after is the median of three
+runs (machine load 15–20 during them, about 3 for before):
+
+| Tasks | Key press→frame p50 before | after | p99 before | after |
+|---:|---:|---:|---:|---:|
+| 10 | 0.40 ms | 0.41 ms | 0.50 ms | 0.58 ms |
+| 100 | 0.63 ms | 0.45 ms | 0.72 ms | 0.62 ms |
+| 250 | 1.00 ms | 0.46 ms | 1.13 ms | 0.61 ms |
+| 1,000 | 3.01 ms | 0.53 ms | 3.34 ms | 0.72 ms |
+| 10,000 | 37.5 ms | 1.44 ms | 40.8 ms | 1.75 ms |
+
+`publication_per_keystroke::a_hosted_keystroke_costs_the_same_whatever_the_list`
+holds key press→frame at 1,000 tasks within 2× of 100 (4.7× before; 1.2× now
+in release, 1.1× in a debug test build). What remains at 10,000 is linear with
+a small constant: each of the two publications per keystroke still reads every
+item's id and label from the state (`Fields::item_collections`) to compare the
+collections, 0.54 ms of publishing per keystroke in all.
+
+### Opening a long list (TIL-758)
+
+`framework-scaling -- 5000,50000 open` reopens the checklist over a record
+already holding N tasks, five times, to its first laid-out frame. Each size
+also prints a `FRAMEWORK-OPEN` line, which the scheduled lane's render job
+records as `render.framework_open.{ms,allocations,heap_per_item}.<size>`
+(`tools/perf/adapters.py framework-open`). Apple M5 Max, macOS 27, release,
+three interleaved runs of each build, p50 of five opens:
+
+| Tasks | Open before | Open after | Heap held before | Heap held after |
+|---:|---:|---:|---:|---:|
+| 5,000 | 155–156 ms | 120–122 ms | 28.5 MB (5,472 B/task) | 24.7 MB (4,698 B/task) |
+| 50,000 | 1,820–1,836 ms | 1,163–1,174 ms | 638 MB (12,739 B/task) | 224 MB (4,454 B/task) |
+
+Two storage costs were behind most of it. Appending an item gave it an order
+key halfway between the last key and the end, so keys grew by a character
+every six appends: the 50,000th task's key was 8,334 characters, 208 MB of
+order keys in all, which the record load re-encoded and hashed, the read
+copied and the sort compared. Keys toward an open end now step instead
+(`tilo_resource::order::between`): 50,000 appends need at most seven
+characters, and a key minted the old way keeps its length. And the collection
+read looked up every key of every item separately (about six Automerge
+lookups per item); it now walks each map once (`tilo_resource::read_slots`).
+
+What remains at 50,000, from `sample`: `AutoCommit::load` 40 % (Automerge
+rebuilds and hashes every change to learn the change graph; the titles alone
+are 2.75 million text ops), the collection read 21 % (one object lookup each
+for the entry, the item and its title text), layout and the bound-control
+refresh 18 %, and closing the previous window 10 %.
+
+### Typing in a note repaints its line
+
+`apps/notes/tests/typing_damage.rs` drives the real Notes window (its record
+and saver included) the way the desktop runs an in-process tile: input through
+`App::surface_input`, frames through `App::surface_frame_with_damage`, and the
+app's scene appended to a host part hinted with its damage and compared part
+by part (`ui::scene_parts`). Every frame is presented sparsely over the one
+before it and compared with a full render, in dark, light and high contrast.
+Pixels repainted per frame of a 1280×900 app (1,152,000 px):
+
+| Change | Before | After |
+|---|---:|---:|
+| A key after the previous key's save landed | 1,152,000 (a rebuilt tree) | ≈ 48,000 (the line, the caret, the save bubble) |
+| The save landing between keys | 1,152,000 (a rebuilt tree) | ≈ 25,000 (the bubble) |
+| A key a minute after the last edit ("Edited" turns over) | 1,152,000 (a rebuilt tree) | ≈ 81,600 (the line, the bubble, the dates line) |
+| A key in the title | ≈ 816,000 (the page panel) | ≈ 62,500 (the title's band) |
+| The pointer onto a toolbar button | ≈ 1,131,000 (the app below the header) | ≈ 1,200 (the button) |
+
+The desktop's 4K Notes tile repainted 7,022,592 of 8,294,400 px per key
+before (`frame_retained_tests::typing_in_notes_repaints_what_changed_not_the_tile`
+now holds a key and a title letter under 5 % of the output).
+
+What was behind it:
+
+- A record's save status flipping (Saved → Saving on a key, back when the
+  saver lands) marked a framework root's *structure* dirty, so the next frame
+  rebuilt the widget tree and repainted the window. The root now syncs again
+  with a changed status in the same pass, and an `App` presents it with a relayout
+  (`component_lifecycle::take_save_status_presentation`); a component mounted
+  straight in a `TileHost` still sees it as a structure change.
+- Notes drew its shell, page tree, save bubble and toasts as one opaque scene
+  beside the note, so the bubble or a hover in the shell repainted the app.
+  Each is now a damage part with its own proof; the shell's empty column
+  slots no longer claim their columns as needing a redraw.
+- The page's title was outside its parts. It is a part of its own now.
+- The "Created … · Edited …" line rebuilt the header's widgets (and so the
+  tree) whenever its words changed. Same-length changes now retext the built
+  line (`NoteHeader::retext_captions`).
+- A text field's correction chip floats outside the field, where neither the
+  block editor's per-paragraph damage nor the title's covered it: sparse
+  frames left it out or left it behind. Fields report it (`TextInput::overhang`)
+  and the editor and the title damage it where it is and was.
+
+Headings, quotes, list and checklist items and rules now damage their row of
+the editor too.
+
+### Code blocks, tables, tags and page renames repaint what changed
+
+The same test drives a code block (in a note of four lines of prose and a
+two-line run), a table, tags and renames (same window, same three themes, same
+pixel comparison). Largest frame per change, of the 1,152,000 px app (most
+include the save bubble, ≈ 25,000 px):
+
+| Change | Before | After |
+|---|---:|---:|
+| A key in a code run's first line | 183,252 (the editor) | ≈ 59,300 (the line, the bubble) |
+| A key in a later code line | 213,898 (the editor) | ≈ 58,500 |
+| A key in prose in a note holding code | 213,898 (the editor) | ≈ 48,600 (as in any note) |
+| A key in a table cell | 1,152,000 (a rebuilt tree) | ≈ 57,500 (the cell, its editor, the bubble) |
+| A second tag joining the header's row | 1,152,000 (a rebuilt tree) | ≈ 92,200 (the header, the bubble) |
+| The first tag (the header grows, the page moves) | 1,152,000 (a rebuilt tree) | ≈ 817,800 (the page panel) |
+| A key in the page tree's rename field | 229,577 (the tree's column) | ≈ 12,300 (the field) |
+| Naming the note in its title (Enter) | 315,041 (the title, the tree's column) | ≈ 94,200 (the title, the row, the caret's line, the bubble) |
+| Committing the rename | 318,105 (the tree's column, the title) | ≈ 101,400 (the row, the title, the caret's line, the bubble) |
+
+What was behind it:
+
+- The block editor kept per-block parts only while *no* block was code or a
+  table, so one code block anywhere made every key repaint the editor. A code
+  run's ground (drawn by its first block) is now a part of its own; each code
+  line damages its line. A table is a frame part, one part per cell (each
+  row's card when the cells stack), the focused cell's editor and the controls.
+  Formula runs still repaint the editor.
+- A key in a table cell set the editor's *structure* dirty, rebuilding the
+  window's tree per key. The table's line measures the table from its text, so
+  the key now asks for a relayout.
+- A header that rebuilt its widgets (a tag, a caption line) rebuilt the
+  window's tree, and a rebuilt tree repainted the window. A widget can now say
+  its structural change is described (`StructureChange::Described`): its own
+  damage covers what its new children change. The window still rebuilds the
+  tree, but keeps the frame's damage, adding every widget box that came, went
+  or moved, matched by identity across the rebuild. Any other reason to
+  rebuild in that frame (`LayoutRuntime::request_rebuild`, a
+  `StructureChange::Rebuild`, a history or viewport recomposition) repaints
+  the window as before; a decorator or container forwards `Described` only by
+  overriding `take_structure_change`.
+- The page tree (`TreeView`) had no damage of its own: anything in it repainted
+  its column. A settled tree now records one part per visible row and one for
+  the rename field; motion, a drag, an open menu, delegated rows and navigation
+  tiles still repaint the tree. Each scene it keeps opens and closes its own
+  layers: splitting the body's clip layer across two appended scenes rendered
+  stray pixels at a row's corner on Metal.
+
+Still open: a native window repaints whole while a blurred floating surface
+(the save bubble) shows.
+
+### Enter and Backspace repaint the blocks that moved
+
+The same test presses Enter and Backspace in a note of four paragraphs (and a
+list), each key after the previous edit's save landed and the bubble faded, in
+the three themes, every frame compared with a full render. Largest frame per
+key, of the 1,152,000 px app (each includes the save bubble, ≈ 25,000 px):
+
+| Key | Before | After |
+|---|---:|---:|
+| Enter splitting a paragraph | 1,152,000 (a rebuilt tree) | ≈ 114,400 (the rows from the split down, the drag handle, the bubble) |
+| Enter ending a paragraph | 1,152,000 (a rebuilt tree) | ≈ 92,900 |
+| Enter adding a list item | 1,152,000 (a rebuilt tree) | ≈ 213,700 (the rows from the new item down) |
+| Backspace joining two paragraphs | 1,152,000 (a rebuilt tree) | ≈ 91,800 |
+| Backspace removing an empty paragraph | 1,152,000 (a rebuilt tree) | ≈ 114,400 |
+
+What was behind it:
+
+- A block that came, went or changed its kind set the editor's *structure*
+  dirty, so the window rebuilt its whole tree. The block stack is one measured
+  leaf and blocks are not widgets, so the editor now *restacks*: it prepares
+  its lines again (`BlockEditor::prepare_blocks`, what a rebuild did for them)
+  and asks for a relayout. A block that brings or takes an image's button
+  still rebuilds. A collaborator's block arrives the same way
+  (`present_blocks`).
+- `PaintDamage` matched parts by position and gave up when one came, went or
+  moved. Parts are now matched by key; a part whose damage covers everything
+  it paints (`PaintPart::placed`: a block's row, a cell, the drag handle, a
+  code run's chrome) repaints where it was and where it is. Parts that only
+  certify where their scene changes (`PaintPart::new`) still repaint whole
+  when they come, go or move.
+- The editor's frame geometry was its rect, which a new paragraph grows, and
+  the drag handle beside the caret's block and a code run's chrome were drawn
+  outside its parts. The geometry is now the editor's top edge and width, and
+  the handle and chrome are placed parts.
+- A window repaints where a relaid widget's box was and is; the editor's box
+  grew with every paragraph. A widget can say its own damage covers changes to
+  its box (`Widget::damage_covers_own_box`, after its draw); the editor does
+  whenever it recorded a paint. The note panel keys the editor's part by its
+  top edge and width, and the scrollbar, whose thumb moves with the note's
+  height, is a part of its own.
+
+The rows below the edit still repaint (the region moved): Enter near the top
+of a long note repaints the visible note, not the window. A copy of the moved
+pixels in the renderer would avoid that.
+
+### A scroll copies what stays on screen
+
+`framework-scaling -- 5000 scroll` scrolls the checklist of 5,000 tasks down
+120 frames of 40 px (and of 40.5 px), the pointer resting over the list, each
+frame presented on an offscreen GPU target as a window presents it and the
+last checked against a full render. Release, M-series Mac (Metal), 1280×800:
+
+| | Repainted px p50 (max) | Copied px p50 | Whole-window frames | CPU frame p50 | GPU present p50 (full render) |
+|---|---:|---:|---:|---:|---:|
+| Before | 1,024,000 (1,024,000) | 0 | 120 / 120 ("history mode") | 0.44 ms | 1.65 ms (1.64 ms) |
+| After, a host that does not copy | 983,616 (983,616) | 0 | 0 | 0.51 ms | 1.68 ms (1.67 ms) |
+| After, the native window (copies) | 99,792 (115,872) | 756,288 | 0 | 0.52 ms | 1.72 ms (1.67 ms) |
+| After, 40.5 px steps | 843,168 (843,168) | 0 (refused) | 0 | 0.52 ms | 1.68 ms (1.67 ms) |
+
+A long note (`apps/notes/tests/scroll_damage.rs`, 120 paragraphs, 1280×900)
+repaints 114,084 px per frame scrolling down by 40 px and 92,602 scrolling up
+by 32, copying every frame, in all three themes; before, every frame repainted
+the window (1,152,000 px).
+
+What was behind it:
+
+- A scroll moved every row, and the native window repaints whole for moved
+  geometry. A relayout whose only moves are scrolls now stays sparse: a
+  scroller offers the move as a copy (`ui::scroll_copy`), the window plans it
+  against the tree it drew and checks every other box (`moves_besides`).
+- A framework window's History toolbar was a "layer" in every frame the
+  window drew without scene parts, so every native frame of a framework app
+  repainted whole. History now draws into its own scene, compared with the
+  presented frame's.
+- `Each` damaged its whole list when any row was dirty and every `Checkbox`
+  damaged itself on every frame; a remount during a scroll was an undescribed
+  rebuild. The list now unions its rows' damage, a checkbox repaints when what
+  it paints changed, and a remount is described.
+- Notes' page scrolls by hand: the panel offers its body (paragraphs and
+  headings; other blocks' hover chrome is not followed), and the app repaints
+  its save bubble, which floats over the note, on every copied frame.
+
+On this GPU the raster stays about as long as a full render: the frame's
+fixed stages dominate at this size, and only the fine raster shrinks with the
+damage. The CPU rasterizer a software adapter (lavapipe, VMs) uses
+rasterizes only the damage, so there the frame shrinks with the pixels. The
+compositor still repaints where the copies landed: the client's pixels there
+changed. The nightly render job records `render.framework_scroll.*` and
+enforces the pixels.
+
+Not yet copied: the shell's in-process apps (the compositor composites their
+scene and would need to copy the app's moved region itself), `ScrollRegion`
+(chat transcripts), `VirtualList`, `DocumentViewport`, and Notes blocks with
+hover chrome (code, tables, images, lists).
+
 ## Verified shared-list CPU workload
 
 The `ui-perf perf_scenario --count 1200 --json` list case now checks the real

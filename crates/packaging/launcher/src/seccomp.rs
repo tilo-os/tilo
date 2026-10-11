@@ -51,7 +51,7 @@ pub const BUILTIN_JIT_ENTITLED: &[&str] = &["so.tilo.browser"];
 /// "nobody" — which would leave the browser unable to render on any
 /// image that didn't ship the file.
 pub fn entitled_to_dynamic_code(package_id: &str) -> bool {
-    let policy_path = crate::dev_env::dev_override(JIT_POLICY_PATH_ENV)
+    let policy_path = package_store::dev_env::dev_override(JIT_POLICY_PATH_ENV)
         .map_or_else(|| PathBuf::from(JIT_POLICY_PATH), PathBuf::from);
     match std::fs::read_to_string(&policy_path) {
         Ok(list) => crate::hardening::policy_matches(&list, package_id),
@@ -74,7 +74,7 @@ pub const BUILTIN_WEB_ENGINE_ENTITLED: &[&str] = &["so.tilo.browser"];
 /// Whether the image lets `package_id` create the namespaces of a web
 /// engine's renderer sandbox.
 pub fn entitled_to_nested_sandbox(package_id: &str) -> bool {
-    let policy_path = crate::dev_env::dev_override(WEB_ENGINE_POLICY_PATH_ENV)
+    let policy_path = package_store::dev_env::dev_override(WEB_ENGINE_POLICY_PATH_ENV)
         .map_or_else(|| PathBuf::from(WEB_ENGINE_POLICY_PATH), PathBuf::from);
     match std::fs::read_to_string(&policy_path) {
         Ok(list) => crate::hardening::policy_matches(&list, package_id),
@@ -122,6 +122,14 @@ pub fn resolve_profile(requested: &str, package_id: &str) -> ProfileDecision {
         requested: requested.to_string(),
         refused: applied != asked,
     }
+}
+
+/// The syscall profile a manifest's sandbox gets, resolved fail-closed
+/// against the image's entitlement policy. Takes the package id since the
+/// manifest's own answer isn't sufficient: whether a package may run
+/// without write-xor-execute is the image's decision, not the packager's.
+pub fn manifest_profile(sandbox: &crate::manifest::Sandbox, package_id: &str) -> SeccompProfile {
+    resolve_profile(&sandbox.seccomp, package_id).applied
 }
 
 /// Path the launcher checks for a pre-baked blob, preferred over
@@ -300,7 +308,7 @@ mod tests {
             }
         }
         // Phase `the_manifest_accessor_consults_the_entitlement_policy`.
-        // `Sandbox::seccomp_profile` must not be a way around [`resolve_profile`].
+        // `manifest_profile` must not be a way around [`resolve_profile`].
         {
             let _policy = JitPolicy::listing("so.tilo.browser\n");
             let sandbox = crate::manifest::Sandbox {
@@ -309,13 +317,18 @@ mod tests {
             };
 
             assert_eq!(
-                sandbox.seccomp_profile("com.example.evil"),
+                manifest_profile(&sandbox, "com.example.evil"),
                 SeccompProfile::TiloDefault,
                 "the manifest accessor must not hand out what the image refused"
             );
             assert_eq!(
-                sandbox.seccomp_profile("so.tilo.browser"),
+                manifest_profile(&sandbox, "so.tilo.browser"),
                 SeccompProfile::TiloJit
+            );
+            assert_eq!(
+                crate::manifest::Sandbox::default().seccomp,
+                SeccompProfile::TiloDefault.as_str(),
+                "the view's default profile is the launcher's strict one"
             );
         }
     }

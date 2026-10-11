@@ -31,7 +31,8 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{
-    FullscreenProvider, MediaArt, MediaAspect, MediaCardFace, MediaSource, VideoPlayer, Widget,
+    FullscreenProvider, MediaArt, MediaAspect, MediaCardFace, MediaSource, TaffyTreeExt,
+    VideoPlayer, Widget, layout_rect,
 };
 
 /// A shared, persistent [`VideoPlayer`]. Cloned cheaply into each rebuilt tree.
@@ -117,24 +118,21 @@ impl Widget for PlayerHost {
         // The host (not the inner player) is registered in `node_map`, so events
         // route here and delegate — the inner player is never aliased by a raw
         // pointer.
-        let node = super::leaf_node(
-            taffy,
-            Style {
-                size: taffy::Size {
-                    width: percent(1.0_f32),
-                    height: length(self.player_h),
-                },
-                flex_shrink: 0.0,
-                ..Default::default()
+        let node = taffy.leaf_node(Style {
+            size: taffy::Size {
+                width: percent(1.0_f32),
+                height: length(self.player_h),
             },
-        );
+            flex_shrink: 0.0,
+            ..Default::default()
+        });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         self.node = Some(node);
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = super::layout_rect(taffy, node, origin);
+        self.rect = layout_rect(taffy, node, origin);
         // Drive the shared player's rect from this host's node.
         self.player.borrow_mut().apply_layout(taffy, node, origin);
     }

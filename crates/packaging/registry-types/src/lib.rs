@@ -49,11 +49,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -111,10 +107,8 @@ pub use snapshot::{
 pub use target::{
     ANDROID_PACKAGE_EXTENSIONS, ANDROID_PLATFORM, DESKTOP_PLATFORMS, LINUX_PLATFORM,
     MACOS_PLATFORM, NATIVE_PLATFORMS, NATIVE_RUNTIME_ID_HEX_LEN, NATIVE_RUNTIME_MARKER,
-    NATIVE_RUNTIME_PACKAGE_ID, NativeRuntime, TILO_OS_PLATFORM, TargetError, WASM_FEATURES,
-    WASM_ISA_BASELINE, WASM32_ARCHITECTURE, WEB_PLATFORM, WEB_RUNTIME_ID_HEX_LEN, WEB_RUNTIME_NAME,
-    WINDOWS_PLATFORM, WasmIsa, WebRuntime, canonical_wasm_isa, is_runtime_package_id,
-    parse_native_runtime, parse_wasm_isa, parse_web_runtime,
+    NATIVE_RUNTIME_PACKAGE_ID, NativeRuntime, TILO_OS_PLATFORM, TargetError, WINDOWS_PLATFORM,
+    is_runtime_package_id, parse_native_runtime,
 };
 pub use verify::{VerifyError, verify_change_request, verify_entry_signature};
 

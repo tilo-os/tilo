@@ -1620,7 +1620,6 @@ impl SearchProvider for ContinueFromDeviceProvider {
 mod tests {
     use crate::shell::state::FreshId as _;
     use std::cell::RefCell;
-    use std::sync::Arc;
 
     use super::*;
     use crate::shell::chrome_state::ChromeState;
@@ -1628,7 +1627,6 @@ mod tests {
     use crate::shell::personal_continuity::DeviceId;
     use crate::shell::state::{Workspace, WorkspaceId, WorkspaceTree, WorkspaceTreeHandle};
     use automerge::AutoCommit;
-    use parking_lot::RwLock;
 
     fn device(value: &str) -> DeviceId {
         DeviceId::new(value).unwrap()
@@ -1703,7 +1701,7 @@ mod tests {
             .workspaces
             .push(Workspace::new(id, "Continuity"));
         tree.desktop.active = id;
-        let handle: WorkspaceTreeHandle = Arc::new(RwLock::new(tree));
+        let handle: WorkspaceTreeHandle = crate::shell::state::WorkspaceTreeHandle::new(tree);
         ChromeState::new_with_handle(handle)
     }
 

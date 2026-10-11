@@ -267,7 +267,7 @@ fn diff_says_what_changed_about_a_mark() {
         .unwrap();
     app.call("edit-marks", json!({"ids": ["b"], "opacity": 0.5}))
         .unwrap();
-    let diff = view(&mut app, "diff", json!({"from": "drawn"}));
+    let diff = view(&mut app, "compare-versions", json!({"from": "drawn"}));
     assert_eq!(
         diff["marks"]["changed"],
         json!({"a": ["stacking"], "b": ["opacity"]}),

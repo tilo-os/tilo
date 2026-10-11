@@ -42,7 +42,7 @@ use tracing::warn;
 use ui::LocalState;
 use ui::framework::{EffectAnswer, EffectCx, Effected, LiveRow};
 use ui::tilo_resource::{self, Effect};
-use ui::widget::{Button, Dropdown, Row, Slider, Spacer, Text, Toggle, Widget};
+use ui::widget::{Button, Dropdown, Row, Slider, Spacer, Text, Widget};
 
 use crate::dispatcher::dispatcher_or_real;
 use crate::effects::{SettingsEffect, effect};
@@ -53,7 +53,7 @@ use crate::prefs::AudioPrefs;
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{
-    caption, card, choice_row_described, error_caption, error_row, rows, setting_row,
+    caption, card, error_caption, error_row, rows, setting_row, setting_row_described,
 };
 
 /// How often the pane re-reads the `PipeWire` graph while it is open, so a
@@ -66,9 +66,27 @@ const HOTPLUG_INTERVAL: Duration = Duration::from_millis(1_500);
 /// Choosing it clears the stream's `target.object` metadata.
 pub(crate) const FOLLOW_DEFAULT: &str = "Default";
 
+/// Whether `event` makes a sound, as the sound section holds it.
+fn event_sound(event: SystemSoundEvent) -> ui::tilo_resource::Path<AudioPrefs, bool> {
+    let events = AudioPrefs::paths().system_sounds.events;
+    match event {
+        SystemSoundEvent::Notification => events.notification,
+        SystemSoundEvent::Message => events.message,
+        SystemSoundEvent::VolumeChange => events.volume_change,
+        SystemSoundEvent::Screenshot => events.screenshot,
+        SystemSoundEvent::DeviceConnected => events.device_connected,
+        SystemSoundEvent::DeviceDisconnected => events.device_disconnected,
+        SystemSoundEvent::LowBattery => events.low_battery,
+        SystemSoundEvent::Error => events.error,
+    }
+}
+
 impl ui::storage::SettingsSchema for AudioPrefs {
     const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("audio");
 }
+
+#[ui::tilo_resource::resource(kind = "settings.audio", label = "Sound")]
+impl AudioPrefs {}
 
 /// What Sound changes: this device's outputs, inputs and app streams, and
 /// the person's audio preferences.
@@ -96,33 +114,17 @@ pub enum AudioEffect {
         #[param("The input device's name")]
         device: String,
     },
-    /// Move the sound between left and right: 0 left, 0.5 centred, 1 right.
-    #[effect(idempotent)]
-    SetBalance { balance: f64 },
     /// Play both channels in each ear.
     #[effect(idempotent)]
     SetMonoOutput { on: bool },
     /// Give calls an echo-cancelled microphone.
     #[effect(idempotent)]
     SetEchoCancellation { on: bool },
-    /// Let system events make a sound.
-    #[effect(idempotent)]
-    SetSystemSounds { on: bool },
-    /// How loud system sounds are, from 0 to 1.
-    #[effect(idempotent)]
-    SetSystemSoundVolume { volume: f64 },
     /// The sound theme system events play from.
     #[effect(idempotent)]
     SetSoundTheme {
         #[param("The theme's name")]
         theme: String,
-    },
-    /// Whether one kind of system event makes a sound.
-    #[effect(idempotent)]
-    SetEventSound {
-        #[param("The event, by its key")]
-        event: String,
-        on: bool,
     },
     /// Use another profile of an audio device (high fidelity, headset…).
     #[effect(row, idempotent)]
@@ -255,13 +257,7 @@ fn run_wpctl(args: &[&str]) -> Result<(), String> {
     if out.status.success() {
         Ok(())
     } else {
-        Err(String::from_utf8_lossy(&out.stderr)
-            .chars()
-            .filter(|character| !character.is_control() || matches!(character, ' ' | '\n' | '\t'))
-            .take(512)
-            .collect::<String>()
-            .trim()
-            .to_string())
+        Err(out.stderr_diagnostic())
     }
 }
 
@@ -487,6 +483,10 @@ fn devices_from_graph(graph: &AudioGraph) -> AudioDevices {
 pub struct AudioArea {
     cx: PaneCx,
     model: std::cell::OnceCell<Shared<AudioModel>>,
+    /// The device's audio, read off the UI thread after the window's first
+    /// frame ([`Self::start_read`]); `None` stands for the sample graph a
+    /// screenshot shows.
+    read: crate::device_read::DeviceRead<Option<AudioRead>>,
 }
 
 impl AudioArea {
@@ -494,19 +494,62 @@ impl AudioArea {
         Self {
             cx: cx.clone(),
             model: std::cell::OnceCell::new(),
+            read: crate::device_read::DeviceRead::default(),
         }
     }
 
     /// The model, over `PipeWire`, or over a sample graph for a screenshot.
     pub fn model(&self) -> &Shared<AudioModel> {
         self.model.get_or_init(|| {
-            let model = if self.cx.reaches_devices() {
-                AudioModel::of_device(self.cx.clone())
-            } else {
-                AudioModel::sample(self.cx.clone())
+            let read = self.read.take().unwrap_or_else(|| self.read_now());
+            let model = match read {
+                Some(read) => AudioModel::from_read(self.cx.clone(), read),
+                None => AudioModel::sample(self.cx.clone()),
             };
             Rc::new(std::cell::RefCell::new(model))
         })
+    }
+
+    /// What a read of the device would find, read on this thread: the
+    /// device's audio, or `None` for the sample graph.
+    fn read_now(&self) -> Option<AudioRead> {
+        let (device, output, input) = self.route();
+        device.then(|| AudioRead::of_device(output.as_deref(), input.as_deref()))
+    }
+
+    /// Whether the area reaches the device, and the remembered output and
+    /// input devices a read routes to again.
+    fn route(&self) -> (bool, Option<String>, Option<String>) {
+        let prefs = self.cx.settings::<AudioPrefs>().get();
+        (
+            self.cx.reaches_devices(),
+            prefs.output_device,
+            prefs.input_device,
+        )
+    }
+
+    /// Read the device's audio off the UI thread; `false` when it has been
+    /// read or is being read.
+    pub(crate) fn start_read(&self) -> bool {
+        if self.is_open() {
+            return false;
+        }
+        let (device, output, input) = self.route();
+        self.read.start(move || {
+            device.then(|| AudioRead::of_device(output.as_deref(), input.as_deref()))
+        })
+    }
+
+    /// Whether the read [`Self::start_read`] started has ended.
+    pub(crate) fn read_finished(&self) -> bool {
+        self.read.is_finished()
+    }
+
+    /// Whether the area has read what its rows show: its pane was shown,
+    /// an effect or a row lookup reached it, or the window read it after
+    /// its first frame ([`crate::effects::LIVE_AREAS`]).
+    pub(crate) fn is_open(&self) -> bool {
+        self.model.get().is_some()
     }
 
     /// One row per app stream, output and input, offering what can be done
@@ -610,10 +653,28 @@ pub struct AudioModel {
     changed: bool,
 }
 
-impl AudioModel {
-    /// This device's audio, read now; a remembered physical route is
-    /// applied again when its device is present.
-    fn of_device(cx: PaneCx) -> Self {
+/// What the Sound area reads of the device: the levels, the device list and
+/// node graph, what the audio runtime can do and the installed sound
+/// themes. That is several `wpctl`/`pw-dump`/`pactl` runs, so the window's
+/// warm-up makes the read off the UI thread.
+struct AudioRead {
+    initial: os_actions::VolumeState,
+    volume_error: Option<String>,
+    input_volume: f32,
+    input_error: Option<String>,
+    devices: AudioDevices,
+    devices_error: Option<String>,
+    graph: AudioGraph,
+    runtime_caps: RuntimeCapabilities,
+    sound_themes: Vec<SoundTheme>,
+    event_sounds_available: bool,
+}
+
+impl AudioRead {
+    /// Read this device's audio. The remembered physical route (`output`,
+    /// `input`, the devices' names) is applied again when its device is
+    /// present.
+    fn of_device(output: Option<&str>, input: Option<&str>) -> Self {
         let (initial, volume_error) = match os_actions::get_volume_state() {
             Ok(state) => (state, None),
             Err(error) => (
@@ -628,13 +689,12 @@ impl AudioModel {
             Ok(level) => (level, None),
             Err(error) => (0.0, Some(error)),
         };
-        let prefs = cx.follow::<AudioPrefs>();
         let (mut devices, mut devices_error) = match list_audio_devices() {
             Ok(devices) => (devices, None),
             Err(error) => (AudioDevices::default(), Some(error)),
         };
         let mut graph = media::audio::enumerate();
-        if let Some(name) = prefs.get().output_device.as_deref()
+        if let Some(name) = output
             && let Some(dev) = graph.sinks.iter().find(|d| d.description == name)
         {
             let id = dev.id;
@@ -644,7 +704,7 @@ impl AudioModel {
                 }
             }
         }
-        if let Some(name) = prefs.get().input_device.as_deref()
+        if let Some(name) = input
             && let Some(dev) = graph.sources.iter().find(|d| d.description == name)
         {
             let id = dev.id;
@@ -658,6 +718,37 @@ impl AudioModel {
             devices = devices_from_graph(&graph);
             devices_error = None;
         }
+        Self {
+            initial,
+            volume_error,
+            input_volume,
+            input_error,
+            devices,
+            devices_error,
+            graph,
+            runtime_caps: RealAudioRuntime.capabilities(),
+            sound_themes: media::event_sound::installed_themes(),
+            event_sounds_available: media::event_sound::sound_backend()
+                != media::event_sound::SoundBackend::Unavailable,
+        }
+    }
+}
+
+impl AudioModel {
+    /// The model over what `read` found on this device.
+    fn from_read(cx: PaneCx, read: AudioRead) -> Self {
+        let AudioRead {
+            initial,
+            volume_error,
+            input_volume,
+            input_error,
+            devices,
+            devices_error,
+            graph,
+            runtime_caps,
+            sound_themes,
+            event_sounds_available,
+        } = read;
         let runtime: Arc<dyn AudioRuntimeControl> = Arc::new(RealAudioRuntime);
         Self {
             output: Arc::new(SystemOutput(dispatcher_or_real(None))),
@@ -669,12 +760,11 @@ impl AudioModel {
             enumerator: Arc::new(RealEnumerator),
             hotplug_interval: HOTPLUG_INTERVAL,
             last_enum: Some(ui::time::now()),
-            runtime_caps: runtime.capabilities(),
+            runtime_caps,
             runtime,
-            prefs,
-            sound_themes: media::event_sound::installed_themes(),
-            event_sounds_available: media::event_sound::sound_backend()
-                != media::event_sound::SoundBackend::Unavailable,
+            prefs: cx.follow::<AudioPrefs>(),
+            sound_themes,
+            event_sounds_available,
             tests_shown: false,
             volume_error,
             input_error,
@@ -864,14 +954,6 @@ impl AudioModel {
                 self.save(|prefs| prefs.input_device = Some(name))?;
                 Ok(t("sound-notice-in-device"))
             }
-            AudioEffect::SetBalance { balance } => {
-                let balance = balance.clamp(0.0, 1.0) as f32;
-                self.save(|prefs| prefs.balance = balance)?;
-                Ok(t_args(
-                    "sound-notice-balance",
-                    &[("percent", percent(f64::from(balance)).into())],
-                ))
-            }
             AudioEffect::SetMonoOutput { on } => {
                 let on = *on;
                 self.save(|prefs| prefs.mono_output = on)?;
@@ -895,14 +977,6 @@ impl AudioModel {
                     "sound-notice-echo-off"
                 }))
             }
-            AudioEffect::SetSystemSounds { on } => {
-                let on = *on;
-                self.save_sounds(|sounds| sounds.enabled = on)
-            }
-            AudioEffect::SetSystemSoundVolume { volume } => {
-                let volume = volume.clamp(0.0, 1.0);
-                self.save_sounds(|sounds| sounds.volume = volume)
-            }
             AudioEffect::SetSoundTheme { theme } => {
                 let id = self
                     .sound_themes
@@ -911,14 +985,6 @@ impl AudioModel {
                     .map(|known| known.id.clone())
                     .ok_or_else(|| t("sound-notice-theme-missing"))?;
                 self.save_sounds(|sounds| sounds.theme = Some(id))
-            }
-            AudioEffect::SetEventSound { event, on } => {
-                let event = SystemSoundEvent::ALL
-                    .into_iter()
-                    .find(|known| known.key() == event)
-                    .ok_or_else(|| t("sound-notice-event-missing"))?;
-                let on = *on;
-                self.save_sounds(|sounds| sounds.events.set(event, on))
             }
             AudioEffect::SetDeviceProfile { device, profile } => {
                 let index = self
@@ -1182,22 +1248,18 @@ impl AudioModel {
                 &t_args("sound-volume-error", &[("error", error.as_str().into())]),
             ));
         } else {
-            output_rows.push(setting_row(
-                &t("sound-volume"),
-                Box::new(
-                    self.cx.bind(
-                        Slider::from_state(&LocalState::new(f64::from(self.volume)))
-                            .with_id("audio.volume"),
+            output_rows.push(
+                self.cx
+                    .row(t("sound-volume"))
+                    .id("audio.volume")
+                    .slider_effect(
+                        &LocalState::new(f64::from(self.volume)),
                         effect(AudioEffect::SET_OUTPUT_VOLUME),
                     ),
-                ),
-            ));
-            output_rows.push(setting_row(
-                &t("sound-mute"),
-                Box::new(self.cx.bind(
-                    Toggle::from_state(&LocalState::new(self.muted)).with_id("audio.mute"),
-                    effect(AudioEffect::SET_OUTPUT_MUTED),
-                )),
+            );
+            output_rows.push(self.cx.row(t("sound-mute")).id("audio.mute").toggle_effect(
+                &LocalState::new(self.muted),
+                effect(AudioEffect::SET_OUTPUT_MUTED),
             ));
         }
         let stereo_sink = self.graph.default_sink().filter(|sink| sink.channels == 2);
@@ -1205,26 +1267,25 @@ impl AudioModel {
             output_rows.push(setting_row(
                 &t("sound-balance"),
                 Box::new(
-                    self.cx.bind(
+                    self.cx.bind_field_with(
                         Slider::from_state(&LocalState::new(f64::from(
                             self.prefs.get().balance.clamp(0.0, 1.0),
                         )))
                         .with_id("audio.balance"),
-                        effect(AudioEffect::SET_BALANCE),
+                        AudioPrefs::paths().balance,
+                        #[expect(
+                            clippy::cast_possible_truncation,
+                            reason = "a balance between 0 and 1 is stored as f32"
+                        )]
+                        |balance: f64| Ok(balance as f32),
                     ),
                 ),
             ));
         }
         if self.runtime_caps.mono_output && stereo_sink.is_some() {
-            output_rows.push(setting_row(
-                &t("sound-mono"),
-                Box::new(
-                    self.cx.bind(
-                        Toggle::from_state(&LocalState::new(self.prefs.get().mono_output))
-                            .with_id("audio.mono"),
-                        effect(AudioEffect::SET_MONO_OUTPUT),
-                    ),
-                ),
+            output_rows.push(self.cx.row(t("sound-mono")).id("audio.mono").toggle_effect(
+                &LocalState::new(self.prefs.get().mono_output),
+                effect(AudioEffect::SET_MONO_OUTPUT),
             ));
             output_rows.push(caption(&t("sound-mono-caption")));
         }
@@ -1298,16 +1359,15 @@ impl AudioModel {
                 &t_args("sound-input-error", &[("error", error.as_str().into())]),
             ));
         } else {
-            input_rows.push(setting_row(
-                &t("sound-input-level"),
-                Box::new(
-                    self.cx.bind(
-                        Slider::from_state(&LocalState::new(f64::from(self.input_volume)))
-                            .with_id("audio.input_volume"),
+            input_rows.push(
+                self.cx
+                    .row(t("sound-input-level"))
+                    .id("audio.input_volume")
+                    .slider_effect(
+                        &LocalState::new(f64::from(self.input_volume)),
                         effect(AudioEffect::SET_INPUT_VOLUME),
                     ),
-                ),
-            ));
+            );
         }
         if self.runtime_caps.microphone_meter && self.graph.default_source().is_some() {
             let running = self.mic_session.is_some();
@@ -1343,16 +1403,15 @@ impl AudioModel {
             input_rows.push(caption(&t("sound-mic-caption")));
         }
         if self.runtime_caps.echo_cancellation && !self.graph.sources.is_empty() {
-            input_rows.push(setting_row(
-                &t("sound-echo"),
-                Box::new(
-                    self.cx.bind(
-                        Toggle::from_state(&LocalState::new(self.prefs.get().echo_cancellation))
-                            .with_id("audio.echo_cancellation"),
+            input_rows.push(
+                self.cx
+                    .row(t("sound-echo"))
+                    .id("audio.echo_cancellation")
+                    .toggle_effect(
+                        &LocalState::new(self.prefs.get().echo_cancellation),
                         effect(AudioEffect::SET_ECHO_CANCELLATION),
                     ),
-                ),
-            ));
+            );
             input_rows.push(caption(&t("sound-echo-caption")));
         }
         card(&t("sound-input"), rows(input_rows))
@@ -1368,25 +1427,24 @@ impl AudioModel {
             if selectable.len() < 2 {
                 continue;
             }
-            let options = selectable.iter().map(|p| p.description.clone()).collect();
+            let options: Vec<String> = selectable.iter().map(|p| p.description.clone()).collect();
             let device = hw.id;
             let active = hw
                 .active_profile
                 .and_then(|i| hw.profiles.iter().find(|p| p.index == i))
                 .map_or_else(|| t("sound-choose-profile"), |p| p.description.clone());
-            hardware_rows.push(choice_row_described(
-                &hw.description,
-                &t("sound-profile"),
-                Box::new(
-                    self.cx.bind(
-                        Dropdown::from_state(options, &LocalState::new(active.clone()))
-                            .with_id(&format!("audio.profile.{}", hw.id))
-                            .with_placeholder(&active),
+            hardware_rows.push(
+                self.cx
+                    .row(&hw.description)
+                    .described(t("sound-profile"))
+                    .id(format!("audio.profile.{}", hw.id))
+                    .choice_effect(
+                        options,
+                        &LocalState::new(active.clone()),
                         effect(AudioEffect::SET_DEVICE_PROFILE)
                             .map(move |profile: String| (device, profile)),
                     ),
-                ),
-            ));
+            );
         }
         for sink in &self.graph.sinks {
             if let Some(codec) = &sink.codec {
@@ -1432,27 +1490,23 @@ impl AudioModel {
                 effect(AudioEffect::ROUTE_STREAM).map(move |device: String| (id, device)),
             );
             let route_row =
-                choice_row_described(&s.app, s.media_name.as_deref().unwrap_or(""), Box::new(dd));
-            let vol_row = setting_row(
-                &t("sound-volume"),
-                Box::new(
-                    self.cx.bind(
-                        Slider::from_state(&LocalState::new(f64::from(s.volume.unwrap_or(1.0))))
-                            .with_id(&format!("audio.stream.{id}.volume.sl")),
-                        effect(AudioEffect::SET_STREAM_VOLUME).map(move |volume: f64| (id, volume)),
-                    ),
-                ),
-            );
-            let mute_row = setting_row(
-                &t("sound-mute"),
-                Box::new(
-                    self.cx.bind(
-                        Toggle::from_state(&LocalState::new(s.muted.unwrap_or(false)))
-                            .with_id(&format!("audio.stream.{id}.muted.tg")),
-                        effect(AudioEffect::SET_STREAM_MUTED).map(move |muted: bool| (id, muted)),
-                    ),
-                ),
-            );
+                setting_row_described(&s.app, s.media_name.as_deref().unwrap_or(""), Box::new(dd));
+            let vol_row = self
+                .cx
+                .row(t("sound-volume"))
+                .id(format!("audio.stream.{id}.volume.sl"))
+                .slider_effect(
+                    &LocalState::new(f64::from(s.volume.unwrap_or(1.0))),
+                    effect(AudioEffect::SET_STREAM_VOLUME).map(move |volume: f64| (id, volume)),
+                );
+            let mute_row = self
+                .cx
+                .row(t("sound-mute"))
+                .id(format!("audio.stream.{id}.muted.tg"))
+                .toggle_effect(
+                    &LocalState::new(s.muted.unwrap_or(false)),
+                    effect(AudioEffect::SET_STREAM_MUTED).map(move |muted: bool| (id, muted)),
+                );
             blocks.push(rows(vec![route_row, vol_row, mute_row]));
         }
         card(title, rows(blocks))
@@ -1491,28 +1545,29 @@ impl AudioModel {
             };
             return card(&t("sound-system"), rows(vec![reason]));
         }
-        let mut sound_rows = vec![setting_row(
-            &t("sound-system"),
-            Box::new(self.cx.bind(
-                Toggle::from_state(&LocalState::new(sounds.enabled)).with_id("audio.system_sounds"),
-                effect(AudioEffect::SET_SYSTEM_SOUNDS),
-            )),
-        )];
+        let mut sound_rows = vec![
+            self.cx
+                .row(t("sound-system"))
+                .id("audio.system_sounds")
+                .toggle(
+                    &LocalState::new(sounds.enabled),
+                    crate::prefs::AudioPrefs::paths().system_sounds.enabled,
+                ),
+        ];
         if !sounds.enabled {
             return card(&t("sound-system"), rows(sound_rows));
         }
-        sound_rows.push(setting_row(
-            &t("sound-volume"),
-            Box::new(
-                self.cx.bind(
-                    Slider::from_state(&LocalState::new(sounds.volume))
-                        .with_id("audio.system_sound_volume"),
-                    effect(AudioEffect::SET_SYSTEM_SOUND_VOLUME),
+        sound_rows.push(
+            self.cx
+                .row(t("sound-volume"))
+                .id("audio.system_sound_volume")
+                .slider(
+                    &LocalState::new(sounds.volume),
+                    AudioPrefs::paths().system_sounds.volume,
                 ),
-            ),
-        ));
+        );
         if self.sound_themes.len() >= 2 {
-            let names = self
+            let names: Vec<String> = self
                 .sound_themes
                 .iter()
                 .map(|theme| theme.name.clone())
@@ -1523,29 +1578,27 @@ impl AudioModel {
                 .find(|theme| theme.id == sounds.theme_name())
                 .map(|theme| theme.name.clone())
                 .unwrap_or_default();
-            sound_rows.push(setting_row(
-                &t("sound-theme"),
-                Box::new(
-                    self.cx.bind(
-                        Dropdown::from_state(names, &LocalState::new(current))
-                            .with_id("audio.sound_theme"),
+            sound_rows.push(
+                self.cx
+                    .row(t("sound-theme"))
+                    .id("audio.sound_theme")
+                    .choice_effect(
+                        names,
+                        &LocalState::new(current),
                         effect(AudioEffect::SET_SOUND_THEME),
                     ),
-                ),
-            ));
+            );
         }
         for event in SystemSoundEvent::ALL {
-            let key = event.key().to_owned();
-            sound_rows.push(setting_row(
-                &event_shown(event),
-                Box::new(
-                    self.cx.bind(
-                        Toggle::from_state(&LocalState::new(sounds.events.get(event)))
-                            .with_id(&format!("audio.event_sound.{}", event.key())),
-                        effect(AudioEffect::SET_EVENT_SOUND).map(move |on: bool| (key.clone(), on)),
+            sound_rows.push(
+                self.cx
+                    .row(event_shown(event))
+                    .id(format!("audio.event_sound.{}", event.key()))
+                    .toggle(
+                        &LocalState::new(sounds.events.get(event)),
+                        event_sound(event),
                     ),
-                ),
-            ));
+            );
         }
         sound_rows.push(caption(&t("sound-system-caption")));
         card(&t("sound-system"), rows(sound_rows))
@@ -2101,7 +2154,9 @@ Video
             model.runtime_caps = runtime.capabilities();
             model.runtime = runtime.clone();
             model
-                .apply(&AudioEffect::SetBalance { balance: 0.75 })
+                .cx
+                .settings::<AudioPrefs>()
+                .update(|prefs| prefs.balance = 0.75)
                 .unwrap();
             model
                 .apply(&AudioEffect::SetMonoOutput { on: true })
@@ -2245,7 +2300,9 @@ Video
         ];
         model.event_sounds_available = true;
         model
-            .apply(&AudioEffect::SetSystemSoundVolume { volume: 0.3 })
+            .cx
+            .settings::<AudioPrefs>()
+            .update(|prefs| prefs.system_sounds.volume = 0.3)
             .unwrap();
         model
             .apply(&AudioEffect::SetSoundTheme {
@@ -2253,10 +2310,9 @@ Video
             })
             .unwrap();
         model
-            .apply(&AudioEffect::SetEventSound {
-                event: SystemSoundEvent::VolumeChange.key().into(),
-                on: false,
-            })
+            .cx
+            .settings::<AudioPrefs>()
+            .update(|prefs| prefs.system_sounds.events.volume_change = false)
             .unwrap();
         let saved = model.cx.settings::<AudioPrefs>().get().system_sounds;
         assert!((saved.volume - 0.3).abs() < 0.001);
@@ -2273,7 +2329,9 @@ Video
             })
             .unwrap();
         model
-            .apply(&AudioEffect::SetSystemSounds { on: false })
+            .cx
+            .settings::<AudioPrefs>()
+            .update(|prefs| prefs.system_sounds.enabled = false)
             .unwrap();
         let saved = model.cx.settings::<AudioPrefs>().get().system_sounds;
         assert!(!saved.enabled);

@@ -28,11 +28,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -40,10 +36,8 @@
 
 pub mod actions;
 pub mod app;
-mod continuation;
 #[cfg(test)]
 mod cpu_profile;
-pub mod doc;
 pub mod effect;
 mod files;
 pub mod main_panel;
@@ -52,6 +46,7 @@ pub mod metadata;
 pub mod model;
 pub mod note_header;
 pub mod notebook;
+pub mod read;
 pub mod resource;
 pub use ui::num;
 pub mod scenario;
@@ -64,7 +59,8 @@ pub use app::NotesApp;
 pub use effect::NotesEffect;
 pub use main_panel::MainPanel;
 pub use model::{PageId, PageMeta, Workspace, WorkspaceData};
-pub use resource::{Notebook, NotesShell};
+pub use notebook::Notebook;
+pub use resource::NotesShell;
 pub use shortcuts_overlay::ShortcutsOverlay;
 pub use status_bar::{SaveStatus, StatusBarState, StatusModel};
 
@@ -77,7 +73,7 @@ pub mod local_view;
 /// web desktop, an agent's participant host, a desktop test) instantiates.
 #[must_use]
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::framework::definition::<NotesShell>()
+    ui::built_in_definition!(NotesShell)
 }
 
 mod columns;

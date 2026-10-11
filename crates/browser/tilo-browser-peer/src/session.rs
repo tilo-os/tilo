@@ -284,6 +284,7 @@ enum Command {
     Join(u64),
     Publish(DocumentRoute, Vec<Vec<u8>>),
     InstallCipher(DocumentRoute, Box<dyn ContentCipher>),
+    InstallChannelKeys(DocumentRoute, channel_crypto::ChannelContentKeys),
     OpenRoute(DocumentRoute),
     PinGovernor(String, [u8; 32]),
     LiveJoin(u64),
@@ -566,6 +567,25 @@ impl PeerHandle {
         self.send(Command::InstallCipher(route, cipher))
     }
 
+    /// Hold `keys` as `route`'s channel keys, exactly as if the channel's
+    /// steward had admitted this session to it: documents held for them
+    /// open, the route's status stops awaiting keys, and edits held for them
+    /// go out sealed. For an application endpoint of the device that
+    /// stewards the channel, which hands it the keys it already holds
+    /// ([`channel_crypto::ChannelSteward::content_keys`]); any other session
+    /// is admitted by the steward over the channel itself.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error once the session is closed.
+    pub fn install_channel_keys(
+        &self,
+        route: DocumentRoute,
+        keys: channel_crypto::ChannelContentKeys,
+    ) -> Result<(), String> {
+        self.send(Command::InstallChannelKeys(route, keys))
+    }
+
     /// Take part in `route`'s encrypted channel: when a steward governs it,
     /// ask for access so documents on it can be opened and sealed. Routes
     /// are also opened by publishing on them or receiving their documents.
@@ -841,7 +861,7 @@ impl PeerHandle {
                     Failure {
                         code: "storage-transaction-failed",
                         message: "Changes could not be saved on this device.".into(),
-                        at_ms: crate::clock::now_ms(),
+                        at_ms: tilo_clock::unix_now_ms(),
                         subject: FailureSubject::Storage,
                     },
                 );
@@ -887,7 +907,7 @@ impl PeerHandle {
                 Failure {
                     code,
                     message,
-                    at_ms: crate::clock::now_ms(),
+                    at_ms: tilo_clock::unix_now_ms(),
                     subject,
                 },
             );
@@ -1179,7 +1199,7 @@ impl Task {
                 Failure {
                     code,
                     message,
-                    at_ms: crate::clock::now_ms(),
+                    at_ms: tilo_clock::unix_now_ms(),
                     subject,
                 },
             );
@@ -1217,7 +1237,7 @@ impl Task {
     /// A timeout is reported once per subscription.
     fn check_admission(&mut self) {
         let status = self.status();
-        match admission_state(&status, self.admission_since, crate::clock::now_ms()) {
+        match admission_state(&status, self.admission_since, tilo_clock::unix_now_ms()) {
             Admission::Admitted => {
                 self.admission_since = None;
                 if status
@@ -1287,7 +1307,7 @@ impl Task {
         let mut attempt: u32 = 0;
         let mut refusals: u32 = 0;
         loop {
-            if self.config.cert.is_expired_at(crate::clock::now_ns()) {
+            if self.config.cert.is_expired_at(tilo_clock::unix_now_ns()) {
                 self.fail("certificate-expired", "This browser's certificate expired.");
                 self.update(|status| status.phase = TransportPhase::Failed);
                 if !self.wait_for_reconnect(&mut commands).await {
@@ -1349,7 +1369,8 @@ impl Task {
                 status.phase = TransportPhase::Offline;
                 status.authenticated = false;
                 status.attempt = attempt;
-                status.next_attempt_at_ms = Some(crate::clock::now_ms().saturating_add(delay_ms));
+                status.next_attempt_at_ms =
+                    Some(tilo_clock::unix_now_ms().saturating_add(delay_ms));
             });
             let sleep = n0_future::time::sleep(delay);
             tokio::pin!(sleep);
@@ -1414,7 +1435,7 @@ impl Task {
             status.phase = TransportPhase::Connected;
             status.authenticated = true;
             status.attempt = 0;
-            status.last_contact_at_ms = Some(crate::clock::now_ms());
+            status.last_contact_at_ms = Some(tilo_clock::unix_now_ms());
             status.failures.retain(|failure| {
                 !failure.code.starts_with("transport") && !failure.code.starts_with("certificate")
             });
@@ -1422,7 +1443,7 @@ impl Task {
                 *ready = false;
             }
         });
-        self.admission_since = Some(crate::clock::now_ms());
+        self.admission_since = Some(tilo_clock::unix_now_ms());
         let mut ping = n0_future::time::interval(PING_INTERVAL);
         let mut channel_tick = n0_future::time::interval(CHANNEL_TICK);
         let mut heartbeat = n0_future::time::interval(tilo_relay_protocol::voice::HEARTBEAT);
@@ -1449,7 +1470,7 @@ impl Task {
                         if !self.resubscribe(&client) {
                             return Exit::Lost("host session saturated".into());
                         }
-                        self.admission_since = Some(crate::clock::now_ms());
+                        self.admission_since = Some(tilo_clock::unix_now_ms());
                     }
                     Some(command) => {
                         if !self.apply(command, Some(&client)).await {
@@ -1490,7 +1511,7 @@ impl Task {
                     self.check_admission();
                 }
                 _ = channel_tick.tick() => {
-                    let changes = self.channels.tick(crate::clock::now_ms());
+                    let changes = self.channels.tick(tilo_clock::unix_now_ms());
                     self.absorb(changes);
                 }
                 _ = heartbeat.tick() => {
@@ -1512,7 +1533,7 @@ impl Task {
                 self.rooms.insert(workspace_id);
                 if client.is_some() {
                     self.admission_since
-                        .get_or_insert_with(crate::clock::now_ms);
+                        .get_or_insert_with(tilo_clock::unix_now_ms);
                 }
                 self.update(|status| {
                     status.rooms.entry(workspace_id).or_insert(false);
@@ -1553,15 +1574,24 @@ impl Task {
                 self.release_live(&route, client);
                 true
             }
+            Command::InstallChannelKeys(route, keys) => {
+                // Settled with the next channel changes, the same way as
+                // keys the channel's own governance hands this session.
+                self.absorb(crate::channels::Changes {
+                    keys: vec![(route, keys)],
+                    outgoing: Vec::new(),
+                });
+                true
+            }
             Command::OpenRoute(route) => {
-                let changes = self.channels.open(&route, crate::clock::now_ms());
+                let changes = self.channels.open(&route, tilo_clock::unix_now_ms());
                 self.absorb(changes);
                 true
             }
             Command::PinGovernor(room, governor) => {
-                let changes = self
-                    .channels
-                    .pin_governor(&room, governor, crate::clock::now_ms());
+                let changes =
+                    self.channels
+                        .pin_governor(&room, governor, tilo_clock::unix_now_ms());
                 self.absorb(changes);
                 true
             }
@@ -1961,7 +1991,7 @@ impl Task {
             self.fail("protocol-rejected", "A document names an invalid room.");
             return true;
         };
-        let changes = self.channels.open(&route, crate::clock::now_ms());
+        let changes = self.channels.open(&route, tilo_clock::unix_now_ms());
         self.absorb(changes);
         if !self.ciphers.contains_key(&route) {
             // Never in the clear: the frames wait for this device's keys.
@@ -1971,7 +2001,7 @@ impl Task {
         }
         let mut delivered = true;
         for frame in frames {
-            let now = crate::clock::now_ns();
+            let now = tilo_clock::unix_now_ns();
             self.doc_seq = now.max(self.doc_seq.saturating_add(1));
             let Some(cipher) = self.ciphers.get_mut(&route) else {
                 self.fail("signature-rejected", "the route's channel keys went away");
@@ -2038,7 +2068,7 @@ impl Task {
     }
 
     fn inbound(&mut self, envelope: Envelope) {
-        let now = crate::clock::now_ms();
+        let now = tilo_clock::unix_now_ms();
         self.update(|status| status.last_contact_at_ms = Some(now));
         match envelope {
             Envelope::Ready { workspace_id, .. } => {
@@ -2138,7 +2168,7 @@ impl Task {
     /// One retained message from the host: channel governance, a member's
     /// certificate, or a document.
     fn inbound_body(&mut self, body: Vec<u8>, author: [u8; 32]) {
-        let now = crate::clock::now_ms();
+        let now = tilo_clock::unix_now_ms();
         match postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&body) {
             Ok(neighbour_wire::NeighbourMsg::IdentityHello { cert, .. }) => {
                 let changes = self.channels.note_cert(author, *cert, now);
@@ -2437,7 +2467,7 @@ async fn sign_governance(
         Some(Envelope::Delta {
             workspace_id,
             author_device_public_key: device,
-            authored_at_ns: crate::clock::now_ns(),
+            authored_at_ns: tilo_clock::unix_now_ns(),
             delta: CoeditPayload::Checkpoint {
                 channel,
                 body: postcard::to_allocvec(&message).ok()?,
@@ -2529,7 +2559,7 @@ fn identity_hello(workspace_id: u64, cert: &DeviceCert) -> Option<Envelope> {
     Some(Envelope::Delta {
         workspace_id,
         author_device_public_key: cert.device_public_key,
-        authored_at_ns: crate::clock::now_ns(),
+        authored_at_ns: tilo_clock::unix_now_ns(),
         delta: CoeditPayload::Checkpoint { channel, body }.encode().ok()?,
         signature: [0; 64],
     })
@@ -2551,7 +2581,7 @@ fn commit(entry: &OutboxEntry, cert: &DeviceCert) -> Envelope {
         workspace_id: entry.workspace_id,
         op: entry.op,
         author_device_public_key: cert.device_public_key,
-        authored_at_ns: crate::clock::now_ns(),
+        authored_at_ns: tilo_clock::unix_now_ns(),
         delta: payload.encode().unwrap_or_default(),
     }
 }
@@ -2564,7 +2594,7 @@ fn commit(entry: &OutboxEntry, cert: &DeviceCert) -> Envelope {
 enum Link {
     Https(HttpsLink),
     #[cfg(feature = "iroh")]
-    Iroh(tilo_relay_client::RelayClient),
+    Iroh(tilo_relay_session::RelayClient),
 }
 
 impl Link {
@@ -2626,7 +2656,7 @@ async fn connect(config: &PeerConfig, signer: &dyn DeviceSigner) -> Result<Link,
         .map(Link::Https),
         #[cfg(feature = "iroh")]
         Host::Iroh { addr, relay_url } => {
-            use tilo_relay_client::{ClientError, RelayClient};
+            use tilo_relay_session::{ClientError, RelayClient};
             let mut builder = iroh::endpoint::Endpoint::builder(iroh::endpoint::presets::Minimal);
             if let Some(url) = relay_url {
                 builder = builder.relay_mode(iroh::RelayMode::Custom(url.clone().into()));

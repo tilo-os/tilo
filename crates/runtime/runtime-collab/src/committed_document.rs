@@ -1,4 +1,4 @@
-//! Disposable reads on the already admitted channel; no route or identity on the wire.
+//! Original launch binding and disposable reads on the admitted channel; no caller-selected identity.
 use serde::{Deserialize, Serialize};
 pub const CHUNK_BYTES: usize = 64 * 1024;
 pub const MAX_DOCUMENT_BYTES: usize = 32 * 1024 * 1024;
@@ -97,6 +97,8 @@ pub enum Request {
         kind: String,
         document: Vec<u8>,
     },
+    /// Read only the host-retained window instance for this live connection.
+    PrivateWindowBinding,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Reply {
@@ -121,6 +123,10 @@ pub enum Reply {
     },
     Initialized {
         revision: [u8; 32],
+    },
+    /// No instance means this connection has no native private control binding.
+    PrivateWindowBinding {
+        instance: Option<u64>,
     },
 }
 impl Request {
@@ -153,7 +159,7 @@ impl Request {
     }
     fn valid(&self) -> bool {
         match self {
-            Self::Open { .. } => true,
+            Self::Open { .. } | Self::PrivateWindowBinding => true,
             Self::Next {
                 capture,
                 offset,
@@ -206,6 +212,9 @@ impl Reply {
     }
     fn valid(&self) -> bool {
         match self {
+            Self::PrivateWindowBinding { instance } => {
+                instance.is_none_or(|instance| instance != 0)
+            }
             Self::Created { receipt, chunk } => {
                 receipt.token != [0; 16]
                     && receipt.workspace.valid()
@@ -298,6 +307,36 @@ mod tests {
         assert!(Reply::decode(&trailing).is_err());
         assert!(CreationChunk::from_reply(Reply::Initialized { revision: [3; 32] }).is_err());
     }
+    #[test]
+    fn private_binding_wire_is_bounded_append_only_and_has_no_selected_identity() {
+        assert_eq!(
+            Request::Open {
+                known_revision: None
+            }
+            .encode()
+            .unwrap(),
+            [0, 0]
+        );
+        assert_eq!(Request::PrivateWindowBinding.encode().unwrap(), [4]);
+        assert_eq!(Reply::Legacy.encode().unwrap(), [0]);
+        assert_eq!(
+            Reply::PrivateWindowBinding { instance: None }
+                .encode()
+                .unwrap(),
+            [7, 0]
+        );
+        let reply = Reply::PrivateWindowBinding { instance: Some(42) };
+        assert_eq!(Reply::decode(&reply.encode().unwrap()).unwrap(), reply);
+        assert!(
+            Reply::PrivateWindowBinding { instance: Some(0) }
+                .encode()
+                .is_err()
+        );
+        // A caller cannot append an instance or identity selector to the unit request.
+        assert!(Request::decode(&[4, 42]).is_err());
+        assert!(Reply::decode(&[7, 1, 0]).is_err());
+    }
+
     #[test]
     fn committed_read_codec_roundtrip_and_bounds() {
         let request = Request::Open {

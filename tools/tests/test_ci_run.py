@@ -1,4 +1,6 @@
 import importlib.util
+import contextlib
+import io
 import json
 import os
 import shlex
@@ -15,6 +17,9 @@ CI_RUN = ROOT / "scripts" / "ci-run.sh"
 spec = importlib.util.spec_from_file_location("cgroup_memory", ROOT / "tools/ci/cgroup_memory.py")
 cgroup_memory = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(cgroup_memory)
+timing_spec = importlib.util.spec_from_file_location('timing_report', ROOT / 'tools/ci/timing_report.py')
+timing_report = importlib.util.module_from_spec(timing_spec)
+timing_spec.loader.exec_module(timing_report)
 
 
 def shell_path(path):
@@ -87,11 +92,82 @@ class CiRunSummaryTests(unittest.TestCase):
 
 
 class CiRunMemoryTests(unittest.TestCase):
+    def test_changed_cgroup_and_invalid_resource_fields_never_fabricate_cpu(self):
+        before = {'identity': [1, 2], 'cgroup': '/private/before', 'monotonic_ns': 100,
+                  'cpu.stat': 'usage_usec 1000'}
+        after = {'identity': [1, 3], 'cgroup': '/private/after', 'monotonic_ns': 200,
+                 'cpu.stat': 'usage_usec 2000', 'cpu.max': 'private credential',
+                 'cpuset.cpus.effective': 'private credential', 'cpu.pressure': 'private credential'}
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            cgroup_memory.resource_report(before, after, 'fixture tests')
+        receipt = output.getvalue()
+        self.assertNotIn('private', receipt)
+        self.assertIn('cgroup_cpu_stat_before=unavailable', receipt)
+        timestamped = '\n'.join('2026-10-11T01:00:00Z ' + line for line in receipt.splitlines())
+        metrics = timing_report.extract_job_metrics(timestamped)['measurements'][0]
+        self.assertNotIn('cgroup_cpu_seconds', metrics)
+        self.assertIsNone(metrics['cpu_limit'])
+        self.assertEqual(cgroup_memory.numeric_stat('usage_usec -1'), 'unavailable')
+        self.assertEqual(cgroup_memory.numeric_stat('usage_usec 1\nusage_usec 2'), 'unavailable')
+
+    def test_success_reports_observed_cpu_and_peak_without_failure_diagnostics(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.put_memory(root)
+            (root / 'cpu.max').write_text('200000 100000\n')
+            (root / 'cpuset.cpus.effective').write_text('0-3\n')
+            (root / 'cpu.stat').write_text('usage_usec 1000000\nuser_usec 900000\nsystem_usec 100000\n')
+            command = ('printf "usage_usec 1750000\\nuser_usec 1500000\\nsystem_usec 250000\\n" '
+                       '> "$TILO_CGROUP_MEMORY_PATH/cpu.stat"; '
+                       'printf "8192\\n" > "$TILO_CGROUP_MEMORY_PATH/memory.peak"; exit 0')
+            output = self.run_fixture(root, command, status=0)
+            self.assertNotIn('CI_CGROUP_MEMORY_', output)
+            self.assertEqual(output.count('==> memory measurements'), 1)
+            timestamped = '\n'.join('2026-10-11T01:00:00Z ' + line for line in output.splitlines())
+            metrics = timing_report.extract_job_metrics(timestamped)['measurements']
+            self.assertEqual(len(metrics), 1)
+            self.assertEqual(metrics[0]['cgroup_cpu_seconds'], 0.75)
+            self.assertEqual(metrics[0]['cpu_limit'], 2)
+            self.assertEqual(metrics[0]['cpuset_cpu_count'], 4)
+            self.assertEqual(metrics[0]['cgroup_memory_peak'], 8192)
+            self.assertEqual(metrics[0]['cgroup_memory_max'], 4294967296)
+            self.assertGreaterEqual(metrics[0]['wall_seconds'], 0)
+
+    def test_outer_measurement_keeps_one_reading_and_exact_command_status(self):
+        for status in (0, 7):
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                self.put_memory(root)
+                result = subprocess.run(
+                    bash_command(shell_path(ROOT / 'tools/ci/measure.sh'), 'outer tests', '--',
+                                 'bash', shell_path(CI_RUN), 'inner tests', '--', 'bash', '-c',
+                                 f'exit {status}'),
+                    cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    env=os.environ | {'TILO_CGROUP_MEMORY_PATH': str(root), 'TILO_CGROUP_ROOT': str(root)},
+                    timeout=HANG_BOUND, check=False,
+                )
+                self.assertEqual(result.returncode, status, result.stdout)
+                self.assertEqual(result.stdout.count(' measurements\n'), 1, result.stdout)
+                self.assertIn('==> outer tests measurements', result.stdout)
+                self.assertNotIn('==> inner tests measurements', result.stdout)
+
+        result = subprocess.run(
+            bash_command(shell_path(CI_RUN), 'outer tests', '--', 'bash', shell_path(CI_RUN),
+                         'inner tests', '--', 'true'),
+            cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            env={key: value for key, value in os.environ.items() if key != 'TILO_CI_MEASURE_ACTIVE'},
+            timeout=HANG_BOUND, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(result.stdout.count(' measurements\n'), 1, result.stdout)
+
     def run_fixture(self, directory, command, status=23):
         result = subprocess.run(
             bash_command("-c", 'export TILO_CGROUP_MEMORY_PATH="$1"; exec bash "$2" memory -- bash -c "$3"',
                          "fixture", shell_path(directory), shell_path(CI_RUN), command),
             cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            env={key: value for key, value in os.environ.items() if key != 'TILO_CI_MEASURE_ACTIVE'},
             timeout=HANG_BOUND, check=False,
         )
         self.assertEqual(result.returncode, status, result.stdout)

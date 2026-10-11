@@ -116,11 +116,8 @@ impl LegacyLaunchRoute {
         socket: &Path,
         uid: Option<u32>,
     ) -> std::io::Result<tokio::task::JoinHandle<()>> {
-        use std::os::unix::fs::PermissionsExt;
         let runtime = tokio::runtime::Handle::try_current().map_err(std::io::Error::other)?;
-        let _ = std::fs::remove_file(socket);
-        let listener = std::os::unix::net::UnixListener::bind(socket)?;
-        std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600))?;
+        let listener = tilo_files::native::private::bind_socket(socket)?;
         if let Some(uid) = uid {
             std::os::unix::fs::chown(socket, Some(uid), Some(uid))?;
         }

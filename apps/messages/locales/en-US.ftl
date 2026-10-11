@@ -70,12 +70,47 @@ messages-setup-scan = Scan this private code from Linked devices on your phone, 
 messages-setup-code = Private device linking code for the selected account
 messages-setup-unavailable = Private linking is unavailable for this account on this device.
 messages-setup-active = This account already has a linking attempt. Finish or close it before starting another.
-messages-setup-interrupted = Linking stopped. Review this account before starting a new attempt.
+messages-setup-interrupted = Linking stopped. Return to account selection to start a new attempt.
+messages-first-reset = Return to account selection
 messages-setup-linked = Device linked. Messaging resumes after its connection and inbox are ready.
 
 messages-setup-selected = { $service } · { $account }
 
 messages-first-signal = Link a Signal account
-messages-first-self-review = Verify that this is your Signal identity: { $identity }
+messages-first-self-review = Verify the selected service identity: { $identity }
 messages-first-confirm = Confirm identity and request access
 messages-first-permission-review = Review this account’s access request in Passwords. Messages starts only after you approve it.
+
+messages-first-sms = Choose an SMS SIM
+messages-select-sim = Use this SIM
+messages-no-sims = No available SIMs were found on this device.
+messages-select-sim-name = Use { $sim }
+
+messages-first-whatsapp = Link a WhatsApp account
+messages-whatsapp-show-code = Show private linking code
+messages-whatsapp-review-storage = Review protected storage access
+messages-whatsapp-refresh-code = Refresh private linking code
+messages-whatsapp-storage-explanation = Review private encrypted storage access before linking. After linking, confirm the identity reported by WhatsApp. This version supports direct text and ordinary private group text, with reviewed membership changes. Community, disappearing-message, media and call features are unavailable.
+messages-first-tilo = Use my Tilo identity
+messages-first-account-prepare = Set up a private Messages account
+
+messages-list-groups = List private groups
+messages-read-group-membership = Read group membership
+messages-close-groups = Close groups
+messages-refresh-group-membership = Refresh membership
+messages-account-groups = WhatsApp groups for { $account }
+messages-groups-unavailable = Group membership is unavailable for this account.
+messages-groups-empty = No participating groups.
+messages-group-untitled = Untitled group
+messages-groups-scope = These groups belong to the selected WhatsApp account, separately from workspace collaborators. Refresh membership before sending or changing members.
+messages-group-role-member = Member
+messages-group-role-admin = Administrator
+messages-group-role-super-admin = Group creator
+
+messages-group-history = Read group messages
+messages-group-send = Send to this group
+messages-group-add = Add reviewed contact
+messages-group-remove = Remove reviewed member
+messages-group-leave = Leave this group
+messages-group-add-choice = Add { $person } using { $route }
+messages-group-remove-choice = Remove { $member }

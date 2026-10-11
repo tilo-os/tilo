@@ -27,7 +27,6 @@ tracing = "0.1"
 # lock collapses to one copy.
 zbus = { workspace = true, features = ["tokio"] }
 tokio = { version = "1.52.3", features = ["rt", "macros", "time", "sync"] }
-futures-util = "0.3"
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]

@@ -9,6 +9,7 @@
 use std::cmp::Reverse;
 use std::collections::BTreeSet;
 use std::fmt;
+use std::num::NonZeroU16;
 
 use serde::{Deserialize, Serialize};
 
@@ -77,6 +78,8 @@ pub enum RuntimeExecution {
     LlamaCpp {
         max_context_tokens: u32,
         gpu_layers: u16,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parallel_slots: Option<NonZeroU16>,
     },
 }
 
@@ -116,10 +119,16 @@ impl RuntimeRelease {
             RuntimeExecution::LlamaCpp {
                 max_context_tokens,
                 gpu_layers,
+                parallel_slots,
             } => {
                 if *gpu_layers > 4096 || (self.kind == RuntimeKind::Cpu && *gpu_layers != 0) {
                     return Err(ProvisionError::InvalidCatalog(
                         "GPU layer setting is incompatible with runtime",
+                    ));
+                }
+                if parallel_slots.is_some_and(|slots| slots.get() > 64) {
+                    return Err(ProvisionError::InvalidCatalog(
+                        "parallel slots exceed launch limit",
                     ));
                 }
                 *max_context_tokens
@@ -164,13 +173,20 @@ pub enum ModelArtifactFormat {
     /// of speech recognition; it is never treated as a chat model or launched
     /// by the vLLM supervisor. The consumer checks its language capabilities.
     WhisperGgml,
+    /// Whistle CACT weights, interpreted by the immutable image AOT runtime.
+    /// The downloadable object contains weights, never executable runtime code.
+    WhistleCact,
 }
 
 impl ModelArtifactFormat {
     /// Whether models of this format run inside the process that uses them
     /// rather than behind a supervised vLLM runtime.
     pub const fn runs_in_process(self) -> bool {
-        matches!(self, Self::OnnxFile | Self::WhisperGgml)
+        matches!(self, Self::OnnxFile | Self::WhisperGgml | Self::WhistleCact)
+    }
+
+    pub const fn is_speech(self) -> bool {
+        matches!(self, Self::WhisperGgml | Self::WhistleCact)
     }
 }
 
@@ -270,7 +286,7 @@ impl LocalModelRelease {
         if self.segmentation {
             capabilities.push(InProcessCapability::Segmentation);
         }
-        if self.artifact_format == ModelArtifactFormat::WhisperGgml {
+        if self.artifact_format.is_speech() {
             capabilities.push(InProcessCapability::SpeechRecognition);
         }
         capabilities
@@ -293,7 +309,7 @@ impl LocalModelRelease {
                 "single-file llama.cpp release has no vision projection",
             ));
         }
-        if self.artifact_format == ModelArtifactFormat::WhisperGgml && self.segmentation {
+        if self.artifact_format.is_speech() && self.segmentation {
             return Err(ProvisionError::InvalidCatalog(
                 "speech graph cannot claim segmentation",
             ));
@@ -878,6 +894,33 @@ mod tests {
         assert!(serde_json::from_value::<RuntimeExecution>(invalid).is_err());
     }
 
+    #[test]
+    fn parallel_slots_preserve_legacy_bytes_and_reject_malformed_counts() {
+        let golden = r#"{"engine":"llama_cpp","max_context_tokens":4096,"gpu_layers":0}"#;
+        let execution: RuntimeExecution = serde_json::from_str(golden).unwrap();
+        assert_eq!(serde_json::to_string(&execution).unwrap(), golden);
+        for value in [
+            serde_json::json!(0),
+            serde_json::json!(-1),
+            serde_json::json!(65536),
+            serde_json::json!(true),
+            serde_json::json!("1"),
+        ] {
+            let mut wire: serde_json::Value = serde_json::from_str(golden).unwrap();
+            wire["parallel_slots"] = value;
+            assert!(serde_json::from_value::<RuntimeExecution>(wire).is_err());
+        }
+        let mut runtime = catalog().runtimes.remove(0);
+        for slots in [1, 64, 65] {
+            runtime.execution = Some(RuntimeExecution::LlamaCpp {
+                max_context_tokens: 4096,
+                gpu_layers: 0,
+                parallel_slots: NonZeroU16::new(slots),
+            });
+            assert_eq!(runtime.validate_execution().is_ok(), slots <= 64);
+        }
+    }
+
     fn artifact(name: &str) -> PinnedArtifact {
         PinnedArtifact {
             url: format!("https://models.example.invalid/{name}"),
@@ -936,6 +979,30 @@ mod tests {
             face_recognition: false,
             segmentation: true,
         }
+    }
+
+    #[test]
+    fn whistle_weights_declare_speech_without_executable_runtime_or_chat_capabilities() {
+        let mut speech = segmentation_model();
+        speech.artifact_format = ModelArtifactFormat::WhistleCact;
+        speech.segmentation = false;
+        speech.validate_shape().unwrap();
+        assert_eq!(
+            speech.in_process_capabilities(),
+            [InProcessCapability::SpeechRecognition]
+        );
+        assert_eq!(
+            serde_json::to_string(&speech.artifact_format).unwrap(),
+            "\"whistle_cact\""
+        );
+        speech.segmentation = true;
+        assert!(speech.validate_shape().is_err());
+        speech.segmentation = false;
+        speech.context_window = 100;
+        assert!(speech.validate_shape().is_err());
+        speech.context_window = 0;
+        speech.allowed_runtimes.insert(RuntimeKind::Cpu);
+        assert!(speech.validate_shape().is_err());
     }
 
     #[test]
@@ -1104,6 +1171,7 @@ mod tests {
         value.runtimes[0].execution = Some(RuntimeExecution::LlamaCpp {
             max_context_tokens: 4096,
             gpu_layers: 0,
+            parallel_slots: None,
         });
         assert!(value.recommend(&cpu(), RuntimeKind::Cpu).is_some());
         value.models[0].allowed_runtimes = [RuntimeKind::NvidiaCuda].into();
@@ -1129,6 +1197,7 @@ mod tests {
         value.runtimes[0].execution = Some(RuntimeExecution::LlamaCpp {
             max_context_tokens: 4096,
             gpu_layers: 8,
+            parallel_slots: None,
         });
         value
     }
@@ -1203,6 +1272,7 @@ mod tests {
                 value.runtimes[0].execution = Some(RuntimeExecution::LlamaCpp {
                     max_context_tokens: 4096,
                     gpu_layers: 0,
+                    parallel_slots: None,
                 });
             }
             let mut fake = Fake {

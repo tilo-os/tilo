@@ -1,203 +1,16 @@
 //! Which names a sandbox may resolve, and so which addresses it may reach.
 //!
-//! The vocabulary is `collab_types::caps::host_covers`'s: `*` is every
-//! host, a leading `.` is a domain and everything under it, anything else is
-//! one exact host. `*.example.com` is accepted as a spelling of
-//! `.example.com`; it is normalised on the way in, never matched as a glob.
+//! The grammar and the decision are `collab_types::caps::net`'s — the same
+//! [`EgressPolicy`] the launcher's gate enforces for apps — so a grant means
+//! one thing to an app and to an environment: `*` is every host, a leading
+//! `.` (or `*.`) is a domain and everything under it, anything else is one
+//! exact host, and an IP literal is not a host. What is this crate's own is
+//! the backend: which *addresses* the DNS stub may admit for an allowed
+//! name ([`admissible`]).
 
 use std::net::IpAddr;
 
-/// One allowed name: a host, or a domain with everything under it.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct HostPattern {
-    /// Lower-case, no trailing dot.
-    name: String,
-    subdomains: bool,
-}
-
-impl HostPattern {
-    /// Parse a grant's host. `example.com` is that host; `.example.com` and
-    /// `*.example.com` are the domain and every name under it.
-    ///
-    /// # Errors
-    /// Returns the reason when `raw` is not a host name: empty, `*` (that is
-    /// [`EgressPolicy::Any`], not a pattern), an IP address (egress is decided
-    /// by name; an address literal would bypass the resolver that decides),
-    /// or a name with characters DNS names do not carry.
-    pub fn parse(raw: &str) -> Result<Self, String> {
-        let trimmed = raw.trim().trim_end_matches('.');
-        let (subdomains, name) = if let Some(rest) = trimmed.strip_prefix("*.") {
-            (true, rest)
-        } else if let Some(rest) = trimmed.strip_prefix('.') {
-            (true, rest)
-        } else {
-            (false, trimmed)
-        };
-        let name = name.to_ascii_lowercase();
-        if name.is_empty() || name == "*" {
-            return Err(format!(
-                "{raw:?} is not a host: name one (example.com), or a domain with \
-                 everything under it (*.example.com)"
-            ));
-        }
-        if name.parse::<IpAddr>().is_ok() || name.starts_with('[') {
-            return Err(format!(
-                "{raw:?} is an address; hosts are granted by name, so the resolver \
-                 that decides what is reachable cannot be bypassed"
-            ));
-        }
-        if name.len() > 253 || !name.split('.').all(is_label) {
-            return Err(format!("{raw:?} is not a valid host name"));
-        }
-        Ok(Self { name, subdomains })
-    }
-
-    /// The name, without any `*.`/`.` prefix.
-    pub fn name(&self) -> &str {
-        &self.name
-    }
-
-    /// Whether names under [`Self::name`] are covered too.
-    pub fn covers_subdomains(&self) -> bool {
-        self.subdomains
-    }
-
-    /// Does this pattern cover `host` (lower-case, no trailing dot)?
-    pub fn covers(&self, host: &str) -> bool {
-        if host == self.name {
-            return true;
-        }
-        self.subdomains
-            && host
-                .strip_suffix(self.name.as_str())
-                .is_some_and(|head| head.ends_with('.') && head.len() > 1)
-    }
-}
-
-impl std::fmt::Display for HostPattern {
-    /// The record's spelling: `example.com` or `.example.com`.
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.subdomains {
-            write!(f, ".{}", self.name)
-        } else {
-            f.write_str(&self.name)
-        }
-    }
-}
-
-fn is_label(label: &str) -> bool {
-    !label.is_empty()
-        && label.len() <= 63
-        && !label.starts_with('-')
-        && !label.ends_with('-')
-        && label
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-}
-
-/// What a sandbox may reach.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum EgressPolicy {
-    /// Everything: a `*` grant. The sandbox still has its own namespace.
-    Any,
-    /// Only the addresses the DNS stub answered for these names. Empty means
-    /// no network at all: the stub refuses every name.
-    Hosts(Vec<HostPattern>),
-}
-
-/// How a name was allowed: by an exact host grant, or under a domain.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Allowed {
-    /// The policy is [`EgressPolicy::Any`].
-    Any,
-    /// An exact host grant names it.
-    Exact,
-    /// A domain grant covers it.
-    Domain,
-}
-
-impl EgressPolicy {
-    /// No network at all.
-    pub fn none() -> Self {
-        Self::Hosts(Vec::new())
-    }
-
-    /// A policy from grant spellings (`*`, `example.com`, `.example.com`,
-    /// `*.example.com`). A `*` anywhere makes it [`EgressPolicy::Any`];
-    /// spellings that are not hosts are skipped with a warning, so a bad
-    /// grant narrows rather than widens.
-    pub fn from_grants<'a>(grants: impl IntoIterator<Item = &'a str>) -> Self {
-        let mut hosts = Vec::new();
-        for raw in grants {
-            if raw.trim() == "*" {
-                return Self::Any;
-            }
-            match HostPattern::parse(raw) {
-                Ok(pattern) => hosts.push(pattern),
-                Err(reason) => tracing::warn!(%reason, "ignoring a host grant"),
-            }
-        }
-        Self::hosts(hosts)
-    }
-
-    /// A policy allowing exactly `hosts`, deduplicated and sorted.
-    pub fn hosts(mut hosts: Vec<HostPattern>) -> Self {
-        hosts.sort();
-        hosts.dedup();
-        Self::Hosts(hosts)
-    }
-
-    /// Whether `name` may be resolved, and how it was allowed.
-    pub fn allows(&self, name: &str) -> Option<Allowed> {
-        let hosts = match self {
-            Self::Any => return Some(Allowed::Any),
-            Self::Hosts(hosts) => hosts,
-        };
-        let name = name.trim_end_matches('.').to_ascii_lowercase();
-        let mut found = None;
-        for pattern in hosts {
-            if !pattern.covers(&name) {
-                continue;
-            }
-            if !pattern.subdomains || pattern.name == name {
-                return Some(Allowed::Exact);
-            }
-            found = Some(Allowed::Domain);
-        }
-        found
-    }
-
-    /// Whether the sandbox needs a route out at all.
-    pub fn reaches_anything(&self) -> bool {
-        match self {
-            Self::Any => true,
-            Self::Hosts(hosts) => !hosts.is_empty(),
-        }
-    }
-
-    /// Whether every name `self` allows, `other` allows too.
-    pub fn within(&self, other: &Self) -> bool {
-        match (self, other) {
-            (_, Self::Any) => true,
-            (Self::Any, Self::Hosts(_)) => false,
-            // A domain grant covering a pattern's name covers everything
-            // under it too.
-            (Self::Hosts(mine), Self::Hosts(theirs)) => mine.iter().all(|p| {
-                theirs
-                    .iter()
-                    .any(|t| t == p || (t.subdomains && t.covers(&p.name)))
-            }),
-        }
-    }
-
-    /// The grant spellings, for reports.
-    pub fn describe(&self) -> Vec<String> {
-        match self {
-            Self::Any => vec!["*".to_owned()],
-            Self::Hosts(hosts) => hosts.iter().map(ToString::to_string).collect(),
-        }
-    }
-}
+pub use collab_types::caps::{Allowed, EgressPolicy, HostPattern, NetHostError};
 
 /// Whether an address a resolver answered for an allowed name may be
 /// admitted. Never the unspecified, multicast, broadcast, link-local
@@ -353,6 +166,35 @@ mod tests {
         }
         for global in ["140.82.112.3", "2606:4700::1111"] {
             assert!(admissible(ip(global), Allowed::Domain), "{global}");
+        }
+    }
+
+    /// Apps and environments answer every row of the shared vector file
+    /// identically: this is the environment side, through the policy the DNS
+    /// stub consults; `launcher`'s `app_egress_answers_every_shared_vector`
+    /// is the app side.
+    #[test]
+    fn environment_egress_answers_every_shared_vector() {
+        let vectors = include_str!("../../../collab/collab-types/tests/net_host_vectors.txt");
+        let rows: Vec<(&str, &str, bool)> = vectors
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .map(
+                |line| match line.split_whitespace().collect::<Vec<_>>()[..] {
+                    [grant, host, "yes"] => (grant, host, true),
+                    [grant, host, "no"] => (grant, host, false),
+                    _ => panic!("malformed vector line {line:?}"),
+                },
+            )
+            .collect();
+        assert!(rows.len() > 20, "the vector file was read: {rows:?}");
+        for (grant, host, covered) in rows {
+            assert_eq!(
+                policy(&[grant]).allows(host).is_some(),
+                covered,
+                "an environment granted {grant:?} asking for {host:?}"
+            );
         }
     }
 }

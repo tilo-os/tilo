@@ -167,7 +167,7 @@ fn an_agent_edit_is_its_own_attributed_undo_boundary() {
         // And presses Ctrl+Z once. This is verbatim what the keybinding calls.
         let state = app.state_mut_for_test();
         state
-            .undo_as(Some(&me), None, None)
+            .undo_as(Some(&me), None, None, None)
             .expect("the keystroke is undoable");
 
         assert!(
@@ -193,8 +193,7 @@ fn an_agent_edit_is_its_own_attributed_undo_boundary() {
         let entry = app
             .state_mut_for_test()
             .peek_last_undo()
-            .expect("the agent's action is on the undo stack at all")
-            .clone();
+            .expect("the agent's action is on the undo stack at all");
         assert_eq!(
             entry.author,
             Some(UserId(AGENT.into())),
@@ -204,7 +203,7 @@ fn an_agent_edit_is_its_own_attributed_undo_boundary() {
         // And it is reversible under that name.
         let state = app.state_mut_for_test();
         state
-            .undo_as(Some(&UserId(AGENT.into())), None, None)
+            .undo_as(Some(&UserId(AGENT.into())), None, None, None)
             .expect("the agent's own action can be reverted as the agent");
         assert!(
             state.doc.get(&ROOT, "agent").unwrap().is_none(),

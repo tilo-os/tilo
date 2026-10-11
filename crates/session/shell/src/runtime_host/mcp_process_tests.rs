@@ -428,7 +428,7 @@ fn mcp_process_owns_and_reaps_its_children() {
             return;
         };
         let session = Session::start(&root).unwrap();
-        let tree = Arc::downgrade(&session.workspace_tree());
+        let tree = session.workspace_tree().downgrade();
         let path = root.join("workspace.json");
         let (started, saving) = mpsc::channel();
         let (release, released) = mpsc::channel();

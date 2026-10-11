@@ -22,9 +22,125 @@ mod tests {
     }
     use automerge::ActorId;
     use automerge::transaction::{CommitOptions, Transactable};
-    use collab_types::caps::{CapOverride, Scope, Subject, Verb};
+    use collab_types::caps::{Access, CapOverride, Scope, Subject};
     use tilo_automerge::ApplyIncoming as _;
-    use ui::widget::op_class_is_revertible;
+
+    #[derive(Clone)]
+    struct NativeTree(WorkspaceTree);
+    impl std::ops::Deref for NativeTree {
+        type Target = tilo_desktop_model::DesktopTree;
+        fn deref(&self) -> &Self::Target {
+            &self.0
+        }
+    }
+    impl std::ops::DerefMut for NativeTree {
+        fn deref_mut(&mut self) -> &mut Self::Target {
+            &mut self.0
+        }
+    }
+    impl crate::activity::ActivityTree for NativeTree {
+        fn document(&self) -> &automerge::AutoCommit {
+            &self.0.doc
+        }
+        fn document_mut(&mut self) -> &mut automerge::AutoCommit {
+            &mut self.0.doc
+        }
+        fn resync_activity_cache(&mut self) -> Result<(), String> {
+            self.0.resync_cache_from_doc();
+            Ok(())
+        }
+        fn native_manual_tasks(&self, _: WorkspaceId) -> bool {
+            true
+        }
+    }
+
+    #[test]
+    fn native_manual_draft_defers_owner_write_and_closes_only_after_completion() {
+        let mut tree = NativeTree(WorkspaceTree::bootstrap_default());
+        let mut pane = native_pane();
+        pane.open_task_composer(&tree);
+        pane.task_draft = "Review mapped receipt".into();
+        tree.0
+            .doc
+            .put(automerge::ROOT, "pending_projection_edit", true)
+            .unwrap();
+        let blocked = pane.create_task_from_draft(&mut tree);
+        assert!(blocked.task_refused);
+        assert!(blocked.create_native_manual.is_none());
+        assert!(!blocked.task_changed);
+        assert!(pane.task_compose_open);
+        assert_eq!(pane.task_draft, "Review mapped receipt");
+        tree.0.doc.commit();
+        let outcome = pane.create_task_from_draft(&mut tree);
+        assert!(outcome.handled);
+        assert!(!outcome.task_changed);
+        let draft = outcome.create_native_manual.unwrap();
+        assert_eq!(draft.workspace, tree.active);
+        assert_eq!(
+            draft.room,
+            tree.active_workspace().unwrap().room.to_string()
+        );
+        assert_eq!(draft.title, "Review mapped receipt");
+        assert!(tree.active_workspace().unwrap().tasks.is_empty());
+        assert!(pane.task_compose_open);
+        assert_eq!(pane.task_draft, "Review mapped receipt");
+        let workspace = tree.active;
+        let id = tree
+            .0
+            .create_workspace_task(
+                workspace,
+                draft.title,
+                draft.actor,
+                None,
+                WorkspaceTaskRoute::Manual,
+                None,
+            )
+            .unwrap();
+        pane.complete_native_manual_task(id.clone(), &mut tree);
+        assert!(!pane.task_compose_open);
+        assert_eq!(pane.selected_task.as_deref(), Some(id.as_str()));
+    }
+
+    #[test]
+    fn native_managed_draft_defers_without_cache_fallback_or_premature_completion() {
+        let mut tree = NativeTree(WorkspaceTree::bootstrap_default());
+        let mut pane = native_pane();
+        pane.open_task_composer(&tree);
+        pane.task_draft = "Inspect operator evidence".into();
+        for route in [WorkspaceTaskRoute::Model, WorkspaceTaskRoute::RulesOnly] {
+            pane.task_route = route;
+            pane.task_agent = None;
+            let missing = pane.create_task_from_draft(&mut tree);
+            assert!(missing.task_refused);
+            assert!(missing.create_native_managed.is_none());
+            assert!(pane.task_compose_open);
+            pane.task_agent = Some("scribe".into());
+            let outcome = pane.create_task_from_draft(&mut tree);
+            assert!(outcome.create_native_manual.is_none());
+            assert!(!outcome.task_changed);
+            let request = outcome.create_native_managed.unwrap();
+            assert_eq!(request.assigned_agent, "scribe");
+            assert_eq!(request.route, route);
+            assert_eq!(request.person_draft.title, "Inspect operator evidence");
+            assert_eq!(
+                request.person_draft.room,
+                tree.active_workspace().unwrap().room.to_string()
+            );
+            assert!(tree.active_workspace().unwrap().tasks.is_empty());
+            assert!(pane.task_compose_open);
+            assert!(pane.selected_task.is_none());
+        }
+        tree.0
+            .doc
+            .put(automerge::ROOT, "pending_projection_edit", true)
+            .unwrap();
+        let blocked = pane.create_task_from_draft(&mut tree);
+        assert!(blocked.task_refused);
+        assert!(blocked.create_native_managed.is_none());
+        assert!(pane.task_compose_open);
+        assert_eq!(pane.task_draft, "Inspect operator evidence");
+        assert!(tree.active_workspace().unwrap().tasks.is_empty());
+    }
 
     /// HIG §9.5 rest edges: the sheet's Panel border on its Panel ground,
     /// and the derived edge of every card class the sheet paints (lift-floor
@@ -92,7 +208,7 @@ mod tests {
                 CapOverride::grant(
                     Subject::app("files"),
                     Scope::FsPath("/home/quinten/notes".to_string()),
-                    Verb::Read,
+                    Access::Read,
                 ),
             )
             .expect("the owner may grant in their own room");
@@ -102,7 +218,7 @@ mod tests {
             CapOverride::grant(
                 Subject::app("terminal"),
                 Scope::Device("camera".to_string()),
-                Verb::Read,
+                Access::Read,
             ),
         )
         .expect("the owner may grant in their own room");
@@ -114,6 +230,67 @@ mod tests {
         tree.seed_doc_from_cache();
         tree.doc.set_actor(reader);
         (tree, ws_id, user)
+    }
+
+    #[test]
+    fn a_workspace_switch_reads_only_its_own_change_and_derives_the_same_history() {
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let first = tree.active;
+        let second = tree.append_empty_workspace("Second");
+        tree.commit_room_change();
+        let mut pane = native_pane();
+        pane.refresh(&mut tree);
+        let reads = || {
+            (
+                ROOM_CHANGE_READS.with(Cell::get),
+                crate::activity::replay::REPLAY_CHECKPOINT_READS.with(Cell::get),
+            )
+        };
+        for n in 0..12 {
+            tree.set_active(if n % 2 == 0 { second } else { first });
+            tree.commit_room_change();
+            let (diffs, forks) = reads();
+            pane.refresh(&mut tree);
+            let (diffs_after, forks_after) = reads();
+            // Each switch is one change: re-reading the room's whole history
+            // made a switch's first frame O(history).
+            assert_eq!(
+                diffs_after - diffs,
+                1,
+                "switch {n} diffs only its own change"
+            );
+            // The first visit to "Second" also checkpoints the change that
+            // created it; after that a switch forks for its own entry alone.
+            if n >= 1 {
+                assert!(
+                    forks_after - forks <= 1,
+                    "switch {n} forks the document at most for its own checkpoint"
+                );
+            }
+        }
+
+        // What the incremental refreshes derived is what one refresh of the
+        // whole history derives.
+        let mut fresh = native_pane();
+        fresh.refresh(&mut tree);
+        assert_eq!(
+            format!("{:?}", pane.derived),
+            format!("{:?}", fresh.derived),
+            "the feed rows and their workspaces"
+        );
+        let frames = |pane: &RoomActivityPane| {
+            pane.replay_frames
+                .iter()
+                .map(|frame| {
+                    format!(
+                        "{:?} {} {:?}",
+                        frame.entry_id, frame.summary, frame.workspaces
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        assert!(!frames(&pane).is_empty(), "the switches are replayable");
+        assert_eq!(frames(&pane), frames(&fresh), "the replay checkpoints");
     }
 
     #[test]
@@ -142,12 +319,12 @@ mod tests {
                 invocation,
                 "ada",
                 tilo_actions::ActionContext::for_resource(
-                    "Export",
                     "document:brief",
                     "document",
                     "Release brief",
                 )
-                .with_app("org.tilo.Writer", "Writer"),
+                .with_app("org.tilo.Writer", "Writer")
+                .with_described(crate::activity::testing::verb("Export")),
                 tilo_actions::EffectReceiptStatus::Succeeded,
             )
         );
@@ -165,7 +342,7 @@ mod tests {
             .iter()
             .find(|entry| entry.id == HistoryEntryId::from_bytes(*invocation.0.as_bytes()))
             .expect("receipt is visible after restart");
-        assert_eq!(entry.summary, "Completed · Export · Release brief");
+        assert_eq!(entry.summary, "Export in Release brief");
         assert!(!entry.is_revertible());
     }
 
@@ -179,7 +356,6 @@ mod tests {
             invocation,
             local,
             tilo_actions::ActionContext::for_resource(
-                "Export",
                 "document:brief",
                 "document",
                 "Release brief",
@@ -243,12 +419,12 @@ mod tests {
             ] {
                 doc.put(automerge::ROOT, field, value).unwrap();
                 let context = ui::tilo_actions::ActionContext::for_resource(
-                    action,
                     record.as_str(),
                     "document",
                     "Campaign brief",
                 )
                 .with_app("org.tilo.Writer", "Writer")
+                .with_described(crate::activity::testing::verb(action))
                 .with_purpose("Make the opening concrete")
                 .with_group(
                     "agent-run:test",
@@ -273,7 +449,7 @@ mod tests {
                     app: "org.tilo.Writer".to_string(),
                     record: record.to_string(),
                     run: change,
-                    summary: "Rewrote the launch story".to_string(),
+                    what: vec![crate::activity::testing::verb("rewrite the launch story")],
                 }],
             )
             .expect("task receipt");
@@ -314,6 +490,110 @@ mod tests {
         (tree, records, pane, record)
     }
 
+    /// A persisted record that is not open here is read from disk once:
+    /// later refreshes reuse what was read until the record's revision moves.
+    #[test]
+    fn agent_runs_are_not_reloaded_from_disk_when_unchanged() {
+        struct CountingDisk {
+            documents: std::collections::BTreeMap<RecordId, Vec<u8>>,
+            revision: std::cell::Cell<u64>,
+            loads: std::cell::Cell<usize>,
+        }
+        impl crate::activity::index::PersistedRecordHistory for CountingDisk {
+            fn load_record(&self, id: &RecordId) -> Option<automerge::AutoCommit> {
+                self.loads.set(self.loads.get().saturating_add(1));
+                automerge::AutoCommit::load(self.documents.get(id)?).ok()
+            }
+            fn revision(&self, _id: &RecordId) -> Option<u64> {
+                Some(self.revision.get())
+            }
+        }
+
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let room = tree.desktop.active_workspace().expect("workspace").room;
+        let record = RecordId::for_file("campaign-brief.qdoc");
+        let kind = ui::RecordKind::new("document");
+        let agent = ActorId::from(b"writing-agent".as_slice());
+        let agent_hex = agent.to_hex_string();
+        let mut doc = automerge::AutoCommit::new();
+        ui::record::init(&mut doc, &record, &kind, &room.to_string());
+        doc.set_actor(agent);
+        doc.put(automerge::ROOT, "intro", "A concrete opening")
+            .unwrap();
+        let context = ui::tilo_actions::ActionContext::for_resource(
+            record.as_str(),
+            "document",
+            "Campaign brief",
+        )
+        .with_app("org.tilo.Writer", "Writer")
+        .with_group("agent-run:cold", "Rewrite the opening", "agent-run");
+        doc.commit_with(
+            CommitOptions::default()
+                .with_time(20)
+                .with_message(context.change_message().unwrap()),
+        );
+        let change = ui::latest_run_by(&mut doc, &agent_hex).expect("agent change");
+        ui::record_run_with_details(
+            &mut doc,
+            "Rewrite the opening",
+            Some(&agent_hex),
+            None,
+            Some("Rewrite the opening"),
+            None,
+            &[ui::RunStep {
+                app: "org.tilo.Writer".to_string(),
+                record: record.to_string(),
+                run: change,
+                what: vec![crate::activity::testing::verb("rewrite the opening")],
+            }],
+        )
+        .expect("task receipt");
+        tilo_resource::history::commit_stamped_at(&mut doc, 21);
+        tree.desktop
+            .room_records_held
+            .entry(room)
+            .or_default()
+            .insert(record.to_string(), kind.to_string());
+        let disk = CountingDisk {
+            documents: [(record.clone(), doc.save())].into_iter().collect(),
+            revision: std::cell::Cell::new(1),
+            loads: std::cell::Cell::new(0),
+        };
+        let records = RecordStore::in_memory();
+        let held_run = |pane: &RoomActivityPane| {
+            pane.agent_runs.iter().any(|indexed| {
+                indexed.source_record.as_ref() == Some(&record)
+                    && indexed.run.label == "Rewrite the opening"
+            })
+        };
+
+        let mut pane = native_pane();
+        pane.refresh(&mut tree);
+        pane.refresh_records_with_local(&mut tree, &records, &disk);
+        let first = disk.loads.get();
+        assert!(first > 0, "the record is read from disk");
+        assert!(held_run(&pane), "its run is read from the persisted record");
+
+        for _ in 0..3 {
+            pane.refresh(&mut tree);
+            pane.refresh_records_with_local(&mut tree, &records, &disk);
+        }
+        assert_eq!(
+            disk.loads.get(),
+            first,
+            "an unchanged record is not read from disk again"
+        );
+        assert!(held_run(&pane), "the run is still listed");
+
+        disk.revision.set(2);
+        pane.refresh_records_with_local(&mut tree, &records, &disk);
+        assert!(
+            disk.loads.get() > first,
+            "a record whose revision moved is read again"
+        );
+        assert!(held_run(&pane));
+    }
+
     #[test]
     fn selecting_agent_work_exposes_the_real_task_receipt_and_named_people() {
         let (_tree, _records, mut pane, _record) = agent_task_fixture();
@@ -346,7 +626,7 @@ mod tests {
         );
         assert_eq!(pane.agent_name(task), "Quill");
         assert_eq!(pane.issuer_name(task), "Ada");
-        assert_eq!(task.steps[0].summary, "Rewrote the launch story");
+        assert_eq!(task.steps[0].sentence(), "Rewrite the launch story");
         assert!(
             pane.lens_candidates().iter().any(
                 |(lens, label)| *lens == LensSelection::AgentTasks && label == "Agent tasks  1"
@@ -364,7 +644,7 @@ mod tests {
         assert!(description.contains("Ada"));
         assert!(description.contains("Quill"));
         assert!(description.contains("pricing table"));
-        assert!(description.contains("Rewrote the launch story"));
+        assert!(description.contains("Rewrite the launch story"));
     }
 
     #[test]
@@ -428,7 +708,7 @@ mod tests {
             CapOverride::grant(
                 Subject::app("files"),
                 Scope::FsPath("/home/quinten/later".to_string()),
-                Verb::Read,
+                Access::Read,
             ),
         )
         .expect("the owner may grant in their own room");
@@ -536,7 +816,7 @@ mod tests {
             CapOverride::grant(
                 Subject::app("files"),
                 Scope::FsPath("/home/quinten/new-result".into()),
-                Verb::Read,
+                Access::Read,
             ),
         )
         .unwrap();
@@ -570,7 +850,6 @@ mod tests {
             doc.put(automerge::ROOT, "review", "Check the conclusion")
                 .unwrap();
             let context = ui::tilo_actions::ActionContext::for_resource(
-                "Revise conclusion",
                 record.as_str(),
                 "document",
                 "Campaign brief",
@@ -615,7 +894,6 @@ mod tests {
                 doc.put(automerge::ROOT, "body", format!("Result {n}"))
                     .unwrap();
                 let context = ui::tilo_actions::ActionContext::for_resource(
-                    "Write result",
                     id.as_str(),
                     "note",
                     format!("Result {n}"),
@@ -809,7 +1087,7 @@ mod tests {
         let resource_entry = HistoryEntry {
             id: HistoryEntryId([71; 16]),
             author: ui::widget::HistoryAuthor::new("ada", 10.0, "Ada"),
-            op_class: OpClass::EditMeta,
+            entry_kind: EntryKind::Details,
             artifact_kind: ArtifactKind::File,
             timestamp: SystemTime::UNIX_EPOCH,
             summary: "Edited launch brief".into(),
@@ -818,7 +1096,6 @@ mod tests {
             redaction: None,
             context: Some(
                 ui::tilo_actions::ActionContext::for_resource(
-                    "Edit",
                     "document:launch-brief",
                     "document",
                     "Launch brief",
@@ -867,6 +1144,51 @@ mod tests {
     }
 
     #[test]
+    fn task_center_resolves_creator_without_cursor_color_and_preserves_identity() {
+        let (mut tree, workspace, _) = busy_room();
+        let creator = "abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd";
+        tree.workspaces
+            .iter_mut()
+            .find(|room| room.id == workspace)
+            .unwrap()
+            .collaborators
+            .push(tilo_desktop_model::Collaborator::new(
+                creator,
+                "Ada Lovelace",
+            ));
+        tree.seed_doc_from_cache();
+        tree.create_workspace_task(
+            workspace,
+            "Review receipt",
+            creator,
+            None,
+            WorkspaceTaskRoute::Manual,
+            None,
+        )
+        .unwrap();
+        let mut pane = native_pane();
+        pane.set_view(ActivityView::Tasks);
+        pane.refresh(&mut tree);
+        let task = pane.tasks.first().unwrap();
+        let creator_label = pane.task_creator_label(task);
+        assert_eq!(creator_label, "Ada Lovelace");
+        assert!(task_assignee_label(task, &creator_label).contains("Ada Lovelace"));
+        let snapshot = format!("{:?}", pane.accessibility_snapshot());
+        assert!(snapshot.contains("Unassigned · created by Ada Lovelace"));
+        assert_eq!(task.created_by, creator);
+        assert_eq!(task.audit.first().unwrap().actor, creator);
+        let mut unidentified = task.clone();
+        unidentified.created_by =
+            "0123456789012345678901234567890123456789012345678901234567890123".into();
+        assert_eq!(
+            pane.task_creator_label(&unidentified),
+            "Unknown collaborator · 01234567"
+        );
+        unidentified.created_by = pane.local_user();
+        assert_eq!(pane.task_creator_label(&unidentified), "You");
+    }
+
+    #[test]
     fn task_center_presents_agent_principals_without_leaking_wire_ids() {
         let event_time = SystemTime::UNIX_EPOCH
             .checked_add(Duration::from_secs(42))
@@ -881,19 +1203,21 @@ mod tests {
             resource: None,
             created_at: 42,
             updated_at: 42,
-            audit: vec![tilo_desktop_model::WorkspaceTaskAuditEvent {
-                at: 42,
-                actor: "agent:scribe".into(),
-                summary: "Reviewed section 2".into(),
-            }],
+            audit: vec![
+                tilo_desktop_model::WorkspaceTaskAuditEvent::new(42, "agent:scribe", "report", [])
+                    .noting("Reviewed section 2"),
+            ],
         };
 
-        let byline = task_assignee_label(&task);
+        let byline = task_assignee_label(&task, "ada");
         let audit = task_audit_line(&task.audit[0], event_time, event_time);
-        let accessible = task_accessibility_description(&task, event_time);
+        let accessible = task_accessibility_description(&task, event_time, "ada");
 
         assert_eq!(byline, "Agent · scribe");
-        assert!(audit.starts_with("scribe · Agent · Reviewed section 2"));
+        assert!(
+            audit.starts_with("scribe · Agent · Reported progress: Reviewed section 2"),
+            "{audit}"
+        );
         assert!(accessible.contains("Agent · scribe"));
         assert!(accessible.contains("scribe · Agent"));
         for rendered in [&byline, &audit, &accessible] {
@@ -1194,7 +1518,6 @@ mod tests {
         let id = HistoryEntryId::from_bytes([9; 16]);
         let resource = "signed-file-record".to_string();
         let context = ui::tilo_actions::ActionContext::for_resource(
-            "Edited",
             resource.clone(),
             "files.entry",
             "Launch brief.md",
@@ -1203,7 +1526,7 @@ mod tests {
         pane.open_external_entry(HistoryEntry {
             id,
             author: ui::widget::HistoryAuthor::new("Ada", 280.0, "01010101"),
-            op_class: collab_types::OpClass::Compaction,
+            entry_kind: EntryKind::Compaction,
             artifact_kind: ArtifactKind::File,
             timestamp: SystemTime::UNIX_EPOCH + Duration::from_secs(20),
             summary: "Edited · Launch brief.md".into(),
@@ -1244,7 +1567,7 @@ mod tests {
             CapOverride::grant(
                 Subject::app("browser"),
                 Scope::NetHost("research.example".to_string()),
-                Verb::Read,
+                Access::Read,
             ),
         )
         .expect("owner may grant in the second room too");
@@ -1396,18 +1719,11 @@ mod tests {
         tree.adopt_ownerless_workspaces(&user);
         let ws_id = tree.desktop.active;
 
-        let week_ago = SystemTime::now() - Duration::from_secs(604_800);
-        let week_ago_secs = i64::try_from(
-            week_ago
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap()
-                .as_secs(),
-        )
-        .unwrap();
+        let week_ago_secs = i64::try_from(ui::time::try_unix_now().unwrap() - 604_800).unwrap();
         let last_week = CapOverride::grant(
             Subject::app("files"),
             Scope::FsPath("/home/quinten/last-week".to_string()),
-            Verb::Read,
+            Access::Read,
         );
         let cap_id = {
             let workspace = tree
@@ -1416,9 +1732,12 @@ mod tests {
                 .iter_mut()
                 .find(|workspace| workspace.id == ws_id)
                 .expect("active workspace");
-            workspace
-                .grant_as_at(&user, last_week, tilo_clock::unix_now())
-                .expect("owner may grant")
+            assert!(workspace.may_govern_at(
+                &user,
+                tilo_action_policy::roles::governance::GRANT,
+                tilo_clock::unix_now()
+            ));
+            workspace.grant_sandbox(last_week)
         };
         let stored = tree
             .desktop
@@ -1426,12 +1745,12 @@ mod tests {
             .iter()
             .find(|workspace| workspace.id == ws_id)
             .expect("active workspace")
-            .capabilities
+            .sandbox
             .iter()
             .find(|capability| capability.id == cap_id)
             .cloned()
             .expect("stored grant");
-        assert!(tilo_desktop_model::desktop_doc::insert_capability(
+        assert!(tilo_desktop_model::desktop_doc::insert_sandbox(
             &mut tree.doc,
             ws_id,
             &stored
@@ -1445,7 +1764,7 @@ mod tests {
             CapOverride::grant(
                 Subject::app("files"),
                 Scope::FsPath("/home/quinten/today".to_string()),
-                Verb::Read,
+                Access::Read,
             ),
         )
         .expect("owner may grant");
@@ -1555,7 +1874,7 @@ mod tests {
     }
 
     #[test]
-    fn action_type_chips_narrow_by_op_class() {
+    fn action_type_chips_narrow_by_entry_kind() {
         use ui::widget::activity_timeline::ChipKind;
         let (mut tree, _, _) = busy_room();
         let mut pane = pane_over(&mut tree);
@@ -1570,8 +1889,8 @@ mod tests {
         assert!(gov < all, "governance is a subset: {gov} of {all}");
         for i in 0..pane.visible_len() {
             assert_eq!(
-                pane.visible_entry(i).unwrap().op_class,
-                OpClass::Govern,
+                pane.visible_entry(i).unwrap().entry_kind,
+                EntryKind::Access,
                 "the Governance chip must only show governance rows"
             );
         }
@@ -1650,7 +1969,7 @@ mod tests {
         for i in 0..pane.visible_len() {
             let e = pane.visible_entry(i).unwrap();
             assert!(
-                !op_class_is_revertible(e.op_class),
+                !e.entry_kind.is_revertible(),
                 "{:?} offered a revert chip",
                 e.summary
             );
@@ -1678,7 +1997,7 @@ mod tests {
             "the grant names verb, scope and subject: {:?}",
             grant.summary
         );
-        assert_eq!(grant.op_class, OpClass::Govern);
+        assert_eq!(grant.entry_kind, EntryKind::Access);
     }
 
     #[test]
@@ -1895,7 +2214,7 @@ mod tests {
                 CapOverride::grant(
                     Subject::app("files"),
                     Scope::FsPath(format!("/tmp/bound/{i}")),
-                    Verb::Read,
+                    Access::Read,
                 ),
             )
             .expect("owner may grant");
@@ -2202,39 +2521,16 @@ mod tests {
     // widget — proving the whole chain, not just `apply_name`.
     // -----------------------------------------------------------------
 
-    fn cursor_moved(x: f64, y: f64) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: winit::dpi::PhysicalPosition::new(x, y),
-        }
-    }
+    use ui::synthetic_input::cursor_moved;
 
-    fn mouse_press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: winit::event::ElementState::Pressed,
-            button: winit::event::MouseButton::Left,
-        }
-    }
+    use ui::synthetic_input::mouse_press;
 
     fn key_press(logical_key: winit::keyboard::Key) -> WindowEvent {
-        // SAFETY: as in `ui`'s own widget tests — every pub field of `KeyEvent`
-        // tolerates the all-zero bit pattern, and winit 0.30 keeps
-        // `KeyEventExtra` crate-private so a struct literal is unavailable.
-        let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = logical_key;
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = winit::event::ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = None;
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        }
+        ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
+            logical_key,
+            None,
+            winit::event::ElementState::Pressed,
+        ))
     }
 
     /// Paint the sheet so the rects the click handler reads off the last frame
@@ -3149,12 +3445,12 @@ mod tests {
                     tilo_actions::InvocationId::new(),
                     "ada",
                     tilo_actions::ActionContext::for_resource(
-                        action,
                         format!("test:{group_id}"),
                         "document",
                         group_label,
                     )
                     .with_app("org.tilo.Writer", "Writer")
+                    .with_described(crate::activity::testing::verb(action))
                     .with_group(group_id, group_label, "work-session"),
                     tilo_actions::EffectReceiptStatus::Succeeded,
                 )
@@ -3231,6 +3527,176 @@ mod tests {
             "materializing and moving a seam must preserve every atomic action"
         );
     }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one room, one labelled kind of change per step, each compared with a fresh pane"
+    )]
+    fn incremental_refresh_matches_full_replay_for_feed_undo_and_attribution() {
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let home = tree.active;
+        let second = tree.append_empty_workspace("Second");
+        tree.commit_room_change();
+        let mut pane = native_pane();
+        pane.refresh(&mut tree);
+
+        // A collaborator's device on the same room, kept in sync by hand.
+        let mut peer = tree.clone();
+        peer.doc.set_actor(ActorId::from(b"bea-device".as_slice()));
+        let receipt = || {
+            tilo_actions::ActionContext::for_resource("document:brief", "document", "Release brief")
+                .with_app("org.tilo.Writer", "Writer")
+                .with_described(crate::activity::testing::verb("Export"))
+        };
+
+        // Every kind of row the steps make, once, before reads are counted:
+        // the first row of a kind can load a catalogue, which moves the
+        // i18n revision, and the log then rightly reads its window again in
+        // the new words.
+        let heads = tree.doc.get_heads();
+        assert!(peer.append_workspace_effect_receipt(
+            home,
+            tilo_actions::InvocationId::new(),
+            "bea",
+            receipt(),
+            tilo_actions::EffectReceiptStatus::Succeeded,
+        ));
+        tree.apply_changes(&peer.export_changes_since(&heads))
+            .expect("the peer's change merges");
+        pane.refresh(&mut tree);
+        native_pane().refresh(&mut tree.clone());
+        // The catalogues those rows loaded were added after this refresh
+        // read the log; the next change reads it under them.
+        tree.set_active(second);
+        tree.commit_room_change();
+        pane.refresh(&mut tree);
+        tree.set_active(home);
+        tree.commit_room_change();
+        pane.refresh(&mut tree);
+
+        let mut next_tab = 92_000_u64;
+        for step in 0..24_u32 {
+            // The peer has everything this device has before either acts.
+            let peer_heads = peer.doc.get_heads();
+            peer.apply_changes(&tree.export_changes_since(&peer_heads))
+                .expect("the peer catches up");
+            let synced = tree.doc.get_heads();
+            let kind = match step % 6 {
+                0 => {
+                    tree.set_active(second);
+                    tree.commit_room_change();
+                    "switch away"
+                }
+                1 => {
+                    next_tab += 1;
+                    // Home has a window group to open the tab in.
+                    tree.set_active(home);
+                    assert!(tree.doc_append_tab_to_first_group_of_active_workspace(
+                        next_tab,
+                        format!("Tab {next_tab}"),
+                        b"{}".to_vec(),
+                    ));
+                    tree.commit_room_change();
+                    "open a tab"
+                }
+                2 => {
+                    // The peer acts while this device switches back: two
+                    // concurrent changes, merged in either order.
+                    assert!(peer.append_workspace_effect_receipt(
+                        home,
+                        tilo_actions::InvocationId::new(),
+                        "bea",
+                        receipt(),
+                        tilo_actions::EffectReceiptStatus::Succeeded,
+                    ));
+                    tree.set_active(home);
+                    tree.commit_room_change();
+                    let theirs = peer.export_changes_since(&synced);
+                    tree.apply_changes(&theirs)
+                        .expect("the peer's change merges");
+                    "a peer's receipt, merged"
+                }
+                3 => {
+                    next_tab += 1;
+                    assert!(peer.doc_append_tab_to_first_group_of_active_workspace(
+                        next_tab,
+                        format!("Bea's tab {next_tab}"),
+                        b"{}".to_vec(),
+                    ));
+                    peer.commit_room_change();
+                    let theirs = peer.export_changes_since(&synced);
+                    tree.apply_changes(&theirs).expect("the peer's tab merges");
+                    "a peer's tab"
+                }
+                4 => {
+                    tree.set_active(second);
+                    tree.commit_room_change();
+                    tree.set_active(home);
+                    tree.commit_room_change();
+                    "two switches between refreshes"
+                }
+                _ => "nothing new",
+            };
+            let appended = tree.doc.get_changes(&synced).len();
+            let read = pane.history_log.changes_read();
+            let catalogue = ui::I18nManager::revision();
+            pane.refresh(&mut tree);
+            assert_eq!(
+                pane.history_log.changes_read() - read,
+                appended,
+                "step {step} ({kind}): the refresh reads only the appended changes \
+                 (i18n revision {catalogue} -> {})",
+                ui::I18nManager::revision()
+            );
+
+            // What a pane that reads the whole log once derives.
+            let mut fresh = native_pane();
+            let mut fresh_tree = tree.clone();
+            fresh.refresh(&mut fresh_tree);
+            assert_eq!(
+                format!("{:?}", pane.derived),
+                format!("{:?}", fresh.derived),
+                "step {step} ({kind}): rows, summaries, authors and workspaces"
+            );
+            assert_eq!(
+                format!("{:?}", pane.timeline.entries()),
+                format!("{:?}", fresh.timeline.entries()),
+                "step {step} ({kind}): the feed"
+            );
+            let frames = |pane: &RoomActivityPane| {
+                pane.replay_frames
+                    .iter()
+                    .map(|frame| {
+                        format!(
+                            "{:?} {} {:?} {:?}",
+                            frame.entry_id, frame.summary, frame.author, frame.workspaces
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(
+                frames(&pane),
+                frames(&fresh),
+                "step {step} ({kind}): replay"
+            );
+            // Undo and restore address a row by the document's heads at it.
+            for (entry, _) in &pane.derived {
+                assert_eq!(
+                    pane.history_log.heads_for_entry(&entry.id),
+                    ui::heads_for_entry(&mut tree.doc, &entry.id),
+                    "step {step} ({kind}): the heads behind {:?}",
+                    entry.summary
+                );
+            }
+        }
+        assert!(
+            pane.derived
+                .iter()
+                .any(|(entry, _)| entry.author.name.contains("bea")),
+            "the peer's receipt is attributed to the peer"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -3244,7 +3710,7 @@ mod resume_card_tests {
         HistoryEntry {
             id: HistoryEntryId([id; 16]),
             author: HistoryAuthor::new(author, 210.0, ui::history_source::short_id(author)),
-            op_class: OpClass::Splice,
+            entry_kind: EntryKind::Text,
             artifact_kind: ArtifactKind::File,
             timestamp,
             summary: "Edited assumptions".into(),
@@ -3252,7 +3718,7 @@ mod resume_card_tests {
             diff_payload: None,
             redaction: None,
             context: Some(
-                ActionContext::for_resource("Edit", "finance:q2", "sheet", "Q2 finance report")
+                ActionContext::for_resource("finance:q2", "sheet", "Q2 finance report")
                     .with_app("so.tilo.sheets", "Sheets"),
             ),
         }
@@ -3360,6 +3826,7 @@ mod task_review_tests {
                             epoch: 3,
                             started_at: 100,
                             applied_direction_revision: 0,
+                            approval: None,
                         }),
                         ..Default::default()
                     },
@@ -3429,13 +3896,8 @@ mod task_review_tests {
         ] {
             for (size, width, height) in [("normal", 1600, 900), ("compact", 560, 560)] {
                 let (mut tree, mut pane, host) = review_fixture();
-                host.snapshot.borrow_mut().sampled_at_secs = i64::try_from(
-                    SystemTime::now()
-                        .duration_since(ui::time::UNIX_EPOCH)
-                        .unwrap()
-                        .as_secs(),
-                )
-                .unwrap();
+                host.snapshot.borrow_mut().sampled_at_secs =
+                    i64::try_from(ui::time::try_unix_now().unwrap()).unwrap();
                 pane.refresh(&mut tree);
                 pane.layout_window(Rect::new(-560.0, 0.0, 0.0, 560.0));
                 paint_header_fixture(&mut pane, &Theme::light());
@@ -3477,6 +3939,99 @@ mod task_review_tests {
             }
         }
     }
+    #[test]
+    fn queued_run_approval_uses_exact_frontier_and_shared_keyboard_controls() {
+        use crate::activity::TaskReviewCommand;
+        let (mut tree, mut pane, host) = review_fixture();
+        let id = pane.selected_task.clone().unwrap();
+        {
+            let mut snapshot = host.snapshot.borrow_mut();
+            snapshot.tasks[0].status = WorkspaceTaskStatus::Queued;
+            snapshot.controls.get_mut(&id).unwrap().active_run = None;
+        }
+        pane.refresh(&mut tree);
+        assert!(
+            pane.task_actions_for(&pane.tasks[0])
+                .contains(&TaskAction::ApproveRun)
+        );
+        for theme in [Theme::light(), Theme::dark(), Theme::high_contrast()] {
+            let theme = theme.with_text_scale(2.0);
+            pane.layout_window(Rect::new(0.0, 0.0, 900.0, 900.0));
+            pane.draw(
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut TextRenderer::new(),
+                &theme,
+                &PresenceCtx::empty(),
+            );
+            assert!(
+                pane.focus_order()
+                    .contains(&ActivityFocus::TaskAction(TaskAction::ApproveRun))
+            );
+            let rect = pane
+                .task_action_rects
+                .iter()
+                .find(|(action, _)| *action == TaskAction::ApproveRun)
+                .unwrap()
+                .1;
+            assert_eq!(rect.intersect(pane.sheet), rect);
+            assert!(
+                pane.accessibility_snapshot()
+                    .children
+                    .iter()
+                    .any(|node| node.name.as_deref()
+                        == Some(TaskAction::ApproveRun.label().as_str()))
+            );
+        }
+        pane.apply_task_action(TaskAction::ApproveRun, &mut tree);
+        assert!(
+            matches!(&host.submitted.borrow()[0].command, TaskReviewCommand::Approve {task_id,run_epoch:3,after_revision:0,..} if task_id==&id)
+        );
+        assert!(
+            pane.review_pending.is_some(),
+            "approval must await its durable receipt"
+        );
+    }
+    #[test]
+    fn approval_keeps_the_painted_frontier_when_a_new_run_is_unseen() {
+        use crate::activity::TaskReviewCommand;
+        let (mut tree, mut pane, host) = review_fixture();
+        let id = pane.selected_task.clone().unwrap();
+        {
+            let mut snapshot = host.snapshot.borrow_mut();
+            snapshot.tasks[0].status = WorkspaceTaskStatus::Queued;
+            snapshot.controls.get_mut(&id).unwrap().active_run = None;
+        }
+        pane.refresh(&mut tree);
+        pane.layout_window(Rect::new(0.0, 0.0, 900.0, 900.0));
+        let mut scene = Scene::new();
+        let mut text = TextRenderer::new();
+        pane.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &Theme::light(),
+            &PresenceCtx::empty(),
+        );
+        {
+            let mut snapshot = host.snapshot.borrow_mut();
+            snapshot.controls.get_mut(&id).unwrap().run_epoch = 4;
+        }
+        pane.refresh(&mut tree);
+        pane.apply_task_action(TaskAction::ApproveRun, &mut tree);
+        assert!(
+            matches!(
+                &host.submitted.borrow()[0].command,
+                TaskReviewCommand::Approve {
+                    run_epoch: 3,
+                    after_revision: 0,
+                    ..
+                }
+            ),
+            "refreshing unseen state must not approve its new run frontier"
+        );
+    }
+
     #[test]
     fn steering_draft_keeps_observed_run_and_revision_after_refresh() {
         use crate::activity::TaskReviewCommand;
@@ -3581,5 +4136,598 @@ mod task_review_tests {
         );
         pane.apply_task_action(TaskAction::CancelRun, &mut tree);
         assert!(host.submitted.borrow().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod morning_source_tests {
+    use super::*;
+    use crate::activity::ActivityHost;
+    use crate::activity::testing::TestTree;
+    use automerge::transaction::CommitOptions;
+
+    fn fixture() -> (TestTree, RoomActivityPane) {
+        let mut tree = TestTree::bootstrap_default();
+        let context = tilo_actions::ActionContext::for_resource(
+            "weather.location:fixture",
+            "location",
+            "Chosen location",
+        )
+        .with_app("so.tilo.weather", "Weather")
+        .with_described(crate::activity::testing::verb("Update selected forecast"));
+        tree.doc
+            .put(automerge::ROOT, "name", "Morning review")
+            .unwrap();
+        tree.doc.commit_with(
+            CommitOptions::default()
+                .with_time(1_800_000_000)
+                .with_message(context.change_message().unwrap()),
+        );
+        let mut pane = RoomActivityPane::new();
+        pane.set_host(Rc::new(crate::activity::testing::TestHost::default()));
+        pane.refresh(&mut tree);
+        let index = pane
+            .timeline
+            .entries()
+            .iter()
+            .position(|entry| {
+                entry
+                    .context
+                    .as_ref()
+                    .and_then(|context| context.resource.as_ref())
+                    .is_some_and(|resource| resource.id == "weather.location:fixture")
+            })
+            .unwrap();
+        pane.timeline.set_selection(Some((index, index)));
+        (tree, pane)
+    }
+
+    // Compatible with the old public pane API: fails before implementation
+    // because the real causal resource selection has no morning-choice action.
+    #[test]
+    fn morning_source_choice_is_a_semantic_action_on_real_resource_history() {
+        let (mut tree, mut pane) = fixture();
+        assert!(
+            pane.selection_history_actions()
+                .iter()
+                .any(|(id, _)| *id == "room.activity.morning.toggle")
+        );
+        let heads = tree.doc.get_heads();
+        assert!(
+            pane.apply_selection_history_action("room.activity.morning.toggle", &mut tree, None)
+                .handled
+        );
+        assert_eq!(
+            tree.doc.get_heads(),
+            heads,
+            "source selection grants nothing and changes no shared document"
+        );
+    }
+
+    #[derive(Default)]
+    struct Host(RefCell<HashMap<u64, MorningPreferences>>);
+    impl ActivityHost for Host {
+        fn all_workspaces_available(&self) -> bool {
+            true
+        }
+        fn morning_sources_available(&self) -> bool {
+            true
+        }
+        fn load_morning_sources(&self) -> HashMap<u64, MorningPreferences> {
+            self.0.borrow().clone()
+        }
+        fn save_morning_sources(&self, value: &HashMap<u64, MorningPreferences>) {
+            *self.0.borrow_mut() = value.clone();
+        }
+    }
+    #[test]
+    fn morning_sources_survive_restart_without_crossing_rooms_or_acknowledging_work() {
+        let (mut tree, mut pane) = fixture();
+        let host = Rc::new(Host::default());
+        pane.set_host(host.clone());
+        assert!(pane.chosen_morning_sources().is_empty());
+        let before = pane.seen_frontiers.clone();
+        pane.apply_selection_history_action(MORNING_SOURCE, &mut tree, None);
+        assert_eq!(pane.chosen_morning_sources().len(), 1);
+        assert_eq!(pane.seen_frontiers, before);
+        let key = pane.chosen_morning_sources()[0].key();
+        let room = tree.workspaces[0].room;
+        let mut restarted = RoomActivityPane::new();
+        restarted.set_host(host.clone());
+        restarted.load_frontiers();
+        restarted.refresh(&mut tree);
+        assert_eq!(restarted.chosen_morning_sources().len(), 1);
+        let outcome = restarted.apply_selection_history_action(
+            &format!("{MORNING_OPEN}{room}.{key}"),
+            &mut tree,
+            None,
+        );
+        assert_eq!(outcome.open_target.unwrap().id, "weather.location:fixture");
+        tree.workspaces[0].room = tilo_desktop_model::RoomId::new();
+        restarted.refresh(&mut tree);
+        assert!(
+            restarted.chosen_morning_sources().is_empty(),
+            "even the same workspace id cannot borrow another room's choices"
+        );
+        restarted.apply_selection_history_action(
+            &format!("{MORNING_SOURCE}.{room}"),
+            &mut tree,
+            None,
+        );
+        assert!(
+            restarted.chosen_morning_sources().is_empty(),
+            "a queued source choice cannot cross the originating room"
+        );
+        assert!(
+            restarted
+                .apply_selection_history_action(
+                    &format!("{MORNING_OPEN}{room}.{key}"),
+                    &mut tree,
+                    None
+                )
+                .open_target
+                .is_none()
+        );
+        tree.workspaces[0].room = room;
+        restarted.refresh(&mut tree);
+        assert_eq!(restarted.chosen_morning_sources().len(), 1);
+        restarted.set_scope(RoomScope::AllWorkspaces, &tree);
+        assert!(
+            restarted
+                .apply_selection_history_action(
+                    &format!("{MORNING_OPEN}{room}.{key}"),
+                    &mut tree,
+                    None
+                )
+                .open_target
+                .is_none()
+        );
+        restarted.set_scope(RoomScope::ThisRoom, &tree);
+        restarted.timeline.set_entries(Vec::new());
+        assert!(
+            restarted.morning_target(&key).is_none(),
+            "missing or revoked resource evidence is unavailable, never fabricated"
+        );
+        restarted.apply_selection_history_action(
+            &format!("{MORNING_REMOVE}{room}.{key}"),
+            &mut tree,
+            None,
+        );
+        assert!(restarted.chosen_morning_sources().is_empty());
+        assert!(host.0.borrow()[&tree.active.raw()].sources.is_empty());
+    }
+    #[test]
+    fn morning_source_choices_are_bounded_and_noisy_activity_preserves_focus() {
+        let (mut tree, mut pane) = fixture();
+        for index in 0..200_u64 {
+            tree.doc
+                .put(automerge::ROOT, "name", format!("Update {index}"))
+                .unwrap();
+            let context = tilo_actions::ActionContext::for_resource(
+                "weather.location:fixture",
+                "location",
+                "Chosen location",
+            )
+            .with_app("so.tilo.weather", "Weather")
+            .with_described(crate::activity::testing::verb("Update"));
+            tree.doc.commit_with(
+                CommitOptions::default()
+                    .with_time(1_800_000_010 + i64::try_from(index).unwrap())
+                    .with_message(context.change_message().unwrap()),
+            );
+        }
+        pane.refresh(&mut tree);
+        assert!(
+            pane.chosen_morning_sources().is_empty(),
+            "even repeated activity never opts a user into a source"
+        );
+        let target = pane
+            .timeline
+            .entries()
+            .iter()
+            .position(|entry| {
+                entry
+                    .context
+                    .as_ref()
+                    .and_then(|context| context.resource.as_ref())
+                    .is_some_and(|resource| resource.id == "weather.location:fixture")
+            })
+            .unwrap();
+        pane.timeline.set_selection(Some((target, target)));
+        pane.apply_selection_history_action(MORNING_SOURCE, &mut tree, None);
+        let key = pane.chosen_morning_sources()[0].key();
+        assert_eq!(
+            pane.morning_evidence(&key).unwrap().1,
+            SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_209)
+        );
+        pane.keyboard_focus = Some(ActivityFocus::Morning(key.clone(), false));
+        pane.refresh(&mut tree);
+        assert_eq!(
+            pane.chosen_morning_sources().len(),
+            1,
+            "repeated updates group into one chosen source"
+        );
+        assert_eq!(
+            pane.keyboard_focus,
+            Some(ActivityFocus::Morning(key, false))
+        );
+        for index in 1..=8 {
+            let id = format!("weather.location:fixture-{index}");
+            let context = tilo_actions::ActionContext::for_resource(&id, "location", &id)
+                .with_app("so.tilo.weather", "Weather")
+                .with_described(crate::activity::testing::verb("Select location"));
+            tree.doc.put(automerge::ROOT, "name", &id).unwrap();
+            tree.doc.commit_with(
+                CommitOptions::default()
+                    .with_time(1_800_001_000 + index)
+                    .with_message(context.change_message().unwrap()),
+            );
+            pane.refresh(&mut tree);
+            let selected = pane
+                .timeline
+                .entries()
+                .iter()
+                .position(|entry| {
+                    entry
+                        .context
+                        .as_ref()
+                        .and_then(|context| context.resource.as_ref())
+                        .is_some_and(|resource| resource.id == id)
+                })
+                .unwrap();
+            pane.timeline.set_selection(Some((selected, selected)));
+            if index == 8 {
+                assert!(
+                    !pane
+                        .selection_history_actions()
+                        .iter()
+                        .any(|(id, _)| *id == MORNING_SOURCE)
+                );
+            }
+            pane.apply_selection_history_action(MORNING_SOURCE, &mut tree, None);
+        }
+        assert_eq!(pane.chosen_morning_sources().len(), 8);
+    }
+
+    #[test]
+    fn morning_source_long_resource_names_keep_freshness_and_navigation_visible() {
+        let (mut tree, mut pane) = fixture();
+        pane.apply_selection_history_action(MORNING_SOURCE, &mut tree, None);
+        let key = pane.chosen_morning_sources()[0].key();
+        let title = "A very long authorized resource name ".repeat(100);
+        let context = tilo_actions::ActionContext::for_resource(
+            "weather.location:fixture",
+            "location",
+            title,
+        )
+        .with_app("so.tilo.weather", "Weather")
+        .with_described(crate::activity::testing::verb("Update"));
+        tree.doc
+            .put(automerge::ROOT, "name", "Long resource label")
+            .unwrap();
+        tree.doc.commit_with(
+            CommitOptions::default()
+                .with_time(1_800_000_300)
+                .with_message(context.change_message().unwrap()),
+        );
+        pane.refresh(&mut tree);
+        pane.set_now_for_test(SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_600));
+        pane.layout_window(Rect::new(0.0, 0.0, 640.0, 900.0));
+        let theme = Theme::high_contrast().with_text_scale(2.0);
+        let mut scene = Scene::new();
+        let mut text = TextRenderer::new();
+        text.set_text_scale(theme.text_scale);
+        pane.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &theme,
+            &PresenceCtx::empty(),
+        );
+        let focus = ActivityFocus::Morning(key, false);
+        assert!(
+            pane.focus_order().contains(&focus),
+            "long names must not push the source controls outside the viewport"
+        );
+        let accessible = pane.access_control(&focus).unwrap();
+        assert!(accessible.description.contains("5 min ago"));
+        assert!(
+            accessible
+                .description
+                .contains("external freshness unknown")
+        );
+    }
+
+    #[test]
+    fn morning_source_native_render_and_keyboard_matrix() {
+        let output = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../target/morning-source-renders");
+        std::fs::create_dir_all(&output).unwrap();
+        for (name, theme) in [
+            ("light", Theme::light()),
+            ("dark", Theme::dark()),
+            ("hc200", Theme::high_contrast().with_text_scale(2.0)),
+        ] {
+            for (size, width, height) in [("normal", 1600, 1000), ("compact", 640, 900)] {
+                let (mut tree, mut pane) = fixture();
+                pane.set_now_for_test(SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_300));
+                pane.apply_selection_history_action(MORNING_SOURCE, &mut tree, None);
+                let key = pane.chosen_morning_sources()[0].key();
+                pane.set_view(ActivityView::CatchUp);
+                pane.layout_window(Rect::new(0.0, 0.0, f64::from(width), f64::from(height)));
+                let mut scene = Scene::new();
+                let mut text = TextRenderer::new();
+                text.set_text_scale(theme.text_scale);
+                pane.draw(
+                    &mut scene,
+                    Affine::IDENTITY,
+                    &mut text,
+                    &theme,
+                    &PresenceCtx::empty(),
+                );
+                let focus = ActivityFocus::Morning(key.clone(), false);
+                assert!(
+                    pane.focus_order().contains(&focus),
+                    "chosen source must remain reachable at {name}/{size}"
+                );
+                let rectangle = pane.rect_for_focus(&focus).unwrap();
+                assert!(rectangle.y1 <= f64::from(height));
+                let accessible = pane.access_control(&focus).unwrap();
+                assert!(accessible.description.contains("Weather"));
+                assert!(accessible.description.contains("5 min ago"));
+                assert!(
+                    accessible
+                        .description
+                        .contains("external freshness unknown")
+                );
+                pane.keyboard_focus = Some(focus.clone());
+                let outcome = pane.activate_focus(&mut tree, None);
+                assert_eq!(outcome.open_target.unwrap().id, "weather.location:fixture");
+                assert_eq!(
+                    pane.keyboard_focus,
+                    Some(focus),
+                    "opening must preserve logical focus"
+                );
+                let mut renderer = ui::offscreen::OffscreenRenderer::new(width, height);
+                renderer.render_png(
+                    &scene,
+                    theme.tokens.colors.surfaces.content,
+                    output.join(format!("{name}-{size}.png")),
+                );
+                pane.apply_selection_history_action(MORNING_SOURCE, &mut tree, None);
+                pane.set_view(ActivityView::Explore);
+                pane.explorer_pane = ExplorerPane::Details;
+                let mut scene = Scene::new();
+                pane.draw(
+                    &mut scene,
+                    Affine::IDENTITY,
+                    &mut text,
+                    &theme,
+                    &PresenceCtx::empty(),
+                );
+                assert!(
+                    pane.focus_order()
+                        .contains(&ActivityFocus::Detail(DetailAction::MorningSource)),
+                    "the source choice must be a keyboard control at {name}/{size}"
+                );
+                for (_, rect) in &pane.detail_action_rects {
+                    assert!(
+                        rect.height()
+                            >= ui::widget::ButtonFace::height(
+                                ui::widget::ControlSize::Regular,
+                                &theme
+                            ),
+                        "source/history controls must use the shared minimum height at {name}/{size}"
+                    );
+                    assert!(rect.y1 <= f64::from(height));
+                }
+                renderer.render_png(
+                    &scene,
+                    theme.tokens.colors.surfaces.content,
+                    output.join(format!("{name}-{size}-choose.png")),
+                );
+            }
+        }
+    }
+    #[derive(Default)]
+    struct PayloadHost {
+        commands: RefCell<Vec<(String, super::MorningSource, super::MorningCommand)>>,
+        noisy: bool,
+    }
+    impl crate::activity::ActivityHost for PayloadHost {
+        fn morning_sources_available(&self) -> bool {
+            true
+        }
+        fn morning_payload(
+            &self,
+            _room: &str,
+            _source: &super::MorningSource,
+        ) -> Option<crate::activity::morning::MorningPayload> {
+            Some(crate::activity::morning::MorningPayload {
+                label: "Chosen location".into(),
+                presentation: tilo_actions::ResourcePresentation {
+                    preview: Some(if self.noisy {
+                        "Long chosen provider observation. ".repeat(60)
+                    } else {
+                        "12°C, light rain · observation 2026-10-11T08:00".into()
+                    }),
+                    detail: Some(
+                        "Synthetic chosen weather provider · fetched 2026-10-11T08:05:00Z".into(),
+                    ),
+                    badge: Some("Last cached observation".into()),
+                },
+                refreshable: true,
+            })
+        }
+        fn submit_morning_command(
+            &self,
+            room: &str,
+            source: &super::MorningSource,
+            command: super::MorningCommand,
+        ) -> Result<(), String> {
+            self.commands
+                .borrow_mut()
+                .push((room.into(), source.clone(), command));
+            Ok(())
+        }
+    }
+    #[test]
+    fn morning_payload_pager_keeps_large_sources_and_removed_evidence_reachable() {
+        let (mut tree, mut pane) = fixture();
+        pane.apply_selection_history_action(MORNING_SOURCE, &mut tree, None);
+        let host = Rc::new(PayloadHost {
+            noisy: true,
+            ..Default::default()
+        });
+        pane.set_host(host.clone());
+        let first = pane.chosen_morning_sources()[0].key();
+        for index in 1..crate::activity::morning::MAX_SOURCES {
+            let room = pane.task_room.clone();
+            pane.morning_sources
+                .get_mut(&pane.morning_workspace)
+                .unwrap()
+                .toggle(
+                    &room,
+                    super::MorningSource {
+                        app: "so.tilo.weather".into(),
+                        resource: format!("deleted:{index}"),
+                    },
+                );
+        }
+        pane.set_view(ActivityView::CatchUp);
+        pane.layout_window(Rect::new(0.0, 0.0, 640.0, 900.0));
+        let theme = Theme::high_contrast().with_text_scale(2.0);
+        let mut text = TextRenderer::new();
+        text.set_text_scale(theme.text_scale);
+        let heads = tree.doc.get_heads();
+        let seen = pane.seen_frontiers.clone();
+        for index in 0..crate::activity::morning::MAX_SOURCES {
+            let mut scene = Scene::new();
+            pane.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut text,
+                &theme,
+                &PresenceCtx::empty(),
+            );
+            let key = pane.chosen_morning_sources()[index].key();
+            let focus =
+                ActivityFocus::MorningCommand(key.clone(), super::MorningCommand::NextSource);
+            assert!(
+                pane.focus_order().contains(&focus),
+                "source {index} remains reachable"
+            );
+            assert!(
+                pane.focus_order()
+                    .contains(&ActivityFocus::Morning(key, true)),
+                "even unavailable sources can be removed"
+            );
+            pane.keyboard_focus = Some(focus);
+            pane.activate_focus(&mut tree, None);
+        }
+        assert_eq!(pane.morning_source_offset, 0);
+        assert_eq!(
+            pane.keyboard_focus,
+            Some(ActivityFocus::MorningCommand(
+                first,
+                super::MorningCommand::NextSource
+            ))
+        );
+        assert!(
+            host.commands.borrow().is_empty(),
+            "paging invokes no provider"
+        );
+        assert_eq!(tree.doc.get_heads(), heads);
+        assert_eq!(pane.seen_frontiers, seen);
+    }
+    #[test]
+    fn morning_payload_native_matrix_keeps_semantic_controls_and_review_boundary() {
+        let output = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../target/morning-payload-renders");
+        std::fs::create_dir_all(&output).unwrap();
+        for (name, theme) in [
+            ("light", Theme::light()),
+            ("dark", Theme::dark()),
+            ("hc200", Theme::high_contrast().with_text_scale(2.0)),
+        ] {
+            for (size, width, height) in [("normal", 1600, 1000), ("compact", 640, 900)] {
+                let (mut tree, mut pane) = fixture();
+                pane.apply_selection_history_action(MORNING_SOURCE, &mut tree, None);
+                let host = Rc::new(PayloadHost::default());
+                pane.set_host(host.clone());
+                let key = pane.chosen_morning_sources()[0].key();
+                let heads = tree.doc.get_heads();
+                let seen = pane.seen_frontiers.clone();
+                pane.set_now_for_test(SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_300));
+                pane.set_view(ActivityView::CatchUp);
+                pane.layout_window(Rect::new(0.0, 0.0, f64::from(width), f64::from(height)));
+                let mut scene = Scene::new();
+                let mut text = TextRenderer::new();
+                text.set_text_scale(theme.text_scale);
+                pane.draw(
+                    &mut scene,
+                    Affine::IDENTITY,
+                    &mut text,
+                    &theme,
+                    &PresenceCtx::empty(),
+                );
+                for command in [
+                    super::MorningCommand::Refresh,
+                    super::MorningCommand::DraftRefresh,
+                ] {
+                    let focus = ActivityFocus::MorningCommand(key.clone(), command);
+                    assert!(
+                        pane.focus_order().contains(&focus),
+                        "command visible at {name}/{size}"
+                    );
+                    if command == super::MorningCommand::Refresh {
+                        assert_eq!(
+                            pane.access_control(&focus).unwrap().description,
+                            t("activity-morning-refresh"),
+                            "an immediate refresh must not be described as an inert draft"
+                        );
+                    }
+                    pane.keyboard_focus = Some(focus);
+                    pane.activate_focus(&mut tree, None);
+                }
+                assert_eq!(host.commands.borrow().len(), 2);
+                assert!(
+                    host.commands
+                        .borrow()
+                        .iter()
+                        .all(|(room, _, _)| *room == pane.task_room)
+                );
+                let accessible = pane
+                    .access_control(&ActivityFocus::Morning(key.clone(), false))
+                    .unwrap();
+                assert!(accessible.description.contains("12°C"));
+                assert!(
+                    accessible
+                        .description
+                        .contains("Synthetic chosen weather provider")
+                );
+                assert!(accessible.description.contains("2026-10-11T08:05:00Z"));
+                assert!(accessible.description.contains("Last cached observation"));
+                let foreign = uuid::Uuid::new_v4().to_string();
+                pane.apply_selection_history_action(
+                    &format!("{}{foreign}.{key}", super::MorningCommand::Refresh.prefix()),
+                    &mut tree,
+                    None,
+                );
+                assert_eq!(
+                    host.commands.borrow().len(),
+                    2,
+                    "queued foreign command is inert"
+                );
+                assert_eq!(tree.doc.get_heads(), heads);
+                assert_eq!(pane.seen_frontiers, seen);
+                let mut renderer = ui::offscreen::OffscreenRenderer::new(width, height);
+                renderer.render_png(
+                    &scene,
+                    theme.tokens.colors.surfaces.content,
+                    output.join(format!("{name}-{size}.png")),
+                );
+            }
+        }
     }
 }

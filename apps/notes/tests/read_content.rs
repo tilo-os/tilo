@@ -3,13 +3,11 @@
 
 use automerge::transaction::Transactable;
 use notes::NotesShell;
-use notes::actions::page_body_id;
-use notes::doc::NotesDoc;
+use notes::read;
 use serde_json::json;
-use tilo_document::{RichText, RichTextAction};
+use tilo_document::RichTextAction;
 use ui::framework::testing::TestApp;
 use ui::permissions::Role;
-use ui::tilo_resource::Invoke;
 
 fn read(app: &mut TestApp<NotesShell>, arguments: serde_json::Value) -> serde_json::Value {
     app.call("read", arguments)
@@ -21,7 +19,7 @@ fn read(app: &mut TestApp<NotesShell>, arguments: serde_json::Value) -> serde_js
 fn a_note_written_through_actions_reads_back_through_actions() {
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<NotesShell>::new().unwrap();
-    app.call("new-page", json!({ "value": "Groceries" }))
+    app.call("new-note", serde_json::json!({ "title": "Groceries" }))
         .unwrap();
 
     let notebook = read(&mut app, json!({}));
@@ -34,20 +32,19 @@ fn a_note_written_through_actions_reads_back_through_actions() {
     let item = page["item"].as_str().expect("item id").to_owned();
 
     let id = app.read_document(|doc| {
-        NotesDoc::list_pages(doc)
+        read::list_pages(doc)
             .into_iter()
             .find(|page| page.title == "Groceries")
             .expect("page")
             .id
     });
-    app.invoke_child::<RichText>(
-        &page_body_id(id),
-        Invoke::apply(&RichTextAction::AppendParagraph {
+    crate::framework_support::edit_body(
+        &mut app,
+        id,
+        &RichTextAction::AppendParagraph {
             text: "oat milk".into(),
-        })
-        .unwrap(),
-    )
-    .unwrap();
+        },
+    );
 
     let note = read(&mut app, json!({ "item": item }));
     assert_eq!(note["kind"], "notes.page");
@@ -109,20 +106,22 @@ fn inspect_editor(app: &mut TestApp<NotesShell>) -> serde_json::Value {
 fn editor_inspection_reuses_the_native_observer_and_writes_nothing() {
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<NotesShell>::new().unwrap();
-    app.call("new-page", json!({"value":"Private fixture title"}))
-        .unwrap();
-    let page = app.state().pages()[0].id;
-    app.invoke_child::<RichText>(
-        &page_body_id(page),
-        Invoke::apply(&RichTextAction::AppendParagraph {
-            text: "Private body fixture".into(),
-        })
-        .unwrap(),
+    app.call(
+        "new-note",
+        serde_json::json!({ "title": "Private fixture title" }),
     )
     .unwrap();
+    let page = crate::framework_support::shown(&app).pages()[0].id;
+    crate::framework_support::edit_body(
+        &mut app,
+        page,
+        &RichTextAction::AppendParagraph {
+            text: "Private body fixture".into(),
+        },
+    );
     app.settle();
     let canonical_body = app.read_document(|doc| {
-        NotesDoc::page_block_snapshots(doc, page)
+        read::page_block_snapshots(doc, page)
             .into_iter()
             .map(|(_, text)| text)
             .collect::<Vec<_>>()
@@ -161,19 +160,24 @@ fn editor_inspection_reuses_the_native_observer_and_writes_nothing() {
 fn editor_inspection_preserves_actual_wrong_page_and_stale_cache_evidence() {
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<NotesShell>::new().unwrap();
-    app.call("new-page", json!({"value":"First private fixture"}))
-        .unwrap();
-    let first = app.state().pages()[0].id;
-    app.call("new-page", json!({"value":"Second private fixture"}))
-        .unwrap();
-    let second = app
-        .state()
+    app.call(
+        "new-note",
+        serde_json::json!({ "title": "First private fixture" }),
+    )
+    .unwrap();
+    let first = crate::framework_support::shown(&app).pages()[0].id;
+    app.call(
+        "new-note",
+        serde_json::json!({ "title": "Second private fixture" }),
+    )
+    .unwrap();
+    let second = crate::framework_support::shown(&app)
         .pages()
         .iter()
         .find(|page| page.id != first)
         .unwrap()
         .id;
-    app.call_on(&notes::actions::page_resource_id(second), "open", json!({}))
+    app.call("open-note", json!({ "page": second }))
         .expect("the second page opens through its actual published row");
     app.settle();
     let before = app.read_document(|doc| (doc.base_heads(), doc.pending_ops()));
@@ -224,7 +228,7 @@ fn a_viewer_inspects_editor_without_gaining_note_mutation_rights() {
     assert!(observed["main_page"].is_null());
     assert!(observed["body_hash"].is_null());
     assert!(
-        app.call("new-page", json!({"value":"Not permitted"}))
+        app.call("new-note", serde_json::json!({ "title": "Not permitted" }))
             .is_err()
     );
     assert_eq!(inspect_editor(&mut app), observed);

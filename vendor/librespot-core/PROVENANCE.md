@@ -20,13 +20,20 @@ Tilo changes:
 - Library tests exercise the actual product-info dispatch and setters without
   network authorization. The upstream live connection integration test is not
   part of these checks.
+- `Login5Manager` accepts an embedding host's approved OAuth bearer provider.
+  Tilo keeps refresh, expiry and revocation in account custody; provider failure
+  never falls back to a stored-credential exchange or a different client.
+- Client-token requests retain `SessionConfig.client_id` on Linux as well as
+  other platforms, including an explicit host OAuth registration. These changes
+  are exercised through the native `tilo-spotify` dependency graph; this vendored
+  dependency is excluded from workspace dev-dependency test selection.
 
 The upstream TLS feature definitions/defaults are retained. Music explicitly
 disables defaults and selects Rustls with native roots; the root workspace
 patch supplies Tilo's existing fixed-path native-root loader.
 
-The remaining source files are unmodified registry sources. Remove this patch
-after upstream releases the parser and recoverable-session fixes.
+The remaining source files are unmodified registry sources. Retire each local
+change when upstream provides equivalent parser, session and host OAuth support.
 
 The archive’s standalone Cargo.lock is omitted: these dependencies use Tilo’s
 committed workspace lock, and upstream standalone locks describe optional TLS

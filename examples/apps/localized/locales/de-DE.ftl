@@ -11,3 +11,8 @@ localized-books = { $count ->
 localized-add = Buch hinzufügen
 localized-remove = Eins herausnehmen
 localized-hint = Stelle die Systemsprache um, um diese App auf Englisch zu sehen.
+
+# What each change says in history.
+localized-add-book = Ein Buch ins Regal gestellt
+localized-remove-book = Ein Buch aus dem Regal genommen
+localized-shelf-reader = Den Namen des Lesers geändert

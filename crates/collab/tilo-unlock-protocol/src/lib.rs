@@ -36,10 +36,6 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        clippy::panic,
         clippy::arithmetic_side_effects,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -107,22 +103,6 @@ pub(crate) fn digest<T: serde::Serialize>(
 ) -> Result<[u8; 32], postcard::Error> {
     let bytes = postcard::to_allocvec(view)?;
     Ok(blake3::derive_key(context, &bytes))
-}
-
-/// Serde helper for 64-byte signatures as one byte string.
-pub(crate) mod bytes64 {
-    use serde::de::Error as _;
-    use serde::{Deserialize, Deserializer, Serializer};
-
-    pub fn serialize<S: Serializer>(bytes: &[u8; 64], s: S) -> Result<S::Ok, S::Error> {
-        s.serialize_bytes(bytes)
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<[u8; 64], D::Error> {
-        let bytes = serde_bytes::ByteBuf::deserialize(d)?;
-        <[u8; 64]>::try_from(bytes.as_slice())
-            .map_err(|_| D::Error::invalid_length(bytes.len(), &"64 bytes"))
-    }
 }
 
 #[cfg(test)]

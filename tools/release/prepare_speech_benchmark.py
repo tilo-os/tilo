@@ -179,6 +179,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("destination", type=Path)
     parser.add_argument("--model-cache", type=Path)
+    parser.add_argument("--model", action="append", choices=MODELS,
+                        help="stage only the selected model(s); default stages all review candidates")
     args = parser.parse_args()
     os.umask(0o077)
     destination = args.destination
@@ -191,7 +193,7 @@ def main():
                 "models": {}, "cases": []}
     for config, language in LANGUAGES:
         manifest["cases"].extend(stage_language(destination, config, language, 8 if language in ["en", "fr", "zh"] else 3))
-    for name in MODELS:
+    for name in dict.fromkeys(args.model or MODELS):
         manifest["models"][name] = stage_model(destination, name, args.model_cache)
     (destination / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
     print("Public probes prepared; no model installed, signed or published; no microphone used.")

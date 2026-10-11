@@ -137,7 +137,7 @@ struct Paths {
 
 impl Paths {
     fn session() -> Result<Self, String> {
-        let runtime_root = xdg_paths::xdg::runtime_dir()
+        let runtime_root = tilo_paths::xdg::runtime_dir()
             .ok_or_else(|| "XDG_RUNTIME_DIR is not an absolute path".to_string())?;
         Ok(Self {
             sockets: PathBuf::from("/tmp/.X11-unix"),
@@ -720,14 +720,17 @@ impl<W: ListenerWatch> XwaylandSupervisor<W> {
         }
     }
 
+    pub(crate) fn reload_keyboard_settings(&self) {
+        self.apply_keyboard_settings(&KeyboardSettings::load());
+    }
+
     #[expect(
         clippy::unused_self,
         reason = "only a running supervisor's displays have X servers to update"
     )]
-    pub(crate) fn reload_keyboard_settings(&self) {
-        let keyboard = KeyboardSettings::load();
+    pub(crate) fn apply_keyboard_settings(&self, keyboard: &KeyboardSettings) {
         if let Some(displays) = registry().displays.as_mut() {
-            displays.reload_keyboard_settings(&keyboard);
+            displays.reload_keyboard_settings(keyboard);
         }
     }
 

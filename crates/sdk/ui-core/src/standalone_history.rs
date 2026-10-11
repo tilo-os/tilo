@@ -11,7 +11,7 @@ use crate::history_source::{
     AuthorDirectory, CompareError, HistoryComparison, HistorySource, committed_heads,
     compare_entries,
 };
-use crate::permissions::{PermissionContext, PermissionScope, Verb};
+use crate::permissions::{ActionKind, PermissionContext, PermissionScope};
 use crate::record::{RecordId, RecordOpenError};
 use crate::widget::{HistoryEntry, HistoryEntryId};
 
@@ -111,7 +111,11 @@ pub(crate) fn apply_restore(
         return Err(HistoryError::StaleReview);
     }
     let context = tilo_actions::ActionContext {
-        action_label: crate::i18n::I18nManager::lookup_plain("standalone-history-restore-action"),
+        what: Some(tilo_actions::Did::history(
+            tilo_actions::HistoryOp::Restore,
+            0,
+            None,
+        )),
         ..tilo_actions::ActionContext::default()
     };
     Ok(state.restore_to_heads_with_context(&review.target_heads, None, None, author, &context))
@@ -176,7 +180,7 @@ impl HistoryTarget {
                     .permissions
                     .try_borrow()
                     .map_err(|_| HistoryError::Unavailable)?
-                    .check(&PermissionScope::app(&binding.app_id, Verb::Write));
+                    .check(&PermissionScope::app(&binding.app_id, ActionKind::Undoable));
                 if !allowed {
                     return Err(HistoryError::Denied);
                 }
@@ -194,7 +198,7 @@ impl HistoryTarget {
                 }
                 if !context
                     .permissions
-                    .check(&PermissionScope::app(app_id, Verb::Write))
+                    .check(&PermissionScope::app(app_id, ActionKind::Undoable))
                 {
                     return Err(HistoryError::Denied);
                 }
@@ -217,7 +221,7 @@ impl HistoryTarget {
                     .permissions
                     .try_borrow()
                     .map_err(|_| HistoryError::Unavailable)?
-                    .check(&PermissionScope::app(&binding.app_id, Verb::Read));
+                    .check(&PermissionScope::app(&binding.app_id, ActionKind::Read));
                 if !allowed {
                     return Err(HistoryError::Denied);
                 }
@@ -237,7 +241,7 @@ impl HistoryTarget {
                 }
                 if !context
                     .permissions
-                    .check(&PermissionScope::app(app_id, Verb::Read))
+                    .check(&PermissionScope::app(app_id, ActionKind::Read))
                 {
                     return Err(HistoryError::Denied);
                 }
@@ -488,7 +492,7 @@ mod tests {
     use automerge::{ROOT, ReadDoc, transaction::CommitOptions};
 
     use super::*;
-    use crate::permissions::{Actor, CapOverride, Scope, Subject};
+    use crate::permissions::{TreePath, policy};
 
     fn document(value: &str) -> AutoCommit {
         let mut doc = AutoCommit::new();
@@ -498,13 +502,10 @@ mod tests {
     }
 
     fn read_only(app_id: &str) -> PermissionContext {
-        PermissionContext::from_capabilities(
-            Actor::agent("reader"),
-            vec![CapOverride::grant(
-                Subject::agent("reader"),
-                Scope::App(app_id.into()),
-                Verb::Read,
-            )],
+        PermissionContext::agent_granted(
+            "reader",
+            &TreePath::root().app(app_id),
+            policy::KindSet::READ,
         )
     }
 
@@ -551,7 +552,7 @@ mod tests {
             assert_eq!(doc.pending_ops(), pending);
             assert_eq!(doc.base_heads(), before);
             doc.put(ROOT, "body", "finished").unwrap();
-            let action = tilo_actions::ActionContext::for_resource("Finish edit", "a", "note", "A");
+            let action = tilo_actions::ActionContext::for_resource("a", "note", "A");
             doc.commit_with(
                 CommitOptions::default().with_message(action.change_message().unwrap()),
             );
@@ -561,9 +562,8 @@ mod tests {
                 changes[0]
                     .message()
                     .and_then(|message| tilo_actions::ActionContext::from_change_message(message))
-                    .unwrap()
-                    .action_label,
-                "Finish edit",
+                    .unwrap(),
+                action,
             );
         }
 

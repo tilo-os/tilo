@@ -246,7 +246,7 @@ pub(crate) fn select_local_target(
                 }),
                 ResourceOwner::Component(binding) => {
                     LocalResourceTarget::Component(BoundActionTarget {
-                        physical_text: false,
+                        input: crate::bound_dispatch::Input::Discrete,
                         address: BoundActionAddress {
                             instance_id: binding.instance_id,
                             address: address.clone(),
@@ -302,17 +302,10 @@ fn operation_allowed(
     app: &str,
     spec: &tilo_actions::ActionSpec,
 ) -> bool {
-    use crate::permissions::{CapDecision, ResourceRef, Verb};
-    use tilo_actions::PermissionRequirement as P;
-    let verb = match spec.contract.permission {
-        P::None => return true,
-        P::Read => Verb::Read,
-        P::Comment => Verb::Comment,
-        P::Write => Verb::Write,
-        P::Invite => Verb::Invite,
-        P::Admin => Verb::Admin,
-    };
-    authority.decide(&ResourceRef::App(app.into()), verb) == CapDecision::Allow
+    authority.check(&crate::permissions::PermissionScope::app(
+        app,
+        spec.contract.kind,
+    ))
 }
 fn filter_legacy_resource(
     mut resource: Resource,
@@ -425,10 +418,16 @@ impl ResourceRequest<'_> {
             outer,
             scope,
             result,
-            ..
+            target,
         } = self
         {
             *result = Some(if interactive {
+                let routing = target.owner.broker_route().map(|route| {
+                    crate::widget::resource_operation::OperationTarget::new(
+                        route,
+                        target.address.clone(),
+                    )
+                });
                 let op = match scope {
                     Some(scope) => crate::widget::ResourceOperation::scoped(
                         scope,
@@ -443,6 +442,7 @@ impl ResourceRequest<'_> {
                         &encoded.payload,
                     ),
                 };
+                let op = op.with_target(routing.as_ref());
                 tile.start_operation(&op, &mut crate::widget::Edits::lend(outer), &ROOT)
                     .map_err(DoorError::Failed)
                     .and_then(|value| {
@@ -626,15 +626,6 @@ pub(crate) fn invoke_legacy_document<'a>(
     target: &'a LegacyResourceTarget,
     services: LegacyDocumentServices<'a>,
     input: LegacyInvocation<'a>,
-) -> Result<LegacyDocumentOutcome, DoorError> {
-    invoke_legacy_document_scoped(root, target, services, input, None)
-}
-
-pub(crate) fn invoke_legacy_document_scoped<'a>(
-    root: &mut dyn Widget,
-    target: &'a LegacyResourceTarget,
-    services: LegacyDocumentServices<'a>,
-    input: LegacyInvocation<'a>,
     scope: Option<&'a crate::invocation_scope::ResourceInvocationScope>,
 ) -> Result<LegacyDocumentOutcome, DoorError> {
     let mut request = ResourceRequest::Document {
@@ -684,17 +675,6 @@ pub(crate) fn resolve_legacy_invocation(
     Ok(snapshot.resources)
 }
 pub(crate) fn invoke_legacy_effect(
-    root: &mut dyn Widget,
-    target: &LegacyResourceTarget,
-    invocation: tilo_actions::InvocationId,
-    kind: OperationKind,
-    encoded: &tilo_actions::EncodedAction,
-    outer: &mut AutoCommit,
-) -> Result<crate::widget::ResourceOperationStart, DoorError> {
-    invoke_legacy_effect_scoped(root, target, invocation, kind, encoded, outer, None)
-}
-
-pub(crate) fn invoke_legacy_effect_scoped(
     root: &mut dyn Widget,
     target: &LegacyResourceTarget,
     invocation: tilo_actions::InvocationId,
@@ -836,7 +816,6 @@ fn execute_owned(
                     ));
                 }
                 let mut context = tilo_actions::ActionContext::for_resource(
-                    spec.history_label(&encoded),
                     resource.id.as_str(),
                     &resource.kind,
                     &resource.label,
@@ -845,7 +824,6 @@ fn execute_owned(
                 if let Some(ambient) = input.ambient {
                     context = context.enriched_by(ambient);
                 }
-                let context = context.with_args_from_payload(&encoded.payload);
                 let dispatched = execute_document(
                     doc,
                     action.as_ref(),

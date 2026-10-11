@@ -23,6 +23,7 @@ use winit::event::{Modifiers, WindowEvent};
 use ui::Theme;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
+use ui::widget::TaffyTreeExt;
 use ui::widget::{AppKind, AppWidget, IconDescriptor, Widget};
 
 use crate::collab::colorimetry::Colorimetry;
@@ -406,11 +407,6 @@ impl PeerView {
         });
     }
 
-    /// Compat shim; prefer [`Self::record_key`] for new call sites.
-    pub fn record_key_no_mods(&mut self, keysym: u32, pressed: bool) {
-        self.record_key(keysym, pressed, 0);
-    }
-
     pub fn take_pending_inputs(&mut self) -> Vec<InputEvent> {
         std::mem::take(&mut self.pending_inputs)
     }
@@ -523,37 +519,21 @@ impl Widget for PeerView {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = match taffy.new_leaf(taffy::Style {
-            size: taffy::Size {
-                width: taffy::Dimension::percent(1.0),
-                height: taffy::Dimension::percent(1.0),
+        taffy.widget_leaf(
+            taffy::Style {
+                size: taffy::Size {
+                    width: taffy::Dimension::percent(1.0),
+                    height: taffy::Dimension::percent(1.0),
+                },
+                ..Default::default()
             },
-            ..Default::default()
-        }) {
-            Ok(node) => node,
-            Err(err) => {
-                // `TaffyTree::new_leaf` only ever returns `Ok` for a
-                // fresh, unattached leaf; this arm exists so a future
-                // upstream change degrades the peer surface instead of
-                // aborting the whole session.
-                tracing::error!("peer_view: leaf allocation failed: {err}");
-                NodeId::from(0u64)
-            }
-        };
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+            node_map,
+            self,
+        )
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let Ok(l) = taffy.layout(node) else {
-            return;
-        };
-        let new_rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        let new_rect = ui::widget::layout_rect(taffy, node, origin);
         // Rect changed → the placement matrix in `draw` changes too. Exact
         // equality is safe: taffy produces integer-valued logical pixels.
         if new_rect != self.rect {
@@ -939,29 +919,10 @@ mod tests {
 
         fn wheel_and_composed_text_go_to_the_window_under_focus() {
             let mut view = PeerView::new(42, 9);
-            let mut taffy = TaffyTree::<()>::new();
-            let node = taffy.new_leaf(taffy::Style::default()).unwrap();
-            let send = |view: &mut PeerView, event: WindowEvent| {
-                let mut doc = automerge::AutoCommit::new();
-                let mut handled = false;
-                let mut focus = None;
-                view.handle_event(
-                    &event,
-                    &mut ui::widget::EventCtx {
-                        scale_factor: 1.0,
-                        modifiers: &winit::event::Modifiers::default(),
-                        state: ui::widget::Edits::lend(&mut doc),
-                        path: &automerge::ROOT,
-                        handled: &mut handled,
-                        focus_target: &mut focus,
-                        node_id: node,
-                        taffy: &taffy,
-                    },
-                );
-                handled
-            };
+            let send =
+                |view: &mut PeerView, event: WindowEvent| ui::testing::dispatch(view, &event);
             let wheel = || WindowEvent::MouseWheel {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 delta: winit::event::MouseScrollDelta::LineDelta(0.0, 1.0),
                 phase: winit::event::TouchPhase::Moved,
             };

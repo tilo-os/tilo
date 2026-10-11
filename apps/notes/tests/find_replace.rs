@@ -1,15 +1,13 @@
 //! The shared find overlay replaces current or all matches through Notes actions.
-use notes::{actions, doc::NotesDoc};
+use notes::{actions, read};
 use ui::framework::testing::TestApp;
 use ui::tilo_resource::Invoke;
 
 fn fixture() -> (TestApp<notes::NotesShell>, notes::PageId) {
     let mut app = TestApp::<notes::NotesShell>::new().unwrap();
     let page = notes::PageId::new_v4();
-    app.invoke(
-        Invoke::apply(&actions::new_page_action(page, None, "a".into(), "Replace")).unwrap(),
-    )
-    .unwrap();
+    app.invoke(Invoke::apply(&actions::create_page_action(page, None, "Replace")).unwrap())
+        .unwrap();
     let rect = app.harness().targets()["block_editor"];
     app.harness().click_at(rect.x0 + 20.0, rect.y0 + 10.0);
     app.harness().type_text("Ä😀 alpha ALPHA");
@@ -49,23 +47,20 @@ fn replace(app: &mut TestApp<notes::NotesShell>) {
 #[test]
 fn semantic_replace_changes_one_unicode_match_and_undo_restores_it() {
     let (mut app, page) = fixture();
-    let before = app.read_document(|doc| NotesDoc::page_blocks(doc, page));
+    let before = app.read_document(|doc| read::page_blocks(doc, page));
     fields(&mut app, "alpha", "β😀");
     replace(&mut app);
-    let after = app.read_document(|doc| NotesDoc::page_blocks(doc, page));
+    let after = app.read_document(|doc| read::page_blocks(doc, page));
     assert_eq!(after[0].text, "Ä😀 β😀 ALPHA");
     assert_eq!(after[1], before[1]);
     assert_eq!(after[0].id, before[0].id);
     assert!(app.undo());
     assert_eq!(
-        app.read_document(|doc| NotesDoc::page_blocks(doc, page)),
+        app.read_document(|doc| read::page_blocks(doc, page)),
         before
     );
     assert!(app.redo());
-    assert_eq!(
-        app.read_document(|doc| NotesDoc::page_blocks(doc, page)),
-        after
-    );
+    assert_eq!(app.read_document(|doc| read::page_blocks(doc, page)), after);
 }
 
 #[test]
@@ -75,7 +70,7 @@ fn keyboard_and_pointer_replace_use_the_same_atomic_action() {
         fields(&mut app, "alpha", "");
         app.harness().key("Tab");
         app.harness().type_text("日本");
-        let before = app.read_document(|doc| NotesDoc::page_blocks(doc, page));
+        let before = app.read_document(|doc| read::page_blocks(doc, page));
         if pointer {
             let targets = app.harness().targets();
             let rect = targets["block-editor-replace"];
@@ -87,12 +82,12 @@ fn keyboard_and_pointer_replace_use_the_same_atomic_action() {
         } else {
             app.harness().key("Enter");
         }
-        let after = app.read_document(|doc| NotesDoc::page_blocks(doc, page));
+        let after = app.read_document(|doc| read::page_blocks(doc, page));
         assert_eq!(after[0].text, "Ä😀 日本 ALPHA", "pointer={pointer}");
         assert_eq!(after[1], before[1]);
         assert!(app.undo());
         assert_eq!(
-            app.read_document(|doc| NotesDoc::page_blocks(doc, page)),
+            app.read_document(|doc| read::page_blocks(doc, page)),
             before
         );
     }
@@ -103,9 +98,9 @@ fn replacement_undo_preserves_concurrent_peer_text_and_stale_match_is_refused() 
     for stale in [false, true] {
         let (mut app, page) = fixture();
         fields(&mut app, "alpha", "β");
-        let before = app.read_document(|doc| NotesDoc::page_blocks(doc, page));
+        let before = app.read_document(|doc| read::page_blocks(doc, page));
         let mut peer = app.peer_document();
-        NotesDoc::edit_page_body(
+        crate::component_support::edit_page_body(
             &mut peer,
             page,
             &tilo_document::RichTextAction::SpliceText {
@@ -120,7 +115,7 @@ fn replacement_undo_preserves_concurrent_peer_text_and_stale_match_is_refused() 
         peer.commit();
         if stale {
             app.merge_peer(&mut peer).unwrap();
-            let expected = app.read_document(|doc| NotesDoc::page_blocks(doc, page));
+            let expected = app.read_document(|doc| read::page_blocks(doc, page));
             assert!(
                 app.harness()
                     .perform_semantic_named(
@@ -131,18 +126,18 @@ fn replacement_undo_preserves_concurrent_peer_text_and_stale_match_is_refused() 
                     .is_err()
             );
             assert_eq!(
-                app.read_document(|doc| NotesDoc::page_blocks(doc, page)),
+                app.read_document(|doc| read::page_blocks(doc, page)),
                 expected
             );
         } else {
             replace(&mut app);
             app.merge_peer(&mut peer).unwrap();
             assert_eq!(
-                app.read_document(|doc| NotesDoc::page_blocks(doc, page)),
-                NotesDoc::page_blocks(&peer, page)
+                app.read_document(|doc| read::page_blocks(doc, page)),
+                read::page_blocks(&peer, page)
             );
             assert!(app.undo());
-            let after = app.read_document(|doc| NotesDoc::page_blocks(doc, page));
+            let after = app.read_document(|doc| read::page_blocks(doc, page));
             assert_eq!(after[0].text, "Peer Ä😀 alpha ALPHA");
             assert_eq!(after[1], before[1]);
             assert_eq!(after[0].id, before[0].id);
@@ -153,7 +148,7 @@ fn replacement_undo_preserves_concurrent_peer_text_and_stale_match_is_refused() 
 #[test]
 fn empty_replacement_deletes_one_match_without_touching_other_marks() {
     let (mut app, page) = fixture();
-    let before = app.read_document(|doc| NotesDoc::page_blocks(doc, page));
+    let before = app.read_document(|doc| read::page_blocks(doc, page));
     app.invoke(
         Invoke::apply(&actions::edit_body_action(
             page,
@@ -174,17 +169,17 @@ fn empty_replacement_deletes_one_match_without_touching_other_marks() {
         .unwrap(),
     )
     .unwrap();
-    let before = app.read_document(|doc| NotesDoc::page_blocks(doc, page));
+    let before = app.read_document(|doc| read::page_blocks(doc, page));
     fields(&mut app, "alpha", "");
     replace(&mut app);
-    let after = app.read_document(|doc| NotesDoc::page_blocks(doc, page));
+    let after = app.read_document(|doc| read::page_blocks(doc, page));
     assert_eq!(after[0].text, "Ä😀  ALPHA");
     assert!(after[0].marks.iter().any(|m| m.mark
         == ui::widget::marks::Mark::ExternalLink("https://example.com".into())
         && m.range == (8..13)));
     assert!(app.undo());
     assert_eq!(
-        app.read_document(|doc| NotesDoc::page_blocks(doc, page)),
+        app.read_document(|doc| read::page_blocks(doc, page)),
         before
     );
 }
@@ -194,7 +189,7 @@ fn replacement_refuses_viewers_and_waits_for_ime_commit() {
     let (mut app, page) = fixture();
     fields(&mut app, "alpha", "");
     app.harness().key("Tab");
-    let before = app.read_document(|doc| NotesDoc::page_blocks(doc, page));
+    let before = app.read_document(|doc| read::page_blocks(doc, page));
     app.harness().send(&ui::winit::event::WindowEvent::Ime(
         ui::winit::event::Ime::Preedit("日本".into(), Some((6, 6))),
     ));
@@ -209,7 +204,7 @@ fn replacement_refuses_viewers_and_waits_for_ime_commit() {
             .is_err()
     );
     assert_eq!(
-        app.read_document(|doc| NotesDoc::page_blocks(doc, page)),
+        app.read_document(|doc| read::page_blocks(doc, page)),
         before
     );
     app.harness().send(&ui::winit::event::WindowEvent::Ime(
@@ -217,10 +212,10 @@ fn replacement_refuses_viewers_and_waits_for_ime_commit() {
     ));
     app.harness().key("Enter");
     assert_eq!(
-        app.read_document(|doc| NotesDoc::page_blocks(doc, page))[0].text,
+        app.read_document(|doc| read::page_blocks(doc, page))[0].text,
         "Ä😀 日本 ALPHA"
     );
-    let before = app.read_document(|doc| NotesDoc::page_blocks(doc, page));
+    let before = app.read_document(|doc| read::page_blocks(doc, page));
     app.set_role(ui::permissions::Role::Viewer);
     assert!(
         app.harness()
@@ -232,7 +227,7 @@ fn replacement_refuses_viewers_and_waits_for_ime_commit() {
             .is_err()
     );
     assert_eq!(
-        app.read_document(|doc| NotesDoc::page_blocks(doc, page)),
+        app.read_document(|doc| read::page_blocks(doc, page)),
         before
     );
 }
@@ -266,7 +261,7 @@ fn navigating_or_replacing_final_match_keeps_exclusive_overlay_focus() {
             app.harness().key("F3");
         }
         assert_replacement_focus(&mut app);
-        let before = app.read_document(|doc| NotesDoc::page_blocks(doc, page));
+        let before = app.read_document(|doc| read::page_blocks(doc, page));
         app.harness().type_text("Z");
         app.harness().send(&ui::winit::event::WindowEvent::Ime(
             ui::winit::event::Ime::Preedit("日本".into(), Some((6, 6))),
@@ -276,7 +271,7 @@ fn navigating_or_replacing_final_match_keeps_exclusive_overlay_focus() {
             ui::winit::event::Ime::Commit("日本".into()),
         ));
         assert_eq!(
-            app.read_document(|doc| NotesDoc::page_blocks(doc, page)),
+            app.read_document(|doc| read::page_blocks(doc, page)),
             before
         );
         assert_replacement_focus(&mut app);
@@ -292,7 +287,7 @@ fn navigating_or_replacing_final_match_keeps_exclusive_overlay_focus() {
 fn replace_all_is_one_action_preserving_every_block_identity() {
     let (mut app, page) = fixture();
     fields(&mut app, "alpha", "β😀");
-    let before = app.read_document(|doc| NotesDoc::page_blocks(doc, page));
+    let before = app.read_document(|doc| read::page_blocks(doc, page));
     app.harness()
         .perform_semantic_named(
             "block_editor",
@@ -300,7 +295,7 @@ fn replace_all_is_one_action_preserving_every_block_identity() {
             &ui::a11y::Action::Activate,
         )
         .unwrap();
-    let after = app.read_document(|doc| NotesDoc::page_blocks(doc, page));
+    let after = app.read_document(|doc| read::page_blocks(doc, page));
     assert_eq!(
         after.iter().map(|b| b.text.as_str()).collect::<Vec<_>>(),
         ["Ä😀 β😀 β😀", "日本 β😀"]
@@ -311,14 +306,11 @@ fn replace_all_is_one_action_preserving_every_block_identity() {
     );
     assert!(app.undo());
     assert_eq!(
-        app.read_document(|doc| NotesDoc::page_blocks(doc, page)),
+        app.read_document(|doc| read::page_blocks(doc, page)),
         before
     );
     assert!(app.redo());
-    assert_eq!(
-        app.read_document(|doc| NotesDoc::page_blocks(doc, page)),
-        after
-    );
+    assert_eq!(app.read_document(|doc| read::page_blocks(doc, page)), after);
 }
 
 fn replace_all(app: &mut TestApp<notes::NotesShell>) {
@@ -336,9 +328,9 @@ fn replace_all_undo_preserves_peer_text_and_refuses_stale_searches() {
     for stale in [false, true] {
         let (mut app, page) = fixture();
         fields(&mut app, "alpha", "β");
-        let before = app.read_document(|doc| NotesDoc::page_blocks(doc, page));
+        let before = app.read_document(|doc| read::page_blocks(doc, page));
         let mut peer = app.peer_document();
-        NotesDoc::edit_page_body(
+        crate::component_support::edit_page_body(
             &mut peer,
             page,
             &tilo_document::RichTextAction::SpliceText {
@@ -353,7 +345,7 @@ fn replace_all_undo_preserves_peer_text_and_refuses_stale_searches() {
         peer.commit();
         if stale {
             app.merge_peer(&mut peer).unwrap();
-            let expected = app.read_document(|doc| NotesDoc::page_blocks(doc, page));
+            let expected = app.read_document(|doc| read::page_blocks(doc, page));
             assert!(
                 app.harness()
                     .perform_semantic_named(
@@ -364,18 +356,18 @@ fn replace_all_undo_preserves_peer_text_and_refuses_stale_searches() {
                     .is_err()
             );
             assert_eq!(
-                app.read_document(|doc| NotesDoc::page_blocks(doc, page)),
+                app.read_document(|doc| read::page_blocks(doc, page)),
                 expected
             );
         } else {
             replace_all(&mut app);
             app.merge_peer(&mut peer).unwrap();
             assert_eq!(
-                app.read_document(|doc| NotesDoc::page_blocks(doc, page)),
-                NotesDoc::page_blocks(&peer, page)
+                app.read_document(|doc| read::page_blocks(doc, page)),
+                read::page_blocks(&peer, page)
             );
             assert!(app.undo());
-            let after = app.read_document(|doc| NotesDoc::page_blocks(doc, page));
+            let after = app.read_document(|doc| read::page_blocks(doc, page));
             assert_eq!(after[0].text, "Peer alpha Ä😀 alpha ALPHA");
             assert_eq!(after[1], before[1]);
         }
@@ -385,7 +377,7 @@ fn replace_all_undo_preserves_peer_text_and_refuses_stale_searches() {
 #[test]
 fn replace_all_pointer_deletion_preserves_prefix_marks_and_undo() {
     let (mut app, page) = fixture();
-    let before = app.read_document(|doc| NotesDoc::page_blocks(doc, page));
+    let before = app.read_document(|doc| read::page_blocks(doc, page));
     app.invoke(
         Invoke::apply(&actions::edit_body_action(
             page,
@@ -407,19 +399,19 @@ fn replace_all_pointer_deletion_preserves_prefix_marks_and_undo() {
     )
     .unwrap();
     fields(&mut app, "alpha", "");
-    let before = app.read_document(|doc| NotesDoc::page_blocks(doc, page));
+    let before = app.read_document(|doc| read::page_blocks(doc, page));
     let targets = app.harness().targets();
     let rect = targets["block-editor-replace-all"];
     assert!(targets["block-editor-replacement"].y1 <= rect.y0);
     assert!(targets["block-editor-replace"].y1 <= rect.y0);
     app.harness().click_at(rect.center().x, rect.center().y);
-    let after = app.read_document(|doc| NotesDoc::page_blocks(doc, page));
+    let after = app.read_document(|doc| read::page_blocks(doc, page));
     assert_eq!(after[0].text, "Ä😀  ");
     assert_eq!(after[1].text, "日本 ");
     assert_eq!(after[0].marks, before[0].marks);
     assert!(app.undo());
     assert_eq!(
-        app.read_document(|doc| NotesDoc::page_blocks(doc, page)),
+        app.read_document(|doc| read::page_blocks(doc, page)),
         before
     );
 }
@@ -429,7 +421,7 @@ fn replace_all_refuses_ime_and_viewers_and_retains_input_focus() {
     let (mut app, page) = fixture();
     fields(&mut app, "alpha", "");
     app.harness().key("Tab");
-    let before = app.read_document(|doc| NotesDoc::page_blocks(doc, page));
+    let before = app.read_document(|doc| read::page_blocks(doc, page));
     app.harness().send(&ui::winit::event::WindowEvent::Ime(
         ui::winit::event::Ime::Preedit("日本".into(), Some((6, 6))),
     ));
@@ -445,7 +437,7 @@ fn replace_all_refuses_ime_and_viewers_and_retains_input_focus() {
     let rect = app.harness().targets()["block-editor-replace-all"];
     app.harness().click_at(rect.center().x, rect.center().y);
     assert_eq!(
-        app.read_document(|doc| NotesDoc::page_blocks(doc, page)),
+        app.read_document(|doc| read::page_blocks(doc, page)),
         before
     );
     app.harness().send(&ui::winit::event::WindowEvent::Ime(
@@ -453,7 +445,7 @@ fn replace_all_refuses_ime_and_viewers_and_retains_input_focus() {
     ));
     replace_all(&mut app);
     assert_replacement_focus(&mut app);
-    let after = app.read_document(|doc| NotesDoc::page_blocks(doc, page));
+    let after = app.read_document(|doc| read::page_blocks(doc, page));
     assert_eq!(after[0].text, "Ä😀 日本 日本");
     assert_eq!(after[1].text, "日本 日本");
     fields(&mut app, "日本", "x");
@@ -467,19 +459,16 @@ fn replace_all_refuses_ime_and_viewers_and_retains_input_focus() {
             )
             .is_err()
     );
-    assert_eq!(
-        app.read_document(|doc| NotesDoc::page_blocks(doc, page)),
-        after
-    );
+    assert_eq!(app.read_document(|doc| read::page_blocks(doc, page)), after);
 }
 
 #[test]
 fn replace_all_refuses_new_peer_blocks_until_the_search_is_refreshed() {
     let (mut app, page) = fixture();
     fields(&mut app, "alpha", "alphaβ");
-    let before = app.read_document(|doc| NotesDoc::page_blocks(doc, page));
+    let before = app.read_document(|doc| read::page_blocks(doc, page));
     let mut peer = app.peer_document();
-    NotesDoc::edit_page_body(
+    crate::component_support::edit_page_body(
         &mut peer,
         page,
         &tilo_document::RichTextAction::InsertParagraph {
@@ -490,7 +479,7 @@ fn replace_all_refuses_new_peer_blocks_until_the_search_is_refreshed() {
     .unwrap();
     peer.commit();
     app.merge_peer(&mut peer).unwrap();
-    let expected = app.read_document(|doc| NotesDoc::page_blocks(doc, page));
+    let expected = app.read_document(|doc| read::page_blocks(doc, page));
     assert!(
         app.harness()
             .perform_semantic_named(
@@ -501,13 +490,13 @@ fn replace_all_refuses_new_peer_blocks_until_the_search_is_refreshed() {
             .is_err()
     );
     assert_eq!(
-        app.read_document(|doc| NotesDoc::page_blocks(doc, page)),
+        app.read_document(|doc| read::page_blocks(doc, page)),
         expected
     );
     fields(&mut app, "alpha", "alphaβ");
     replace_all(&mut app);
     assert_eq!(
-        app.read_document(|doc| NotesDoc::page_blocks(doc, page))
+        app.read_document(|doc| read::page_blocks(doc, page))
             .iter()
             .map(|b| b.text.clone())
             .collect::<Vec<_>>(),
@@ -515,7 +504,7 @@ fn replace_all_refuses_new_peer_blocks_until_the_search_is_refreshed() {
     );
     assert!(app.undo());
     assert_eq!(
-        app.read_document(|doc| NotesDoc::page_blocks(doc, page)),
+        app.read_document(|doc| read::page_blocks(doc, page)),
         expected
     );
 }
@@ -526,12 +515,12 @@ fn replace_all_keyboard_shortcut_uses_one_undo_step() {
         let (mut app, page) = fixture();
         fields(&mut app, "alpha", "β😀");
         app.harness().key("Tab");
-        let before = app.read_document(|doc| NotesDoc::page_blocks(doc, page));
+        let before = app.read_document(|doc| read::page_blocks(doc, page));
         app.harness().set_modifiers(&[modifier.into()]);
         app.harness().key("Enter");
         app.harness().set_modifiers(&[]);
         assert_eq!(
-            app.read_document(|doc| NotesDoc::page_blocks(doc, page))
+            app.read_document(|doc| read::page_blocks(doc, page))
                 .iter()
                 .map(|b| b.text.clone())
                 .collect::<Vec<_>>(),
@@ -541,7 +530,7 @@ fn replace_all_keyboard_shortcut_uses_one_undo_step() {
         assert_replacement_focus(&mut app);
         assert!(app.undo());
         assert_eq!(
-            app.read_document(|doc| NotesDoc::page_blocks(doc, page)),
+            app.read_document(|doc| read::page_blocks(doc, page)),
             before
         );
     }

@@ -185,7 +185,7 @@ impl Records {
             Service::Signal => "signal",
             Service::Whatsapp => "whatsapp",
             Service::Sms => "sms",
-            Service::Tilo => return Err(SendError::Revoked),
+            Service::Tilo => "tilo",
         };
         let account = accounts
             .get(&accounts::AccountId::new(&owner.account))

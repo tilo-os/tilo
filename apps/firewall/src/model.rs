@@ -6,23 +6,31 @@
 //! **services**, and a list of **rules** (port openings + rich,
 //! source-scoped accept/reject entries).
 //!
-//! Everything is plain data + small pure helpers — no IO, no rendering,
-//! no automerge. The CRDT bridge lives in `doc.rs`; the live
-//! `firewall-cmd`/`nft` apply path lives in `backend.rs`. Keeping this
-//! layer pure means the whole model round-trips through serde and is
-//! unit-testable without a document or a GPU.
+//! Everything is plain data + small pure helpers — no IO, no rendering.
+//! [`Firewall`] is the stored record (`#[derive(Model)]`): zones keyed by
+//! name, each with its membership sets and an ordered collection of rules.
+//! [`FirewallConfig`] is the configuration as the window and firewalld read
+//! it, made from the record. The live `firewall-cmd`/`nft` apply path lives
+//! in `backend.rs`.
+
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
+use ui::tilo_resource::{self, Collection, Id, Json, JsonSchema, Model, Refusal, Set};
 use uuid::Uuid;
 
 /// Stable identifier for a single rule. Backs selection + edit/delete.
 pub type RuleId = Uuid;
 
 /// The nine stock firewalld zones. `Public` is the conventional default.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(
+    Model, JsonSchema, Default, Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
 pub enum ZoneKind {
     Drop,
     Block,
+    #[default]
     Public,
     External,
     Dmz,
@@ -122,9 +130,10 @@ impl ZoneKind {
 }
 
 /// A zone's default target — what happens to traffic no rule matched.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Model, Default, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Target {
     /// firewalld `default` — reject with an ICMP error.
+    #[default]
     Default,
     /// Accept everything not otherwise denied (trusted zone).
     Accept,
@@ -202,8 +211,9 @@ impl Proto {
 }
 
 /// What a rule does with matching traffic.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Model, Default, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Action {
+    #[default]
     Allow,
     Deny,
 }
@@ -233,6 +243,7 @@ impl Action {
 }
 
 /// What a rule matches: a named service, or an explicit port + protocol.
+/// Stored whole: a rule's match changes as one value.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Matcher {
     /// A named service from the catalog (e.g. `https`).
@@ -241,19 +252,18 @@ pub enum Matcher {
     Port { port: String, proto: Proto },
 }
 
+impl Default for Matcher {
+    fn default() -> Self {
+        Self::Service(String::new())
+    }
+}
+
 impl Matcher {
     /// Short, human label for the first table column.
     pub fn label(&self) -> String {
         match self {
             Matcher::Service(s) => s.clone(),
             Matcher::Port { port, proto } => format!("{}/{}", port, proto.label()),
-        }
-    }
-
-    pub fn proto_label(&self) -> String {
-        match self {
-            Matcher::Service(s) => ServiceCatalog::proto_of(s).to_string(),
-            Matcher::Port { proto, .. } => proto.label().to_string(),
         }
     }
 
@@ -272,10 +282,6 @@ impl Matcher {
             Matcher::Service(s) => ServiceCatalog::proto_title(ServiceCatalog::proto_of(s)),
             Matcher::Port { proto, .. } => proto.title(),
         }
-    }
-
-    pub fn is_service(&self) -> bool {
-        matches!(self, Matcher::Service(_))
     }
 }
 
@@ -457,6 +463,165 @@ impl FirewallConfig {
             }
         }
         Ok(())
+    }
+}
+
+/// One rule as the document stores it; its item id is the rule's uuid.
+#[derive(Model, Default, Clone, Debug, PartialEq)]
+pub struct StoredRule {
+    /// What it matches
+    pub matcher: Json<Matcher>,
+    /// What it does
+    pub action: Action,
+    /// Source address
+    pub source: String,
+    /// Enabled
+    pub enabled: bool,
+}
+
+/// One zone as the document stores it, keyed by its zone name.
+#[derive(Model, Default, Clone, Debug, PartialEq)]
+pub struct StoredZone {
+    /// Default policy
+    pub target: Target,
+    /// Interfaces
+    pub interfaces: Set<String>,
+    /// Allowed services
+    pub services: Set<String>,
+    /// Rules, in the order they apply.
+    pub rules: Collection<StoredRule>,
+    /// Masquerade
+    pub masquerade: bool,
+    /// Rules deleted from this zone: a deletion wins over a concurrent edit
+    /// and an import never brings the rule back.
+    #[model(readonly)]
+    pub deleted_rules: Set<String>,
+}
+
+/// The stored firewall configuration: what every device running the app
+/// projects onto its own firewalld.
+#[derive(Model, Default, Clone, Debug, PartialEq)]
+#[model(check = Firewall::valid)]
+pub struct Firewall {
+    /// Running: started and stopped by verbs.
+    #[model(readonly)]
+    pub enabled: bool,
+    /// Panic mode: entered and left by verbs.
+    #[model(readonly)]
+    pub panic_mode: bool,
+    /// Active zone
+    pub default_zone: ZoneKind,
+    /// The configured zones, by zone name.
+    pub zones: BTreeMap<String, StoredZone>,
+}
+
+impl Firewall {
+    /// A configured firewall is one firewalld can be handed safely.
+    fn valid(&self) -> Result<(), Refusal> {
+        if self.zones.is_empty() {
+            return Ok(());
+        }
+        self.config().validate().map_err(Refusal::new)
+    }
+
+    /// The item id of rule `id`.
+    pub fn rule(id: RuleId) -> Id {
+        Id::from_raw(id.to_string())
+    }
+
+    /// The configuration the record holds: stock zones in order, each
+    /// membership sorted, rules in order without the deleted ones.
+    pub fn config(&self) -> FirewallConfig {
+        let zones = ZoneKind::ALL
+            .into_iter()
+            .filter_map(|kind| {
+                let stored = self.zones.get(kind.name())?;
+                let rules = stored
+                    .rules
+                    .iter()
+                    .filter(|(id, _)| !stored.deleted_rules.contains(&id.as_str().to_owned()))
+                    .filter_map(|(id, rule)| {
+                        Some(Rule {
+                            id: id.as_str().parse().ok()?,
+                            matcher: rule.matcher.0.clone(),
+                            action: rule.action,
+                            source: rule.source.clone(),
+                            enabled: rule.enabled,
+                        })
+                    })
+                    .collect();
+                Some(Zone {
+                    kind,
+                    target: stored.target,
+                    interfaces: stored.interfaces.iter().cloned().collect(),
+                    services: stored.services.iter().cloned().collect(),
+                    rules,
+                    masquerade: stored.masquerade,
+                })
+            })
+            .collect();
+        FirewallConfig {
+            enabled: self.enabled,
+            panic_mode: self.panic_mode,
+            default_zone: self.default_zone,
+            zones,
+        }
+    }
+
+    /// Take in what firewalld reported: members it lacks turn off, rules it
+    /// lacks are deleted, a deleted rule stays deleted, and the rest is
+    /// written where it differs.
+    pub fn take_in(&mut self, config: &FirewallConfig) {
+        self.enabled = config.enabled;
+        self.panic_mode = config.panic_mode;
+        self.default_zone = config.default_zone;
+        for incoming in &config.zones {
+            let zone = self
+                .zones
+                .entry(incoming.kind.name().to_owned())
+                .or_default();
+            zone.target = incoming.target;
+            zone.masquerade = incoming.masquerade;
+            zone.interfaces = incoming.interfaces.iter().cloned().collect();
+            zone.services = incoming.services.iter().cloned().collect();
+            let wanted: Vec<Id> = incoming
+                .rules
+                .iter()
+                .map(|rule| Self::rule(rule.id))
+                .collect();
+            let gone: Vec<Id> = zone
+                .rules
+                .ids()
+                .filter(|id| !wanted.contains(id))
+                .cloned()
+                .collect();
+            for id in gone {
+                zone.rules.remove(&id);
+                zone.deleted_rules.insert(id.as_str().to_owned());
+            }
+            for rule in &incoming.rules {
+                let id = Self::rule(rule.id);
+                if zone.deleted_rules.contains(&id.as_str().to_owned()) {
+                    continue;
+                }
+                let stored = StoredRule {
+                    matcher: Json(rule.matcher.clone()),
+                    action: rule.action,
+                    source: rule.source.clone(),
+                    enabled: rule.enabled,
+                };
+                match zone.rules.get_mut(&id) {
+                    Some(existing) => {
+                        if *existing != stored {
+                            *existing = stored;
+                        }
+                    }
+                    None => {
+                        zone.rules.push(id, stored);
+                    }
+                }
+            }
+        }
     }
 }
 

@@ -667,24 +667,33 @@ class Session:
         return [t.get("name", "") for t in self.targets()]
 
     def check_action(self, actor: str, app: str, action: str,
-                     verb: str = "write") -> dict:
-        """Ask the in-app action gate whether `actor` may invoke this.
+                     kind: str = "undoable", resource: str = "document") -> dict:
+        """Ask the in-app action gate whether `actor` may invoke `action`
+        on `app`'s `resource`.
 
         Read-only, and the production gate: this is the same check the
         broker runs, asked without performing anything.
         """
         return call(self.sock, {"op": "check_action", "actor": actor,
-                                "app": app, "action": action, "verb": verb})
+                                "app": app, "resource": resource,
+                                "action": action, "kind": kind})
 
-    def grant(self, subject: str, scope: str, verb: str) -> dict:
-        """Grant a capability, through `Workspace::grant_as`.
+    def allow(self, subject: str, node: str, kinds: list[str],
+              answer: str = "allow") -> dict:
+        """Give `subject` `answer` for actions of `kinds` at `node`, a path
+        below the room, through the room's governance.
 
         The authority check is the production one — it refuses a grantor
-        who neither owns the room nor holds admin over it — so a refusal
-        here is the model working, not the harness failing.
+        who may not grant in the room, or grants more than they hold — so a
+        refusal here is the model working, not the harness failing.
         """
-        return call(self.sock, {"op": "grant", "subject": subject,
-                                "scope": scope, "verb": verb})
+        return call(self.sock, {"op": "allow", "subject": subject,
+                                "node": node, "kinds": kinds,
+                                "answer": answer})
+
+    def admit(self, person: str, role: str) -> dict:
+        """Admit `person` to the room with `role`, through its governance."""
+        return call(self.sock, {"op": "admit", "person": person, "role": role})
 
     # -- synthetic input, continued (all counted) --------------------
 
@@ -3422,8 +3431,9 @@ def beat_three(quinten: Session, agent: Session, host_ws: dict,
     step("what the agent is allowed to do, before quinten says so")
     # The more interesting half, and the one that makes an agent a
     # different kind of participant: it is a subject in the permission
-    # model, `agent:<id>`, and its authority is a grant on a scope. Asked
-    # of the production gate, which answers about a verb on a scope.
+    # model, `agent:<id>`, and its authority is grants on places in the
+    # room's tree. Asked of the production gate, which answers about a kind
+    # of action at a place.
     def may_write(app: str) -> bool:
         answer = quinten.check_action(AGENT_SUBJECT, app, "SpliceText") \
             .get("answer", {}) or {}
@@ -3436,7 +3446,7 @@ def beat_three(quinten: Session, agent: Session, host_ws: dict,
           may_write(WORD_PROCESSOR), False)
 
     step(f"quinten grants it write on {AGENT_SCOPE} — that app, and nothing else")
-    granted = quinten.grant(AGENT_SUBJECT, AGENT_SCOPE, "write")
+    granted = quinten.allow(AGENT_SUBJECT, AGENT_SCOPE, ["read", "undoable"])
     claim("the grant was accepted", "err" not in granted, True)
     if "err" in granted:
         note(json.dumps(granted["err"])[:200])
@@ -3447,14 +3457,14 @@ def beat_three(quinten: Session, agent: Session, host_ws: dict,
     # named one app, so it must not answer for another.
     claim("and still may not write to a different app",
           may_write("so.tilo.terminal"), False)
-    note("a capability is a verb on a scope; the scope here is one app")
+    note("a grant is kinds of action at a place; the place here is one app")
 
     step("and the session it drives is admitted to the room as itself")
     # The grant above is about the principal inside an app. The session
     # is a separate subject, and a guest who has only been let in is not
     # yet allowed to act — so it is admitted explicitly, the same way
     # xaver would be.
-    admitted = quinten.grant(f"person:{agent.user}", "workspace", "write")
+    admitted = quinten.admit(agent.user, "editor")
     claim("quinten admits the agent's session as an editor",
           "err" not in admitted, True)
     if "err" in admitted:
@@ -3492,44 +3502,44 @@ def beat_four(quinten: Session, xaver: Session, agent: Session,
     note(f"opened from {via}")
     claim("the collaborators panel is up on quinten's screen",
           quinten.overlays()["collaborators"], True)
-    # Who is in this room, read off the room's own capability list —
-    # which *is* the membership (`state.rs:877`: "Room membership lives
-    # here"), and is the same list the panel on screen is drawn from.
-    #
-    # Read here rather than from `peers`, which carries pointers and
-    # nothing else: a `peers()["roster"]` lookup returned an empty list
-    # on every run this demo has ever made, and printed nothing, so the
-    # roster was never actually being checked.
+    # Who is in this room, read off the room's own policy — its members
+    # and the grants it holds — which is the membership, and is what the
+    # panel on screen is drawn from.
     #
     # This is also the honest place to look for the agent. Claude is a
     # participant in this room and has no mouse — a pointer that has
     # never moved publishes nothing, by design — so asserting a cursor
     # for it would be asserting something that should not exist. What
-    # makes it a participant is that it holds a capability in the room,
-    # and that is what is checked.
-    caps = quinten.active_workspace().get("capabilities") or []
+    # makes it a participant is that the room admits it, and that is what
+    # is checked.
+    policy = quinten.active_workspace().get("policy") or {}
+    roles = policy.get("members") or {}
+    grants = policy.get("grants") or []
     members: dict[str, list[str]] = {}
-    for cap in caps:
-        subject = json.dumps(cap.get("subject"))
-        for name in (quinten.user, xaver.user, agent.user):
-            if f'"{name}"' in subject or f":{name}" in subject:
-                members.setdefault(name, []).append(str(cap.get("verb")))
-    if not caps:
-        # Said as a gap rather than asserted away. An empty list here is
+    for name in (quinten.user, xaver.user, agent.user):
+        if name in roles:
+            members.setdefault(name, []).append(str(roles[name]))
+        if policy.get("owner") == name:
+            members.setdefault(name, []).append("owner")
+        for grant in grants:
+            if name in json.dumps(grant.get("subject")):
+                members.setdefault(name, []).append(str(grant.get("kinds")))
+    if not policy:
+        # Said as a gap rather than asserted away. An empty policy here is
         # this reader looking in the wrong place, not a room with nobody
         # in it — three participants joined it two beats ago.
-        gap("the active workspace reported no capability list, so who is "
-            "in this room could not be read off it")
+        gap("the active workspace reported no policy, so who is in this "
+            "room could not be read off it")
     else:
-        note(f"the room's own capability list names {sorted(members)} "
-             f"across {len(caps)} capabilities")
-        claim("the agent is in the room the same way the people are — by "
-              "holding a capability in it", agent.user in members, True)
+        note(f"the room's own policy names {sorted(members)} "
+             f"across {len(roles)} members and {len(grants)} grants")
+        claim("the agent is in the room the same way the people are — the "
+              "room admits it", agent.user in members, True)
         if agent.user in members:
             note(f"{agent.user} holds {sorted(set(members[agent.user]))} "
-                 f"here — which is what makes it a member of this room: a "
-                 f"capability, granted by the owner, in the same list the "
-                 f"people are in")
+                 f"here — which is what makes it a member of this room: "
+                 f"admitted by the owner, in the same policy the people "
+                 f"are in")
     read_hold()
     quinten.snapshot(os.path.join(shots, "03a-roster.png"))
     close_collaborators(quinten)

@@ -17,7 +17,6 @@
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
-use ui::time::UNIX_EPOCH;
 use ui::widget::{AppModel, ModelPath};
 
 use taffy::{NodeId, TaffyTree};
@@ -27,35 +26,26 @@ use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::framework::{Dispatcher, PersonRecord};
-use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::toast::{ToastKind, ToastStack};
+use ui::widget::toast::ToastKind;
 use ui::widget::{
     FullscreenProvider, NavItem, NavList, NavMode, NavSection, NavShell, VideoPlayer, Widget,
 };
 
 use crate::action::{self, Action, ActionBus, Invocations};
-use crate::actions::{TubeAction, TubeEffect};
+use crate::actions::TubeEffect;
 use crate::api::{Request, Update, Worker};
 use crate::history::WatchHistory;
 use crate::i18n::{arg, t, t_args};
 use crate::model::{Route, TubeModel};
-use crate::resource::{Tube, TubeShared};
+use crate::resource::Library;
 use crate::screens;
 use crate::widgets::SharedPlayer;
-use ui::tilo_resource::{ActionDecl, Invoke};
+use ui::tilo_resource::{Edit, Invoke};
 
 pub(crate) const QUALITIES: [&str; 4] = ["1080p", "720p", "480p", "auto"];
-
-fn history_now_ms() -> u64 {
-    ui::time::wall()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| {
-            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
-        })
-}
 
 /// Pull the frames the player's engine decoded into its surface, as the
 /// player's own `sync` does every frame; it reads no document.
@@ -76,7 +66,7 @@ pub struct TubeApp {
     /// Where library edits and effects go: the framework's door for the
     /// resource. `None` until the framework attaches the surface; a bare
     /// widget shows a library it cannot change.
-    dispatcher: Option<Dispatcher<Tube>>,
+    dispatcher: Option<Dispatcher<Library>>,
     /// The person's watch history, a record in their own room, in a live
     /// window.
     history: Option<PersonRecord<WatchHistory>>,
@@ -105,9 +95,8 @@ pub struct TubeApp {
     /// Resource invocations raised by controls that report through a closure
     /// (the navigation rail, the watch toolbar), handed to the host.
     invocations: Invocations,
-    /// Transient notices ("Link copied", a skipped segment) as toasts.
-    toasts: ToastStack,
-    /// `model.notice_count` already shown as toasts.
+    /// The transient notice ("Link copied", a skipped segment) last shown
+    /// as the shell's toast.
     toasted: u64,
     /// Live `YouTube` search answers handed to the platform search.
     /// A structural change the host took from `take_structure_dirty` that
@@ -233,7 +222,6 @@ impl TubeApp {
             can_go_back,
             shell_built: false,
             invocations: action::new_invocations(),
-            toasts: ToastStack::new(),
             toasted: 0,
             shell_stale: true,
             shell_key: None,
@@ -350,9 +338,11 @@ impl TubeApp {
                 self.model.playing = self.player.borrow().is_playing();
             }
             TubeEffect::Share { video } => {
+                tracing::debug!(target: "tube::share", %video, at = ?ui::time::now(), "share effect entered");
                 let url = format!("https://youtu.be/{video}");
                 ui::clipboard_copy(&url);
                 self.model.push_notice(format!("Link copied: {url}"));
+                tracing::debug!(target: "tube::share", %video, at = ?ui::time::now(), "share model notice created");
             }
             TubeEffect::Download { video } => {
                 // Published as unavailable; a caller that invokes it anyway
@@ -362,7 +352,7 @@ impl TubeApp {
                 ));
             }
             TubeEffect::MarkWatched { video } => {
-                let at_ms = history_now_ms();
+                let at_ms = ui::time::unix_now_ms();
                 self.edit_history(&WatchHistory::RECORD.with((video, at_ms)));
             }
             TubeEffect::ForgetWatched { video } => {
@@ -416,9 +406,9 @@ impl TubeApp {
 
     /// Submit a library edit through the framework's door, which checks it,
     /// applies it, records the undo step and presents the result.
-    fn edit(&self, action: &TubeAction) {
+    fn edit(&self, edit: Edit<Library>) {
         if let Some(dispatcher) = &self.dispatcher {
-            dispatcher.apply(action);
+            dispatcher.submit(edit);
         }
     }
 
@@ -446,7 +436,7 @@ impl TubeApp {
             let replica = self.local_history.get_or_insert_with(|| {
                 let mut replica = ui::tilo_resource::Replica::<WatchHistory>::new();
                 let count = shown.len();
-                let watched = shown
+                let watched: Vec<(String, u64)> = shown
                     .iter()
                     .enumerate()
                     .map(|(at, video)| (video.clone(), u64::try_from(count - at).unwrap_or(0)))
@@ -532,10 +522,7 @@ impl TubeApp {
                         && self.model.is_subscribed(&channel.id)
                 });
             if !already_subscribed {
-                edits.push(TubeAction::SetSubscription {
-                    channel_id: subscription,
-                    subscribed: true,
-                });
+                edits.push(Library::subscribe(&subscription, true));
             }
         }
 
@@ -558,7 +545,7 @@ impl TubeApp {
                 && self.change_preferences(|current| *current = settings)
         });
 
-        let watched_at_ms = history_now_ms();
+        let watched_at_ms = ui::time::unix_now_ms();
         let pulled: Vec<(String, u64)> = remote
             .watch_history
             .into_iter()
@@ -582,73 +569,12 @@ impl TubeApp {
         let library_changed = !edits.is_empty();
         if let Some(dispatcher) = &self.dispatcher {
             dispatcher.group(|| {
-                for edit in &edits {
-                    dispatcher.apply(edit);
+                for edit in edits {
+                    dispatcher.submit(edit);
                 }
             });
         }
         library_changed || history_changed || preferences_changed
-    }
-
-    /// Edits bound to the open watch page: like it, queue it, subscribe to
-    /// its creator. Each carries the state it sets, read from what the page
-    /// shows now.
-    pub(crate) fn watch_page_declarations(&self) -> Vec<ActionDecl<Tube>> {
-        let Route::Watch(video_id) = &self.model.route else {
-            return Vec::new();
-        };
-        let Some(video) = self.model.video(video_id) else {
-            return Vec::new();
-        };
-        let bound = |id: &'static str, label: &str, action: TubeAction| {
-            ActionDecl::new(id, label, Vec::new(), move |_, _| Ok(action.clone()))
-        };
-        let liked = self.model.is_liked(video_id);
-        let queued = self.model.is_queued(video_id);
-        let subscribed = self.model.is_subscribed(&video.channel_id);
-        let creator = self
-            .model
-            .subscription_key(&video.channel_id)
-            .unwrap_or(&video.channel_id)
-            .to_owned();
-        vec![
-            bound(
-                "like-this-video",
-                if liked {
-                    "Unlike this video"
-                } else {
-                    "Like this video"
-                },
-                TubeAction::SetVideoLiked {
-                    video_id: video_id.clone(),
-                    liked: !liked,
-                },
-            ),
-            bound(
-                "queue-this-video",
-                if queued {
-                    "Remove this video from the queue"
-                } else {
-                    "Add this video to the queue"
-                },
-                TubeAction::SetQueueMembership {
-                    video_id: video_id.clone(),
-                    queued: !queued,
-                },
-            ),
-            bound(
-                "subscribe-to-this-creator",
-                if subscribed {
-                    "Unsubscribe from this creator"
-                } else {
-                    "Subscribe to this creator"
-                },
-                TubeAction::SetSubscription {
-                    channel_id: creator,
-                    subscribed: !subscribed,
-                },
-            ),
-        ]
     }
 
     /// An instance with no catalogue and no network.
@@ -765,11 +691,26 @@ impl TubeApp {
 
     /// Supply a deterministic catalogue in a hosted test without changing its
     /// dispatcher, effect admission, or shared library. Live launch stays empty.
+    ///
+    /// A live window has already spawned its fetch worker on its first frame.
+    /// Retire it with the live catalogue: its startup notes, its status and
+    /// the feed it fetched would otherwise land whenever the network answers,
+    /// rebuild the staged page and drop a click made in between.
     pub fn stage_model_for_test(&mut self, model: TubeModel) {
         self.search_query.set(model.search_query.clone());
         self.model = model;
         self.online = false;
+        self.worker = None;
         self.shell_stale = true;
+    }
+
+    /// Test hook: fetch nothing, and fold the results the returned sender
+    /// sends as the network's, whenever the test lands one.
+    #[doc(hidden)]
+    pub fn script_worker_for_test(&mut self) -> std::sync::mpsc::SyncSender<crate::api::Update> {
+        let (worker, results) = crate::api::Worker::scripted();
+        self.worker = Some(worker);
+        results
     }
 
     #[must_use]
@@ -786,11 +727,11 @@ impl TubeApp {
     /// subscriptions and comment likes. Every presentation is the
     /// whole library, so an emptied one (everything unliked, the queue
     /// cleared) shows empty.
-    pub(crate) fn present_library(&mut self, state: &TubeShared) {
-        self.model.liked = TubeShared::on(&state.likes);
-        self.model.queue = TubeShared::on(&state.queue);
-        self.model.subscriptions = TubeShared::on(&state.subscriptions);
-        self.model.comment_likes.clone_from(&state.comment_likes);
+    pub(crate) fn present_library(&mut self, state: &Library) {
+        self.model.liked = state.likes.iter().cloned().collect();
+        self.model.queue = state.queue.iter().cloned().collect();
+        self.model.subscriptions = state.subscriptions.iter().cloned().collect();
+        self.model.comment_likes = state.comment_likes.iter().cloned().collect();
         self.structure_dirty = true;
     }
 
@@ -851,7 +792,7 @@ impl TubeApp {
     /// the person's watch history.
     pub(crate) fn attach_framework(
         &mut self,
-        dispatcher: Dispatcher<Tube>,
+        dispatcher: Dispatcher<Library>,
         history: Option<PersonRecord<WatchHistory>>,
     ) {
         self.dispatcher = Some(dispatcher);
@@ -859,28 +800,10 @@ impl TubeApp {
         self.follow_history();
     }
 
-    /// `--shots` builder: start on an EMPTY Home in its loading state, so a still
-    /// captures the skeleton the real (online) app shows on a cold start before
-    /// live results land — proving the no-fake-content default reads as
-    /// "loading", not a blank page.
-    #[must_use]
-    pub fn with_loading_home_shot(mut self) -> Self {
-        self.show_loading_home();
-        self
-    }
-
     fn show_loading_home(&mut self) {
         self.model = TubeModel::default();
         self.model.feed_loading = true;
         self.model.route = Route::Home;
-    }
-
-    /// `--shots` builder for the terminal offline/empty state after a live
-    /// fetch failed. Kept distinct from the cold-start loading skeleton.
-    #[must_use]
-    pub fn with_empty_home_shot(mut self) -> Self {
-        self.show_empty_home();
-        self
     }
 
     fn show_empty_home(&mut self) {
@@ -931,16 +854,6 @@ impl TubeApp {
         self.model.route = route;
     }
 
-    /// Secret-free offscreen proof of the real device lifecycle surface. The
-    /// route is scrolled to the card so wide and narrow screenshots exercise
-    /// pending approval, active sync, revocation, and broker-key messaging.
-    #[cfg(feature = "grayjay-sync")]
-    #[must_use]
-    pub fn with_device_sync_shot(mut self) -> Self {
-        self.show_device_sync_sample();
-        self
-    }
-
     #[cfg(feature = "grayjay-sync")]
     fn show_device_sync_sample(&mut self) {
         self.model.route = Route::Settings;
@@ -949,26 +862,6 @@ impl TubeApp {
         self.scroll_cells
             .borrow_mut()
             .insert("settings".into(), Rc::new(Cell::new((0.0, f32::MAX))));
-    }
-
-    /// Test/shots hook: the first video's watch page as playback starts,
-    /// opened from Home. Without a network there is no stream to decode, so
-    /// the player shows the video's art in its place, as it does in the live
-    /// app until the first frame arrives; a hermetic capture never shows a
-    /// synthesized picture as if it were the video. (The real decode path is
-    /// captured by `with_live_frame_for_shot` under `--live-shots`.)
-    #[must_use]
-    pub fn with_playing_demo_for_test(self) -> Self {
-        let id = self
-            .model
-            .videos
-            .first()
-            .map_or_else(|| "vid_donut".to_string(), |v| v.id.clone());
-        let mut app = self.with_route_shot(Route::Watch(id.clone()));
-        app.player_video = Some(id);
-        // A video just started shows its transport, as the live player does.
-        app.player.borrow_mut().reveal_controls();
-        app
     }
 
     /// `--live-shots` hook: open the shared player on a real, directly-playable
@@ -1485,8 +1378,7 @@ impl TubeApp {
         }
     }
 
-    /// Show each notice pushed since the last frame as a toast, oldest first,
-    /// and let the toasts that have been read expire.
+    /// Show a notice pushed since the last frame as the shell's toast.
     fn show_new_notices(&mut self) {
         use std::hash::{Hash, Hasher};
         let mut identity = std::collections::hash_map::DefaultHasher::new();
@@ -1494,11 +1386,11 @@ impl TubeApp {
         let current = identity.finish();
         if current != self.toasted {
             if let Some(notice) = self.model.notices.first() {
-                self.toasts.push(notice.clone(), ToastKind::Info);
+                self.shell.toast(notice.clone(), ToastKind::Info);
+                tracing::debug!(target: "tube::share", at = ?ui::time::now(), "notice toast created");
             }
             self.toasted = current;
         }
-        self.toasts.advance(ui::time::now());
     }
 
     /// If the playhead sits inside an enabled `SponsorBlock` segment, jump the
@@ -1556,12 +1448,14 @@ impl TubeApp {
     /// Shared by the card and search-result open paths and by autoplay-next so they stay
     /// in lockstep.
     fn open_video(&mut self, id: String) {
-        let watched_at_ms = history_now_ms();
+        let watched_at_ms = ui::time::unix_now_ms();
         self.edit_history(&WatchHistory::RECORD.with((id.clone(), watched_at_ms)));
         self.navigate_to(Route::Watch(id.clone()));
         self.model.playhead = 0.0;
         self.model.playing = true;
-        self.request(Request::Branding(id.clone()));
+        // SponsorBlock, DeArrow and dislikes come from the network, so an
+        // offline window (a capture, a staged test) asks for none of them.
+        self.request_live(Request::Branding(id.clone()));
         // Fetch the uploader's real avatar + subscriber count when we only hold a
         // name stub (feed/search items don't carry the channel's avatar or subs),
         // so the watch-page channel row shows a real photo + count rather than an
@@ -1706,6 +1600,7 @@ impl TubeApp {
                 }
             }
             Action::Share(id) => {
+                tracing::debug!(target: "tube::share", video = %id, route = ?self.model.route, at = ?ui::time::now(), "share action dispatched");
                 // Share belongs to the open watch page. Refuse a stale leaf
                 // event rather than copying a link for a video no longer shown.
                 if matches!(&self.model.route, Route::Watch(current) if current == &id) {
@@ -1717,7 +1612,7 @@ impl TubeApp {
                 return false;
             }
             Action::Edit(edit) => {
-                self.edit(&edit);
+                self.edit(edit);
                 return false;
             }
             Action::Effect(effect) => {
@@ -2198,13 +2093,7 @@ impl Widget for TubeApp {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = crate::widgets::node_layout(taffy, node);
-        let rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        let rect = ui::widget::layout_rect(taffy, node, origin);
         // A new window size re-sizes the width-driven watch page.
         if rect.size() != self.rect.size() {
             self.shell_stale = true;
@@ -2235,31 +2124,6 @@ impl Widget for TubeApp {
     ) {
         self.shell
             .draw_overlay(scene, transform, text_renderer, theme, presence);
-        if !self.toasts.is_empty() {
-            self.toasts
-                .place_bottom_right(self.rect, f64::from(theme.tokens.spacing.s4));
-            self.toasts
-                .draw(scene, transform, text_renderer, theme, presence);
-        }
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        permissions: &PermissionContext,
-    ) {
-        self.shell.draw_with_presence(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
-            permissions,
-        );
     }
 
     #[allow(
@@ -2321,12 +2185,7 @@ impl Widget for TubeApp {
             _ => {}
         }
 
-        if !self.toasts.is_empty() {
-            self.toasts.handle_event(event, ctx);
-        }
-        if !*ctx.handled {
-            self.shell.handle_event(event, ctx);
-        }
+        self.shell.handle_event(event, ctx);
 
         // Esc goes back, unless a control inside used it.
         if !*ctx.handled
@@ -2390,7 +2249,6 @@ impl Widget for TubeApp {
     fn needs_redraw(&self) -> bool {
         self.structure_dirty
             || self.images_pending()
-            || !self.toasts.is_empty()
             || !self.shell_built
             || self.shell.needs_redraw()
     }
@@ -2425,10 +2283,7 @@ impl Widget for TubeApp {
             && matches!(&self.model.route, Route::Watch(id)
                 if self.playing_id.as_deref() == Some(id.as_str())
                     && self.player_video.as_deref() != Some(id.as_str()));
-        resolving
-            || self.images_pending()
-            || !self.toasts.is_empty()
-            || self.shell.needs_animation_frame()
+        resolving || self.images_pending() || self.shell.needs_animation_frame()
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -2462,15 +2317,11 @@ impl Widget for TubeApp {
             Route::Settings => "Settings".to_string(),
             Route::Search(query) => format!("Search: {query}"),
         };
-        let mut node = AccessNode::new(Role::Window)
-            .with_name(format!("Tube — {route}"))
-            .with_state(AccessState::new().busy(self.model.feed_loading));
-        if !self.toasts.is_empty()
-            && let Some(announcement) = self.toasts.accessibility()
-        {
-            node.children.push(announcement);
-        }
-        Some(node)
+        Some(
+            AccessNode::new(Role::Window)
+                .with_name(format!("Tube — {route}"))
+                .with_state(AccessState::new().busy(self.model.feed_loading)),
+        )
     }
 
     fn name(&self) -> &'static str {
@@ -2498,7 +2349,7 @@ mod tests {
     use super::*;
     use crate::model::Category;
     use automerge::{AutoCommit, ReadDoc};
-    use ui::tilo_resource::Resource;
+    use ui::tilo_resource::Resource as _;
 
     fn fresh() -> (TubeApp, AutoCommit) {
         (TubeApp::new(), AutoCommit::new())
@@ -2514,6 +2365,45 @@ mod tests {
             .borrow_mut()
             .set_engine(media::MediaEngine::new_synthesized());
         (app, doc)
+    }
+
+    #[test]
+    fn a_staged_catalogue_retires_the_live_worker_and_fetches_nothing() {
+        // A live window has spawned its fetch worker by its first frame.
+        let mut app = TubeApp::new().online();
+        app.worker = Some(Worker::spawn());
+        app.stage_model_for_test(crate::sample::model());
+        assert!(
+            app.worker.is_none(),
+            "a staged catalogue must not keep the live worker, whose late results rebuild the page"
+        );
+        app.open_video("vid_rust_async".into());
+        assert!(
+            matches!(&app.model.route, Route::Watch(id) if id == "vid_rust_async"),
+            "the staged watch page opens"
+        );
+        assert!(
+            app.worker.is_none(),
+            "an offline watch page asks the network for no SponsorBlock or DeArrow branding"
+        );
+    }
+
+    #[test]
+    fn a_fresh_share_notice_replaces_the_previous_toast() {
+        let (mut app, _doc) = fresh();
+        app.model.route = Route::Watch("vid_donut".into());
+        app.shell.toast("Previous notice", ToastKind::Info);
+        app.perform(TubeEffect::Share {
+            video: "vid_donut".into(),
+        })
+        .unwrap();
+        app.show_new_notices();
+        assert!(
+            app.shell
+                .toast_text()
+                .is_some_and(|text| text.contains("Link copied") && text.contains("vid_donut")),
+            "the fresh share notice replaces the previous one"
+        );
     }
 
     #[test]
@@ -2584,17 +2474,17 @@ mod tests {
     #[test]
     fn an_emptied_library_shows_empty() {
         let mut app = TubeApp::new();
-        let mut library = TubeShared::default();
-        library.likes.insert("vid_donut".into(), true);
-        library.queue.insert("vid_donut".into(), true);
-        library.comment_likes.insert("vid_donut#1".into(), true);
+        let mut library = Library::default();
+        library.likes.insert("vid_donut".into());
+        library.queue.insert("vid_donut".into());
+        library.comment_likes.insert("vid_donut#1".into());
         app.present_library(&library);
         assert!(app.model.is_liked("vid_donut") && app.model.is_queued("vid_donut"));
-        assert_eq!(app.model.comment_likes.get("vid_donut#1"), Some(&true));
+        assert!(app.model.comment_likes.contains("vid_donut#1"));
 
         // A collaborator unliked and unqueued everything.
-        library.likes.insert("vid_donut".into(), false);
-        library.queue.insert("vid_donut".into(), false);
+        library.likes.remove(&"vid_donut".into());
+        library.queue.remove(&"vid_donut".into());
         app.present_library(&library);
         assert!(app.model.liked.is_empty(), "an emptied library is shown");
         assert!(app.model.queue.is_empty());
@@ -2907,9 +2797,13 @@ mod tests {
             );
             assert!(app.model.playhead >= 1570.0, "Skip jumps past the segment");
             app.show_new_notices();
-            assert_eq!(app.toasts.len(), 1, "the skip is confirmed by one toast");
+            assert!(
+                app.shell.toast_text().is_some(),
+                "the skip is confirmed by a toast"
+            );
+            app.shell.dismiss_toast();
             app.show_new_notices();
-            assert_eq!(app.toasts.len(), 1, "a notice is toasted once");
+            assert!(app.shell.toast_text().is_none(), "a notice is toasted once");
             let _ = app.build_screen(&theme);
             assert!(
                 app.player.borrow().setting(screens::SKIP_SETTING).is_none(),
@@ -2968,16 +2862,13 @@ mod tests {
             let (mut app, mut doc) = fresh();
             app.model.route = Route::Watch("vid_donut".into());
             app.model.playhead = 42.0;
-            ui::framework::testing::dispatcher::<crate::resource::Tube>("tube.application")
-                .apply_now(
+            ui::framework::testing::dispatcher::<Library>("tube.library")
+                .submit_now(
                     &mut ui::widget::Edits::lend(&mut doc),
-                    &crate::actions::TubeAction::SetVideoLiked {
-                        video_id: "vid_donut".into(),
-                        liked: true,
-                    },
+                    Library::like("vid_donut", true),
                 )
                 .expect("structured library action applies");
-            app.present_library(&crate::resource::Tube::read(&doc).unwrap());
+            app.present_library(&Library::read(&doc).unwrap());
             Widget::sync(&mut app, &doc, &automerge::ROOT);
             assert!(app.model.liked.iter().any(|id| id == "vid_donut"));
             assert!(

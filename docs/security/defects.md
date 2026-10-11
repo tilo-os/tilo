@@ -1,8 +1,9 @@
 # Security & identity defects — as-built audit, 2026-07-30
 
 Findings from a four-way survey of the boot chain, identity/key management, threat-model
-documentation, and the cryptographic-roles implementation. This file records **defects in the
-code as it stands today**. The forward-looking design lives in
+documentation, and the cryptographic-roles implementation. This file preserves **defects
+observed at the original audit snapshot**; later status notes distinguish repaired source
+from still-open validation. The forward-looking design lives in
 `docs/security/architecture.md` and deliberately does not
 reference any of this.
 
@@ -42,7 +43,7 @@ the ceremony persists that seed, and `IdentityRecord::into_threshold_identity` r
 whose secret does not derive its recorded public key. The mismatch is fatal in `runtime-identity`
 in every build profile. Firstboot now goes through the same encoder, so there is one writer of
 the format. Held by
-`crates/sdk/ui-core/src/widget/identity_flow/mod.rs::tests::identity_record_serialization_and_signing_round_trips`
+`crates/collab/tilo-identity-ceremony/src/lib.rs::tests::identity_record_serialization_and_signing_round_trips`
 (phase `ceremony_minted_record_signs_for_its_own_recorded_public_key`)
 and
 `crates/runtime/runtime-identity/src/unix.rs::tests::a_local_secret_must_derive_the_recorded_key_to_sign`
@@ -72,6 +73,25 @@ Any peer that can reach the endpoint and speak the ALPN can read and rewrite the
 
 **Fix direction:** the responder must resolve the connecting node to an identity and evaluate the
 ACL per-connection. Depends on a real, persistent device identity existing first.
+
+**Resolved in source; runtime qualification separate.** At
+[Tilo `260d8c7d3f`](https://code.tilo.so/tilo/tilo/commit/260d8c7d3f7133c36bf8a7d97a87fb264c286926),
+[`SyncProtocol::accept`](../../crates/system/fs/src/sync.rs) calls
+`authenticate_connection` before request dispatch. `serve_request` refuses a different
+workspace and requires whole-workspace read authority for a document or write authority
+for sync. `accept_namespace_payload` checks authority and the workspace/device signature
+before applying bytes; sync rounds recheck the live write authority. The historical
+unauthenticated replication description above is not a current-source vulnerability claim.
+
+Existing regression sources are
+[`peer_auth::tests`](../../crates/system/fs/src/peer_auth/tests.rs)::
+`peer_auth_rejects_tampered_expired_future_or_revoked_certificates` and
+[`sync::tests`](../../crates/system/fs/src/sync/tests.rs)::
+`namespace_documents_reach_only_entitled_peers_and_readers_cannot_author`,
+`a_host_refuses_a_namespace_request_for_another_workspace`, and
+`a_sync_message_of_another_workspace_is_refused_and_nothing_merges`.
+These names and guards were checked against source for the documentation correction;
+no tests or installed/deployed acceptance were run by that check.
 
 ---
 

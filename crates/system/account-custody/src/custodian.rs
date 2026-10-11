@@ -442,12 +442,28 @@ impl Custodian {
         oauth_use: OAuthUse,
         force: bool,
     ) -> Result<Zeroizing<String>, CustodyError> {
+        self.oauth_access_token_with_expiry(id, oauth_use, force)
+            .map(|(token, _)| token)
+    }
+
+    /// Return the same approved bearer with its provider-confirmed expiry.
+    /// Refresh and revocation checks remain owned by the custodian.
+    ///
+    /// # Errors
+    /// See [`Self::oauth_access_token`].
+    pub fn oauth_access_token_with_expiry(
+        &self,
+        id: &AccountId,
+        oauth_use: OAuthUse,
+        force: bool,
+    ) -> Result<(Zeroizing<String>, Option<u64>), CustodyError> {
         let mut vault = self.vault();
         if let Some(error) = vault.recovery_error() {
             return Err(CustodyError::Storage(error.to_string()));
         }
         let tokens = self.fresh_oauth_tokens(&mut vault, id, oauth_use, force)?;
-        Ok(Zeroizing::new(tokens.access_token))
+        let expires = tokens.expires_at();
+        Ok((Zeroizing::new(tokens.access_token), expires))
     }
 
     /// `id`'s sealed `OAuth` tokens, refreshed when due (or `force`), with

@@ -23,8 +23,8 @@ use ui::tilo_actions::remote::{
     ReceiptStatus,
 };
 use ui::tilo_actions::{
-    ActionAddress, ActionContract, ActionDescriptor, ActionOutput, ActionParam, ExecutionLocus,
-    InputSpec, InvocationId, OperationKind, ParamType, PermissionRequirement, ResultSpec,
+    ActionAddress, ActionContract, ActionDescriptor, ActionKind, ActionOutput, ActionParam,
+    ExecutionLocus, InputSpec, InvocationId, OperationKind, ParamType, ResultSpec,
 };
 use ui::{RemoteActions, RemoteActionsGuard};
 
@@ -38,7 +38,7 @@ fn row(
     kind: &str,
     action: &str,
     params: Vec<ActionParam>,
-    permission: PermissionRequirement,
+    permission: ActionKind,
     result: ResultSpec,
 ) -> CatalogueRow {
     CatalogueRow {
@@ -61,7 +61,7 @@ fn row(
             locus: ExecutionLocus::default(),
             kind: OperationKind::Document,
             contract: ActionContract {
-                permission,
+                kind: permission,
                 result,
                 ..ActionContract::default()
             },
@@ -94,7 +94,7 @@ impl FakeHost {
                 "shortcuts.library",
                 action,
                 params,
-                PermissionRequirement::Write,
+                ActionKind::Undoable,
                 ResultSpec::None,
             )
         };
@@ -114,7 +114,7 @@ impl FakeHost {
                     "notes.folder",
                     "list",
                     Vec::new(),
-                    PermissionRequirement::Read,
+                    ActionKind::Read,
                     ResultSpec::Json {
                         schema: json!({
                             "type": "object",
@@ -133,7 +133,7 @@ impl FakeHost {
                         ActionParam::required("title", ParamType::Text, "Title"),
                         ActionParam::required("pinned", ParamType::Boolean, "Pin it"),
                     ],
-                    PermissionRequirement::Write,
+                    ActionKind::Undoable,
                     ResultSpec::None,
                 ),
                 library("list", Vec::new()),
@@ -196,13 +196,13 @@ impl ActionHost for FakeHost {
             "freeform" => Some(json!({
                 "name": "Note the inbox",
                 "steps": [
-                    {"id": "list", "step": "invoke", "app_id": NOTES,
-                     "resource": {"fixed": INBOX}, "action": "list"},
-                    {"id": "note", "step": "invoke", "app_id": NOTES,
-                     "resource": {"fixed": INBOX}, "action": "create",
+                    {"id": "list", "step": "invoke", "action": {"app": NOTES, "kind": "notes.folder", "action": "list"},
+                     "resource": {"fixed": INBOX}},
+                    {"id": "note", "step": "invoke", "action": {"app": NOTES, "kind": "notes.folder", "action": "create"},
+                     "resource": {"fixed": INBOX},
                      "args": {"title": {"literal": "Inbox"}, "pinned": {"literal": false}}}
                 ],
-                "grant": [{"scope": "Any", "effect": "Grant", "verb": "Admin"}]
+                "grant": [{"node": "**", "kinds": ["read", "undoable", "outside"], "answer": "allow"}]
             })),
             _ => None,
         };
@@ -228,14 +228,17 @@ impl ActionHost for FakeHost {
     }
 }
 
-fn rule(action: &str, verb: collab_types::Verb) -> Value {
-    serde_json::to_value(collab_types::PermissionProfileRule::grant(
-        collab_types::Scope::Action {
-            app: NOTES.into(),
+fn rule(action: &str, kind: tilo_action_policy::ActionKind) -> Value {
+    serde_json::to_value(
+        shortcuts::grant::Permission {
+            app_id: NOTES.into(),
+            reach: shortcuts::grant::Reach::Resource(INBOX.into()),
             action: action.into(),
-        },
-        verb,
-    ))
+            kind,
+            label: String::new(),
+        }
+        .rule(),
+    )
     .unwrap()
 }
 
@@ -297,8 +300,10 @@ fn every_operation_is_a_published_action() {
         .expect("the drafts are a published resource");
     for action in [
         "new-draft",
+        "draft-shortcut",
+        "set-schedule",
         "add-step",
-        "set-argument",
+        "bind-argument",
         "remove-step",
         "move-step",
     ] {
@@ -327,7 +332,7 @@ fn every_operation_is_a_published_action() {
 #[test]
 fn add_steps_bind_them_validate_and_save_through_the_door() {
     let (host, _guard, mut app) = open();
-    app.invoke(Workbench::NEW_DRAFT.with("Tidy".into()))
+    app.invoke(Workbench::NEW_DRAFT.with("Tidy"))
         .expect("a new draft");
     let shortcut_id = app
         .state()
@@ -409,19 +414,18 @@ fn add_steps_bind_them_validate_and_save_through_the_door() {
             "id": shortcut_id,
             "name": "Tidy",
             "inputs": [{
-                "name": "who", "ty": "text", "required": true, "description": "who",
-                "nullable": false
+                "name": "who", "ty": "text", "required": true, "description": "who"
             }],
             "steps": [
-                {"id": "list", "step": "invoke", "app_id": NOTES,
-                 "resource": {"fixed": INBOX}, "action": "list"},
-                {"id": "create", "step": "invoke", "app_id": NOTES,
-                 "resource": {"fixed": INBOX}, "action": "create",
+                {"id": "list", "step": "invoke", "action": {"app": NOTES, "kind": "notes.folder", "action": "list"},
+                 "resource": {"fixed": INBOX}},
+                {"id": "create", "step": "invoke", "action": {"app": NOTES, "kind": "notes.folder", "action": "create"},
+                 "resource": {"fixed": INBOX},
                  "args": {"pinned": {"literal": true}, "title": {"input": "who"}}}
             ],
             "grant": [
-                rule("list", collab_types::Verb::Read),
-                rule("create", collab_types::Verb::Write),
+                rule("list", tilo_action_policy::ActionKind::Read),
+                rule("create", tilo_action_policy::ActionKind::Undoable),
             ]
         }})
     );
@@ -441,7 +445,7 @@ fn with_agent() -> FakeHost {
             ActionParam::required("input", ParamType::Text, "Input"),
             ActionParam::required("schema", ParamType::Object, "Schema"),
         ],
-        PermissionRequirement::Write,
+        ActionKind::Undoable,
         ResultSpec::Json { schema: json!({}) },
     ));
     host
@@ -528,7 +532,7 @@ fn with_saved_note() -> FakeHost {
         "shortcuts.shortcut",
         tilo_automation::SHORTCUT_RUN_ACTION,
         Vec::new(),
-        PermissionRequirement::Write,
+        ActionKind::Undoable,
         ResultSpec::None,
     ));
     host.saved.push(json!({
@@ -539,8 +543,8 @@ fn with_saved_note() -> FakeHost {
             "description": "Note title", "nullable": false
         }],
         "steps": [
-            {"id": "create", "step": "invoke", "app_id": NOTES,
-             "resource": {"fixed": INBOX}, "action": "create",
+            {"id": "create", "step": "invoke", "action": {"app": NOTES, "kind": "notes.folder", "action": "create"},
+             "resource": {"fixed": INBOX},
              "args": {"title": {"input": "title"}, "pinned": {"literal": false}}}
         ]
     }));
@@ -595,4 +599,156 @@ fn a_saved_shortcut_opens_its_page_runs_with_its_inputs_and_a_run_leads_back() {
     app.harness()
         .wait_for_named("run-quick-note", tilo_test_env::hang_bound())
         .expect("the run opens the shortcut it started");
+}
+
+#[test]
+fn morning_refresh_draft_requires_schedule_choice_and_keyboard_save_review() {
+    let mut fixture = FakeHost::new();
+    let mut refresh = row(
+        "weather",
+        "so.tilo.weather",
+        "weather.location:fixture",
+        "weather.location",
+        "refresh",
+        Vec::new(),
+        ActionKind::Read,
+        ResultSpec::Job,
+    );
+    refresh.resource.label = "Chosen weather".into();
+    refresh.action.as_mut().unwrap().kind = OperationKind::Effect;
+    refresh.action.as_mut().unwrap().resource_label = "Chosen weather".into();
+    fixture.rows.push(refresh);
+    let (host, _guard, mut app) = open_with(fixture);
+    app.invoke(Workbench::DRAFT_SHORTCUT.with(json!({
+        "id": "fixture-refresh", "name": "Refresh chosen weather", "steps": [{"id": "refresh", "step": "invoke", "action": {"app": "so.tilo.weather", "kind": "weather.location", "action": "refresh"}, "resource": {"fixed": "weather.location:fixture"}}]
+    }))).unwrap();
+    act(&mut app, "schedule-enabled", &Action::Focus);
+    assert!(host.library_calls("create").is_empty());
+    assert!(
+        app.state()
+            .drafts
+            .values()
+            .next()
+            .unwrap()
+            .program()
+            .triggers
+            .is_empty()
+    );
+    act(&mut app, "schedule-enabled", &Action::ToggleCheck);
+    act(&mut app, "schedule-hour", &Action::SetValue("09".into()));
+    act(&mut app, "schedule-minute", &Action::SetValue("15".into()));
+    let program = app.state().drafts.values().next().unwrap().program();
+    assert_eq!(
+        program.triggers,
+        vec![tilo_automation::TriggerSpec::Schedule {
+            schedule: tilo_automation::Schedule::Calendar {
+                at: tilo_automation::TimeOfDay {
+                    hour: 9,
+                    minute: 15
+                },
+                weekdays: Vec::new()
+            },
+            catch_up: tilo_automation::CatchUp::RunOnce
+        }]
+    );
+    assert!(
+        host.library_calls("create").is_empty(),
+        "schedule choice edits only the draft"
+    );
+    let output = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/morning-refresh-renders");
+    std::fs::create_dir_all(&output).unwrap();
+    render_morning_matrix(&mut app, &output, "draft");
+    app.harness().set_theme(ui::Theme::light());
+    app.harness().resize((1600, 1000)).unwrap();
+    act(&mut app, "review-save", &Action::Activate);
+    app.harness()
+        .expect(
+            &SemanticExpectation::named("schedule-review-0")
+                .name(ui::i18n::I18nManager::format(
+                    "shortcuts-schedule-review",
+                    &[("time", ui::i18n::ArgValue::from("09:15"))],
+                ))
+                .within(tilo_test_env::hang_bound()),
+        )
+        .expect("the actual save review must disclose the chosen schedule");
+    render_morning_matrix(&mut app, &output, "review");
+    app.harness().set_theme(ui::Theme::light());
+    app.harness().resize((1600, 1000)).unwrap();
+    act(&mut app, "shortcuts-save-sheet.primary", &Action::Focus);
+    app.harness().key("Enter");
+    let saved = host.library_calls("create");
+    assert_eq!(saved.len(), 1);
+    let saved: tilo_automation::Shortcut =
+        serde_json::from_value(saved[0]["shortcut"].clone()).unwrap();
+    assert_eq!(saved.triggers, program.triggers);
+    assert_eq!(
+        saved.grant,
+        vec![
+            shortcuts::grant::Permission {
+                app_id: "so.tilo.weather".into(),
+                reach: shortcuts::grant::Reach::Resource("weather.location:fixture".into()),
+                action: "refresh".into(),
+                kind: ActionKind::Read,
+                label: String::new(),
+            }
+            .rule()
+        ]
+    );
+}
+
+fn render_morning_matrix(app: &mut TestApp<App>, output: &std::path::Path, page: &str) {
+    for (name, theme) in [
+        ("light", ui::Theme::light()),
+        ("dark", ui::Theme::dark()),
+        ("hc200", ui::Theme::high_contrast().with_text_scale(2.0)),
+    ] {
+        for (size, width, height) in [("normal", 1600, 1000), ("compact", 640, 900)] {
+            app.harness().set_theme(theme.clone());
+            app.harness().resize((width, height)).unwrap();
+            app.harness()
+                .render_png(&output.join(format!("{name}-{size}-{page}.png")));
+            if page == "review" {
+                let snapshot = app.harness().inspection();
+                let paragraph = inspection_node(&snapshot.root, "shortcuts-grant-explain")
+                    .or_else(|| {
+                        snapshot
+                            .presentation
+                            .as_ref()
+                            .and_then(|root| inspection_node(root, "shortcuts-grant-explain"))
+                    })
+                    .expect("the painted save review must expose its full explanation");
+                let body_width = ui::widget::modal_dialog::body_width(
+                    ui::kurbo::Rect::new(0.0, 0.0, f64::from(width), f64::from(height)),
+                    560.0,
+                    &theme,
+                );
+                assert!(
+                    paragraph.rect[2] <= body_width + 1.0,
+                    "{name}/{size}: explanation paints beyond the review body: {:?}, body width {body_width}",
+                    paragraph.rect,
+                );
+                assert_eq!(
+                    paragraph
+                        .semantics
+                        .as_ref()
+                        .and_then(|node| node.name.as_deref()),
+                    Some(ui::i18n!("shortcuts-grant-explain").as_str()),
+                    "wrapping must retain the complete accessible explanation",
+                );
+            }
+        }
+    }
+}
+
+fn inspection_node<'a>(
+    node: &'a ui::headless::InspectionNode,
+    id: &str,
+) -> Option<&'a ui::headless::InspectionNode> {
+    if node.test_id.as_deref() == Some(id) {
+        return Some(node);
+    }
+    node.children
+        .iter()
+        .find_map(|child| inspection_node(child, id))
 }

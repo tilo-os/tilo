@@ -101,13 +101,73 @@ pub enum Response {
     },
 }
 
+/// The sink and source writes behind the volume, mute and mic-mute keys.
+///
+/// The session's implementation queues them on a thread of their own
+/// (`audio_writer::AudioWriter`): `wpctl` can block on `PipeWire` for
+/// seconds, and these keys are pressed on the compositor thread.
+pub trait AudioControl {
+    /// Set the default sink to `pct` percent.
+    ///
+    /// # Errors
+    ///
+    /// The daemon's error, where the write is not merely queued.
+    fn set_volume(&self, pct: f32) -> Result<(), String>;
+    /// Set the default sink's mute flag.
+    ///
+    /// # Errors
+    ///
+    /// The daemon's error, where the write is not merely queued.
+    fn set_mute(&self, muted: bool) -> Result<(), String>;
+    /// Flip the default sink's mute flag.
+    ///
+    /// # Errors
+    ///
+    /// The daemon's error, where the write is not merely queued.
+    fn toggle_mute(&self) -> Result<(), String>;
+    /// Flip the default source's mute flag. Its readout is raised through
+    /// `readout` once the resulting state is known.
+    ///
+    /// # Errors
+    ///
+    /// When this control cannot reach the microphone at all.
+    fn toggle_source_mute(
+        &self,
+        _readout: &crate::session_runtime::Delivery<Osd>,
+    ) -> Result<(), String> {
+        Err("no microphone control".into())
+    }
+}
+
+/// Audio writes made synchronously through a Quick Settings dispatcher,
+/// as the volume slider makes them.
+pub struct DispatcherAudio<'a>(pub &'a dyn QsActions);
+
+impl AudioControl for DispatcherAudio<'_> {
+    fn set_volume(&self, pct: f32) -> Result<(), String> {
+        self.0.set_volume(pct)
+    }
+
+    fn set_mute(&self, muted: bool) -> Result<(), String> {
+        self.0.set_mute(muted)
+    }
+
+    fn toggle_mute(&self) -> Result<(), String> {
+        self.0.toggle_mute()
+    }
+}
+
 /// Everything [`apply`] may read or drive.
 pub struct Context<'a> {
     pub actions: &'a dyn QsActions,
-    /// When running, read for the current level (rather than shelling out
-    /// again) and written back so the tray indicator moves the same frame.
+    /// Volume, mute and mic-mute writes.
+    pub audio: &'a dyn AudioControl,
+    /// Read for the current level and written back so the tray indicator
+    /// moves the same frame. Without a reading the volume keys do nothing:
+    /// asking the daemon here would stall the compositor thread.
     pub status: Option<&'a StatusBridge>,
-    /// Where a media player's late answer to a transport key is raised.
+    /// Where a late readout is raised: a media player's answer to a
+    /// transport key, or the microphone's state after the mic-mute key.
     pub transport_osd: &'a crate::session_runtime::Delivery<Osd>,
     /// Airplane mode as Quick Settings last showed it; the wireless key
     /// flips exactly what the Quick Settings toggle would.
@@ -193,10 +253,10 @@ fn classify_keysym(raw: u32) -> Option<MediaKey> {
 pub fn apply(key: MediaKey, cx: &Context<'_>) -> Option<Response> {
     use crate::shell::mpris::Command;
     let osd = match key {
-        MediaKey::VolumeUp => step_volume(VOLUME_STEP, cx.actions, cx.status),
-        MediaKey::VolumeDown => step_volume(-VOLUME_STEP, cx.actions, cx.status),
-        MediaKey::VolumeMute => toggle_mute(cx.actions, cx.status),
-        MediaKey::MicMute => toggle_mic_mute(),
+        MediaKey::VolumeUp => step_volume(VOLUME_STEP, cx.audio, cx.status),
+        MediaKey::VolumeDown => step_volume(-VOLUME_STEP, cx.audio, cx.status),
+        MediaKey::VolumeMute => toggle_mute(cx.audio, cx.status),
+        MediaKey::MicMute => toggle_mic_mute(cx.audio, cx.transport_osd),
         MediaKey::BrightnessUp => step_brightness(BRIGHTNESS_STEP, cx.actions, &cx.brightness),
         MediaKey::BrightnessDown => step_brightness(-BRIGHTNESS_STEP, cx.actions, &cx.brightness),
         MediaKey::PlayPause => transport(Command::PlayPause, cx.transport_osd),
@@ -220,40 +280,63 @@ pub fn apply(key: MediaKey, cx: &Context<'_>) -> Option<Response> {
     osd.map(Response::Osd)
 }
 
-/// Current sink level + mute, preferring the poller's reading and
-/// falling back to asking the daemon directly.
+/// Current sink level + mute, as the status poller last read it. Never the
+/// daemon itself: the keys run on the compositor thread, and a key pressed
+/// before the first reading shows nothing rather than freeze the desktop.
 fn current_volume(status: Option<&StatusBridge>) -> Option<os_actions::VolumeState> {
-    if let Some(v) = status.and_then(|s| s.snapshot().volume) {
-        return Some(v);
-    }
-    os_actions::get_volume_state().ok()
+    status.and_then(|s| s.snapshot().volume)
 }
 
-fn step_volume(delta: f32, actions: &dyn QsActions, status: Option<&StatusBridge>) -> Option<Osd> {
+fn step_volume(delta: f32, audio: &dyn AudioControl, status: Option<&StatusBridge>) -> Option<Osd> {
     let now = current_volume(status)?;
     let next = (now.level + delta).clamp(0.0, 1.0);
-    actions.set_volume(next * 100.0).ok()?;
-    // Nudging the volume un-mutes: reaching for volume-up on a muted sink
-    // means "let me hear it".
-    let muted = if now.muted && delta > 0.0 {
-        actions.set_mute(false).ok()?;
-        false
-    } else {
-        now.muted
-    };
-    let published = os_actions::VolumeState { level: next, muted };
-    if let Some(s) = status {
-        s.set_volume(published);
-    }
-    Some(Osd::volume(next, muted))
+    commit_volume(audio, status, Some(now), next)
+        .ok()
+        .map(|(_, osd)| osd)
 }
 
-fn toggle_mute(actions: &dyn QsActions, status: Option<&StatusBridge>) -> Option<Osd> {
-    // Read before actuating. When the status poller has not produced its
-    // first sample yet, `current_volume` falls back to `wpctl`; reading after
-    // the toggle would observe the new state and invert it a second time.
+/// Set the default sink to `level` (`0.0..=1.0`) — the one path behind the
+/// volume keys and the Quick Settings slider, so both answer the same
+/// change with the same sink state, tray reading and readout.
+///
+/// `previous` is the state the change starts from. A change that does not
+/// turn the level down, and leaves it audible, un-mutes: reaching for more
+/// volume on a muted sink means "let me hear it", while turning down is not
+/// a request to hear anything. The tray is updated only from a known
+/// previous state and only once every write succeeded, so a failure never
+/// publishes a state the sink is not in.
+///
+/// # Errors
+///
+/// The daemon's error when setting the level or un-muting failed.
+pub(crate) fn commit_volume(
+    audio: &dyn AudioControl,
+    status: Option<&StatusBridge>,
+    previous: Option<os_actions::VolumeState>,
+    level: f32,
+) -> Result<(os_actions::VolumeState, Osd), String> {
+    let level = level.clamp(0.0, 1.0);
+    audio.set_volume(level * 100.0)?;
+    let was_muted = previous.is_some_and(|now| now.muted);
+    let unmute = previous.is_some_and(|now| level > 0.0 && level >= now.level);
+    if was_muted && unmute {
+        audio.set_mute(false)?;
+    }
+    let committed = os_actions::VolumeState {
+        level,
+        muted: was_muted && !unmute,
+    };
+    if let (Some(status), Some(_)) = (status, previous) {
+        status.set_volume(committed);
+    }
+    Ok((committed, Osd::volume(level, committed.muted)))
+}
+
+fn toggle_mute(audio: &dyn AudioControl, status: Option<&StatusBridge>) -> Option<Osd> {
+    // Read before actuating: a reading taken after the toggle could observe
+    // the new state and invert it a second time.
     let now = current_volume(status)?;
-    actions.toggle_mute().ok()?;
+    audio.toggle_mute().ok()?;
     // `wpctl set-mute toggle` reports nothing, so assume the inverse of
     // what we last knew rather than pay a second subprocess.
     let level = now.level;
@@ -264,9 +347,17 @@ fn toggle_mute(actions: &dyn QsActions, status: Option<&StatusBridge>) -> Option
     Some(Osd::volume(level, muted))
 }
 
-fn toggle_mic_mute() -> Option<Osd> {
-    let muted = os_actions::toggle_source_mute().ok()?;
-    Some(Osd::mic_mute(muted))
+/// The microphone's state is not polled, so its readout arrives once the
+/// flip has happened and reported where it ended: `None` now, the slab
+/// through `readout` a moment later.
+fn toggle_mic_mute(
+    audio: &dyn AudioControl,
+    readout: &crate::session_runtime::Delivery<Osd>,
+) -> Option<Osd> {
+    if let Err(error) = audio.toggle_source_mute(readout) {
+        tracing::warn!(target: "tilo::os_actions", %error, "mic mute key unavailable");
+    }
+    None
 }
 
 fn step_brightness(delta: f32, actions: &dyn QsActions, keys: &BrightnessKeys<'_>) -> Option<Osd> {
@@ -324,41 +415,36 @@ fn toggle_airplane_mode(on: bool, actions: &dyn QsActions) -> Option<Osd> {
 
 /// Flip the touchpad preference in the session's settings. The compositor
 /// owns libinput and applies the change on its next settings poll, the
-/// same path a Settings-pane toggle takes.
+/// same path a Settings-pane toggle takes. The flip reads and writes under
+/// the settings lock, so two quick presses flip twice.
 fn toggle_touchpad() -> Option<Osd> {
-    use settings_store::hardware::TOUCHPAD_ENABLED_KEY;
-    let enabled = settings_store::load_section("input")
-        .get(TOUCHPAD_ENABLED_KEY)
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(true);
-    let next = !enabled;
-    let mut values = serde_json::Map::new();
-    values.insert(TOUCHPAD_ENABLED_KEY.into(), serde_json::Value::Bool(next));
-    if let Err(error) = settings_store::update_section("input", values) {
-        tracing::warn!(%error, "touchpad toggle could not be saved");
-        return None;
+    let origin = settings_store::ChangeOrigin::local(TOUCHPAD_TOGGLE_ORIGIN);
+    match settings_store::hardware::TOUCHPAD_ENABLED.update_by(&origin, |enabled| !enabled) {
+        Ok(next) => Some(Osd::touchpad(next)),
+        Err(error) => {
+            tracing::warn!(%error, "touchpad toggle could not be saved");
+            None
+        }
     }
-    Some(Osd::touchpad(next))
 }
+
+/// The change origin the touchpad-toggle hardware key records.
+const TOUCHPAD_TOGGLE_ORIGIN: &str = "media-key.touchpad-toggle";
+/// The change origin the mouse-keys chord records: its fixed-chord id.
+const MOUSE_KEYS_ORIGIN: &str = "fixed-toggle-mouse-keys";
 
 /// Flip mouse keys in the session's settings, for the Shift+Alt+Num Lock
 /// chord. Like the touchpad key, the compositor picks the change up on its
 /// next settings poll, the path a Settings-pane toggle takes.
 pub fn toggle_mouse_keys() -> Option<Osd> {
-    const SECTION: &str = "accessibility";
-    const KEY: &str = "mouse_keys";
-    let enabled = settings_store::load_section(SECTION)
-        .get(KEY)
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false);
-    let next = !enabled;
-    let mut values = serde_json::Map::new();
-    values.insert(KEY.into(), serde_json::Value::Bool(next));
-    if let Err(error) = settings_store::update_section(SECTION, values) {
-        tracing::warn!(%error, "mouse keys toggle could not be saved");
-        return None;
+    let origin = settings_store::ChangeOrigin::local(MOUSE_KEYS_ORIGIN);
+    match settings_store::hardware::MOUSE_KEYS.update_by(&origin, |enabled| !enabled) {
+        Ok(next) => Some(Osd::mouse_keys(next)),
+        Err(error) => {
+            tracing::warn!(%error, "mouse keys toggle could not be saved");
+            None
+        }
     }
-    Some(Osd::mouse_keys(next))
 }
 
 fn transport(
@@ -396,7 +482,7 @@ mod tests {
     /// `apply` for the keys these tests press, which never reach a player.
     fn apply_local(
         key: MediaKey,
-        actions: &dyn QsActions,
+        actions: &Recorder,
         status: Option<&StatusBridge>,
     ) -> Option<Osd> {
         match respond(key, actions, status, false) {
@@ -408,7 +494,7 @@ mod tests {
 
     fn respond(
         key: MediaKey,
-        actions: &dyn QsActions,
+        actions: &Recorder,
         status: Option<&StatusBridge>,
         airplane_mode: bool,
     ) -> Option<Response> {
@@ -417,6 +503,7 @@ mod tests {
             key,
             &Context {
                 actions,
+                audio: &DispatcherAudio(actions),
                 status,
                 transport_osd: &transport_osd,
                 airplane_mode,
@@ -546,8 +633,6 @@ mod tests {
         every_machine_key_is_classified();
     }
 
-    /// Build a `KeyboardInput` event for `key` via the zeroed-struct
-    /// workaround (winit's `KeyEvent` has a private `platform_specific` field).
     fn press(key: Key) -> WindowEvent {
         key_event(key, ElementState::Pressed)
     }
@@ -557,23 +642,7 @@ mod tests {
     }
 
     fn key_event(key: Key, state: ElementState) -> WindowEvent {
-        // SAFETY: every public field is overwritten below, and the one
-        // private field tolerates an all-zero bit pattern — the same
-        // invariant `native::keyboard_input_event` relies on.
-        let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = key;
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = state;
-        ev.repeat = false;
-        ev.text = None;
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        }
+        ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(key, None, state))
     }
 
     /// Recording dispatcher: captures the actuation without touching the
@@ -690,6 +759,7 @@ mod tests {
                 key,
                 &Context {
                     actions: &rec,
+                    audio: &DispatcherAudio(&rec),
                     status: None,
                     transport_osd: &transport_osd,
                     airplane_mode: false,
@@ -821,6 +891,23 @@ mod tests {
             );
             let off = toggle_mouse_keys().expect("saved");
             assert_eq!(off.caption(), "Mouse keys off");
+            let log = std::fs::read_to_string(paths.change_log()).expect("change log");
+            let entries: Vec<serde_json::Value> = log
+                .lines()
+                .map(|line| serde_json::from_str(line).expect("one JSON entry per line"))
+                .collect();
+            assert_eq!(entries.len(), 2, "one entry per flip: {entries:?}");
+            for (entry, after) in entries.iter().zip([true, false]) {
+                assert_eq!(entry["section"], "accessibility");
+                assert_eq!(entry["leaf"], "mouse_keys");
+                assert_eq!(entry["after"], after);
+                assert_eq!(entry["action"], MOUSE_KEYS_ORIGIN, "the chord is named");
+                assert_eq!(
+                    entry["principal"],
+                    settings_store::ChangeOrigin::LOCAL_USER,
+                    "pressed at this device's keyboard"
+                );
+            }
         });
     }
 
@@ -967,5 +1054,68 @@ mod tests {
         the_mute_key_flips_the_state_and_says_so();
         mute_uses_the_state_from_before_actuation();
         a_machine_with_no_audio_daemon_shows_no_readout();
+    }
+
+    /// An audio control that counts every write it is asked for.
+    #[derive(Default)]
+    struct Untouchable {
+        writes: Cell<usize>,
+    }
+
+    impl Untouchable {
+        fn refuse(&self) -> Result<(), String> {
+            self.writes.set(self.writes.get().saturating_add(1));
+            Err("no write without a known starting level".into())
+        }
+    }
+
+    impl AudioControl for Untouchable {
+        fn set_volume(&self, _: f32) -> Result<(), String> {
+            self.refuse()
+        }
+        fn set_mute(&self, _: bool) -> Result<(), String> {
+            self.refuse()
+        }
+        fn toggle_mute(&self) -> Result<(), String> {
+            self.refuse()
+        }
+    }
+
+    #[test]
+    fn volume_key_without_snapshot_does_not_query_daemon() {
+        let rec = Recorder::default();
+        let audio = Untouchable::default();
+        let unread = StatusBridge::new();
+        let (transport_osd, _mailbox) = crate::session_runtime::mailbox(std::sync::Arc::new(|| {}));
+        for key in [
+            MediaKey::VolumeUp,
+            MediaKey::VolumeDown,
+            MediaKey::VolumeMute,
+        ] {
+            for status in [None, Some(&unread)] {
+                let response = apply(
+                    key,
+                    &Context {
+                        actions: &rec,
+                        audio: &audio,
+                        status,
+                        transport_osd: &transport_osd,
+                        airplane_mode: false,
+                        brightness: BrightnessKeys::default(),
+                    },
+                );
+                assert_eq!(
+                    response, None,
+                    "{key:?} with no reading shows nothing and asks nobody"
+                );
+            }
+        }
+        assert!(rec.calls.borrow().is_empty());
+        assert_eq!(audio.writes.get(), 0, "no write is even attempted");
+        assert_eq!(
+            unread.snapshot().volume,
+            None,
+            "nothing is invented for the tray"
+        );
     }
 }

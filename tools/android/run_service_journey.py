@@ -27,6 +27,8 @@ def main():
     for name in ('apk', 'signer', 'runtime-receipt'):
         parser.add_argument('--' + name + '-sha256', required=True)
     parser.add_argument('--expect-incompatibility', action='store_true')
+    parser.add_argument('--queued-starts', action='store_true',
+        help='exercise QueuedServiceActivity on the unchanged signed APK')
     args = parser.parse_args()
     native_architecture(args.architecture)
     output = checked_output(args.output)
@@ -73,13 +75,25 @@ def main():
                     frames.append(journey.launch())
                     def completed():
                         path = private_file(room, 'services.txt')
-                        if path and path.read_text().count('current-stop=') == number:
+                        marker = 'journey-complete' if args.queued_starts else 'current-stop='
+                        if path and path.read_text().count(marker) == number:
                             return path
                         return None
                     path = wait_for(completed, 'actual Android service stop results')
                     text = path.read_text()
                     current = text.split('activity-create=')[-1].splitlines()
-                    if args.expect_incompatibility:
+                    if args.queued_starts:
+                        expected = [str(number), 'camera-denied=true',
+                            'queued-stop=' + ('false' if args.expect_incompatibility else 'true'),
+                            'queued-repeat-stop=false', 'service-create;main=true']
+                        if args.expect_incompatibility:
+                            expected += ['start=1;action=cancelled-first;main=true',
+                                'start=2;action=cancelled-second;main=true']
+                        expected += ['start=3;action=restart;main=true', 'service-destroy;main=true',
+                            'running-stop=true', 'running-repeat-stop=false', 'service-create;main=true',
+                            'start=4;action=late-restart;main=true', 'service-destroy;main=true',
+                            'late-stop=true', 'late-repeat-stop=false', 'journey-complete']
+                    elif args.expect_incompatibility:
                         expected = ['1', 'camera-denied=true', 'service-create;main=true',
                             'start=0;main=true', 'start=0;main=true', 'stale-stop=true', 'current-stop=true']
                     else:
@@ -123,6 +137,7 @@ def main():
                     'production_binaries': {name: digest(REPO / 'target/debug' / name) for name in ('shell', 'tilo-launcher')},
                     'apk_sha256': args.apk_sha256, 'runtime_receipt_sha256': args.runtime_receipt_sha256,
                     'runtime_accepted': not args.expect_incompatibility, 'results': results,
+                    'queued_start_cancellation': args.queued_starts,
                     'presented_frames': frames, 'additional_grants': False, 'real_device': False}
 
             finally:

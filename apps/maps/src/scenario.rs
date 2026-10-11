@@ -11,10 +11,9 @@
 use ui::framework::Fixture;
 use ui::tilo_resource::Invoke;
 
-use crate::actions::MapsAction;
 use crate::model::{TransitTime, TransitTimeMode, TravelMode};
-use crate::resource::Maps;
 use crate::sample;
+use crate::workspace::{Workspace, workspace};
 
 /// Every named scenario `--shots --scenario NAME` captures; a `-narrow` one
 /// is a phone-sized window, where the panel is a drawer.
@@ -136,7 +135,7 @@ impl Sample {
 }
 
 /// Prepare `fixture`'s sample before the view is built.
-pub(crate) fn prepare(fixture: &mut Fixture<Maps>) {
+pub(crate) fn prepare(fixture: &mut Fixture<Workspace>) {
     let sample = Sample::of(fixture.scenario());
     fixture.provide(sample);
 }
@@ -153,15 +152,13 @@ pub(crate) fn viewport(scenario: Option<&str>) -> (u32, u32) {
 /// resource: the sample city's places (two of them saved), its recent
 /// searches and travel settings, and — where the scenario shows one — the
 /// drive route or the transit journeys.
-pub(crate) fn actions(name: Option<&str>) -> Vec<Invoke<Maps>> {
+pub(crate) fn actions(name: Option<&str>) -> Vec<Invoke<Workspace>> {
     if Sample::of(name) == Sample::Empty {
         return Vec::new();
     }
     let scenario = Scenario::of(name);
     let model = sample::default_model();
-    let mut actions = vec![MapsAction::UpsertPlaces {
-        places: model.places.clone(),
-    }];
+    let mut actions = vec![Workspace::ACCEPT_PLACES.with(model.places.clone())];
     // Each committed search moves to the front of the history, so the
     // oldest is committed first.
     actions.extend(
@@ -169,48 +166,43 @@ pub(crate) fn actions(name: Option<&str>) -> Vec<Invoke<Maps>> {
             .recents
             .iter()
             .rev()
-            .map(|query| MapsAction::CommitSearch {
-                query: query.clone(),
-            }),
+            .map(|query| Workspace::COMMIT_SEARCH.with(query.as_str())),
     );
-    actions.push(MapsAction::SetTravelMode {
-        mode: if scenario.is_transit() {
-            TravelMode::Transit
-        } else {
-            model.mode
-        },
-    });
+    let mode = if scenario.is_transit() {
+        TravelMode::Transit
+    } else {
+        model.mode
+    };
+    actions.extend(Invoke::edit(&Workspace::paths().mode.set(mode)).ok());
     if scenario == Scenario::TransitArrive {
-        actions.push(MapsAction::SetTransitTime {
-            value: TransitTime {
+        actions.extend(
+            Invoke::edit(&Workspace::paths().transit_time.set(TransitTime {
                 mode: TransitTimeMode::Arrive,
                 offset_min: 60,
-            },
-        });
+            }))
+            .ok(),
+        );
     }
     if scenario.has_route()
         && let Some(route) = model.route.clone()
     {
-        actions.push(MapsAction::SetRoute {
+        actions.push(Workspace::ACCEPT_ROUTE.with(workspace::AcceptRoute {
             route,
             origin: model.origin,
             origin_name: model.origin_name.clone(),
             dest: model.dest,
             dest_name: model.dest_name.clone(),
             mode: model.mode,
-        });
+        }));
     }
     if scenario.is_transit() {
-        actions.push(MapsAction::SetTransit {
+        actions.push(Workspace::ACCEPT_TRANSIT.with(workspace::AcceptTransit {
             transit: model.transit.clone(),
             origin: model.origin,
             origin_name: model.origin_name.clone(),
             dest: model.dest,
             dest_name: model.dest_name,
-        });
+        }));
     }
     actions
-        .iter()
-        .filter_map(|action| Invoke::apply(action).ok())
-        .collect()
 }

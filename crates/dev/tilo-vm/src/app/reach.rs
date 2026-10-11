@@ -32,6 +32,13 @@ const WAKE_WAIT: Duration = Duration::from_secs(150);
 /// `vm wake` sends the packet again this often while it waits: one can be lost.
 const RESEND_EVERY: Duration = Duration::from_secs(15);
 
+fn device_action_outcome(response: serde_json::Value) -> Outcome {
+    let failed = response.get("err").is_some();
+    let mut outcome = Outcome::new(response.to_string(), response);
+    outcome.failed = failed;
+    outcome
+}
+
 fn unix_now() -> u64 {
     u64::try_from(chrono::Utc::now().timestamp()).unwrap_or(0)
 }
@@ -124,6 +131,16 @@ fn wake_line(entry: &VmEntry) -> String {
 }
 
 impl App {
+    pub(super) fn vm_device_actions(
+        &mut self,
+        name: Option<&str>,
+        command: crate::cli::DeviceActionCommand,
+    ) -> Result<Outcome, CliError> {
+        let payload = crate::device_actions::request(command, std::io::stdin().lock())?;
+        let vm = self.resolve_vm(name)?;
+        let mut remote = self.connect(&vm)?;
+        Ok(device_action_outcome(remote.call(payload)?))
+    }
     fn probe_device(&mut self, vm: &Resolved, endpoint: &SshEndpoint) -> Probe {
         reach::probe(
             &mut self.runner,

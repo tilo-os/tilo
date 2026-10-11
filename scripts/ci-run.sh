@@ -49,8 +49,13 @@ echo "==> ${label}: $*"
 start=$(date +%s)
 progress_script="$(dirname "${BASH_SOURCE[0]}")/../tools/ci/process_progress.py"
 memory_script="$(dirname "${BASH_SOURCE[0]}")/../tools/ci/cgroup_memory.py"
-# Capture before running the command; only print memory evidence on failure.
-python3 "$memory_script" > "$log.memory-before" 2>/dev/null || true
+# The outer measure.sh wrapper already owns resource readings. Otherwise
+# extend this existing snapshot; the command keeps its original parent/PID.
+resource_before=()
+if [[ ${TILO_CI_MEASURE_ACTIVE:-} != 1 ]]; then
+    resource_before=(resource-before)
+fi
+python3 "$memory_script" "${resource_before[@]}" > "$log.memory-before" 2>/dev/null || true
 # Forgejo's runner terminates a step after 15 minutes without output. Cargo can
 # legitimately be silent that long while linking a large workspace target, so
 # emit one compact progress line per minute until the command exits.
@@ -76,10 +81,15 @@ heartbeat_pid=$!
 # Stream and capture. PIPESTATUS[0] is the command's status, not tee's. Neither
 # holds the heartbeat's write end, so a process the command leaves behind
 # cannot keep the heartbeat running.
-"$@" {heartbeat_stop}>&- 2>&1 | tee "$log" {heartbeat_stop}>&-
+TILO_CI_MEASURE_ACTIVE=1 "$@" {heartbeat_stop}>&- 2>&1 | tee "$log" {heartbeat_stop}>&-
 rc="${PIPESTATUS[0]}"
 stop_heartbeat
 elapsed=$(( $(date +%s) - start ))
+
+if ((${#resource_before[@]})); then
+    python3 "$memory_script" resource-after "$log.memory-before" "$label" 2>/dev/null \
+        || echo 'CI_COMMAND_RESOURCES=unavailable'
+fi
 
 if [ "$rc" -eq 0 ]; then
     echo "==> ${label}: OK in ${elapsed}s"

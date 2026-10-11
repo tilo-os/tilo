@@ -64,6 +64,11 @@ impl NativeDocumentReadContext {
 /// Data only. Its provider retains the actual bounded native save's lifetime.
 pub enum NativeDocumentRead {
     Unchanged([u8; 32]),
+    /// The owner holds no complete capture right now: the record's governed
+    /// checkpoint is still arriving. Not readable yet, and no failure:
+    /// answered as [`Reply::Unavailable`], the reader withholds readiness
+    /// and asks again.
+    Pending,
     Captured {
         revision: [u8; 32],
         body: Box<dyn DocumentBytes>,
@@ -227,6 +232,7 @@ impl CapnpChannelHandle {
                     .is_some_and(|active| active.capture.id == id)
                 {
                     slot.closed = true;
+                    slot.active = None;
                 }
             }
         });
@@ -285,6 +291,64 @@ impl CapnpChannelHandle {
         context.revalidate()?;
         Ok(context)
     }
+    pub(super) fn native_private_window_instance(&self) -> Result<Option<u64>, String> {
+        let route = self.route();
+        if !self
+            .state
+            .services
+            .committed_documents
+            .as_ref()
+            .is_some_and(|service| service.requires_room(&route.cluster_id))
+        {
+            return Ok(None);
+        }
+        let Some(local) = self
+            .lease
+            .as_ref()
+            .and_then(|lease| lease.local_media.as_ref())
+            .filter(|_| self.verified_identity.agent_id.is_none())
+            .filter(|local| local.continuation_instance.is_some())
+        else {
+            return Ok(None);
+        };
+        if !local.current()
+            || local.app_id != route.app_id
+            || local.workspace_id != route.cluster_id
+        {
+            return Err("native private launch custody ended".into());
+        }
+        let context = self.document_read_context()?;
+        self.state
+            .services
+            .committed_documents
+            .as_ref()
+            .ok_or("native document owner unavailable")?
+            .authorize(&context)?;
+        context.revalidate()?;
+        Ok(local
+            .continuation_instance
+            .filter(|instance| *instance != 0))
+    }
+
+    pub(super) fn continuation_instance(&self) -> Result<u64, String> {
+        if self
+            .state
+            .services
+            .committed_documents
+            .as_ref()
+            .is_some_and(|service| service.requires_room(&self.route().cluster_id))
+        {
+            return self
+                .native_private_window_instance()?
+                .ok_or_else(|| "native launch has no private window-instance binding".into());
+        }
+        self.route()
+            .record_id
+            .strip_prefix("continuation:")
+            .and_then(|id| id.parse::<u64>().ok())
+            .ok_or_else(|| "continuation requires a durable shell tab id".into())
+    }
+
     pub(super) fn committed_document_dispatch(&self, request: &Request) -> Result<Reply, String> {
         let required = self
             .state
@@ -305,9 +369,13 @@ impl CapnpChannelHandle {
             slot.closed = true;
         }
         if slot.closed {
+            slot.active = None;
             return Err("committed read channel expired".into());
         }
         match request {
+            Request::PrivateWindowBinding => Ok(Reply::PrivateWindowBinding {
+                instance: self.native_private_window_instance()?,
+            }),
             Request::Initialize {
                 token,
                 revision,
@@ -380,6 +448,10 @@ impl CapnpChannelHandle {
         service.authorize(&context)?;
         match read {
             NativeDocumentRead::Unchanged(revision) => Ok(Reply::Unchanged { revision }),
+            // A record created by this Open is answered with its capture or
+            // not at all; only an existing record may be read again later.
+            NativeDocumentRead::Pending if created.is_none() => Ok(Reply::Unavailable),
+            NativeDocumentRead::Pending => Err("created record capture unavailable".into()),
             NativeDocumentRead::Captured { revision, body } => {
                 let id = self
                     .state

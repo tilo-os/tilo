@@ -12,6 +12,7 @@ pub mod headers;
 pub mod language;
 pub mod meta;
 pub mod notes;
+mod plain_paragraphs;
 pub mod styles;
 
 use crate::format::{CodecError, Confidence, FormatProvider};

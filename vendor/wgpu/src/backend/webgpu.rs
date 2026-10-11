@@ -2282,28 +2282,9 @@ impl dispatch::DeviceInterface for WebDevice {
         &self,
         desc: &crate::ComputePipelineDescriptor<'_>,
     ) -> dispatch::DispatchComputePipeline {
-        let shader_module = desc.module.inner.as_webgpu();
-        let mapped_compute_stage = webgpu_sys::GpuProgrammableStage::new(&shader_module.module);
-        insert_constants_map(&mapped_compute_stage, desc.compilation_options.constants);
-        if let Some(ep) = desc.entry_point {
-            mapped_compute_stage.set_entry_point(ep);
-        }
-        let auto_layout = wasm_bindgen::JsValue::from(webgpu_sys::GpuAutoLayoutMode::Auto);
-        let mapped_desc = webgpu_sys::GpuComputePipelineDescriptor::new(
-            &match desc.layout {
-                Some(layout) => {
-                    let layout = &layout.inner.as_webgpu().inner;
-                    JsValue::from(layout)
-                }
-                None => auto_layout,
-            },
-            &mapped_compute_stage,
-        );
-        if let Some(label) = desc.label {
-            mapped_desc.set_label(label);
-        }
-
-        let compute_pipeline = self.inner.create_compute_pipeline(&mapped_desc);
+        let compute_pipeline = self
+            .inner
+            .create_compute_pipeline(&map_compute_pipeline_descriptor(desc));
 
         WebComputePipeline {
             inner: compute_pipeline,
@@ -4033,6 +4014,62 @@ impl Drop for WebQueueWriteBuffer {
 /// exposed by `wasm-bindgen`. See the following issues for details:
 /// - [gfx-rs/wgpu#5688](https://github.com/gfx-rs/wgpu/pull/5688)
 /// - [rustwasm/wasm-bindgen#3587](https://github.com/rustwasm/wasm-bindgen/issues/3587)
+fn map_compute_pipeline_descriptor(
+    desc: &crate::ComputePipelineDescriptor<'_>,
+) -> webgpu_sys::GpuComputePipelineDescriptor {
+    let shader_module = desc.module.inner.as_webgpu();
+    let mapped_compute_stage = webgpu_sys::GpuProgrammableStage::new(&shader_module.module);
+    insert_constants_map(&mapped_compute_stage, desc.compilation_options.constants);
+    if let Some(ep) = desc.entry_point {
+        mapped_compute_stage.set_entry_point(ep);
+    }
+    let auto_layout = wasm_bindgen::JsValue::from(webgpu_sys::GpuAutoLayoutMode::Auto);
+    let mapped_desc = webgpu_sys::GpuComputePipelineDescriptor::new(
+        &match desc.layout {
+            Some(layout) => {
+                let layout = &layout.inner.as_webgpu().inner;
+                JsValue::from(layout)
+            }
+            None => auto_layout,
+        },
+        &mapped_compute_stage,
+    );
+    if let Some(label) = desc.label {
+        mapped_desc.set_label(label);
+    }
+    mapped_desc
+}
+
+impl WebDevice {
+    /// `createComputePipelineAsync`: the browser compiles the pipeline off
+    /// its GPU process's main thread, which a synchronous
+    /// `createComputePipeline` occupies for the whole compile. A descriptor
+    /// the browser rejects is then created synchronously, which reports the
+    /// error through the device's usual error path.
+    pub(crate) fn create_compute_pipeline_async(
+        &self,
+        desc: &crate::ComputePipelineDescriptor<'_>,
+    ) -> impl Future<Output = dispatch::DispatchComputePipeline> {
+        let mapped = map_compute_pipeline_descriptor(desc);
+        let promise = self.inner.create_compute_pipeline_async(&mapped);
+        let device = self.inner.clone();
+        MakeSendFuture::new(
+            wasm_bindgen_futures::JsFuture::from(promise),
+            move |result: JsFutureResult| {
+                let inner = match result {
+                    Ok(pipeline) => pipeline.unchecked_into(),
+                    Err(_) => device.create_compute_pipeline(&mapped),
+                };
+                WebComputePipeline {
+                    inner,
+                    ident: crate::cmp::Identifier::create(),
+                }
+                .into()
+            },
+        )
+    }
+}
+
 fn insert_constants_map(target: &JsValue, map: &[(&str, f64)]) {
     if !map.is_empty() {
         js_sys::Reflect::set(

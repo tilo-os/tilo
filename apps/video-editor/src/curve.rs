@@ -481,6 +481,8 @@ fn quantise(v: f64) -> u8 {
     (v.clamp(0.0, 1.0) * 255.0).round() as u8
 }
 
+ui::tilo_resource::json_model!(Curve);
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,7 +1,12 @@
-//! Browser as a [`tilo_resource::Resource`]: bookmarks and preferences are
-//! document actions; window navigation is published from
-//! [`Resource::local_operations`], and what only this window knows (the
-//! page, history, downloads, extensions) from the surface's live rows.
+//! Browser's document: the bookmarks, the preferences that follow the
+//! person to every browser window, and the sites tracker protection is off
+//! for. Bookmarking a page and turning protection off for a site are
+//! verbs; a bookmark's title and every preference are field edits at their
+//! paths. What only this window knows (the page, navigation, downloads,
+//! extensions) is published from the surface's live rows and effects; the
+//! visit log and address book are the person's own records
+//! ([`BrowsingHistory`](crate::history::BrowsingHistory),
+//! [`AddressBook`](crate::autofill::AddressBook)).
 
 use std::rc::Rc;
 
@@ -9,246 +14,166 @@ use ui::framework::{
     Command, EffectAnswer, EffectCx, Effected, LiveRow, ResourceApp, ResourceSurface, SurfaceCx,
     ViewCx,
 };
-use ui::tilo_actions::{ActionParam, ParamType};
+use ui::i18n::EmbeddedCatalog;
 use ui::tilo_resource::{
-    ActionDecl, Doc, Invoke, ModelError, Resource, SearchEntry, declaration_spec,
+    self, ActionCx, ActionDecl, Collection, Derived, Id, Invoke, Model, Refusal, ScopeDecl, Set,
+    resource,
 };
 use ui::widget::Element;
 
 use crate::BrowserWindow;
-use crate::actions::{
-    BROWSER_ACTION_TYPE, BrowserAction, bookmark_resource_id, bookmarks_from_doc, register,
-};
+use crate::actions::{MAX_SITE_EXCEPTIONS, normalized_bookmark_url};
 use crate::browser_widget::BrowserWidget;
 use crate::browsing_mode::BrowsingMode;
 use crate::effects::BrowserEffect;
-use crate::library::{Bookmark, Bookmarks};
+use crate::library::{Bookmark, MAX_BOOKMARKS};
 use crate::settings::Settings;
 
-/// Document projection: collaborative bookmarks, the preferences that
-/// follow the person to every browser window, and the origins tracker
-/// protection is off for.
-#[derive(Clone, Debug, Default)]
-pub struct BrowserState {
-    pub bookmarks: Bookmarks,
+/// The browser's Fluent catalog.
+pub const LOCALES: &[(&str, &str)] = &[("en-US", include_str!("../locales/en-US.ftl"))];
+
+static CATALOG: EmbeddedCatalog =
+    EmbeddedCatalog::new("en-US", LOCALES, "browser-add-bookmark").with_system_locale();
+
+/// The browser's document: collaborative bookmarks, the preferences, and
+/// the origins tracker protection is off for.
+#[derive(Model, Clone, Debug, Default, PartialEq)]
+pub struct Browser {
+    /// Bookmarks
+    pub bookmarks: Collection<Bookmark>,
+    /// Preferences
     pub preferences: Settings,
-    pub site_exceptions: std::collections::BTreeSet<String>,
+    /// Sites without tracker protection, by exact origin
+    /// (`https://example.org`). Only turning protection on or off for a
+    /// site changes them.
+    #[model(readonly)]
+    pub site_exceptions: Set<String>,
 }
 
-/// The preferences `doc` holds; each one it never set reads its default.
-fn preferences_from_doc(doc: &Doc) -> Settings {
-    use ui::doc::{read_bool, read_text};
-    let root = ui::automerge::ROOT;
-    let mut preferences = Settings::default();
-    if let Some(enabled) = read_bool(doc, &root, crate::settings::ADBLOCK_PATH) {
-        preferences.adblock_enabled = enabled;
-    }
-    if let Some(enabled) = read_bool(doc, &root, crate::settings::CLEAR_ON_EXIT_PATH) {
-        preferences.clear_on_exit = enabled;
-    }
-    if let Some(url) = read_text(doc, &root, crate::settings::HOMEPAGE_PATH)
-        .filter(|url| crate::actions::normalized_bookmark_url(url).is_some())
-    {
-        preferences.homepage = url;
-    }
-    if let Some(template) = read_text(doc, &root, crate::settings::SEARCH_ENGINE_PATH)
-        .filter(|template| crate::actions::normalized_bookmark_url(template).is_some())
-    {
-        preferences.search_engine = template;
-    }
-    preferences
-}
-
-/// Browser library resource.
-pub struct Browser;
-
-impl Resource for Browser {
-    /// Matches the published application root kind.
-    const KIND: &'static str = "browser.application";
-    const LABEL: &'static str = "Browser";
-    const ACTION_TYPE: &'static str = BROWSER_ACTION_TYPE;
-
-    type State = BrowserState;
-    type Action = BrowserAction;
-
-    fn register(registry: &mut tilo_actions::ActionRegistry) {
-        register(registry);
-    }
-
-    fn read(doc: &Doc) -> Result<BrowserState, ModelError> {
-        Ok(BrowserState {
-            bookmarks: bookmarks_from_doc(doc).unwrap_or_default(),
-            preferences: preferences_from_doc(doc),
-            site_exceptions: crate::actions::site_exceptions_from_doc(doc),
-        })
-    }
-
-    fn declarations() -> Vec<ActionDecl<Self>> {
-        vec![
-            ActionDecl::new(
-                "set-adblock",
-                "Set ad blocking",
-                vec![ActionParam::required_owned(
-                    "enabled",
-                    ParamType::Boolean,
-                    "Whether network ad blocking is on",
-                )],
-                |args, _| {
-                    Ok(BrowserAction::SetAdblock {
-                        enabled: args.boolean("enabled").unwrap_or(true),
-                    })
-                },
-            ),
-            ActionDecl::new(
-                "set-clear-on-exit",
-                "Set clear-on-exit",
-                vec![ActionParam::required_owned(
-                    "enabled",
-                    ParamType::Boolean,
-                    "Whether private data clears when the window closes",
-                )],
-                |args, _| {
-                    Ok(BrowserAction::SetClearOnExit {
-                        enabled: args.boolean("enabled").unwrap_or(false),
-                    })
-                },
-            ),
-        ]
-    }
-
-    fn children(state: &BrowserState) -> Vec<tilo_actions::Resource> {
-        let mut bookmarks =
-            tilo_actions::Resource::new("browser.bookmarks", "browser.bookmarks", "Bookmarks");
-        for entry in state.bookmarks.entries() {
-            bookmarks = bookmarks.with_child(bookmark_child(entry));
+#[resource(
+    kind = "browser.application",
+    label = "Browser",
+    initialize = Browser::default,
+    scopes = Browser::scopes,
+    children = Browser::sites
+)]
+impl Browser {
+    /// Bookmark a page.
+    #[action]
+    pub fn add_bookmark(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("The page's absolute http(s) address")] url: String,
+        #[param("Its title; the address when none")] title: Option<String>,
+    ) -> Result<(), Refusal> {
+        let url = normalized_bookmark_url(&url)
+            .ok_or_else(|| Refusal::new("a bookmark is an absolute http(s) URL"))?;
+        if self.bookmarks.values().any(|bookmark| bookmark.url == url) {
+            return Ok(());
         }
-        vec![bookmarks, settings_child()]
+        if self.bookmarks.len() >= MAX_BOOKMARKS {
+            return Err(Refusal::new("too many bookmarks; remove some first"));
+        }
+        let title = title
+            .map(|title| title.trim().to_owned())
+            .filter(|title| !title.is_empty())
+            .unwrap_or_else(|| url.clone());
+        self.bookmarks.push(cx.id(), Bookmark { url, title });
+        Ok(())
     }
 
-    fn search_scopes(_state: &BrowserState) -> Vec<ui::search::ScopeDecl> {
+    /// Remove a bookmark.
+    #[action(item = bookmarks)]
+    pub fn remove_bookmark(&mut self, bookmark: &Id) -> Result<(), Refusal> {
+        let url = self
+            .bookmarks
+            .get(bookmark)
+            .ok_or_else(|| Refusal::new("no such bookmark"))?
+            .url
+            .clone();
+        // Two people bookmarking one page at once made two items of it.
+        self.bookmarks.retain(|_, bookmark| bookmark.url != url);
+        Ok(())
+    }
+
+    /// Turn tracker protection on or off for a site.
+    #[action]
+    pub fn set_site_protection(
+        &mut self,
+        #[param("The site's address or exact origin, such as https://example.org")] origin: String,
+        #[param("Whether tracker protection is on for the site")] enabled: bool,
+    ) -> Result<(), Refusal> {
+        let origin = crate::site_controls::origin(origin.trim())
+            .ok_or_else(|| Refusal::new("a site is named by one http(s) origin"))?;
+        if enabled {
+            self.site_exceptions.remove(&origin);
+        } else if !self.site_exceptions.contains(&origin) {
+            if self.site_exceptions.len() >= MAX_SITE_EXCEPTIONS {
+                return Err(Refusal::new(
+                    "too many site exceptions; turn protection back on for some",
+                ));
+            }
+            self.site_exceptions.insert(origin);
+        }
+        Ok(())
+    }
+}
+
+/// The resource id of the bookmark `id`: its item of the document.
+pub fn bookmark_resource_id(id: &Id) -> String {
+    tilo_resource::items::item_resource_id::<Browser>("bookmarks", id)
+}
+
+impl Browser {
+    /// The library's sections a search can be narrowed to.
+    fn scopes(_: &Self) -> Vec<ScopeDecl> {
         vec![
-            ui::search::ScopeDecl::new(crate::actions::HISTORY_SCOPE, "History"),
-            ui::search::ScopeDecl::new(crate::actions::BOOKMARKS_SCOPE, "Bookmarks"),
-            ui::search::ScopeDecl::new(crate::actions::DOWNLOADS_SCOPE, "Downloads"),
+            ScopeDecl::new(crate::actions::HISTORY_SCOPE, "History"),
+            ScopeDecl::new(crate::actions::BOOKMARKS_SCOPE, "Bookmarks"),
+            ScopeDecl::new(crate::actions::DOWNLOADS_SCOPE, "Downloads"),
         ]
     }
 
-    fn search(state: &BrowserState) -> Vec<SearchEntry> {
-        state
-            .bookmarks
-            .entries()
+    /// Each site tracker protection is off for, as a place that turns it
+    /// back on.
+    fn sites(&self) -> Vec<Derived<Self>> {
+        self.site_exceptions
             .iter()
-            .map(|entry| {
-                let id = bookmark_resource_id(&entry.url);
-                SearchEntry::new(
-                    if entry.title.is_empty() {
-                        entry.url.clone()
-                    } else {
-                        entry.title.clone()
-                    },
-                    entry.url.clone(),
-                )
-                .invoking(ui::tilo_actions::ActionAddress::new(id.as_str(), "open"))
-                .anchored(id)
+            .map(|origin| {
+                let params = browser::SetSiteProtection::paths();
+                Derived::new(origin.clone())
+                    .of_kind("site")
+                    .identified(format!("site:{origin}"))
+                    .with(
+                        Self::SET_SITE_PROTECTION
+                            .bind(params.origin, origin.clone())
+                            .and(params.enabled, true),
+                    )
             })
             .collect()
     }
-}
 
-fn bookmark_child(entry: &Bookmark) -> tilo_actions::Resource {
-    let title = if entry.title.is_empty() {
-        entry.url.clone()
-    } else {
-        entry.title.clone()
-    };
-    // Open is the surface's: it navigates this window. Remove is the
-    // document action, tombstoning the tags the document holds now.
-    let remove = BrowserAction::RemoveBookmark {
-        url: entry.url.clone(),
-        observed_tags: entry.tags.clone(),
-    };
-    tilo_actions::Resource::new(bookmark_resource_id(&entry.url), "browser.bookmark", title)
-        .with_action(declaration_spec(&ActionDecl::<Browser>::new(
-            "remove",
-            "Remove bookmark",
-            vec![],
-            move |_, _| Ok(remove.clone()),
-        )))
-}
+    /// Turning tracker protection for `origin` to the other state from
+    /// `protected`, as the row of a page on that site offers it.
+    pub(crate) fn site_switch(origin: &str, protected: bool) -> Option<ActionDecl<Self>> {
+        let params = browser::SetSiteProtection::paths();
+        Self::SET_SITE_PROTECTION
+            .bind(params.origin, origin.to_owned())
+            .and(params.enabled, !protected)
+            .declaration(
+                "set-site-protection",
+                if protected {
+                    "Turn tracker protection off for this site"
+                } else {
+                    "Turn tracker protection on for this site"
+                },
+            )
+    }
 
-/// The preferences, as the document actions that set them.
-fn settings_child() -> tilo_actions::Resource {
-    let toggle = |id: &'static str, label: &str, build: fn(bool) -> BrowserAction| {
-        declaration_spec(&ActionDecl::<Browser>::new(
-            id,
-            label,
-            vec![ActionParam::required_owned(
-                "enabled",
-                ParamType::Boolean,
-                "Whether the setting is enabled",
-            )],
-            move |args, _| Ok(build(args.boolean("enabled").unwrap_or(false))),
-        ))
-    };
-    let text = |id: &'static str,
-                label: &str,
-                parameter: &'static str,
-                build: fn(String) -> BrowserAction| {
-        declaration_spec(&ActionDecl::<Browser>::new(
-            id,
-            label,
-            vec![ActionParam::required_owned(
-                parameter,
-                ParamType::Text,
-                parameter,
-            )],
-            move |args, _| Ok(build(args.text(parameter).unwrap_or_default().to_owned())),
-        ))
-    };
-    tilo_actions::Resource::new("browser.settings", "browser.settings", "Settings")
-        .with_action(toggle(
-            "set-adblock",
-            "Set ad and tracker blocking",
-            |enabled| BrowserAction::SetAdblock { enabled },
-        ))
-        .with_action(toggle(
-            "set-clear-on-exit",
-            "Set clear data on exit",
-            |enabled| BrowserAction::SetClearOnExit { enabled },
-        ))
-        .with_action(text("set-homepage", "Set homepage", "url", |url| {
-            BrowserAction::SetHomepage { url }
-        }))
-        .with_action(text(
-            "set-search-engine",
-            "Set search engine template",
-            "template",
-            |template| BrowserAction::SetSearchEngine { template },
-        ))
-        .with_action(declaration_spec(&ActionDecl::<Browser>::new(
-            "set-site-protection",
-            "Set tracker protection for a site",
-            vec![
-                ActionParam::required_owned(
-                    "origin",
-                    ParamType::Text,
-                    "The site's exact origin, such as https://example.org",
-                ),
-                ActionParam::required_owned(
-                    "enabled",
-                    ParamType::Boolean,
-                    "Whether tracker protection is on for the site",
-                ),
-            ],
-            |args, _| {
-                let origin = args.text("origin").unwrap_or_default();
-                Ok(BrowserAction::SetSiteProtection {
-                    origin: crate::site_controls::origin(origin)
-                        .unwrap_or_else(|| origin.to_owned()),
-                    enabled: args.boolean("enabled").unwrap_or(true),
-                })
-            },
-        )))
+    /// The origins tracker protection is off for.
+    pub fn exceptions(&self) -> std::collections::BTreeSet<String> {
+        self.site_exceptions.iter().cloned().collect()
+    }
 }
 
 /// The screenshot scenarios: the page, the chrome's states, the library's
@@ -332,19 +257,21 @@ impl ResourceApp for BrowserShell {
             return Vec::new();
         }
         [
-            ("https://www.rust-lang.org/learn", "Learn Rust", "rust"),
-            ("https://developer.mozilla.org/", "MDN Web Docs", "mdn"),
+            ("https://www.rust-lang.org/learn", "Learn Rust"),
+            ("https://developer.mozilla.org/", "MDN Web Docs"),
         ]
         .into_iter()
-        .filter_map(|(url, title, tag)| {
-            Invoke::apply(&BrowserAction::AddBookmark {
+        .map(|(url, title)| {
+            Browser::ADD_BOOKMARK.with(browser::AddBookmark {
                 url: url.into(),
-                title: title.into(),
-                tag: format!("bookmark:{tag}"),
+                title: Some(title.into()),
             })
-            .ok()
         })
         .collect()
+    }
+
+    fn catalog() -> Option<&'static EmbeddedCatalog> {
+        Some(&CATALOG)
     }
 
     fn view(cx: &mut ViewCx<Browser>) -> Element {
@@ -373,12 +300,31 @@ impl ResourceApp for BrowserShell {
             Some(uri) => widget.with_initial_uri(uri),
             None => widget,
         };
+        // A search hit on a bookmark, or an agent's `open`, shows its page.
+        let (live, dispatch) = (cx.live().clone(), cx.dispatcher());
+        cx.on_open_item(move |bookmark| {
+            let url = live
+                .with(|browser| browser.bookmarks.get(bookmark).map(|b| b.url.clone()))
+                .ok_or_else(|| Refusal::new("there is no such bookmark"))?;
+            dispatch.effect(&BrowserEffect::Open { url });
+            Ok(())
+        });
+        // A history or download hit opens its page or shows the download.
+        let index = widget.search_index();
+        let dispatch = cx.dispatcher();
+        cx.on_open(move |anchor: &str| -> Result<(), Refusal> {
+            let effect = index
+                .opened(anchor)
+                .ok_or_else(|| Refusal::new(format!("`{anchor}` is no longer in the history")))?;
+            dispatch.effect(&effect);
+            Ok(())
+        });
         cx.surface(BrowserWindow::new(widget, focus_address))
     }
 }
 
 impl ResourceSurface<Browser, BrowserEffect> for BrowserWindow {
-    fn present(&mut self, state: &Rc<BrowserState>) {
+    fn present(&mut self, state: &Rc<Browser>) {
         self.present_state(state);
     }
 
@@ -433,6 +379,11 @@ impl ResourceSurface<Browser, BrowserEffect> for BrowserWindow {
         self.page().page_declarations()
     }
 
+    /// The page row turns tracker protection on or off for its site.
+    fn row_declarations(&self, row: &str) -> Vec<ActionDecl<Browser>> {
+        self.page().row_declarations(row)
+    }
+
     fn live_rows(&self) -> Vec<LiveRow> {
         self.page().live_rows()
     }
@@ -454,6 +405,7 @@ mod tests {
     use super::*;
     use ui::framework::testing::TestApp;
     use ui::tilo_actions::OperationKind;
+    use ui::tilo_resource::Resource as _;
 
     fn find<'a>(
         resources: &'a [tilo_actions::Resource],
@@ -483,9 +435,14 @@ mod tests {
         app.harness().click_named("browser.bookmark").unwrap();
         app.settle();
         let state = app.state();
-        assert_eq!(state.bookmarks.entries().len(), 1, "the star adds the page");
-        let page = state.bookmarks.entries()[0].url.clone();
-        assert!(state.bookmarks.contains("https://example.org"));
+        assert_eq!(state.bookmarks.len(), 1, "the star adds the page");
+        let (bookmark, page) = state
+            .bookmarks
+            .iter()
+            .map(|(id, bookmark)| (id.clone(), bookmark.url.clone()))
+            .next()
+            .unwrap();
+        assert!(crate::library::Bookmarks::of(&state.bookmarks).contains("https://example.org"));
 
         let published = app.harness().resources();
         let root = find(&published, Browser::KIND).unwrap();
@@ -495,13 +452,16 @@ mod tests {
                 .all(|action| action.id != "bookmark-page"),
             "a bookmarked page is not offered again"
         );
-        let row = find(&published, &bookmark_resource_id(&page)).unwrap();
+        let row = find(&published, &bookmark_resource_id(&bookmark)).unwrap();
         let ids: Vec<&str> = row
             .actions
             .iter()
             .map(|action| action.id.as_str())
             .collect();
-        assert!(ids.contains(&"open") && ids.contains(&"remove"), "{ids:?}");
+        assert!(
+            ids.contains(&"open") && ids.contains(&"remove-bookmark"),
+            "{ids:?}"
+        );
         for id in [
             "browser.page",
             "browser.history",
@@ -510,21 +470,22 @@ mod tests {
         ] {
             let live = find(&published, id).unwrap();
             assert!(
-                live.actions
-                    .iter()
-                    .all(|action| action.kind != OperationKind::Document),
-                "{id} is what this window does, never a document edit"
+                live.actions.iter().all(|action| {
+                    action.kind != OperationKind::Document
+                        || (id == "browser.page" && action.id == "set-site-protection")
+                }),
+                "{id} is what this window does; only the page's site switch is a document edit"
             );
         }
 
         app.call_on(
-            &bookmark_resource_id(&page),
-            "remove",
+            &bookmark_resource_id(&bookmark),
+            "remove-bookmark",
             serde_json::json!({}),
         )
         .unwrap();
         app.settle();
-        assert!(app.state().bookmarks.entries().is_empty());
+        assert!(app.state().bookmarks.is_empty(), "{page} is removed");
         assert!(
             find(&app.harness().resources(), Browser::KIND)
                 .unwrap()
@@ -534,14 +495,25 @@ mod tests {
             "the page can be bookmarked again"
         );
 
-        app.call_on(
-            "browser.settings",
-            "set-homepage",
-            serde_json::json!({"url": "https://home.test/"}),
+        let preferences = Browser::paths().preferences;
+        app.call(
+            "field-edit",
+            serde_json::json!({ "edit": preferences.homepage.replace("https://home.test/") }),
         )
         .unwrap();
-        app.call("set-adblock", serde_json::json!({"enabled": false}))
-            .unwrap();
+        assert!(
+            app.call(
+                "field-edit",
+                serde_json::json!({ "edit": preferences.homepage.replace("not a url") }),
+            )
+            .is_err(),
+            "a homepage is a web address"
+        );
+        app.call(
+            "field-edit",
+            serde_json::json!({ "edit": preferences.adblock_enabled.set(false) }),
+        )
+        .unwrap();
         app.settle();
         let preferences = app.state().preferences;
         assert_eq!(preferences.homepage, "https://home.test/");
@@ -549,26 +521,58 @@ mod tests {
         assert!(app.undo(), "a preference is an undo step");
         assert!(app.state().preferences.adblock_enabled);
 
-        app.call_on(
-            "browser.settings",
+        app.call(
             "set-site-protection",
             serde_json::json!({"origin": "https://Tracker.example/page", "enabled": false}),
         )
         .unwrap();
         app.settle();
         assert_eq!(
-            app.state().site_exceptions.into_iter().collect::<Vec<_>>(),
+            app.state().exceptions().into_iter().collect::<Vec<_>>(),
             vec!["https://tracker.example".to_string()],
             "a site exception is kept by its exact origin"
         );
+        let published = app.harness().resources();
+        let site = find(
+            &published,
+            "browser.application/derived/site:https://tracker.example",
+        )
+        .expect("a site without protection is a place");
+        let protect = site
+            .actions
+            .iter()
+            .find(|action| action.id == "set-site-protection")
+            .expect("the place turns protection back on");
+        assert!(
+            protect.params().is_empty(),
+            "the site and the switch are bound"
+        );
         app.call_on(
-            "browser.settings",
+            "browser.application/derived/site:https://tracker.example",
             "set-site-protection",
-            serde_json::json!({"origin": "https://tracker.example", "enabled": true}),
+            serde_json::json!({}),
         )
         .unwrap();
         app.settle();
         assert!(app.state().site_exceptions.is_empty());
+
+        let page = find(&app.harness().resources(), "browser.page")
+            .unwrap()
+            .clone();
+        let switch = page
+            .actions
+            .iter()
+            .find(|action| action.id == "set-site-protection")
+            .expect("the page row switches protection for its site");
+        assert!(switch.params().is_empty());
+        app.call_on("browser.page", "set-site-protection", serde_json::json!({}))
+            .unwrap();
+        app.settle();
+        assert_eq!(
+            app.state().exceptions().into_iter().collect::<Vec<_>>(),
+            ["https://example.org"],
+            "the page's own site"
+        );
     }
 
     #[test]
@@ -592,15 +596,20 @@ mod tests {
             let mut app = TestApp::<BrowserShell>::capture(Some(scenario)).unwrap();
             app.settle();
             if *scenario == "library-bookmarks" {
-                assert_eq!(app.state().bookmarks.entries().len(), 2);
+                assert_eq!(app.state().bookmarks.len(), 2);
             }
         }
     }
 
     #[test]
-    fn preferences_read_their_defaults_until_the_document_sets_them() {
-        let state = Browser::read(&Doc::new()).unwrap();
+    fn a_new_browser_starts_with_the_default_preferences() {
+        let state = ui::tilo_resource::Replica::<Browser>::new()
+            .state()
+            .unwrap();
         assert_eq!(state.preferences, Settings::default());
-        assert!(state.bookmarks.entries().is_empty());
+        assert!(state.bookmarks.is_empty());
     }
 }
+
+#[cfg(test)]
+mod model_tests;

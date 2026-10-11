@@ -3,17 +3,24 @@
 set -euo pipefail
 
 usage() {
-    echo "usage: $0 BIN_DIR STAGE_DIR" >&2
+    echo "usage: $0 BIN_DIR STAGE_DIR [--primary-files]" >&2
     exit 2
 }
 
-[[ $# == 2 ]] || usage
+[[ $# == 2 || $# == 3 ]] || usage
+primary_files=0
+if [[ $# == 3 ]]; then
+    [[ $3 == --primary-files ]] || usage
+    primary_files=1
+fi
 bin_dir=$1
 stage=$2
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
 [[ ! -e $stage ]] || { echo "stage path already exists: $stage" >&2; exit 1; }
-for bin in shell tilo-launcher tilo-unlock-helper imager; do
+bins=(shell tilo-launcher tilo-unlock-helper imager)
+(( ! primary_files )) || bins+=(fs tilo-relay-admin tilo-enroll)
+for bin in "${bins[@]}"; do
     [[ -x $bin_dir/$bin ]] || { echo "missing executable: $bin_dir/$bin" >&2; exit 1; }
 done
 
@@ -25,6 +32,13 @@ fi
 
 mkdir -p "$stage"/{bin,libexec,pam,wayland-sessions,applications,portal,pipewire,systemd-user,license}
 install -pm 0755 "$bin_dir/shell"             "$stage/bin/tilo-shell"
+if (( primary_files )); then
+    install -pm 0755 "$bin_dir/fs" "$stage/bin/fs"
+    install -pm 0755 "$bin_dir/tilo-relay-admin" "$stage/bin/tilo-relay-admin"
+    install -pm 0755 "$bin_dir/tilo-enroll" "$stage/bin/tilo-enroll"
+    install -pm 0755 "$repo_root/dist/session/tilo-files-workspace.py" "$stage/libexec/tilo-files-workspace"
+    install -pm 0644 "$repo_root/dist/session/tilo-files-workspace.service" "$stage/systemd-user/tilo-files-workspace.service"
+fi
 install -pm 0755 "$bin_dir/tilo-launcher"      "$stage/bin/tilo-launcher"
 install -pm 0755 "$bin_dir/tilo-unlock-helper" "$stage/libexec/tilo-unlock-helper"
 install -pm 0755 "$repo_root/dist/session/tilo-session"     "$stage/libexec/tilo-session"
@@ -49,3 +63,8 @@ install -pm 0644 "$repo_root/os/usr/share/xdg-desktop-portal/tilo-portals.conf" 
 install -pm 0644 "$repo_root/os/usr/share/pipewire/tilo-echo-cancel.conf" \
                  "$stage/pipewire/tilo-echo-cancel.conf"
 install -pm 0644 "$repo_root/LICENSE" "$stage/license/LICENSE"
+
+# Host only: the OS image retains its existing system fs.service.
+if (( primary_files )); then
+    printf '\n[Unit]\nWants=tilo-files-workspace.service\n' >> "$stage/systemd-user/tilo-graphical-session.target"
+fi

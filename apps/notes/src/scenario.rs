@@ -4,12 +4,11 @@
 
 use std::fmt::Write as _;
 
-use tilo_document::RichTextAction;
 use ui::headless::{FrameHarness, SemanticExpectation};
 use vello::kurbo::{Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
-use crate::actions::{self, NotesAction};
+use crate::actions::{self, Action};
 use crate::main_panel::MainPanel;
 use crate::model::{PageId, TagId};
 
@@ -270,7 +269,7 @@ fn launch_body(scenario: Option<&str>) -> String {
 /// a handful of notes in a tree, two tags on the launch checklist, and the
 /// note a typing scenario types into.
 #[must_use]
-pub fn actions(scenario: Option<&str>) -> Vec<NotesAction> {
+pub fn actions(scenario: Option<&str>) -> Vec<Action> {
     if scenario == Some("first_note") {
         return Vec::new();
     }
@@ -297,7 +296,7 @@ pub fn actions(scenario: Option<&str>) -> Vec<NotesAction> {
     }
     let mut out = notes
         .iter()
-        .map(|(id, parent, title)| actions::append_page_action(*id, *parent, title))
+        .map(|(id, parent, title)| actions::create_page_action(*id, *parent, title))
         .collect::<Vec<_>>();
     let titles = notes
         .iter()
@@ -317,18 +316,12 @@ pub fn actions(scenario: Option<&str>) -> Vec<NotesAction> {
     }
     if matches!(scenario, Some("image" | "image_edit")) {
         // The image itself: the body already names it by its digest.
-        out.push(actions::add_image_asset_action(
-            launch,
-            IMAGE.to_vec(),
-            RichTextAction::AppendParagraph {
-                text: "Captured from the settings window.".into(),
-            },
-        ));
+        out.push(actions::keep_image_action(IMAGE.to_vec()));
     }
     if scenario == Some("import_success") {
         // The note a Markdown file became, the moment its import succeeded.
         out.push(actions::import_markdown_action(
-            page(8),
+            Some(page(8)),
             "Project brief",
             "Imported through Notes' semantic Markdown action.\n\n- [x] Preserve headings\n- [x] Preserve lists\n",
             Vec::new(),

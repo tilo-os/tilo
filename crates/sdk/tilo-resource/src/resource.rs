@@ -9,13 +9,16 @@ use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tilo_actions::{
-    ActionArgs, ActionError, ActionParam, ActionRegistry, ActionSpec, EncodedAction,
-    ExecutionLocus, OperationKind, ParamType, PermissionRequirement,
+    ActionArgs, ActionError, ActionNeed, ActionParam, ActionRegistry, ActionSpec, EncodedAction,
+    ExecutionLocus, OperationKind, ParamType,
 };
 
+use crate::action::ActionKind;
 use crate::delta::Delta;
 use crate::model::{Doc, ModelError};
+use crate::path::Edit;
 use crate::reader::Demand;
+use crate::vocabulary::{Builds, Built, Declaration, Vocabulary, vocabulary};
 
 /// A resource type. Implement it by hand for a type with its own storage
 /// layout and merge semantics (a timeline, a rich-text document, a photo edit
@@ -72,12 +75,32 @@ pub trait Resource: Sized + 'static {
         Ok(())
     }
 
+    /// A copy of `state` for [`refresh`](Self::refresh) to bring up to date
+    /// while the state the reader holds is shared (a view still holds the
+    /// last one): refreshing a copy reads only what a change touched, where
+    /// without one the state is read whole. `#[resource]` copies a `Clone`
+    /// record; the default has none.
+    fn copy_state(_state: &Self::State) -> Option<Self::State> {
+        None
+    }
+
+    /// Opt in to reusing the document-owned publication between changes.
+    ///
+    /// Return an epoch for every non-document input used by declarations,
+    /// children, views or local operations (for example the local date of a
+    /// daily-note action). The framework also invalidates on state and locale
+    /// revisions; surface bindings and effect availability remain live.
+    /// `None` preserves publication on every request for dynamic resources.
+    fn publication_cache_epoch(_state: &Self::State) -> Option<String> {
+        None
+    }
+
     /// Where `obj` sits in the document, when the state already knows: the
     /// path from the root to it. A change to an object the state has read
     /// (the paragraph being typed in) is then placed without asking the
     /// document, which for a large document is the costly part of reading a
     /// change. The default knows nothing, and the document is asked.
-    fn locate(state: &Self::State, obj: &automerge::ObjId) -> Option<crate::delta::Path> {
+    fn locate(state: &Self::State, obj: &automerge::ObjId) -> Option<crate::delta::ObjPath> {
         let _ = (state, obj);
         None
     }
@@ -152,66 +175,29 @@ pub trait Resource: Sized + 'static {
         None
     }
 
-    /// The least a participant must be allowed to do for `action` to apply:
-    /// [`Write`](PermissionRequirement::Write) by default, `Comment` for a
-    /// reply or a note someone who may only comment can still add. The
-    /// dispatcher a view or surface edits through checks it, and a declared
-    /// action that builds it names the same level with
-    /// [`ActionDecl::requiring`].
-    fn permission(action: &Self::Action) -> PermissionRequirement {
+    /// The one field of the record `action` writes, when it writes only one:
+    /// a reply or a note writes the `comments`, so a grant on that field
+    /// (what someone who may only comment holds) reaches it. `None` by
+    /// default. A declared action that builds it names the same field with
+    /// [`ActionDecl::below_field`].
+    fn field_of(action: &Self::Action) -> Option<&'static str> {
         let _ = action;
-        PermissionRequirement::Write
+        None
     }
 
-    /// Publish the bounded audited mutation door. Default resources retain
-    /// their existing catalogue. Enabling this also requires a closed
-    /// [`allows_low_mutation`](Self::allows_low_mutation) whitelist.
-    const AUDITED_LOW_MUTATIONS: bool = false;
-
-    /// Opt in an audited state-only mutation to the bounded low-risk door.
-    /// Default-deny: a default `Action::risk()` is insufficient authority.
-    /// Implementations must use a closed whitelist excluding I/O, commands,
-    /// capability grants and destructive mutations. The target also requires
-    /// actual `RiskLevel::Low` and checks the action's current permission.
-    fn allows_low_mutation(action: &Self::Action) -> bool {
-        let _ = action;
-        false
-    }
-
-    /// The least any of the resource's actions needs
-    /// ([`permission`](Self::permission)): what the generic [`APPLY`] and
-    /// group actions are offered under, each invocation then checked
-    /// against what its value needs. Writing by default; `Comment` for a
-    /// resource someone who may only comment can still reply in.
-    fn least_permission() -> PermissionRequirement {
-        PermissionRequirement::Write
+    /// The least any of the resource's actions is ([`kind_of`](Self::kind_of),
+    /// [`field_of`](Self::field_of)): what the generic [`APPLY`] and group
+    /// actions are offered under, each invocation then decided by what its
+    /// value is. An undoable change of the record by default; an undoable
+    /// change of its `comments` for a resource someone who may only comment
+    /// can still reply in.
+    fn least_need() -> ActionNeed {
+        least_need_declared(&vocabulary::<Self>().declarations())
     }
 
     /// Mutations offered by name. The generic [`APPLY`] action is always
     /// offered in addition, so any typed value can reach the host.
     fn declarations() -> Vec<ActionDecl<Self>> {
-        Vec::new()
-    }
-
-    /// Mutations whose arguments are bound from `state` at publish time
-    /// (clear-all that names the current rows): typed builders of
-    /// [`Action`](Self::Action), published beside
-    /// [`declarations`](Self::declarations) and checked, confirmed and undone
-    /// the same way. Prefer [`declarations`](Self::declarations) when the
-    /// action does not need the state. An action bound to where a person is
-    /// rather than to the document (the selection, the current folder) is
-    /// bound by the view or surface that knows it.
-    fn bound_declarations(_state: &Self::State) -> Vec<ActionDecl<Self>> {
-        Vec::new()
-    }
-
-    /// View and effect operations that depend on `state` (start or stop,
-    /// carrying the current on/off), published on the same resource as
-    /// [`declarations`](Self::declarations). Static ones stay on
-    /// [`local_operations`](Self::local_operations); a mutation bound from
-    /// the state is a [`bound_declarations`](Self::bound_declarations) entry,
-    /// never a hand-built document spec here.
-    fn bound_actions(_state: &Self::State) -> Vec<tilo_actions::ActionSpec> {
         Vec::new()
     }
 
@@ -233,6 +219,50 @@ pub trait Resource: Sized + 'static {
     /// agents and scripts — the same door as the root, not a second tree.
     fn children(_state: &Self::State) -> Vec<tilo_actions::Resource> {
         Vec::new()
+    }
+
+    /// The effects offered on the item `item` of the collection `field`,
+    /// bound to it (`#[resource(effects = E)]` with `#[effect(item = field)]`
+    /// variants): published on the item resource beside its item verbs.
+    fn item_effects(_field: &str, _item: &crate::Id) -> Vec<tilo_actions::ActionSpec> {
+        Vec::new()
+    }
+
+    /// The views the item `item` of the collection `field` offers
+    /// (`#[resource(item_views = path)]`): published on the item resource,
+    /// so a link to the item opens it in one, each opened by one of the
+    /// item's own actions ([`item_effects`](Self::item_effects)).
+    fn item_views(_field: &str, _item: &crate::Id) -> Vec<tilo_actions::ResourceViewSpec> {
+        Vec::new()
+    }
+
+    /// [`children`](Self::children) split into the children that are not
+    /// items and the items of the record's collections, so a publisher can
+    /// keep the item children it built for an earlier version and build
+    /// only those whose label changed. `others` followed by
+    /// [`item_children`](crate::items::item_children) of the rest must be
+    /// exactly `children`. The default puts every child in `others`;
+    /// `#[resource]` splits off its item collections.
+    fn children_parts(state: &Self::State) -> crate::items::ChildrenParts {
+        crate::items::ChildrenParts {
+            others: Self::children(state),
+            items: Vec::new(),
+            item_actions: Vec::new(),
+        }
+    }
+
+    /// The ids of the [`declarations`](Self::declarations) that
+    /// [`children`](Self::children) offer on some child with arguments
+    /// already bound (an item action on each item of a list), which the
+    /// resource then publishes for scripts rather than the palette.
+    ///
+    /// [`publish_head`] asks this to publish the resource's own actions
+    /// without building its children, so a resource with many children
+    /// answers from what it knows about them: `#[resource]` from how many
+    /// items each collection holds. The default builds the children and
+    /// looks.
+    fn children_offer_bound(state: &Self::State) -> Vec<&'static str> {
+        offered_bound_ids(&Self::children(state), &vocabulary::<Self>().declarations())
     }
 
     /// The nested resource `id`, when [`children`](Self::children) leaves it
@@ -318,6 +348,77 @@ pub trait Resource: Sized + 'static {
         None
     }
 
+    /// The storage version documents of this resource are written at;
+    /// `#[resource(version = N)]` raises it with each incompatible change
+    /// and [`Self::migrate`] brings older documents up to it.
+    const VERSION: u32 = 1;
+
+    /// Bring a document stored at version `from` up to [`Self::VERSION`],
+    /// reading its old shape with the model helpers. Called once per
+    /// document by [`crate::evolution::migrate`].
+    ///
+    /// # Errors
+    /// Returns why the document cannot be migrated.
+    fn migrate(doc: &mut Doc, from: u32) -> Result<(), ModelError> {
+        let _ = doc;
+        Err(ModelError::invalid(format!(
+            "{} has no migration from storage version {from}",
+            Self::LABEL
+        )))
+    }
+
+    /// The public surface: verbs, their parameters and kinds, and the
+    /// stored fields ([`crate::surface`]).
+    #[must_use]
+    fn surface() -> crate::surface::Surface {
+        crate::surface::surface_of::<Self>()
+    }
+
+    /// Whether the resource's actions include field edits ([`Edit`]),
+    /// published as [`FIELD_EDIT`]. `#[resource]` records have them.
+    const EDITS: bool = false;
+
+    /// The action a field edit of this resource is, when it has field edits
+    /// ([`Self::EDITS`]).
+    fn edit_action(edit: Edit<Self>) -> Option<Self::Action> {
+        let _ = edit;
+        None
+    }
+
+    /// Stamp the origin's clock on an action as the door admits it. A caller
+    /// never supplies the time an action carries.
+    fn stamp(action: &mut Self::Action, now_ms: i64) {
+        let _ = (action, now_ms);
+    }
+
+    /// The schemas of the own vocabularies of the record's fields
+    /// ([`Operations`](crate::Operations)), by field path pattern (`*` for
+    /// every item): what a field edit in that vocabulary carries.
+    fn op_schemas() -> Vec<(String, serde_json::Value)> {
+        Vec::new()
+    }
+
+    /// Whether the declared action `action` can be taken in `state`, and why
+    /// not when it cannot. `#[resource(available = path)]` answers it.
+    fn availability(state: &Self::State, action: &str) -> tilo_actions::Availability {
+        let _ = (state, action);
+        tilo_actions::Availability::Available
+    }
+
+    /// The first content of a new record, written by its creator once it is
+    /// created: nobody's undo step. `#[resource(seed = path)]` provides it.
+    fn seed() -> Option<Self::Action> {
+        None
+    }
+
+    /// What kind of action `action` is: whether it only reads, changes only
+    /// the document, or reaches outside it. Derived by `#[resource]` from
+    /// what each verb is able to do, never declared.
+    fn kind_of(action: &Self::Action) -> ActionKind {
+        let _ = action;
+        ActionKind::Undoable
+    }
+
     /// Register this resource's replay decoder. Override to register an
     /// existing vocabulary under additional type ids.
     fn register(registry: &mut ActionRegistry) {
@@ -338,6 +439,578 @@ pub trait Resource: Sized + 'static {
 pub const APPLY: &str = "apply";
 /// The parameter of [`APPLY`] carrying the JSON-encoded action.
 pub const APPLY_PARAM: &str = "action";
+
+/// The id of the action a resource with field edits ([`Resource::EDITS`])
+/// publishes for them: one [`Edit`] given as JSON, a path and an operation.
+pub const FIELD_EDIT: &str = "field-edit";
+/// The parameter of [`FIELD_EDIT`] carrying the edit.
+pub const EDIT_PARAM: &str = "edit";
+
+/// Read a field edit given as JSON into the action it is.
+fn read_edit(vocabulary: &Vocabulary, value: serde_json::Value) -> Result<Built, String> {
+    let edit = Edit::<()>::from_json(value)?;
+    match (vocabulary.edit)(edit) {
+        Some(action) => Ok(action),
+        None => Err(format!("{} has no field edits", vocabulary.label)),
+    }
+}
+
+/// The schema of a field edit of `R`: one alternative per editable path of
+/// its stored shape — the path's steps, the operations its type takes, the
+/// value it holds, its title and flags — so an agent builds a valid edit
+/// from the published descriptor alone. A resource without a shape gets
+/// the generic one, with its fields' own operations named for `rich`.
+pub(crate) fn edit_schema(vocabulary: &Vocabulary) -> serde_json::Value {
+    let ops = (vocabulary.op_schemas)();
+    if let Some(shape) = (vocabulary.shape)()
+        && !shape.fields().is_empty()
+    {
+        let mut alternatives = Vec::new();
+        edit_paths(shape, &[], "", &ops, &mut alternatives);
+        if !alternatives.is_empty() {
+            return described_edit(&alternatives, &ops);
+        }
+    }
+    generic_edit_schema(&ops)
+}
+
+/// The schema a field edit is checked against, with every editable path
+/// described: its template, the operations it takes, the value's schema,
+/// its title and flags (the description), and one example edit per path
+/// (the examples) — what an agent builds a field edit from.
+fn described_edit(
+    alternatives: &[serde_json::Value],
+    ops: &[(String, serde_json::Value)],
+) -> serde_json::Value {
+    let mut schema = generic_edit_schema(ops);
+    let mut lines = vec![
+        "A field edit: `path` from the record (fields by name, items by id, map entries by key) and `op` with its arguments. Editable paths:".to_owned(),
+    ];
+    let mut examples = Vec::new();
+    let mut shapes: Vec<Vec<String>> = Vec::new();
+    for alternative in alternatives {
+        let at = |pointer: &str| alternative.pointer(pointer).cloned().unwrap_or_default();
+        let template = at("/properties/path/examples/0");
+        let ops: Vec<String> = at("/properties/op/enum")
+            .as_array()
+            .map(|ops| {
+                ops.iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let value = at("/properties/value");
+        let text = |key: &str| at(key).as_str().unwrap_or_default().to_owned();
+        let kind = value_kind(&value);
+        lines.push(format!(
+            "- `{}`: {} — {}{}",
+            text("/title"),
+            ops.join(", "),
+            text("/description"),
+            kind.map_or_else(String::new, |kind| format!(" ({kind})")),
+        ));
+        // One example per shape of path (a field, an item's field, an
+        // entry): the listing names every path of each shape.
+        let shape: Vec<String> = template
+            .as_array()
+            .map(|steps| {
+                steps
+                    .iter()
+                    .filter_map(|step| step.as_object()?.keys().next().cloned())
+                    .collect()
+            })
+            .unwrap_or_default();
+        if shapes.contains(&shape) {
+            continue;
+        }
+        shapes.push(shape);
+        let mut example = serde_json::Map::new();
+        example.insert("path".into(), template);
+        if let Some(op) = ops.first() {
+            example.insert("op".into(), op.clone().into());
+        }
+        examples.push(serde_json::Value::Object(example));
+    }
+    if let Some(object) = schema.as_object_mut() {
+        object.insert("description".into(), lines.join("\n").into());
+        object.insert("examples".into(), examples.into());
+    }
+    schema
+}
+
+/// The kind of value a schema describes, in a word or two, when it says one
+/// (`string`, `number`, `one of a, b`): what a path's line in the field-edit
+/// listing tells beside its operations. Objects are described by their own
+/// paths.
+fn value_kind(schema: &serde_json::Value) -> Option<String> {
+    if let Some(options) = schema.get("enum").and_then(serde_json::Value::as_array) {
+        let options: Vec<String> = options
+            .iter()
+            .map(|option| {
+                option
+                    .as_str()
+                    .map_or_else(|| option.to_string(), str::to_owned)
+            })
+            .collect();
+        return Some(format!("one of {}", options.join(", ")));
+    }
+    match schema.get("type")? {
+        serde_json::Value::String(kind) if kind != "object" => Some(kind.clone()),
+        serde_json::Value::Array(kinds) => Some(
+            kinds
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .collect::<Vec<_>>()
+                .join(" or "),
+        ),
+        _ => None,
+    }
+}
+
+/// The generic field-edit schema, with the vocabularies of the record's
+/// fields' own operations named for `rich`.
+fn generic_edit_schema(ops: &[(String, serde_json::Value)]) -> serde_json::Value {
+    let ops = ops.to_vec();
+    let mut schema = <Edit<()> as crate::JsonSchema>::json_schema();
+    if !ops.is_empty()
+        && let Some(properties) = schema
+            .get_mut("properties")
+            .and_then(serde_json::Value::as_object_mut)
+    {
+        // A field type's own vocabulary (rich text's) can outweigh the
+        // whole listing: it is summarised by its operations and their
+        // arguments, and checked when the edit applies.
+        let alternatives = ops
+            .into_iter()
+            .map(|(path, schema)| {
+                serde_json::json!({
+                    "description": format!(
+                        "An edit of `{path}` in its own vocabulary, one of: {}",
+                        crate::schema::summary(&schema)
+                    ),
+                })
+            })
+            .collect();
+        properties.insert("rich".into(), crate::schema::one_of(alternatives));
+    }
+    schema
+}
+
+fn step_schema(kind: &str, value: serde_json::Value) -> serde_json::Value {
+    let mut properties = serde_json::Map::new();
+    properties.insert(kind.to_owned(), value);
+    serde_json::json!({
+        "type": "object",
+        "properties": properties,
+        "required": [kind],
+    })
+}
+
+/// The operations a field of `field`'s type takes, by its stored shape and
+/// type.
+fn field_ops(field: &crate::FieldShape, rich: bool) -> Vec<&'static str> {
+    let ty = field.ty;
+    match field.shape {
+        crate::Shape::Collection(_) | crate::Shape::Keyed(_) => {
+            vec!["insert-item", "remove-item", "move-to", "set"]
+        }
+        _ if rich => vec!["rich"],
+        _ if ty.starts_with("Counter") => vec!["add", "set"],
+        _ if ty.starts_with("Set<") => vec!["insert", "remove", "set"],
+        _ if ty.starts_with("Grid<") => vec![
+            "set-cell",
+            "insert-row",
+            "insert-column",
+            "remove-row",
+            "remove-column",
+        ],
+        _ if ty.starts_with("Outbox") => vec!["settle", "forget"],
+        crate::Shape::Map(_) => vec!["set", "remove-key"],
+        _ if ty == "String" => vec!["set", "splice", "replace"],
+        _ => vec!["set"],
+    }
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "one walk over the stored shape, an alternative per kind of path"
+)]
+fn edit_paths(
+    shape: crate::Shape,
+    steps: &[serde_json::Value],
+    dotted: &str,
+    rich: &[(String, serde_json::Value)],
+    out: &mut Vec<serde_json::Value>,
+) {
+    let alternative = |steps: &[serde_json::Value],
+                       open: bool,
+                       ops: &[&str],
+                       value: serde_json::Value,
+                       rich: Option<&serde_json::Value>,
+                       title: &str,
+                       description: String| {
+        // The path as an agent writes it, items by a placeholder id.
+        let template: Vec<serde_json::Value> = steps
+            .iter()
+            .map(|step| {
+                let properties = step.get("properties").and_then(serde_json::Value::as_object);
+                match properties.and_then(|properties| properties.iter().next()) {
+                    Some((kind, value)) if kind == "field" => {
+                        serde_json::json!({ "field": value.get("const").cloned().unwrap_or_default() })
+                    }
+                    Some((kind, _)) => serde_json::json!({ kind.clone(): format!("<{kind}>") }),
+                    None => serde_json::Value::Null,
+                }
+            })
+            .collect();
+        let dotted: Vec<String> = template
+            .iter()
+            .map(
+                |step| match step.get("field").and_then(serde_json::Value::as_str) {
+                    Some(field) => field.to_owned(),
+                    None => "*".to_owned(),
+                },
+            )
+            .collect();
+        let mut path = serde_json::json!({
+            "type": "array",
+            "prefixItems": steps,
+            "minItems": steps.len(),
+            "examples": [template],
+        });
+        if let Some(path) = path.as_object_mut() {
+            if open {
+                // What is inside the entry or cell, by any steps.
+                path.insert("items".into(), serde_json::json!({ "type": "object" }));
+            } else {
+                path.insert("maxItems".into(), steps.len().into());
+            }
+        }
+        let mut properties = serde_json::Map::new();
+        properties.insert("path".into(), path);
+        properties.insert("op".into(), serde_json::json!({ "enum": ops }));
+        properties.insert("value".into(), value);
+        if let Some(rich) = rich {
+            properties.insert("rich".into(), rich.clone());
+        }
+        serde_json::json!({
+            "title": dotted.join("."),
+            "description": if description.is_empty() {
+                title.to_owned()
+            } else {
+                format!("{title}; {description}")
+            },
+            "type": "object",
+            "properties": properties,
+            "required": ["path", "op"],
+        })
+    };
+    let item = step_schema("item", serde_json::json!({ "type": "string" }));
+    // A read-only field is changed only by the record's verbs: no path an
+    // edit could take.
+    for field in shape.fields().iter().filter(|field| !field.readonly) {
+        let mut here = steps.to_vec();
+        here.push(step_schema(
+            "field",
+            serde_json::json!({ "const": field.key }),
+        ));
+        let path = format!("{dotted}{}", field.key);
+        let rich_schema = rich
+            .iter()
+            .find(|(at, _)| *at == path)
+            .map(|(_, schema)| schema);
+        let ops = field_ops(field, rich_schema.is_some());
+        let collection = matches!(
+            field.shape,
+            crate::Shape::Collection(_) | crate::Shape::Keyed(_)
+        );
+        // A value field's `set` takes its value; containers' operations
+        // carry items, elements or keys of their own.
+        let simple = ops.first() == Some(&"set") && !collection;
+        let value = if simple {
+            (field.schema)()
+        } else {
+            serde_json::json!({})
+        };
+        let mut flags = Vec::new();
+        if field.unit {
+            flags.push("its own storage unit".to_owned());
+        }
+        if collection {
+            flags.push(if field.quiet_remove {
+                "removing an item asks nothing".to_owned()
+            } else {
+                "removing an item asks for confirmation".to_owned()
+            });
+        }
+        let description = flags.join("; ");
+        out.push(alternative(
+            &here,
+            false,
+            &ops,
+            value,
+            rich_schema,
+            field.title,
+            description,
+        ));
+        match field.shape {
+            crate::Shape::Record(_) => {
+                edit_paths(field.shape, &here, &format!("{path}."), rich, out);
+            }
+            crate::Shape::Collection(inner) | crate::Shape::Keyed(inner) => {
+                let mut items = here.clone();
+                items.push(item.clone());
+                let item_value = (field.schema)().get("items").map_or_else(
+                    || serde_json::json!({}),
+                    |items| {
+                        // A collection's JSON lists `{id, value}` entries.
+                        items
+                            .get("properties")
+                            .and_then(|properties| properties.get("value"))
+                            .cloned()
+                            .unwrap_or_else(|| items.clone())
+                    },
+                );
+                out.push(alternative(
+                    &items,
+                    false,
+                    &["set"],
+                    item_value,
+                    None,
+                    field.title,
+                    "one item, by its id".to_owned(),
+                ));
+                edit_paths(*inner, &items, &format!("{path}.*."), rich, out);
+            }
+            crate::Shape::Value if field.ty.starts_with("Grid<") => {
+                let mut cells = here.clone();
+                cells.push(step_schema(
+                    "cell",
+                    serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "row": { "type": "string" },
+                            "column": { "type": "string" },
+                        },
+                        "required": ["row", "column"],
+                    }),
+                ));
+                out.push(alternative(
+                    &cells,
+                    true,
+                    &[
+                        "set", "splice", "replace", "add", "insert", "remove", "rich",
+                    ],
+                    serde_json::json!({}),
+                    None,
+                    field.title,
+                    "a cell, by its row and column ids, and what is inside it".to_owned(),
+                ));
+            }
+            crate::Shape::Map(_) => {
+                let mut entries = here.clone();
+                entries.push(step_schema("key", serde_json::json!({ "type": "string" })));
+                out.push(alternative(
+                    &entries,
+                    true,
+                    &["set", "splice", "replace", "add", "insert", "remove"],
+                    serde_json::json!({}),
+                    None,
+                    field.title,
+                    "an entry, by its key, and what is inside it".to_owned(),
+                ));
+            }
+            crate::Shape::Value => {}
+        }
+    }
+}
+
+/// The published spec of [`FIELD_EDIT`].
+fn field_edit_spec(vocabulary: &'static Vocabulary) -> ActionSpec {
+    // Built once per type: it describes every editable path, which only
+    // the type decides.
+    let schema = per_type(vocabulary, TypeSchema::Edit, &|| {
+        Some(edit_schema(vocabulary))
+    })
+    .unwrap_or_else(|| Arc::new(edit_schema(vocabulary)));
+    rooted_edit_spec(
+        vocabulary,
+        (Vec::new(), (vocabulary.shape)()),
+        schema,
+        format!("Edit a {} field", vocabulary.label),
+        "The path of the field from the record's root, and the operation",
+    )
+}
+
+/// The field edit offered on the item `item` of the collection `field`:
+/// paths from the item, its editable paths described as the record's are.
+#[must_use]
+pub fn item_field_edit_spec<R: Resource>(field: &str, item: &crate::Id) -> Option<ActionSpec> {
+    item_field_edit_spec_of(vocabulary::<R>(), field, item)
+}
+
+/// [`item_field_edit_spec`] of the resource `vocabulary`.
+pub(crate) fn item_field_edit_spec_of(
+    vocabulary: &'static Vocabulary,
+    field: &str,
+    item: &crate::Id,
+) -> Option<ActionSpec> {
+    field_edit_spec_at_of(
+        vocabulary,
+        vec![
+            crate::Segment::Field(field.to_owned()),
+            crate::Segment::Item(item.clone()),
+        ],
+    )
+}
+
+/// The field edit offered on the item at `prefix` (fields and item ids from
+/// the record, ending at an item): paths from the item, its editable paths
+/// described as the record's are.
+#[must_use]
+pub fn field_edit_spec_at<R: Resource>(prefix: Vec<crate::Segment>) -> Option<ActionSpec> {
+    field_edit_spec_at_of(vocabulary::<R>(), prefix)
+}
+
+/// [`field_edit_spec_at`] of the resource `vocabulary`.
+pub(crate) fn field_edit_spec_at_of(
+    vocabulary: &'static Vocabulary,
+    prefix: Vec<crate::Segment>,
+) -> Option<ActionSpec> {
+    let mut shape = (vocabulary.shape)()?;
+    let mut dotted = String::new();
+    let mut readonly = false;
+    for segment in &prefix {
+        match (shape, segment) {
+            (crate::Shape::Record(fields), crate::Segment::Field(key)) => {
+                let field = fields.iter().find(|candidate| candidate.key == key)?;
+                readonly |= field.readonly;
+                shape = field.shape;
+                dotted.push_str(key);
+                dotted.push('.');
+            }
+            (
+                crate::Shape::Collection(inner) | crate::Shape::Keyed(inner),
+                crate::Segment::Item(_),
+            ) => {
+                shape = *inner;
+                dotted.push_str("*.");
+            }
+            _ => return None,
+        }
+    }
+    if shape.fields().is_empty() || readonly {
+        return None;
+    }
+    // The same for every item: built once per type and path.
+    let schema = per_type_at(vocabulary, TypeSchema::Edit, &dotted, &|| {
+        let ops: Vec<(String, serde_json::Value)> = (vocabulary.op_schemas)()
+            .into_iter()
+            .filter_map(|(path, schema)| {
+                path.strip_prefix(&dotted)
+                    .map(|rest| (rest.to_owned(), schema))
+            })
+            .collect();
+        let mut alternatives = Vec::new();
+        edit_paths(shape, &[], "", &ops, &mut alternatives);
+        (!alternatives.is_empty()).then(|| described_edit(&alternatives, &ops))
+    })?;
+    Some(rooted_edit_spec(
+        vocabulary,
+        (prefix, Some(shape)),
+        schema,
+        "Edit a field of this item".to_owned(),
+        "The path of the field from the item, and the operation",
+    ))
+}
+
+/// The field edit at paths under `prefix`, described by `schema`.
+fn rooted_edit_spec(
+    vocabulary: &'static Vocabulary,
+    (prefix, root): (Vec<crate::Segment>, Option<crate::Shape>),
+    schema: Arc<serde_json::Value>,
+    label: String,
+    description: &'static str,
+) -> ActionSpec {
+    let mut spec = edit_spec(vocabulary, prefix, schema, label, description);
+    // Any door reads the edit without this record's code: it is a field
+    // edit, and these collections' removals ask nothing.
+    spec.contract
+        .tags
+        .push(tilo_action_policy::edits::FIELD_EDIT_TAG.to_owned());
+    if let Some(root) = root {
+        spec.contract.tags.extend(
+            root.quiet_removals()
+                .into_iter()
+                .map(|path| format!("{}{path}", tilo_action_policy::edits::QUIET_REMOVAL_TAG)),
+        );
+    }
+    spec
+}
+
+/// The field edit at paths under `prefix`, described by `schema`.
+fn edit_spec(
+    vocabulary: &'static Vocabulary,
+    prefix: Vec<crate::Segment>,
+    schema: Arc<serde_json::Value>,
+    label: String,
+    description: &'static str,
+) -> ActionSpec {
+    let read = move |value: &serde_json::Map<String, serde_json::Value>| {
+        let edit = Edit::<()>::from_json(serde_json::Value::Object(value.clone()))?;
+        let mut path = prefix.clone();
+        path.extend(edit.path().iter().cloned());
+        match (vocabulary.edit)(Edit::new(path, edit.op().clone())) {
+            Some(action) => Ok(action),
+            None => Err(format!("{} has no field edits", vocabulary.label)),
+        }
+    };
+    let read = std::sync::Arc::new(read);
+    let risk_read = std::sync::Arc::clone(&read);
+    ActionSpec::typed(
+        FIELD_EDIT,
+        label,
+        "Field edit as JSON",
+        ExecutionLocus::ClientLocal,
+        vec![
+            ActionParam::required_owned(EDIT_PARAM, ParamType::Object, description)
+                .with_shared_schema(schema),
+        ],
+        move |args| {
+            let Some(tilo_actions::ArgValue::Object(value)) = args.get(EDIT_PARAM) else {
+                return refused("missing edit");
+            };
+            match read(value) {
+                Ok(mut action) => {
+                    action.stamp(origin_now_ms());
+                    encoded(&action)
+                }
+                Err(reason) => refused(&reason),
+            }
+        },
+    )
+    .with_description(
+        "Change one field: {path: [{field: name} | {item: id} | {key: k} | {cell: {row, column}}], op: set | splice | replace | add | insert | remove | ..., ...its arguments}.",
+    )
+    // Controls and agents edit fields; a person picks named actions or edits
+    // the field in place.
+    .programmatic()
+    // A field edit changes only the document.
+    .reversible()
+    // History records the edit itself, not `field-edit`.
+    .carrying()
+    // Removing a collection item asks, as a delete verb does.
+    .with_risk(move |args| {
+        let Some(tilo_actions::ArgValue::Object(value)) = args.get(EDIT_PARAM) else {
+            return tilo_actions::RiskLevel::Low;
+        };
+        match risk_read(value) {
+            Ok(action) => action.risk(),
+            Err(_) => tilo_actions::RiskLevel::Low,
+        }
+    })
+}
 
 /// The edits of a resource whose document holds nothing. An app whose data
 /// lives entirely outside any document — credentials in this device's
@@ -365,7 +1038,9 @@ impl tilo_actions::Action for NoAction {
 /// match. Long prose an entry is found by — a book's chapter, a long note —
 /// is its `body`, which the index reads in place rather than the entry
 /// copying it, and whose segments may each be a hit of their own.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+// `Clone` and `PartialEq` are written out: derived, they are inlined into
+// every app that copies or compares an entry.
+#[derive(Debug, Default, Eq)]
 pub struct SearchEntry {
     /// The containing resource scope for a flat anchor.
     pub within: Option<String>,
@@ -385,6 +1060,44 @@ pub struct SearchEntry {
     pub fields: Vec<(String, SearchWeight)>,
     /// Structured filter values: token key, localized group label, value.
     pub facets: Vec<(String, String, String)>,
+}
+
+impl Clone for SearchEntry {
+    fn clone(&self) -> Self {
+        Self {
+            within: self.within.clone(),
+            row: self.row.clone(),
+            anchor: self.anchor.clone(),
+            title: self.title.clone(),
+            text: self.text.clone(),
+            action: self.action.clone(),
+            group: self.group.clone(),
+            subtitle: self.subtitle.clone(),
+            icon: self.icon.clone(),
+            boost: self.boost,
+            body: self.body.clone(),
+            fields: self.fields.clone(),
+            facets: self.facets.clone(),
+        }
+    }
+}
+
+impl PartialEq for SearchEntry {
+    fn eq(&self, other: &Self) -> bool {
+        self.within == other.within
+            && self.row == other.row
+            && self.anchor == other.anchor
+            && self.title == other.title
+            && self.text == other.text
+            && self.action == other.action
+            && self.group == other.group
+            && self.subtitle == other.subtitle
+            && self.icon == other.icon
+            && self.boost == other.boost
+            && self.body == other.body
+            && self.fields == other.fields
+            && self.facets == other.facets
+    }
 }
 
 /// How much a match in one of a [`SearchEntry`]'s fields counts. The title
@@ -515,6 +1228,15 @@ impl SearchEntry {
         }
     }
 
+    /// List the hit inside the scope `scope` (an item's anchor) though its
+    /// own anchor lies elsewhere: an article in its feed's scope, related by
+    /// a field rather than by nesting.
+    #[must_use]
+    pub fn inside(mut self, scope: impl Into<String>) -> Self {
+        self.within = Some(scope.into());
+        self
+    }
+
     /// The item a hit opens.
     #[must_use]
     pub fn anchored(mut self, anchor: impl Into<String>) -> Self {
@@ -526,6 +1248,18 @@ impl SearchEntry {
     #[must_use]
     pub fn invoking(mut self, action: tilo_actions::ActionAddress) -> Self {
         self.action = Some(action);
+        self
+    }
+
+    /// Anchored at the live row `row`, opened by running `effect`, the
+    /// view effect that row offers (go to a bookmark, show a find match):
+    /// for a hit whose row is the window's own state rather than an item
+    /// of the record.
+    #[must_use]
+    pub fn opening<E: crate::Effect>(mut self, row: impl Into<String>, effect: &E) -> Self {
+        let row = row.into();
+        self.action = Some(tilo_actions::ActionAddress::new(row.clone(), effect.id()));
+        self.anchor = Some(row);
         self
     }
 
@@ -578,7 +1312,12 @@ impl SearchEntry {
 
 /// Where a participant is inside a resource, in the resource's own terms:
 /// the same on every collaborator's screen whatever its layout.
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// Also what an action is told to act at (`#[param(place)] at:
+/// Option<Place>`): it travels as `{"item": id}`, `{"item": id, "at": n}` or
+/// `{"item": id, "start": n, "end": n}`.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(into = "PlaceWire")]
 pub enum Place {
     /// An item (a paragraph, a clip, a row).
     Item(String),
@@ -592,84 +1331,247 @@ pub enum Place {
     },
 }
 
+impl Place {
+    /// The item the place is in.
+    #[must_use]
+    pub fn item(&self) -> &str {
+        match self {
+            Self::Item(item) | Self::Caret { item, .. } | Self::Range { item, .. } => item,
+        }
+    }
+}
+
+// Decoded through a JSON value whatever the deserializer, by one function.
+impl<'de> serde::Deserialize<'de> for Place {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = <serde_json::Value as serde::Deserialize>::deserialize(deserializer)?;
+        match place_from_json(value) {
+            Ok(place) => Ok(place),
+            Err(error) => Err(serde::de::Error::custom(error)),
+        }
+    }
+}
+
+/// The place in `value`, its JSON form.
+fn place_from_json(value: serde_json::Value) -> Result<Place, String> {
+    match serde_json::from_value::<PlaceWire>(value) {
+        Ok(wire) => Place::try_from(wire),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+impl crate::JsonSchema for Place {
+    fn json_schema() -> serde_json::Value {
+        tilo_actions::place_schema()
+    }
+}
+
+/// [`Place`] as it travels.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PlaceWire {
+    item: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    at: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    start: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    end: Option<usize>,
+}
+
+impl From<Place> for PlaceWire {
+    fn from(place: Place) -> Self {
+        match place {
+            Place::Item(item) => Self {
+                item,
+                at: None,
+                start: None,
+                end: None,
+            },
+            Place::Caret { item, at } => Self {
+                item,
+                at: Some(at),
+                start: None,
+                end: None,
+            },
+            Place::Range { item, start, end } => Self {
+                item,
+                at: None,
+                start: Some(start),
+                end: Some(end),
+            },
+        }
+    }
+}
+
+impl TryFrom<PlaceWire> for Place {
+    type Error = String;
+
+    fn try_from(wire: PlaceWire) -> Result<Self, String> {
+        if wire.item.is_empty() {
+            return Err("a place names its item".into());
+        }
+        match (wire.at, wire.start, wire.end) {
+            (None, None, None) => Ok(Self::Item(wire.item)),
+            (Some(at), None, None) => Ok(Self::Caret {
+                item: wire.item,
+                at,
+            }),
+            (None, Some(start), Some(end)) if start <= end => Ok(Self::Range {
+                item: wire.item,
+                start,
+                end,
+            }),
+            _ => {
+                Err("a place is an item, a caret `at` in it, or a range `start..end` of it".into())
+            }
+        }
+    }
+}
+
 /// Builds a resource's action from arguments already bound against the
 /// declaration's parameters. `now_ms` is the origin's clock, captured once so
 /// replay is deterministic.
 pub type BuildAction<R> =
     Arc<dyn Fn(&ActionArgs, i64) -> Result<<R as Resource>::Action, String> + Send + Sync>;
 
-/// One mutation offered by name.
+/// One mutation offered by name: a [`Declaration`] of the resource `R`,
+/// whose fields it derefs to.
 pub struct ActionDecl<R: Resource> {
-    pub id: &'static str,
-    pub label: String,
-    pub description: Option<String>,
-    pub params: Vec<ActionParam>,
-    pub permission: PermissionRequirement,
-    pub destructive: bool,
-    /// What the action answers its caller with, beside the change: the state
-    /// it left, as the declaring resource's surface reports it.
-    pub result: Option<tilo_actions::ResultSpec>,
-    /// Contract tags its callers read: a precondition on the invoker's view
-    /// (`ContextRequirement`), a text that may arrive in parts.
-    pub tags: Vec<String>,
-    /// The prompt of an action whose one input is content another action
-    /// produced (an image to place), carried by its callers rather than
-    /// typed: the build reads its content hash as the
-    /// [`PROMPTED_PARAM`](tilo_actions::PROMPTED_PARAM) argument.
-    pub content: Option<String>,
-    /// A bound edit that refines the resource's declared action of the same
-    /// id: it builds the same action from the same arguments, and also
-    /// places its invoker (the caret an append leaves its writer at).
-    /// See [`bind_declaration`].
-    pub refines: bool,
-    pub build: BuildAction<R>,
+    decl: Declaration,
+    marker: std::marker::PhantomData<fn() -> R>,
 }
 
 impl<R: Resource> Clone for ActionDecl<R> {
     fn clone(&self) -> Self {
         Self {
-            id: self.id,
-            label: self.label.clone(),
-            description: self.description.clone(),
-            params: self.params.clone(),
-            permission: self.permission,
-            destructive: self.destructive,
-            result: self.result.clone(),
-            tags: self.tags.clone(),
-            content: self.content.clone(),
-            refines: self.refines,
-            build: Arc::clone(&self.build),
+            decl: self.decl.clone(),
+            marker: std::marker::PhantomData,
         }
     }
 }
 
+impl<R: Resource> std::ops::Deref for ActionDecl<R> {
+    type Target = Declaration;
+
+    fn deref(&self) -> &Declaration {
+        &self.decl
+    }
+}
+
+impl<R: Resource> AsRef<Declaration> for ActionDecl<R> {
+    fn as_ref(&self) -> &Declaration {
+        &self.decl
+    }
+}
+
+impl<R: Resource> std::ops::DerefMut for ActionDecl<R> {
+    fn deref_mut(&mut self) -> &mut Declaration {
+        &mut self.decl
+    }
+}
+
 impl<R: Resource> ActionDecl<R> {
+    /// A field edit whose one value its caller supplies, offered as the
+    /// action `id` labelled `label`: the parameter `param` (described by
+    /// `description`, typed by `V`'s schema) becomes the edit `make(value)`.
+    /// What a row offers when the edit is bound to it but its value is not
+    /// ("Rename playlist", "Add a song to this playlist").
+    pub fn edit_asking<V>(
+        id: &'static str,
+        label: impl Into<String>,
+        param: &'static str,
+        description: &'static str,
+        make: impl Fn(V) -> crate::Edit<R> + Send + Sync + 'static,
+    ) -> Self
+    where
+        V: DeserializeOwned + crate::JsonSchema,
+    {
+        let schema = V::json_schema();
+        let declared = ActionParam::required_owned(
+            param,
+            crate::__private::param_type_of(&schema),
+            description,
+        )
+        .with_schema(schema);
+        let vocabulary = vocabulary::<R>();
+        let build: Builds = Arc::new(move |args, now_ms| {
+            let value = taken_arg(args, param)?;
+            let value: V = match serde_json::from_value(value) {
+                Ok(value) => value,
+                Err(error) => return Err(format!("`{param}`: {error}")),
+            };
+            stamped_edit(vocabulary, make(value).retyped(), now_ms)
+        });
+        Self::declared(Declaration::new(
+            vocabulary,
+            id,
+            label.into(),
+            vec![declared],
+            build,
+        ))
+    }
+
+    /// The field edit `edit` offered as the action `id` labelled `label`,
+    /// its value bound: what a place or a live row offers ("Use Proton for
+    /// Adobe Reader"), checked and recorded as the edit itself.
+    pub fn edit(id: &'static str, label: impl Into<String>, edit: crate::Edit<R>) -> Self
+    where
+        crate::Edit<R>: Send + Sync,
+    {
+        Self::declared(edit_declaration(
+            vocabulary::<R>(),
+            id,
+            label.into(),
+            edit.retyped(),
+        ))
+    }
+
     pub fn new(
         id: &'static str,
         label: impl Into<String>,
         params: Vec<ActionParam>,
         build: impl Fn(&ActionArgs, i64) -> Result<R::Action, String> + Send + Sync + 'static,
     ) -> Self {
-        Self {
+        let build: Builds = Arc::new(move |args, now_ms| match build(args, now_ms) {
+            Ok(action) => Ok(Built::of::<R>(action)),
+            Err(reason) => Err(reason),
+        });
+        Self::declared(Declaration::new(
+            vocabulary::<R>(),
             id,
-            label: label.into(),
-            description: None,
+            label.into(),
             params,
-            permission: PermissionRequirement::Write,
-            destructive: false,
-            result: None,
-            tags: Vec::new(),
-            content: None,
-            refines: false,
-            build: Arc::new(build),
+            build,
+        ))
+    }
+
+    pub(crate) fn declared(decl: Declaration) -> Self {
+        Self {
+            decl,
+            marker: std::marker::PhantomData,
         }
+    }
+
+    /// The declaration, of whichever resource.
+    #[must_use]
+    pub fn into_declaration(self) -> Declaration {
+        self.decl
+    }
+
+    /// The action it builds from `args` at `now_ms`.
+    ///
+    /// # Errors
+    /// Why the arguments do not make the action.
+    pub fn build_action(&self, args: &ActionArgs, now_ms: i64) -> Result<R::Action, String> {
+        typed::<R>((self.decl.build)(args, now_ms)?)
     }
 
     /// Mark a bound edit as refining the resource's declared action of the
     /// same id ([`bind_declaration`]).
     #[must_use]
     pub fn refining(mut self) -> Self {
-        self.refines = true;
+        self.decl.refines = true;
         self
     }
 
@@ -677,24 +1579,21 @@ impl<R: Resource> ActionDecl<R> {
     /// incremental-text declaration) for the callers that read it.
     #[must_use]
     pub fn tagged(mut self, tag: impl Into<String>) -> Self {
-        let tag = tag.into();
-        if !self.tags.contains(&tag) {
-            self.tags.push(tag);
-        }
+        self.decl.tag(tag.into());
         self
     }
 
     /// Take content another action produced as the one input, described by
-    /// `prompt`; see [`Self::content`].
+    /// `prompt`; see [`Declaration::content`].
     #[must_use]
     pub fn collecting_content(mut self, prompt: impl Into<String>) -> Self {
-        self.content = Some(prompt.into());
+        self.decl.content = Some(prompt.into());
         self
     }
 
     #[must_use]
     pub fn describe(mut self, description: impl Into<String>) -> Self {
-        self.description = Some(description.into());
+        self.decl.description = Some(description.into());
         self
     }
 
@@ -702,37 +1601,134 @@ impl<R: Resource> ActionDecl<R> {
     /// state it left), which the hosting surface supplies after it applies.
     #[must_use]
     pub fn returns(mut self, result: tilo_actions::ResultSpec) -> Self {
-        self.result = Some(result);
+        self.decl.result = Some(result);
         self
     }
 
+    /// Set what the action is able to do.
     #[must_use]
-    pub fn requiring(mut self, permission: PermissionRequirement) -> Self {
-        self.permission = permission;
+    pub fn of_kind(mut self, kind: ActionKind) -> Self {
+        self.decl.kind = kind;
+        self
+    }
+
+    /// Place the action below the one field it writes.
+    #[must_use]
+    pub fn below_field(mut self, field: &'static str) -> Self {
+        self.decl.field = Some(field);
         self
     }
 
     #[must_use]
     pub fn destructive(mut self) -> Self {
-        self.destructive = true;
+        self.decl.destructive = true;
+        self
+    }
+
+    /// The units the action writes, as the surface lists them
+    /// ([`crate::footprint`]).
+    #[must_use]
+    pub fn writing(mut self, units: Vec<String>) -> Self {
+        self.decl.writes = units;
         self
     }
 
     /// Answer the caller with what the action made, from
     /// [`Resource::answer`].
     #[must_use]
-    pub fn answering(self) -> Self {
-        self.returns(tilo_actions::ResultSpec::Json {
-            schema: serde_json::json!({"type": "object"}),
-        })
+    pub fn answering(mut self) -> Self {
+        self.decl.answer();
+        self
     }
 }
 
-/// Milliseconds since the Unix epoch on this machine. Only ever read on the
-/// origin, when an action is built; never inside `apply`.
+impl Declaration {
+    fn tag(&mut self, tag: String) {
+        if !self.tags.contains(&tag) {
+            self.tags.push(tag);
+        }
+    }
+
+    fn answer(&mut self) {
+        self.result = Some(tilo_actions::ResultSpec::Json {
+            schema: serde_json::json!({"type": "object"}),
+        });
+    }
+}
+
+/// The action of `R` that `built` is.
+fn typed<R: Resource>(built: Built) -> Result<R::Action, String> {
+    built
+        .into_action::<R>()
+        .ok_or_else(|| format!("not an action of a {}", R::LABEL))
+}
+
+/// The argument `param` of `args`, taken out.
+fn taken_arg(args: &ActionArgs, param: &str) -> Result<serde_json::Value, String> {
+    match args.to_json().remove(param) {
+        Some(value) => Ok(value),
+        None => Err(format!("`{param}` is missing")),
+    }
+}
+
+/// The action the field edit `edit` of the resource `vocabulary` is,
+/// stamped at `now_ms`.
+pub(crate) fn stamped_edit(
+    vocabulary: &Vocabulary,
+    edit: Edit<()>,
+    now_ms: i64,
+) -> Result<Built, String> {
+    let Some(mut action) = (vocabulary.edit)(edit) else {
+        return Err(format!("{} has no field edits", vocabulary.label));
+    };
+    action.stamp(now_ms);
+    Ok(action)
+}
+
+/// [`ActionDecl::edit`] of the resource `vocabulary`.
+fn edit_declaration(
+    vocabulary: &'static Vocabulary,
+    id: &'static str,
+    label: String,
+    edit: Edit<()>,
+) -> Declaration {
+    let destructive = (vocabulary.edit)(edit.clone())
+        .is_some_and(|action| action.risk() == tilo_actions::RiskLevel::Destructive);
+    let build: Builds = Arc::new(move |_, now_ms| stamped_edit(vocabulary, edit.clone(), now_ms));
+    let mut decl = Declaration::new(vocabulary, id, label, Vec::new(), build);
+    decl.destructive = destructive;
+    decl
+}
+
+thread_local! {
+    /// The origin clock of a [`Replica`](crate::Replica) applying an action
+    /// on this thread, in place of the machine's.
+    static ORIGIN_CLOCK: std::cell::Cell<Option<i64>> = const { std::cell::Cell::new(None) };
+}
+
+/// Milliseconds since the Unix epoch on this machine (or the clock of the
+/// replica applying an action here). Only ever read on the origin, when an
+/// action is built; never inside `apply`.
 #[must_use]
 pub fn origin_now_ms() -> i64 {
-    i64::try_from(tilo_clock::unix_now_ms()).unwrap_or(i64::MAX)
+    ORIGIN_CLOCK
+        .with(std::cell::Cell::get)
+        .unwrap_or_else(|| i64::try_from(tilo_clock::unix_now_ms()).unwrap_or(i64::MAX))
+}
+
+/// Run `f` with the origin clock reading `now_ms`: every action built
+/// inside it is stamped with that time, so encoding the same invocation
+/// twice (once to ask for confirmation, once to check it) gives the same
+/// action.
+pub fn with_origin_clock<T>(now_ms: i64, f: impl FnOnce() -> T) -> T {
+    struct Restore(Option<i64>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            ORIGIN_CLOCK.with(|clock| clock.set(self.0));
+        }
+    }
+    let _restore = Restore(ORIGIN_CLOCK.with(|clock| clock.replace(Some(now_ms))));
+    f()
 }
 
 /// Encode a resource action under its registry type id.
@@ -743,121 +1739,108 @@ pub fn encode<R: Resource>(action: &R::Action) -> Result<EncodedAction, ActionEr
     EncodedAction::encode(R::ACTION_TYPE, action)
 }
 
-/// What history calls one action value of `R`: the label of the declared
-/// action it names (a `remove-marks` value is "Remove marks"), else its
-/// variant name in words, or `None` when it names neither.
-///
-/// The generic [`APPLY`] and a [`GROUP`](crate::GROUP) of one kind of edit
-/// are recorded under this name, so a person's history says what each edit
-/// did rather than that an edit was applied.
-pub fn action_label<R: Resource>(action: &R::Action) -> Option<String> {
-    serde_json::to_value(action)
-        .ok()
-        .and_then(|value| value_label::<R>(&value))
-}
-
-fn value_label<R: Resource>(value: &serde_json::Value) -> Option<String> {
-    let declarations = R::declarations();
-    let ids: Vec<&str> = declarations.iter().map(|decl| decl.id).collect();
-    if let Some((id, _)) = crate::schema::declared_invocation(value, &ids) {
-        return declarations
-            .into_iter()
-            .find(|decl| decl.id == id)
-            .map(|decl| decl.label);
+/// The encoded form of a built action, or a refusal carrying why it does
+/// not encode.
+pub(crate) fn encoded(action: &Built) -> EncodedAction {
+    match action.encode() {
+        Ok(encoded) => encoded,
+        Err(error) => refused(&error.to_string()),
     }
-    let value = value.get("op").unwrap_or(value);
-    let variant = match value {
-        serde_json::Value::String(variant) => variant.as_str(),
-        serde_json::Value::Object(fields) => match fields.get("action") {
-            Some(serde_json::Value::String(variant)) => variant.as_str(),
-            _ if fields.len() == 1 => fields.keys().next()?.as_str(),
-            _ => return None,
-        },
-        _ => return None,
-    };
-    let words = in_words(variant);
-    (!words.is_empty()).then_some(words)
-}
-
-/// `remove-marks`, `remove_marks` and `RemoveMarks` as "Remove marks".
-fn in_words(identifier: &str) -> String {
-    let mut words = String::with_capacity(identifier.len().saturating_add(4));
-    let mut previous_lowercase_or_digit = false;
-    for character in identifier.chars() {
-        if matches!(character, '-' | '_' | ' ') {
-            if !words.is_empty() && !words.ends_with(' ') {
-                words.push(' ');
-            }
-            previous_lowercase_or_digit = false;
-            continue;
-        }
-        if character.is_uppercase() && previous_lowercase_or_digit {
-            words.push(' ');
-        }
-        previous_lowercase_or_digit = character.is_lowercase() || character.is_ascii_digit();
-        if words.is_empty() {
-            words.extend(character.to_uppercase());
-        } else {
-            words.extend(character.to_lowercase());
-        }
-    }
-    words.trim_end().to_owned()
-}
-
-/// The history name of an encoded [`APPLY`]: its action's
-/// [`action_label`].
-pub(crate) fn apply_label<R: Resource>(encoded: &EncodedAction) -> Option<String> {
-    if encoded.type_id != R::ACTION_TYPE {
-        return None;
-    }
-    let value = serde_json::from_slice::<serde_json::Value>(&encoded.payload).ok()?;
-    value_label::<R>(&value)
-}
-
-/// The history name of an encoded [`GROUP`](crate::GROUP) whose members are
-/// all one kind of edit (a selection's moves are "Edit marks"); a mixed group
-/// keeps the group's own label.
-pub(crate) fn group_label<R: Resource>(encoded: &EncodedAction) -> Option<String> {
-    if encoded.type_id != crate::group::group_type::<R>() {
-        return None;
-    }
-    let members = serde_json::from_slice::<Vec<serde_json::Value>>(&encoded.payload).ok()?;
-    let mut labels = members.iter().map(value_label::<R>);
-    let first = labels.next()??;
-    labels
-        .all(|label| label.as_deref() == Some(first.as_str()))
-        .then_some(first)
 }
 
 /// The encoded form of a builder's result: the action, or a refusal that
 /// carries the builder's reason.
-pub(crate) fn encode_built<R: Resource>(built: Result<R::Action, String>) -> EncodedAction {
+pub(crate) fn encode_built(built: Result<Built, String>) -> EncodedAction {
     match built {
-        Ok(action) => encode::<R>(&action).unwrap_or_else(|error| refused::<R>(&error.to_string())),
-        Err(reason) => refused::<R>(&reason),
+        Ok(action) => encoded(&action),
+        Err(reason) => refused(&reason),
     }
+}
+
+/// The nested resource `id` of `state`, read from `doc` with `id` demanded
+/// when `state` has not loaded it: an item past what a view shows or a
+/// tree pages still resolves by id ([`Resource::child`], [`Resource::load`]).
+pub fn child_by_id<R: Resource>(
+    state: &R::State,
+    doc: &Doc,
+    id: &str,
+) -> Option<tilo_actions::Resource> {
+    if let Some(child) = R::child(state, id) {
+        return Some(child);
+    }
+    let mut fresh = R::read(doc).ok()?;
+    // A child is published as `<kind>/<field>/<key>`; its record knows
+    // it by the key.
+    let key = id.rsplit('/').next().unwrap_or(id);
+    R::load(&mut fresh, doc, &Demand::none().with_keys([id, key])).ok()?;
+    R::child(&fresh, id)
 }
 
 /// An action whose payload cannot be decoded, so the host refuses it with
 /// the builder's reason instead of applying anything.
-pub(crate) fn refused<R: Resource>(reason: &str) -> EncodedAction {
-    let _ = R::ACTION_TYPE;
+pub(crate) fn refused(reason: &str) -> EncodedAction {
     EncodedAction {
         type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.to_owned(),
         payload: reason.as_bytes().to_vec(),
     }
 }
 
+/// The ids of `declarations` some child among `children` offers bound.
+fn offered_bound_ids(
+    children: &[tilo_actions::Resource],
+    declarations: &[Declaration],
+) -> Vec<&'static str> {
+    let mut ids = Vec::new();
+    for decl in declarations {
+        if crate::items::offered_bound(children, decl) {
+            ids.push(decl.id);
+        }
+    }
+    ids
+}
+
+/// The least a caller needs to take any of `declarations`.
+fn least_need_declared(declarations: &[Declaration]) -> ActionNeed {
+    let mut needs = Vec::with_capacity(declarations.len());
+    for decl in declarations {
+        needs.push((decl.kind, decl.field));
+    }
+    least_need_of(&needs)
+}
+
+/// The least a caller needs to take any of the actions `needs` (kind and
+/// field each): the one that asks least.
+#[must_use]
+pub fn least_need_of(needs: &[(ActionKind, Option<&'static str>)]) -> ActionNeed {
+    needs
+        .iter()
+        .min_by_key(|(kind, field)| (*kind, field.is_none()))
+        .map_or_else(
+            || tilo_actions::ActionContract::default().need(),
+            |(kind, field)| ActionNeed {
+                kind: *kind,
+                field: field.map(str::to_owned),
+                privileged: false,
+            },
+        )
+}
+
 /// The published spec of one declared or bound mutation: what the palette,
-/// agents and scripts invoke, building `R::Action` from their arguments.
+/// agents and scripts invoke, building the resource's action from their
+/// arguments.
 ///
 /// The action is built when it is invoked, never when it is published: one
 /// that takes no arguments still mints its ids and reads the clock at the
 /// moment it is taken, so two invocations make two distinct actions.
-pub fn declaration_spec<R: Resource>(decl: &ActionDecl<R>) -> ActionSpec {
+#[must_use]
+pub fn declaration_spec<D: AsRef<Declaration> + ?Sized>(decl: &D) -> ActionSpec {
+    spec_of_declaration(decl.as_ref())
+}
+
+/// [`declaration_spec`] of a declaration of whichever resource.
+fn spec_of_declaration(decl: &Declaration) -> ActionSpec {
     let build = Arc::clone(&decl.build);
-    let encoded =
-        move |args: &tilo_actions::ActionArgs| encode_built::<R>(build(args, origin_now_ms()));
+    let encoded = move |args: &tilo_actions::ActionArgs| encode_built(build(args, origin_now_ms()));
     let spec = if let Some(prompt) = &decl.content {
         let param = ActionParam::required_owned(
             tilo_actions::PROMPTED_PARAM,
@@ -877,18 +1860,38 @@ pub fn declaration_spec<R: Resource>(decl: &ActionDecl<R>) -> ActionSpec {
                 )];
                 match ActionArgs::bind(std::slice::from_ref(&param), supplied) {
                     Ok(args) => encoded(&args),
-                    Err(error) => refused::<R>(&error.to_string()),
+                    Err(error) => refused(&error.to_string()),
                 }
             },
         )
     } else if decl.params.is_empty() {
+        // Built when taken, so it reads the clock and mints its ids then; a
+        // destructive one is held for confirmation as the same verb of the
+        // same kind of record.
+        let domain = format!("{}#{}", decl.resource, decl.id);
+        let action_type = decl.action_type;
         ActionSpec::deferred(
             decl.id,
             decl.label.clone(),
             ExecutionLocus::ClientLocal,
-            R::ACTION_TYPE,
+            action_type,
             move || encoded(&tilo_actions::ActionArgs::none()),
         )
+        .with_continuation_identity(move |query| match query {
+            tilo_actions::ContinuationQuery::Draft => {
+                Some(tilo_actions::ContinuationEvidence::Draft {
+                    resolution_domain: tilo_actions::ContinuationKey::new(
+                        "verb",
+                        [domain.as_bytes()],
+                    ),
+                    handler: tilo_actions::ContinuationKey::new(
+                        "action-type",
+                        [action_type.as_bytes()],
+                    ),
+                })
+            }
+            tilo_actions::ContinuationQuery::Exact(_) => None,
+        })
     } else {
         ActionSpec::typed(
             decl.id,
@@ -899,10 +1902,15 @@ pub fn declaration_spec<R: Resource>(decl: &ActionDecl<R>) -> ActionSpec {
             encoded,
         )
     };
-    let mut spec = spec
-        .requiring(decl.permission)
-        // Every document action is undone by the host's undo.
-        .reversible();
+    let mut spec = spec.of_kind(decl.kind);
+    // A document action is undone by the host's undo; one that reached
+    // outside the document is not.
+    if decl.kind == ActionKind::Undoable {
+        spec = spec.reversible();
+    }
+    if let Some(field) = decl.field {
+        spec = spec.below_field(field);
+    }
     if let Some(description) = &decl.description {
         spec = spec.with_description(description.clone());
     }
@@ -921,25 +1929,31 @@ pub fn declaration_spec<R: Resource>(decl: &ActionDecl<R>) -> ActionSpec {
 }
 
 /// Each declared action's arguments object, as serde reads it.
-fn declared_args<R: Resource>() -> std::collections::BTreeMap<&'static str, serde_json::Value> {
-    R::declarations()
-        .iter()
-        .map(|decl| (decl.id, crate::schema::args_schema(&decl.params)))
-        .collect()
+fn declared_args(
+    declarations: &[Declaration],
+) -> std::collections::BTreeMap<&'static str, serde_json::Value> {
+    let mut args = std::collections::BTreeMap::new();
+    for decl in declarations {
+        args.insert(decl.id, crate::schema::args_schema(&decl.params));
+    }
+    args
 }
 
 /// The parameter of [`APPLY`]: one action value, described by
 /// [`Resource::action_schema`] when the resource has one, with what only
 /// restates a named action folded into a reference to it.
-pub(crate) fn apply_param<R: Resource>() -> ActionParam {
+pub(crate) fn apply_param(vocabulary: &Vocabulary) -> ActionParam {
     let param = ActionParam::required_owned(
         APPLY_PARAM,
         ParamType::Object,
-        format!("A {} action, as JSON", R::LABEL),
+        format!("A {} action, as JSON", vocabulary.label),
     );
-    let schema = per_type::<R>(TypeSchema::Apply, || {
-        R::action_schema()
-            .map(|schema| crate::schema::fold_declared(&schema, &declared_args::<R>()))
+    let schema = per_type(vocabulary, TypeSchema::Apply, &|| {
+        let schema = (vocabulary.action_schema)()?;
+        Some(crate::schema::fold_declared(
+            &schema,
+            &declared_args(&vocabulary.declarations()),
+        ))
     });
     match schema {
         Some(schema) => param.with_shared_schema(schema),
@@ -952,12 +1966,15 @@ pub(crate) fn apply_param<R: Resource>() -> ActionParam {
 enum TypeSchema {
     Apply,
     Group,
+    /// The field edit's, at the paths under a dotted prefix (`""` for the
+    /// record's root, `notes.*.` for an item of `notes`).
+    Edit,
 }
 
 #[derive(Default)]
 struct CompiledSchemas {
     epoch: u64,
-    entries: HashMap<(TypeId, TypeSchema), Option<Arc<serde_json::Value>>>,
+    entries: HashMap<(TypeId, TypeSchema, String), Option<Arc<serde_json::Value>>>,
 }
 
 static SCHEMAS: OnceLock<Mutex<CompiledSchemas>> = OnceLock::new();
@@ -974,24 +1991,47 @@ pub fn reset_type_schemas() {
     }
 }
 
-/// `build`'s schema for `R`, retained for this generation of app code.
-fn per_type<R: Resource>(
+/// Which generation of app code built what is cached from the resource
+/// types: it changes when [`reset_type_schemas`] forgets them.
+pub(crate) fn type_epoch() -> u64 {
+    SCHEMAS.get().map_or(0, |cache| {
+        cache.lock().unwrap_or_else(PoisonError::into_inner).epoch
+    })
+}
+
+/// `build`'s schema for the resource `vocabulary`, retained for this
+/// generation of app code.
+fn per_type(
+    vocabulary: &Vocabulary,
     schema: TypeSchema,
-    build: impl FnOnce() -> Option<serde_json::Value>,
+    build: &dyn Fn() -> Option<serde_json::Value>,
+) -> Option<Arc<serde_json::Value>> {
+    per_type_at(vocabulary, schema, "", build)
+}
+
+/// [`per_type`] for the paths under the dotted prefix `at`.
+fn per_type_at(
+    vocabulary: &Vocabulary,
+    schema: TypeSchema,
+    at: &str,
+    build: &dyn Fn() -> Option<serde_json::Value>,
 ) -> Option<Arc<serde_json::Value>> {
     let cache = SCHEMAS.get_or_init(Mutex::default);
-    cached_schema(cache, (TypeId::of::<R>(), schema), build)
+    cached_schema(
+        cache,
+        ((vocabulary.type_id)(), schema, at.to_owned()),
+        build,
+    )
 }
 
 fn cached_schema(
     cache: &Mutex<CompiledSchemas>,
-    key: (TypeId, TypeSchema),
-    build: impl FnOnce() -> Option<serde_json::Value>,
+    key: (TypeId, TypeSchema, String),
+    build: &dyn Fn() -> Option<serde_json::Value>,
 ) -> Option<Arc<serde_json::Value>> {
     let epoch = {
         let store = cache.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(found) = store.entries.get(&key) {
-            #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
             let _phase = crate::profiling::Phase::start("schema.cached_clone");
             return found.clone();
         }
@@ -1010,15 +2050,19 @@ fn cached_schema(
 /// A JSON action value as [`APPLY`] reads it. A value naming a declared
 /// action is checked against that declaration first, so it is refused with
 /// the reason the named action would give.
-fn read_apply<R: Resource>(value: serde_json::Value) -> Result<R::Action, String> {
-    let declarations = R::declarations();
-    let ids: Vec<&str> = declarations.iter().map(|decl| decl.id).collect();
+fn read_apply(vocabulary: &Vocabulary, value: serde_json::Value) -> Result<Built, String> {
+    let declarations = vocabulary.declarations();
+    let mut ids: Vec<&str> = Vec::with_capacity(declarations.len());
+    for decl in declarations.iter() {
+        ids.push(decl.id);
+    }
     if let Some((id, fields)) = crate::schema::declared_invocation(&value, &ids)
         && let Some(decl) = declarations.iter().find(|decl| decl.id == id)
+        && let Err(error) = ActionArgs::bind_json(&decl.params, &fields)
     {
-        ActionArgs::bind_json(&decl.params, &fields).map_err(|error| format!("{id}: {error}"))?;
+        return Err(format!("{id}: {error}"));
     }
-    serde_json::from_value::<R::Action>(value).map_err(|error| error.to_string())
+    (vocabulary.read)(value)
 }
 
 /// The parameter of [`GROUP`](crate::GROUP): invocations of the resource's
@@ -1026,44 +2070,15 @@ fn read_apply<R: Resource>(value: serde_json::Value) -> Result<R::Action, String
 /// checked against its own action's schema when the group is built, so this
 /// names those actions rather than repeating their schemas; an `apply`
 /// member carries `apply`'s schema, without its descriptions.
-pub(crate) fn group_param<R: Resource>() -> ActionParam {
-    use crate::schema::{
-        array, constant, describe, nullable, object, one_of, string_enum, undescribed,
-    };
-
-    let schema = per_type::<R>(TypeSchema::Group, || {
-        let ids: Vec<&str> = R::declarations().iter().map(|decl| decl.id).collect();
-        let mut members = Vec::new();
-        if !ids.is_empty() {
-            members.push(describe(
-                object(vec![
-                    ("action", string_enum(&ids), true),
-                    (
-                        "args",
-                        nullable(serde_json::json!({"type": "object"})),
-                        false,
-                    ),
-                ]),
-                "A named action, args as it takes them",
-            ));
+pub(crate) fn group_param(vocabulary: &Vocabulary) -> ActionParam {
+    let schema = per_type(vocabulary, TypeSchema::Group, &|| {
+        let declarations = vocabulary.declarations();
+        let mut ids: Vec<&str> = Vec::with_capacity(declarations.len());
+        for decl in declarations.iter() {
+            ids.push(decl.id);
         }
-        let action = apply_param::<R>().schema.map_or_else(
-            || serde_json::json!({"type": "object"}),
-            |schema| undescribed(&schema),
-        );
-        members.push(object(vec![
-            (
-                "action",
-                if R::AUDITED_LOW_MUTATIONS {
-                    string_enum(&[APPLY, crate::APPLY_LOW])
-                } else {
-                    constant(APPLY)
-                },
-                true,
-            ),
-            ("args", object(vec![(APPLY_PARAM, action, true)]), true),
-        ]));
-        Some(array(one_of(members)))
+        let apply = apply_param(vocabulary).schema;
+        Some(group_schema(&ids, apply.as_deref(), vocabulary.edits))
     })
     .unwrap_or_else(|| Arc::new(serde_json::json!({"type": "array"})));
     ActionParam::required_owned(
@@ -1071,31 +2086,88 @@ pub(crate) fn group_param<R: Resource>() -> ActionParam {
         ParamType::Array,
         format!(
             "{} actions to apply in order as one step, each {{\"action\": id, \"args\": {{..}}}}",
-            R::LABEL
+            vocabulary.label
         ),
     )
     .with_shared_schema(schema)
 }
 
-fn apply_spec<R: Resource>() -> ActionSpec {
+/// The schema of a group of the actions `ids`, `apply` with the action
+/// schema `apply`, and field edits when `edits`: one function for every
+/// resource.
+fn group_schema(ids: &[&str], apply: Option<&serde_json::Value>, edits: bool) -> serde_json::Value {
+    use crate::schema::{
+        array, constant, describe, nullable, object, one_of, string_enum, undescribed,
+    };
+    let mut members = Vec::new();
+    if !ids.is_empty() {
+        members.push(describe(
+            object(vec![
+                ("action", string_enum(ids), true),
+                (
+                    "args",
+                    nullable(serde_json::json!({"type": "object"})),
+                    false,
+                ),
+            ]),
+            "A named action, args as it takes them",
+        ));
+    }
+    let action = apply.map_or_else(|| serde_json::json!({"type": "object"}), undescribed);
+    if edits {
+        members.push(describe(
+            object(vec![
+                ("action", constant(FIELD_EDIT), true),
+                (
+                    "args",
+                    object(vec![(
+                        EDIT_PARAM,
+                        undescribed(&<Edit<()> as crate::JsonSchema>::json_schema()),
+                        true,
+                    )]),
+                    true,
+                ),
+            ]),
+            "A field edit",
+        ));
+    }
+    members.push(object(vec![
+        ("action", constant(APPLY), true),
+        ("args", object(vec![(APPLY_PARAM, action, true)]), true),
+    ]));
+    array(one_of(members))
+}
+
+/// The JSON object of the argument `param` of `args`.
+fn object_arg(
+    args: &tilo_actions::ActionArgs,
+    param: &str,
+) -> Option<serde_json::Map<String, serde_json::Value>> {
+    match args.get(param) {
+        Some(tilo_actions::ArgValue::Object(value)) => Some(value.clone()),
+        _ => None,
+    }
+}
+
+fn apply_spec(vocabulary: &'static Vocabulary) -> ActionSpec {
     #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
     let _phase = crate::profiling::Phase::start("resource.apply_spec");
+    let read = move |args: &tilo_actions::ActionArgs| match object_arg(args, APPLY_PARAM) {
+        Some(value) => read_apply(vocabulary, serde_json::Value::Object(value)),
+        None => Err("missing action".to_owned()),
+    };
     ActionSpec::typed(
         APPLY,
-        format!("Apply {} edit", R::LABEL),
+        format!("Apply {} edit", vocabulary.label),
         "Action as JSON",
         ExecutionLocus::ClientLocal,
-        vec![apply_param::<R>()],
-        |args| {
-            let Some(tilo_actions::ArgValue::Object(value)) = args.get(APPLY_PARAM) else {
-                return refused::<R>("missing action");
-            };
-            match read_apply::<R>(serde_json::Value::Object(value.clone())) {
-                Ok(action) => {
-                    encode::<R>(&action).unwrap_or_else(|error| refused::<R>(&error.to_string()))
-                }
-                Err(reason) => refused::<R>(&reason),
+        vec![apply_param(vocabulary)],
+        move |args| match read(args) {
+            Ok(mut action) => {
+                action.stamp(origin_now_ms());
+                encoded(&action)
             }
+            Err(reason) => refused(&reason),
         },
     )
     .with_description(
@@ -1104,56 +2176,113 @@ fn apply_spec<R: Resource>() -> ActionSpec {
     // A typed edit is how a surface, an agent or a script says what should
     // happen without a named declaration; a person picks named actions.
     .programmatic()
-    // Offered to whoever may take the least of its edits; each value needs
-    // what that edit needs.
-    .requiring(R::least_permission())
-    .with_permission_of(|args| {
-        let Some(tilo_actions::ArgValue::Object(value)) = args.get(APPLY_PARAM) else {
-            return PermissionRequirement::Write;
-        };
-        read_apply::<R>(serde_json::Value::Object(value.clone()))
-            .map_or(PermissionRequirement::Write, |action| R::permission(&action))
+    // A typed value of the resource's own vocabulary changes only the
+    // document, and the host's undo reverts it.
+    .reversible()
+    // History records the edit it carried, not `apply`.
+    .carrying()
+    // Offered to whoever may take the least of its edits; each value is
+    // what that edit is.
+    .with_need((vocabulary.least_need)())
+    .with_need_of(move |args| match read(args) {
+        Ok(action) => action.need(),
+        Err(_) => tilo_actions::ActionContract::default().need(),
     })
-    // History names each value after what it did, not after `apply`.
-    .with_history_label(apply_label::<R>)
     // Each value is classified: deleting is destructive, trimming is not, so
     // a destructive value gets the confirmation a declared one would.
-    .with_risk(|args| {
-        let Some(tilo_actions::ArgValue::Object(value)) = args.get(APPLY_PARAM) else {
-            return tilo_actions::RiskLevel::Low;
-        };
-        serde_json::from_value::<R::Action>(serde_json::Value::Object(value.clone()))
-            .map_or(tilo_actions::RiskLevel::Low, |action| {
-                tilo_actions::Action::risk(&action)
-            })
+    .with_risk(move |args| {
+        let value = object_arg(args, APPLY_PARAM).map(serde_json::Value::Object);
+        match value.map(vocabulary.read) {
+            Some(Ok(action)) => action.risk(),
+            _ => tilo_actions::RiskLevel::Low,
+        }
     })
 }
 
-/// How much a requirement asks, least first.
-pub(crate) fn permission_rank(requirement: PermissionRequirement) -> u8 {
-    match requirement {
-        PermissionRequirement::None => 0,
-        PermissionRequirement::Read => 1,
-        PermissionRequirement::Comment => 2,
-        PermissionRequirement::Write => 3,
-        PermissionRequirement::Invite => 4,
-        PermissionRequirement::Admin => 5,
+/// What kind of action a published spec is: a view only reads, an effect
+/// reaches outside the document, and a document action changes only the
+/// document when the host's undo reverts it, else it reaches outside.
+#[must_use]
+pub fn spec_kind(spec: &ActionSpec) -> ActionKind {
+    if spec
+        .contract
+        .tags
+        .iter()
+        .any(|tag| tag == crate::effect::EDITS_TAG)
+    {
+        return ActionKind::Undoable;
+    }
+    match spec.kind {
+        OperationKind::View => ActionKind::Read,
+        OperationKind::Document if spec.contract.reversible => ActionKind::Undoable,
+        OperationKind::Effect | OperationKind::Document => ActionKind::Outside,
     }
 }
 
-fn group_spec<R: Resource>() -> ActionSpec {
+/// What `action` is, for the grants deciding it.
+pub fn need_of<R: Resource>(action: &R::Action) -> ActionNeed {
+    ActionNeed {
+        kind: R::kind_of(action),
+        field: R::field_of(action).map(str::to_owned),
+        privileged: false,
+    }
+}
+
+/// What several actions applied as one are: the strongest kind among them,
+/// below a field only when every one writes that same field. Nothing to
+/// apply is an undoable change of the record.
+pub(crate) fn group_need(needs: impl IntoIterator<Item = ActionNeed>) -> ActionNeed {
+    let mut needs = needs.into_iter();
+    let Some(mut group) = needs.next() else {
+        return tilo_actions::ActionContract::default().need();
+    };
+    for need in needs {
+        group = ActionNeed {
+            kind: group.kind.max(need.kind),
+            field: group
+                .field
+                .filter(|field| need.field.as_ref() == Some(field)),
+            privileged: group.privileged || need.privileged,
+        };
+    }
+    group
+}
+
+/// The encoded group of the built `members`, of the resource `vocabulary`:
+/// what [`ActionGroup`](crate::ActionGroup) of them encodes as.
+fn encode_group(vocabulary: &Vocabulary, members: &[Built]) -> EncodedAction {
+    let mut payload = Vec::with_capacity(128);
+    payload.push(b'[');
+    for (index, member) in members.iter().enumerate() {
+        if index > 0 {
+            payload.push(b',');
+        }
+        if let Err(error) = member.write_json(&mut payload) {
+            return refused(&error.to_string());
+        }
+    }
+    payload.push(b']');
+    EncodedAction {
+        type_id: crate::group::group_type_of(vocabulary.action_type),
+        payload,
+    }
+}
+
+fn group_spec(vocabulary: &'static Vocabulary) -> ActionSpec {
     #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
     let _phase = crate::profiling::Phase::start("resource.group_spec");
+    let build = move |args: &tilo_actions::ActionArgs, now_ms: i64| {
+        crate::group::build_members(vocabulary, &args.to_json(), now_ms)
+    };
     ActionSpec::typed(
         crate::GROUP,
-        format!("Apply several {} edits as one", R::LABEL),
+        format!("Apply several {} edits as one", vocabulary.label),
         "Invocations as JSON",
         ExecutionLocus::ClientLocal,
-        vec![group_param::<R>()],
-        |args| match crate::group::build_group::<R>(&args.to_json(), origin_now_ms()) {
-            Ok(group) => EncodedAction::encode(crate::group::group_type::<R>(), &group)
-                .unwrap_or_else(|error| refused::<R>(&error.to_string())),
-            Err(reason) => refused::<R>(&reason),
+        vec![group_param(vocabulary)],
+        move |args| match build(args, origin_now_ms()) {
+            Ok(members) => encode_group(vocabulary, &members),
+            Err(reason) => refused(&reason),
         },
     )
     .with_description(
@@ -1161,33 +2290,66 @@ fn group_spec<R: Resource>() -> ActionSpec {
     )
     // One group is one undo step, like any other document action.
     .reversible()
-    // A group of one kind of edit is named after it.
-    .with_history_label(group_label::<R>)
     // A gesture's edits, from a surface, a script or an agent; a person picks
     // the named actions it is made of.
     .programmatic()
-    // Needs what its most demanding member needs.
-    .requiring(R::least_permission())
-    .with_permission_of(|args| {
-        crate::group::build_group::<R>(&args.to_json(), 0).map_or(
-            PermissionRequirement::Write,
-            |group| {
-                group
-                    .actions
-                    .iter()
-                    .map(R::permission)
-                    .max_by_key(|requirement| permission_rank(*requirement))
-                    .unwrap_or(PermissionRequirement::Write)
-            },
-        )
+    // History records the members, not the group.
+    .carrying()
+    // Is what its most demanding member is.
+    .with_need((vocabulary.least_need)())
+    .with_need_of(move |args| match build(args, 0) {
+        Ok(members) => group_need(members.iter().map(Built::need)),
+        Err(_) => tilo_actions::ActionContract::default().need(),
     })
     // As consequential as its most consequential member.
-    .with_risk(|args| {
-        crate::group::build_group::<R>(&args.to_json(), 0)
-            .map_or(tilo_actions::RiskLevel::Low, |group| {
-                tilo_actions::Action::risk(&group)
-            })
+    .with_risk(move |args| match build(args, 0) {
+        Ok(members) => crate::group::group_risk(members.iter().map(Built::risk)),
+        Err(_) => tilo_actions::RiskLevel::Low,
     })
+}
+
+/// The default search entries of a record: one per item with a
+/// `#[model(label)]`, anchored at its item resource, or else all of its text
+/// in one entry. A `#[resource(search = path)]` function extends it by
+/// calling it.
+#[must_use]
+pub fn default_search<R: crate::Resource + crate::Fields>(
+    label: &str,
+    record: &R,
+) -> Vec<crate::SearchEntry> {
+    let items = crate::Fields::item_search(record);
+    let mut text = Vec::new();
+    if items.is_empty() {
+        record.collect_text(&mut text);
+    }
+    default_search_of(R::KIND, label, items, &text)
+}
+
+/// [`default_search`] of a record of the kind `kind` holding `items`, or
+/// else the text `text`.
+fn default_search_of(
+    kind: &str,
+    label: &str,
+    items: Vec<crate::items::ItemText>,
+    text: &[String],
+) -> Vec<crate::SearchEntry> {
+    if !items.is_empty() {
+        let mut entries = Vec::with_capacity(items.len());
+        for item in items {
+            let anchor = crate::items::item_resource_id_in(kind, item.field, &item.id);
+            entries.push(crate::SearchEntry::new(item.label, item.text).anchored(anchor));
+        }
+        return entries;
+    }
+    if text.is_empty() {
+        return Vec::new();
+    }
+    vec![crate::SearchEntry {
+        anchor: None,
+        title: text.first().cloned().unwrap_or_else(|| label.to_owned()),
+        text: text.join("\n"),
+        ..Default::default()
+    }]
 }
 
 /// The resource tree published for one open resource: every declared and
@@ -1205,6 +2367,25 @@ pub fn publish<R: Resource>(id: &str, label: &str, state: &R::State) -> tilo_act
     publish_parts::<R>(id, label, Some(state))
 }
 
+/// [`publish`] without the children: the resource's identity, actions and
+/// views exactly as `publish` gives them, at a cost that does not grow with
+/// the children ([`Resource::children_offer_bound`]). What controls bind to.
+pub fn publish_head<R: Resource>(
+    id: &str,
+    label: &str,
+    state: &R::State,
+) -> tilo_actions::Resource {
+    let offered = R::children_offer_bound(state);
+    let own = Own {
+        availability: Some(&|action| R::availability(state, action)),
+        views: R::views(state),
+        local_operations: R::local_operations(),
+    };
+    publish_own(vocabulary::<R>(), id, label, own, &|decl| {
+        offered.contains(&decl.id)
+    })
+}
+
 /// [`publish`], or without a state only what does not depend on one: the
 /// declared actions, [`APPLY`], [`GROUP`](crate::GROUP) and the local
 /// operations.
@@ -1213,54 +2394,80 @@ pub(crate) fn publish_parts<R: Resource>(
     label: &str,
     state: Option<&R::State>,
 ) -> tilo_actions::Resource {
-    let children = state.map(R::children).unwrap_or_default();
-    let mut resource = tilo_actions::Resource::new(id, R::KIND, label);
-    for decl in R::declarations() {
-        #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
+    let vocabulary = vocabulary::<R>();
+    let Some(state) = state else {
+        let own = Own {
+            availability: None,
+            views: Vec::new(),
+            local_operations: R::local_operations(),
+        };
+        return publish_own(vocabulary, id, label, own, &|_| false);
+    };
+    let children = R::children(state);
+    let own = Own {
+        availability: Some(&|action| R::availability(state, action)),
+        views: R::views(state),
+        local_operations: R::local_operations(),
+    };
+    publish_own(vocabulary, id, label, own, &|decl| {
+        crate::items::offered_bound(&children, decl)
+    })
+    .with_children(children)
+}
+
+/// What a resource's own publication reads of its state.
+struct Own<'a> {
+    /// Whether each declared action can be taken now; without a state,
+    /// none is decided.
+    availability: Option<&'a dyn Fn(&str) -> tilo_actions::Availability>,
+    views: Vec<tilo_actions::ResourceViewSpec>,
+    local_operations: Vec<ActionSpec>,
+}
+
+/// The resource's own part of [`publish_parts`]: everything but its
+/// children, with `offered_bound` saying which declarations a child offers
+/// with arguments bound.
+fn publish_own(
+    vocabulary: &'static Vocabulary,
+    id: &str,
+    label: &str,
+    own: Own<'_>,
+    offered_bound: &dyn Fn(&Declaration) -> bool,
+) -> tilo_actions::Resource {
+    let mut resource = tilo_actions::Resource::new(id, vocabulary.kind, label);
+    // Describe the declared domain ID before any host dispatch alias projection.
+    resource.semantic_identity = tilo_actions::ResourceSemanticIdentity::new(vocabulary.kind, id);
+    for decl in vocabulary.declarations().iter() {
         let _phase = crate::profiling::Phase::start("resource.declaration_spec");
-        let spec = declaration_spec(&decl);
+        let mut spec = spec_of_declaration(decl);
+        if let Some(availability) = own.availability {
+            spec.contract.availability = availability(decl.id);
+        }
         // Offered on the items it acts on, with some of its arguments bound
         // ([`items::bound`](crate::items::bound)), it stays published here
         // for scripts that name the item, out of the palette's way.
-        resource = resource.with_action(if crate::items::offered_bound(&children, &decl) {
+        resource = resource.with_action(if offered_bound(decl) {
             spec.programmatic()
         } else {
             spec
         });
     }
-    for decl in state.map(R::bound_declarations).unwrap_or_default() {
-        if resource
-            .actions
-            .iter()
-            .any(|existing| existing.id == decl.id)
-        {
-            continue;
-        }
-        resource = resource.with_action(declaration_spec(&decl));
-    }
-    for spec in state.map(R::bound_actions).unwrap_or_default() {
-        // Document actions and state-dependent views or effects. Static views
-        // and effects stay on `local_operations`.
-        resource = resource.with_action(spec);
-    }
-    for view in state.map(R::views).unwrap_or_default() {
+    for view in own.views {
         resource = resource.with_view(view);
     }
-    for spec in R::local_operations() {
+    for spec in own.local_operations {
         if spec.kind == OperationKind::Document {
             continue;
         }
         resource = resource.with_action(spec);
     }
     resource = resource
-        .with_action(apply_spec::<R>())
-        .with_action(group_spec::<R>());
-    if R::AUDITED_LOW_MUTATIONS {
-        resource = resource
-            .with_action(crate::low_mutation::apply_spec::<R>())
-            .with_action(crate::low_mutation::group_spec::<R>());
+        .with_action(apply_spec(vocabulary))
+        .with_action(group_spec(vocabulary));
+    if vocabulary.edits {
+        resource = resource.with_action(field_edit_spec(vocabulary));
     }
-    resource.with_children(children)
+    resource
 }
 
 /// Build the action a declaration produces for JSON arguments, validating them
@@ -1273,24 +2480,46 @@ pub fn build_action<R: Resource>(
     arguments: &serde_json::Map<String, serde_json::Value>,
     now_ms: i64,
 ) -> Result<R::Action, String> {
+    typed::<R>(build_action_of(vocabulary::<R>(), id, arguments, now_ms)?)
+}
+
+/// [`build_action`] of the resource `vocabulary`.
+pub(crate) fn build_action_of(
+    vocabulary: &Vocabulary,
+    id: &str,
+    arguments: &serde_json::Map<String, serde_json::Value>,
+    now_ms: i64,
+) -> Result<Built, String> {
     if id == crate::GROUP {
         return Err("a group is several actions; build it with `group::build_group`".into());
     }
-    if id == crate::APPLY_LOW {
-        return crate::low_mutation::build_action::<R>(arguments);
+    let read = if id == APPLY {
+        Some((APPLY_PARAM, "missing action"))
+    } else if id == FIELD_EDIT && vocabulary.edits {
+        Some((EDIT_PARAM, "missing edit"))
+    } else {
+        None
+    };
+    if let Some((param, missing)) = read {
+        let Some(value) = arguments.get(param).cloned() else {
+            return Err(missing.to_owned());
+        };
+        let mut action = if id == APPLY {
+            read_apply(vocabulary, value)?
+        } else {
+            read_edit(vocabulary, value)?
+        };
+        action.stamp(now_ms);
+        return Ok(action);
     }
-    if id == APPLY {
-        let value = arguments
-            .get(APPLY_PARAM)
-            .cloned()
-            .ok_or_else(|| "missing action".to_owned())?;
-        return read_apply::<R>(value);
-    }
-    let decl = R::declarations()
-        .into_iter()
-        .find(|decl| decl.id == id)
-        .ok_or_else(|| format!("{} has no action `{id}`", R::LABEL))?;
-    let args = ActionArgs::bind_json(&decl.params, arguments).map_err(|error| error.to_string())?;
+    let declarations = vocabulary.declarations();
+    let Some(decl) = declarations.iter().find(|decl| decl.id == id) else {
+        return Err(format!("{} has no action `{id}`", vocabulary.label));
+    };
+    let args = match ActionArgs::bind_json(&decl.params, arguments) {
+        Ok(args) => args,
+        Err(error) => return Err(error.to_string()),
+    };
     (decl.build)(&args, now_ms)
 }
 
@@ -1302,11 +2531,12 @@ pub fn build_action<R: Resource>(
 /// same edit from the same arguments and only adds where it was invoked from
 /// (an append that leaves its writer's caret after the text), and replaces
 /// the declared spec while the binding lasts.
-pub fn bind_declaration<R: Resource>(
+#[must_use]
+pub fn bind_declaration(
     resource: tilo_actions::Resource,
-    decl: &ActionDecl<R>,
+    decl: &Declaration,
 ) -> tilo_actions::Resource {
-    let spec = declaration_spec(decl);
+    let spec = spec_of_declaration(decl);
     let mut resource = resource;
     match resource
         .actions
@@ -1332,7 +2562,8 @@ fn same_shape(bound: &ActionSpec, declared: &ActionSpec) -> bool {
     };
     bound.kind == declared.kind
         && shape(bound) == shape(declared)
-        && bound.contract.permission == declared.contract.permission
+        && bound.contract.kind == declared.contract.kind
+        && bound.contract.field == declared.contract.field
         && bound.contract.risk == declared.contract.risk
 }
 
@@ -1455,16 +2686,22 @@ mod schema_sharing_tests {
     #[test]
     fn shared_schema_reloads_do_not_retain_or_repopulate_stale_generation() {
         let cache = Mutex::new(CompiledSchemas::default());
-        let key = (TypeId::of::<()>(), TypeSchema::Apply);
-        let first = cached_schema(&cache, key, || Some(serde_json::json!({"minimum":1}))).unwrap();
-        let reused = cached_schema(&cache, key, || panic!("cached type must not rebuild")).unwrap();
+        let key = (TypeId::of::<()>(), TypeSchema::Apply, String::new());
+        let first = cached_schema(&cache, key.clone(), &|| {
+            Some(serde_json::json!({"minimum":1}))
+        })
+        .unwrap();
+        let reused = cached_schema(&cache, key.clone(), &|| {
+            panic!("cached type must not rebuild")
+        })
+        .unwrap();
         assert!(Arc::ptr_eq(&first, &reused));
         {
             let mut store = cache.lock().unwrap();
             store.epoch += 1;
             store.entries.clear();
         }
-        let old_build = cached_schema(&cache, key, || {
+        let old_build = cached_schema(&cache, key.clone(), &|| {
             let mut store = cache.lock().unwrap();
             store.epoch += 1;
             store.entries.clear();
@@ -1477,7 +2714,7 @@ mod schema_sharing_tests {
             "old build cannot repopulate new generation"
         );
         let current =
-            cached_schema(&cache, key, || Some(serde_json::json!({"minimum":3}))).unwrap();
+            cached_schema(&cache, key, &|| Some(serde_json::json!({"minimum":3}))).unwrap();
         assert_eq!(first["minimum"], 1);
         assert_eq!(old_build["minimum"], 2);
         assert_eq!(current["minimum"], 3);

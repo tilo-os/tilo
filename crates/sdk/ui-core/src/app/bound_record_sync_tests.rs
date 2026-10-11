@@ -261,8 +261,8 @@ fn native_bound_sync_routes_verified_bytes_and_preserves_undo_retries_and_depend
         assert!(
             fixture
                 .records
-                .read_history(&binding.checkout.id, |_, history| history
-                    .next_undo_in(&binding.author, binding.instance_id)
+                .read_history(&binding.checkout.id, |doc, history| history
+                    .next_undo_in(doc, &binding.author, binding.instance_id)
                     .is_none())
                 .unwrap()
         );

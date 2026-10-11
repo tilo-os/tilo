@@ -1,0 +1,44 @@
+{
+  "owner": "tilo",
+  "repo": "tilo",
+  "run_number": 97894,
+  "run_id": 116676,
+  "preserved_at": "2026-10-11T09:23:12.892894942Z",
+  "artifacts": [
+    {
+      "id": 212353,
+      "name": "tilo-apps-x86_64",
+      "file": "212353.zip",
+      "bytes": 337917736,
+      "member_bytes": 755010659,
+      "sha256": "3325e45e8d84c79574e83e8b5806360c71df02250d85463f4d0c0dc8fb2cde80",
+      "architecture": "x86_64",
+      "metadata_sha256": {
+        "index.json": "65a077049c79ecca6af61f8b51ef9bba6f89a05dd14257a0222bc48e26dbc6d1",
+        "publication-receipt.json": "094780e17beeee607e82872d2cf8b8d0a46fcf18ef8af977ae46a35f6880811f"
+      }
+    },
+    {
+      "id": 212352,
+      "name": "tilo-apps-aarch64",
+      "file": "212352.zip",
+      "bytes": 325367842,
+      "member_bytes": 710645099,
+      "sha256": "6690ad3a5f2a11f5cc49f068737d392a60f634e0c47582efedc47ceff77bb7a9",
+      "architecture": "aarch64",
+      "metadata_sha256": {
+        "index.json": "4efb5c0ef925ccace3472e20195157a5d2cbb2b4dc1160f78ace406b617ce31d",
+        "publication-receipt.json": "0af0a59dfa162a6e01445a8fd8b00719cd717e19c63758444202857b7129e027"
+      }
+    }
+  ],
+  "source": "919dfbd901dff103b79e3d0fdef9f4af4b2e24c5",
+  "builder": "registry.tilo.so/tilo/tilo-builder@sha256:d362fd17c8670ac467dd9b2e795ce2110afa73c6618dd599a4ea6ebcf18aa5f1",
+  "successful_jobs": [
+    676763,
+    676764,
+    676930,
+    676931
+  ],
+  "publish_job": 677350
+}

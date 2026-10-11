@@ -1,4 +1,5 @@
 """Real process ownership and close ordering for the smoke driver's cleanup."""
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -6,6 +7,7 @@ import subprocess
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
 
 REPO = Path(__file__).resolve().parents[2]
@@ -164,6 +166,31 @@ class BrowserCleanupLifecycle(unittest.TestCase):
             status, output = second.finish()
             self.assertEqual(status, 0, output)
             self.assert_closed(second)
+
+
+class BrowserProcessDiscovery(unittest.TestCase):
+    @staticmethod
+    def supervisor():
+        spec = importlib.util.spec_from_file_location(
+            'owned_browser', REPO / 'tools/web/owned_browser.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_exit_during_proc_stat_read_is_left_to_waitpid(self):
+        supervisor = self.supervisor()
+        for error in (FileNotFoundError, ProcessLookupError):
+            with self.subTest(error=error), \
+                    patch.object(Path, 'iterdir', return_value=[Path('/proc/123')]), \
+                    patch.object(Path, 'read_text', side_effect=error):
+                self.assertEqual(supervisor.children(), [])
+
+    def test_unreadable_proc_stat_fails_discovery(self):
+        supervisor = self.supervisor()
+        with patch.object(Path, 'iterdir', return_value=[Path('/proc/123')]), \
+                patch.object(Path, 'read_text', side_effect=PermissionError):
+            with self.assertRaises(PermissionError):
+                supervisor.children()
 
 
 if __name__ == '__main__':

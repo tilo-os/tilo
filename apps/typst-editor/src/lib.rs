@@ -4,7 +4,7 @@
 //! the left, a live rendered preview of the compiled document on the right,
 //! a clickable diagnostics ("Problems") panel, page thumbnails, zoom, and a
 //! background compile worker. A workspace of Typst files is the app's
-//! resource ([`resource::TypstEditor`]): each file's source is a collaborative
+//! resource ([`resource::Workspace`]): each file's source is a collaborative
 //! text every keystroke splices through the workspace's actions, so editing
 //! is shared, attributed and undoable. A `.typ` path on the command line
 //! opens that file's own workspace.
@@ -27,11 +27,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -50,7 +46,7 @@ pub mod worker;
 
 /// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::framework::definition::<TypstEditorShell>()
+    ui::built_in_definition!(TypstEditorShell)
 }
 
-pub use resource::{TypstEditor, TypstEditorShell};
+pub use resource::{LOCALES, TypstEditorShell, Workspace};

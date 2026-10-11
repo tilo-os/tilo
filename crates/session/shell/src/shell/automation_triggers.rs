@@ -643,15 +643,6 @@ impl ScheduleTriggers {
         Self { ledger, path }
     }
 
-    /// When the schedule `key` fires next, when it is armed.
-    #[must_use]
-    pub fn next_fire(&self, room: &str, shortcut: &str, index: usize) -> Option<DateTime<Utc>> {
-        self.ledger
-            .schedules
-            .get(&ledger_key(room, shortcut, index))
-            .and_then(|entry| DateTime::from_timestamp_millis(entry.next_fire_ms))
-    }
-
     fn persist(&self) {
         let Some(path) = &self.path else {
             return;
@@ -898,7 +889,7 @@ impl TriggerHost {
     /// the launcher-provided state root.
     #[must_use]
     pub fn for_session() -> Self {
-        let schedules = xdg_paths::env_dir("XDG_STATE_HOME")
+        let schedules = tilo_paths::env_dir("XDG_STATE_HOME")
             .map(|state| state.join("tilo/automation/schedules.json"));
         Self::new(Arc::new(SystemClock), schedules)
     }
@@ -1568,21 +1559,20 @@ mod tests {
     #[test]
     fn a_folder_is_watched_only_while_its_capability_lets_the_saver_read_it() {
         use crate::shell::state::{Workspace, WorkspaceAuthority as _, WorkspaceId};
-        use collab_types::{CapOverride, Scope, Subject, Verb};
+        use collab_types::{Access, CapOverride, Scope, Subject};
 
         let owner = "person:owner".to_string();
         let mut workspace = Workspace::new(WorkspaceId(1), "Scans");
-        workspace.room = personal_room();
+        workspace.set_room(personal_room());
         workspace.set_owner(owner.clone());
         workspace
-            .grant_as(
+            .govern_as_at(
                 &owner,
-                CapOverride::membership(
-                    Subject::person("person:me"),
-                    workspace.room.to_string(),
-                    Verb::Read,
-                )
-                .with_id("me-membership"),
+                tilo_action_policy::Change::AddMember {
+                    person: "person:me".into(),
+                    role: tilo_action_policy::Role::Viewer,
+                },
+                tilo_clock::unix_now(),
             )
             .expect("the owner admits the saver");
         workspace
@@ -1591,11 +1581,22 @@ mod tests {
                 CapOverride::grant(
                     Subject::person("person:me"),
                     Scope::FsPath("/var/workspace/inbox".into()),
-                    Verb::Read,
+                    Access::Read,
                 )
                 .with_id("inbox-read"),
             )
             .expect("the owner shares the folder");
+        workspace
+            .grant_as(
+                &owner,
+                CapOverride::grant(
+                    Subject::person("person:me"),
+                    Scope::NetHost("example.org".into()),
+                    Access::Read,
+                )
+                .with_id("me-host"),
+            )
+            .expect("the owner shares a host");
         workspace.shortcuts = vec![event_shortcut(
             &TriggerSpec::FileChanged {
                 capability: "inbox-read".into(),
@@ -1616,8 +1617,8 @@ mod tests {
             }]
         );
         assert!(
-            readable_folder(&workspace, "me-membership", "person:me")
-                .expect_err("a membership is no folder")
+            readable_folder(&workspace, "me-host", "person:me")
+                .expect_err("a host is no folder")
                 .contains("does not share a folder")
         );
 

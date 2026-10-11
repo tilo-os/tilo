@@ -1,10 +1,10 @@
 use super::files::ImportSummary;
 use super::*;
-use crate::doc::ContactsDoc;
 use crate::form::{Slot, TYPE_OPTIONS, TypeTarget};
 use crate::model::normalize_text;
 use crate::model::sample_contacts;
 use crate::model::{Address, Birthday};
+use crate::resource::Contacts;
 use crate::vcard;
 use crate::view::DialogChoice;
 use automerge::AutoCommit;
@@ -12,23 +12,16 @@ use automerge::ROOT;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use taffy::{AvailableSpace, Dimension, Size, Style};
-use tilo_automerge::ApplyIncoming;
 use ui::a11y::{AccessNode, Role};
-use ui::permissions::PermissionContext;
+use ui::tilo_resource::{Invoke, Replica};
+use ui::time::Duration;
 use ui::tokens::colors::ON_FILL_MIN_CONTRAST;
 use vello::kurbo::Point;
 
 fn target(app: &ContactsApp, id: &str) -> Rect {
-    fn find(widget: &dyn Widget, id: &str) -> Option<Rect> {
-        if widget.test_id() == Some(id) {
-            return Some(widget.get_rect());
-        }
-        widget
-            .children()
-            .into_iter()
-            .find_map(|child| find(child, id))
-    }
-    find(app, id).unwrap_or_else(|| panic!("production target {id} is absent"))
+    ui::widget::find_test_id(app, id)
+        .unwrap_or_else(|| panic!("production target {id} is absent"))
+        .get_rect()
 }
 fn named_widget<'a>(widget: &'a dyn Widget, name: &str, role: Role) -> Option<&'a dyn Widget> {
     if widget
@@ -144,24 +137,12 @@ fn form_slots(form: &EditForm) -> Vec<Slot> {
 /// from a door, it edits nothing: tests of what an edit writes run the app.
 fn sampled() -> ContactsApp {
     let mut app = ContactsApp::new();
-    app.present_book(&crate::resource::ContactsState {
-        contacts: crate::resource::sample_book(),
-        ..crate::resource::ContactsState::default()
-    });
+    app.present_book(&std::rc::Rc::new(Contacts {
+        contacts: crate::resource::sample_book().into(),
+        ..Contacts::default()
+    }));
     app.stage_capture(None);
     app
-}
-
-/// The book `app` presents, as the framework publishes it.
-fn published(app: &ContactsApp) -> Vec<tilo_actions::Resource> {
-    vec![ui::tilo_resource::publish::<crate::resource::Contacts>(
-        "contacts.book",
-        "Contacts",
-        &crate::resource::ContactsState {
-            contacts: app.store.contacts.clone(),
-            ..crate::resource::ContactsState::default()
-        },
-    )]
 }
 
 /// The sample book synced into a fresh document.
@@ -176,7 +157,7 @@ fn ask(app: &mut Live, request: Request) {
 
 fn selected_contact(app: &ContactsApp) -> Contact {
     app.selected
-        .and_then(|id| app.store.get(id))
+        .and_then(|id| app.store.contact(id))
         .cloned()
         .expect("a contact is selected")
 }
@@ -262,20 +243,17 @@ fn named(harness: &Live, name: &str) -> bool {
     contains(&**harness, name)
 }
 
-fn live_message<'a>(
-    node: &'a ui::a11y::AccessNode,
-    message: &str,
-) -> Option<&'a ui::a11y::AccessNode> {
-    if node.name.as_deref() == Some(message) && node.live.is_some() {
-        return Some(node);
-    }
-    node.children
-        .iter()
-        .find_map(|child| live_message(child, message))
+fn announced(app: &ContactsApp, message: &str) -> bool {
+    let node = app
+        .shell
+        .children()
+        .last()
+        .and_then(|child| child.accessibility());
+    node.is_some_and(|node| node.live.is_some() && node.value.as_deref() == Some(message))
 }
 
 fn toast(app: &ContactsApp) -> Option<&str> {
-    app.toast.as_ref().map(|(message, _)| message.as_str())
+    app.shell.toast_text()
 }
 
 /// The window is the shell: groups beside the people beside the person,
@@ -367,7 +345,7 @@ fn sidebar_destinations_narrow_the_list() {
     assert!(
         favorites
             .iter()
-            .all(|id| app.store.get(*id).unwrap().favorite)
+            .all(|id| app.store.contact(*id).unwrap().favorite)
     );
     assert_eq!(app.destination_label().as_deref(), Some("Favorites"));
 
@@ -380,7 +358,7 @@ fn sidebar_destinations_narrow_the_list() {
     for id in &friends {
         assert!(
             app.store
-                .get(*id)
+                .contact(*id)
                 .unwrap()
                 .groups
                 .iter()
@@ -401,11 +379,10 @@ fn sidebar_destinations_narrow_the_list() {
 
     // Taking everyone out of the group removes it as a destination.
     for id in friends {
-        let mut contact = app.store.get(id).cloned().unwrap();
+        let mut contact = app.store.contact(id).cloned().unwrap();
         let before = contact.clone();
         contact.groups.clear();
-        app.invoke(&crate::actions::patch_contact_action(&before, &contact));
-        app.store.upsert(contact);
+        app.invoke(Contacts::save(&before, &contact).unwrap());
     }
     app.list_stale = true;
     app.publish();
@@ -428,7 +405,7 @@ fn the_sort_control_orders_the_list() {
     let by_name = list_ids(&app);
     let names: Vec<String> = by_name
         .iter()
-        .map(|id| app.store.get(*id).unwrap().last.clone())
+        .map(|id| app.store.contact(*id).unwrap().last.clone())
         .collect();
     let mut sorted = names.clone();
     sorted.sort();
@@ -450,7 +427,7 @@ fn the_sort_control_orders_the_list() {
     assert_ne!(by_org, by_name);
     let orgs: Vec<String> = by_org
         .iter()
-        .map(|id| normalize_text(&app.store.get(*id).unwrap().org))
+        .map(|id| normalize_text(&app.store.contact(*id).unwrap().org))
         .collect();
     let filled: Vec<&String> = orgs.iter().filter(|org| !org.is_empty()).collect();
     let mut sorted = filled.clone();
@@ -498,7 +475,7 @@ fn the_list_selects_by_pointer_keyboard_and_semantics() {
 
     // The list's semantic rows select too.
     let last = *rows.last().unwrap();
-    let name = harness.store.get(last).unwrap().display_name();
+    let name = harness.store.contact(last).unwrap().display_name();
     act_named(&mut harness, &name, &ui::a11y::Action::Activate);
     assert_eq!(harness.selected, Some(last));
 }
@@ -510,13 +487,16 @@ fn list_keys_delete_edit_and_create() {
     let mut harness = harness((1280, 800));
     let selected = harness.selected;
     harness.harness_mut().key("Delete");
-    assert_eq!(harness.confirm_delete, selected);
+    harness.settle();
     assert!(
-        matches!(harness.dialog, Some((DialogKey::Delete(_), _))),
-        "the delete dialog is up"
+        host_confirmation_is_up(&mut harness),
+        "the host asks before deleting"
     );
-    harness.harness_mut().key("Escape");
-    assert!(harness.confirm_delete.is_none(), "Escape cancels");
+    cancel_on_host(&mut harness);
+    assert!(
+        harness.store.contact(selected.unwrap()).is_some(),
+        "cancelling deletes nothing"
+    );
 
     harness.harness_mut().key("e");
     assert_eq!(harness.mode, Mode::Edit);
@@ -578,7 +558,7 @@ fn a_contact_menu_without_a_pointer_opens_under_its_row() {
 fn the_contact_menu_runs_the_canonical_actions() {
     let mut app = synced();
     let grace = id_named(&app, "Grace Hopper");
-    let was_favorite = app.store.get(grace).unwrap().favorite;
+    let was_favorite = app.store.contact(grace).unwrap().favorite;
     ask(
         &mut app,
         Request::ContextMenu(grace, Some(Point::new(400.0, 200.0))),
@@ -592,7 +572,7 @@ fn the_contact_menu_runs_the_canonical_actions() {
     let index = |action| rows.iter().position(|row| *row == Some(action)).unwrap();
 
     app.choose_menu(index(ContextAction::Favorite));
-    assert_eq!(app.store.get(grace).unwrap().favorite, !was_favorite);
+    assert_eq!(app.store.contact(grace).unwrap().favorite, !was_favorite);
     assert_eq!(
         app.book().iter().find(|c| c.id == grace).unwrap().favorite,
         !was_favorite,
@@ -652,11 +632,9 @@ fn the_contact_menu_runs_the_canonical_actions() {
         Request::ContextMenu(grace, Some(Point::new(400.0, 200.0))),
     );
     app.choose_menu(index(ContextAction::Delete));
-    assert_eq!(app.confirm_delete, Some(grace));
-    ask(&mut app, Request::Dialog(DialogChoice::Primary));
-    assert!(app.store.get(grace).is_none());
+    confirm_on_host(&mut app);
+    assert!(app.store.contact(grace).is_none());
     assert!(!app.book().iter().any(|c| c.id == grace));
-    assert_eq!(toast(&app), Some("Contact deleted"));
     assert!(
         app.app
             .state()
@@ -683,7 +661,7 @@ fn header_commands_favorite_delete_and_open_the_website() {
     let mut app = synced();
     let ada = selected_contact(&app);
     ask(&mut app, Request::ToggleFavorite);
-    assert_eq!(app.store.get(ada.id).unwrap().favorite, !ada.favorite);
+    assert_eq!(app.store.contact(ada.id).unwrap().favorite, !ada.favorite);
     assert_eq!(
         app.header_shown,
         Some(HeaderKey::View {
@@ -693,11 +671,10 @@ fn header_commands_favorite_delete_and_open_the_website() {
     );
 
     ask(&mut app, Request::DeleteSelected);
-    assert_eq!(app.confirm_delete, Some(ada.id));
-    ask(&mut app, Request::Dialog(DialogChoice::Dismiss));
-    assert!(app.confirm_delete.is_none());
+    assert!(host_confirmation_is_up(&mut app), "the host asks first");
+    cancel_on_host(&mut app);
     assert!(
-        app.store.get(ada.id).is_some(),
+        app.store.contact(ada.id).is_some(),
         "dismissing deletes nothing"
     );
 
@@ -769,22 +746,20 @@ fn search_and_open_operations_reveal_their_target() {
             .expect("Grace is seeded")
             .id;
         app.selected = None;
-        let entries = <crate::resource::Contacts as ui::tilo_resource::Resource>::search(
-            &crate::resource::ContactsState {
-                contacts: app.book(),
-                ..crate::resource::ContactsState::default()
-            },
-        );
+        let entries = <Contacts as ui::tilo_resource::Resource>::search(&Contacts {
+            contacts: app.book().into(),
+            ..Contacts::default()
+        });
         let hits: Vec<_> = entries
             .iter()
             .filter(|entry| entry.text.to_lowercase().contains("navy"))
             .collect();
         assert_eq!(hits.len(), 1, "the organisation finds one contact");
         assert_eq!(hits[0].title, "Grace Hopper");
-        let address = hits[0].action.clone().expect("the hit invokes an action");
-        assert_eq!(address, crate::actions::open_contact_address(id));
+        let anchor = hits[0].anchor.clone().expect("the hit opens a contact");
+        assert_eq!(anchor, crate::resource::contact_resource_id(id));
         app.app
-            .call_on(&address.resource, &address.action, serde_json::json!({}))
+            .call("open", serde_json::json!({ "anchor": anchor }))
             .expect("the open operation succeeds");
         app.settle();
         assert_eq!(app.selected, Some(id), "the open action selected Grace");
@@ -811,17 +786,11 @@ fn search_and_open_operations_reveal_their_target() {
             "the Friends group filter hides Grace before activation"
         );
 
-        let resources = published(&app);
-        let address = crate::actions::open_contact_address(id);
-        let spec = tilo_actions::door::resolve(&resources, &address)
-            .expect("the search address resolves in the agent-visible tree");
-        let encoded = ui::testing::action_contract::spec_encoding(spec, None);
-        let effect = <crate::actions::ContactsEffect as ui::tilo_resource::Effect>::from_payload(
-            &encoded.payload,
-        )
-        .expect("the address names a contacts effect");
         app.app
-            .effect_on(&address.resource, &effect)
+            .call(
+                "open",
+                serde_json::json!({ "anchor": crate::resource::contact_resource_id(id) }),
+            )
             .expect("the addressed open succeeds");
         app.settle();
 
@@ -848,7 +817,7 @@ fn search_and_open_operations_reveal_their_target() {
             .expect("samples expose Work");
         app.app
             .effect_on(
-                &crate::actions::group_resource_id(&group),
+                &crate::resource::place_resource_id(&crate::resource::group_place(&group)),
                 &crate::actions::ContactsEffect::OpenGroup {
                     name: group.clone(),
                 },
@@ -872,7 +841,7 @@ fn search_and_open_operations_reveal_their_target() {
             !app.visible_ids().is_empty()
                 && app.visible_ids().iter().all(|id| app
                     .store
-                    .get(*id)
+                    .contact(*id)
                     .is_some_and(|c| c.groups.iter().any(|g| group_names_equal(&g.value, &group)))),
             "every revealed row belongs to the canonical group"
         );
@@ -888,7 +857,6 @@ fn drive_frame(app: &mut ContactsApp, w: u32, h: u32) {
 
 fn drive_frame_with_theme(app: &mut ContactsApp, w: u32, h: u32, theme: &Theme) {
     let presence = PresenceCtx::empty();
-    let permission = PermissionContext::permissive();
     let mut tr = TextRenderer::new();
     tr.set_text_scale(theme.text_scale);
     let mut taffy: TaffyTree<()> = TaffyTree::new();
@@ -932,14 +900,7 @@ fn drive_frame_with_theme(app: &mut ContactsApp, w: u32, h: u32, theme: &Theme) 
     app.apply_layout(&taffy, child, Point::ORIGIN);
 
     let mut scene = Scene::new();
-    app.draw_with_presence(
-        &mut scene,
-        Affine::IDENTITY,
-        &mut tr,
-        theme,
-        &presence,
-        &permission,
-    );
+    app.draw(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
     // Encoding the scene is enough to exercise every draw path; the
     // GPU blit is covered by the `--shots` harness.
     let _ = &scene;
@@ -1018,7 +979,7 @@ fn text_scale_reflows_geometry_and_names_fit() {
     for id in ids {
         h.app.commit_select(id);
         h.relayout();
-        let name = h.app.store.get(id).unwrap().display_name();
+        let name = h.app.store.contact(id).unwrap().display_name();
         let heading = named_widget(&*h.app, &name, Role::Heading { level: 1 })
             .expect("the real contact heading");
         let measured = f64::from(
@@ -1056,7 +1017,7 @@ fn saves_persist_and_refusals_never_claim_success() {
         let mut app = Live::sample(1280, 800);
         let c = app
             .selected
-            .and_then(|id| app.store.get(id))
+            .and_then(|id| app.store.contact(id))
             .cloned()
             .unwrap();
         let id = c.id;
@@ -1075,14 +1036,14 @@ fn saves_persist_and_refusals_never_claim_success() {
         let mut app = Live::sample(1280, 800);
         let contact = app
             .selected
-            .and_then(|id| app.store.get(id))
+            .and_then(|id| app.store.contact(id))
             .cloned()
             .unwrap();
         app.begin_edit(contact.clone(), false);
         set_title(&app, "Unsaved draft");
         // A collaborator deletes the record while it is being edited.
         app.app
-            .merge_peer_edit(|doc| ContactsDoc::delete_contact(doc, contact.id));
+            .merge_peer_edit(|doc| peer_applies(doc, Contacts::delete(contact.id)));
         app.settle();
         app.save_edit();
         app.settle();
@@ -1094,18 +1055,13 @@ fn saves_persist_and_refusals_never_claim_success() {
             "the person's text is kept"
         );
         assert!(
-            app.store.get(contact.id).is_none(),
+            app.store.contact(contact.id).is_none(),
             "the store follows the document"
         );
-        let message = app
-            .toast
-            .as_ref()
-            .map(|(message, _)| message.clone())
-            .unwrap();
+        let message = toast(&app).unwrap().to_owned();
         assert!(message.starts_with("Couldn't save contact:"), "{message}");
-        let tree = app.accessibility().unwrap();
         assert!(
-            live_message(&tree, &message).is_some(),
+            announced(&app, &message),
             "the refusal is announced through the retained live region"
         );
     }
@@ -1118,54 +1074,60 @@ fn saves_persist_and_refusals_never_claim_success() {
         let mut app = Live::sample(1280, 800);
         let contact = app
             .selected
-            .and_then(|id| app.store.get(id))
+            .and_then(|id| app.store.contact(id))
             .cloned()
             .unwrap();
         app.app
-            .merge_peer_edit(|doc| ContactsDoc::delete_contact(doc, contact.id));
+            .merge_peer_edit(|doc| peer_applies(doc, Contacts::delete(contact.id)));
         app.settle();
-        app.store.upsert(contact.clone());
+        std::rc::Rc::make_mut(&mut app.store)
+            .contacts
+            .push(contact.clone());
         app.selected = Some(contact.id);
 
         assert!(
-            app.submit(&crate::actions::set_favorite_action(
-                contact.id.to_string(),
-                !contact.favorite,
-            ))
-            .is_ok(),
+            app.submit(Invoke::edit(&Contacts::favorite(contact.id, !contact.favorite)).unwrap())
+                .is_ok(),
             "the stale control submits the typed favorite action"
         );
         app.settle();
         assert!(
-            app.store.get(contact.id).is_none(),
+            app.store.contact(contact.id).is_none(),
             "favorite refusal reconciles"
         );
-        let favorite_error = app.toast.as_ref().unwrap().0.clone();
+        let favorite_error = toast(&app).unwrap().to_owned();
         assert!(
             favorite_error.starts_with("Couldn't change the address book:"),
             "{favorite_error}"
         );
         assert!(
-            live_message(&app.accessibility().unwrap(), &favorite_error).is_some(),
+            announced(&app, &favorite_error),
             "the favorite refusal is announced"
         );
 
         // Recreate the stale projection to exercise the independently visible
         // delete-confirmation path against the same tombstone.
-        app.store.upsert(contact.clone());
+        std::rc::Rc::make_mut(&mut app.store)
+            .contacts
+            .push(contact.clone());
         app.selected = Some(contact.id);
         app.request(Request::DeleteSelected);
-        app.request(Request::Dialog(DialogChoice::Primary));
+        if host_confirmation_is_up(&mut app) {
+            confirm_on_host(&mut app);
+        }
         app.settle();
         assert!(
-            app.store.get(contact.id).is_none(),
+            app.store.contact(contact.id).is_none(),
             "delete refusal reconciles"
         );
-        let delete_error = app.toast.as_ref().unwrap().0.clone();
-        assert!(delete_error.starts_with("Couldn't change the address book:"));
+        let delete_error = toast(&app).unwrap().to_owned();
+        assert!(
+            delete_error.starts_with("Couldn't change the address book:"),
+            "{delete_error}"
+        );
         assert_ne!(delete_error, "Contact deleted", "no false success toast");
         assert!(
-            live_message(&app.accessibility().unwrap(), &delete_error).is_some(),
+            announced(&app, &delete_error),
             "the delete refusal is announced"
         );
     }
@@ -1183,7 +1145,7 @@ fn saves_persist_and_refusals_never_claim_success() {
         app.settle();
         assert_eq!(app.mode, Mode::Edit, "the draft stays open");
         assert!(app.book().is_empty(), "nothing reached the document");
-        let message = app.toast.as_ref().unwrap().0.clone();
+        let message = toast(&app).unwrap().to_owned();
         assert!(message.starts_with("Couldn't save contact:"), "{message}");
     }
 }
@@ -1195,38 +1157,20 @@ fn saves_persist_and_refusals_never_claim_success() {
 // =================================================================
 
 use winit::dpi::PhysicalPosition;
-use winit::event::{DeviceId, ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
-use winit::keyboard::{Key, KeyLocation, ModifiersState, NamedKey, PhysicalKey, SmolStr};
+use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::keyboard::{Key, ModifiersState, NamedKey, SmolStr};
 
-/// Build a `KeyboardInput` winit event. winit 0.30's `KeyEvent` carries a
-/// `pub(crate)` `platform_specific` field, so it can't be struct-literalled
-/// — the whole struct is zero-initialised (the same trick `shell`'s and
-/// `terminal`'s test harnesses use) then the public fields we care about are
-/// overwritten. `text` is what a focused `TextInput` actually inserts.
+/// `text` is what a focused `TextInput` actually inserts.
 fn key_input_event(logical_key: Key, text: Option<&str>) -> WindowEvent {
-    // SAFETY: every public `KeyEvent` field tolerates the all-zero bit
-    // pattern (`Option` → `None`; `Key`/`PhysicalKey`/`KeyLocation`/
-    // `ElementState` first variant; `bool` → false) and we overwrite the
-    // ones we read below; the private field is inert for our widgets.
-    let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-    ev.logical_key = logical_key;
-    ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-    ev.location = KeyLocation::Standard;
-    ev.state = ElementState::Pressed;
-    ev.repeat = false;
-    ev.text = text.map(SmolStr::new);
+    // `Key`/`PhysicalKey`/`KeyLocation`/ `ElementState` first variant; `bool` → false) and we
+    // overwrite the ones we read below; the private field is inert for our widgets.
+    let ev =
+        ui::synthetic_input::key_event(logical_key, text.map(SmolStr::new), ElementState::Pressed);
     WindowEvent::KeyboardInput {
-        device_id: device_id(),
+        device_id: winit::event::DeviceId::dummy(),
         event: ev,
         is_synthetic: false,
     }
-}
-
-fn device_id() -> DeviceId {
-    // winit gives no public DeviceId constructor; the production code
-    // does exactly this for synthesised presses (see
-    // `forward_press_to_focused_input`).
-    unsafe { std::mem::zeroed() }
 }
 
 /// Mounts the app in the production frame host so tests can pump events
@@ -1267,7 +1211,7 @@ impl Harness {
 
     fn move_to(&mut self, p: Point) {
         self.dispatch(&WindowEvent::CursorMoved {
-            device_id: device_id(),
+            device_id: winit::event::DeviceId::dummy(),
             position: PhysicalPosition::new(p.x, p.y),
         });
     }
@@ -1275,12 +1219,12 @@ impl Harness {
     fn press_left(&mut self, p: Point) -> bool {
         self.move_to(p);
         let press = self.dispatch(&WindowEvent::MouseInput {
-            device_id: device_id(),
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Pressed,
             button: MouseButton::Left,
         });
         let release = self.dispatch(&WindowEvent::MouseInput {
-            device_id: device_id(),
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Released,
             button: MouseButton::Left,
         });
@@ -1291,7 +1235,7 @@ impl Harness {
     fn press_right(&mut self, p: Point) -> bool {
         self.move_to(p);
         let handled = self.dispatch(&WindowEvent::MouseInput {
-            device_id: device_id(),
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Pressed,
             button: MouseButton::Right,
         });
@@ -1661,7 +1605,7 @@ fn website_renders_and_opens_through_the_link_widget() {
     {
         let mut h = Harness::new(1280, 800);
         let id = h.app.selected.expect("a contact is selected");
-        let website = h.app.store.get(id).unwrap().website.clone();
+        let website = h.app.store.contact(id).unwrap().website.clone();
         assert!(!website.is_empty());
         let (_, button) = h
             .app
@@ -1699,7 +1643,7 @@ fn website_renders_and_opens_through_the_link_widget() {
         let _work = work.background().enter();
         let mut h = Harness::live(1280, 800);
         let id = h.app.selected.unwrap();
-        let url = h.app.store.get(id).unwrap().website.clone();
+        let url = h.app.store.contact(id).unwrap().website.clone();
         assert!(!url.is_empty(), "the selected seed has a website");
 
         h.relayout();
@@ -1757,15 +1701,16 @@ fn context_menu_opens_canonical_contact_actions() {
                 other.is_some()
             ),
         }
-        // Click the "Delete" row in the menu → the delete-confirm modal opens.
+        // Click the "Delete" row in the menu → the host asks to confirm.
         let rows = menu_rows(&h.app);
         let delete_idx = menu_index(&h.app, ContextAction::Delete);
         h.press_left(rows[&delete_idx].center());
-        assert_eq!(
-            h.app.confirm_delete,
-            Some(id),
-            "context-menu Delete routes through the confirmation modal"
+        h.app.settle();
+        assert!(
+            host_confirmation_is_up(&mut h.app),
+            "context-menu Delete routes through the host's confirmation"
         );
+        assert!(h.app.store.contact(id).is_some(), "nothing is deleted yet");
         assert!(
             !h.app.menu.is_open(),
             "the context menu closes when an item is chosen"
@@ -1813,7 +1758,7 @@ fn context_menu_opens_canonical_contact_actions() {
                 .map(|c| c.favorite)
                 .expect("contact present in doc")
         };
-        let before = h.app.store.get(id).unwrap().favorite;
+        let before = h.app.store.contact(id).unwrap().favorite;
 
         assert!(h.press_right(row));
         // The menu item index is stable; resolve it and confirm its label
@@ -1835,7 +1780,7 @@ fn context_menu_opens_canonical_contact_actions() {
 
         // The flag flipped in the store AND in the CRDT, and the menu closed.
         assert_eq!(
-            h.app.store.get(id).unwrap().favorite,
+            h.app.store.contact(id).unwrap().favorite,
             !before,
             "store flag flipped"
         );
@@ -1872,52 +1817,22 @@ fn context_menu_opens_canonical_contact_actions() {
     }
 }
 
-/// The delete key and confirm modal dispatch the palette's delete action; the shared modal's cancel is non-destructive.
+/// Deleting asks the host to confirm: confirmed, it does exactly what the
+/// palette's delete does; cancelled, it deletes nothing.
 #[test]
 fn delete_confirmation_dispatches_the_palette_action() {
-    // --- phase: confirm_modal_delete_removes_contact_from_doc ---
+    // --- phase: confirmed_delete_is_the_palettes_delete ---
     {
         let mut h = Harness::new(1280, 800);
-        let id = h.row_id(0);
-        h.app.confirm_delete = Some(id);
-        let before = h.book().len();
-        h.relayout();
-        let del = current_dialog(&*h.app).primary_rect();
-        h.press_left(del.center());
-        assert!(
-            h.app.confirm_delete.is_none(),
-            "the modal closes after confirming"
-        );
-        let after = h.book().len();
-        assert_eq!(
-            after,
-            before - 1,
-            "Delete removes the contact from the CRDT doc"
-        );
-        assert!(
-            !h.book().iter().any(|c| c.id == id),
-            "the deleted contact is gone from the document"
-        );
-    }
-
-    // --- phase: confirm_delete_dispatches_the_action_the_palette_builds ---
-    {
-        // Single source of truth, proven on the real button path: confirming
-        // a delete dispatches the byte-identical EncodedAction the Ctrl+K
-        // "Delete contact" spec builds for the same contact.
-        let mut h = Harness::new(1280, 800);
-        let id = h.row_id(0);
-        let expected = h
-            .app
-            .book_after(&crate::actions::delete_contact_action(id.to_string()));
-        h.app.confirm_delete = Some(id);
-        h.relayout();
-        let del = current_dialog(&*h.app).primary_rect();
-        h.press_left(del.center());
+        let id = h.app.selected.unwrap();
+        let expected = h.app.book_after(Contacts::delete(id));
+        assert!(h.press_named(NamedKey::Delete));
+        h.app.settle();
+        confirm_on_host(&mut h.app);
         assert_eq!(
             h.book(),
             expected,
-            "the confirm-delete button does what the palette's Delete does",
+            "the confirmed delete does what the palette's Delete does",
         );
         assert!(
             !h.book().iter().any(|c| c.id == id),
@@ -1925,41 +1840,15 @@ fn delete_confirmation_dispatches_the_palette_action() {
         );
     }
 
-    // --- phase: delete_key_opens_confirm_and_escape_dismisses_it ---
+    // --- phase: cancelling_the_hosts_confirmation_is_non_destructive ---
     {
         let mut h = Harness::new(1280, 800);
         let id = h.app.selected.unwrap();
         assert!(h.press_named(NamedKey::Delete));
-        assert_eq!(
-            h.app.confirm_delete,
-            Some(id),
-            "Delete raises the confirm modal for the selection"
-        );
-        h.press_named(NamedKey::Escape);
-        assert!(
-            h.app.confirm_delete.is_none(),
-            "Escape dismisses the confirm modal"
-        );
-        assert!(h.app.store.get(id).is_some(), "nothing was deleted");
-    }
-
-    // --- phase: delete_confirmation_is_shared_modal_and_cancel_is_non_destructive ---
-    {
-        let mut h = Harness::new(1280, 800);
-        let id = h.row_id(0);
-        h.app.confirm_delete = Some(id);
-        h.relayout();
-
-        let dialog = current_dialog(&*h.app);
-        let access = dialog.accessibility().expect("modal accessibility node");
-        assert_eq!(access.role, ui::a11y::Role::Dialog);
-        assert!(access.state.modal, "assistive tech sees a blocking dialog");
-        assert!(h.app.traps_focus(), "keyboard focus cannot leave the modal");
-        let cancel = dialog.secondary_rect();
-
-        assert!(h.press_left(cancel.center()));
-        assert!(h.app.confirm_delete.is_none(), "Cancel closes the dialog");
-        assert!(h.app.store.get(id).is_some(), "Cancel never deletes");
+        h.app.settle();
+        assert!(host_confirmation_is_up(&mut h.app));
+        cancel_on_host(&mut h.app);
+        assert!(h.app.store.contact(id).is_some(), "Cancel never deletes");
         assert!(
             h.book().iter().any(|c| c.id == id),
             "Cancel leaves the document untouched"
@@ -1967,7 +1856,7 @@ fn delete_confirmation_dispatches_the_palette_action() {
     }
 }
 
-/// Favourite toggles dispatch the palette action, palette actions reconcile on sync, the detail star toggles store and doc and a toast dismisses.
+/// Favourite toggles dispatch the palette action, palette actions reconcile on sync, the detail star toggles store and doc and a toast expires after a real action.
 #[allow(
     clippy::too_many_lines,
     reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
@@ -1982,11 +1871,10 @@ fn favorite_toggles_dispatch_and_reconcile_with_feedback() {
         let mut h = Harness::new(1280, 800);
         let row = h.row_center(0);
         let id = h.row_id(0);
-        let before = h.app.store.get(id).unwrap().favorite;
-        let expected = h.app.book_after(&crate::actions::set_favorite_action(
-            id.to_string(),
-            !before,
-        ));
+        let before = h.app.store.contact(id).unwrap().favorite;
+        let expected = h
+            .app
+            .book_after(Invoke::edit(&Contacts::favorite(id, !before)).unwrap());
 
         assert!(h.press_right(row));
         let rows = menu_rows(&h.app);
@@ -2012,19 +1900,15 @@ fn favorite_toggles_dispatch_and_reconcile_with_feedback() {
         h.app
             .app
             .call_on(
-                &crate::actions::contact_resource_id(id),
-                "delete",
+                &crate::resource::contact_resource_id(id),
+                "delete-contact",
                 serde_json::json!({}),
             )
             .expect_err("deleting asks for confirmation");
-        let action = crate::actions::delete_contact_action(id.to_string());
-        h.app
-            .app
-            .invoke_confirmed(ui::tilo_resource::Invoke::apply(&action).unwrap())
-            .unwrap();
+        h.app.app.invoke_confirmed(Contacts::delete(id)).unwrap();
         h.app.settle();
         assert!(
-            h.app.store.get(id).is_none(),
+            h.app.store.contact(id).is_none(),
             "the presented book dropped the deleted contact"
         );
         assert_eq!(h.app.store.len(), before - 1);
@@ -2034,14 +1918,14 @@ fn favorite_toggles_dispatch_and_reconcile_with_feedback() {
     {
         let mut h = Harness::new(1280, 800);
         let id = h.app.selected.unwrap();
-        let before = h.app.store.get(id).unwrap().favorite;
+        let before = h.app.store.contact(id).unwrap().favorite;
         assert!(
             target(&h.app, "contacts.favorite").width() > 0.0,
             "the detail favorite star is laid out"
         );
         h.press_left(target(&h.app, "contacts.favorite").center());
         assert_eq!(
-            h.app.store.get(id).unwrap().favorite,
+            h.app.store.contact(id).unwrap().favorite,
             !before,
             "the star flips the store flag"
         );
@@ -2051,55 +1935,98 @@ fn favorite_toggles_dispatch_and_reconcile_with_feedback() {
             "and persists to the doc"
         );
     }
-
     // --- phase: toast_auto_dismisses_after_a_real_action ---
     {
-        // After Save/Delete/Import/Export the confirmation toast used to stay
-        // forever: it stored an Instant nothing ever read. Drive a real action
-        // (delete) so the production `show_toast` fires, then prove the frame
-        // loop keeps itself awake and clears the toast once its lifetime
-        // elapses, and idles afterwards.
-        let mut app = Live::sample(1280, 800);
-        let id = app.selected.unwrap();
+        let shown = ui::time::now();
+        ui::time::testing::with_monotonic_time(shown, || {
+            // A real action: saving an edit raises the confirmation.
+            let mut app = Live::sample(1280, 800);
+            let contact = selected_contact(&app);
+            app.begin_edit(contact, false);
+            app.form
+                .as_ref()
+                .expect("the editor is open")
+                .set_value(Slot::Title, "Toasted");
+            app.request(Request::Save);
+            assert!(toast(&app).is_some(), "saving a contact raises a toast");
 
-        app.selected = Some(id);
-        app.request(Request::DeleteSelected);
-        app.request(Request::Dialog(DialogChoice::Primary));
-        assert!(app.toast.is_some(), "deleting a contact raises a toast");
-        assert!(
-            app.needs_animation_frame(),
-            "the loop stays awake so the timed dismissal fires without further input",
-        );
+            let deadline = app
+                .shell
+                .children()
+                .last()
+                .expect("the showing notice is the shell's final owned child")
+                .next_wake_deadline()
+                .expect("the production notice exposes its expiry deadline");
+            let host_deadline = app
+                .harness_mut()
+                .frame_schedule()
+                .next_wake_deadline
+                .expect("the real host schedules the notice's dismissal without input");
+            assert!(
+                host_deadline <= deadline,
+                "the host must wake no later than its owned notice's expiry"
+            );
+            assert!(deadline > shown, "a fresh notice has its full lifetime");
+            app.harness_mut().relayout();
+            assert!(
+                toast(&app).is_some(),
+                "a fresh toast survives an immediate frame"
+            );
 
-        // A frame drawn before the lifetime elapses keeps the toast.
-        drive_frame(&mut app, 1280, 800);
-        assert!(
-            app.toast.is_some(),
-            "a fresh toast survives an immediate frame"
-        );
+            // The animation clock does not advance the real record writer.
+            // Await the production durability boundary before asking whether
+            // the whole host, including its save-status feedback, is idle.
+            app.app
+                .flush()
+                .expect("the actual delete reaches durable record storage");
+            assert!(
+                toast(&app).is_some(),
+                "durable storage completion does not dismiss a fresh notice"
+            );
 
-        // Back-date the toast past its lifetime and draw again → it clears,
-        // and the loop is then free to idle.
-        if let Some((_, shown)) = app.toast.as_mut() {
-            *shown = ui::time::now()
-                .checked_sub(TOAST_LIFETIME)
-                .unwrap()
-                .checked_sub(Duration::from_millis(50))
-                .unwrap();
-        }
-        assert!(
-            app.toast_expired(),
-            "the back-dated toast is past its lifetime"
-        );
-        app.harness_mut().relayout();
-        assert!(
-            app.toast.is_none(),
-            "the toast auto-dismisses once its lifetime elapses"
-        );
-        assert!(
-            !app.needs_animation_frame(),
-            "with the toast gone the loop can settle back to idle",
-        );
+            let expired = deadline + Duration::from_millis(50);
+            ui::time::testing::with_monotonic_time(expired, || {
+                assert!(
+                    app.harness_mut().poll_frame().unwrap(),
+                    "the due deadline drives the production frame without further input"
+                );
+                assert!(
+                    toast(&app).is_none(),
+                    "the toast auto-dismisses once its lifetime elapses; first host wake {:?}, shared notice lifetime {:?}",
+                    deadline.duration_since(shown),
+                    ui::widget::toast::DEFAULT_TTL
+                );
+            });
+            // Allow the real host to finish any action animation; never force
+            // a draw or mutate the notice to manufacture an idle result.
+            for frame in 1..=100 {
+                ui::time::testing::with_monotonic_time(
+                    expired + Duration::from_millis(frame * 16),
+                    || {
+                        app.harness_mut().poll_frame().unwrap();
+                    },
+                );
+            }
+            // Inspect the settled host at the last polled instant: restoring
+            // the outer clock first would move time backwards by 4.65 seconds.
+            ui::time::testing::with_monotonic_time(expired + Duration::from_millis(1600), || {
+                let idle = app.harness_mut().frame_schedule();
+                let future_requesters = idle.next_wake_deadline.map(|at| {
+                    ui::time::testing::with_monotonic_time(at, || {
+                        app.harness_mut().frame_requesters()
+                    })
+                });
+                assert!(
+                    !idle.needs_animation_frame && idle.next_wake_deadline.is_none(),
+                    "with the toast gone the loop can settle back to idle; schedule {:?}; requesters {:?}; future requesters {:?}; contact animation {}, deadline {:?}",
+                    idle,
+                    app.harness_mut().frame_requesters(),
+                    future_requesters,
+                    app.needs_animation_frame(),
+                    app.next_wake_deadline()
+                );
+            });
+        });
     }
 }
 
@@ -2115,7 +2042,7 @@ fn switching_while_editing_is_guarded_by_the_unsaved_modal() {
         let mut h = Harness::new(1280, 800);
         // Enter edit on the selected contact and dirty a field.
         let cur = h.app.selected.unwrap();
-        let c = h.app.store.get(cur).cloned().unwrap();
+        let c = h.app.store.contact(cur).cloned().unwrap();
         h.app.begin_edit(c, false);
         if let Some(form) = h.app.form.as_ref() {
             form.set_value(Slot::Title, "Brand New Title");
@@ -2161,8 +2088,8 @@ fn switching_while_editing_is_guarded_by_the_unsaved_modal() {
     {
         let mut h = Harness::new(1280, 800);
         let cur = h.app.selected.unwrap();
-        let original_title = h.app.store.get(cur).unwrap().title.clone();
-        let c = h.app.store.get(cur).cloned().unwrap();
+        let original_title = h.app.store.contact(cur).unwrap().title.clone();
+        let c = h.app.store.contact(cur).cloned().unwrap();
         h.app.begin_edit(c, false);
         if let Some(form) = h.app.form.as_ref() {
             form.set_value(Slot::Title, "Throwaway Title");
@@ -2191,7 +2118,7 @@ fn switching_while_editing_is_guarded_by_the_unsaved_modal() {
     {
         let mut h = Harness::new(1280, 800);
         let cur = h.app.selected.unwrap();
-        let c = h.app.store.get(cur).cloned().unwrap();
+        let c = h.app.store.contact(cur).cloned().unwrap();
         h.app.begin_edit(c, false);
         h.relayout();
         assert!(!h.app.form_is_dirty(), "no edits ⇒ not dirty");
@@ -2216,7 +2143,7 @@ fn switching_while_editing_is_guarded_by_the_unsaved_modal() {
         // and switching contacts pops the modal instead of losing the edit.
         let mut h = Harness::new(1280, 800);
         let cur = h.app.selected.unwrap();
-        let c = h.app.store.get(cur).cloned().unwrap();
+        let c = h.app.store.contact(cur).cloned().unwrap();
         h.app.begin_edit(c, false);
         h.relayout();
         assert!(h.focus_field(Slot::Title));
@@ -2258,8 +2185,8 @@ fn edits_commit_only_on_save_and_cancel_discards() {
     {
         let mut h = Harness::new(1280, 800);
         let id = h.app.selected.unwrap();
-        let original = h.app.store.get(id).unwrap().title.clone();
-        let c = h.app.store.get(id).cloned().unwrap();
+        let original = h.app.store.contact(id).unwrap().title.clone();
+        let c = h.app.store.contact(id).cloned().unwrap();
         h.app.begin_edit(c, false);
         h.relayout();
         // Focus the Title field via a real click, then type through the
@@ -2278,7 +2205,7 @@ fn edits_commit_only_on_save_and_cancel_discards() {
         assert_ne!(live, original);
         // … but NOTHING was committed: editing is a true draft now.
         assert_eq!(
-            h.app.store.get(id).unwrap().title,
+            h.app.store.contact(id).unwrap().title,
             original,
             "store untouched mid-edit"
         );
@@ -2297,7 +2224,7 @@ fn edits_commit_only_on_save_and_cancel_discards() {
         assert_eq!(h.app.mode, Mode::View, "Cancel leaves edit mode");
         assert!(h.app.form.is_none(), "Cancel drops the form");
         assert_eq!(
-            h.app.store.get(id).unwrap().title,
+            h.app.store.contact(id).unwrap().title,
             original,
             "Cancel discarded the edit (store)"
         );
@@ -2391,7 +2318,7 @@ fn edits_commit_only_on_save_and_cancel_discards() {
     {
         let mut h = Harness::new(1280, 800);
         let id = h.app.selected.unwrap();
-        let c = h.app.store.get(id).cloned().unwrap();
+        let c = h.app.store.contact(id).cloned().unwrap();
         h.app.begin_edit(c, false);
         h.relayout();
         assert!(h.focus_field(Slot::Org));
@@ -2402,7 +2329,7 @@ fn edits_commit_only_on_save_and_cancel_discards() {
         assert!(h.press_char_ctrl("s"), "Ctrl+S is handled in edit mode");
         assert_eq!(h.app.mode, Mode::View, "Ctrl+S leaves the form");
         assert_eq!(
-            h.app.store.get(id).unwrap().org,
+            h.app.store.contact(id).unwrap().org,
             typed,
             "the typed org saved to the store"
         );
@@ -2506,8 +2433,9 @@ fn search_field_focus_and_typing_narrow_the_list() {
     );
     let grace = id_named(&h.app, "Grace Hopper");
     assert_eq!(
-        people[0].action_address(),
-        Some(crate::actions::open_contact_address(grace))
+        people[0].action_id,
+        crate::resource::contact_resource_id(grace),
+        "the hit opens the contact"
     );
     assert!(providers[0].search("definitely no contact").is_empty());
     let request = ui::search::SearchRequest::this_app().with_query("hopper");
@@ -2552,7 +2480,7 @@ fn sort_and_group_filters_reorder_and_filter_the_list() {
         let first_by_name = h
             .app
             .store
-            .get(h.app.visible_ids()[0])
+            .contact(h.app.visible_ids()[0])
             .unwrap()
             .display_name();
         assert_eq!(
@@ -2580,7 +2508,7 @@ fn sort_and_group_filters_reorder_and_filter_the_list() {
         let first_by_org = h
             .app
             .store
-            .get(h.app.visible_ids()[0])
+            .contact(h.app.visible_ids()[0])
             .unwrap()
             .display_name();
         assert_ne!(first_by_org, first_by_name, "the list reordered");
@@ -2593,7 +2521,7 @@ fn sort_and_group_filters_reorder_and_filter_the_list() {
         act_named(
             &mut h.app,
             "Sort contacts",
-            &ui::a11y::Action::SetValue("Sort by name".into()),
+            &ui::a11y::Action::SetValue("Sort by last name".into()),
         );
         assert_eq!(h.app.sort, SortKey::Name);
     }
@@ -2606,7 +2534,7 @@ fn sort_and_group_filters_reorder_and_filter_the_list() {
         assert!(
             !h.app
                 .store
-                .get(sel_before)
+                .contact(sel_before)
                 .unwrap()
                 .groups
                 .iter()
@@ -2625,7 +2553,7 @@ fn sort_and_group_filters_reorder_and_filter_the_list() {
             visible.iter().all(|id| h
                 .app
                 .store
-                .get(*id)
+                .contact(*id)
                 .unwrap()
                 .groups
                 .iter()
@@ -2674,7 +2602,7 @@ fn split_divider_and_compact_toolbar_fit_their_space() {
         assert!(h.app.shell.geometry().resize_handle.width() > 0.0);
         h.move_to(grab);
         assert!(h.dispatch(&WindowEvent::MouseInput {
-            device_id: device_id(),
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Pressed,
             button: MouseButton::Left,
         }));
@@ -2685,7 +2613,7 @@ fn split_divider_and_compact_toolbar_fit_their_space() {
             "dragging the shared sidebar grip widens navigation"
         );
         h.dispatch(&WindowEvent::MouseInput {
-            device_id: device_id(),
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Released,
             button: MouseButton::Left,
         });
@@ -2731,7 +2659,7 @@ fn repeated_rows_grow_shrink_and_keep_ids_in_the_draft() {
     {
         let mut h = Harness::new(1280, 800);
         let id = h.app.selected.unwrap();
-        let c = h.app.store.get(id).cloned().unwrap();
+        let c = h.app.store.contact(id).cloned().unwrap();
         let base = c.phones.len();
         h.app.begin_edit(c, false);
         h.relayout();
@@ -2778,7 +2706,7 @@ fn repeated_rows_grow_shrink_and_keep_ids_in_the_draft() {
     {
         let mut h = Harness::new(1280, 800);
         let id = h.app.selected.unwrap();
-        let c = h.app.store.get(id).cloned().unwrap();
+        let c = h.app.store.contact(id).cloned().unwrap();
         let before = c.favorite;
         h.app.begin_edit(c, false);
         h.relayout();
@@ -2797,7 +2725,7 @@ fn repeated_rows_grow_shrink_and_keep_ids_in_the_draft() {
             "the pill flips the draft flag"
         );
         assert_eq!(
-            h.app.store.get(id).unwrap().favorite,
+            h.app.store.contact(id).unwrap().favorite,
             before,
             "draft-only: store unchanged until Save"
         );
@@ -2815,7 +2743,7 @@ fn draft_popups_set_type_and_birthday_only_in_the_draft() {
     {
         let mut h = Harness::new(1280, 800);
         let id = h.app.selected.unwrap();
-        let c = h.app.store.get(id).cloned().unwrap();
+        let c = h.app.store.contact(id).cloned().unwrap();
         assert!(!c.phones.is_empty());
         let stored_label = c.phones[0].label.clone();
         h.app.begin_edit(c, false);
@@ -2848,7 +2776,7 @@ fn draft_popups_set_type_and_birthday_only_in_the_draft() {
         );
         // Draft-only: the committed store still holds the old label.
         assert_eq!(
-            h.app.store.get(id).unwrap().phones[0].label,
+            h.app.store.contact(id).unwrap().phones[0].label,
             stored_label,
             "the label isn't committed until Save",
         );
@@ -2858,7 +2786,7 @@ fn draft_popups_set_type_and_birthday_only_in_the_draft() {
     {
         let mut h = Harness::new(1280, 800);
         let id = h.app.selected.unwrap();
-        let c = h.app.store.get(id).cloned().unwrap();
+        let c = h.app.store.contact(id).cloned().unwrap();
         let stored_bday = c.birthday;
         h.app.begin_edit(c, false);
         h.relayout();
@@ -2889,7 +2817,7 @@ fn draft_popups_set_type_and_birthday_only_in_the_draft() {
         );
         // Draft-only: not committed to the store yet.
         assert_eq!(
-            h.app.store.get(id).unwrap().birthday,
+            h.app.store.contact(id).unwrap().birthday,
             stored_bday,
             "birthday not committed until Save"
         );
@@ -2899,7 +2827,7 @@ fn draft_popups_set_type_and_birthday_only_in_the_draft() {
     {
         let mut h = Harness::new(1_280, 800);
         let id = h.app.selected.expect("sample contact selected");
-        let contact = h.app.store.get(id).cloned().expect("stored contact");
+        let contact = h.app.store.contact(id).cloned().expect("stored contact");
         h.app.begin_edit(contact, false);
         h.relayout();
         let chip = target(&h.app, "contacts.form.type.phone-0");
@@ -2996,7 +2924,7 @@ fn vcf_export_writes_the_selected_book() {
             .selected
             .with(|set| *set.iter().next().unwrap());
         assert!(
-            h.app.store.get(first_id).is_some(),
+            h.app.store.contact(first_id).is_some(),
             "selection refers to a real contact"
         );
         act_named(
@@ -3310,7 +3238,7 @@ fn saved_book_persists_across_restarts_and_imports() {
         let mut app = Live::sample(1280, 800);
         let before = app.store.len();
         let removed = app.store.contacts[0].id;
-        app.invoke(&crate::actions::delete_contact_action(removed.to_string()));
+        app.invoke(Contacts::delete(removed));
         app.settle();
 
         // Relaunch: the deletion stuck.
@@ -3386,8 +3314,8 @@ fn import_and_export_run_through_the_file_chooser() {
         let opened = h.app.request_export(&[], VCardVersion::V3);
         assert!(!opened, "an empty selection does not open the Save dialog");
         assert!(!h.app.portal_in_flight(), "no export runs");
-        match &h.app.toast {
-            Some((msg, _)) => assert!(msg.to_lowercase().contains("select")),
+        match toast(&h.app) {
+            Some(msg) => assert!(msg.to_lowercase().contains("select")),
             None => panic!("an empty export must surface a guiding toast"),
         }
     }
@@ -3411,9 +3339,9 @@ fn check_import_conflict_decisions() {
         let mut app = Live::empty(w, h);
         let mut summary = ImportSummary::default();
         let mut first_new = None;
-        app.absorb_import_contact(original.clone(), &mut summary, &mut first_new);
+        app.absorb_import_contacts([original.clone()], &mut summary, &mut first_new);
         app.settle();
-        app.absorb_import_contact(incoming.clone(), &mut summary, &mut first_new);
+        app.absorb_import_contacts([incoming.clone()], &mut summary, &mut first_new);
         assert_eq!(summary.conflicts, 1);
         app.recompose();
         (app, original, incoming)
@@ -3442,7 +3370,7 @@ fn check_import_conflict_decisions() {
         act_named(&mut app, choice, &ui::a11y::Action::Activate);
         assert!(app.import_conflicts.is_empty());
         assert_eq!(
-            app.store.get(original.id).unwrap().emails[0].value,
+            app.store.contact(original.id).unwrap().emails[0].value,
             original.emails[0].value
         );
         if choice == "Keep existing" {
@@ -3522,7 +3450,7 @@ fn check_duplicate_resource_and_compact_header() {
         .expect("a shared email/name identifies a candidate");
     let published = app.app.agent_surface().to_string();
     assert!(
-        published.contains("contacts.duplicate"),
+        published.contains("contacts.book/derived/duplicate:"),
         "the exact duplicate resource is published"
     );
     app.choose_more(MoreAction::ReviewDuplicate);
@@ -3611,7 +3539,7 @@ fn export_modal_semantics() {
         "exactly one actual row was selected"
     );
     act_named(&mut app, "Cancel", &ui::a11y::Action::Activate);
-    app.store.contacts = (0..1000)
+    std::rc::Rc::make_mut(&mut app.store).contacts = (0..1000)
         .map(|index| Contact {
             id: uuid::Uuid::new_v4(),
             first: format!("Export {index:04}"),
@@ -3635,7 +3563,7 @@ fn export_modal_semantics() {
 fn unsaved_modal_semantics() {
     let mut app = Live::sample(1280, 800);
     let current = app.selected.unwrap();
-    let contact = app.store.get(current).cloned().unwrap();
+    let contact = app.store.contact(current).cloned().unwrap();
     app.begin_edit(contact, false);
     app.recompose();
     act_named(
@@ -3672,7 +3600,7 @@ fn unsaved_modal_semantics() {
 fn detail_and_editor_semantics() {
     let mut app = Live::sample(1280, 800);
     let id = app.selected.unwrap();
-    let favorite = app.store.get(id).unwrap().favorite;
+    let favorite = app.store.contact(id).unwrap().favorite;
     let favorite_node = named_widget(&*app, "Favorite", Role::ToggleButton)
         .expect("actual favorite control")
         .accessibility()
@@ -3680,7 +3608,7 @@ fn detail_and_editor_semantics() {
     assert_eq!(favorite_node.state.checked, Some(favorite));
     act_named(&mut app, "Favorite", &ui::a11y::Action::Activate);
     assert_eq!(
-        app.store.get(id).map(|contact| contact.favorite),
+        app.store.contact(id).map(|contact| contact.favorite),
         Some(!favorite)
     );
     assert_eq!(
@@ -3691,7 +3619,7 @@ fn detail_and_editor_semantics() {
         Some(!favorite),
         "activation dispatches the canonical collaborative action"
     );
-    let contact = app.store.get(id).cloned().unwrap();
+    let contact = app.store.contact(id).cloned().unwrap();
     app.begin_edit(contact, false);
     app.recompose();
     let first = crate::form::field_name(Slot::First);
@@ -3724,7 +3652,7 @@ fn detail_and_editor_semantics() {
 fn form_choice_semantics() {
     let mut app = Live::sample(1280, 800);
     let id = app.selected.unwrap();
-    let contact = app.store.get(id).cloned().unwrap();
+    let contact = app.store.contact(id).cloned().unwrap();
     app.begin_edit(contact, false);
     app.recompose();
     let kind = TypeTarget::Phone(0);
@@ -3783,6 +3711,14 @@ struct Live {
 }
 
 impl Live {
+    /// Import `paths` as the portal would hand them back, and let the
+    /// book present what the import added.
+    fn import_paths(&mut self, paths: &[PathBuf]) -> ImportSummary {
+        let summary = ContactsApp::import_paths(self, paths);
+        self.settle();
+        summary
+    }
+
     /// The declared sample book in the production live host, at `w`x`h`.
     /// Its pose is presentation-only; actions keep their real admission route.
     fn sample(w: u32, h: u32) -> Self {
@@ -3860,7 +3796,7 @@ impl Live {
     /// so far have applied.
     fn book(&mut self) -> Vec<Contact> {
         self.settle();
-        self.app.state().contacts
+        self.app.state().contacts.to_vec()
     }
 
     /// Close the app and launch it again on the same profile, as after a
@@ -3874,10 +3810,8 @@ impl Live {
         self.shared.borrow_mut().push(request);
         self.app.settle();
     }
-    fn invoke(&mut self, action: &crate::actions::ContactsAction) {
-        self.app
-            .invoke(ui::tilo_resource::Invoke::apply(action).unwrap())
-            .unwrap();
+    fn invoke(&mut self, invoke: Invoke<Contacts>) {
+        self.app.invoke_confirmed(invoke).unwrap();
         self.settle();
     }
     fn choose_menu(&mut self, index: usize) {
@@ -3899,10 +3833,11 @@ impl Live {
     }
     /// The address book as it would be after `action`, applied to a copy of
     /// the document as the palette's action of the same name applies it.
-    fn book_after(&self, action: &crate::actions::ContactsAction) -> Vec<Contact> {
-        let mut peer = self.app.peer_document();
-        tilo_actions::Action::apply(action, &mut peer).expect("the palette's action applies");
-        ContactsDoc::list_contacts(&peer)
+    fn book_after(&self, invoke: Invoke<Contacts>) -> Vec<Contact> {
+        let mut peer = Replica::<Contacts>::from_doc(self.app.peer_document());
+        peer.apply_confirmed(invoke)
+            .expect("the palette's action applies");
+        peer.state().unwrap().contacts.to_vec()
     }
 }
 
@@ -3943,7 +3878,7 @@ fn duplicates_are_reviewed_field_by_field_before_merging() {
     let mut copy = ada.clone();
     copy.id = uuid::Uuid::from_u128(ada.id.as_u128() + 0x100);
     copy.org = "Babbage & Co.".into();
-    app.invoke(&crate::actions::create_contact_action(&copy));
+    app.invoke(Contacts::add(&copy));
     app.settle();
     assert!(
         app.duplicate_candidate.is_some(),
@@ -3974,6 +3909,12 @@ fn duplicates_are_reviewed_field_by_field_before_merging() {
 
     ask(&mut app, Request::Dialog(DialogChoice::Primary));
     app.settle();
+    assert!(
+        app.duplicate_review.is_some(),
+        "the review stays up behind the host's question"
+    );
+    confirm_on_host(&mut app);
+    assert!(app.duplicate_review.is_none(), "a landed merge closes it");
     let book = app.book();
     assert!(
         !book.iter().any(|c| c.id == copy.id),
@@ -3984,7 +3925,6 @@ fn duplicates_are_reviewed_field_by_field_before_merging() {
         "Babbage & Co.",
         "the merge kept the chosen value"
     );
-    assert!(toast(&app).is_some_and(|message| message.starts_with("Merged")));
 }
 
 /// Shared facts read as a phrase.
@@ -4016,7 +3956,6 @@ fn every_capture_scenario_renders() {
         "favorites",
         "context",
         "more",
-        "confirm",
         "import-conflict",
         "duplicate-review",
         "empty",
@@ -4032,7 +3971,6 @@ fn every_capture_scenario_renders() {
             match scenario {
                 "new" | "edit" | "calendar" => assert_eq!(app.mode, Mode::Edit, "{scenario}"),
                 "export" => assert!(app.export.is_some()),
-                "confirm" => assert!(app.confirm_delete.is_some()),
                 "duplicate-review" => assert!(app.duplicate_review.is_some()),
                 "empty" => assert!(app.store.is_empty()),
                 _ => {}
@@ -4085,7 +4023,7 @@ fn check_refused_save_reconciles_and_announces_an_error_without_claiming_success
     let mut app = synced();
     let contact = selected_contact(&app);
     app.app
-        .merge_peer_edit(|doc| ContactsDoc::delete_contact(doc, contact.id));
+        .merge_peer_edit(|doc| peer_applies(doc, Contacts::delete(contact.id)));
     app.settle();
     app.begin_edit(contact.clone(), false);
     app.save_edit();
@@ -4093,13 +4031,13 @@ fn check_refused_save_reconciles_and_announces_an_error_without_claiming_success
     assert_eq!(app.mode, Mode::Edit, "the rejected draft remains editable");
     assert!(app.form.is_some());
     assert!(
-        app.store.get(contact.id).is_none(),
+        app.store.contact(contact.id).is_none(),
         "store reconciles from the document"
     );
     let message = toast(&app).unwrap().to_owned();
     assert!(message.starts_with("Couldn't save contact:"));
     assert!(
-        live_message(&app.accessibility().unwrap(), &message).is_some(),
+        announced(&app, &message),
         "the refusal is announced through the live region"
     );
 }
@@ -4108,12 +4046,14 @@ fn check_refused_favorite_and_delete_reconcile_without_false_success() {
     let mut app = synced();
     let contact = selected_contact(&app);
     app.app
-        .merge_peer_edit(|doc| ContactsDoc::delete_contact(doc, contact.id));
+        .merge_peer_edit(|doc| peer_applies(doc, Contacts::delete(contact.id)));
     app.settle();
     // A control can still have the last rendered contact when the peer's
     // tombstone reaches the door. Submit that real stale view request;
     // a helper looking up the already-reconciled store would do nothing.
-    app.store.upsert(contact.clone());
+    std::rc::Rc::make_mut(&mut app.store)
+        .contacts
+        .push(contact.clone());
     app.selected = Some(contact.id);
     app.request(Request::ToggleFavorite);
     assert!(
@@ -4121,7 +4061,7 @@ fn check_refused_favorite_and_delete_reconcile_without_false_success() {
         "a tombstoned toggle is rejected"
     );
     assert!(
-        app.store.get(contact.id).is_none(),
+        app.store.contact(contact.id).is_none(),
         "favorite refusal reconciles"
     );
     assert!(
@@ -4152,7 +4092,7 @@ fn check_seeds_sample_contacts_and_selects_one() {
     assert_eq!(app.store.len(), 7);
     assert!(app.selected.is_some(), "a contact must be auto-selected");
     // The seeded selection points at a real, richly-populated record.
-    let sel = app.store.get(app.selected.unwrap()).unwrap();
+    let sel = app.store.contact(app.selected.unwrap()).unwrap();
     assert!(!sel.phones.is_empty());
 }
 
@@ -4169,7 +4109,7 @@ fn check_edit_mode_with_repeated_fields_frame_does_not_panic() {
     // Enter edit on the selected contact and add repeated fields.
     let c = app
         .selected
-        .and_then(|id| app.store.get(id))
+        .and_then(|id| app.store.contact(id))
         .cloned()
         .unwrap();
     app.begin_edit(c, false);
@@ -4407,7 +4347,7 @@ fn check_mouse_wheel_scrolls_the_overflowing_contact_list() {
     let before = h.app.shared.borrow().painted.clone();
     h.move_to(h.app.shell.geometry().overview_column.center());
     h.dispatch(&WindowEvent::MouseWheel {
-        device_id: device_id(),
+        device_id: winit::event::DeviceId::dummy(),
         delta: MouseScrollDelta::LineDelta(0.0, -3.0),
         phase: winit::event::TouchPhase::Moved,
     });
@@ -4431,12 +4371,13 @@ fn check_large_books_virtualize_rows_and_keep_keyboard_selection_in_view() {
         })
         .collect();
     h.app.app.merge_peer_edit(|doc| {
-        for contact in ContactsDoc::list_contacts(doc) {
-            ContactsDoc::delete_contact(doc, contact.id);
-        }
-        for contact in &directory {
-            ContactsDoc::create_contact(doc, contact);
-        }
+        let book = Replica::<Contacts>::from_doc(doc.fork()).state().unwrap();
+        let invokes = book
+            .contacts
+            .iter()
+            .map(|contact| Contacts::delete(contact.id))
+            .chain([Contacts::add_all(directory.clone())]);
+        peer_applies(doc, Invoke::group(invokes));
     });
     h.app.settle();
     h.app.selected = Some(directory[0].id);
@@ -4530,29 +4471,17 @@ fn check_reimporting_the_same_uidless_card_is_idempotent() {
 
 fn check_disconnected_uidless_imports_converge_on_one_contact_and_stable_rows() {
     let card = "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Grace Hopper\r\nN:Hopper;Grace;;;\r\nTEL;TYPE=work:+1 202 555 0143\r\nEMAIL:grace@example.com\r\nCATEGORIES:Pioneers\r\nEND:VCARD\r\n";
-    let mut ancestor = AutoCommit::new();
-    ancestor.commit();
-    let mut left = ancestor.fork();
-    let mut right = ancestor.fork();
+    let mut left = Replica::<Contacts>::new();
+    let mut right = left.fork();
     let left_contact = vcard::parse_vcards(card).pop().unwrap();
     let right_contact = vcard::parse_vcards(card).pop().unwrap();
     assert_eq!(left_contact, right_contact);
 
-    tilo_actions::Action::apply(
-        &crate::actions::create_contact_action(&left_contact),
-        &mut left,
-    )
-    .unwrap();
-    tilo_actions::Action::apply(
-        &crate::actions::create_contact_action(&right_contact),
-        &mut right,
-    )
-    .unwrap();
-    left.commit();
-    right.commit();
-    left.merge_incoming(&mut right).unwrap();
+    left.apply(Contacts::add(&left_contact)).unwrap();
+    right.apply(Contacts::add(&right_contact)).unwrap();
+    left.sync_with(&mut right).unwrap();
 
-    let merged = ContactsDoc::list_contacts(&left);
+    let merged = left.state().unwrap().contacts.to_vec();
     assert_eq!(
         merged.len(),
         1,
@@ -4602,7 +4531,7 @@ fn check_hostile_known_uid_is_reported_for_review_without_overwriting_contact() 
     );
     assert_eq!(app.store.len(), 1);
     assert_eq!(
-        app.store.get(original.id).unwrap().emails[0].value,
+        app.store.contact(original.id).unwrap().emails[0].value,
         original.emails[0].value
     );
     assert!(toast(&app).is_some_and(|message| message.contains("review")));
@@ -4627,7 +4556,10 @@ fn check_import_of_nothing_is_a_clean_noop() {
     assert!(app.book().is_empty(), "and writes nothing to the doc");
     assert!(!path.exists(), "and never touches disk");
     let _ = &path;
-    assert!(app.toast.is_none(), "a cancelled/empty import stays silent");
+    assert!(
+        toast(&app).is_none(),
+        "a cancelled/empty import stays silent"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -4652,4 +4584,91 @@ fn narrow_sort_row_has_full_aligned_control_without_extra_gutters() {
         assert!(control.x0 >= 0.0 && control.x1 <= 390.0);
         assert!(app.sort_choice.with(|value| value == "name"));
     }
+}
+
+/// A collaborator's `invoke`, written on their replica of `doc` and merged
+/// back into it.
+fn peer_applies(doc: &mut ui::tilo_resource::Doc, invoke: Invoke<Contacts>) {
+    let mut peer = Replica::<Contacts>::from_doc(doc.fork());
+    peer.apply_confirmed(invoke)
+        .expect("the peer's change applies");
+    tilo_automerge::ApplyIncoming::merge_incoming(doc, peer.doc_mut())
+        .expect("the peer's change merges");
+}
+
+/// Whether the host's confirmation of an action is up.
+fn host_confirmation_is_up(app: &mut Live) -> bool {
+    app.harness_mut().a11y_nodes().iter().any(|(_, node)| {
+        node.role() == ui::accesskit::Role::Dialog && node.label() == Some("Action confirmation")
+    })
+}
+
+/// Confirm the action the host asks about, as the person does.
+fn confirm_on_host(app: &mut Live) {
+    assert!(
+        host_confirmation_is_up(app),
+        "the host asks to confirm the action"
+    );
+    act_named(
+        app,
+        "Confirmation",
+        &ui::a11y::Action::SetValue("CONFIRM".into()),
+    );
+    act_named(app, "Confirm", &ui::a11y::Action::Activate);
+    app.settle();
+}
+
+/// Cancel the action the host asks about.
+fn cancel_on_host(app: &mut Live) {
+    act_named(app, "Cancel", &ui::a11y::Action::Activate);
+    app.settle();
+}
+
+/// A surface that closes its own dialog in the same event its destructive
+/// action asks the host to confirm: the host remembers where focus returns
+/// from the window as it now stands, never from the dialog that is gone.
+#[test]
+fn closing_a_dialog_while_the_host_asks_to_confirm_is_safe() {
+    let mut app = ui::framework::testing::TestApp::<crate::ContactsShell>::new().unwrap();
+    let mut survivor = Contact::new();
+    survivor.first = "Ada".into();
+    survivor.id = uuid::Uuid::from_u128(1);
+    let mut source = survivor.clone();
+    source.id = uuid::Uuid::from_u128(2);
+    source.org = "Analytical Engines".into();
+    app.invoke(Contacts::add_all(vec![survivor.clone(), source.clone()]))
+        .unwrap();
+    app.effect_on(
+        &crate::resource::place_resource_id(&crate::resource::duplicate_place(
+            survivor.id,
+            source.id,
+        )),
+        &crate::actions::ContactsEffect::OpenReview {
+            survivor: survivor.id,
+            source: source.id,
+        },
+    )
+    .unwrap();
+    app.settle();
+    let merge = app.harness().a11y_node_named("Merge contacts").unwrap();
+    app.harness()
+        .perform_a11y_action(merge, &ui::a11y::Action::Focus)
+        .unwrap();
+    // In one event: the review closes, so its focused Merge button is
+    // dropped, and the merge goes to the host, which asks to confirm.
+    app.with_widget(|surface: &mut ContactsApp| {
+        surface.duplicate_review = None;
+        surface.dirty = true;
+        surface
+            .submit(Contacts::merge(survivor.id, source.id, []))
+            .unwrap();
+    });
+    app.settle();
+    assert!(
+        app.harness().a11y_nodes().iter().any(|(_, node)| {
+            node.role() == ui::accesskit::Role::Dialog
+                && node.label() == Some("Action confirmation")
+        }),
+        "the host asks to confirm the merge"
+    );
 }

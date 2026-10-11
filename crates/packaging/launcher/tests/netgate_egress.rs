@@ -628,7 +628,7 @@ fn without_a_gate_the_sandbox_has_no_network_and_fails_closed() {
     // back to `--share-net`, which would apply a grant naming one host as
     // "every host".
     {
-        let policy = EgressPolicy::new(vec![ALLOWED_NAME.to_string()]);
+        let policy = EgressPolicy::from_grants([ALLOWED_NAME]);
         // `/proc` is not writable, so creating the parent directory fails
         // before any bind is attempted.
         let impossible = PathBuf::from("/proc/tilo-netgate-nope/gate.sock");
@@ -853,9 +853,8 @@ fn grants_decide_which_hosts_the_sandbox_reaches() {
         // Filter disabled: allowlist permits everything, nothing else changed.
         // Spelled `Filtered(["*"])`, not `Unrestricted`, which would take the
         // `--share-net` path too.
-        let (open_gate, open_socket) =
-            start_gate("breakage-open", EgressPolicy::new(vec!["*".to_string()]));
-        let open_decision = EgressDecision::Filtered(EgressPolicy::new(vec!["*".to_string()]));
+        let (open_gate, open_socket) = start_gate("breakage-open", EgressPolicy::Any);
+        let open_decision = EgressDecision::Filtered(EgressPolicy::Any);
         let passed = run_probe(
             &open_decision,
             Some(&open_socket),
@@ -1113,7 +1112,7 @@ fn device_local_services_stay_out_of_reach_without_an_exact_grant() {
 
         // `.localhost` covers `localhost` for the access decision — but it is
         // not the user pointing at this machine.
-        let covered = EgressPolicy::new(vec![".localhost".to_string()]);
+        let covered = EgressPolicy::from_grants([".localhost"]);
         assert!(
             covered.permits("localhost"),
             "the grant must cover the name, or the refusal below proves nothing about \
@@ -1148,7 +1147,7 @@ fn device_local_services_stay_out_of_reach_without_an_exact_grant() {
 
         // Same everything, an exact grant: the service is reached. So the
         // refusal above was the device-local rule and not a broken fixture.
-        let named = EgressPolicy::new(vec!["localhost".to_string()]);
+        let named = EgressPolicy::from_grants(["localhost"]);
         let (named_gate, named_socket) = start_gate("device-local-named", named.clone());
         let allowed = run_device_local_probe(
             &EgressDecision::Filtered(named),

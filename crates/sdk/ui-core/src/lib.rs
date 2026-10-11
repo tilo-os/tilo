@@ -54,7 +54,7 @@
     target_arch = "wasm32",
     allow(
         dead_code,
-        reason = "the browser build omits the native App runner, broker transport and offscreen renderer, which are the only callers of much shared plumbing"
+        reason = "the browser build compiles native-host plumbing it never drives: the App runner, broker transport and offscreen renderer are its only callers"
     )
 )]
 #![cfg_attr(
@@ -95,10 +95,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         clippy::float_cmp,
         reason = "in a test these are the assertion, not a hazard"
@@ -119,7 +116,6 @@ pub mod table_model;
 pub use action_locus::ActionUiRoute;
 pub mod action_palette;
 pub mod agent_identity;
-pub mod agent_task_frontier;
 pub mod animation;
 #[cfg(test)]
 extern crate self as tilo_ui;
@@ -133,6 +129,7 @@ pub(crate) mod application_test_support;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod app;
+pub mod app_surface;
 pub mod auth_backdrop;
 pub mod backdrop;
 pub mod caps_lock;
@@ -160,6 +157,7 @@ pub mod doc;
 pub mod doc_source;
 #[cfg(any(all(windows, feature = "dx12-shader-cache"), test))]
 mod dx12_shader_cache;
+pub mod evdev;
 pub mod floating_surface;
 pub mod font_catalog;
 pub mod format;
@@ -181,6 +179,9 @@ mod host_appearance;
 mod host_chrome;
 pub mod host_data;
 pub mod owner_wake;
+/// The app's own vello pipelines, kept across launches in its cache directory.
+#[cfg(feature = "native")]
+pub(crate) mod pipeline_cache;
 /// The session's read-only vello pipeline cache every app starts from.
 pub mod pipeline_seed;
 #[cfg(all(windows, feature = "native"))]
@@ -213,6 +214,7 @@ pub mod pen;
 pub mod permissions;
 pub mod persist;
 pub mod platform;
+pub mod pointer_replay;
 pub mod portable_storage;
 pub mod presence;
 pub mod priority_contacts;
@@ -221,6 +223,7 @@ pub mod query_text;
 pub mod realtime_continuity;
 pub mod standalone_history_pane;
 pub mod storage;
+#[cfg(any(test, feature = "ux-bench"))]
 pub mod ux_bench;
 pub use query_text::{QueryComposition, QueryEventChange, QueryImeChange, QueryInk, QueryView};
 pub mod personal_dictionary;
@@ -237,21 +240,25 @@ pub mod close_admission;
 /// (`tools/policy/check_app_resource_action_contract.py`).
 pub mod host_operation {
     pub use crate::widget::resource_operation::{
-        OperationRequest, ResourceOperation, ResourceOperationStart, start_in_children,
+        OperationRequest, OperationTarget, ResourceOperation, ResourceOperationStart,
+        start_in_children,
     };
 }
 pub mod host_palette;
+pub mod published;
 pub mod reader_hud;
 pub mod record;
 pub mod remote_actions;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 pub mod render_thread;
 pub mod reorder;
 pub mod resources;
 pub mod retained_present;
 pub mod richtext;
 pub mod scale;
+pub mod scene_parts;
 pub mod screen_reader;
+pub mod scroll_copy;
 pub mod search;
 pub mod secret_paint;
 pub mod selection;
@@ -280,6 +287,11 @@ pub mod view;
 pub mod virtual_viewport;
 #[cfg(feature = "native")]
 pub use native::warmup;
+/// Private completion receipts shared by native and browser text editors.
+/// These types grant no access to an embedded browser or its engine.
+pub mod text_input {
+    pub use crate::webview::text_input::{Failure, Receipt, Resolver};
+}
 pub mod webview;
 pub mod widget;
 pub mod window_icon;
@@ -300,7 +312,7 @@ pub(crate) const HANG_BOUND: time::Duration = time::Duration::from_secs(30);
 
 // `kurbo` and `peniko` come through `vello`, where the geometry and paint
 // types in every `draw` signature live.
-/// The AccessKit types the bridge and [`headless::Driver`] hand back,
+/// The AccessKit types the bridge and [`headless::FrameHarness`] hand back,
 /// re-exported so an app crate can name them (`tilo_ui::accesskit::Role`) without
 /// taking its own dependency on a version that must match this one exactly.
 pub use accesskit;
@@ -321,7 +333,7 @@ pub use collection_transition::{
 };
 pub use color_compat::ColorCompat;
 pub use content_layout::{FocusedContentLane, ResponsiveControlBar};
-pub use doc::{TextEdit, put_if_changed, put_text_diffed, splice_text_diffed};
+pub use doc::{TextEdit, put_text_diffed, splice_text_diffed};
 pub use i18n::{ArgValue, EmbeddedCatalog, I18nError, I18nManager, PseudoLocale};
 pub use image_store::{Fetcher, HostImageLoader, ImageStore};
 pub use input::{
@@ -334,7 +346,8 @@ pub use interaction::{
 };
 pub use keycaps::{KeycapLanguage, Keycaps};
 pub use local_state::{
-    LatestRequest, LatestTask, LocalState, LocalStateWriter, RequestCompletion, TaskCompletion,
+    Intents, LatestRequest, LatestTask, LocalState, LocalStateWriter, RequestCompletion,
+    TaskCompletion,
 };
 pub use nav_stack::{EdgeSwipeBack, NavAction, NavStack};
 pub use paragraph::{ComposedLine, ParagraphBox, ParagraphOptions, compose_paragraph};
@@ -411,8 +424,8 @@ pub use widget::{
 pub use widget::{NavItem, NavList, NavMode, NavPane, NavSection, NavShell};
 
 pub use widget::{RouteError, RouteHandle, Router};
-// Audit-timeline widgets + their shared types. The `collab_types::OpClass` /
-// `ArtifactKind` re-exports flow through these widgets, so callers can build
+// Audit-timeline widgets + their shared types. The `ArtifactKind`
+// re-export flows through these widgets, so callers can build
 // a `HistoryEntry` without a direct dependency on the collab-types crate.
 pub use history_mode::{
     HistoryController, HistoryError, HistoryResource, HistorySnapshot, PreviewSide, RestoreReview,
@@ -420,8 +433,8 @@ pub use history_mode::{
 pub use widget::activity_timeline::{ActivityTimeline, BandUndoRequest};
 pub use widget::collaboration_overview::{CollaborationOverview, CollaborationOverviewAction};
 pub use widget::history::{
-    HistoryAuthor, HistoryClassification, HistoryEntry, HistoryEntryId, HistoryFilter,
-    RedactionDisplay, format_relative_time, hue_to_rgb, op_class_glyph, op_class_is_revertible,
+    AuthorRelation, EntryKind, HistoryAuthor, HistoryClassification, HistoryEntry, HistoryEntryId,
+    HistoryFilter, RedactionDisplay, format_relative_time, hue_to_rgb,
 };
 pub use widget::history_group::{
     GroupNameRequest, GroupingConfig, HistoryGroup, MAX_GROUP_DEPTH, NamedRange, OpFamily,
@@ -499,8 +512,8 @@ pub use wake::{WakeBindError, WakeEvent, WakeHandle, WakeScope, WakeScopeGuard};
 // `permissions/mod.rs`.
 pub use collaboration::PresencePayload;
 pub use permissions::{
-    Actor, CapDecision, CapOverride, PermissionContext, PermissionScope, ResourceRef, Role,
-    Scope as CapScope, Subject, UserId, Verb,
+    Access, ActionKind, Actor, CapDecision, CapOverride, PermissionContext, PermissionScope,
+    ResourceRef, Role, Scope as CapScope, Subject, UserId,
 };
 pub use widget::ParticipantPresence;
 
@@ -521,7 +534,7 @@ pub mod synthetic_input;
 
 pub mod bound_dispatch;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 mod presentation_feedback;
 
 /// Emission-time local control custody.

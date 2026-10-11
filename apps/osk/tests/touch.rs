@@ -6,7 +6,7 @@ use std::rc::Rc;
 
 use osk::widget::{key_row_height, keyboard_gutter, suggestion_row_height, toolbar_row_height};
 use osk::{GeometricSwipeModel, KeyAction, KeyboardLayout, OskWidget, ShiftState, TextMirror};
-use ui::headless::Driver;
+use ui::headless::FrameHarness;
 use ui::tokens::{Metrics, Spacing};
 use ui::{State, Widget};
 use vello::kurbo::{Point, Rect};
@@ -15,7 +15,7 @@ use winit::event::TouchPhase;
 const VIEWPORT: (u32, u32) = (720, 360);
 
 struct Keyboard {
-    driver: Driver,
+    driver: FrameHarness,
     typed: Rc<RefCell<TextMirror>>,
 }
 
@@ -37,7 +37,7 @@ impl Keyboard {
         let typed = Rc::new(RefCell::new(TextMirror::new(4096)));
         let sink = typed.clone();
         let widget = widget.on_output(move |output| sink.borrow_mut().apply(&output));
-        let driver = Driver::for_root(State::new(), widget, viewport, ui::Theme::dark());
+        let driver = FrameHarness::for_root(State::new(), widget, viewport, ui::Theme::dark());
         Self { driver, typed }
     }
 
@@ -50,6 +50,14 @@ impl Keyboard {
             .root_mut::<OskWidget>()
             .follow_input_method(transition);
         self.driver.recompose().unwrap();
+    }
+
+    fn preferred_layout(&self) -> &str {
+        self.driver.root::<OskWidget>().preferred_text_layout()
+    }
+
+    fn take_preference_edits(&mut self) -> Vec<osk::SetPreference> {
+        self.driver.root_mut::<OskWidget>().take_preference_edits()
     }
 
     fn down(&mut self, finger: u64, at: Point) {
@@ -72,6 +80,10 @@ fn key(c: char) -> Point {
 }
 
 fn key_in(layout: &KeyboardLayout, viewport: (u32, u32), c: char) -> Point {
+    action_in(layout, viewport, &KeyAction::Char(c.to_string()))
+}
+
+fn action_in(layout: &KeyboardLayout, viewport: (u32, u32), action: &KeyAction) -> Point {
     let rows = u32::try_from(layout.row_count()).expect("a handful of rows");
     let spacing = Spacing::BASE;
     let metrics = Metrics::BASE;
@@ -85,12 +97,54 @@ fn key_in(layout: &KeyboardLayout, viewport: (u32, u32), c: char) -> Point {
     );
     osk::key_rects(layout, area, ShiftState::Off)
         .into_iter()
-        .find(|(id, _)| {
-            layout
-                .key(*id)
-                .is_some_and(|k| k.action == KeyAction::Char(c.to_string()))
-        })
-        .map_or_else(|| panic!("no key for {c}"), |(_, r)| r.center())
+        .find(|(id, _)| layout.key(*id).is_some_and(|k| &k.action == action))
+        .map_or_else(|| panic!("no key for {action:?}"), |(_, r)| r.center())
+}
+
+#[test]
+fn language_key_obeys_configured_sources_and_touch_cancellation() {
+    let mut widget = OskWidget::new();
+    widget.present_preferences(&osk::OskPreferences {
+        layouts: vec!["qwerty".into()],
+        ..Default::default()
+    });
+    let mut keyboard = Keyboard::with_widget(widget, VIEWPORT);
+    let at = action_in(
+        &KeyboardLayout::qwerty(),
+        VIEWPORT,
+        &KeyAction::Layout("azerty".into()),
+    );
+    keyboard.down(1, at);
+    keyboard.up(1, at);
+    assert_eq!(keyboard.preferred_layout(), "qwerty");
+    assert!(keyboard.take_preference_edits().is_empty());
+    keyboard.driver.recompose().unwrap();
+    keyboard.down(4, at);
+    keyboard
+        .driver
+        .root_mut::<OskWidget>()
+        .present_preferences(&osk::OskPreferences {
+            layouts: vec!["azerty".into(), "qwerty".into()],
+            ..Default::default()
+        });
+    keyboard.driver.recompose().unwrap();
+    keyboard.up(4, at);
+    assert_eq!(keyboard.preferred_layout(), "qwerty");
+    assert!(keyboard.take_preference_edits().is_empty());
+    keyboard.driver.recompose().unwrap();
+    keyboard.down(2, at);
+    keyboard.driver.touch(2, TouchPhase::Cancelled, at.x, at.y);
+    assert_eq!(keyboard.preferred_layout(), "qwerty");
+    assert!(keyboard.take_preference_edits().is_empty());
+    keyboard.driver.recompose().unwrap();
+    keyboard.down(3, at);
+    keyboard.up(3, at);
+    assert_eq!(keyboard.preferred_layout(), "azerty");
+    assert_eq!(
+        keyboard.take_preference_edits(),
+        [osk::SetPreference::Layout("azerty".into())]
+    );
+    assert!(keyboard.text().is_empty());
 }
 
 /// A dense path through the centres of `word`'s keys.

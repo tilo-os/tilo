@@ -21,7 +21,8 @@ on:
       - "tools/ci/workspace_graph.py"
       - "tools/policy/app_capability*"
       - "tools/policy/app_portability*"
-      - "tools/policy/check_app_*"
+      - "tools/policy/check_app_capabilities.py"
+      - "tools/policy/check_app_portability.py"
       - "tools/sdk/**"
       - "tools/web/**"
       - "vendor/**"
@@ -39,11 +40,19 @@ on:
       - "tools/ci/workspace_graph.py"
       - "tools/policy/app_capability*"
       - "tools/policy/app_portability*"
-      - "tools/policy/check_app_*"
+      - "tools/policy/check_app_capabilities.py"
+      - "tools/policy/check_app_portability.py"
       - "tools/sdk/**"
       - "tools/web/**"
       - "vendor/**"
   workflow_dispatch:
+    inputs:
+      lanes:
+        description: 'Diagnostic selection; normal PR/main runs retain every lane.'
+        type: choice
+        required: false
+        default: all
+        options: [all, linux]
 
 concurrency:
   # A newer commit on a pull request replaces its older run. Pushes keep one
@@ -60,6 +69,9 @@ env:
   WASM_BINDGEN_VERSION: "0.2.108"
 
 jobs:
+  # Native PR lanes wait for these compile-free gates; invalid PRs do not
+  # consume native slots. Main keeps all selected native diagnostics even
+  # when policy fails. The dev and release browser lanes remain independent.
   # Compile-free gates: portability rules and their shrink-only baseline, the
   # capabilities each app's code uses against its manifest, the
   # manifest-generated desktop registry, the SDK patch list outside apps
@@ -111,6 +123,7 @@ jobs:
       image: ${{ steps.resolve.outputs.image }}
       main: ${{ steps.merge.outputs.main }}
       affected: ${{ steps.affected.outputs.affected }}
+      linux_affected: ${{ steps.affected.outputs.linux_affected }}
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -133,22 +146,27 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" = workflow_dispatch ]; then
             echo affected=true >> "$GITHUB_OUTPUT"
+            echo linux_affected=true >> "$GITHUB_OUTPUT"
           else
             # A pull request compares the merge with the main it merged; a push
             # compares with its parent.
             python3 tools/ci/app_sdk_affected.py ${MAIN:+--base "$MAIN"} --github-output "$GITHUB_OUTPUT"
+            python3 tools/ci/app_sdk_affected.py ${MAIN:+--base "$MAIN"} --lane linux --github-output "$GITHUB_OUTPUT"
           fi
 
   # Linux: the CLI's own tests, the Linux artifact and .tapp of a
   # representative app, and a generated app built outside the repository.
   linux:
-    needs: [builder]
-    if: needs.builder.outputs.affected == 'true'
+    needs: [builder, policy]
+    if: ${{ !cancelled() && needs.builder.result == 'success' && (github.event_name != 'pull_request' || needs.policy.result == 'success') && needs.builder.outputs.linux_affected == 'true' }}
     # Several full debug graphs (tilo-app-cli's tests, Calculator, a generated
     # app for two targets) share one target directory: they outgrow the
     # quality lane's 20 GiB disk and reach its 5 GiB memory limit. Each step
     # reports its peak memory.
-    runs-on: runner
+    # PRs can use either approved native pool without stranding idle ARM capacity.
+    # Every main commit retains the native x86 SDK qualification; browser
+    # lanes remain x86 because Chrome for Testing supplies an x86 Linux build.
+    runs-on: ${{ github.event_name == 'push' && 'runner' || 'runner-native-portable' }}
     timeout-minutes: 180
     env:
       CARGO_INCREMENTAL: "0"
@@ -167,6 +185,10 @@ jobs:
           main: ${{ needs.builder.outputs.main }}
       - name: Prepare Rust build caches
         uses: ./.forgejo/actions/prepare-rust-build
+      - name: Verify native Linux SDK runner architecture
+        env:
+          EXPECTED_ARCH: ${{ github.event_name == 'push' && 'x86_64' || runner.arch }}
+        run: bash tools/ci/assert-native-runner.sh "$EXPECTED_ARCH"
       - name: tilo-caps and the tilo-app target commands
         run: |
           bash tools/ci/measure.sh "tilo-caps tests" -- cargo test --locked -p tilo-caps
@@ -270,8 +292,8 @@ jobs:
   # app mounted in headless Chromium on WebGPU.
   web:
     # The dev mount does not consume release artifacts; build both lanes in parallel.
-    needs: [builder]
-    if: needs.builder.outputs.affected == 'true'
+    needs: [builder, policy]
+    if: ${{ (github.event_name != 'workflow_dispatch' || github.event.inputs.lanes != 'linux') && !cancelled() && needs.builder.result == 'success' && (github.event_name != 'pull_request' || needs.policy.result == 'success') && needs.builder.outputs.affected == 'true' }}
     # wasm-bindgen over the whole desktop bundle exceeds the quality lane's
     # 5 GiB.
     runs-on: runner
@@ -280,6 +302,9 @@ jobs:
       image: ${{ needs.builder.outputs.image }}
     env:
       CDP_PORT: "9333"
+      # Three isolated browsers fit the existing 6-CPU/22-GiB job budget.
+      # Set this back to "2" to roll back without changing any probe.
+      TILO_WEB_SMOKE_SHARDS: "3"
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -301,10 +326,11 @@ jobs:
       - name: Platform crates' browser modules (node --test)
         run: node --test crates/platform/*/web/*.test.mjs
       - name: Build tilo-app
-        run: cargo build --locked -p tilo-app-cli --bin tilo-app
+        run: bash tools/ci/measure.sh "SDK web tool build" -- cargo build --locked -p tilo-app-cli --bin tilo-app
       - name: Desktop bundle (dev profile)
         run: |
-          target/debug/tilo-app build --target web --bundle desktop apps/calculator
+          bash tools/ci/measure.sh "SDK dev desktop bundle build" -- \
+            target/debug/tilo-app build --target web --bundle desktop apps/calculator
       - name: Headless Chromium for Testing
         run: |
           # Chrome's shared-library dependencies; present on current builders.
@@ -348,7 +374,7 @@ jobs:
       - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         if: always()
         with:
-          name: app-sdk-mounted-resource
+          name: app-sdk-mounted-resource-${{ github.run_attempt }}
           path: |
             target/mounted-resource
             target/mounted-resource-recovery
@@ -367,7 +393,8 @@ jobs:
           mkdir -p "$RUNNER_TEMP/web-shots"
           # Independent browsers keep each probe foregrounded while using
           # the existing job CPU/memory budget. Every app and timing stays.
-          SHOTS_DIR="$RUNNER_TEMP/web-shots" node crates/browser/tilo-web-desktop/scripts/smoke.mjs \
+          SHOTS_DIR="$RUNNER_TEMP/web-shots" bash tools/ci/measure.sh "SDK app mount tests" -- \
+            node crates/browser/tilo-web-desktop/scripts/smoke.mjs \
             http://127.0.0.1:7878 "${apps[@]}" desktop
       - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         if: always()
@@ -381,8 +408,8 @@ jobs:
 
   # The release desktop bundle held to its size budget, beside the mount test.
   web-size:
-    needs: [builder]
-    if: needs.builder.outputs.affected == 'true'
+    needs: [builder, policy]
+    if: ${{ (github.event_name != 'workflow_dispatch' || github.event.inputs.lanes != 'linux') && !cancelled() && needs.builder.result == 'success' && (github.event_name != 'pull_request' || needs.policy.result == 'success') && needs.builder.outputs.affected == 'true' }}
     # wasm-bindgen over the whole desktop bundle exceeds the quality lane's
     # 5 GiB.
     runs-on: runner
@@ -407,10 +434,11 @@ jobs:
             cargo install --locked wasm-bindgen-cli --version "$WASM_BINDGEN_VERSION"
           fi
       - name: Build tilo-app
-        run: cargo build --locked -p tilo-app-cli --bin tilo-app
+        run: bash tools/ci/measure.sh "SDK release web tool build" -- cargo build --locked -p tilo-app-cli --bin tilo-app
       - name: Release desktop bundle within its size budget
         run: |
-          target/debug/tilo-app build --target web --bundle desktop --release apps/calculator
+          bash tools/ci/measure.sh "SDK release desktop bundle build" -- \
+            target/debug/tilo-app build --target web --bundle desktop --release apps/calculator
           python3 tools/web/wasm_size_ratchet.py measure desktop target/tilo-app/web/calculator/bundle
       - name: Stage exact release private image worker
         run: |

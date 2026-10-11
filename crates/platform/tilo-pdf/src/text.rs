@@ -332,14 +332,6 @@ impl TextLayer {
             .unwrap_or(self.text.len())
     }
 
-    /// Position of the character whose text contains byte `byte`.
-    #[must_use]
-    pub fn position_of_byte(&self, byte: usize) -> usize {
-        self.byte_offsets
-            .partition_point(|&b| b <= byte)
-            .saturating_sub(1)
-    }
-
     /// The character under `p`, or the nearest character of the line under
     /// `p` (within a small vertical tolerance).
     #[must_use]

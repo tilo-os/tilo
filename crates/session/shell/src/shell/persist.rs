@@ -1,6 +1,8 @@
-use crate::shell::state::{STATE_SCHEMA_VERSION, WorkspaceTree};
-use automerge::AutoCommit;
+use crate::shell::state::{RoomId, STATE_SCHEMA_VERSION, TabId, WorkspaceTree};
 use std::path::{Path, PathBuf};
+
+mod doc_log;
+pub(crate) use doc_log::DocLog;
 
 /// Why this session is not the one the state file describes. The
 /// session still starts, from a default tree, but the person has to be
@@ -87,7 +89,7 @@ fn leave_notice_beside_the_file(state: &Path, notice: &StateNotice) {
 }
 
 /// `TILO_STATE_PATH` overrides it. Anything driving a compositor that
-/// isn't the user's own session must set it — `xdg_paths::config_dir()`
+/// isn't the user's own session must set it — `tilo_paths::config_dir()`
 /// **ignores a relative `XDG_CONFIG_HOME`**, so a harness isolating
 /// itself with a relative path writes into the user's
 /// `~/.config/tilo/state.json` instead.
@@ -97,7 +99,7 @@ pub fn state_json_path() -> PathBuf {
     {
         return PathBuf::from(v);
     }
-    xdg_paths::config_dir().map_or_else(
+    tilo_paths::config_dir().map_or_else(
         || PathBuf::from("state.json"),
         |c| c.join("tilo").join("state.json"),
     )
@@ -111,7 +113,7 @@ pub fn fs_capability_export_path() -> PathBuf {
     {
         return PathBuf::from(v);
     }
-    xdg_paths::config_dir().map_or_else(
+    tilo_paths::config_dir().map_or_else(
         || PathBuf::from("fs-capabilities.json"),
         |c| c.join("tilo").join("fs-capabilities.json"),
     )
@@ -120,95 +122,155 @@ pub fn fs_capability_export_path() -> PathBuf {
 /// Native file envelope; the portable desktop schema remains independently versioned.
 pub const NATIVE_STATE_SCHEMA_VERSION: u32 = 3;
 
+/// Encode `tree` as its state file, refusing what exceeds the file's bounds.
+///
+/// # Errors
+/// The authority's layout is invalid, or the encoded file would leave no
+/// room for the recovery its enrolled rooms reserved.
 pub(crate) fn encode_tree(tree: &WorkspaceTree) -> std::io::Result<Vec<u8>> {
-    encode_durable(&durable_tree(tree)?)
+    // Refuse a malformed authority before copying anything.
+    check_authority(&tree.native_authority)?;
+    encode_durable(&DurableTree::of(tree))
 }
 
-/// The tree as it is written to disk: live surfaces become launch records,
-/// and process-local launch progress and session-only grants are dropped.
-fn durable_tree(tree: &WorkspaceTree) -> std::io::Result<WorkspaceTree> {
-    // Prove encoded refusal bounds before cloning any tree or serialization buffer.
-    check_durable(tree)?;
-    let durable = durable_copy(tree);
-    // Symbolic launch records may grow (for example, copying a foreign title
-    // into its durable label). Preserve the reserve on the exact output shape.
-    check_durable(&durable)?;
-    Ok(durable)
-}
-
-fn check_durable(tree: &WorkspaceTree) -> std::io::Result<()> {
+fn check_authority(
+    authority: &super::native_workspace_owner::NativeAuthorityStorage,
+) -> std::io::Result<()> {
     super::native_workspace_owner::publication::validate_file_layout(
         NATIVE_STATE_SCHEMA_VERSION,
-        &tree.native_authority,
+        authority,
     )
-    .map_err(std::io::Error::other)?;
-    super::native_workspace_owner::publication::preflight_tree(tree).map_err(std::io::Error::other)
+    .map_err(std::io::Error::other)
 }
 
-/// Copy `tree` in its durable shape. Unchecked: the encoded size bounds are
-/// for whoever encodes it.
-fn durable_copy(tree: &WorkspaceTree) -> WorkspaceTree {
-    let mut durable = tree.clone();
-    durable.desktop.schema_version = NATIVE_STATE_SCHEMA_VERSION;
-    // Native process surface IDs become durable symbolic launch records.
-    symbolise_foreign_surfaces(&mut durable);
-    clear_transient_launch_notes(&mut durable);
-    durable.prune_local_app_records();
-    durable.prune_package_launches();
-    for ws in &mut durable.desktop.workspaces {
-        ws.capabilities
-            .retain(ui::CapOverride::persists_across_restart);
+/// Exactly what `state.json` holds, in [`WorkspaceTree`]'s serde shape, and
+/// nothing else: none of the tree's documents, which are saved beside it
+/// (see [`state_doc_path`]). Copying it costs the size of the file, not of
+/// the history.
+#[derive(serde::Serialize)]
+pub(crate) struct DurableTree {
+    native_authority: super::native_workspace_owner::NativeAuthorityStorage,
+    #[serde(flatten)]
+    desktop: crate::shell::state::DesktopTree,
+    room_authority: std::collections::HashMap<RoomId, crate::shell::state::RoomAuthority>,
+    room_peer_names: std::collections::HashMap<RoomId, std::collections::BTreeMap<String, String>>,
+    room_peer_identities: std::collections::HashMap<
+        RoomId,
+        std::collections::BTreeMap<String, crate::shell::state::GovernedPeerIdentity>,
+    >,
+    room_share_floor: std::collections::HashMap<RoomId, u64>,
+    continuation_tabs: std::collections::BTreeSet<TabId>,
+    continuation_rooms: std::collections::BTreeSet<RoomId>,
+    continuation_owned_tabs: std::collections::HashMap<TabId, RoomId>,
+    continuation_closed_tabs: std::collections::HashMap<TabId, RoomId>,
+    continuation_file_references:
+        std::collections::HashMap<TabId, crate::shell::personal_continuity::LaunchIntent>,
+    native_document_tabs:
+        std::collections::HashMap<TabId, crate::shell::state::NativeDocumentReference>,
+    #[serde(skip_serializing_if = "std::collections::HashMap::is_empty")]
+    local_app_records: std::collections::HashMap<TabId, crate::shell::state::LocalAppRecord>,
+    #[serde(skip_serializing_if = "std::collections::HashMap::is_empty")]
+    package_launches: std::collections::HashMap<TabId, String>,
+}
+
+impl DurableTree {
+    /// `tree` as it is written to disk: live surfaces become launch records,
+    /// and process-local launch progress and session-only grants are dropped.
+    /// Unchecked: the encoded size bounds are for whoever encodes it.
+    pub(crate) fn of(tree: &WorkspaceTree) -> Self {
+        let mut desktop = tree.desktop.clone();
+        desktop.schema_version = NATIVE_STATE_SCHEMA_VERSION;
+        // Native process surface IDs become durable symbolic launch records.
+        symbolise_foreign_surfaces(&mut desktop);
+        clear_transient_launch_notes(&mut desktop);
+        let mut local_app_records = tree.local_app_records.clone();
+        WorkspaceTree::prune_local_app_records_of(&desktop, &mut local_app_records);
+        let mut package_launches = tree.package_launches.clone();
+        WorkspaceTree::prune_package_launches_of(&desktop, &mut package_launches);
+        for ws in &mut desktop.workspaces {
+            ws.sandbox.retain(ui::CapOverride::persists_across_restart);
+        }
+        Self {
+            native_authority: tree.native_authority.clone(),
+            desktop,
+            room_authority: tree.room_authority.clone(),
+            room_peer_names: tree.room_peer_names.clone(),
+            room_peer_identities: tree.room_peer_identities.clone(),
+            room_share_floor: tree.room_share_floor.clone(),
+            continuation_tabs: tree.continuation_tabs.clone(),
+            continuation_rooms: tree.continuation_rooms.clone(),
+            continuation_owned_tabs: tree.continuation_owned_tabs.clone(),
+            continuation_closed_tabs: tree.continuation_closed_tabs.clone(),
+            continuation_file_references: tree.continuation_file_references.clone(),
+            native_document_tabs: tree.native_document_tabs.clone(),
+            local_app_records,
+            package_launches,
+        }
     }
-    durable
 }
 
-fn encode_durable(durable: &WorkspaceTree) -> std::io::Result<Vec<u8>> {
-    use super::native_workspace_owner::store::{LimitedWriter, MAX_STATE_BYTES};
-    let mut output = LimitedWriter::new(Vec::new(), MAX_STATE_BYTES);
+/// Encode `durable` once, refusing it when the authority is malformed or the
+/// file would leave no room for the recovery its enrolled rooms reserved.
+fn encode_durable(durable: &DurableTree) -> std::io::Result<Vec<u8>> {
+    use super::native_workspace_owner::store::LimitedWriter;
+    check_authority(&durable.native_authority)?;
+    let limit =
+        super::native_workspace_owner::publication::state_file_limit(&durable.native_authority)
+            .map_err(std::io::Error::other)?;
+    let mut output = LimitedWriter::new(Vec::new(), limit);
     serde_json::to_writer_pretty(&mut output, durable).map_err(std::io::Error::other)?;
+    #[cfg(test)]
+    ENCODES_ON_THIS_THREAD.with(|encodes| encodes.set(encodes.get().saturating_add(1)));
     Ok(output.into_inner())
 }
 
-/// What a save writes, taken from the tree while the caller holds it. Only
-/// the copy happens on the caller's thread; encoding, the size checks and
-/// every write happen in [`TreeSnapshot::write_to`].
+/// What a save writes, taken from the tree while the caller holds it: a copy
+/// of the fields `state.json` holds, and the tree document's changes since
+/// the previous save, cut from it (see `doc_log`). No document is copied;
+/// encoding, the size checks and every write happen in
+/// [`TreeSnapshot::write_to`].
 pub struct TreeSnapshot {
-    durable: WorkspaceTree,
+    durable: DurableTree,
+    runtime: super::native_workspace_owner::NativeStateRuntime,
     sequence: super::native_workspace_owner::store::StateSequence,
 }
 
 impl TreeSnapshot {
-    /// Copy `tree` as it would be saved now.
+    /// Take `tree` as it would be saved now.
     #[must_use]
     pub fn of(tree: &WorkspaceTree) -> Self {
+        tree.native_runtime.document_log().cut(&tree.doc);
         Self {
             sequence: tree.native_runtime.next_sequence(),
-            durable: durable_copy(tree),
+            runtime: tree.native_runtime.clone(),
+            durable: DurableTree::of(tree),
         }
     }
 
-    /// Publish the snapshot to `path` and the tree document beside it,
-    /// unless a later snapshot of the same tree already reached the file.
+    /// Publish the snapshot to `path` unless a later snapshot of the same
+    /// tree already reached the file, then write the tree document's pending
+    /// changes beside it either way.
     ///
     /// # Errors
     /// As [`save_tree_to`].
     pub(crate) fn write_to(
-        mut self,
+        self,
         path: &Path,
     ) -> std::io::Result<super::native_workspace_owner::store::Publication> {
-        use super::native_workspace_owner::store::{Companion, Publication};
-        check_durable(&self.durable)?;
         let bytes = encode_durable(&self.durable)?;
-        let runtime = self.durable.native_runtime.clone();
         let authority = &self.durable.native_authority;
-        let published = runtime.publish(path, authority, authority, &bytes, self.sequence)?;
-        if published == Publication::Written {
-            runtime.write_companion(Companion::Document, self.sequence, || {
-                save_doc_beside(&mut self.durable, path, &bytes);
-            });
-            #[cfg(test)]
-            WRITES_ON_THIS_THREAD.with(|writes| writes.set(writes.get().saturating_add(1)));
-        }
+        let published = self
+            .runtime
+            .publish(path, authority, authority, &bytes, self.sequence)?;
+        // Superseded or not, the changes cut for this snapshot are written:
+        // the snapshot that superseded it may have been cut before them.
+        write_document(&self.runtime, path);
+        #[cfg(test)]
+        WRITES_ON_THIS_THREAD.with(|writes| {
+            if published == super::native_workspace_owner::store::Publication::Written {
+                writes.set(writes.get().saturating_add(1));
+            }
+        });
         Ok(published)
     }
 }
@@ -218,6 +280,10 @@ thread_local! {
     /// State files this thread published, so a test can tell a save it
     /// queued from one it performed.
     pub(crate) static WRITES_ON_THIS_THREAD: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+    /// State files this thread encoded, so a test can count the encodes a
+    /// publication costs.
+    pub(crate) static ENCODES_ON_THIS_THREAD: std::cell::Cell<usize> =
         const { std::cell::Cell::new(0) };
 }
 
@@ -229,8 +295,8 @@ thread_local! {
 /// Refuses stale authority snapshots, encoded limits, competing writers, and
 /// publication failures. Uncertain publication fences subsequent writes.
 pub fn save_tree_to(tree: &WorkspaceTree, path: &Path) -> std::io::Result<()> {
-    // Prove encoded refusal bounds before cloning any tree or serialization buffer.
-    check_durable(tree)?;
+    // Refuse a malformed authority before copying anything.
+    check_authority(&tree.native_authority)?;
     TreeSnapshot::of(tree).write_to(path).map(drop)
 }
 
@@ -283,19 +349,19 @@ pub fn wait_for_saves_within(limit: std::time::Duration) -> bool {
     saved
 }
 
-/// Largest tree document this build reads or writes. History only grows,
-/// so this is far above the `state.json` cap.
+/// Largest tree document this build reads or writes, and largest log beside
+/// it. History only grows, so this is far above the `state.json` cap.
 const MAX_STATE_DOC_BYTES: usize = 256 * 1024 * 1024;
 
 /// The tree document beside `state.json` (`state.automerge`): the desktop
-/// with its whole change history, which Activity and Replay read. When it is
-/// the companion of the `state.json` beside it, it is authoritative on load.
+/// with its whole change history, which Activity and Replay read. Changes
+/// since it was last compacted are in the log beside it
+/// (`state.automerge.log`, see `doc_log`).
 pub fn state_doc_path(state: &Path) -> PathBuf {
     state.with_extension("automerge")
 }
 
-/// Which `state.json` the document was written with, and the actor it was
-/// written as.
+/// The actor the document is written as.
 fn state_doc_meta_path(state: &Path) -> PathBuf {
     let mut s = state_doc_path(state).into_os_string();
     s.push(".meta");
@@ -309,164 +375,110 @@ struct StateDocMeta {
     /// is never sent to a peer, so no change from this actor exists that is
     /// not in the saved document or lost with the process.
     actor: String,
-    /// blake3 of the `state.json` bytes the document was written with.
+    /// Builds before the log named here the `state.json` the document was
+    /// written with, and then rebuilt the desktop from the document instead.
+    /// The document now records the live desktop and its base can lag the
+    /// log, so this build never names one: an older build keeps the
+    /// document's history and applies `state.json` over it.
+    #[serde(default)]
     state_json: String,
 }
 
-fn state_json_digest(bytes: &[u8]) -> String {
-    blake3::hash(bytes).to_hex().to_string()
-}
-
-/// Write `durable`'s document next to the `state.json` just published from
-/// it. The document first takes on exactly what `state.json` records, so the
-/// two agree on load. Best-effort: `state.json` is already durable, and a
-/// document that fails to write is caught on load by its meta.
-fn save_doc_beside(durable: &mut WorkspaceTree, path: &Path, state_json: &[u8]) {
-    durable.commit_room_change();
-    durable.seed_doc_from_cache();
-    let doc = durable.doc.save();
-    if doc.len() > MAX_STATE_DOC_BYTES {
-        tracing::warn!(
-            bytes = doc.len(),
-            "tree document exceeds its size cap; its history is not saved"
-        );
-        return;
-    }
-    let meta = StateDocMeta {
-        actor: durable.doc.get_actor().to_hex_string(),
-        state_json: state_json_digest(state_json),
-    };
-    let Ok(meta) = serde_json::to_vec(&meta) else {
-        return;
-    };
-    // Document before meta: a meta naming this `state.json` must never sit
-    // beside an older document.
-    let written = tilo_files::native::atomic::replace(
-        &state_doc_path(path),
-        &doc,
+fn write_meta(state: &Path, actor: &str) -> std::io::Result<()> {
+    let meta = serde_json::to_vec(&StateDocMeta {
+        actor: actor.to_owned(),
+        state_json: String::new(),
+    })
+    .map_err(std::io::Error::other)?;
+    tilo_files::native::atomic::replace(
+        &state_doc_meta_path(state),
+        &meta,
         tilo_files::native::atomic::Privacy::OwnerOnly,
     )
-    .and_then(|()| {
-        tilo_files::native::atomic::replace(
-            &state_doc_meta_path(path),
-            &meta,
-            tilo_files::native::atomic::Privacy::OwnerOnly,
-        )
-    });
-    if let Err(error) = written {
+    .map_err(tilo_files::native::atomic::PublicationError::into_io_error)
+}
+
+/// Write the tree document's pending changes beside the state file at
+/// `path`, and its meta after them. Best-effort: `state.json` is already
+/// durable, and on load it is what the desktop is rebuilt from.
+fn write_document(runtime: &super::native_workspace_owner::NativeStateRuntime, path: &Path) {
+    if let Err(error) =
+        runtime
+            .document_log()
+            .write(&state_doc_path(path), MAX_STATE_DOC_BYTES, |actor| {
+                write_meta(path, actor)
+            })
+    {
         tracing::warn!(path = %path.display(), %error, "could not save the tree document");
     }
 }
 
-/// [`save_doc_beside`] for a publication that encoded `tree` itself.
-pub(crate) fn save_doc_for(
-    tree: &WorkspaceTree,
-    path: &Path,
-    state_json: &[u8],
-    sequence: super::native_workspace_owner::store::StateSequence,
-) {
-    match durable_tree(tree) {
-        Ok(mut durable) => tree.native_runtime.write_companion(
-            super::native_workspace_owner::store::Companion::Document,
-            sequence,
-            || save_doc_beside(&mut durable, path, state_json),
-        ),
-        Err(error) => {
-            tracing::warn!(path = %path.display(), %error, "could not save the tree document");
-        }
-    }
+/// Write `tree`'s document beside the state file at `path` now, for a
+/// publication that encoded and published `tree` itself.
+pub(crate) fn save_document(tree: &WorkspaceTree, path: &Path) {
+    tree.native_runtime.document_log().cut(&tree.doc);
+    write_document(&tree.native_runtime, path);
 }
 
-enum SavedDoc {
-    Absent,
-    /// Written with the `state.json` being loaded.
-    Current(AutoCommit),
-    /// Written with an earlier `state.json`.
-    Stale(AutoCommit),
-}
-
-fn read_capped(path: &Path, cap: usize) -> std::io::Result<Vec<u8>> {
-    use std::io::Read;
-    let mut bytes = Vec::new();
-    std::fs::File::open(path)?
-        .take((cap as u64).saturating_add(1))
-        .read_to_end(&mut bytes)?;
-    if bytes.len() > cap {
-        return Err(std::io::Error::other("tree document exceeds its size cap"));
-    }
-    Ok(bytes)
-}
-
-/// Keep a document that cannot be opened for recovery, out of the way of
-/// the next save.
+/// Keep a document and log that cannot be opened for recovery, out of the
+/// way of the next save.
 fn set_aside_unreadable_doc(doc_path: &Path, error: &dyn std::fmt::Display) {
-    let mut aside = doc_path.as_os_str().to_os_string();
-    aside.push(".unreadable");
     tracing::error!(
         path = %doc_path.display(),
         %error,
         "tree document cannot be opened; history restarts from state.json"
     );
-    if let Err(e) = std::fs::rename(doc_path, &aside) {
-        tracing::warn!(path = %doc_path.display(), error = %e, "could not set the unreadable tree document aside");
+    for path in [doc_path.to_path_buf(), doc_log::log_path(doc_path)] {
+        let mut aside = path.as_os_str().to_os_string();
+        aside.push(".unreadable");
+        match std::fs::rename(&path, &aside) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                tracing::warn!(path = %path.display(), error = %e, "could not set the unreadable tree document aside");
+            }
+        }
     }
 }
 
-fn load_saved_doc(path: &Path, state_json: &[u8]) -> SavedDoc {
+/// Adopt the document saved beside `state.json`, with the history its log
+/// adds, and continue its files from there. `state.json` stays what the
+/// desktop is: the seed after load splices whatever it has that the
+/// document lacks into it — changes still unwritten when the last session
+/// ended, or the durable form of its live windows. With no document, that
+/// seed starts the history from `state.json` as one change.
+fn attach_saved_doc(tree: &mut WorkspaceTree, path: &Path) {
     let doc_path = state_doc_path(path);
-    let bytes = match read_capped(&doc_path, MAX_STATE_DOC_BYTES) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return SavedDoc::Absent,
+    let loaded = match doc_log::load(&doc_path, MAX_STATE_DOC_BYTES) {
+        Ok(Some(loaded)) => loaded,
+        Ok(None) => return,
         Err(error) => {
             set_aside_unreadable_doc(&doc_path, &error);
-            return SavedDoc::Absent;
+            return;
         }
     };
-    let mut doc = match AutoCommit::load(&bytes) {
-        Ok(doc) => doc,
-        Err(error) => {
-            set_aside_unreadable_doc(&doc_path, &error);
-            return SavedDoc::Absent;
-        }
-    };
+    if loaded.extent.torn {
+        tracing::warn!(
+            path = %doc_path.display(),
+            "the tree document's log ends in a torn write; the history before it is kept"
+        );
+    }
+    let mut doc = loaded.doc;
     let meta = std::fs::read(state_doc_meta_path(path))
         .ok()
         .and_then(|bytes| serde_json::from_slice::<StateDocMeta>(&bytes).ok());
-    if let Some(actor) = meta
-        .as_ref()
+    let actor = meta
         .and_then(|meta| hex::decode(&meta.actor).ok())
         .filter(|actor| !actor.is_empty())
-    {
-        doc.set_actor(automerge::ActorId::from(actor));
+        .map(automerge::ActorId::from);
+    let meta_actor = actor.as_ref().map(automerge::ActorId::to_hex_string);
+    if let Some(actor) = actor {
+        doc.set_actor(actor);
     }
-    if meta.is_some_and(|meta| meta.state_json == state_json_digest(state_json)) {
-        SavedDoc::Current(doc)
-    } else {
-        SavedDoc::Stale(doc)
-    }
-}
-
-/// Adopt the document saved beside `state.json`. A current one is
-/// authoritative: the cache is rebuilt from it. A stale one — left when only
-/// `state.json` was written, by an interrupted save or an older build —
-/// keeps its history but not its content; the seed after load splices
-/// `state.json`'s newer state into it. With no document, that seed starts
-/// the history from `state.json` as one change.
-fn attach_saved_doc(tree: &mut WorkspaceTree, path: &Path, state_json: &[u8]) {
-    match load_saved_doc(path, state_json) {
-        SavedDoc::Current(doc) => {
-            tree.doc = doc;
-            tree.resync_cache_from_doc();
-        }
-        SavedDoc::Stale(doc) => {
-            tracing::info!(
-                path = %path.display(),
-                "tree document predates state.json; keeping its history and applying state.json"
-            );
-            tree.doc = doc;
-        }
-        SavedDoc::Absent => {}
-    }
+    tree.native_runtime
+        .document_log()
+        .attach(&doc_path, &doc, loaded.extent, meta_actor);
+    tree.doc = doc;
 }
 
 /// # Errors
@@ -513,15 +525,14 @@ pub fn load_tree_from(path: &Path) -> std::io::Result<WorkspaceTree> {
     // The file envelope's version is stamped on write; in memory the tree
     // carries the portable desktop schema.
     tree.desktop.schema_version = STATE_SCHEMA_VERSION;
-    // Before the repairs below, so they apply to what the document
-    // restores too, and the seed after them records their outcome.
-    attach_saved_doc(&mut tree, path, s.as_bytes());
+    // Before the repairs below, so the seed after them records their outcome.
+    attach_saved_doc(&mut tree, path);
     tree.prune_local_app_records();
     tree.prune_package_launches();
-    // `doc` is `#[serde(skip)]` in `state.json`. The seed is diff-aware: for
-    // a current document it writes only what the repairs changed; for a
-    // stale one, what `state.json` has that it lacks; with no document it
-    // is the one-time migration that starts the history.
+    // `doc` is `#[serde(skip)]` in `state.json`. The seed is diff-aware: it
+    // writes only what `state.json` and the repairs have that the document
+    // lacks — nothing, after a clean shutdown; with no document it is the
+    // one-time migration that starts the history.
     tree.seed_doc_from_cache();
     // The `next_id` counter restarts at 1; without seeding, the next
     // allocation collides with a persisted id.
@@ -553,10 +564,10 @@ pub(crate) fn durable_app_id(surface_id: u64, app_id: &str) -> String {
 /// `PeerWindow` and `AppPlaceholder` are intentionally retained: unlike a
 /// `Foreign` tile they are symbolic records with no process-local object id,
 /// and are the explicit continuation contract.
-fn symbolise_foreign_surfaces(tree: &mut WorkspaceTree) {
+fn symbolise_foreign_surfaces(desktop: &mut crate::shell::state::DesktopTree) {
     use crate::shell::state::TileContent;
 
-    for workspace in &mut tree.desktop.workspaces {
+    for workspace in &mut desktop.workspaces {
         for strip in &mut workspace.strips {
             for group in &mut strip.window_groups {
                 for tab in &mut group.tabs {
@@ -581,10 +592,10 @@ fn symbolise_foreign_surfaces(tree: &mut WorkspaceTree) {
 /// an in-memory launcher worker and pending-placement entry, neither of which
 /// survives this process.  Persisting it would turn an interrupted launch
 /// into a permanently answered window that [`peer_windows::pending`] skips.
-fn clear_transient_launch_notes(tree: &mut WorkspaceTree) {
+fn clear_transient_launch_notes(desktop: &mut crate::shell::state::DesktopTree) {
     use crate::shell::state::TileContent;
 
-    for workspace in &mut tree.desktop.workspaces {
+    for workspace in &mut desktop.workspaces {
         for strip in &mut workspace.strips {
             for group in &mut strip.window_groups {
                 for tab in &mut group.tabs {
@@ -986,13 +997,8 @@ mod tests {
                 room,
                 Collaborator::new("bob", "Bob").with_cursor_color("#f97316"),
             ));
-            let owner_before = original.desktop.active_workspace().unwrap().owner.clone();
-            let caps_before = original
-                .desktop
-                .active_workspace()
-                .unwrap()
-                .capabilities
-                .len();
+            let policy_before = original.desktop.active_workspace().unwrap().policy.clone();
+            let caps_before = original.desktop.active_workspace().unwrap().sandbox.len();
 
             save_tree_to(&original, &path).expect("save");
             let (loaded, notice) = load_or_default(&path);
@@ -1017,11 +1023,11 @@ mod tests {
                 .find(|w| w.room == room)
                 .expect("the room survives the round trip");
             assert_eq!(
-                after.owner, owner_before,
-                "dropping presence must not disturb who owns the workspace"
+                after.policy, policy_before,
+                "dropping presence must not disturb who owns the workspace or its grants"
             );
             assert_eq!(
-                after.capabilities.len(),
+                after.sandbox.len(),
                 caps_before,
                 "dropping presence must not disturb granted capabilities"
             );
@@ -1503,5 +1509,260 @@ mod tests {
                 "every replacement completed its rename: {leftovers:?}"
             );
         }
+    }
+
+    /// The durable copy as it was made before [`DurableTree`]: the whole
+    /// tree, documents included, cloned and then transformed. Kept as the
+    /// oracle for `state.json`'s shape.
+    fn durable_copy_before(tree: &WorkspaceTree) -> WorkspaceTree {
+        let mut durable = tree.clone();
+        durable.desktop.schema_version = NATIVE_STATE_SCHEMA_VERSION;
+        symbolise_foreign_surfaces(&mut durable.desktop);
+        clear_transient_launch_notes(&mut durable.desktop);
+        durable.prune_local_app_records();
+        durable.prune_package_launches();
+        for ws in &mut durable.desktop.workspaces {
+            ws.sandbox.retain(ui::CapOverride::persists_across_restart);
+        }
+        durable
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn durable_tree_serialises_exactly_like_workspace_tree() {
+        use crate::shell::state::{
+            Access, CapOverride, Expiry, LocalAppRecord, NativeDocumentReference, RoomAuthority,
+            Scope, Subject, Tab, TileContent,
+        };
+
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let room = tree.desktop.workspaces[0].room;
+        let group = &mut tree.desktop.workspaces[0].strips[0].window_groups[0];
+        group.tabs.push(Tab {
+            id: 93_001,
+            title: "Editor".into(),
+            tile: TileContent::Foreign {
+                app_id: "org.example.ParityEditor".into(),
+                surface_id: 93_002,
+            },
+        });
+        group.tabs.push(Tab {
+            id: 93_003,
+            title: "Terminal".into(),
+            tile: TileContent::LocalApp {
+                app_id: "org.example.Terminal".into(),
+                label: "Terminal".into(),
+                note: crate::shell::peer_windows::OPENING.into(),
+            },
+        });
+        let capabilities = &mut tree.desktop.workspaces[0].sandbox;
+        capabilities.push(
+            CapOverride::grant(
+                Subject::app("so.tilo.books"),
+                Scope::FsPath("/var/workspace/kept".into()),
+                Access::Read,
+            )
+            .with_id("kept"),
+        );
+        capabilities.push(
+            CapOverride::grant(
+                Subject::app("so.tilo.books"),
+                Scope::FsPath("/var/workspace/session".into()),
+                Access::Write,
+            )
+            .with_id("session-only")
+            .expiring(Expiry::EndOfSession),
+        );
+        tree.room_authority.insert(room, RoomAuthority::Local);
+        tree.room_peer_names
+            .entry(room)
+            .or_default()
+            .insert("peer".into(), "Ada".into());
+        tree.room_share_floor.insert(room, 41);
+        tree.continuation_tabs.insert(93_003);
+        tree.continuation_rooms.insert(room);
+        tree.continuation_owned_tabs.insert(93_003, room);
+        tree.continuation_closed_tabs.insert(93_004, room);
+        tree.native_document_tabs.insert(
+            93_003,
+            NativeDocumentReference {
+                provider_id: "notes".into(),
+                path: "/home/ada/notes.md".into(),
+            },
+        );
+        for (tab, app_id) in [
+            (93_003, "org.example.Terminal"),
+            (93_005, "org.example.Gone"),
+        ] {
+            tree.local_app_records.insert(
+                tab,
+                LocalAppRecord {
+                    room,
+                    app_id: app_id.into(),
+                    record_instance: 7,
+                },
+            );
+            tree.package_launches.insert(tab, app_id.into());
+        }
+        tree.seed_doc_from_cache();
+
+        let before = serde_json::to_vec_pretty(&durable_copy_before(&tree)).expect("oracle");
+        let now = serde_json::to_vec_pretty(&DurableTree::of(&tree)).expect("durable tree");
+        assert_eq!(
+            String::from_utf8_lossy(&now),
+            String::from_utf8_lossy(&before),
+            "state.json keeps its exact shape"
+        );
+        let written: serde_json::Value = serde_json::from_slice(&now).expect("json");
+        assert!(written["local_app_records"].get("93003").is_some());
+        assert!(
+            written["local_app_records"].get("93005").is_none(),
+            "the fixture prunes something"
+        );
+        assert!(
+            !String::from_utf8_lossy(&now).contains("session-only"),
+            "the fixture drops a session grant"
+        );
+    }
+
+    #[test]
+    fn a_save_hands_the_writer_only_what_changed_and_restores_the_live_history() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("state.json");
+        let mut tree = WorkspaceTree::bootstrap_default();
+        let second = tree.append_empty_workspace("Second");
+        // No `persist_path`: the saves below are this test's own, not the
+        // writer thread's racing them.
+        for index in 0..400 {
+            tree.desktop.workspaces[0].name = format!("Renamed {index}");
+            tree.seed_doc_from_cache();
+        }
+        save_tree_to(&tree, &path).expect("baseline save");
+
+        tree.set_active(second);
+        tree.commit_room_change();
+        let snapshot = TreeSnapshot::of(&tree);
+        let handed = tree.native_runtime.document_log().pending_bytes();
+        // What handing over the whole history would cost, change by change.
+        let history: usize = tree.export_changes_since(&[]).iter().map(Vec::len).sum();
+        assert!(handed > 0, "the switch is handed to the writer");
+        assert!(
+            handed.saturating_mul(20) < history,
+            "a save hands over the switch ({handed} bytes), not the history ({history} bytes)"
+        );
+        snapshot.write_to(&path).expect("save");
+        assert_eq!(tree.native_runtime.document_log().pending_bytes(), 0);
+        assert!(
+            doc_log::log_path(&state_doc_path(&path)).exists(),
+            "the change was appended, not the document rewritten"
+        );
+
+        let heads = tree.current_heads();
+        let actor = tree.doc.get_actor().clone();
+        drop(tree);
+        let mut restarted = load_tree_from(&path).expect("restart");
+        assert_eq!(restarted.desktop.active, second);
+        assert_eq!(
+            restarted.current_heads(),
+            heads,
+            "base and log together are the live history"
+        );
+        assert_eq!(restarted.doc.get_actor(), &actor);
+    }
+
+    #[test]
+    fn a_torn_document_log_loses_only_its_last_save() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("state.json");
+        let mut tree = WorkspaceTree::bootstrap_default();
+        let first = tree.desktop.workspaces[0].id;
+        save_tree_to(&tree, &path).expect("baseline save");
+        for name in ["One", "Two", "Three"] {
+            tree.append_empty_workspace(name);
+            tree.commit_room_change();
+            save_tree_to(&tree, &path).expect("save");
+        }
+        drop(tree);
+        let log = doc_log::log_path(&state_doc_path(&path));
+        let len = std::fs::metadata(&log).expect("log").len();
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&log)
+            .expect("open log")
+            .set_len(len.saturating_sub(5))
+            .expect("tear the last append");
+
+        let restarted = load_tree_from(&path).expect("a torn log still loads");
+        let names = |desktop: &tilo_desktop_model::DesktopTree| -> Vec<String> {
+            desktop
+                .workspaces
+                .iter()
+                .map(|ws| ws.name.clone())
+                .collect()
+        };
+        assert!(
+            names(&restarted.desktop).iter().any(|name| name == "Three"),
+            "state.json, not the document, is what the desktop is"
+        );
+        let mut from_doc = tilo_desktop_model::DesktopTree::default();
+        tilo_desktop_model::desktop_doc::rebuild(&restarted.doc, &mut from_doc);
+        assert_eq!(
+            names(&from_doc),
+            names(&restarted.desktop),
+            "the seed after load restores what the torn frame held"
+        );
+        assert_eq!(restarted.desktop.workspaces[0].id, first);
+        let set_aside: Vec<_> = std::fs::read_dir(dir.path())
+            .expect("state dir")
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".unreadable"))
+            .collect();
+        assert!(
+            set_aside.is_empty(),
+            "a torn tail sets nothing aside: {set_aside:?}"
+        );
+    }
+
+    #[test]
+    fn a_document_saved_by_the_previous_build_loads_unchanged() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("state.json");
+        let mut tree = WorkspaceTree::bootstrap_default();
+        tree.desktop.workspaces[0].name = "Before the log".into();
+        tree.seed_doc_from_cache();
+        save_tree_to(&tree, &path).expect("save");
+        // What the previous build left: the whole document, rewritten on
+        // every save, and a meta naming the state.json it was written with.
+        let state_json = std::fs::read(&path).expect("state.json");
+        std::fs::write(state_doc_path(&path), tree.doc.save()).expect("document");
+        std::fs::write(
+            state_doc_meta_path(&path),
+            serde_json::json!({
+                "actor": tree.doc.get_actor().to_hex_string(),
+                "state_json": blake3::hash(&state_json).to_hex().to_string(),
+            })
+            .to_string(),
+        )
+        .expect("meta");
+        assert!(!doc_log::log_path(&state_doc_path(&path)).exists());
+        let heads = tree.current_heads();
+        let actor = tree.doc.get_actor().clone();
+        drop(tree);
+
+        let mut restarted = load_tree_from(&path).expect("restart");
+        assert_eq!(restarted.current_heads(), heads);
+        assert_eq!(restarted.doc.get_actor(), &actor);
+        assert_eq!(restarted.desktop.workspaces[0].name, "Before the log");
+
+        // And the history continues as a log beside it.
+        restarted.desktop.workspaces[0].name = "After the log".into();
+        restarted.seed_doc_from_cache();
+        save_tree_to(&restarted, &path).expect("save");
+        assert!(doc_log::log_path(&state_doc_path(&path)).exists());
+        let heads = restarted.current_heads();
+        drop(restarted);
+        let mut again = load_tree_from(&path).expect("restart again");
+        assert_eq!(again.current_heads(), heads);
     }
 }

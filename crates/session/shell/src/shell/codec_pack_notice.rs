@@ -1,9 +1,9 @@
-//! Desktop notifications for the opt-in media codecs pack.
+//! Desktop notifications for the opt-in media codecs extension.
 //!
-//! The pack installs in the background: setup continues while it downloads,
-//! and an opt-in made offline installs once the device is online (the
-//! helper's `NetworkManager` hook starts it). Whoever asked may have moved on,
-//! so the result arrives as a notification. The shell follows the helper's
+//! The extension installs in the background: setup continues while it
+//! downloads, and an opt-in made offline installs once the device is online
+//! (the helper's `NetworkManager` hook starts it). Whoever asked may have moved
+//! on, so the result arrives as a notification. The shell follows the helper's
 //! status file ([`os_actions::codec_pack::watch`], inotify, nothing polls) and
 //! queues a notice for each transition worth telling; the compositor loop
 //! drains the queue into the notification centre.
@@ -140,12 +140,14 @@ mod tests {
     fn a_deferred_install_that_finishes_online_is_announced() {
         let notice = notice_for(
             &status(r#"{"state":"waiting-for-network","desired":true}"#),
-            &status(r#"{"state":"installed","mesa":"enabled","desired":true}"#),
+            &status(
+                r#"{"state":"installed","parts":{"tilo-codecs-mesa":"enabled"},"desired":true}"#,
+            ),
         )
         .unwrap();
-        assert_eq!(notice.title, "Media codecs installed");
+        assert_eq!(notice.title, "More video and audio formats are on");
         assert!(
-            notice.body.contains("sign out and back in"),
+            notice.body.contains("Sign out and back in"),
             "{}",
             notice.body
         );
@@ -156,7 +158,7 @@ mod tests {
     fn software_only_install_says_no_restart_and_that_hardware_follows() {
         let notice = notice_for(
             &status(r#"{"state":"installing"}"#),
-            &status(r#"{"state":"installed","mesa":"waiting"}"#),
+            &status(r#"{"state":"installed","parts":{"tilo-codecs-mesa":"waiting"}}"#),
         )
         .unwrap();
         assert!(notice.body.contains("No restart is needed"));
@@ -165,8 +167,8 @@ mod tests {
 
     #[test]
     fn a_later_matching_mesa_build_is_announced_once() {
-        let before = status(r#"{"state":"installed","mesa":"waiting"}"#);
-        let after = status(r#"{"state":"installed","mesa":"enabled"}"#);
+        let before = status(r#"{"state":"installed","parts":{"tilo-codecs-mesa":"waiting"}}"#);
+        let after = status(r#"{"state":"installed","parts":{"tilo-codecs-mesa":"enabled"}}"#);
         assert_eq!(
             notice_for(&before, &after).unwrap().title,
             "Hardware H.264/HEVC is ready"
@@ -218,10 +220,10 @@ mod tests {
         observe(&monitor, status(r#"{"state":"installing","desired":true}"#));
         observe(
             &monitor,
-            status(r#"{"state":"installed","mesa":"enabled"}"#),
+            status(r#"{"state":"installed","parts":{"tilo-codecs-mesa":"enabled"}}"#),
         );
         let queue = &monitor.lock().unwrap().queue;
         assert_eq!(queue.len(), 1);
-        assert_eq!(queue[0].title, "Media codecs installed");
+        assert_eq!(queue[0].title, "More video and audio formats are on");
     }
 }

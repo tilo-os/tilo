@@ -9,6 +9,7 @@ use std::rc::Rc;
 use serde::{Deserialize, Serialize};
 use tilo_app::prelude::*;
 
+use tilo_app::advanced::{Affine, NodeId, Scene, TaffyTree};
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Log {
     pub title: String,

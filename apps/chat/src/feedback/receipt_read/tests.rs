@@ -3,9 +3,12 @@ use automerge::{ObjType, ROOT, transaction::Transactable};
 use ui::feedback::{Destination, Receipt, ReviewedFeedback, Submission};
 
 fn submitted() -> (automerge::AutoCommit, Submission, Resource) {
-    let mut doc = automerge::AutoCommit::new();
-    crate::doc::ChatDoc::seed_if_empty(&mut doc);
-    let channel = crate::doc::ChatDoc::list_channels(&doc)
+    submitted_as("visitor")
+}
+
+fn submitted_as(author: &str) -> (automerge::AutoCommit, Submission, Resource) {
+    let mut doc = crate::testing::demo_doc();
+    let channel = crate::testing::channels(&doc)
         .into_iter()
         .find(|channel| channel.kind == crate::model::ChannelKind::Text)
         .unwrap();
@@ -22,20 +25,19 @@ fn submitted() -> (automerge::AutoCommit, Submission, Resource) {
             screenshot: None,
         },
     };
-    crate::actions::apply_as(
+    crate::testing::apply_as(
         &mut doc,
-        "visitor",
-        &crate::actions::ChatAction::Feedback(crate::feedback::FeedbackAction::Submit {
-            submission: submission.clone(),
-            ts: 123,
-        }),
+        author,
+        crate::testing::submit_feedback(&submission),
     )
     .unwrap();
     doc.commit();
     let report = crate::feedback::report(&doc, &submission.id)
         .unwrap()
         .unwrap();
-    (doc, submission, crate::feedback::publish(&report))
+    let resource =
+        crate::testing::report_resource(&submission.id, &report.submission.feedback.text);
+    (doc, submission, resource)
 }
 
 fn encoded(resource: &Resource) -> EncodedAction {
@@ -53,7 +55,10 @@ fn receipt_request_is_bound_to_the_published_report_and_has_no_caller_heads() {
     let operation = encoded(&resource);
     validate(&resource, &operation.payload).unwrap();
     let mut other = resource.clone();
-    other.id = tilo_actions::ResourceId::new("chat.feedback:ffffffffffffffffffffffffffffffff");
+    other.id = tilo_actions::ResourceId::new(crate::testing::item(
+        "feedback",
+        "ffffffffffffffffffffffffffffffff",
+    ));
     assert_eq!(
         validate(&other, &operation.payload),
         Err(SemanticReadError::InvalidRequest)
@@ -75,8 +80,7 @@ fn projection_uses_the_committed_basis_and_its_declared_result_contract() {
     let operation = encoded(&resource);
     let heads = doc.base_heads();
     // A later replacement cannot change what the earlier committed basis says.
-    doc.put_object(ROOT, crate::feedback::REPORTS, ObjType::Map)
-        .unwrap();
+    doc.put_object(ROOT, "feedback", ObjType::Map).unwrap();
     doc.commit();
     let page = project(&doc, &heads, &operation.payload).unwrap();
     let receipt: Receipt = serde_json::from_value(page.content.clone()).unwrap();
@@ -147,11 +151,20 @@ fn mounted_fixture(author: &str) -> MountedFixture {
         .reserve_record(&checkout)
         .unwrap()
         .initialize(|doc| {
-            crate::doc::ChatDoc::seed_workspace(
-                doc, room, "Fixture", "visitor", "Visitor", "V", 0,
-            )?;
-            crate::doc::ChatDoc::insert_category(doc, "feedback-category", room, "Feedback");
-            crate::doc::ChatDoc::insert_channel(
+            crate::testing::apply_as(
+                doc,
+                "visitor",
+                crate::resource::Chat::BEGIN_CHAT.with(crate::record::chat::BeginChat {
+                    workspace: Some(room.into()),
+                    workspace_name: Some("Fixture".into()),
+                    name: "Visitor".into(),
+                    initials: "V".into(),
+                    color: 0,
+                }),
+            )
+            .map_err(|error| error.to_string())?;
+            crate::testing::insert_category(doc, "feedback-category", room, "Feedback");
+            crate::testing::insert_channel(
                 doc,
                 "feedback",
                 room,
@@ -159,15 +172,8 @@ fn mounted_fixture(author: &str) -> MountedFixture {
                 "Feedback",
                 crate::model::ChannelKind::Text,
             );
-            crate::actions::apply_as(
-                doc,
-                "visitor",
-                &crate::actions::ChatAction::Feedback(crate::feedback::FeedbackAction::Submit {
-                    submission: submission.clone(),
-                    ts: 123,
-                }),
-            )
-            .map_err(|error| error.to_string())
+            crate::testing::apply_as(doc, "visitor", crate::testing::submit_feedback(&submission))
+                .map_err(|error| error.to_string())
         })
         .unwrap();
     records.try_flush().unwrap();
@@ -179,12 +185,10 @@ fn mounted_fixture(author: &str) -> MountedFixture {
         checkout,
         reveal: None,
     };
-    let permissions = Rc::new(RefCell::new(
-        ui::permissions::PermissionContext::from_capabilities(
-            ui::permissions::Actor::person(Some(ui::permissions::Role::Owner), author),
-            vec![],
-        ),
-    ));
+    let permissions = Rc::new(RefCell::new(ui::permissions::PermissionContext::member(
+        author,
+        ui::permissions::Role::Owner,
+    )));
     let context = HostContext::prepare(
         crate::definition(),
         HostContextInputs {
@@ -227,7 +231,7 @@ fn mounted_chat_reader_returns_the_actual_primary_route_stamp() {
             &ui::bound_dispatch::BoundActionAddress {
                 instance_id: 42,
                 address: tilo_actions::ActionAddress::new(
-                    format!("chat.feedback:{}", submission.id),
+                    crate::testing::item("feedback", &submission.id),
                     "read-feedback-receipt",
                 ),
             },
@@ -247,10 +251,8 @@ fn mounted_chat_reader_returns_the_actual_primary_route_stamp() {
 }
 
 fn maintainer_role(fixture: &MountedFixture, role: ui::permissions::Role) {
-    *fixture.permissions.borrow_mut() = ui::permissions::PermissionContext::from_capabilities(
-        ui::permissions::Actor::person(Some(role), "maintainer"),
-        vec![],
-    );
+    *fixture.permissions.borrow_mut() =
+        ui::permissions::PermissionContext::member("maintainer", role);
 }
 
 #[test]
@@ -259,7 +261,7 @@ fn mounted_triage_observes_live_write_permission_and_keeps_attributed_task_refer
     let address = ui::bound_dispatch::BoundActionAddress {
         instance_id: 42,
         address: tilo_actions::ActionAddress::new(
-            format!("chat.feedback:{}", fixture.submission.id),
+            crate::testing::item("feedback", &fixture.submission.id),
             "triage",
         ),
     };
@@ -349,5 +351,110 @@ fn mounted_triage_observes_live_write_permission_and_keeps_attributed_task_refer
             })
             .unwrap(),
         report
+    );
+}
+
+#[test]
+fn mounted_feedback_status_reads_attributed_triage_with_view_permission() {
+    let mut fixture = mounted_fixture("maintainer");
+    for status in ["investigating", "resolved"] {
+        let address = ui::bound_dispatch::BoundActionAddress {
+            instance_id: 42,
+            address: tilo_actions::ActionAddress::new(
+                crate::testing::item("feedback", &fixture.submission.id),
+                "triage",
+            ),
+        };
+        fixture
+            .frame
+            .invoke_bound_action(
+                &address,
+                serde_json::json!({"update":{"status":status}})
+                    .as_object()
+                    .unwrap(),
+            )
+            .unwrap()
+            .completed()
+            .unwrap();
+    }
+    let reference = tilo_reference::ResourceRef::ranged(
+        "tasks.task",
+        "fixture-task",
+        "Fixture task",
+        tilo_reference::Span::chars(1, 4),
+    );
+    fixture
+        .frame
+        .invoke_bound_action(
+            &ui::bound_dispatch::BoundActionAddress {
+                instance_id: 42,
+                address: tilo_actions::ActionAddress::new(
+                    crate::testing::item("feedback", &fixture.submission.id),
+                    "triage",
+                ),
+            },
+            serde_json::json!({"update":{"status":"task","reference":reference}})
+                .as_object()
+                .unwrap(),
+        )
+        .unwrap()
+        .completed()
+        .unwrap();
+    fixture.frame.flush_component_records().unwrap();
+    maintainer_role(&fixture, ui::permissions::Role::Viewer);
+    let address = ui::bound_dispatch::BoundActionAddress {
+        instance_id: 42,
+        address: tilo_actions::ActionAddress::new(
+            crate::testing::item("feedback", &fixture.submission.id),
+            "read-feedback-status",
+        ),
+    };
+    let output = fixture
+        .frame
+        .invoke_bound_action(&address, &serde_json::Map::new())
+        .expect("a returning viewer must be able to read triage through the public door")
+        .completed()
+        .unwrap();
+    let value = output.value.unwrap();
+    assert_eq!(value["content"]["receipt"]["id"], fixture.submission.id);
+    assert_eq!(
+        value["content"]["receipt"]["digest"],
+        fixture.submission.digest().unwrap()
+    );
+    assert_eq!(value["content"]["triage"].as_array().unwrap().len(), 3);
+    assert_eq!(value["content"]["earlierEntries"], 0);
+    assert_eq!(
+        value["content"]["triage"][0]["update"]["status"],
+        "investigating"
+    );
+    assert_eq!(
+        value["content"]["triage"][1]["update"]["status"],
+        "resolved"
+    );
+    assert_eq!(value["content"]["triage"][1]["author"], "maintainer");
+    assert_eq!(
+        value["content"]["triage"][2]["update"]["reference"],
+        serde_json::to_value(reference).unwrap()
+    );
+}
+
+#[test]
+fn canonical_read_requires_the_exact_attributed_reporter_when_requested() {
+    let author = "a".repeat(64);
+    let (doc, submission, resource) = submitted_as(&author);
+    let request = |author: &str| {
+        serde_json::to_vec(&serde_json::json!({"id": submission.id, "expectedAuthor": author}))
+            .unwrap()
+    };
+    let payload = request(&author);
+    validate(&resource, &payload).unwrap();
+    assert!(project(&doc, &doc.base_heads(), &payload).is_ok());
+    assert_eq!(
+        project(&doc, &doc.base_heads(), &request(&"b".repeat(64))).err(),
+        Some(SemanticReadError::InvalidOwner)
+    );
+    assert_eq!(
+        validate(&resource, &request("visitor")),
+        Err(SemanticReadError::InvalidRequest)
     );
 }

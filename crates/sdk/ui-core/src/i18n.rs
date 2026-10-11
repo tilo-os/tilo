@@ -47,6 +47,72 @@ impl From<std::borrow::Cow<'_, str>> for ArgValue {
     }
 }
 
+/// The Fluent message a label, placeholder or button shows: looked up in
+/// the active locale when drawn, shown verbatim when no catalog has it.
+///
+/// `tilo-app` generates one constant per message of an app's
+/// `locales/en-US.ftl` in its locale registry (`locales::keys::NOTES_ADD`),
+/// so a misspelt key in an app that uses them does not compile. A plain
+/// string converts too, for text that is not a catalog message.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct LabelKey(std::borrow::Cow<'static, str>);
+
+impl LabelKey {
+    /// The message `key`.
+    #[must_use]
+    pub const fn new(key: &'static str) -> Self {
+        Self(std::borrow::Cow::Borrowed(key))
+    }
+
+    /// The message id.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for LabelKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl AsRef<str> for LabelKey {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<&LabelKey> for LabelKey {
+    fn from(key: &LabelKey) -> Self {
+        key.clone()
+    }
+}
+
+impl From<&str> for LabelKey {
+    fn from(key: &str) -> Self {
+        Self(std::borrow::Cow::Owned(key.to_owned()))
+    }
+}
+
+impl From<String> for LabelKey {
+    fn from(key: String) -> Self {
+        Self(std::borrow::Cow::Owned(key))
+    }
+}
+
+impl From<&String> for LabelKey {
+    fn from(key: &String) -> Self {
+        Self(std::borrow::Cow::Owned(key.clone()))
+    }
+}
+
+impl From<LabelKey> for String {
+    fn from(key: LabelKey) -> Self {
+        key.0.into_owned()
+    }
+}
+
 /// Widening conversions into `f64` — exact for every value of `$t`.
 macro_rules! arg_from_number_lossless {
     ($($t:ty),*) => {$(
@@ -734,6 +800,15 @@ impl EmbeddedCatalog {
         }
     }
 
+    /// The Fluent source of the source locale's catalogue.
+    #[must_use]
+    pub fn source(&self) -> Option<&'static str> {
+        self.catalogs
+            .iter()
+            .find(|(locale, _)| *locale == self.source_locale)
+            .map(|(_, source)| *source)
+    }
+
     /// A thread with no manager gets one selecting the user's locale from the
     /// environment (see [`I18nManager::install_system`]).
     #[must_use]
@@ -845,6 +920,47 @@ impl EmbeddedCatalog {
         self.ensure();
         I18nManager::current_locale()
     }
+}
+
+/// Define the calling crate's [`EmbeddedCatalog`]: `locales/<locale>.ftl` in
+/// the crate, `en-US` as the source, the user's locale when no host chose one,
+/// and source copy pinned in the crate's own tests.
+///
+/// `embedded_catalog!(pub(crate) static STORE_CATALOG, "probe-key", ["en-US", "de-DE"])`
+/// defines just the static; `embedded_catalog!(pub fn, "probe-key", ["en-US"])`
+/// defines `static CATALOG` and the `t` / `t_args` lookups the crate's copy
+/// goes through.
+#[macro_export]
+macro_rules! embedded_catalog {
+    ($vis:vis static $name:ident, $probe:literal, [$($locale:literal),+ $(,)?]) => {
+        $vis static $name: $crate::i18n::EmbeddedCatalog = {
+            let catalog = $crate::i18n::EmbeddedCatalog::new(
+                "en-US",
+                &[$((
+                    $locale,
+                    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/locales/", $locale, ".ftl")),
+                )),+],
+                $probe,
+            )
+            .with_system_locale();
+            #[cfg(test)]
+            let catalog = catalog.with_pinned_locale("en-US");
+            catalog
+        };
+    };
+    ($vis:vis fn, $probe:literal, [$($locale:literal),+ $(,)?]) => {
+        $crate::embedded_catalog!(static CATALOG, $probe, [$($locale),+]);
+
+        #[allow(dead_code, reason = "a crate may resolve only plain or only interpolated copy")]
+        $vis fn t(key: &str) -> String {
+            CATALOG.t(key)
+        }
+
+        #[allow(dead_code, reason = "a crate may resolve only plain or only interpolated copy")]
+        $vis fn t_args(key: &str, args: &[(&str, $crate::i18n::ArgValue)]) -> String {
+            CATALOG.t_args(key, args)
+        }
+    };
 }
 
 #[macro_export]
@@ -1229,10 +1345,14 @@ mod tests {
             "relative-ago-years",
             "participant-agent",
             "participant-unknown-agent",
+            "participant-shortcut",
+            "participant-app",
+            "participant-acting-for",
         ] {
             let mut args = FluentArgs::new();
             args.set("count", FluentValue::from(2));
             args.set("name", FluentValue::from("scribe"));
+            args.set("person", FluentValue::from("Ada"));
             for (locale, bundle) in [("en-US", &en), ("de-DE", &de)] {
                 let (value, clean) = format_from_bundle(bundle, key, Some(&args))
                     .unwrap_or_else(|| panic!("{locale}.ftl lacks {key}"));

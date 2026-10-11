@@ -28,16 +28,14 @@ fn program(replica: &Replica<Workbench>) -> Program {
 
 fn with_draft() -> (Replica<Workbench>, Id) {
     let mut replica = Replica::<Workbench>::new();
-    replica
-        .apply(Workbench::NEW_DRAFT.with("Tidy".into()))
-        .unwrap();
+    replica.apply(Workbench::NEW_DRAFT.with("Tidy")).unwrap();
     let id = draft_id(&replica);
     (replica, id)
 }
 
 fn invoke(action: &str) -> serde_json::Value {
-    json!({"step": "invoke", "app_id": "so.tilo.notes",
-           "resource": {"fixed": "notes.folder:inbox"}, "action": action})
+    json!({"step": "invoke", "action": {"app": "so.tilo.notes", "kind": "notes.folder", "action": action},
+           "resource": {"fixed": "notes.folder:inbox"}})
 }
 
 #[test]
@@ -79,7 +77,7 @@ fn arguments_bind_and_clear_and_steps_move_and_go() {
             .unwrap();
     }
     replica
-        .apply(Workbench::SET_ARGUMENT.with((
+        .apply(Workbench::BIND_ARGUMENT.with((
             id.clone(),
             "1".into(),
             "title".into(),
@@ -92,7 +90,7 @@ fn arguments_bind_and_clear_and_steps_move_and_go() {
     assert_eq!(args["title"], Binding::step("list", "/titles/0"));
 
     replica
-        .apply(Workbench::SET_ARGUMENT.with((
+        .apply(Workbench::BIND_ARGUMENT.with((
             id.clone(),
             "1".into(),
             "title".into(),
@@ -175,7 +173,7 @@ fn concurrent_edits_to_different_parts_of_one_draft_all_survive() {
 
     // Here: bind an argument of the first step, add an input and a step
     // inside the branch.
-    here.apply(Workbench::SET_ARGUMENT.with((
+    here.apply(Workbench::BIND_ARGUMENT.with((
         id.clone(),
         "0".into(),
         "folder".into(),
@@ -189,7 +187,7 @@ fn concurrent_edits_to_different_parts_of_one_draft_all_survive() {
     // There: bind an argument of the second step, move it first, and bind
     // another argument of the first step.
     there
-        .apply(Workbench::SET_ARGUMENT.with((
+        .apply(Workbench::BIND_ARGUMENT.with((
             id.clone(),
             "1".into(),
             "title".into(),
@@ -200,7 +198,7 @@ fn concurrent_edits_to_different_parts_of_one_draft_all_survive() {
         .apply(Workbench::MOVE_STEP.with((id.clone(), "1".into(), true)))
         .unwrap();
     there
-        .apply(Workbench::SET_ARGUMENT.with((
+        .apply(Workbench::BIND_ARGUMENT.with((
             id,
             "1".into(),
             "limit".into(),
@@ -230,4 +228,166 @@ fn concurrent_edits_to_different_parts_of_one_draft_all_survive() {
     };
     assert_eq!(then[0].id, "archive");
     assert_eq!(merged.inputs[0].name, "who");
+}
+
+#[test]
+fn a_step_stores_the_key_of_the_action_it_invokes() {
+    let (mut replica, id) = with_draft();
+    replica
+        .apply(Workbench::ADD_STEP.with((id, String::new(), invoke("list"))))
+        .unwrap();
+    let StepKind::Invoke { action, .. } = &program(&replica).steps[0].kind else {
+        panic!("an action step")
+    };
+    assert_eq!(
+        *action,
+        ui::tilo_actions::ActionKey::new("so.tilo.notes", "notes.folder", "list")
+    );
+}
+
+#[test]
+fn the_name_and_output_are_field_edits_and_history_names_the_draft() {
+    let (mut replica, id) = with_draft();
+    let draft = Workbench::paths().drafts.item(&id);
+    replica
+        .apply(Invoke::edit(&draft.name.replace("Inbox digest")).unwrap())
+        .unwrap();
+    replica
+        .apply(Workbench::ADD_STEP.with((id.clone(), String::new(), invoke("list"))))
+        .unwrap();
+    let output = Binding::StepOutput {
+        step: "list".into(),
+        pointer: String::new(),
+    };
+    replica
+        .apply(Invoke::edit(&draft.output.set(Json(Some(output.clone())))).unwrap())
+        .unwrap();
+    assert_eq!(program(&replica).output, Some(output));
+    replica
+        .apply(Workbench::REMOVE_STEP.with((id.clone(), "0".into())))
+        .unwrap();
+    replica.apply(Workbench::DISCARD.with(id)).unwrap();
+    let catalogue = tilo_history::Catalogue::new("en-US", &[include_str!("../locales/en-US.ftl")]);
+    let reader = tilo_history::Reader::new("en-US").with_app(&catalogue);
+    let sentences: Vec<String> = replica
+        .versions()
+        .into_iter()
+        .filter_map(|version| version.context)
+        .filter(|entry| entry.what.is_some())
+        .map(|entry| reader.sentence(&entry))
+        .collect();
+    assert_eq!(
+        sentences,
+        [
+            "Started the shortcut Tidy",
+            "Renamed the shortcut Tidy",
+            "Added a step to Inbox digest",
+            "Changed what Inbox digest reports back",
+            "Removed step 0 from Inbox digest",
+            "Discarded the draft Inbox digest",
+        ]
+    );
+}
+
+#[test]
+fn morning_refresh_draft_is_inert_until_person_chooses_schedule_and_saves() {
+    let mut replica = Replica::<Workbench>::new();
+    replica.apply(Workbench::DRAFT_SHORTCUT.with(json!({
+        "id": "injected", "name": "Refresh chosen source", "steps": [{"id": "refresh", "step": "invoke", "action": {"app": "so.tilo.weather", "kind": "weather.location", "action": "refresh"}, "resource": {"fixed": "weather.location:fixture"}}],
+        "triggers": [{"trigger": "schedule", "schedule": {"every": "interval", "seconds": 60}}], "saved_by": "someone-else"
+    }))).unwrap();
+    let id = draft_id(&replica);
+    assert!(program(&replica).triggers.is_empty());
+    assert!(
+        !replica
+            .state()
+            .unwrap()
+            .drafts
+            .values()
+            .next()
+            .unwrap()
+            .replaces_saved
+    );
+    assert_ne!(
+        replica
+            .state()
+            .unwrap()
+            .drafts
+            .values()
+            .next()
+            .unwrap()
+            .shortcut_id,
+        "injected"
+    );
+    replica
+        .apply(Workbench::SET_SCHEDULE.with((id.clone(), true, 9, 15)))
+        .unwrap();
+    assert_eq!(
+        program(&replica).triggers,
+        vec![tilo_automation::TriggerSpec::Schedule {
+            schedule: tilo_automation::Schedule::Calendar {
+                at: tilo_automation::TimeOfDay {
+                    hour: 9,
+                    minute: 15
+                },
+                weekdays: Vec::new()
+            },
+            catch_up: tilo_automation::CatchUp::RunOnce
+        }]
+    );
+    assert!(
+        replica
+            .apply(Workbench::SET_SCHEDULE.with((id.clone(), true, 24, 0)))
+            .is_err()
+    );
+    replica
+        .apply(Workbench::SET_SCHEDULE.with((id, false, 9, 15)))
+        .unwrap();
+    assert!(program(&replica).triggers.is_empty());
+}
+
+#[test]
+fn morning_refresh_schedule_edits_preserve_other_saved_triggers() {
+    use tilo_automation::{CatchUp, Schedule, TimeOfDay, TriggerSpec, Weekday};
+    let (replica, id) = with_draft();
+    let mut saved = replica
+        .state()
+        .unwrap()
+        .drafts
+        .get(&id)
+        .unwrap()
+        .shortcut(Vec::new());
+    let existing = vec![
+        TriggerSpec::Schedule {
+            schedule: Schedule::Interval { seconds: 3600 },
+            catch_up: CatchUp::RunOnce,
+        },
+        TriggerSpec::Schedule {
+            schedule: Schedule::Calendar {
+                at: TimeOfDay {
+                    hour: 10,
+                    minute: 30,
+                },
+                weekdays: vec![Weekday::Monday],
+            },
+            catch_up: CatchUp::RunOnce,
+        },
+        TriggerSpec::Keyboard {
+            chord: "Super+R".into(),
+        },
+    ];
+    saved.triggers = existing.clone();
+    let mut reopened = Replica::<Workbench>::new();
+    reopened
+        .apply(Workbench::OPEN_SHORTCUT.with(serde_json::to_value(saved).unwrap()))
+        .unwrap();
+    let id = draft_id(&reopened);
+    reopened
+        .apply(Workbench::SET_SCHEDULE.with((id.clone(), true, 9, 15)))
+        .unwrap();
+    assert_eq!(program(&reopened).triggers[..existing.len()], existing);
+    reopened
+        .apply(Workbench::SET_SCHEDULE.with((id, false, 9, 15)))
+        .unwrap();
+    assert_eq!(program(&reopened).triggers, existing);
 }

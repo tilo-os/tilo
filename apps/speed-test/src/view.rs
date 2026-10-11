@@ -106,22 +106,11 @@ impl Decorator for TestColumns {
         node
     }
 
-    fn adjust_layout_with_measure(
-        &mut self,
-        tree: &mut ui::taffy::TaffyTree<()>,
-        node: ui::taffy::NodeId,
-        text: &mut ui::TextRenderer,
-    ) -> bool {
-        // The decorator's default forwards the inner row's measured hook.
-        // Explicitly include this layout-only adapter in the solver pass.
-        let changed = Decorator::adjust_layout_style(self, tree, node);
-        self.row.adjust_layout_with_measure(tree, node, text) | changed
-    }
-
     fn adjust_layout_style(
         &mut self,
         tree: &mut ui::taffy::TaffyTree<()>,
         node: ui::taffy::NodeId,
+        text: &mut ui::TextRenderer,
     ) -> bool {
         let Ok(layout) = tree.layout(node) else {
             return false;
@@ -152,7 +141,8 @@ impl Decorator for TestColumns {
             style.size.width = minimum;
             changed |= tree.set_style(child, style).is_ok();
         }
-        changed
+        // This adapter stands in for the row's node; the row adjusts it too.
+        self.row.adjust_layout_style(tree, node, text) | changed
     }
 }
 

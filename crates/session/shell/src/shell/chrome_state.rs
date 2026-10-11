@@ -11,7 +11,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::rc::Rc;
 
-use parking_lot::{RwLockReadGuard, RwLockWriteGuard};
+use parking_lot::RwLockReadGuard;
 use ui::record::RecordStore;
 
 use crate::notifications::{CloseReason, NotificationBridge};
@@ -209,6 +209,19 @@ pub struct OverlayFlags {
     pub clock: bool,
 }
 
+/// Who the display sheet is open for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ProjectionFollow {
+    /// The person opened it, or has used it since: it is a picker they
+    /// close themselves.
+    Person,
+    /// A `display.layout.*` action opened it while its layout is stored.
+    Staging,
+    /// A `display.layout.*` action opened it for this display change; it
+    /// closes once the change is kept, reverted, refused or replaced.
+    Transaction(u64),
+}
+
 /// The live activity Clocks shows outside its windows: the timer or
 /// stopwatch running, and a due timer to announce once.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize)]
@@ -350,8 +363,9 @@ pub struct QuickSettingsState {
     pub bluetooth_available: bool,
     /// Primary `NetworkManager` Ethernet interface. `None` means no adapter.
     pub wired: Option<os_actions::WiredInfo>,
-    /// Read-only kernel battery snapshot for the quick status row.
-    pub battery: os_actions::BatteryInfo,
+    /// The top bar's battery reading — same type, same sysfs parser — so
+    /// the panel and the tray cannot disagree about the charge.
+    pub battery: tilo_power_mgmt::BatterySnapshot,
     /// `None` when fwupd is unavailable, otherwise the offered update count.
     pub firmware_updates: Option<usize>,
     pub radios: os_actions::RadioState,
@@ -444,22 +458,14 @@ impl Default for QuickSettingsState {
             bluetooth: false,
             bluetooth_available: false,
             wired: None,
-            battery: os_actions::BatteryInfo::from_root(std::path::Path::new(
-                "/nonexistent/tilo-power-supply",
-            )),
+            battery: tilo_power_mgmt::BatterySnapshot::absent(),
             firmware_updates: None,
             radios: os_actions::RadioState::default(),
             vpns: Vec::new(),
             privacy: os_actions::get_privacy_status(),
-            night_light: settings_store::bool_at(&settings_store::load(), "display", "night_light")
-                .unwrap_or(false),
+            night_light: settings_store::hardware::NIGHT_LIGHT.get(),
             rotation_available: os_actions::has_accelerometer(),
-            rotation_lock: settings_store::bool_at(
-                &settings_store::load(),
-                "display",
-                "rotation_lock",
-            )
-            .unwrap_or(false),
+            rotation_lock: settings_store::hardware::ROTATION_LOCK.get(),
             nav_stack: vec![QsLevel::Root],
             // Populated by nmcli/bluetoothctl on the popover's rising
             // edge — no fake content.
@@ -492,16 +498,7 @@ impl QuickSettingsState {
             bluetooth: false,
             bluetooth_available: false,
             wired: None,
-            battery: os_actions::BatteryInfo {
-                present: false,
-                capacity: 0,
-                status: String::new(),
-                cycle_count: None,
-                on_ac: false,
-                full_capacity: None,
-                design_capacity: None,
-                charge_limit: None,
-            },
+            battery: tilo_power_mgmt::BatterySnapshot::absent(),
             firmware_updates: None,
             radios: os_actions::RadioState::default(),
             vpns: Vec::new(),
@@ -566,12 +563,15 @@ pub struct ChromeState {
     pub(crate) hosted_inputs: super::hosted_inputs::HostedTileInputs,
     pub(crate) native_app_opening: Option<super::launcher::NativeAppOpening>,
     /// Shared with the portal (grants) and peer-sync (replica), all
-    /// holding clones of the same `Arc<RwLock<_>>`. Named `tree_handle`
+    /// holding clones of the same [`WorkspaceTreeHandle`]. Named `tree_handle`
     /// (not `tree`) so unmigrated call-sites get a type-mismatch error
     /// instead of silently borrowing the wrong thing; use
     /// [`Self::tree`] / [`Self::tree_mut`].
     pub tree_handle: WorkspaceTreeHandle,
     pub overlays: OverlayFlags,
+    /// Who the open display sheet belongs to: the person, or the display
+    /// change an action opened it for. See [`ProjectionFollow`].
+    pub(crate) projection_follow: ProjectionFollow,
     pub quick_settings: QuickSettingsState,
     /// `Some` while the workspace lens's Name input is in
     /// text-entry mode — the edit buffer, which may diverge from the
@@ -608,6 +608,10 @@ pub struct ChromeState {
     /// Bumped on every tree mutation. Widgets poll this in `update` to
     /// re-sync caches — cheaper than diffing, simpler than an event bus.
     pub revision: u64,
+    /// Which chrome this is, unique in the process. [`Self::revision`]
+    /// counts from zero in every chrome, so a cache keyed on it names the
+    /// chrome too.
+    instance: u64,
     /// Bumped when an appearance action writes the store so the live frame
     /// applies theme and locale on the next paint without waiting for the
     /// settings-file poll.
@@ -626,8 +630,11 @@ pub struct ChromeState {
     /// caller is blocked — see [`PendingPrompt`].
     pub pending_grants: VecDeque<PendingPrompt>,
     /// Test-only override for `is_active_workspace_owner`. `None` is
-    /// production behaviour (always owner, no logged-in-user identity
-    /// yet); `Some(false)` exercises the disabled-Revoke path.
+    /// production behaviour: ownership is computed from the active
+    /// workspace's capabilities. `Some(false)` exercises the disabled-Revoke
+    /// path. It only decides which controls are offered; member role changes
+    /// and removals are authorized by `crate::shell::membership` whatever it
+    /// says.
     pub test_only_owner_override: Option<bool>,
     /// Seeded at boot from the device identity.
     pub local_user_id: crate::shell::state::UserId,
@@ -722,14 +729,14 @@ pub struct ChromeState {
     /// "Send…" requests for the last screenshot from the action door,
     /// drained into the capture studio by the overlay host.
     screenshot_sends: Vec<ui::widget::ScreenshotSendTarget>,
-    /// Compatibility queue for callers of the original active-room API.
-    legacy_record_requests: Vec<(String, String)>,
     /// Tracked record actions retain the exact authorized destination until
     /// the overlay-owned room index consumes them on a later frame.
     tracked_record_requests: Vec<RecordRequest>,
     record_request_results: BTreeMap<u64, Result<(), String>>,
     next_record_request_id: u64,
-    peer_sync_request_results: BTreeMap<u64, Result<(), String>>,
+    /// Terminal results of tracked peer-sync requests: `Null` for one that
+    /// only presented something, the action output for a network request.
+    peer_sync_request_results: BTreeMap<u64, Result<serde_json::Value, String>>,
     next_peer_sync_request_id: u64,
     /// Foreign surfaces whose tab close affordance was activated. The native
     /// compositor drains this edge and sends `xdg_toplevel.close`; keeping it
@@ -743,6 +750,7 @@ pub struct ChromeState {
     /// and toggles the focused client's `xdg_toplevel` fullscreen state,
     /// which only it holds the protocol handles for.
     fullscreen_toggle_requested: bool,
+    topbar_editor_requested: bool,
     /// Compositor-only remaining paints after overview / workspace switch
     /// (W16). The host's crossfade demand still clears when the curve
     /// settles — this count is not `needs_animation_frame`.
@@ -771,6 +779,7 @@ pub struct ChromeState {
     continuity_suggestions: crate::shell::continuity_suggestion::ContinuitySuggestions,
     /// Recently closed tabs, for `tab.reopen` and the close toast's Undo.
     closed_tabs: crate::shell::closed_tabs::ClosedTabStack,
+    pending_closed_tabs: Vec<crate::shell::closed_tabs::ClosedTab>,
     /// Close toasts still offering Undo: notification id -> closed entry.
     /// They never enter notification history.
     undo_toasts: BTreeMap<u64, u64>,
@@ -843,6 +852,7 @@ impl ChromeState {
             native_app_opening: None,
             identity_source,
             overlays: OverlayFlags::default(),
+            projection_follow: ProjectionFollow::Person,
             quick_settings,
             editing_workspace_name: None,
             editing_workspace_name_selection: ui::text_selection::Selection::default(),
@@ -857,6 +867,10 @@ impl ChromeState {
             workspace_settings_anchor: vello::kurbo::Rect::ZERO,
             ws_grant_draft: tilo_desktop::workspace_settings::GrantDraft::default(),
             revision: 0,
+            instance: {
+                static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            },
             appearance_generation: 0,
             observed_external_tree_revision: 0,
             activity_glance: ActivityGlance::default(),
@@ -894,7 +908,6 @@ impl ChromeState {
             presence_requests: Vec::new(),
             screenshot_sends: Vec::new(),
             wheel_summon: None,
-            legacy_record_requests: Vec::new(),
             tracked_record_requests: Vec::new(),
             record_request_results: BTreeMap::new(),
             next_record_request_id: 1,
@@ -903,6 +916,7 @@ impl ChromeState {
             close_surface_requests: Vec::new(),
             window_transfers: super::window_transfer::WindowTransfers::default(),
             fullscreen_toggle_requested: false,
+            topbar_editor_requested: false,
             transition_paints_remaining: 0,
             shortcut_action_requests: Vec::new(),
             cancel_tab_drag_requested: false,
@@ -914,6 +928,7 @@ impl ChromeState {
             continuity_suggestions:
                 crate::shell::continuity_suggestion::ContinuitySuggestions::default(),
             closed_tabs: crate::shell::closed_tabs::ClosedTabStack::default(),
+            pending_closed_tabs: Vec::new(),
             undo_toasts: BTreeMap::new(),
             workspace_undo_toasts: BTreeMap::new(),
             records: RecordStore::in_memory(),
@@ -990,7 +1005,7 @@ impl ChromeState {
     pub(crate) fn complete_peer_sync_request(
         &mut self,
         request_id: u64,
-        result: Result<(), String>,
+        result: Result<serde_json::Value, String>,
     ) {
         self.peer_sync_request_results.insert(request_id, result);
     }
@@ -1014,15 +1029,8 @@ impl ChromeState {
     pub(crate) fn take_peer_sync_request_result(
         &mut self,
         request_id: u64,
-    ) -> Option<Result<(), String>> {
+    ) -> Option<Result<serde_json::Value, String>> {
         self.peer_sync_request_results.remove(&request_id)
-    }
-
-    /// Same effect as activating that record's row in search — a
-    /// reference is added to this room's index, no bytes move.
-    #[deprecated(note = "use push_tracked_record_request to retain authorization context")]
-    pub fn push_record_request(&mut self, id: impl Into<String>, kind: impl Into<String>) {
-        self.legacy_record_requests.push((id.into(), kind.into()));
     }
 
     /// Queue an authorized record import against its exact workspace target.
@@ -1045,11 +1053,6 @@ impl ChromeState {
             actor,
         });
         request_id
-    }
-
-    #[deprecated(note = "use take_tracked_record_requests for authorization-aware requests")]
-    pub fn take_record_requests(&mut self) -> Vec<(String, String)> {
-        std::mem::take(&mut self.legacy_record_requests)
     }
 
     pub(crate) fn take_tracked_record_requests(&mut self) -> Vec<RecordRequest> {
@@ -1077,6 +1080,15 @@ impl ChromeState {
     pub fn request_fullscreen_toggle(&mut self) {
         self.fullscreen_toggle_requested = true;
         self.bump();
+    }
+
+    pub fn request_topbar_editor(&mut self) {
+        self.topbar_editor_requested = true;
+        self.bump();
+    }
+
+    pub fn take_topbar_editor_request(&mut self) -> bool {
+        std::mem::take(&mut self.topbar_editor_requested)
     }
 
     pub fn take_fullscreen_toggle_request(&mut self) -> bool {
@@ -1375,7 +1387,7 @@ impl ChromeState {
     /// The guard drops at the end of the borrow scope, so concurrent
     /// readers (paint, portal lookup, peer-sync export) unblock as soon
     /// as the mutation lands.
-    pub fn tree_mut(&self) -> RwLockWriteGuard<'_, WorkspaceTree> {
+    pub fn tree_mut(&self) -> crate::shell::state::WorkspaceTreeWriteGuard<'_> {
         self.tree_handle.write()
     }
 
@@ -1411,7 +1423,7 @@ impl ChromeState {
                 if let Some(active_room) = tree
                     .desktop
                     .active_workspace()
-                    .filter(|workspace| workspace.owner.is_none())
+                    .filter(|workspace| workspace.owner().is_none())
                     .map(|workspace| workspace.room)
                 {
                     tree.adopt_ownerless_workspaces_with(|room| {
@@ -1462,6 +1474,49 @@ impl ChromeState {
         self.revision = self.revision.wrapping_add(1);
     }
 
+    /// Open the display sheet for the person: a sheet they asked for stays
+    /// until they close it, whatever happens to the layouts chosen in it.
+    pub(crate) fn open_projection(&mut self) {
+        self.overlays.projection = true;
+        self.projection_follow = ProjectionFollow::Person;
+    }
+
+    /// Close the display sheet and forget any change it followed.
+    pub(crate) fn close_projection(&mut self) {
+        self.overlays.projection = false;
+        self.projection_follow = ProjectionFollow::Person;
+    }
+
+    /// A `display.layout.*` action began staging a layout: show it in the
+    /// sheet, and follow it there unless the person has the sheet open.
+    pub(crate) fn open_projection_for_action(&mut self) {
+        if !self.overlays.projection || self.projection_follow != ProjectionFollow::Person {
+            self.overlays.projection = true;
+            self.projection_follow = ProjectionFollow::Staging;
+        }
+    }
+
+    /// The layout an action staged was stored as `transaction`: the sheet it
+    /// opened now follows that change.
+    pub(crate) fn projection_staged(&mut self, transaction: u64) {
+        if self.overlays.projection && self.projection_follow == ProjectionFollow::Staging {
+            self.projection_follow = ProjectionFollow::Transaction(transaction);
+        }
+    }
+
+    /// The layout an action was staging was refused before it took effect:
+    /// the sheet it opened for it closes, as there is nothing to answer.
+    pub(crate) fn projection_refused(&mut self) {
+        if self.projection_follow == ProjectionFollow::Staging {
+            self.close_projection();
+        }
+    }
+
+    /// This chrome's identity, unique in the process; see `instance`.
+    pub(crate) fn instance(&self) -> u64 {
+        self.instance
+    }
+
     /// Persist-side appearance change: chrome rebuilds, and the live frame
     /// applies the configured theme and locale on the next paint instead of
     /// waiting for the settings-file poll.
@@ -1478,6 +1533,7 @@ impl ChromeState {
             return false;
         }
         self.observed_external_tree_revision = external;
+        self.publish_completed_closes();
         self.bump();
         true
     }
@@ -1583,11 +1639,32 @@ impl ChromeState {
             | tilo_desktop::activity::HISTORY_UNDO
             | tilo_desktop::activity::HISTORY_RESTORE
             | tilo_desktop::activity::ACTIVITY_ACKNOWLEDGE
-            | tilo_desktop::activity::ACTIVITY_TASKS => {}
+            | tilo_desktop::activity::ACTIVITY_TASKS
+            | tilo_desktop::activity::morning::MORNING_SOURCE => {}
+            _ if [
+                tilo_desktop::activity::morning::MORNING_OPEN,
+                tilo_desktop::activity::morning::MORNING_REMOVE,
+                tilo_desktop::activity::morning::MORNING_REFRESH,
+                tilo_desktop::activity::morning::MORNING_DRAFT,
+                tilo_desktop::activity::morning::MORNING_NEXT,
+            ]
+            .iter()
+            .any(|prefix| tilo_desktop::activity::morning::decode_action(id, prefix).is_some()) => {
+            }
             _ => return Err("Unknown history action".into()),
         }
+        let request = if id == tilo_desktop::activity::morning::MORNING_SOURCE {
+            let room = self
+                .tree()
+                .active_workspace()
+                .map(|workspace| workspace.room)
+                .ok_or_else(|| "Workspace unavailable".to_string())?;
+            format!("{id}.{room}")
+        } else {
+            id.to_string()
+        };
         self.open_room_activity(None);
-        self.history_action_request = Some(id.to_string());
+        self.history_action_request = Some(request);
         self.bump();
         Ok(())
     }
@@ -1722,8 +1799,51 @@ impl ChromeState {
         Some(suggestion)
     }
 
-    /// Remember a close so it can be undone, and say so with a short toast
-    /// whose activation puts the tab back.
+    /// Publish Undo and its toast only after removal. A live client may
+    /// refuse its close request and keep the tab present.
+    pub fn remember_closed_tab_after_removal(
+        &mut self,
+        entry: crate::shell::closed_tabs::ClosedTab,
+    ) {
+        if self.pending_closed_tabs.iter().any(|pending| {
+            pending
+                .tabs
+                .iter()
+                .map(|content| content.tab.id)
+                .eq(entry.tabs.iter().map(|content| content.tab.id))
+        }) {
+            return;
+        }
+        self.pending_closed_tabs.push(entry);
+        self.publish_completed_closes();
+    }
+
+    fn publish_completed_closes(&mut self) {
+        let present: std::collections::HashSet<_> = self
+            .tree()
+            .desktop
+            .workspaces
+            .iter()
+            .flat_map(|workspace| workspace.strips.iter())
+            .flat_map(|strip| strip.window_groups.iter())
+            .flat_map(|group| group.tabs.iter())
+            .map(|tab| tab.id)
+            .collect();
+        let entries = std::mem::take(&mut self.pending_closed_tabs);
+        for entry in entries {
+            if entry
+                .tabs
+                .iter()
+                .any(|content| present.contains(&content.tab.id))
+            {
+                self.pending_closed_tabs.push(entry);
+            } else {
+                self.remember_closed_tab(entry);
+            }
+        }
+    }
+
+    /// Remember a completed close and offer a toast whose activation restores it.
     pub fn remember_closed_tab(&mut self, entry: crate::shell::closed_tabs::ClosedTab) -> u64 {
         use crate::shell::i18n::{t, t_args};
 
@@ -2592,11 +2712,6 @@ impl ChromeState {
         self.notification_log.history()
     }
 
-    /// Number of entries in the history log.
-    pub fn notification_history_count(&self) -> usize {
-        self.notification_log.history().len()
-    }
-
     pub fn notification_badge_total(&self) -> u32 {
         self.notification_badges
             .iter()
@@ -2906,7 +3021,7 @@ impl ChromeState {
             .focus
             .active_until(local_minute, weekday_from_monday)
             .map(|end| {
-                let time = format!("{:02}:{:02}", end / 60, end % 60);
+                let time = ui::clock::hour_minute((end / 60).into(), (end % 60).into());
                 t_args("quiet-status-focus-until", &[("time", time.into())])
             })
     }
@@ -3481,9 +3596,7 @@ mod active_tab_tests {
         AppKind, GroupId, Strip, StripId, Tab, TileContent, WindowGroup as StateGroup,
         WindowWidth as StateWidth, Workspace, WorkspaceId, WorkspaceTree,
     };
-    use parking_lot::RwLock;
     use std::collections::HashMap as StdMap;
-    use std::sync::Arc;
 
     fn tree_with(active_tab_id: u64) -> WorkspaceTree {
         let ws_id = WorkspaceId::new();
@@ -3538,21 +3651,21 @@ mod active_tab_tests {
     #[test]
     fn active_tab_and_strip_lookups_follow_the_live_pointers_or_return_none() {
         fn active_app_title_follows_group_active_tab() {
-            let handle = Arc::new(RwLock::new(tree_with(200)));
+            let handle = crate::shell::state::WorkspaceTreeHandle::new(tree_with(200));
             let chrome = ChromeState::new_with_handle(handle);
             let st = chrome.borrow();
             assert_eq!(st.active_app_title().as_deref(), Some("Second"));
         }
 
         fn active_tab_id_matches_the_active_tab_pointer() {
-            let handle = Arc::new(RwLock::new(tree_with(100)));
+            let handle = crate::shell::state::WorkspaceTreeHandle::new(tree_with(100));
             let chrome = ChromeState::new_with_handle(handle);
             let st = chrome.borrow();
             assert_eq!(st.active_tab_id(), Some(100));
         }
 
         fn no_active_returns_none_instead_of_first_group() {
-            let handle = Arc::new(RwLock::new(WorkspaceTree::default()));
+            let handle = crate::shell::state::WorkspaceTreeHandle::new(WorkspaceTree::default());
             let chrome = ChromeState::new_with_handle(handle);
             let st = chrome.borrow();
             assert_eq!(st.active_tab_id(), None);
@@ -3562,7 +3675,7 @@ mod active_tab_tests {
         fn without_active_strip_returns_none_not_first_strip() {
             let mut tree = tree_with(100);
             tree.desktop.active_strip.clear();
-            let handle = Arc::new(RwLock::new(tree));
+            let handle = crate::shell::state::WorkspaceTreeHandle::new(tree);
             let chrome = ChromeState::new_with_handle(handle);
             let st = chrome.borrow();
             assert_eq!(st.active_tab_id(), None);
@@ -3718,6 +3831,8 @@ mod active_tab_tests {
             let mut replica = tree_with(100);
             let replica_workspace = replica.desktop.active;
             assert!(replica.set_room(replica_workspace, room));
+            // The host's invite pins it (hub 1) as the room's governor.
+            assert!(replica.pin_room_authority(room, crate::shell::state::PeerOrigin::hub(1)));
             let baseline = tree
                 .export_room_changes_since(room, &[])
                 .expect("host room baseline");
@@ -3851,7 +3966,7 @@ mod active_tab_tests {
                 surface_id: 77,
             });
             let ws_id = tree.desktop.active;
-            let handle = Arc::new(RwLock::new(tree));
+            let handle = crate::shell::state::WorkspaceTreeHandle::new(tree);
             let chrome = ChromeState::new_with_handle(handle);
             let st = chrome.borrow();
 
@@ -3895,7 +4010,7 @@ mod active_tab_tests {
                     label: "notes.ts".into(),
                 });
             let ws_id = tree.desktop.active;
-            let handle = Arc::new(RwLock::new(tree));
+            let handle = crate::shell::state::WorkspaceTreeHandle::new(tree);
             let chrome = ChromeState::new_with_handle(handle);
             let st = chrome.borrow();
 
@@ -4017,9 +4132,9 @@ mod provisioned_identity_tests {
             .iter()
             .find(|w| w.room == room)
             .expect("workspace");
-        assert_eq!(workspace.owner.as_deref(), Some(person.as_str()));
-        assert_eq!(workspace.role_of_at(&person, 0), Some(CapRole::Owner));
-        assert_eq!(workspace.role_of_at(&"quickuser".to_string(), 0), None);
+        assert_eq!(workspace.owner().map(String::as_str), Some(person.as_str()));
+        assert_eq!(workspace.role_of(&person), Some(CapRole::Owner));
+        assert_eq!(workspace.role_of("quickuser"), None);
         drop(tree);
         drop(state);
         assert_eq!(

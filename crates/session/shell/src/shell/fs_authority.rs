@@ -6,8 +6,11 @@ use std::path::PathBuf;
 use std::sync::{Condvar, Mutex, OnceLock};
 use std::time::Instant;
 
-const DEFAULT_FS_AUTHORITY_CACHE_DIR: &str = "/var/cache/quick-fs";
 const DEFAULT_FS_AUTHORITY_PUBLISHER: &str = "/usr/bin/fs";
+/// `fs publish-authority`'s exit status on a device without the workspace
+/// governor key: a joined device never signs authority, so there is nothing
+/// to publish and nothing to retry.
+const PUBLISHER_NOT_GOVERNOR_EXIT: i32 = 77;
 const MAX_FS_AUTHORITY_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
 /// A publisher that is not installed will not appear within seconds; a host
 /// session without `quick-fs` would otherwise spawn and warn every five.
@@ -17,16 +20,9 @@ const MAX_RECORDED_FS_AUTHORITY_ATTEMPTS: usize = 16;
 /// Tail of the publisher's stderr kept per recorded attempt.
 const MAX_RECORDED_FS_AUTHORITY_STDERR: usize = 2048;
 
-pub fn permission_profile_document_key(name: &str) -> String {
-    blake3::hash(name.trim().to_lowercase().as_bytes())
-        .to_hex()
-        .to_string()
-}
-
 #[derive(Clone, Debug)]
 struct FsAuthorityPublication {
     acl: PathBuf,
-    cache_dir: PathBuf,
     publisher: PathBuf,
 }
 
@@ -112,15 +108,6 @@ fn fs_authority_publisher() -> PathBuf {
         )
 }
 
-fn fs_authority_cache_dir() -> PathBuf {
-    std::env::var_os("TILO_FS_AUTHORITY_CACHE_DIR")
-        .filter(|value| !value.is_empty())
-        .map_or_else(
-            || PathBuf::from(DEFAULT_FS_AUTHORITY_CACHE_DIR),
-            PathBuf::from,
-        )
-}
-
 /// Coalesce exports and submit them outside the compositor's mutation path.
 /// The filesystem authority socket may be unavailable while its service is
 /// starting; capped-backoff retries cover that normal boot ordering and a
@@ -133,7 +120,6 @@ pub fn schedule_fs_authority_publication(acl: PathBuf) {
     }
     let publication = FsAuthorityPublication {
         acl,
-        cache_dir: fs_authority_cache_dir(),
         publisher: fs_authority_publisher(),
     };
     let Ok(mut queue) = fs_authority_publication_queue().lock() else {
@@ -153,6 +139,20 @@ pub fn schedule_fs_authority_publication(acl: PathBuf) {
         fs_authority_publication_retired().notify_all();
         tracing::warn!(%error, "could not start filesystem authority publisher");
     }
+}
+
+/// Run the publisher once. Its stderr is captured so a failing publisher
+/// explains itself in the journal and in the attempt history, not only by
+/// exit status.
+fn run_publisher(publication: &FsAuthorityPublication) -> std::io::Result<std::process::Output> {
+    std::process::Command::new(&publication.publisher)
+        .arg("publish-authority")
+        .arg("--acl")
+        .arg(&publication.acl)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .output()
 }
 
 fn run_fs_authority_publication_queue() {
@@ -181,18 +181,7 @@ fn run_fs_authority_publication_queue() {
         // One warning per publication; the retries after it are the same story.
         let mut failures = 0_u32;
         loop {
-            // Capture stderr so a failing publisher explains itself in the
-            // journal and in the attempt history, not only by exit status.
-            let result = std::process::Command::new(&publication.publisher)
-                .arg("publish-authority")
-                .arg("--cache-dir")
-                .arg(&publication.cache_dir)
-                .arg("--acl")
-                .arg(&publication.acl)
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::piped())
-                .output();
+            let result = run_publisher(&publication);
             let mut publisher_missing = false;
             let (succeeded, outcome) = match result {
                 Ok(output) if output.status.success() => {
@@ -204,6 +193,16 @@ fn run_fs_authority_publication_queue() {
                         );
                     }
                     (true, "published".to_string())
+                }
+                Ok(output) if output.status.code() == Some(PUBLISHER_NOT_GOVERNOR_EXIT) => {
+                    tracing::debug!(
+                        acl = %publication.acl.display(),
+                        "this device does not govern the workspace; its authority is published by the primary device"
+                    );
+                    (
+                        true,
+                        "not the workspace governor; nothing to publish".to_string(),
+                    )
                 }
                 Ok(output) => {
                     let stderr = stderr_tail(&output.stderr);

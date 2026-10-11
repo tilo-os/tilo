@@ -68,4 +68,52 @@ pub enum MediaEvent {
     /// A fatal pipeline error. The engine has stopped; the string is a
     /// human-readable reason for a status line, never a control-flow token.
     Error(String),
+    /// No installed decoder handles one of the source's streams. Comes in the
+    /// same poll as, and just before, the [`MediaEvent::Error`] that stops
+    /// playback, so a player can offer to add formats instead of only showing
+    /// the reason. `codec` is a human name ("H.264", "HEVC", "AAC").
+    MissingDecoder { codec: String },
+}
+
+/// The human name of the codec a stream of `media_type` (a caps name such as
+/// `video/x-h265`) carries; `mpeg_version` is the caps' `mpegversion`, which
+/// tells MPEG audio and video apart. Unknown types keep their caps name.
+#[must_use]
+pub fn codec_name(media_type: &str, mpeg_version: Option<i32>) -> String {
+    let name = match (media_type, mpeg_version) {
+        ("video/x-h264", _) => "H.264",
+        ("video/x-h265", _) => "HEVC",
+        ("video/x-vp8", _) => "VP8",
+        ("video/x-vp9", _) => "VP9",
+        ("video/x-av1", _) => "AV1",
+        ("video/mpeg", Some(1)) => "MPEG-1",
+        ("video/mpeg", Some(2)) => "MPEG-2",
+        ("video/mpeg", Some(4)) => "MPEG-4",
+        ("audio/mpeg", Some(1)) => "MP3",
+        ("audio/mpeg", Some(2 | 4)) => "AAC",
+        ("audio/x-ac3", _) => "AC-3",
+        ("audio/x-eac3", _) => "E-AC-3",
+        ("audio/x-dts", _) => "DTS",
+        ("audio/x-true-hd", _) => "TrueHD",
+        ("audio/x-opus", _) => "Opus",
+        ("audio/x-vorbis", _) => "Vorbis",
+        ("audio/x-flac", _) => "FLAC",
+        _ => return media_type.to_owned(),
+    };
+    name.to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::codec_name;
+
+    #[test]
+    fn codecs_have_human_names() {
+        assert_eq!(codec_name("video/x-h264", None), "H.264");
+        assert_eq!(codec_name("video/x-h265", None), "HEVC");
+        assert_eq!(codec_name("audio/mpeg", Some(4)), "AAC");
+        assert_eq!(codec_name("audio/mpeg", Some(1)), "MP3");
+        assert_eq!(codec_name("video/mpeg", Some(2)), "MPEG-2");
+        assert_eq!(codec_name("video/x-weird", None), "video/x-weird");
+    }
 }

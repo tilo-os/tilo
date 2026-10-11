@@ -41,11 +41,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -57,7 +53,6 @@ pub mod identity;
 mod rng;
 pub mod shares;
 pub mod signing;
-pub mod transcript;
 
 // Convenience re-exports.
 pub use dkg::{DkgOutcome, DkgSession, EnrolmentRound1, EnrolmentRound2};

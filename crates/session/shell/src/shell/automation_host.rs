@@ -52,13 +52,15 @@ pub struct DocumentShare {
 }
 
 /// Document `record`'s share of run `run`: the band from its first to its
-/// last change grouped under the run. `None` when the run did not change it.
-pub fn document_share(run: RunId, record: &str, doc: &mut AutoCommit) -> Option<DocumentShare> {
+/// last committed change grouped under the run. `None` when the run did not
+/// change it. Reads through a shared reference, so a transaction still open
+/// in the document stays its producer's.
+pub fn document_share(run: RunId, record: &str, doc: &AutoCommit) -> Option<DocumentShare> {
     let mut first: Option<(i64, String)> = None;
     let mut last = None;
     let mut app = String::new();
-    let mut labels: Vec<String> = Vec::new();
-    for version in tilo_resource::history::versions(doc) {
+    let mut what: Vec<tilo_actions::Described> = Vec::new();
+    for version in tilo_resource::history::committed_versions(doc) {
         let Some(context) = made_by_run(version.message.as_deref(), run) else {
             continue;
         };
@@ -71,8 +73,10 @@ pub fn document_share(run: RunId, record: &str, doc: &mut AutoCommit) -> Option<
         {
             app.clone_from(&owner.id);
         }
-        if !labels.contains(&context.action_label) {
-            labels.push(context.action_label.clone());
+        if let Some(described) = context.described()
+            && !what.contains(&described)
+        {
+            what.push(described);
         }
     }
     let (at, start) = first?;
@@ -86,7 +90,7 @@ pub fn document_share(run: RunId, record: &str, doc: &mut AutoCommit) -> Option<
                 ui::history_source::entry_id_from_hash(&start),
                 ui::history_source::entry_id_from_hash(&end),
             ),
-            summary: labels.join(", "),
+            what,
         },
     })
 }
@@ -153,8 +157,12 @@ mod tests {
     fn only_changes_grouped_under_the_run_become_its_steps() {
         let run = RunId::new();
         let context = |label: &str, group: &str| {
-            ActionContext::for_resource(label, "notes.note:1", "notes.note", "Note")
+            ActionContext::for_resource("notes.note:1", "notes.note", "Note")
                 .with_app("so.tilo.notes", "Notes")
+                .with_described(tilo_actions::Described::new(tilo_actions::Did::verb(
+                    tilo_actions::ActionKey::new("so.tilo.notes", "notes.note", label),
+                    [],
+                )))
                 .with_group(group, "Tidy", "shortcut")
                 .change_message()
         };
@@ -178,19 +186,19 @@ mod tests {
         untouched.commit();
 
         assert_eq!(
-            document_share(run, "file:untouched", &mut untouched),
+            document_share(run, "file:untouched", &untouched),
             None,
             "a document the run did not change is no step"
         );
         let steps = ordered_steps(
-            document_share(run, "file:notes", &mut notes)
+            document_share(run, "file:notes", &notes)
                 .into_iter()
                 .collect(),
         );
         assert_eq!(steps.len(), 1);
         assert_eq!(steps[0].app, "so.tilo.notes");
         assert_eq!(steps[0].record, "file:notes");
-        assert_eq!(steps[0].summary, "Rename, Rewrite");
+        assert_eq!(steps[0].sentence(), "Rename, Rewrite");
         assert_ne!(steps[0].run.start, steps[0].run.end);
     }
 }

@@ -22,6 +22,8 @@
 //! rail: each segment shows its icon, and its label (with the
 //! [`Segment::with_hint`] shortcut) is its tooltip; the label is its
 //! accessible name.
+use crate::num::f32_of_f64;
+use crate::num::f64_of_usize;
 use crate::widget::binding::{BoxedBinding, Pulled};
 use crate::widget::toolbar::Orientation;
 use crate::widget::{AppModel, ModelPath};
@@ -49,19 +51,168 @@ use crate::widget::{ActionEmitter, ControlBindingMetadata, ControlSize, TaffyTre
 /// it as `None`).
 pub const NONE_CHOSEN: usize = usize::MAX;
 
-/// Lossless `usize -> f64` widening for segment-strip geometry. Segment
-/// counts are bounded far below `u32::MAX`, so routing through `u32` (which
-/// `f64` represents exactly) avoids the precision loss a direct cast risks.
-fn usize_to_f64(n: usize) -> f64 {
-    f64::from(u32::try_from(n).unwrap_or(u32::MAX))
+/// One painted segmented strip, identified independently of its position.
+/// Keep `id` stable while the strip remains mounted.
+#[derive(Clone, Copy, Debug)]
+pub struct SegmentedTouchGroup<'a> {
+    id: usize,
+    rects: &'a [Rect],
+    selected: usize,
+    swipe: bool,
 }
 
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "logical pixel counts far below f32 precision"
-)]
-fn px_f32(value: f64) -> f32 {
-    value as f32
+impl<'a> SegmentedTouchGroup<'a> {
+    #[must_use]
+    pub const fn new(id: usize, rects: &'a [Rect], selected: usize) -> Self {
+        Self {
+            id,
+            rects,
+            selected,
+            swipe: true,
+        }
+    }
+
+    /// Vertical and multi-select strips accept taps, not mode swipes.
+    #[must_use]
+    pub const fn tap_only(mut self) -> Self {
+        self.swipe = false;
+        self
+    }
+
+    #[must_use]
+    pub fn contains(self, point: Point) -> bool {
+        self.rects.iter().any(|rect| rect.contains(point))
+    }
+}
+
+/// The input owner applies a selection through its existing admitted action.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SegmentedTouchResult {
+    Unhandled,
+    Captured,
+    Selected { group: usize, index: usize },
+}
+
+impl SegmentedTouchResult {
+    #[must_use]
+    pub fn handled(self) -> bool {
+        self != Self::Unhandled
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct SegmentTouchStart {
+    finger: u64,
+    group: usize,
+    point: Point,
+    selected: usize,
+    count: usize,
+}
+
+/// The retained control and painted strips share one touch recognizer.
+/// Only a completed single-finger gesture chooses; cancellation, a second
+/// finger, a removed strip or an externally changed selection refuses it.
+#[derive(Debug, Default)]
+pub struct SegmentedTouch {
+    contacts: std::collections::BTreeSet<u64>,
+    start: Option<SegmentTouchStart>,
+}
+
+impl SegmentedTouch {
+    #[must_use]
+    pub fn is_active(&self) -> bool {
+        !self.contacts.is_empty()
+    }
+
+    /// Refuse an in-flight gesture when a modal or mode removes its owner.
+    pub fn cancel(&mut self) {
+        self.contacts.clear();
+        self.start = None;
+    }
+
+    pub fn handle(
+        &mut self,
+        touch: &winit::event::Touch,
+        scale_factor: f64,
+        groups: &[SegmentedTouchGroup<'_>],
+    ) -> SegmentedTouchResult {
+        use winit::event::TouchPhase;
+        let point = Point::new(
+            touch.location.x / scale_factor,
+            touch.location.y / scale_factor,
+        );
+        match touch.phase {
+            TouchPhase::Started => {
+                if self.is_active() {
+                    self.contacts.insert(touch.id);
+                    self.start = None;
+                    return SegmentedTouchResult::Captured;
+                }
+                let Some(group) = groups.iter().find(|group| group.contains(point)) else {
+                    return SegmentedTouchResult::Unhandled;
+                };
+                self.contacts.insert(touch.id);
+                self.start = Some(SegmentTouchStart {
+                    finger: touch.id,
+                    group: group.id,
+                    point,
+                    selected: group.selected,
+                    count: group.rects.len(),
+                });
+                SegmentedTouchResult::Captured
+            }
+            TouchPhase::Moved if self.contacts.contains(&touch.id) => {
+                SegmentedTouchResult::Captured
+            }
+            TouchPhase::Cancelled if self.contacts.remove(&touch.id) => {
+                self.start = None;
+                SegmentedTouchResult::Captured
+            }
+            TouchPhase::Ended if self.contacts.remove(&touch.id) => {
+                let start = self.start.take();
+                let Some(start) =
+                    start.filter(|start| start.finger == touch.id && !self.is_active())
+                else {
+                    return SegmentedTouchResult::Captured;
+                };
+                let Some(group) = groups.iter().find(|group| {
+                    (group.id, group.selected, group.rects.len())
+                        == (start.group, start.selected, start.count)
+                }) else {
+                    return SegmentedTouchResult::Captured;
+                };
+                let delta = point - start.point;
+                let height = group
+                    .rects
+                    .iter()
+                    .map(|rect| rect.height())
+                    .fold(0.0, f64::max);
+                let swipe = group
+                    .swipe
+                    .then(|| {
+                        ToggleGroup::swipe_selection(
+                            delta,
+                            height,
+                            group.selected,
+                            group.rects.len(),
+                        )
+                    })
+                    .flatten();
+                let tap = (delta.hypot() <= crate::gesture::TouchGestureArena::TAP_SLOP)
+                    .then(|| group.rects.iter().position(|rect| rect.contains(point)))
+                    .flatten();
+                swipe
+                    .or(tap)
+                    .map_or(SegmentedTouchResult::Captured, |index| {
+                        SegmentedTouchResult::Selected {
+                            group: group.id,
+                            index,
+                        }
+                    })
+            }
+            _ => SegmentedTouchResult::Unhandled,
+        }
+    }
 }
 
 /// One choice of a [`ToggleGroup`] or a [`SegmentedFace`].
@@ -231,8 +382,7 @@ pub struct ToggleGroup {
     scroll_x: f64,
     /// Finger owning the current gesture. Selection commits on release, so a
     /// scroll or cancelled touch never changes tabs on initial contact.
-    active_touch: Option<u64>,
-    touch_start: Option<Point>,
+    touch: SegmentedTouch,
     /// Something that changes the measured size landed since the last layout.
     layout_dirty: bool,
     /// Focus came from a press: the ring is for keyboard focus, and returns
@@ -295,8 +445,7 @@ impl ToggleGroup {
             measured_width: None,
             rows: 1,
             scroll_x: 0.0,
-            active_touch: None,
-            touch_start: None,
+            touch: SegmentedTouch::default(),
             layout_dirty: true,
             pressed_into_focus: false,
             orientation: Orientation::Horizontal,
@@ -486,14 +635,14 @@ impl ToggleGroup {
     )]
     pub fn on_view<F: FnMut(usize) + 'static>(mut self, id: &str, f: F) -> Self {
         use crate::tilo_actions::{
-            ActionBinding, ActionParam, ActionSpec, DiscoveryScope, EncodedAction, OperationKind,
-            ParamType, Resource,
+            ActionBinding, ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType,
+            Resource,
         };
 
         const TYPE_ID: &str = "tilo.ui.segmented.select";
         self.id = Some(id.to_owned());
         let control_id = id.to_owned();
-        let mut spec = ActionSpec::typed_operation(
+        let spec = ActionSpec::typed_operation(
             "select",
             "Select",
             "Choose a segment",
@@ -515,7 +664,6 @@ impl ToggleGroup {
                 .expect("generated segmented action payload is serializable")
             },
         );
-        spec.contract.discovery = DiscoveryScope::Launchable;
         let resource = Resource::new(format!("tilo.control:{id}"), "tilo.control.segmented", id)
             .with_action(spec.clone());
         let binding = ActionBinding::new(&resource, &spec, |index: usize| {
@@ -603,19 +751,6 @@ impl ToggleGroup {
     /// Every segment's state in a multi-select strip.
     pub fn chosen(&self) -> Option<&[bool]> {
         self.chosen.as_deref()
-    }
-
-    /// Set a multi-select strip's segments from the model. Does not fire
-    /// the change callback.
-    pub fn set_chosen(&mut self, chosen: &[bool]) {
-        if let Some(current) = self.chosen.as_mut()
-            && current.as_slice() != chosen
-        {
-            current.clear();
-            current.extend_from_slice(chosen);
-            current.resize(self.segments.len(), false);
-            self.cache_dirty = true;
-        }
     }
 
     /// Does **not** fire `on_change`, which is reserved for user-driven
@@ -765,7 +900,7 @@ impl ToggleGroup {
 
     fn strip_height(&self) -> f64 {
         if self.chosen.is_some() {
-            let rows = usize_to_f64(self.rows.max(1));
+            let rows = f64_of_usize(self.rows.max(1));
             rows * self.metrics.height + (rows - 1.0) * self.metrics.gap
         } else {
             self.metrics.height
@@ -777,11 +912,11 @@ impl ToggleGroup {
 /// between them sharing the height left over.
 fn stack(rect: Rect, n: usize) -> Vec<Rect> {
     let side = rect.width();
-    let gaps = usize_to_f64(n.saturating_sub(1)).max(1.0);
-    let gap = ((rect.height() - side * usize_to_f64(n)) / gaps).max(0.0);
+    let gaps = f64_of_usize(n.saturating_sub(1)).max(1.0);
+    let gap = ((rect.height() - side * f64_of_usize(n)) / gaps).max(0.0);
     (0..n)
         .map(|i| {
-            let y = rect.y0 + usize_to_f64(i) * (side + gap);
+            let y = rect.y0 + f64_of_usize(i) * (side + gap);
             Rect::new(rect.x0, y, rect.x1, y + side)
         })
         .collect()
@@ -793,15 +928,15 @@ fn partition(rect: Rect, n: usize) -> Vec<Rect> {
     if n == 0 {
         return Vec::new();
     }
-    let seg_w = rect.width() / usize_to_f64(n);
+    let seg_w = rect.width() / f64_of_usize(n);
     let last = n.saturating_sub(1);
     (0..n)
         .map(|i| {
-            let x0 = rect.x0 + usize_to_f64(i) * seg_w;
+            let x0 = rect.x0 + f64_of_usize(i) * seg_w;
             let x1 = if i == last {
                 rect.x1
             } else {
-                rect.x0 + usize_to_f64(i.saturating_add(1)) * seg_w
+                rect.x0 + f64_of_usize(i.saturating_add(1)) * seg_w
             };
             Rect::new(x0, rect.y0, x1, rect.y1)
         })
@@ -857,7 +992,7 @@ fn partition_sized(rect: Rect, naturals: &[(f64, f64)]) -> (Vec<Rect>, Vec<bool>
         return (Vec::new(), Vec::new());
     }
     let avail = rect.width().max(0.0);
-    let count = usize_to_f64(n);
+    let count = f64_of_usize(n);
     let full: Vec<f64> = naturals.iter().map(|(full, _)| *full).collect();
     let widest = full.iter().copied().fold(0.0, f64::max);
     if widest * count <= avail + 1e-6 {
@@ -1047,7 +1182,7 @@ impl StripMetrics {
             return naturals.iter().map(|(full, _)| full).sum::<f64>().ceil();
         }
         let widest = naturals.iter().map(|(full, _)| *full).fold(0.0, f64::max);
-        (widest * usize_to_f64(segments.len()) + 2.0 * self.inset).ceil()
+        (widest * f64_of_usize(segments.len()) + 2.0 * self.inset).ceil()
     }
 }
 
@@ -1476,7 +1611,7 @@ impl ToggleGroup {
                 Some(short) if full_w > room + 0.5 => short,
                 _ => item.label,
             };
-            let shown = text_renderer.elide_to_width_style(label, px_f32(room + 0.5), style);
+            let shown = text_renderer.elide_to_width_style(label, f32_of_f64(room + 0.5), style);
             let (tw, th) = text_renderer.measure_style(&shown, None, style);
             // Tabs set their labels from the leading edge; segments centre.
             let text_x = if tabs {
@@ -1696,61 +1831,25 @@ impl ToggleGroup {
         node_id: NodeId,
     ) {
         if !self.is_enabled() {
+            self.touch.cancel();
             return;
         }
-        let pos = Point::new(
-            touch.location.x / scale_factor,
-            touch.location.y / scale_factor,
-        );
-        match touch.phase {
-            winit::event::TouchPhase::Started
-                if self.active_touch.is_none() && self.rect.contains(pos) =>
-            {
-                self.active_touch = Some(touch.id);
-                self.touch_start = Some(pos);
+        let group = SegmentedTouchGroup::new(0, &self.segment_rects, self.selected);
+        let group = if self.orientation == Orientation::Horizontal && self.chosen.is_none() {
+            group
+        } else {
+            group.tap_only()
+        };
+        let result = self.touch.handle(touch, scale_factor, &[group]);
+        if result.handled() {
+            *handled = true;
+            if touch.phase == winit::event::TouchPhase::Started {
                 self.pressed_into_focus |= !self.is_focused;
                 *focus_target = Some(node_id);
-                *handled = true;
             }
-            winit::event::TouchPhase::Moved if self.active_touch == Some(touch.id) => {
-                *handled = true;
-            }
-            winit::event::TouchPhase::Ended if self.active_touch == Some(touch.id) => {
-                self.active_touch = None;
-                if let Some(start) = self.touch_start.take() {
-                    if self.orientation == Orientation::Horizontal
-                        && self.chosen.is_none()
-                        && let Some(index) = Self::swipe_selection(
-                            pos - start,
-                            self.metrics
-                                .height
-                                .max(StripMetrics::stock(ControlSize::Large).height),
-                            self.selected,
-                            self.segments.len(),
-                        )
-                    {
-                        self.request_selection(index);
-                    } else if (pos - start).hypot() < self.metrics.height
-                        && let Some(index) = self
-                            .segment_rects
-                            .iter()
-                            .position(|segment| segment.contains(pos))
-                    {
-                        self.request_selection(index);
-                    }
-                }
-                *handled = true;
-            }
-            winit::event::TouchPhase::Cancelled if self.active_touch == Some(touch.id) => {
-                self.active_touch = None;
-                self.touch_start = None;
-                *handled = true;
-            }
-            winit::event::TouchPhase::Started if self.active_touch.is_some() => {
-                self.touch_start = None;
-                *handled = true;
-            }
-            _ => {}
+        }
+        if let SegmentedTouchResult::Selected { index, .. } = result {
+            self.request_selection(index);
         }
     }
 
@@ -1798,6 +1897,26 @@ fn tab_label_span(
 }
 
 impl ToggleGroup {
+    /// Pin the node to the measured strip width. True when the style changed.
+    fn pin_measured_width(&self, taffy: &mut TaffyTree<()>, node: NodeId) -> bool {
+        let Some(width) = self
+            .measured_width
+            .filter(|_| !self.fill && self.chosen.is_none())
+        else {
+            return false;
+        };
+        let Ok(style) = taffy.style(node) else {
+            return false;
+        };
+        let width = Dimension::length(width);
+        if style.size.width == width {
+            return false;
+        }
+        let mut style = style.clone();
+        style.size.width = width;
+        taffy.set_style(node, style).is_ok()
+    }
+
     /// Apply a `tilo.ui.segmented.select` addressed to this control.
     /// `Ok(false)` when the operation is not this control's.
     fn select_segment_operation(
@@ -1874,11 +1993,11 @@ impl Widget for ToggleGroup {
                 .max(f64::from(theme.tokens.metrics.min_pointer_target));
             let gap = f64::from(theme.tokens.spacing.s1);
             self.stacked = (side, gap);
-            let n = usize_to_f64(self.segments.len().max(1));
+            let n = f64_of_usize(self.segments.len().max(1));
             let node = taffy.leaf_node(Style {
                 size: Size {
-                    width: Dimension::length(px_f32(side)),
-                    height: Dimension::length(px_f32(side * n + gap * (n - 1.0))),
+                    width: Dimension::length(f32_of_f64(side)),
+                    height: Dimension::length(f32_of_f64(side * n + gap * (n - 1.0))),
                 },
                 flex_shrink: 0.0,
                 ..Default::default()
@@ -1887,7 +2006,7 @@ impl Widget for ToggleGroup {
             return node;
         }
         let height = self.strip_height() + self.caption_height;
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 // Fit the labels (measured in `measure`) unless asked to
                 // fill; a multi-select strip and a tab strip take the row's
@@ -1900,7 +2019,7 @@ impl Widget for ToggleGroup {
                 height: if self.chosen.is_some() {
                     Dimension::auto()
                 } else {
-                    Dimension::length(px_f32(height))
+                    Dimension::length(f32_of_f64(height))
                 },
             },
             max_size: Size {
@@ -1916,9 +2035,8 @@ impl Widget for ToggleGroup {
                 0.0
             },
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn measure(
@@ -1929,13 +2047,15 @@ impl Widget for ToggleGroup {
     ) -> Size<f32> {
         if self.orientation == Orientation::Vertical {
             let (side, gap) = self.stacked;
-            let n = usize_to_f64(self.segments.len().max(1));
+            let n = f64_of_usize(self.segments.len().max(1));
             return Size {
-                width: known.width.unwrap_or(px_f32(side)),
-                height: known.height.unwrap_or(px_f32(side * n + gap * (n - 1.0))),
+                width: known.width.unwrap_or(f32_of_f64(side)),
+                height: known
+                    .height
+                    .unwrap_or(f32_of_f64(side * n + gap * (n - 1.0))),
             };
         }
-        let intrinsic = px_f32(
+        let intrinsic = f32_of_f64(
             self.metrics
                 .intrinsic_width(&self.segments, self.style, text),
         );
@@ -1955,7 +2075,7 @@ impl Widget for ToggleGroup {
             self.rows = rows;
             return Size {
                 width,
-                height: px_f32(self.strip_height() + self.caption_height),
+                height: f32_of_f64(self.strip_height() + self.caption_height),
             };
         }
         if !self.fill {
@@ -1965,30 +2085,11 @@ impl Widget for ToggleGroup {
             width: known.width.unwrap_or(intrinsic),
             height: known
                 .height
-                .unwrap_or(px_f32(self.strip_height() + self.caption_height)),
+                .unwrap_or(f32_of_f64(self.strip_height() + self.caption_height)),
         }
     }
 
-    fn adjust_layout_style(&mut self, taffy: &mut TaffyTree<()>, node: NodeId) -> bool {
-        let Some(width) = self
-            .measured_width
-            .filter(|_| !self.fill && self.chosen.is_none())
-        else {
-            return false;
-        };
-        let Ok(style) = taffy.style(node) else {
-            return false;
-        };
-        let width = Dimension::length(width);
-        if style.size.width == width {
-            return false;
-        }
-        let mut style = style.clone();
-        style.size.width = width;
-        taffy.set_style(node, style).is_ok()
-    }
-
-    fn adjust_layout_with_measure(
+    fn adjust_layout_style(
         &mut self,
         taffy: &mut TaffyTree<()>,
         node: NodeId,
@@ -2002,22 +2103,17 @@ impl Widget for ToggleGroup {
             return false;
         }
         if self.measured_width.is_none() {
-            self.measured_width = Some(px_f32(self.metrics.intrinsic_width(
+            self.measured_width = Some(f32_of_f64(self.metrics.intrinsic_width(
                 &self.segments,
                 self.style,
                 text,
             )));
         }
-        self.adjust_layout_style(taffy, node)
+        self.pin_measured_width(taffy, node)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        let x0 = origin.x + f64::from(layout.location.x);
-        let y0 = origin.y + f64::from(layout.location.y);
-        let x1 = x0 + f64::from(layout.size.width);
-        let y1 = y0 + f64::from(layout.size.height);
-        self.place(Rect::new(x0, y0, x1, y1));
+        self.place(crate::widget::layout_rect(taffy, node, origin));
         self.layout_dirty = false;
     }
 
@@ -2087,7 +2183,7 @@ impl Widget for ToggleGroup {
             let style = theme.text(TextRole::Caption);
             let shown = text_renderer.elide_to_width_style(
                 caption,
-                px_f32(self.outer.width().max(1.0)),
+                f32_of_f64(self.outer.width().max(1.0)),
                 &style,
             );
             let at = Affine::translate((self.outer.x0, self.outer.y0));
@@ -2202,7 +2298,7 @@ impl Widget for ToggleGroup {
     }
 
     fn wants_pointer_capture(&self) -> bool {
-        self.active_touch.is_some()
+        self.touch.is_active()
     }
 
     fn claims_raw_touch(&self, point: Point) -> bool {
@@ -2363,18 +2459,7 @@ impl crate::resources::PublishesResources for ToggleGroup {
 }
 
 impl crate::widget::controls::ActionControls for ToggleGroup {
-    fn install_control_custody(
-        &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
-    ) {
-        if let Some(action) = &mut self.action {
-            let _ = action.install_custody(domain, attachment);
-        }
-    }
-    fn take_control_invocation(&mut self) -> Option<crate::tilo_actions::ControlInvocation> {
-        self.action.as_mut().and_then(ActionEmitter::take)
-    }
+    crate::widget::controls::optional_emitter_controls!();
     fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
         let Some(action) = &self.action else {
             // A choice kept in view state is made through the segments'
@@ -2393,20 +2478,13 @@ impl crate::widget::controls::ActionControls for ToggleGroup {
             .map(|index| action.metadata(self.segment_id(index)))
             .collect()
     }
-    fn refresh_control_action_availability(
-        &mut self,
-        allowed: &std::collections::HashSet<crate::tilo_actions::ActionAddress>,
-    ) {
-        if let Some(action) = &mut self.action {
-            action.refresh_availability(allowed);
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::presence::PresenceCtx;
+    use crate::testing::dispatch;
     use crate::tokens::TextRole;
     use crate::widget::Widget;
     use std::cell::RefCell;
@@ -2470,6 +2548,57 @@ mod tests {
         );
     }
 
+    #[test]
+    fn painted_strips_refuse_removed_changed_and_interrupted_touch_owners() {
+        use winit::event::TouchPhase::{Cancelled, Ended, Started};
+        let rects = [
+            Rect::new(0.0, 0.0, 100.0, 48.0),
+            Rect::new(100.0, 0.0, 200.0, 48.0),
+        ];
+        let group = SegmentedTouchGroup::new(42, &rects, 0);
+        let mut recognizer = SegmentedTouch::default();
+        let event = |id, phase, x, y| winit::event::Touch {
+            device_id: winit::event::DeviceId::dummy(),
+            phase,
+            location: winit::dpi::PhysicalPosition::new(x, y),
+            force: None,
+            id,
+        };
+        assert_eq!(
+            recognizer.handle(&event(1, Started, 180.0, 24.0), 1.0, &[group]),
+            SegmentedTouchResult::Captured
+        );
+        assert_eq!(
+            recognizer.handle(&event(1, Ended, 80.0, 24.0), 1.0, &[]),
+            SegmentedTouchResult::Captured
+        );
+        assert!(!recognizer.is_active());
+        recognizer.handle(&event(2, Started, 180.0, 24.0), 1.0, &[group]);
+        let changed = SegmentedTouchGroup::new(42, &rects, 1);
+        assert_eq!(
+            recognizer.handle(&event(2, Ended, 80.0, 24.0), 1.0, &[changed]),
+            SegmentedTouchResult::Captured
+        );
+        recognizer.handle(&event(3, Started, 180.0, 24.0), 1.0, &[group]);
+        recognizer.handle(&event(4, Started, 180.0, 24.0), 1.0, &[group]);
+        recognizer.handle(&event(3, Ended, 80.0, 24.0), 1.0, &[group]);
+        recognizer.handle(&event(5, Started, 180.0, 24.0), 1.0, &[group]);
+        recognizer.handle(&event(4, Cancelled, 80.0, 24.0), 1.0, &[group]);
+        assert_eq!(
+            recognizer.handle(&event(5, Ended, 80.0, 24.0), 1.0, &[group]),
+            SegmentedTouchResult::Captured
+        );
+        assert!(!recognizer.is_active());
+        recognizer.handle(&event(6, Started, 180.0, 24.0), 1.0, &[group]);
+        assert_eq!(
+            recognizer.handle(&event(6, Ended, 80.0, 24.0), 1.0, &[group]),
+            SegmentedTouchResult::Selected {
+                group: 42,
+                index: 1
+            }
+        );
+    }
+
     /// Fixed rect so tests can simulate clicks without a full taffy pass.
     fn group_at(segments: Vec<Segment>, selected: usize, rect: Rect) -> ToggleGroup {
         let mut g = ToggleGroup::new(segments, selected);
@@ -2477,15 +2606,15 @@ mod tests {
         // Populate segment_rects manually (mirrors apply_layout).
         let n = g.segments.len();
         if n > 0 {
-            let w = rect.width() / usize_to_f64(n);
+            let w = rect.width() / f64_of_usize(n);
             let last = n.saturating_sub(1);
             g.segment_rects = (0..n)
                 .map(|i| {
-                    let x0 = rect.x0 + usize_to_f64(i) * w;
+                    let x0 = rect.x0 + f64_of_usize(i) * w;
                     let x1 = if i == last {
                         rect.x1
                     } else {
-                        rect.x0 + usize_to_f64(i.saturating_add(1)) * w
+                        rect.x0 + f64_of_usize(i.saturating_add(1)) * w
                     };
                     Rect::new(x0, rect.y0, x1, rect.y1)
                 })
@@ -2494,71 +2623,20 @@ mod tests {
         g
     }
 
-    fn cursor_moved(x: f64, y: f64) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: winit::dpi::PhysicalPosition::new(x, y),
-        }
-    }
+    use crate::synthetic_input::cursor_moved;
 
-    fn mouse_press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
+    use crate::synthetic_input::mouse_press;
 
-    fn key_press(key: NamedKey) -> WindowEvent {
-        // SAFETY: the non-public `KeyEventExtra` field accepts its all-zero
-        // representation; every public field used by routing is set below.
-        let mut event: KeyEvent = unsafe { std::mem::zeroed() };
-        event.state = ElementState::Pressed;
-        event.logical_key = Key::Named(key);
-        event.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event,
-            is_synthetic: false,
-        }
-    }
+    use crate::synthetic_input::named_key;
 
     fn touch(phase: winit::event::TouchPhase, point: Point) -> WindowEvent {
         WindowEvent::Touch(winit::event::Touch {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             phase,
             location: winit::dpi::PhysicalPosition::new(point.x, point.y),
             force: None,
             id: 7,
         })
-    }
-    fn dispatch(g: &mut ToggleGroup, event: &WindowEvent) {
-        let _ = dispatch_handled(g, event);
-    }
-
-    fn dispatch_handled(g: &mut ToggleGroup, event: &WindowEvent) -> bool {
-        let mut tree = TaffyTree::<()>::new();
-        let node = tree.leaf_node(Style::default());
-        let mut handled = false;
-        let mut focus_target = None;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        g.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &tree,
-            },
-        );
-        handled
     }
 
     #[test]
@@ -2628,7 +2706,7 @@ mod tests {
         dispatch(&mut g, &mouse_press());
         g.set_focus(true);
         assert!(!g.focus_visible(), "a click shows no focus ring");
-        dispatch(&mut g, &key_press(NamedKey::ArrowLeft));
+        dispatch(&mut g, &named_key(NamedKey::ArrowLeft));
         assert!(g.focus_visible(), "the keys bring the ring back");
         g.set_focus(false);
         g.set_focus(true);
@@ -2880,9 +2958,9 @@ mod tests {
         dispatch(&mut g, &mouse_press());
         assert_eq!(g.selected(), 0, "a click on it chooses nothing");
         g.set_focus(true);
-        assert!(dispatch_handled(&mut g, &key_press(NamedKey::ArrowRight)));
+        assert!(dispatch(&mut g, &named_key(NamedKey::ArrowRight)));
         assert_eq!(g.selected(), 2, "the arrow steps over it");
-        assert!(dispatch_handled(&mut g, &key_press(NamedKey::ArrowLeft)));
+        assert!(dispatch(&mut g, &named_key(NamedKey::ArrowLeft)));
         assert_eq!(g.selected(), 0);
         let node = g.accessibility().expect("a group node");
         assert!(
@@ -2939,26 +3017,17 @@ mod tests {
             .on_change(move |index| captured.borrow_mut().push(index));
             group.set_focus(true);
 
-            assert!(dispatch_handled(
-                &mut group,
-                &key_press(NamedKey::ArrowRight)
-            ));
+            assert!(dispatch(&mut group, &named_key(NamedKey::ArrowRight)));
             assert_eq!(group.selected(), 1);
-            assert!(dispatch_handled(&mut group, &key_press(NamedKey::End)));
+            assert!(dispatch(&mut group, &named_key(NamedKey::End)));
             assert_eq!(group.selected(), 2);
-            assert!(dispatch_handled(
-                &mut group,
-                &key_press(NamedKey::ArrowRight)
-            ));
+            assert!(dispatch(&mut group, &named_key(NamedKey::ArrowRight)));
             assert_eq!(group.selected(), 0, "arrow navigation wraps");
-            assert!(dispatch_handled(&mut group, &key_press(NamedKey::Enter)));
+            assert!(dispatch(&mut group, &named_key(NamedKey::Enter)));
             assert_eq!(&*changes.borrow(), &[1, 2, 0]);
 
             group.set_focus(false);
-            assert!(!dispatch_handled(
-                &mut group,
-                &key_press(NamedKey::ArrowRight)
-            ));
+            assert!(!dispatch(&mut group, &named_key(NamedKey::ArrowRight)));
             assert_eq!(
                 group.selected(),
                 0,
@@ -2989,9 +3058,9 @@ mod tests {
             assert_eq!(group.selected(), 2);
 
             group.set_focus(true);
-            dispatch(&mut group, &key_press(NamedKey::ArrowRight));
+            dispatch(&mut group, &named_key(NamedKey::ArrowRight));
             assert_eq!(group.selected(), 0, "right arrow wraps to the first tab");
-            dispatch(&mut group, &key_press(NamedKey::End));
+            dispatch(&mut group, &named_key(NamedKey::End));
             assert_eq!(group.selected(), 2);
         }
 
@@ -3011,15 +3080,12 @@ mod tests {
             assert!(!Widget::is_enabled(&group));
 
             dispatch(&mut group, &cursor_moved(150.0, 22.0));
-            assert!(!dispatch_handled(&mut group, &mouse_press()));
-            assert!(!dispatch_handled(
+            assert!(!dispatch(&mut group, &mouse_press()));
+            assert!(!dispatch(
                 &mut group,
                 &touch(winit::event::TouchPhase::Started, Point::new(150.0, 22.0)),
             ));
-            assert!(!dispatch_handled(
-                &mut group,
-                &key_press(NamedKey::ArrowRight),
-            ));
+            assert!(!dispatch(&mut group, &named_key(NamedKey::ArrowRight),));
             assert_eq!(group.selected(), 0);
         }
     }
@@ -3194,10 +3260,6 @@ mod tests {
             assert_eq!(resource.actions.len(), 1);
             let spec = &resource.actions[0];
             assert_eq!(spec.kind, crate::tilo_actions::OperationKind::View);
-            assert_eq!(
-                spec.contract.discovery,
-                crate::tilo_actions::DiscoveryScope::Launchable
-            );
             assert_eq!(spec.params()[0].name, "index");
 
             assert!(Widget::perform_semantic_action(
@@ -3254,7 +3316,7 @@ mod tests {
             let node = g.accessibility().expect("semantics");
             assert_eq!(node.value, None);
             g.set_focus(true);
-            dispatch(&mut g, &key_press(NamedKey::ArrowRight));
+            dispatch(&mut g, &named_key(NamedKey::ArrowRight));
             assert_eq!(g.selection(), Some(0), "the first arrow chooses the first");
             g.set_selection(None);
             assert_eq!(g.selected(), NONE_CHOSEN);

@@ -72,6 +72,56 @@ impl DisplayUpdate {
     }
 }
 
+/// Who and what made a settings change: the action (or shell entry point,
+/// such as a fixed chord) that caused it, and the principal that invoked it.
+///
+/// A source that keeps a history ([`crate::SessionSettings`]) records it
+/// beside each changed leaf, so "who changed this" has an answer and a later
+/// system undo has its input. Both fields are optional: a write another
+/// process made to the copy arrives with no origin at all.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ChangeOrigin {
+    /// The action id (`appearance.theme.dark`) or shell entry point
+    /// (`fixed-toggle-mouse-keys`) that made the change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<String>,
+    /// Who invoked it: [`ChangeOrigin::LOCAL_USER`] for the person at this
+    /// device's own input, else the collaborator's or agent's principal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub principal: Option<String>,
+}
+
+impl ChangeOrigin {
+    /// The person at this device's keyboard, pointer or touch screen.
+    pub const LOCAL_USER: &'static str = "local-user";
+
+    /// A change `action` made, with no principal known yet.
+    #[must_use]
+    pub fn action(action: impl Into<String>) -> Self {
+        Self {
+            action: Some(action.into()),
+            principal: None,
+        }
+    }
+
+    /// This origin, invoked by `principal`.
+    #[must_use]
+    pub fn by(mut self, principal: impl Into<String>) -> Self {
+        self.principal = Some(principal.into());
+        self
+    }
+
+    /// `action`, invoked by the person at this device's own input.
+    #[must_use]
+    pub fn local(action: impl Into<String>) -> Self {
+        Self::action(action).by(Self::LOCAL_USER)
+    }
+}
+
+/// What a read-modify-write makes of the current section: the leaves to
+/// merge into it. Called once, with the section as stored at that moment.
+pub type SectionChange<'a> = dyn FnMut(&Map<String, Value>) -> Map<String, Value> + 'a;
+
 /// Where the settings document lives when it is not the local file.
 pub trait SettingsSource: Send + Sync {
     /// The whole document. Forgiving like the file: never fails.
@@ -82,6 +132,46 @@ pub trait SettingsSource: Send + Sync {
     /// # Errors
     /// The host could not keep the change; the document is unchanged.
     fn update_section(&self, name: &str, values: Map<String, Value>) -> std::io::Result<()>;
+
+    /// [`Self::update_section`], recording `origin` with every leaf it
+    /// changes. A source without a history ignores the origin.
+    ///
+    /// # Errors
+    /// As [`Self::update_section`].
+    fn update_section_by(
+        &self,
+        name: &str,
+        values: Map<String, Value>,
+        origin: &ChangeOrigin,
+    ) -> std::io::Result<()> {
+        let _ = origin;
+        self.update_section(name, values)
+    }
+
+    /// Read section `name` and merge what `change` makes of it, recording
+    /// `origin`, as one step no other write to this source lands inside.
+    /// This is the read-modify-write behind [`crate::Key::update`]: a toggle
+    /// pressed twice in quick succession flips twice.
+    ///
+    /// The default reads and then writes, which is atomic only where the
+    /// source's writer serialises them itself (an app's settings channel,
+    /// whose host applies writes in order); a source that owns its document
+    /// overrides it to hold its lock across both.
+    ///
+    /// # Errors
+    /// As [`Self::update_section`].
+    fn update_section_with(
+        &self,
+        name: &str,
+        origin: &ChangeOrigin,
+        change: &mut SectionChange<'_>,
+    ) -> std::io::Result<()> {
+        let current = match self.load().remove(name) {
+            Some(Value::Object(section)) => section,
+            _ => Map::new(),
+        };
+        self.update_section_by(name, change(&current), origin)
+    }
 
     /// Preserve the storage owner's explicit durable/copy-repair receipt.
     /// Ordinary sources report only successful writes; errors stay errors.
@@ -125,6 +215,32 @@ pub trait SettingsSource: Send + Sync {
             std::io::ErrorKind::Unsupported,
             "atomic display persistence is unavailable",
         ))
+    }
+
+    /// Compare a host-owned display transaction, including an absent section.
+    /// Main's atomic display update also protects the observed profile state.
+    ///
+    /// # Errors
+    /// Refuses stale intent, unsupported sources or failed durable persistence.
+    fn compare_display_transaction(
+        &self,
+        expected: Option<&Value>,
+        transaction: Map<String, Value>,
+    ) -> std::io::Result<()> {
+        let document = self.load();
+        if document.get("display_transaction") != expected {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::WouldBlock,
+                "The settings transaction changed.",
+            ));
+        }
+        match self.compare_display_update(DisplayUpdate::new(&document, transaction, None))? {
+            ConditionalUpdate::Stored | ConditionalUpdate::StoredWithCopyRepair(_) => Ok(()),
+            ConditionalUpdate::Superseded => Err(std::io::Error::new(
+                std::io::ErrorKind::WouldBlock,
+                "The settings transaction changed.",
+            )),
+        }
     }
 
     /// Changes whenever the document does, so readers can cache it.
@@ -251,12 +367,29 @@ impl SettingsSource for HostDocument {
             .clone()
     }
 
+    fn update_section(&self, name: &str, values: Map<String, Value>) -> std::io::Result<()> {
+        let mut values = Some(values);
+        self.update_section_with(name, &ChangeOrigin::default(), &mut |_| {
+            values.take().unwrap_or_default()
+        })
+    }
+
     #[allow(
         clippy::significant_drop_tightening,
         reason = "held across persist so concurrent merges apply one after another"
     )]
-    fn update_section(&self, name: &str, values: Map<String, Value>) -> std::io::Result<()> {
+    fn update_section_with(
+        &self,
+        name: &str,
+        _origin: &ChangeOrigin,
+        change: &mut SectionChange<'_>,
+    ) -> std::io::Result<()> {
         let mut doc = self.doc.lock().unwrap_or_else(PoisonError::into_inner);
+        let current = match doc.get(name) {
+            Some(Value::Object(section)) => section.clone(),
+            _ => Map::new(),
+        };
+        let values = change(&current);
         let mut next = doc.clone();
         merge_section(&mut next, name, values);
         (self.persist)(&next)?;
@@ -265,6 +398,27 @@ impl SettingsSource for HostDocument {
         drop(doc);
         self.changes.ring();
         Ok(())
+    }
+
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the document lock covers comparison, persistence and revision publication"
+    )]
+    fn compare_display_update(&self, update: DisplayUpdate) -> std::io::Result<ConditionalUpdate> {
+        let mut doc = self.doc.lock().unwrap_or_else(PoisonError::into_inner);
+        if !update.matches(&doc) {
+            return Ok(ConditionalUpdate::Superseded);
+        }
+        let mut next = doc.clone();
+        for (section, values) in update.sections() {
+            merge_section(&mut next, section, values);
+        }
+        (self.persist)(&next)?;
+        *doc = next;
+        self.revision.fetch_add(1, Ordering::AcqRel);
+        drop(doc);
+        self.changes.ring();
+        Ok(ConditionalUpdate::Stored)
     }
 
     fn revision(&self) -> u64 {

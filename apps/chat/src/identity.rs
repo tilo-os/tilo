@@ -37,7 +37,8 @@ impl LocalIdentity {
         let name = ui::local_identity::bound()
             .map(|identity| identity.display_name.trim().to_string())
             .filter(|name| !name.is_empty())
-            .unwrap_or_else(user_display);
+            .or_else(user_display)
+            .unwrap_or_else(|| unnamed_label(id));
         Self {
             initials: initials_of(&name),
             color_idx: color_from_bytes(id.as_bytes()),
@@ -52,14 +53,6 @@ fn color_from_bytes(b: &[u8]) -> usize {
     (fnv1a(b) % 8) as usize
 }
 
-/// `color_from_bytes`, for a caller outside this module that has taken a
-/// new id and has to move the colour with it. A colour derived from an id
-/// the peer no longer authors under is a caret that disagrees with the
-/// avatar beside it.
-pub fn color_index_for(bytes: &[u8]) -> usize {
-    color_from_bytes(bytes)
-}
-
 /// 64-bit FNV-1a — a stable hash (never used for
 /// security; only to spread ids across the colour palette / host fallback).
 fn fnv1a(bytes: &[u8]) -> u64 {
@@ -68,20 +61,58 @@ fn fnv1a(bytes: &[u8]) -> u64 {
     std::hash::Hasher::finish(&hasher)
 }
 
-/// Present a tidy display name from the login name, splitting on common
-/// separators so "ada.lovelace" → "Ada Lovelace". Falls back to "You".
-fn user_display() -> String {
-    let raw = tilo_paths::session::user_name().unwrap_or_else(|| "You".to_string());
+/// An available login hint; absent names remain unnamed.
+fn user_display() -> Option<String> {
+    let raw = tilo_paths::session::user_name()?;
     let display: String = raw
         .split(['.', '_', '-', ' '])
         .filter(|p| !p.is_empty())
         .map(ui::format::capitalize_first)
         .collect::<Vec<_>>()
         .join(" ");
-    if display.is_empty() {
-        "You".to_string()
+    (!display.is_empty()).then_some(display)
+}
+
+/// Distinguish unnamed participants without exposing their complete routing id.
+pub(crate) fn unnamed_label(id: &str) -> String {
+    crate::i18n::t_args(
+        "chat-person-unnamed",
+        &[("tag", participant_tag(id).into())],
+    )
+}
+
+/// Shared person rows cannot use the current-reader label without an identity tag.
+/// Preserve the saved name and id; only its presentation is disambiguated.
+pub(crate) fn shared_name_label(id: &str, name: &str) -> String {
+    if name.trim().is_empty() {
+        unnamed_label(id)
+    } else if name.trim() == "You" {
+        crate::i18n::t_args(
+            "chat-person-relative-name",
+            &[
+                ("name", name.trim().into()),
+                ("tag", participant_tag(id).into()),
+            ],
+        )
     } else {
-        display
+        name.to_owned()
+    }
+}
+
+fn participant_tag(id: &str) -> String {
+    let body = id.rsplit(['@', ':']).next().unwrap_or(id);
+    let tail: String = body
+        .chars()
+        .rev()
+        .take(4)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    if tail.is_empty() {
+        id.to_string()
+    } else {
+        tail
     }
 }
 

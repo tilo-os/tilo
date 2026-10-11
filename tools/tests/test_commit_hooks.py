@@ -128,6 +128,35 @@ class CommitHookTests(unittest.TestCase):
         self.assertIn("Use type(optional-scope)", result.stderr)
         self.assertIn("added.bin: non-text", result.stderr)
 
+    def test_ci_batch_reader_checks_large_and_intermediate_blobs(self):
+        # Exceed pipe capacity, mix empty and repeated blobs, and restore/remove
+        # forbidden bytes later. Checking only the final tree must still fail.
+        for index in range(64):
+            self.stage(f"text {index}.txt", ("UTF-8 text λ\n" * 8192).encode())
+        self.stage("empty.txt", b"")
+        self.stage("intermediate.bin", b"forbidden\0bytes\n")
+        self.stage("restored.txt", b"forbidden\r\n")
+        self.git("commit", "--no-verify", "-qm", "test: establish large intermediate changes")
+        self.git("rm", "--", "intermediate.bin")
+        self.stage("restored.txt", b"valid final text\n")
+        self.git("commit", "-qm", "fix: restore final text")
+        result = self.ci()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("intermediate.bin: non-text", result.stderr)
+        self.assertIn("restored.txt: non-LF", result.stderr)
+
+    def test_ci_batch_reader_rejects_missing_and_non_blob_objects(self):
+        for oid in ("a" * 40, self.base):
+            with self.subTest(oid=oid):
+                result = subprocess.run(
+                    ["python3", "-c",
+                     "from pathlib import Path; import sys; from check_commit_policy import blob_reader\n"
+                     "with blob_reader(Path(sys.argv[1])) as read: read(sys.argv[2].encode())",
+                     str(self.root), oid],
+                    cwd=ROOT / "tools/policy", capture_output=True, text=True, timeout=10)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("Cannot inspect exact changed blob", result.stderr)
+
     def test_genuine_generated_merge_revert_fixup_and_codegen_messages(self):
         self.stage("source", b"first\n")
         self.git("commit", "-qm", "fix(shell): correct source")

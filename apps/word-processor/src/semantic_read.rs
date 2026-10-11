@@ -131,7 +131,7 @@ struct Candidate {
 fn compare(order: &[u8], id: &str, other_order: &[u8], other_id: &str) -> Ordering {
     tilo_resource::order::bytes::cmp(order, other_order).then(id.cmp(other_id))
 }
-/// Root-record convenience projection; the owner still supplies/stamps the canonical record route.
+/// The text of a Writer record's body; the owner still supplies/stamps the canonical record route.
 ///
 /// # Errors
 ///
@@ -143,7 +143,11 @@ pub fn read_text(
     cursor: Option<&Cursor>,
     limits: Limits,
 ) -> Result<Page, ReadError> {
-    read_text_at(doc, owner_heads, &ROOT, cursor, limits)
+    let source = Source::new(doc, owner_heads);
+    let body = source
+        .object(&ROOT, crate::model::BODY, ObjType::Map)?
+        .ok_or(ReadError::Malformed)?;
+    read_source(&source, &body, cursor, limits)
 }
 /// One order scan retains only the next requested number of blocks plus one lookahead.
 /// Invalid order rows are skipped exactly as `tilo_doc::model::blocks_in_order` does; valid oversized

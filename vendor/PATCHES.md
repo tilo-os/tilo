@@ -25,6 +25,21 @@ Both directories contain `PROVENANCE.md`, licences and focused regression
 tests. No insecure verifier, alternative trust loader or policy exception is
 introduced.
 
+## iroh idle timers
+
+`iroh` 1.0.3, `netwatch` 0.19.1 and `iroh-gossip` 0.101.0 are the
+checksum-verified registry releases in the lock, each with one small patch
+so an idle endpoint wakes for nothing: no re-STUN tick and no home relay
+while the relay map is empty, no 15 s wall-clock poll on Linux (a timerfd the
+kernel cancels on resume or a clock step replaces it), and no gossip cache
+sweep once a topic's caches are empty. Network changes still arrive through
+netlink at once. Each directory's `TILO-PATCH.md` has the details and an
+upstream-ready description; `crates/system/fs/tests/iroh_idle.rs` pins them.
+`iroh` and `iroh-gossip` build an `rlib` only: as path packages their
+upstream `cdylib` dropped the hash from the library filenames, so two builds
+in one Cargo run overwrote each other's outputs (E0460/E0463).
+Remove a copy once its upstream release carries the change.
+
 ## Exportable histories
 
 The fork changes also live in two standalone histories, disconnected from the
@@ -49,10 +64,14 @@ sources; every following commit is a reviewable topic change:
   [toolchain-compatible lint attributes](https://github.com/linebender/vello/pull/1863).
   This keeps diagnostics and compatibility cleanup out of the performance PR
   while retaining the dependency-ordered 0.9 history used by Tilo.
-- `vendor-upstream/winit-0.30.13` contains winit alone, based on crates.io
+- `codex/winit-dictation-ack-history` contains winit alone, based on crates.io
   `winit` 0.30.13. It retains the registry metadata and updates
   `Cargo.toml.orig` alongside Cargo's normalized manifest, making the topic
   commits straightforward to apply to an upstream source checkout.
+  It extends `vendor-upstream/winit-0.30.13`: one exact synchronization records
+  already-landed pen, presentation and keyboard source from Tilo's
+  `2fa854fb55` base, followed by the content-free dictation ACK extension.
+  The ACK is a separate reviewable commit, `217d0e69b3f4824391bdab8c5f73ce178cf4946c`.
 
 Run `tools/vendor-history.sh verify` to check the recorded roots and tips. Run
 `tools/vendor-history.sh export OUTPUT_DIRECTORY` to create portable Git
@@ -92,6 +111,14 @@ uses `tilo-accesskit-winit`, and Smithay's `backend_winit` is off), so every
 crate sees tilo-winit's types without a `[patch]`. vello had no crates.io
 dependents either, so its `[patch]` entries are gone too.
 
+The winit fork also carries `tilo_text_input_v1`, a content-free, surface-bound
+acknowledgement beside standard Wayland text-input-v3. It publishes only opaque
+field stamps and operation receipts. Dictation text still arrives as the standard
+IME commit; this extension grants no microphone permission or input-method
+ownership. The SDK enables deferred browser fields only during an admitted voice
+session and consumes the original renderer's guarded receipt before acknowledging
+an edit. `vendor/winit/TILO-FORK.md` records the additional event variant and API.
+
 The `wgpu-hal` patch stays a `[patch]`: a published SDK builds on the
 crates.io release, and only the optional `presentation-feedback` feature
 needs the patched Metal observer (now part of the `metal` feature, since a
@@ -122,7 +149,7 @@ change.
 ## Vello changes
 
 `vendor/vello` and `vendor/vello_encoding` are `vello` 0.9.0 and
-`vello_encoding` 0.9.0 from crates.io, verbatim, except for the ten files
+`vello_encoding` 0.9.0 from crates.io, verbatim, except for the files
 below and the publication identity in `Cargo.toml` (see "Published forks").
 Everything else in both trees — including `Cargo.lock`, the licenses and
 every other `.rs` file — is the unmodified crates.io release; diff either tree
@@ -277,6 +304,90 @@ JavaScript collects it: a 60-window soak kept up to 1,100 of them alive.
 maximum is 8192 px per side, a 256 MB texture. Images that do not fit after
 eviction are omitted and reported, as they already were at the maximum.
 
+## Image cache eviction, shrink and stats (`image_cache.rs`, `resolve.rs`, `lib.rs`)
+
+Upstream evicts a resident image only when an allocation fails, and never
+shrinks the atlas. A Wayland client's frame is a new image on every commit,
+so every superseded frame kept its CPU pixels alive until the atlas was full,
+the atlas grew to its maximum on the way, and the compositor kept that
+high-water mark for the rest of the session (TIL-692: about 14 MiB per app
+opened and closed, past 1 GiB). Now:
+
+- `ImageCache::finish_resolve` evicts every resident no pass drew in the last
+  two (`EVICT_AFTER_GENERATIONS`, upstream's own staleness rule), so a resident
+  survives two scenes that skip it — two outputs, or a capture beside the
+  live frame — and a window that keeps committing holds three frames at most.
+- When a pass's residents cover at most an eighth of the atlas for 60 passes
+  in a row (`SHRINK_AFTER_RESOLVES`), the next pass first repacks into half
+  the side, down to the initial 1024. Repacking marks every resident dirty, so
+  each is uploaded again, at its new position, the next time it is drawn; the
+  halving happens in `begin_resolve`, before the pass hands out positions. A
+  repack that does not fit leaves the atlas as it was.
+- `Renderer::image_cache_stats()` (through `Resolver::image_cache_stats`)
+  reports `ImageCacheStats`: atlas side, resident count, resident CPU bytes
+  and area, and lifetime evictions, shrinks and omissions.
+- `Renderer::shrink_image_atlas_soon()` (through
+  `Resolver::shrink_image_atlas_soon`, `ImageCache::shrink_soon`): the caller
+  knows images went for good, a window closed. For the next 16 passes
+  (`SHRINK_SOON_RESOLVES`) a pass after a sparse one halves the atlas at once,
+  as often as the eighth-full rule allows, instead of after 60. A desktop that
+  goes idle after a close draws a handful of frames, so the slow rule kept a
+  256 MiB atlas after four apps closed (TIL-731).
+
+Own tests in `image_cache.rs`: stale residents are released without
+allocation pressure, an image survives two passes that skip it, a committing
+window holds three frames at most, the atlas shrinks after residency drops and
+uploads its residents again where it draws them, a busy atlas does not shrink,
+thirty open/close cycles leave only the wallpaper resident at the size it
+started with, and told images went the atlas comes down within a few passes
+while an expired request waits the long way again.
+
+## Scratch shrink (`bump_budget.rs`, `wgpu_engine.rs`, `lib.rs`)
+
+Upstream and the bump-budget patch above size a renderer's working memory for
+the busiest scene it has drawn and keep it: the bump reservation only grows,
+and the buffer pool keeps every size class until something clears it. A
+compositor that once drew several windows therefore kept their scratch after
+they closed (about 35 MiB on the dev VM: a 36 MiB reservation against the
+bare desktop's 28, and a 68 MiB pool). `Renderer::set_shrink_scratch(true)`
+opts a renderer in; it is off by default, so applications keep upstream's
+behaviour.
+
+- `BudgetTracker` tags each counter readback with whether its render ran
+  coarse over the whole scene (`begin_dense_readback`, used by
+  `render_to_texture_with_post_render_checked{,_indexed}`); a damage render's
+  counters cover only the bins it redrew, so they neither count nor shrink.
+  It keeps the field-wise maximum of the dense, non-overflowing frames since
+  the reservation last changed. After 120 of them (`SHRINK_AFTER_FRAMES`) it
+  lowers each field towards four times that maximum (`SHRINK_HEADROOM`, twice
+  what growth reserves), by at most half per shrink, so the scene that grew
+  a field still fits once and draws without overflowing when it comes back.
+  A shrink that frees less than an eighth of what the viewport reserves,
+  floors included (`SHRINK_MIN_FRACTION`), is not taken. Growth or an
+  overflow starts the window again. The caller clears the pool on a shrink
+  as it does on growth (`collect` reports both as `changed`).
+- `ResourcePool` stamps each free buffer with the recording that returned
+  it; after each recording an opted-in engine destroys the free buffers no
+  recording has taken for 120 recordings (`POOL_KEEP_RECORDINGS`), with the
+  cached bind groups that name them. Buffers are taken from the end of their
+  class's list, so a class's surplus goes first.
+- `Renderer::shrink_scratch_soon()`: the caller knows the scene got smaller
+  for good, a window closed. The next shrink needs only two dense frames
+  drawn since (`SHRINK_SOON_FRAMES`, within 16 measurements), once, and for
+  the next 64 recordings free buffers go after 16 untaken. An idle desktop
+  draws a handful of frames after a close, too few for the slow rule.
+- `Renderer::scratch_shrinks()` counts the shrinks, for the caller to have
+  freed device memory returned (a software rasteriser keeps it otherwise).
+
+Own tests in `bump_budget.rs` (a window of lighter dense frames shrinks it by
+at most half and the busy scene still fits, damage renders neither count nor
+shrink, an overflow or a growth starts the window again, a soon request
+shrinks once after two dense frames drawn since, small steps and renderers
+that did not opt in hold) and in `lib.rs` on a GPU (the shrunk renderer draws
+the light scene bit-identically to a fresh one, holds less, and draws the
+busy scene again in one render, identically; buffers no recording takes are
+destroyed and the pool holds what the light scene alone pools).
+
 ## `vendor/vello/src/wgpu_engine.rs`: cleared pools and freed downloads are destroyed
 
 wgpu's WebGPU backend does not destroy a buffer when it is dropped; the GPU
@@ -314,6 +425,55 @@ client frames on the GPU and draws them on its presenting renderer from
 their textures; screenshots, recordings and renderers on other devices
 reach the same frames through the source, which reads them back on demand.
 
+## `vendor/automerge`: parse changes without applying them
+
+`Automerge::parse_changes(data)` parses and checksums the change chunks of an
+incremental save without applying them to a document, so a receiver reads
+each change's hash, message and dependencies (the signed claim of what each
+change is) before it decides to merge them.
+
+## `vendor/vello/src/image_source.rs` (new), `lib.rs`, `wgpu_engine.rs`: images drawn from a texture
+
+`Renderer::draw_image_from(image, Some(ImageSource { texture, origin,
+opaque }))` makes an image's atlas write a small render pass instead of a
+`copy_texture_to_texture`: the fragment shader `textureLoad`s the source at
+`origin` and writes the atlas slot (viewport and scissor on the slot), forcing
+alpha to one when `opaque`. The source may therefore be any colour format the
+device samples as float — a Wayland client's `ARGB8888` buffer imports as
+`Bgra8Unorm`, which `copy_texture_to_texture` cannot copy into the
+`Rgba8Unorm` atlas — and an `X` format is drawn opaque, so the compositor
+draws a client's dma-buf straight from its import with this one copy. The
+atlas texture gains `RENDER_ATTACHMENT` usage for it. A source takes
+precedence over an `override_image` texture for the same image.
+`Renderer::image_source_writes()` counts the writes and their bytes.
+
+## `vendor/vello_shaders/build.rs`, `vendor/vello/src/lib.rs`: shader fingerprint
+
+The build script also emits `SOURCE_FINGERPRINT`, an FNV-1a hash over every
+shader's name and WGSL text in name order, and vello re-exports it as
+`vello::SHADER_FINGERPRINT`. A `wgpu::PipelineCache` an app keeps across
+launches (`ui::pipeline_cache`) is keyed by it, so a cache filled by other
+shaders is never used. Nothing else reads it.
+
+## `vendor/vello/src/lib.rs`, `shaders.rs`, `wgpu_engine.rs`: deferred pipelines
+
+`Renderer::new_deferring(device, options, deferral)` registers every shader
+as `Renderer::new` does, but builds a pipeline before returning only when
+`deferral` allows. `PipelineDeferral::Unused` defers the registrations a full
+frame on the default path never dispatches: the three-level path-tag scan,
+the GPU draw reduce and leaf while the CPU draw prefix serves, the indirect
+path stages while the direct ones serve, the clip reduce and the sparse fine
+stage. `PipelineDeferral::All` defers every one, for a caller that rasterizes
+its frames another way. `start_deferred_pipelines` builds them on one
+background thread, largest first, and runs a callback after the last. Before
+encoding, a render installs what the thread has finished. For a deferred
+pipeline it dispatches and that is not built yet, it waits for the thread, or
+builds it itself when no thread is running, so a dispatch never lacks its
+pipeline. On GL nothing is deferred (one context lock, see "one init thread
+on GL"). `Renderer::new` is unchanged except that the parallel initial build
+starts the longest shaders first. `deferred_pipelines()` reports what is
+pending and what a render had to build itself.
+
 ## zlink-macros
 
 `vendor/zlink-macros` is crates.io `zlink-macros` 0.7.0 (checksum
@@ -336,3 +496,12 @@ Settings uses it to label its foreground physical keyboard map independently
 from logical key events. A real Smithay-to-Winit wire regression covers initial
 keymap/focus and several queued modifier/group changes; no global capture or new
 protocol/socket is introduced.
+
+## Build-script-generated protobuf descriptors
+
+`buffa-build` 0.9.2 is carried as verified registry source with a small
+upstream-compatible change: a descriptor proven to be produced inside the
+caller's Cargo OUT_DIR is not registered as an input. All external descriptors
+remain tracked, including symlinks across the output-directory boundary.
+`vendor/buffa-build/PROVENANCE.md` records the checksum, revision and patch.
+The registry waproto source and its source/hash guards remain unchanged.

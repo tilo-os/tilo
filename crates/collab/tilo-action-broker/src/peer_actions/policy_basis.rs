@@ -9,8 +9,8 @@ mod tests {
     )]
     use super::*;
     use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, transaction::Transactable};
-    use collab_types::caps::{CapOverride, Expiry, Scope, Subject, Verb};
     use ed25519_dalek::SigningKey;
+    use tilo_action_policy::{Answer, Grant, KindSet, Lifetime, Role, Subject, TreePath};
     use tilo_automerge::ApplyIncoming;
     use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
     fn peer(blobs: &[Vec<u8>], title: &str) -> tilo_peer_state::StatePeer {
@@ -34,7 +34,7 @@ mod tests {
             doc.apply_incoming([automerge::Change::from_bytes(bytes).unwrap()])
                 .unwrap();
         }
-        let caps = doc.get(ROOT, "capabilities").unwrap().unwrap().1;
+        let caps = doc.get(ROOT, "grants").unwrap().unwrap().1;
         for (index, blob) in blobs.iter().enumerate() {
             doc.put(&caps, index.to_string(), ScalarValue::Bytes(blob.clone()))
                 .unwrap();
@@ -64,25 +64,28 @@ mod tests {
         .unwrap();
         peer
     }
-    fn cap(expiry: Expiry) -> Vec<u8> {
+    fn cap(lifetime: Lifetime) -> Vec<u8> {
         serde_json::to_vec(
-            &CapOverride::grant(
-                Subject::Role(collab_types::Role::Editor),
-                Scope::Workspace,
-                Verb::Read,
+            &Grant::new(
+                "editors-read",
+                Subject::Role(Role::Editor),
+                TreePath::room(uuid::Uuid::from_u128(33).to_string()),
+                KindSet::READ,
+                Answer::Allow,
+                Subject::person("owner"),
             )
-            .expiring(expiry),
+            .with_lifetime(lifetime),
         )
         .unwrap()
     }
     #[test]
     fn private_policy_basis_matches_existing_domain_and_ordered_time_boundaries() {
         let values = [
-            cap(Expiry::AtUnix(8)),
-            cap(Expiry::AtUnix(7)),
-            cap(Expiry::AtUnix(7)),
-            cap(Expiry::AtUnix(3)),
-            cap(Expiry::Never),
+            cap(Lifetime::Until(8_000)),
+            cap(Lifetime::Until(7_000)),
+            cap(Lifetime::Until(7_000)),
+            cap(Lifetime::Until(3_000)),
+            cap(Lifetime::UntilRevoked),
         ];
         let a = peer(&values, "A");
         let b = peer(&values, "B");
@@ -98,25 +101,25 @@ mod tests {
         assert_eq!(basis.next_expiry_after(8), None);
         assert_ne!(
             basis,
-            PrivatePolicyBasis::from_peer(&peer(&[cap(Expiry::AtUnix(9))], "A")).unwrap()
+            PrivatePolicyBasis::from_peer(&peer(&[cap(Lifetime::Until(9_000))], "A")).unwrap()
         );
     }
     #[test]
-    fn private_policy_basis_fails_closed_for_unparsed_or_nonpersistent_caps() {
+    fn private_policy_basis_fails_closed_for_unparsed_or_nonpersistent_grants() {
         for blob in [
             b"not-json".to_vec(),
-            cap(Expiry::EndOfSession),
-            cap(Expiry::AfterUse),
+            cap(Lifetime::Session("session".into())),
+            cap(Lifetime::Once),
         ] {
             assert!(PrivatePolicyBasis::from_peer(&peer(&[blob], "A")).is_err());
         }
     }
     #[test]
     fn private_policy_basis_preserves_missing_room_and_general_revision_scope() {
-        let source = peer(&[cap(Expiry::AfterUse)], "policy");
+        let source = peer(&[cap(Lifetime::Once)], "policy");
         assert_eq!(
             PrivatePolicyBasis::from_peer(&source).unwrap_err(),
-            "nonpersistent governed private policy capability"
+            "nonpersistent governed private policy grant"
         );
         assert!(tilo_peer_state::owner_commit::canonical_owner(&source).is_ok());
         assert!(

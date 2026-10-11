@@ -1,6 +1,7 @@
 use super::*;
-use collab_types::files::CheckedHistoryOperationV1;
-use collab_types::{Ed25519PublicKey, FileActor, FileProvenance};
+use collab_types::Ed25519PublicKey;
+use fs_protocol::files::CheckedHistoryOperationV1;
+use fs_protocol::{FileActor, FileProvenance};
 use iroh::{Endpoint, endpoint::presets};
 
 struct Fixture {
@@ -8,7 +9,7 @@ struct Fixture {
     endpoint: Endpoint,
     fs: QuickFS,
     ino: u64,
-    original: collab_types::FileVersionId,
+    original: fs_protocol::FileVersionId,
     history: Arc<crate::history::FileHistoryStore>,
     journal: Arc<Mutex<crate::record_transaction::RecordTransactionJournal>>,
 }
@@ -297,7 +298,7 @@ async fn checked_restore_refuses_changed_reviews_and_same_byte_ambiguity() {
             .unwrap();
         for (id, stamp) in [(100_u128, 20_u8), (101, 21)] {
             let mut version = current.clone();
-            version.id = collab_types::FileVersionId(uuid::Uuid::from_u128(id));
+            version.id = fs_protocol::FileVersionId(uuid::Uuid::from_u128(id));
             version.parents = vec![fixture.original];
             version.timestamp_ms = current.timestamp_ms + 10;
             version.actor = FileActor {
@@ -341,11 +342,11 @@ async fn checked_restore_refuses_changed_reviews_and_same_byte_ambiguity() {
         };
         assert_eq!(
             receipt.prior_revision.version_id,
-            collab_types::FileVersionId(uuid::Uuid::from_u128(101))
+            fs_protocol::FileVersionId(uuid::Uuid::from_u128(101))
         );
         assert_eq!(
             receipt.prior_reference,
-            collab_types::files::FileRestorePriorReferenceV1::LegacyContentRepresentative
+            fs_protocol::files::FileRestorePriorReferenceV1::LegacyContentRepresentative
         );
         assert_eq!(receipt.prior_revision.content_hash, current.content_hash);
         assert_eq!(receipt.prior_revision.byte_len, 6);
@@ -376,7 +377,7 @@ async fn checked_restore_refuses_changed_reviews_and_same_byte_ambiguity() {
         assert_eq!(undone.restored_revision.content_hash, current.content_hash);
         assert_eq!(
             undone.prior_reference,
-            collab_types::files::FileRestorePriorReferenceV1::ObservedRevision
+            fs_protocol::files::FileRestorePriorReferenceV1::ObservedRevision
         );
         assert_eq!(
             history
@@ -525,7 +526,7 @@ async fn checked_restore_prepared_recovery_preserves_later_edits_and_fences_writ
         );
         let state = fixture.history.snapshot(request.review.record_id).unwrap();
         let mut version = state.versions.last().unwrap().clone();
-        version.id = collab_types::FileVersionId::new();
+        version.id = fs_protocol::FileVersionId::new();
         version.parents = state.heads;
         assert!(
             matches!(second.publish_structural_version(&version),Err(crate::record_publisher::RecordPublisherError::Repository(crate::record_repository::RecordRepositoryError::RestoreRecoveryRequired(id))) if id == request.intent_id)
@@ -879,12 +880,7 @@ async fn checked_restore_late_acl_replacement_buffer_aba_and_rebinding_are_zero_
                         Outcome::NotVisible
                     }
                     1 => {
-                        fixture
-                            .fs
-                            .write_buffers
-                            .lock()
-                            .unwrap()
-                            .insert(fixture.ino, b"unflushed".to_vec());
+                        fixture.fs.install_stage(fixture.ino, b"unflushed".to_vec());
                         Outcome::PendingWrites
                     }
                     2 => {
@@ -915,7 +911,7 @@ async fn checked_restore_late_acl_replacement_buffer_aba_and_rebinding_are_zero_
                             .find(|v| v.id == fixture.original)
                             .unwrap()
                             .clone();
-                        version.id = collab_types::FileVersionId::new();
+                        version.id = fs_protocol::FileVersionId::new();
                         version.parents = vec![fixture.original];
                         version.timestamp_ms = 0;
                         version.provenance = FileProvenance::Edit;
@@ -954,18 +950,14 @@ async fn checked_restore_late_acl_replacement_buffer_aba_and_rebinding_are_zero_
 async fn checked_restore_expiry_and_storage_interleavings_complete_safely() {
     // Phase `checked_restore_real_expiry_is_rechecked_at_final_admission_and_acl_writer_waits`.
     {
-        use collab_types::{CapOverride, Effect, Expiry, Scope, Subject, Verb};
+        use collab_types::{Access, CapOverride, Effect, Expiry, Scope, Subject};
         let mut fixture = Fixture::new().await;
-        let expiry = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs()
-            + 2;
+        let expiry = tilo_clock::try_unix_now().unwrap() + 2;
         let cap = CapOverride::new(
             Subject::User(Ed25519PublicKey([55; 32])),
             Scope::FsPath("/".into()),
             Effect::Grant,
-            Verb::Write,
+            Access::Write,
         )
         .expiring(Expiry::AtUnix(expiry));
         let acl = AclHandle::new(crate::acl::WorkspaceAcl::from_capabilities(
@@ -995,12 +987,7 @@ async fn checked_restore_expiry_and_storage_interleavings_complete_safely() {
                     .is_err(),
                 "ACL write must wait behind admission read lease"
             );
-            while std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs()
-                <= expiry
-            {
+            while tilo_clock::try_unix_now().unwrap() <= expiry {
                 std::thread::sleep(std::time::Duration::from_millis(20));
             }
             resume.send(()).unwrap();
@@ -1180,7 +1167,7 @@ async fn checked_restore_durable_phases_reopen_exactly_and_frontiers_parent_all_
                 .find(|v| v.id == fixture.original)
                 .unwrap()
                 .clone();
-            losing.id = collab_types::FileVersionId::new();
+            losing.id = fs_protocol::FileVersionId::new();
             losing.parents = vec![fixture.original];
             losing.timestamp_ms = 0;
             losing.provenance = FileProvenance::Edit;
@@ -1331,10 +1318,6 @@ async fn checked_restore_scope_codecs_transport_and_parent_bounds_fail_closed() 
                 fixture.fs.checked_history_restore(fixture.ino, request),
                 Outcome::UnsupportedOwner { .. }
             ));
-            assert_eq!(
-                fixture.fs.restore_version(fixture.ino, fixture.original),
-                Err(libc::ENOTSUP)
-            );
             assert_eq!(fixture.durable_bytes(), before);
             fixture
                 .fs
@@ -1345,21 +1328,6 @@ async fn checked_restore_scope_codecs_transport_and_parent_bounds_fail_closed() 
                     "test.bin",
                 )
                 .unwrap();
-            let mut document = tilo_doc::Document::new();
-            let bytes = document.save();
-            fixture.fs.commit_content(fixture.ino, &bytes).unwrap();
-            let review = fixture.fs.checked_history_review(fixture.ino).unwrap();
-            let request = Request {
-                review,
-                intent_id: uuid::Uuid::new_v4(),
-                ..request
-            };
-            let before = fixture.durable_bytes();
-            assert!(matches!(
-                fixture.fs.checked_history_restore(fixture.ino, request),
-                Outcome::UnsupportedOwner { .. }
-            ));
-            assert_eq!(fixture.durable_bytes(), before);
             fixture.endpoint.close().await;
         }
     }
@@ -1374,9 +1342,9 @@ async fn checked_restore_scope_codecs_transport_and_parent_bounds_fail_closed() 
                 .iter()
                 .find(|v| v.id == fixture.original)
                 .unwrap();
-            for _ in 0..collab_types::files::MAX_VERSION_PARENTS {
+            for _ in 0..fs_protocol::files::MAX_VERSION_PARENTS {
                 let mut version = source.clone();
-                version.id = collab_types::FileVersionId::new();
+                version.id = fs_protocol::FileVersionId::new();
                 version.parents = vec![fixture.original];
                 version.timestamp_ms = 0;
                 version.provenance = FileProvenance::Edit;
@@ -1392,7 +1360,7 @@ async fn checked_restore_scope_codecs_transport_and_parent_bounds_fail_closed() 
                     .unwrap()
                     .heads
                     .len(),
-                collab_types::files::MAX_VERSION_PARENTS + 1
+                fs_protocol::files::MAX_VERSION_PARENTS + 1
             );
             let request = fixture.request();
             let before = fixture.durable_bytes();
@@ -2144,7 +2112,7 @@ async fn checked_restore_startup_completion_rejects_bad_batches_and_retries_io_f
             .proposed_version
             .clone();
         later.parents = vec![later.id];
-        later.id = collab_types::FileVersionId::new();
+        later.id = fs_protocol::FileVersionId::new();
         later.provenance = FileProvenance::Edit;
         publisher.publish_structural_version(&later).unwrap();
         fixture.endpoint.close().await;
@@ -2153,7 +2121,7 @@ async fn checked_restore_startup_completion_rejects_bad_batches_and_retries_io_f
 
 #[tokio::test(flavor = "multi_thread")]
 async fn history_read_complete_paging_and_exact_parent_metadata() {
-    use collab_types::files::{FileHistoryReadQueryV1 as Q, FileHistoryReadValueV1 as V};
+    use fs_protocol::files::{FileHistoryReadQueryV1 as Q, FileHistoryReadValueV1 as V};
     let fixture = Fixture::new().await;
     for i in 0..25 {
         fixture
@@ -2235,7 +2203,7 @@ async fn history_read_complete_paging_and_exact_parent_metadata() {
 async fn history_reads_reject_stale_cursors_and_bind_them_to_live_scope() {
     // Phase `history_read_rejects_stale_wrong_record_missing_cursor_and_revocation`.
     {
-        use collab_types::files::{
+        use fs_protocol::files::{
             FileHistoryReadErrorV1 as E, FileHistoryReadQueryV1 as Q, FileHistoryReadValueV1 as V,
         };
         let mut fixture = Fixture::new().await;
@@ -2247,7 +2215,7 @@ async fn history_reads_reject_stale_cursors_and_bind_them_to_live_scope() {
             panic!()
         };
         let mut wrong = page.scope;
-        wrong.record_id = collab_types::FileRecordId::new();
+        wrong.record_id = fs_protocol::FileRecordId::new();
         wrong.frontier[0] ^= 1;
         assert_eq!(
             fixture.fs.read_file_history(
@@ -2263,7 +2231,7 @@ async fn history_reads_reject_stale_cursors_and_bind_them_to_live_scope() {
             fixture.fs.read_file_history(
                 fixture.ino,
                 Q::Page {
-                    cursor: Some((page.scope.frontier, collab_types::FileVersionId::new()))
+                    cursor: Some((page.scope.frontier, fs_protocol::FileVersionId::new()))
                 }
             ),
             Err(E::InvalidRequest)
@@ -2273,7 +2241,7 @@ async fn history_reads_reject_stale_cursors_and_bind_them_to_live_scope() {
                 fixture.ino,
                 Q::Version {
                     frontier: page.scope.frontier,
-                    version_id: collab_types::FileVersionId::new()
+                    version_id: fs_protocol::FileVersionId::new()
                 }
             ),
             Err(E::MissingVersion)
@@ -2303,7 +2271,7 @@ async fn history_reads_reject_stale_cursors_and_bind_them_to_live_scope() {
     }
     // Phase `history_read_cursors_bind_workspace_mount_record_and_allow_codec_browsing`.
     {
-        use collab_types::files::{
+        use fs_protocol::files::{
             FileHistoryReadErrorV1 as E, FileHistoryReadQueryV1 as Q, FileHistoryReadValueV1 as V,
         };
         let mut fixture = Fixture::with_signed(false).await;
@@ -2391,10 +2359,10 @@ async fn history_reads_reject_stale_cursors_and_bind_them_to_live_scope() {
                 "test.qdoc",
             )
             .unwrap();
-        assert!(matches!(
-            fixture.fs.checked_history_review(fixture.ino),
-            Err(Outcome::UnsupportedOwner { .. })
-        ));
+        assert!(
+            fixture.fs.checked_history_review(fixture.ino).is_ok(),
+            "a serialized document is reviewed like any record"
+        );
         let V::Page(page) = fixture
             .fs
             .read_file_history(fixture.ino, Q::Page { cursor: None })
@@ -2408,7 +2376,7 @@ async fn history_reads_reject_stale_cursors_and_bind_them_to_live_scope() {
                 .read_file_history_preview(fixture.ino, page.scope, fixture.original)
                 .unwrap(),
             b"first",
-            "unsupported restore codec does not suppress authorized immutable reads"
+            "the record's content kind does not suppress authorized immutable reads"
         );
         fixture.endpoint.close().await;
     }
@@ -2422,7 +2390,7 @@ async fn history_reads_reject_stale_cursors_and_bind_them_to_live_scope() {
 async fn history_reads_keep_exact_bytes_separate_from_current_visibility() {
     // Phase `history_read_immutable_bytes_and_post_hydration_visibility`.
     {
-        use collab_types::files::{
+        use fs_protocol::files::{
             FileHistoryReadErrorV1 as E, FileHistoryReadQueryV1 as Q, FileHistoryReadValueV1 as V,
         };
         let mut fixture = Fixture::new().await;
@@ -2485,7 +2453,7 @@ async fn history_reads_keep_exact_bytes_separate_from_current_visibility() {
                     );
                     let record_id = replacement.record_id_for(other).unwrap();
                     let mut version = page.versions[0].clone();
-                    version.id = collab_types::FileVersionId::new();
+                    version.id = fs_protocol::FileVersionId::new();
                     version.record_id = record_id;
                     version.parents.clear();
                     fixture.history.append(version).unwrap();
@@ -2500,7 +2468,7 @@ async fn history_reads_keep_exact_bytes_separate_from_current_visibility() {
     }
     // Phase `history_read_backfill_changes_frontier_without_changing_visible_bytes`.
     {
-        use collab_types::files::{
+        use fs_protocol::files::{
             FileHistoryReadErrorV1 as E, FileHistoryReadQueryV1 as Q, FileHistoryReadValueV1 as V,
         };
         let fixture = Fixture::with_signed(false).await;
@@ -2512,7 +2480,7 @@ async fn history_reads_keep_exact_bytes_separate_from_current_visibility() {
             panic!()
         };
         let mut version = page.versions[0].clone();
-        version.id = collab_types::FileVersionId::new();
+        version.id = fs_protocol::FileVersionId::new();
         version.timestamp_ms = 0;
         version.parents = vec![fixture.original];
         fixture.history.append(version).unwrap();
@@ -2531,7 +2499,7 @@ async fn history_reads_keep_exact_bytes_separate_from_current_visibility() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn history_read_current_winner_is_separate_from_exact_restore_receipt() {
-    use collab_types::files::{FileHistoryReadQueryV1 as Q, FileHistoryReadValueV1 as V};
+    use fs_protocol::files::{FileHistoryReadQueryV1 as Q, FileHistoryReadValueV1 as V};
     let fixture = Fixture::new().await;
     let request = fixture.request();
     let applied = fixture.fs.checked_history_restore(fixture.ino, request);
@@ -2574,5 +2542,236 @@ async fn history_read_current_winner_is_separate_from_exact_restore_receipt() {
             .unwrap(),
         b"first"
     );
+    fixture.endpoint.close().await;
+}
+
+/// A `.qdoc` record with two document versions: v1 holds blocks "alpha" (in
+/// part bold) and "beta"; v2, written through the FUSE commit path, extends
+/// "beta".
+struct QdocVersions {
+    fixture: Fixture,
+    v1: fs_protocol::FileVersionId,
+    v1_bytes: Vec<u8>,
+    v2_bytes: Vec<u8>,
+    alpha: String,
+}
+
+impl QdocVersions {
+    async fn new(signed: bool) -> Self {
+        let fixture = Fixture::with_signed(signed).await;
+        fixture
+            .fs
+            .rename_named(
+                crate::namespace::ROOT_INO,
+                "test.bin",
+                crate::namespace::ROOT_INO,
+                "a.qdoc",
+            )
+            .unwrap();
+        let record = fixture.fs.ns().record_id_for(fixture.ino).unwrap();
+        let mut document = tilo_doc::Document::new();
+        let alpha = document.insert_block(None, "paragraph");
+        document.splice_text(&alpha, 0, 0, "alpha");
+        document.add_mark(&alpha, 0, 3, "strong", true);
+        let beta = document.insert_block(Some(&alpha), "paragraph");
+        document.splice_text(&beta, 0, 0, "beta");
+        let first = document.save();
+        assert_eq!(fixture.fs.commit_bytes(fixture.ino, &first), Ok(()));
+        let heads = fixture.history.snapshot(record).unwrap().heads;
+        assert_eq!(heads.len(), 1);
+        let first_version = heads[0];
+        document.splice_text(&beta, 4, 0, " gamma");
+        let second = document.save();
+        assert_eq!(fixture.fs.commit_bytes(fixture.ino, &second), Ok(()));
+        Self {
+            fixture,
+            v1: first_version,
+            v1_bytes: first,
+            v2_bytes: second,
+            alpha,
+        }
+    }
+
+    fn restore(&self, operation: Operation) -> Outcome {
+        let fs = &self.fixture.fs;
+        let request = Request {
+            schema_version: 1,
+            intent_id: uuid::Uuid::new_v4(),
+            review: fs.checked_history_review(self.fixture.ino).unwrap(),
+            operation,
+        };
+        fs.checked_history_restore(self.fixture.ino, request)
+    }
+
+    fn current(&self) -> Vec<u8> {
+        self.fixture
+            .fs
+            .read_full_blocking(self.fixture.ino)
+            .unwrap()
+    }
+}
+
+fn blocks(bytes: &[u8]) -> Vec<String> {
+    let document = tilo_doc::Document::load(bytes).unwrap();
+    document
+        .blocks_in_order()
+        .iter()
+        .map(|id| document.block_text(id).unwrap())
+        .collect()
+}
+
+fn snapshot_of(bytes: &[u8]) -> tilo_doc::DocSnapshot {
+    tilo_doc::Document::load(bytes).unwrap().materialize()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn restores_qdoc_as_new_crdt_revision() {
+    for signed in [true, false] {
+        let versions = QdocVersions::new(signed).await;
+        let fixture = &versions.fixture;
+        let record = fixture.fs.ns().record_id_for(fixture.ino).unwrap();
+        let before = fixture.history.snapshot(record).unwrap();
+        let Outcome::Applied { receipt } = versions.restore(Operation::Restore {
+            version_id: versions.v1,
+        }) else {
+            panic!("a qdoc restores");
+        };
+
+        let restored = versions.current();
+        assert_eq!(snapshot_of(&restored), snapshot_of(&versions.v1_bytes));
+        assert_eq!(blocks(&restored), vec!["alpha", "beta"]);
+        assert_ne!(
+            restored, versions.v1_bytes,
+            "the restore is a new revision, not v1's bytes"
+        );
+        let mut restored_doc = automerge::AutoCommit::load(&restored).unwrap();
+        let v2_heads = automerge::AutoCommit::load(&versions.v2_bytes)
+            .unwrap()
+            .get_heads();
+        for head in &v2_heads {
+            assert!(
+                restored_doc.get_change_by_hash(head).is_some(),
+                "the restored document descends from v2"
+            );
+        }
+        assert_ne!(restored_doc.get_heads(), v2_heads);
+
+        let after = fixture.history.snapshot(record).unwrap();
+        assert_eq!(after.versions.len(), before.versions.len() + 1);
+        let version = after
+            .versions
+            .iter()
+            .find(|v| v.id == receipt.restored_revision.version_id)
+            .unwrap();
+        assert_eq!(
+            version.provenance,
+            FileProvenance::Restore { from: versions.v1 }
+        );
+        assert_eq!(version.parents, before.heads);
+        assert_eq!(
+            version.content_hash,
+            fixture
+                .fs
+                .ns()
+                .hash_for(fixture.ino)
+                .map(|hash| ContentHash(*hash.as_bytes()))
+        );
+        assert_eq!(receipt.restored_revision.byte_len, restored.len() as u64);
+        assert_eq!(
+            fixture
+                .fs
+                .history_version_preview(fixture.ino, version.id)
+                .unwrap(),
+            restored,
+            "the restored revision is a fetchable payload"
+        );
+
+        // Undo is a restore of the prior revision, along the same CRDT route.
+        let Outcome::Applied { receipt: undone } = versions.restore(Operation::Undo {
+            restore_intent: receipt.intent_id,
+        }) else {
+            panic!("the qdoc restore undoes");
+        };
+        let current = versions.current();
+        assert_eq!(snapshot_of(&current), snapshot_of(&versions.v2_bytes));
+        let mut current_doc = automerge::AutoCommit::load(&current).unwrap();
+        for head in restored_doc.get_heads() {
+            assert!(current_doc.get_change_by_hash(&head).is_some());
+        }
+        assert_eq!(undone.prior_revision, receipt.restored_revision);
+        fixture.endpoint.close().await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn restore_preserves_concurrent_peer_edit() {
+    for signed in [true, false] {
+        let versions = QdocVersions::new(signed).await;
+        // A peer holding v2 extends "alpha" while the restore happens here.
+        let peer_bytes = {
+            let mut peer = tilo_doc::Document::load(&versions.v2_bytes).unwrap();
+            peer.splice_text(&versions.alpha, 5, 0, "!");
+            peer.save()
+        };
+        assert!(matches!(
+            versions.restore(Operation::Restore {
+                version_id: versions.v1
+            }),
+            Outcome::Applied { .. }
+        ));
+        let mut merged = automerge::AutoCommit::load(&versions.current()).unwrap();
+        let mut peer = automerge::AutoCommit::load(&peer_bytes).unwrap();
+        tilo_automerge::ApplyIncoming::merge_incoming(&mut merged, &mut peer).unwrap();
+        assert_eq!(
+            blocks(&merged.save()),
+            vec!["alpha!", "beta"],
+            "the peer's edit survives the restore and the restore survives the merge"
+        );
+        versions.fixture.endpoint.close().await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn opaque_file_with_document_bytes_restores() {
+    for signed in [true, false] {
+        let fixture = Fixture::with_signed(signed).await;
+        // `test.bin` is opaque by name, whatever its bytes parse as.
+        let bytes = tilo_doc::Document::new().save();
+        fixture.fs.commit_content(fixture.ino, &bytes).unwrap();
+        let request = fixture.request();
+        let Outcome::Applied { receipt } = fixture.fs.checked_history_restore(fixture.ino, request)
+        else {
+            panic!("an opaque file restores its bytes");
+        };
+        assert_eq!(
+            fixture.fs.read_full_blocking(fixture.ino).unwrap(),
+            b"first"
+        );
+        let state = fixture.history.snapshot(request.review.record_id).unwrap();
+        let original = state
+            .versions
+            .iter()
+            .find(|v| v.id == fixture.original)
+            .unwrap();
+        assert_eq!(
+            receipt.restored_revision.content_hash, original.content_hash,
+            "an opaque restore puts the selected bytes back"
+        );
+        fixture.endpoint.close().await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn namespace_documents_still_have_no_checked_restore_route() {
+    let fixture = Fixture::new().await;
+    let document = fixture
+        .fs
+        .ns()
+        .create_document(crate::namespace::ROOT_INO, "report.md", "md", 1)
+        .unwrap();
+    assert!(matches!(
+        fixture.fs.checked_history_review(document),
+        Err(Outcome::UnsupportedOwner { .. })
+    ));
     fixture.endpoint.close().await;
 }

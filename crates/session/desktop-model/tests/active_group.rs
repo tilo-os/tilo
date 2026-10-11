@@ -32,7 +32,7 @@ fn tree_with_n_groups(n: u64) -> (DesktopTree, StripId, Vec<GroupId>) {
         })
         .collect();
     let mut ws = Workspace::new(ws_id, "Test");
-    ws.room = RoomId::new();
+    ws.set_room(RoomId::new());
     ws.strips.push(strip);
     let mut active_strip = HashMap::new();
     active_strip.insert(ws_id, strip_id);

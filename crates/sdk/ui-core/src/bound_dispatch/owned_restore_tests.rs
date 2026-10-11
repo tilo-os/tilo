@@ -46,9 +46,9 @@ fn snapshot(binding: &CallbackBinding) -> Snapshot {
             pending_ops: doc.pending_ops(),
             revision: history.revision(),
             generation: state.generation,
-            can_redo: history.can_redo_as(None),
+            can_redo: history.can_redo_as(doc, None),
             pending_before: state.pending.as_ref().map(|p| p.before.clone()),
-            history: crate::state::owned_restore_tests::history_snapshot(history),
+            history: crate::state::owned_restore_tests::history_snapshot(history, doc),
         })
         .unwrap()
 }
@@ -68,8 +68,6 @@ fn owned_restore_bound_applies_exact_spans_once_with_one_undo_boundary() {
             .restore_prepared(&mut outer, &admitted(&binding, &authority), &plan)
             .unwrap();
         assert!(receipt.changed);
-        assert_eq!(receipt.before, plan.current_heads());
-        assert_eq!(receipt.history_revision, before.revision + 1);
         assert_eq!(
             binding.generation().unwrap(),
             before.generation.map(|v| v + 1)
@@ -80,7 +78,8 @@ fn owned_restore_bound_applies_exact_spans_once_with_one_undo_boundary() {
                 assert_eq!(value(doc), "old");
                 assert_eq!(crate::record::identity(doc), Some(binding.checkout.clone()));
                 assert_eq!(doc.get_changes(plan.current_heads()).len(), 1);
-                let entry = history.peek_last_undo().unwrap();
+                assert_eq!(history.revision(), before.revision + 1);
+                let entry = history.peek_last_undo(doc).unwrap();
                 assert_eq!(entry.before, plan.current_heads());
                 assert_eq!(entry.after, receipt.after);
                 assert_eq!(entry.author, Some(binding.author.clone()));
@@ -88,8 +87,11 @@ fn owned_restore_bound_applies_exact_spans_once_with_one_undo_boundary() {
                 assert_eq!(
                     doc.get_changes(plan.current_heads())[0]
                         .message()
-                        .and_then(|s| tilo_actions::ActionContext::from_change_message(s)),
-                    Some(context())
+                        .and_then(|s| tilo_actions::ActionContext::from_change_message(s))
+                        .map(crate::state::owned_restore_tests::unstamped),
+                    Some(context().with_invoker(tilo_actions::ActionInvoker::actor(
+                        binding.author.0.clone()
+                    )))
                 );
                 assert_eq!(state.pending.as_ref().unwrap().before, receipt.after);
             })
@@ -103,7 +105,7 @@ fn owned_restore_bound_applies_exact_spans_once_with_one_undo_boundary() {
             .with_action_state(&binding.checkout.id, |doc, history, _| {
                 assert_eq!(value(doc), "live");
                 assert_eq!(crate::record::identity(doc), Some(binding.checkout.clone()));
-                assert_eq!(history.revision(), receipt.history_revision + 1);
+                assert_eq!(history.revision(), before.revision + 2);
             })
             .unwrap();
         assert_eq!(outer.pending_ops(), 0);
@@ -123,7 +125,7 @@ fn owned_restore_bound_applies_exact_spans_once_with_one_undo_boundary() {
                 doc.put(ROOT, "body", "later").unwrap();
                 history.commit_action_authored(doc, None, None, Some(binding.author.clone()));
                 history
-                    .undo_as(doc, Some(&binding.author), None, None)
+                    .undo_as(doc, Some(&binding.author), None, None, None)
                     .unwrap();
                 state.pending = Some(PendingRecordAction::new(&binding, doc.base_heads()));
                 prepare_content_restore(doc, &SCHEMA, &doc.base_heads(), &doc.base_heads()).unwrap()
@@ -165,7 +167,7 @@ fn owned_restore_bound_applies_exact_spans_once_with_one_undo_boundary() {
                 doc.put(ROOT, "body", "later").unwrap();
                 history.commit_action_authored(doc, None, None, Some(binding.author.clone()));
                 history
-                    .undo_as(doc, Some(&binding.author), None, None)
+                    .undo_as(doc, Some(&binding.author), None, None, None)
                     .unwrap();
                 state.pending = Some(PendingRecordAction::new(&binding, doc.base_heads()));
                 prepare_content_restore(doc, &SCHEMA, &doc.base_heads(), &target).unwrap()

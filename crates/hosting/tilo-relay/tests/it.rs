@@ -59,6 +59,8 @@ mod federation_workspace_shard;
 mod governed_rooms;
 #[path = "governed_workspace_access.rs"]
 mod governed_workspace_access;
+#[path = "hosting_cost.rs"]
+mod hosting_cost;
 #[path = "interactive_workspace_owner.rs"]
 mod interactive_workspace_owner;
 #[cfg(target_os = "linux")]
@@ -73,12 +75,16 @@ mod multi_host;
 mod out_of_band_join_modes;
 #[path = "personal_device_process.rs"]
 mod personal_device_process;
+#[path = "presence_coalescing.rs"]
+mod presence_coalescing;
 #[path = "record_content_routing.rs"]
 mod record_content_routing;
 #[path = "relay_daemon.rs"]
 mod relay_daemon;
 #[path = "remote_action_routing.rs"]
 mod remote_action_routing;
+#[path = "room_admission.rs"]
+mod room_admission;
 #[path = "store_and_forward.rs"]
 mod store_and_forward;
 

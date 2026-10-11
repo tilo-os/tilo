@@ -76,6 +76,23 @@ pub fn derive_scale(px: (u32, u32), mm: Option<(u32, u32)>) -> f64 {
     scale.max(MIN_SCALE)
 }
 
+/// The `display.scale` the user set, if any. Distinguishing "unset" from
+/// "set to 1.0" is the point: unset derives each output's scale from its
+/// panel, 1.0 means the user chose 100% on a `HiDPI` panel. Values outside
+/// the Settings control's range (100%-200%, with margin) read as unset so an
+/// out-of-band value can't wedge the UI.
+pub fn user_scale(display: &serde_json::Map<String, serde_json::Value>) -> Option<f64> {
+    display
+        .get("scale")
+        .and_then(serde_json::Value::as_f64)
+        .filter(|scale| (0.5..=3.0).contains(scale))
+}
+
+/// [`user_scale`] of the persisted display section.
+pub fn load_user_scale() -> Option<f64> {
+    user_scale(&crate::load_section(crate::hardware::DISPLAY_SECTION))
+}
+
 /// The scale for one output: the user's setting when expressed, otherwise
 /// the derivation. `override_scale` is the `display.scale` value from the
 /// shared settings store, already validated; `None` means not configured.

@@ -206,12 +206,9 @@ impl ToolBuildService {
     /// Returns an error when the socket cannot be made, or there is no
     /// runtime to serve it on.
     pub fn listen(&self, member: MemberRun) -> std::io::Result<tokio::task::JoinHandle<()>> {
-        use std::os::unix::fs::PermissionsExt;
         let runtime = tokio::runtime::Handle::try_current().map_err(std::io::Error::other)?;
         let socket = member.socket();
-        let _ = std::fs::remove_file(&socket);
-        let listener = std::os::unix::net::UnixListener::bind(&socket)?;
-        std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))?;
+        let listener = tilo_files::native::private::bind_socket(&socket)?;
         if let Some(uid) = member.uid {
             std::os::unix::fs::chown(&socket, Some(uid), Some(uid))?;
         }

@@ -61,7 +61,8 @@ class RollingCollection(unittest.TestCase):
                         observer_session="2bd78136-4c17-4853-9d7c-7442274a7059",
                         cpu_frame_id=1)
         tags = ("tilo-native-send", "tilo-native-main-stages", "tilo-native-worker",
-                "tilo-native-worker-handoff", "tilo-native-present-call")
+                "tilo-native-worker-handoff", "tilo-native-present-call",
+                "tilo-native-gpu-stages")
         rows = []
         for tag in tags:
             row = dict(identity, host_clock="clock_monotonic_seconds", before_host_lo_s=0.102)

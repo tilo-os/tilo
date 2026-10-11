@@ -24,6 +24,7 @@
 //! between them) for a painted host that lays its own rows, so a stepper
 //! drawn by hand is the one the widget draws.
 
+use crate::num::f32_of_f64;
 use crate::paint::PaintCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -134,17 +135,6 @@ const I64_MAX_AS_F64: f64 = 9_223_372_036_854_775_807.0;
 )]
 fn round_to_i64(v: f64) -> i64 {
     v.round().clamp(I64_MIN_AS_F64, I64_MAX_AS_F64) as i64
-}
-
-/// Narrows a screen-space length (`f64`, this widget's own unit) to the
-/// `f32` taffy consumes. Control widths/heights never approach `f32`'s
-/// range, so this never truncates in practice.
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "widget widths/heights are always far below f32's range"
-)]
-fn px_f32(v: f64) -> f32 {
-    v as f32
 }
 
 /// `kurbo::Affine` composition is plain f64 matrix math with no panic
@@ -616,12 +606,6 @@ impl NumberInput {
         self.value
     }
 
-    /// The current value as an `i64` (rounded) — convenience for the common
-    /// integer-inspector case (font size, margins).
-    pub fn value_i64(&self) -> i64 {
-        round_to_i64(self.value)
-    }
-
     /// Push a value in programmatically. Clamps and re-formats the
     /// display, but does NOT report a change through
     /// [`take_changed`](NumberInput::take_changed). A bound
@@ -685,7 +669,7 @@ impl NumberInput {
         let (value_width, _) = text.measure_style(display, None, style);
         minimum
             .width
-            .max(value_width + field_padding * 2.0 + minimum.height * 2.0 + px_f32(GAP * 2.0))
+            .max(value_width + field_padding * 2.0 + minimum.height * 2.0 + f32_of_f64(GAP * 2.0))
             .ceil()
     }
 
@@ -706,8 +690,8 @@ impl NumberInput {
             DEFAULT_WIDTH * f64::from(theme.text_scale)
         };
         Size {
-            width: px_f32(width),
-            height: px_f32(height),
+            width: f32_of_f64(width),
+            height: f32_of_f64(height),
         }
     }
 
@@ -716,11 +700,11 @@ impl NumberInput {
     /// configured precision and suffix — beside its steppers. A host laying
     /// its own rows (a font-size stepper in an inspector) reserves this
     /// instead of guessing the field's type size; it is the same rule the
-    /// widget applies to itself in `adjust_layout_with_measure`, so a slot
+    /// widget applies to itself in `adjust_layout_style`, so a slot
     /// sized from it never clips a value the widget would have held.
     pub fn preferred_width(&self, theme: &Theme, text: &mut TextRenderer) -> f64 {
         let minimum = self.base_footprint(theme);
-        let padding = px_f32(self.field.text_padding_x(theme));
+        let padding = f32_of_f64(self.field.text_padding_x(theme));
         let style = self.value_style_in(theme);
         let widest = [self.value, self.min, self.max]
             .into_iter()
@@ -851,9 +835,9 @@ impl Widget for NumberInput {
     ) -> NodeId {
         let size = self.base_footprint(theme);
         self.minimum = size;
-        self.field_padding = px_f32(self.field.text_padding_x(theme));
+        self.field_padding = f32_of_f64(self.field.text_padding_x(theme));
         self.value_style = self.value_style_in(theme);
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: Dimension::length(size.width),
                 height: Dimension::length(size.height),
@@ -863,12 +847,11 @@ impl Widget for NumberInput {
             // leaf below its own size — see `Toggle::build_layout`).
             flex_shrink: 0.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
-    fn adjust_layout_with_measure(
+    fn adjust_layout_style(
         &mut self,
         tree: &mut TaffyTree<()>,
         node: NodeId,
@@ -901,12 +884,7 @@ impl Widget for NumberInput {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        let x0 = origin.x + f64::from(layout.location.x);
-        let y0 = origin.y + f64::from(layout.location.y);
-        let x1 = x0 + f64::from(layout.size.width);
-        let y1 = y0 + f64::from(layout.size.height);
-        self.apply_layout_external(Rect::new(x0, y0, x1, y1));
+        self.apply_layout_external(crate::widget::layout_rect(taffy, node, origin));
     }
 
     fn draw(
@@ -1145,6 +1123,7 @@ impl Widget for NumberInput {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        _key_path: &[u64],
         _state: &mut crate::widget::Edits<'_>,
         _root: &ModelPath,
     ) -> bool {
@@ -1179,18 +1158,7 @@ impl Widget for NumberInput {
 }
 
 impl crate::widget::controls::ActionControls for NumberInput {
-    fn install_control_custody(
-        &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
-    ) {
-        if let Some(action) = &mut self.action {
-            let _ = action.install_custody(domain, attachment);
-        }
-    }
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.action.as_mut().and_then(ActionEmitter::take)
-    }
+    crate::widget::controls::optional_emitter_controls!();
     fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
         let control_id = self.test_id().unwrap_or("number_input");
         if let Some(action) = &self.action {
@@ -1202,22 +1170,13 @@ impl crate::widget::controls::ActionControls for NumberInput {
             }]
         }
     }
-    fn refresh_control_action_availability(
-        &mut self,
-        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
-    ) {
-        if let Some(action) = &mut self.action {
-            action.refresh_availability(allowed);
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::dispatch;
     use automerge::AutoCommit;
-    use winit::event::{KeyEvent, Modifiers};
-    use winit::keyboard::{KeyLocation, NativeKeyCode, PhysicalKey};
 
     fn layout_with_theme(n: &mut NumberInput, theme: &Theme) {
         let mut tree = TaffyTree::new();
@@ -1377,9 +1336,9 @@ mod tests {
                 None,
                 &theme.text(crate::tokens::TextRole::Body),
             );
-            let padding = px_f32(input.field.text_padding_x(&theme));
-            let height = px_f32(crate::widget::ControlSize::Regular.height(&theme));
-            let required = f64::from(widest + padding * 2.0 + height * 2.0 + px_f32(GAP * 2.0));
+            let padding = f32_of_f64(input.field.text_padding_x(&theme));
+            let height = f32_of_f64(crate::widget::ControlSize::Regular.height(&theme));
+            let required = f64::from(widest + padding * 2.0 + height * 2.0 + f32_of_f64(GAP * 2.0));
             assert!(
                 preferred + 1e-6 >= required,
                 "preferred {preferred} must hold the widest value ({required})"
@@ -1405,55 +1364,9 @@ mod tests {
         n.apply_layout_external(Rect::new(x0, y0, x0 + DEFAULT_WIDTH, y0 + height));
     }
 
-    fn dispatch(n: &mut NumberInput, event: &WindowEvent) {
-        let mut tree = TaffyTree::<()>::new();
-        let node = tree.leaf_node(Style::default());
-        let mut handled = false;
-        let mut focus_target = None;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        n.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &tree,
-            },
-        );
-    }
-
-    fn cursor(x: f64, y: f64) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: winit::dpi::PhysicalPosition::new(x, y),
-        }
-    }
-    fn press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
-    fn named_key(k: NamedKey) -> WindowEvent {
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Named(k);
-        ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-        ev.location = KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = None;
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        }
-    }
+    use crate::synthetic_input::cursor_moved;
+    use crate::synthetic_input::mouse_press;
+    use crate::synthetic_input::named_key;
 
     #[test]
     fn number_text_parses_and_formats_with_units_signs_and_precision() {
@@ -1576,19 +1489,19 @@ mod tests {
             );
 
             // Click + once: 70 → 72.
-            dispatch(&mut n, &cursor(plus_c.0, plus_c.1));
-            dispatch(&mut n, &press());
+            dispatch(&mut n, &cursor_moved(plus_c.0, plus_c.1));
+            dispatch(&mut n, &mouse_press());
             assert_eq!(n.value(), 72.0);
             assert_eq!(n.take_changed(), Some(72.0));
 
             // Click + again: already at max → no move, no report.
-            dispatch(&mut n, &press());
+            dispatch(&mut n, &mouse_press());
             assert_eq!(n.value(), 72.0, "clamped at max");
             assert_eq!(n.take_changed(), None, "no change when already clamped");
 
             // Click − : 72 → 70.
-            dispatch(&mut n, &cursor(minus_c.0, minus_c.1));
-            dispatch(&mut n, &press());
+            dispatch(&mut n, &cursor_moved(minus_c.0, minus_c.1));
+            dispatch(&mut n, &mouse_press());
             assert_eq!(n.value(), 70.0);
             assert_eq!(n.take_changed(), Some(70.0));
         }
@@ -1632,8 +1545,8 @@ mod tests {
                 n.plus_rect.x0.midpoint(n.plus_rect.x1),
                 n.plus_rect.y0.midpoint(n.plus_rect.y1),
             );
-            dispatch(&mut n, &cursor(plus_c.0, plus_c.1));
-            dispatch(&mut n, &press());
+            dispatch(&mut n, &cursor_moved(plus_c.0, plus_c.1));
+            dispatch(&mut n, &mouse_press());
             assert_eq!(n.value(), before, "disabled field ignores stepper clicks");
             assert!(!Widget::is_focusable(&n));
         }
@@ -1677,6 +1590,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut first,
                 &Action::Increment,
+                &[],
                 &mut crate::widget::Edits::lend(&mut document),
                 &automerge::ROOT,
             ));
@@ -1714,6 +1628,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut n,
                 &Action::Increment,
+                &[],
                 &mut crate::widget::Edits::lend(&mut doc),
                 &root
             ));
@@ -1721,6 +1636,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut n,
                 &Action::SetValue("100".into()),
+                &[],
                 &mut crate::widget::Edits::lend(&mut doc),
                 &root
             ));
@@ -1748,6 +1664,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut number,
                 &crate::a11y::Action::SetValue("42".into()),
+                &[],
                 &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));

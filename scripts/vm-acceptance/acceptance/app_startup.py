@@ -47,6 +47,21 @@ SOFTWARE_BUDGET_MS = 3000
 HISTORY_BUDGET_MS = 1000
 
 
+# A warm open on a CPU rasterizer, judged by the median of A15's ten opens: well under
+# the per-launch software budget, which also covers a session's cold first launches.
+# Since apps stopped starting OpenGL beside Vulkan and a GPU-less session pins
+# lavapipe, the median is 0.6-0.8 s on a quiet runner and was at most ~1.2 s on a
+# contended one before either change.
+WARM_OPEN_SOFTWARE_BUDGET_MS = 1500
+
+
+def warm_open_budget_ms(app: str, renderer: str = "gpu") -> int:
+    """The median warm open's budget (A15): tighter than a launch's on a CPU rasterizer."""
+    if renderer == "cpu":
+        return WARM_OPEN_SOFTWARE_BUDGET_MS
+    return budget_ms(app, renderer)
+
+
 def budget_ms(app: str, renderer: str = "gpu") -> int:
     if renderer == "cpu":
         return SOFTWARE_BUDGET_MS
@@ -55,7 +70,14 @@ def budget_ms(app: str, renderer: str = "gpu") -> int:
 
 def parse_startups(log: str) -> list[dict]:
     """Every `APP-STARTUP` line in `log`, in order: app, total_ms, its phases, and the
-    renderer ("gpu", "cpu", or "unknown") its latest adapter line before it named."""
+    renderer ("gpu", "cpu", or "unknown") its latest adapter line before it named.
+
+    Phase durations are intervals ending at the named marker, not spans named by
+    that marker. Keep their order and repetitions in phase_intervals; phases
+    retains the longest interval for each marker for the slowest-phase report.
+    The summary omits sub-millisecond intervals, so it cannot reconstruct exact
+    timestamps or span durations; those require the original event receipt.
+    """
     out = []
     renderers: dict[str, str] = {}
     for line in ANSI.sub("", log).splitlines():
@@ -67,11 +89,15 @@ def parse_startups(log: str) -> list[dict]:
         if not found:
             continue
         phases = {}
+        phase_intervals = []
         for phase in filter(None, found["phases"].split(",")):
             name, _, ms = phase.rpartition(":")
             if name and ms.isdigit():
-                phases[name] = int(ms)
+                elapsed = int(ms)
+                phase_intervals.append({"marker": name, "ms": elapsed})
+                phases[name] = max(phases.get(name, 0), elapsed)
         out.append({"app": found["app"], "total_ms": int(found["total"]), "phases": phases,
+                    "phase_intervals": phase_intervals,
                     "renderer": renderers.get(found["pkg"], "unknown"), "line": found.group(0)})
     return out
 
@@ -87,7 +113,7 @@ def slowest_phase(phases: dict[str, int]) -> str:
     if not phases:
         return "-"
     name, ms = max(phases.items(), key=lambda item: item[1])
-    return f"{name} {ms} ms"
+    return f"until {name} {ms} ms"
 
 
 def table(startups: list[dict]) -> list[str]:

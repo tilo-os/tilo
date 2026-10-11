@@ -21,7 +21,7 @@ fn encode(message: &NeighbourMsg, author: [u8; 32], index: usize) -> Source {
             workspace_id: tilo_relay::room_workspace_id("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
                 .unwrap(),
             author_device_public_key: author,
-            authored_at_ns: tilo_delivery_protocol::clock::now_ns(),
+            authored_at_ns: tilo_clock::unix_now_ns(),
             delta: payload.encode().unwrap(),
             signature: [0; 64],
         })
@@ -70,7 +70,7 @@ fn fixture() -> (PublicEnrollment, Vec<Source>, SigningKey) {
         .set_host_devices(workspace, &[cert.device_public_key])
         .unwrap();
     let update = directory
-        .sync_incremental(&key, tilo_delivery_protocol::clock::now_ns())
+        .sync_incremental(&key, tilo_clock::unix_now_ns())
         .unwrap();
     let mut host = cert.clone();
     host.capabilities = DeviceCapabilities::host();
@@ -141,7 +141,7 @@ fn valid_complete_archive_reconstructs_canonical_documents() {
         "so.tilo.word-processor".into(),
         "tab:0000000000000001".into(),
     )];
-    let c = tilo_doc::model::open(writer, &automerge::ROOT).unwrap();
+    let c = word_processor::model::open(writer).unwrap();
     assert_eq!(
         tilo_doc::model::materialize_region(writer, &c, tilo_doc::model::Region::Body)[0].text,
         "Recovery test"
@@ -269,10 +269,10 @@ fn signed_tail_with_missing_causal_predecessor_is_incomplete() {
         let mut doc = AutoCommit::load(&bytes).unwrap();
         doc.set_actor(automerge::ActorId::from(vec![99; 32]));
         doc.put(automerge::ROOT, "predecessor", true).unwrap();
-        doc.commit();
+        collab_types::CommitNamed::commit_edit(&mut doc, "fixture", "predecessor");
         let before = doc.get_heads();
         doc.put(automerge::ROOT, "successor", true).unwrap();
-        doc.commit();
+        collab_types::CommitNamed::commit_edit(&mut doc, "fixture", "successor");
         envelope.payload = DocumentMutation::Incremental(doc.save_after(&before))
             .encode()
             .unwrap();
@@ -307,17 +307,9 @@ fn readable_export_contains_sent_content_and_shared_draft_without_changing_heads
     assert_eq!(writer_export["body_text"], "Recovery test");
     assert_eq!(writer.base_heads(), before);
     let mut chat = recovered.docs[&("so.tilo.chat".into(), String::new())].clone();
-    let channel = chat::doc::ChatDoc::list_channels(&chat).remove(0).id;
-    chat::doc::ChatDoc::push_message(
-        &mut chat,
-        &channel,
-        chat::doc::NewMessage {
-            author: "test-person".into(),
-            text: "Sent archive content".into(),
-            ..Default::default()
-        },
-    );
-    chat::doc::ChatDoc::set_draft(&mut chat, &channel, "Unsent shared draft");
+    let channel = chat::projection::read(&chat).channel_rows().remove(0).id;
+    chat::demo::say(&mut chat, "test-person", &channel, "Sent archive content").unwrap();
+    chat::demo::set_draft(&mut chat, "test-person", &channel, "Unsent shared draft").unwrap();
     chat.commit();
     let before = chat.base_heads();
     let export = readable("so.tilo.chat", &chat).unwrap();

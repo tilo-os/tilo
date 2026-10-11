@@ -8,6 +8,11 @@
 //! or dropped. When the keys arrive the held edits are sealed and sent and
 //! the held ciphertext is opened, in order.
 //!
+//! Once a route holds keys it asks again only when told its channel changed
+//! (`channelKeysChanged`), when ciphertext arrives that its keys can't open,
+//! or when the broker refuses an edit sealed under them; see
+//! `broker::KeySchedule`.
+//!
 //! Only an endpoint with no identity service at all (an explicit test
 //! harness) stays plaintext, and only until a group is installed on it.
 
@@ -57,13 +62,19 @@ pub(super) enum Unopened {
     Never,
 }
 
+/// A frame waiting for keys, with the claims its op will carry.
+pub(super) type HeldFrame = (Vec<u8>, Vec<collab_types::ChangeClaim>);
+
 /// A route's keys plus what waits on them.
 pub(super) struct RouteKeys {
     pub(super) keys: Keys,
-    held_outbound: VecDeque<Vec<u8>>,
+    held_outbound: VecDeque<HeldFrame>,
     held_outbound_bytes: usize,
     held_inbound: VecDeque<(SignedOp, String)>,
     reported: Option<ChannelAccessState>,
+    /// The generation of the keys that last failed to open held ciphertext
+    /// and asked for newer ones: asked once per generation.
+    asked_for_held: Option<u64>,
 }
 
 impl RouteKeys {
@@ -84,12 +95,33 @@ impl RouteKeys {
             held_outbound_bytes: 0,
             held_inbound: VecDeque::new(),
             reported: None,
+            asked_for_held: None,
         }
     }
 
     /// Whether this endpoint asks the identity service for keys.
     pub(super) fn asks_identity_service(&self) -> bool {
         matches!(self.keys, Keys::Pending(_) | Keys::Content { .. })
+    }
+
+    /// Whether this route asks the identity service and holds no keys yet:
+    /// it waits for access, was removed, or the service is unavailable.
+    pub(super) fn awaiting_keys(&self) -> bool {
+        matches!(self.keys, Keys::Pending(_))
+    }
+
+    /// Whether held ciphertext should make the endpoint ask for newer keys
+    /// now: the route holds keys, they failed to open what arrived (sealed
+    /// under an epoch they lack), and this generation has not asked yet.
+    pub(super) fn wants_keys_for_held(&mut self) -> bool {
+        let Keys::Content { generation, .. } = self.keys else {
+            return false;
+        };
+        if self.held_inbound.is_empty() || self.asked_for_held == Some(generation) {
+            return false;
+        }
+        self.asked_for_held = Some(generation);
+        true
     }
 
     /// The service generation of the keys held, 0 when none.
@@ -213,18 +245,22 @@ impl RouteKeys {
     }
 
     /// Keep a frame until keys arrive. `false` when the hold is full.
-    pub(super) fn hold_outbound(&mut self, frame: Vec<u8>) -> bool {
+    pub(super) fn hold_outbound(
+        &mut self,
+        frame: Vec<u8>,
+        claims: Vec<collab_types::ChangeClaim>,
+    ) -> bool {
         let bytes = self.held_outbound_bytes.saturating_add(frame.len());
         if self.held_outbound.len() >= MAX_HELD_OUTBOUND || bytes > MAX_HELD_OUTBOUND_BYTES {
             return false;
         }
         self.held_outbound_bytes = bytes;
-        self.held_outbound.push_back(frame);
+        self.held_outbound.push_back((frame, claims));
         true
     }
 
     /// Take every held frame, oldest first, once keys are held.
-    pub(super) fn take_held_outbound(&mut self) -> Vec<Vec<u8>> {
+    pub(super) fn take_held_outbound(&mut self) -> Vec<HeldFrame> {
         if !self.state().is_open() {
             return Vec::new();
         }
@@ -253,7 +289,7 @@ impl RouteKeys {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use collab_types::{AttestationId, ChannelId, Ed25519PublicKey, OpClass};
+    use collab_types::{AttestationId, ChannelId, Ed25519PublicKey, OpKind};
     use runtime_identity::wire::ChannelAccess as Wire;
 
     fn keys(channel: ChannelId) -> (channel_crypto::ChannelGroup, Vec<u8>) {
@@ -274,7 +310,7 @@ mod tests {
                 artifact,
                 Ed25519PublicKey::from_bytes([2; 32]),
                 AttestationId::default(),
-                OpClass::Splice,
+                OpKind::Change,
                 std::time::SystemTime::UNIX_EPOCH,
                 1,
                 metadata,
@@ -284,7 +320,7 @@ mod tests {
                 artifact,
                 Ed25519PublicKey::from_bytes([2; 32]),
                 AttestationId::default(),
-                OpClass::Splice,
+                OpKind::Change,
                 std::time::SystemTime::UNIX_EPOCH,
                 1,
             ),
@@ -309,8 +345,8 @@ mod tests {
             route.seal(artifact, ContentRetention::Delta, b"mine".to_vec()),
             Sealed::Hold
         ));
-        assert!(route.hold_outbound(b"first".to_vec()));
-        assert!(route.hold_outbound(b"second".to_vec()));
+        assert!(route.hold_outbound(b"first".to_vec(), Vec::new()));
+        assert!(route.hold_outbound(b"second".to_vec(), Vec::new()));
         let arrived = envelope(sealed, Some(metadata));
         assert!(matches!(route.open(&arrived, true), Err(Unopened::Later)));
         route.hold_inbound(arrived, "peer".into());
@@ -327,7 +363,10 @@ mod tests {
         assert_eq!(route.generation(), 7);
         assert_eq!(
             route.take_held_outbound(),
-            vec![b"first".to_vec(), b"second".to_vec()]
+            vec![
+                (b"first".to_vec(), Vec::new()),
+                (b"second".to_vec(), Vec::new())
+            ]
         );
         let held = route.take_held_inbound();
         assert_eq!(held.len(), 1);
@@ -369,7 +408,7 @@ mod tests {
             .encode()
             .unwrap();
         let mut compaction = envelope(payload, Some(metadata));
-        compaction.op_class = OpClass::Compaction;
+        compaction.kind = OpKind::Compaction;
         let mut route = RouteKeys::requested();
         route.update(Wire::Ready, 1, Some(&encoded));
         assert_eq!(
@@ -406,6 +445,45 @@ mod tests {
             route.open(&envelope(sealed, Some(metadata)), true),
             Err(Unopened::Never)
         ));
+    }
+
+    /// Ciphertext the held keys can't open (sealed under a newer epoch) asks
+    /// for newer keys once per generation, and never while keys are awaited
+    /// (those routes are asked anyway).
+    #[test]
+    fn unopenable_ciphertext_asks_for_newer_keys_once_per_generation() {
+        let channel = ChannelId::new();
+        let (_, encoded) = keys(channel);
+        let artifact = ArtifactId(uuid::Uuid::from_bytes([1; 16]));
+        let mut route = RouteKeys::requested();
+        assert!(route.awaiting_keys());
+        route.hold_inbound(envelope(vec![1], None), "peer".into());
+        assert!(
+            !route.wants_keys_for_held(),
+            "a waiting route is asked anyway"
+        );
+
+        route.update(Wire::Ready, 1, Some(&encoded));
+        assert!(!route.awaiting_keys());
+        assert_eq!(route.take_held_inbound().len(), 1, "released with the keys");
+        assert!(
+            !route.wants_keys_for_held(),
+            "nothing held asks for nothing"
+        );
+        let newer = keys(channel).0;
+        let (metadata, sealed) = newer
+            .seal_content(artifact, ContentRetention::Delta, b"from a newer epoch")
+            .unwrap();
+        route.hold_inbound(envelope(sealed, Some(metadata)), "peer".into());
+        assert!(route.wants_keys_for_held());
+        assert!(
+            !route.wants_keys_for_held(),
+            "asked once for this generation"
+        );
+
+        route.update(Wire::Ready, 2, Some(&encoded));
+        assert!(route.wants_keys_for_held(), "newer keys may still lack it");
+        assert!(!route.wants_keys_for_held());
     }
 
     #[test]

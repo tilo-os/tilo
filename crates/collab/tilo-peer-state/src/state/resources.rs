@@ -15,11 +15,11 @@ impl<'de> Schema<'de> for DurableV6<'de> {}
 mod tests {
     use super::*;
     use crate::NeighbourMsg;
-    use crate::resources::outer::{self, Error, Limits};
+    use crate::resources::{OuterLimits, PeerResourceError, outer};
 
-    fn limits() -> Limits {
-        Limits {
-            allocation: 16 * 1024 * 1024,
+    fn limits() -> OuterLimits {
+        OuterLimits {
+            allocation_bytes: 16 * 1024 * 1024,
             collection_entries: 1024 * 1024,
         }
     }
@@ -58,12 +58,12 @@ mod tests {
         assert_eq!(
             outer::decode::<NeighbourMsg>(
                 &bytes,
-                Limits {
-                    allocation: 128,
+                OuterLimits {
+                    allocation_bytes: 128,
                     ..limits()
                 }
             ),
-            Err(Error::Capacity)
+            Err(PeerResourceError::Capacity)
         );
     }
 }

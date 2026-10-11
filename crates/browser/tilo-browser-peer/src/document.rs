@@ -407,16 +407,30 @@ pub async fn sign_frame(
     let (metadata, sealed) = cipher
         .seal(artifact, frame_retention(&cleartext), &cleartext)
         .map_err(DocumentError::Payload)?;
+    // A sealed op carries the claims of its changes for the relay, and names
+    // the surface of the page's app they are decided against.
+    let claims = collab_types::DocumentMutation::decode(&cleartext)
+        .ok()
+        .and_then(|mutation| {
+            collab_types::mutation_claims(&mutation, collab_types::record_unit).ok()
+        })
+        .unwrap_or_default();
+    #[cfg(feature = "toolkit")]
+    let surface = ui::app_surface::hash_of(&route.app_id);
+    #[cfg(not(feature = "toolkit"))]
+    let surface = None;
     let mut op = SignedOp::new_unsigned_with_encryption(
         sealed,
         artifact,
         author,
         attestation,
-        collab_types::OpClass::Splice,
+        collab_types::OpKind::Change,
         timestamp,
         seq,
         metadata,
-    );
+    )
+    .with_claims(claims)
+    .with_surface(surface);
     let signing_bytes = op
         .signing_bytes()
         .map_err(|error| DocumentError::Signature(error.to_string()))?;
@@ -563,7 +577,7 @@ mod tests {
                 artifact,
                 collab_types::Ed25519PublicKey::from_bytes(author),
                 collab_types::AttestationId::new(),
-                collab_types::OpClass::Splice,
+                collab_types::OpKind::Change,
                 std::time::SystemTime::UNIX_EPOCH,
                 1,
             ),

@@ -472,6 +472,7 @@ fn retained_row_activates_by_pointer_and_accessibility() {
     assert!(Widget::perform_action(
         &mut row,
         &crate::a11y::Action::Activate,
+        &[],
         &mut crate::widget::Edits::lend(&mut doc),
         &automerge::ROOT,
     ));
@@ -487,7 +488,7 @@ fn hover_actions_run_from_assistive_technology_and_the_keyboard() {
         .action(Icon::Reply, "Reply", move || r.set(r.get() + 1))
         .action(Icon::Trash, "Delete message", move || d.set(d.get() + 1));
     let mut doc = automerge::AutoCommit::new();
-    assert!(Widget::perform_action_at(
+    assert!(Widget::perform_action(
         &mut row,
         &crate::a11y::Action::Activate,
         &[1],
@@ -501,6 +502,7 @@ fn hover_actions_run_from_assistive_technology_and_the_keyboard() {
     assert!(Widget::perform_action(
         &mut row,
         &crate::a11y::Action::Activate,
+        &[],
         &mut crate::widget::Edits::lend(&mut doc),
         &automerge::ROOT,
     ));
@@ -597,6 +599,7 @@ fn a_leading_checkbox_toggles_apart_from_activation() {
     assert!(Widget::perform_action(
         &mut row,
         &crate::a11y::Action::ToggleCheck,
+        &[],
         &mut crate::widget::Edits::lend(&mut doc),
         &automerge::ROOT,
     ));
@@ -617,6 +620,7 @@ fn a_disabled_row_is_inert_and_skipped_by_focus() {
     assert!(!Widget::perform_action(
         &mut row,
         &crate::a11y::Action::Activate,
+        &[],
         &mut crate::widget::Edits::lend(&mut doc),
         &automerge::ROOT,
     ));

@@ -2,21 +2,19 @@
 //! `ui` toolkit.
 //!
 //! Architecture:
-//! - [`model`] — pure data: collaborative catalog/playlist state plus local
-//!   playback/cache projections.
+//! - [`model`] — the collaborative [`Library`](model::Library) record (catalog,
+//!   playlists, likes) plus local playback/cache values. It replicates across
+//!   devices; audio transport/cache never do.
 //! - [`seed`] — the bundled offline sample library (`--shots`, tests).
-//! - [`doc`] — the Automerge bridge: user-authored library state replicates
-//!   across devices; audio transport/cache never do.
 //! - [`backend`] — the swappable YouTube-Music data source
 //!   ([`backend::MusicBackend`]): a hermetic offline sample impl and the
-//!   shipping-default rustypipe impl (`live` feature). `PoToken` is a seam
-//!   ([`backend::potoken`]).
+//!   shipping-default rustypipe impl (`live` feature).
 //! - [`stream`] — the non-blocking worker driving [`backend`] off the UI thread.
 //! - [`audio`] — `GStreamer` `playbin` output + live position query (`audio`
 //!   feature).
 //! - [`lyrics`] — LRC parsing + a bundled sample library, plus a feature-gated
 //!   async lrclib fetch worker (`live` or `lyrics` feature).
-//! - [`resource`] — the library as the framework resource [`Music`] and the
+//! - [`resource`] — the library's verbs as the framework resource and the
 //!   app [`MusicShell`]: canonical shared library state, collaboration,
 //!   history, peer replication, screenshot scenarios and the launch. Audio
 //!   transport/cache stay device-local.
@@ -38,11 +36,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -53,8 +47,8 @@ pub mod app;
 pub mod audio;
 pub mod backend;
 pub mod commands;
-pub mod doc;
 mod files;
+mod i18n;
 #[cfg(test)]
 pub mod live_search;
 pub mod local_file;
@@ -81,7 +75,7 @@ pub fn searchable_types() -> Vec<SearchableType> {
     search_type::all_searchable_types()
 }
 
-pub use resource::{Music, MusicShell};
+pub use resource::MusicShell;
 
 ui::dev_reload_entry!(MusicShell);
 

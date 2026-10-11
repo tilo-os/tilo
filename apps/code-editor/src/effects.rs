@@ -14,13 +14,13 @@ use crate::commands::Command;
 #[effect(operation = "code_editor.effect")]
 pub enum CodeEditorEffect {
     /// Open file.
-    #[effect(permission = "read")]
-    Open {
+    #[effect(kind = "read")]
+    ShowFile {
         #[param("The file record's id")]
         file: String,
     },
     /// Show location.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     Reveal {
         #[param("The file record's id, when the location is in a project file")]
         file: Option<String>,
@@ -65,15 +65,15 @@ pub enum CodeEditorEffect {
     #[effect(device_only)]
     RevertFile,
     /// Find in file.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     Find,
     /// Replace in file.
     Replace,
     /// Search project.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     SearchProject,
     /// Go to line.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     GoToLine {
         #[param("One-based line number; omit to ask for one")]
         value: Option<String>,
@@ -89,26 +89,36 @@ pub enum CodeEditorEffect {
     /// Toggle line comment.
     ToggleComment,
     /// Toggle bottom panel.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     ToggleBottomPanel,
     /// Cycle color theme.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     NextTheme,
     /// Show problems.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     GoToProblems,
     /// Show search results.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     GoToSearch,
     /// Show terminal.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     GoToTerminal,
     /// Toggle sidebar.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     ToggleSidebar,
     /// Turn language servers on or off.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     ToggleLanguageServers,
+    /// Read file text.
+    #[effect(row, kind = "read", returns, idempotent)]
+    ReadText {
+        #[param("The file record's id")]
+        file: String,
+        #[param("Zero-based position in Unicode scalar values")]
+        start_chars: usize,
+        #[param("Maximum Unicode scalar values to read, between 1 and 4096")]
+        max_chars: usize,
+    },
 }
 
 impl CodeEditorEffect {
@@ -116,7 +126,8 @@ impl CodeEditorEffect {
     /// the command palette's commands.
     pub fn command(&self) -> Option<Command> {
         Some(match self {
-            Self::Open { .. }
+            Self::ReadText { .. }
+            | Self::ShowFile { .. }
             | Self::Reveal { .. }
             | Self::OpenFile { path: Some(_) }
             | Self::OpenFolder { path: Some(_) }

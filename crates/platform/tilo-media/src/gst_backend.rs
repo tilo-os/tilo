@@ -10,7 +10,7 @@
 //!   starts the audio sink;
 //! * runs clock-driven playback when asked to play.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
@@ -23,7 +23,9 @@ use gstreamer_video as gst_video;
 use crate::event::{MediaEvent, VideoFrame};
 use crate::frame::{Frame, FrameAcceptance, FramePayload};
 use crate::gst_frames::frame_from_sample;
-use crate::hw::{DecoderEntry, DecoderKind, HwPolicy, HwReport, rank_for};
+use crate::hw::fallback::{self, Direction};
+use crate::hw::v4l2;
+use crate::hw::{DecoderEntry, DecoderKind, HwPolicy, HwReport, effective_rank};
 use crate::source::Source;
 use crate::{MediaChapter, MediaTrack};
 
@@ -32,27 +34,81 @@ use crate::{MediaChapter, MediaTrack};
 /// Runs once per process, right after `gst::init`. Without this, a build whose
 /// `va*` elements ship at rank `NONE` never autoplugs them however capable the
 /// GPU is.
-fn apply_decoder_ranks(policy: HwPolicy) {
+///
+/// `refused` names hardware decoders that already failed on the current
+/// source; they drop to rank `NONE`, below what autoplugging considers, so the
+/// reopened pipeline plugs the next candidate instead of failing the same way.
+fn apply_decoder_ranks(policy: HwPolicy, refused: &BTreeSet<String>) {
+    // The rank each decoder had before this process first touched it.
+    static SHIPPED: Mutex<std::collections::BTreeMap<String, u32>> =
+        Mutex::new(std::collections::BTreeMap::new());
     let registry = gst::Registry::get();
+    let Ok(mut shipped) = SHIPPED.lock() else {
+        return;
+    };
     for feature in registry.features(gst::ElementFactory::static_type()) {
         let name = feature.name().to_string();
         if !crate::hw::looks_like_video_decoder(&name) {
             continue;
         }
         let kind = DecoderKind::classify(&name);
+        let original = *shipped
+            .entry(name.clone())
+            .or_insert_with(|| u32::try_from(feature.rank().into_glib()).unwrap_or(0));
         // Safety: `Rank` is a transparent wrapper over the C `gint` rank, and
         // any value is meaningful — GStreamer's own constants are just points
         // on that scale.
         // Ranks are a small scale (`GST_RANK_PRIMARY` is 256), so the
         // conversion is exact; a rank that somehow did not fit would be
         // "rank this as high as possible", which is what saturating gives.
-        let rank = i32::try_from(rank_for(policy, kind)).unwrap_or(i32::MAX);
+        let rank = if refused.contains(&name) {
+            0
+        } else {
+            i32::try_from(effective_rank(policy, kind, original)).unwrap_or(i32::MAX)
+        };
         let want = unsafe { gst::Rank::from_glib(rank) };
         if feature.rank() != want {
             feature.set_rank(want);
         }
     }
-    tracing::debug!("media: decoder ranks applied for policy {policy:?}");
+    tracing::debug!("media: decoder ranks applied for policy {policy:?}, refused {refused:?}");
+}
+
+/// The hardware decoders in the registry for `media_type`, by factory name.
+/// Reads the registry as it stands, without the extension refresh
+/// [`available_video_decoders`] does, so it is cheap enough for a streaming
+/// thread.
+fn hardware_decoders_for(media_type: &str) -> Vec<String> {
+    gst::Registry::get()
+        .features(gst::ElementFactory::static_type())
+        .into_iter()
+        .map(|f| f.name().to_string())
+        .filter(|name| {
+            crate::hw::looks_like_video_decoder(name)
+                && DecoderKind::classify(name).is_hardware()
+                && v4l2::element_media_type(name) == Some(media_type)
+        })
+        .collect()
+}
+
+/// The bitstream and picture size a decoder was configured with, read from
+/// the caps on its sink pad.
+fn decoder_input(element: &gst::Element) -> (Option<&'static str>, Option<(u32, u32)>) {
+    let factory = element.factory().map(|f| f.name().to_string());
+    let caps = element
+        .static_pad("sink")
+        .and_then(|pad| pad.current_caps());
+    let structure = caps.as_ref().and_then(|c| c.structure(0));
+    let media_type = factory
+        .as_deref()
+        .and_then(v4l2::element_media_type)
+        .or_else(|| structure.and_then(|st| v4l2::element_media_type(st.name())));
+    let size = structure.and_then(|st| {
+        let w = u32::try_from(st.get::<i32>("width").ok()?).ok()?;
+        let h = u32::try_from(st.get::<i32>("height").ok()?).ok()?;
+        Some((w, h))
+    });
+    (media_type, size)
 }
 
 /// Every video decoder in the `GStreamer` registry, with the rank it currently
@@ -144,7 +200,17 @@ fn sink_caps(acceptance: FrameAcceptance) -> gst::Caps {
 /// The video sink bin. Under [`FrameAcceptance::Rgba`] a `videoconvert` stands
 /// in front of the sink so any decoder output reaches RGBA; under
 /// [`FrameAcceptance::Native`] the sink is bare and negotiation decides.
-fn build_video_sink(acceptance: FrameAcceptance) -> Option<(gst::Element, gst_app::AppSink)> {
+///
+/// The RGBA bin also returns its *copy stage*: an `identity` in front of the
+/// converter that, once a V4L2 decoder is plugged, drops the allocation query
+/// so the decoder copies each picture into ordinary cached memory before the
+/// conversion reads it. A V4L2 decoder's buffers are mapped write-combined on
+/// ARM chips, and a colour conversion reading them directly is pathological:
+/// measured on an RK3566, 1080p H.264 from the Hantro decoder reached RGBA at
+/// 2.8 fps converting in place and 16 fps after one sequential copy.
+fn build_video_sink(
+    acceptance: FrameAcceptance,
+) -> Option<(gst::Element, gst_app::AppSink, Option<gst::Element>)> {
     let appsink = gst_app::AppSink::builder()
         .name("tilo_vsink")
         .caps(&sink_caps(acceptance))
@@ -174,18 +240,27 @@ fn build_video_sink(acceptance: FrameAcceptance) -> Option<(gst::Element, gst_ap
     match acceptance {
         FrameAcceptance::Native => {
             let element = appsink.clone().upcast::<gst::Element>();
-            Some((element, appsink))
+            Some((element, appsink, None))
         }
         FrameAcceptance::Rgba => {
             let bin = gst::Bin::builder().name("tilo_vbin").build();
-            let convert = gst::ElementFactory::make("videoconvert").build().ok()?;
+            let copy = gst::ElementFactory::make("identity")
+                .name("tilo_hw_copy")
+                .property("drop-allocation", false)
+                .build()
+                .ok()?;
+            // `0` lets the converter split each picture across every core.
+            let convert = gst::ElementFactory::make("videoconvert")
+                .property("n-threads", 0u32)
+                .build()
+                .ok()?;
             let sink_el = appsink.clone().upcast::<gst::Element>();
-            bin.add_many([&convert, &sink_el]).ok()?;
-            convert.link(&sink_el).ok()?;
-            let pad = convert.static_pad("sink")?;
+            bin.add_many([&copy, &convert, &sink_el]).ok()?;
+            gst::Element::link_many([&copy, &convert, &sink_el]).ok()?;
+            let pad = copy.static_pad("sink")?;
             let ghost = gst::GhostPad::with_target(&pad).ok()?;
             bin.add_pad(&ghost).ok()?;
-            Some((bin.upcast::<gst::Element>(), appsink))
+            Some((bin.upcast::<gst::Element>(), appsink, Some(copy)))
         }
     }
 }
@@ -216,6 +291,9 @@ impl SeekMode {
 #[derive(Default)]
 struct Observed {
     report: HwReport,
+    /// Hardware decoders that failed on the current source, with the error
+    /// each gave. Cleared when a different source opens.
+    refused: Vec<(String, String)>,
 }
 
 #[allow(
@@ -273,6 +351,23 @@ pub struct GstState {
     /// Flattened, trusted container TOC. The bus publishes it asynchronously
     /// after discovery, so callers can poll this without blocking decode.
     chapters: Vec<MediaChapter>,
+
+    /// The URI currently open, so a refused hardware decoder can be retried
+    /// past on the same source.
+    uri: Option<String>,
+    /// Factory names of hardware decoders that failed on `uri`.
+    refused: BTreeSet<String>,
+    /// Where to resume, and whether to play, once a reopen after a refused
+    /// decoder has prerolled.
+    resume: Option<(u64, bool)>,
+    /// Why the current source is not in hardware, kept to explain a later
+    /// error: the refused decoder's reason, and its media type.
+    refusal: Option<(&'static str, String)>,
+    /// The codec of a stream no installed decoder handles, announced with the
+    /// error the pipeline posts next.
+    missing_decoder: Option<String>,
+    /// The RGBA bin's copy stage; see [`build_video_sink`].
+    copy_stage: Option<gst::Element>,
 }
 
 impl GstState {
@@ -290,7 +385,7 @@ impl GstState {
         // policy a property of the engine's configuration rather than of
         // whichever code happened to touch the registry first, which is what
         // lets a caller (and a test) actually choose it.
-        apply_decoder_ranks(policy);
+        apply_decoder_ranks(policy, &BTreeSet::new());
 
         // Prefer `playbin`: unlike `playbin3` in current GStreamer releases,
         // it exposes the stable `n-audio` / `current-audio` and text-stream
@@ -301,7 +396,7 @@ impl GstState {
             .or_else(|_| gst::ElementFactory::make("playbin3").build())
             .ok()?;
 
-        let (video_sink, appsink) = build_video_sink(acceptance)?;
+        let (video_sink, appsink, copy_stage) = build_video_sink(acceptance)?;
         playbin.set_property("video-sink", &video_sink);
 
         // Audio through a real sink so playback is audible, with an explicit
@@ -334,23 +429,10 @@ impl GstState {
         // decode engaged: the name of the element GStreamer chose.
         {
             let observed = observed.clone();
+            let copy_stage = copy_stage.clone();
             playbin.connect("deep-element-added", false, move |vals| {
                 if let Some(element) = vals.get(2).and_then(|v| v.get::<gst::Element>().ok()) {
-                    let name = element.name().to_string();
-                    if let Ok(mut o) = observed.lock()
-                        && o.report.note_element(&name)
-                    {
-                        let kind = o.report.decoder_kind.unwrap_or(DecoderKind::Software);
-                        tracing::info!(
-                            "media: decoder {name} ({}, {})",
-                            kind.as_str(),
-                            if kind.is_hardware() {
-                                "hardware"
-                            } else {
-                                "software"
-                            }
-                        );
-                    }
+                    on_element_added(&element, &observed, copy_stage.as_ref(), policy, acceptance);
                 }
                 None
             });
@@ -384,6 +466,12 @@ impl GstState {
             frames_stored: 0,
             frames_at_seek: 0,
             chapters: Vec::new(),
+            uri: None,
+            refused: BTreeSet::new(),
+            resume: None,
+            refusal: None,
+            missing_decoder: None,
+            copy_stage,
         })
     }
 
@@ -427,16 +515,7 @@ impl GstState {
         self.frames_stored = 0;
         self.frames_at_seek = 0;
         self.chapters.clear();
-        if let Ok(mut o) = self.observed.lock() {
-            o.report = HwReport::default();
-        }
-
-        // Another engine may have been built since, leaving the registry on
-        // its policy, and extensions may have changed since this engine was
-        // built. Re-assert ours before the decoder is autoplugged.
-        crate::extensions::refresh_registry();
-        apply_decoder_ranks(self.policy);
-        self.set_drop_policy(false);
+        self.resume = None;
         let uri = match source.to_uri() {
             Ok(uri) => uri,
             Err(error) => {
@@ -444,7 +523,30 @@ impl GstState {
                 return;
             }
         };
-        self.playbin.set_property("uri", uri);
+        self.missing_decoder = None;
+        // A decoder refused by one stream may suit the next one.
+        if self.uri.as_deref() != Some(uri.as_str()) {
+            self.refused.clear();
+            self.refusal = None;
+            if let Ok(mut o) = self.observed.lock() {
+                o.refused.clear();
+            }
+        }
+        if let Ok(mut o) = self.observed.lock() {
+            o.report = HwReport::default();
+        }
+        if let Some(copy) = &self.copy_stage {
+            copy.set_property("drop-allocation", false);
+        }
+
+        // Another engine may have been built since, leaving the registry on
+        // its policy, and extensions may have changed since this engine was
+        // built. Re-assert ours before the decoder is autoplugged.
+        crate::extensions::refresh_registry();
+        apply_decoder_ranks(self.policy, &self.refused);
+        self.set_drop_policy(false);
+        self.playbin.set_property("uri", &uri);
+        self.uri = Some(uri);
         self.volume = volume.clamp(0.0, 1.0);
         self.apply_gain();
         // Preroll: a first frame and the duration become available without
@@ -651,6 +753,24 @@ impl GstState {
     /// re-prerolls and the new frame arrives on the preroll path, so scrubbing
     /// never starts the audio sink.
     pub fn seek(&mut self, ms: u64, mode: SeekMode) -> bool {
+        // A flushing seek while the first preroll is still negotiating is
+        // fatal to the V4L2 stateless decoders: the flush fails their
+        // allocation query mid-negotiation, they conclude the sink cannot
+        // take dmabufs, and the stream never prerolls — with no error on the
+        // bus. Hold the seek until the preroll completes instead.
+        if self.frames_stored == 0
+            && matches!(
+                self.playbin.state(gst::ClockTime::ZERO).0,
+                Ok(gst::StateChangeSuccess::Async)
+            )
+        {
+            self.deferred_seek = Some((ms, mode));
+            self.seek_in_flight = true;
+            self.seek_target_ms = Some(ms);
+            // The preroll picture about to land is not the one asked for.
+            self.frames_at_seek = self.frames_stored.saturating_add(1);
+            return true;
+        }
         // Before the first preroll completes, decodebin may still be
         // autoplugging the decoder, and a flushing seek GStreamer accepts in
         // that window can leave the decoder's caps unnegotiated, so no
@@ -671,6 +791,14 @@ impl GstState {
             return;
         };
         let (_, current, _) = self.playbin.state(gst::ClockTime::ZERO);
+        if self.frames_stored == 0
+            && matches!(
+                self.playbin.state(gst::ClockTime::ZERO).0,
+                Ok(gst::StateChangeSuccess::Async)
+            )
+        {
+            return;
+        }
         if current >= gst::State::Paused && self.issue_seek(ms, mode) {
             self.deferred_seek = None;
         }
@@ -680,6 +808,7 @@ impl GstState {
         if let Some(output) = &self.governed_output {
             output.flush();
         }
+
         let pos = gst::ClockTime::from_mseconds(ms);
         match self.playbin.seek_simple(mode.flags(), pos) {
             Ok(()) => {
@@ -887,6 +1016,109 @@ impl GstState {
         }
     }
 
+    /// When `error` came from a hardware decoder that refused the stream —
+    /// a picture larger than the block takes, a profile it lacks — log why,
+    /// demote that decoder for this source and reopen at the same position,
+    /// so autoplugging moves on to the next decoder. Returns whether it did.
+    ///
+    /// A decoder is refused once per source: if it comes back and fails
+    /// again, the error stands.
+    fn retry_past_refused_decoder(&mut self, error: &gst::message::Error) -> bool {
+        let Some(element) = error
+            .src()
+            .and_then(|src| src.clone().downcast::<gst::Element>().ok())
+        else {
+            return false;
+        };
+        let name = element.name();
+        if !crate::hw::looks_like_video_decoder(&name)
+            || !DecoderKind::classify(&name).is_hardware()
+        {
+            return false;
+        }
+        let Some(factory) = element.factory().map(|f| f.name().to_string()) else {
+            return false;
+        };
+        if self.refused.contains(&factory) {
+            return false;
+        }
+        let (media_type, size) = decoder_input(&element);
+        let detail = error.error().to_string();
+        let refused = vec![(factory.clone(), detail.clone())];
+        if let Some(media_type) = media_type {
+            let reason = fallback::explain(
+                Direction::Decode,
+                media_type,
+                false,
+                std::slice::from_ref(&factory),
+                &refused,
+                size,
+                v4l2::devices(),
+            );
+            fallback::report_once(Direction::Decode, media_type, &reason);
+            self.refusal = Some((media_type, reason.why(Direction::Decode, media_type)));
+        } else {
+            tracing::warn!("media: hardware decoder {factory} refused the stream ({detail})");
+        }
+        if let Ok(mut o) = self.observed.lock() {
+            o.refused.extend(refused);
+            o.report = HwReport::default();
+        }
+        self.refused.insert(factory);
+
+        let resume_at = self.last_position.unwrap_or(0);
+        let _ = self.playbin.set_state(gst::State::Null);
+        if let Some(copy) = &self.copy_stage {
+            copy.set_property("drop-allocation", false);
+        }
+        apply_decoder_ranks(self.policy, &self.refused);
+        self.seek_in_flight = false;
+        self.seek_target_ms = None;
+        self.resume = Some((resume_at, self.playing));
+        let _ = self.playbin.set_state(gst::State::Paused);
+        true
+    }
+
+    /// Nothing could decode a stream: say whether hardware could have, and
+    /// carry that into the error the pipeline is about to post.
+    fn explain_missing_decoder(&mut self, missing: &gst::StructureRef) {
+        let caps = missing
+            .get::<gst::Caps>("detail")
+            .ok()
+            .and_then(|caps| caps.structure(0).map(ToOwned::to_owned));
+        if missing.get::<&str>("type").ok() == Some("decoder")
+            && let Some(st) = &caps
+        {
+            self.missing_decoder = Some(crate::event::codec_name(
+                st.name().as_str(),
+                st.get::<i32>("mpegversion").ok(),
+            ));
+        }
+        let Some(media_type) = missing
+            .get::<gst::Caps>("detail")
+            .ok()
+            .and_then(|caps| caps.structure(0).map(|st| st.name().to_string()))
+            .and_then(|name| v4l2::element_media_type(&name))
+        else {
+            return;
+        };
+        let why = match &self.refusal {
+            Some((mt, why)) if *mt == media_type => why.clone(),
+            _ => fallback::explain(
+                Direction::Decode,
+                media_type,
+                false,
+                &hardware_decoders_for(media_type),
+                &[],
+                None,
+                v4l2::devices(),
+            )
+            .why(Direction::Decode, media_type),
+        };
+        let text = fallback::report_unplayable(media_type, &why);
+        self.refusal = Some((media_type, text));
+    }
+
     pub fn poll(&mut self) -> Vec<MediaEvent> {
         let mut events: Vec<MediaEvent> = self.pending.drain(..).collect();
 
@@ -915,13 +1147,42 @@ impl GstState {
                     // The flushing seek finished; the sink now holds the frame
                     // for the requested time.
                     self.seek_in_flight = self.deferred_seek.is_some();
+                    // A reopen past a refused decoder prerolled: put the
+                    // playhead and transport back where they were.
+                    if let Some((ms, playing)) = self.resume.take() {
+                        if ms > 0 {
+                            self.seek(ms, SeekMode::Accurate);
+                        }
+                        if playing {
+                            self.set_playing(true);
+                        }
+                    }
                 }
                 MessageView::Eos(_) => {
                     self.draining_output = true;
                 }
                 MessageView::Error(e) => {
+                    if self.retry_past_refused_decoder(e) {
+                        // Stale messages from the torn-down attempt.
+                        while self.bus.pop().is_some() {}
+                        break;
+                    }
                     self.playing = false;
-                    events.push(MediaEvent::Error(e.error().to_string()));
+                    let message = match &self.refusal {
+                        Some((_, why)) => format!("{} ({why})", e.error()),
+                        None => e.error().to_string(),
+                    };
+                    if let Some(codec) = self.missing_decoder.take() {
+                        events.push(MediaEvent::MissingDecoder { codec });
+                    }
+                    events.push(MediaEvent::Error(message));
+                }
+                MessageView::Element(el) => {
+                    if let Some(st) = el.structure()
+                        && st.name() == "missing-plugin"
+                    {
+                        self.explain_missing_decoder(st);
+                    }
                 }
                 MessageView::Toc(toc) => {
                     let (toc, _) = toc.toc();
@@ -963,6 +1224,147 @@ impl GstState {
 
         events
     }
+}
+
+/// Record a newly instantiated element. When it is the stream's video
+/// decoder: log which one it is, switch the RGBA bin's copy stage on for a
+/// V4L2 decoder, and when it runs in software say why, once.
+fn on_element_added(
+    element: &gst::Element,
+    observed: &Arc<Mutex<Observed>>,
+    copy_stage: Option<&gst::Element>,
+    policy: HwPolicy,
+    acceptance: FrameAcceptance,
+) {
+    if element
+        .factory()
+        .is_some_and(|f| f.name() == "uridecodebin")
+    {
+        steer_autoplugging(element, observed, acceptance);
+        return;
+    }
+    let name = element.name().to_string();
+    let (kind, already_refused) = {
+        let Ok(mut o) = observed.lock() else {
+            return;
+        };
+        if !o.report.note_element(&name) {
+            return;
+        }
+        (
+            o.report.decoder_kind.unwrap_or(DecoderKind::Software),
+            !o.refused.is_empty(),
+        )
+    };
+    tracing::info!(
+        "media: decoder {name} ({}, {})",
+        kind.as_str(),
+        if kind.is_hardware() {
+            "hardware"
+        } else {
+            "software"
+        }
+    );
+    if kind == DecoderKind::V4l2
+        && let Some(copy) = copy_stage
+    {
+        copy.set_property("drop-allocation", true);
+    }
+    // A refusal has already been explained, with more detail than is known
+    // here.
+    if kind.is_hardware() || already_refused {
+        return;
+    }
+    let factory = element.factory().map(|f| f.name().to_string());
+    let Some(media_type) = factory.as_deref().and_then(v4l2::element_media_type) else {
+        return;
+    };
+    let installed = hardware_decoders_for(media_type);
+    let reason = fallback::explain(
+        Direction::Decode,
+        media_type,
+        policy == HwPolicy::Off,
+        &installed,
+        &[],
+        None,
+        v4l2::devices(),
+    );
+    fallback::report_once(Direction::Decode, media_type, &reason);
+}
+
+/// Two hooks on the URI decoder's autoplugging.
+///
+/// * `autoplug-select` skips a hardware decoder that already refused the
+///   current source. Ranks alone cannot do this: `playbin` sorts its factory
+///   list once per registry cookie, and a rank change does not move the
+///   cookie.
+/// * `autoplug-query` answers the allocation query a decoder sends before
+///   its source pad is linked, advertising `GstVideoMeta`. An H.264 stream
+///   in MP4 carries its parameter sets in the caps, so the decoder negotiates
+///   on its first caps event, before `playbin` links it to the sink; without
+///   the meta a V4L2 decoder that picked `memory:DMABuf` refuses to continue
+///   (`DMABuf caps negotiated without the mandatory support of VideoMeta`)
+///   and the stream never prerolls. Once linked, the sink answers for itself.
+fn steer_autoplugging(
+    uridecodebin: &gst::Element,
+    observed: &Arc<Mutex<Observed>>,
+    acceptance: FrameAcceptance,
+) {
+    let refused = observed.clone();
+    uridecodebin.connect("autoplug-select", false, move |vals| {
+        let factory = vals.get(3)?.get::<gst::ElementFactory>().ok()?;
+        let skip = refused.lock().is_ok_and(|o| {
+            o.refused
+                .iter()
+                .any(|(name, _)| name.as_str() == factory.name().as_str())
+        });
+        // GST_AUTOPLUG_SELECT_TRY = 0, _SKIP = 2.
+        let ty = gst::glib::Type::from_name("GstAutoplugSelectResult")?;
+        gst::glib::EnumClass::with_type(ty)?.to_value(if skip { 2 } else { 0 })
+    });
+    // Only a consumer that takes dmabufs negotiates them early: an RGBA sink
+    // advertises system-memory caps, and answering for it here would hand a
+    // V4L2 decoder the meta that stops it copying out of its write-combined
+    // buffers (see `build_video_sink`).
+    if acceptance != FrameAcceptance::Native {
+        return;
+    }
+    uridecodebin.connect("autoplug-query", false, |vals| {
+        use gst::glib::translate::ToGlibPtr;
+        let element = vals.get(2)?.get::<gst::Element>().ok()?;
+        let value = vals.get(3)?;
+        if !value.type_().is_a(gst::Query::static_type()) {
+            return Some(false.to_value());
+        }
+        // The query is borrowed, not taken: decodebin passes it with static
+        // scope so the handler can answer it in place, and taking a reference
+        // (`Value::get::<Query>`) would make it read-only.
+        let raw_value: *const gst::glib::gobject_ffi::GValue = value.to_glib_none().0;
+        // SAFETY: `raw_value` is a live GValue holding a `GstQuery` (checked
+        // above); `g_value_get_boxed` borrows the pointer without a reference.
+        let raw = unsafe { gst::glib::gobject_ffi::g_value_get_boxed(raw_value) }
+            .cast::<gst::ffi::GstQuery>();
+        if raw.is_null() {
+            return Some(false.to_value());
+        }
+        // SAFETY: non-null and alive for the duration of this emission.
+        let query = unsafe { gst::QueryRef::from_ptr(raw) };
+        // SAFETY: `raw` is a live mini object.
+        let writable = unsafe { gst::ffi::gst_mini_object_is_writable(raw.cast()) } != 0;
+        if query.type_() != gst::QueryType::Allocation
+            || !crate::hw::looks_like_video_decoder(&element.name())
+            || !writable
+        {
+            return Some(false.to_value());
+        }
+        let api = gst_video::VideoMeta::meta_api();
+        // SAFETY: `raw` is the writable allocation query the decoder is
+        // waiting on. Adding a meta API is how a downstream peer answers it.
+        unsafe {
+            gst::ffi::gst_query_add_allocation_meta(raw, api.into_glib(), std::ptr::null());
+        }
+        Some(true.to_value())
+    });
 }
 
 /// Flatten a container TOC without inventing any labels. Nested editions and

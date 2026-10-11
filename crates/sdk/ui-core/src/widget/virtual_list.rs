@@ -169,10 +169,6 @@ where
         &self.items
     }
 
-    pub fn item_mut(&mut self, index: usize) -> Option<&mut T> {
-        self.items.get_mut(index)
-    }
-
     /// # Errors
     ///
     /// Returns [`DuplicateListKey`] when `key` already exists.
@@ -340,6 +336,8 @@ pub struct VirtualList<M: ListModel> {
     bleed: f64,
     /// Whether the rows were last laid out beside a scroll bar.
     rows_beside_bar: bool,
+    /// The list takes its parent's height, and its viewport follows it.
+    fill_height: bool,
     last_tick: Option<Instant>,
     last_anchor: Option<SparseAnchor<M::Key>>,
     requested_range: Option<Range<usize>>,
@@ -435,6 +433,7 @@ impl<M: ListModel> VirtualList<M> {
             gutter: f64::from(crate::tokens::Metrics::BASE.scrollbar_gutter),
             bleed: f64::from(crate::tokens::Spacing::BASE.s2),
             rows_beside_bar: false,
+            fill_height: false,
             last_tick: None,
             last_anchor: None,
             requested_range: None,
@@ -484,6 +483,14 @@ impl<M: ListModel> VirtualList<M> {
     pub fn set_viewport_height(&mut self, height: f32) {
         self.viewport.set_viewport(f64::from(height));
         self.visible_window_changed();
+    }
+
+    /// Take the parent's full height (a pane's one list) instead of a fixed
+    /// viewport; the viewport follows the laid-out height.
+    #[must_use]
+    pub fn filling(mut self) -> Self {
+        self.fill_height = true;
+        self
     }
 
     #[must_use]
@@ -1113,29 +1120,6 @@ impl<M: ListModel> VirtualList<M> {
         self.viewport.offset().to_bits() != before.to_bits()
     }
 
-    fn route_to_children(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        if let Some(row) = self
-            .mounted
-            .iter_mut()
-            .find(|row| row.widget.wants_pointer_capture())
-            && let Some(node) = row.node
-        {
-            row.widget
-                .handle_event(event, &mut ctx.reborrow(ctx.path, node));
-            return;
-        }
-        for row in self.mounted.iter_mut().rev() {
-            let Some(node) = row.node else {
-                continue;
-            };
-            row.widget
-                .handle_event(event, &mut ctx.reborrow(ctx.path, node));
-            if *ctx.handled {
-                break;
-            }
-        }
-    }
-
     fn handle_scrollbar_event(&mut self, event: &WindowEvent, scale_factor: f64) -> bool {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
@@ -1351,7 +1335,11 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
             Style {
                 size: Size {
                     width: percent(1.0_f32),
-                    height: Dimension::length(px(self.viewport.viewport())),
+                    height: if self.fill_height {
+                        percent(1.0_f32)
+                    } else {
+                        Dimension::length(px(self.viewport.viewport()))
+                    },
                 },
                 overflow: taffy::Point {
                     x: taffy::Overflow::Clip,
@@ -1367,13 +1355,14 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        if self.fill_height
+            && self.rect.height() > 0.0
+            && (self.rect.height() - self.viewport.viewport()).abs() > 0.5
+        {
+            self.viewport.set_viewport(self.rect.height());
+            self.visible_window_changed();
+        }
         let child_origin = Point::new(self.rect.x0, self.rect.y0);
         let mut measurements = Vec::with_capacity(self.mounted.len());
         for row in &mut self.mounted {
@@ -1499,7 +1488,12 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
             return;
         }
         if !self.drag_scroll.is_tracking() && !self.reorder.is_tracking() {
-            self.route_to_children(event, ctx);
+            crate::widget::route_to_mounted(
+                &mut self.mounted,
+                |mounted| (&mut mounted.widget, mounted.node),
+                event,
+                ctx,
+            );
         }
         if *ctx.handled {
             return;
@@ -1851,9 +1845,10 @@ mod tests {
     use std::rc::Rc;
     use winit::event::MouseScrollDelta;
 
+    use crate::testing::Dispatch;
     use taffy::AvailableSpace;
     use winit::dpi::PhysicalPosition;
-    use winit::event::{DeviceId, Modifiers};
+    use winit::event::DeviceId;
 
     struct HugeList {
         count: usize,
@@ -2010,25 +2005,18 @@ mod tests {
             _theme: &Theme,
             node_map: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
-            let node = taffy.leaf_node(Style {
+            let style = Style {
                 size: Size {
                     width: percent(1.0_f32),
                     height: Dimension::length(self.height),
                 },
                 ..Default::default()
-            });
-            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-            node
+            };
+            taffy.widget_leaf(style, node_map, self)
         }
 
         fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-            let layout = taffy.layout(node).copied().unwrap_or_default();
-            self.rect = Rect::new(
-                origin.x + f64::from(layout.location.x),
-                origin.y + f64::from(layout.location.y),
-                origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-                origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-            );
+            self.rect = crate::widget::layout_rect(taffy, node, origin);
         }
 
         fn draw(
@@ -2113,23 +2101,10 @@ mod tests {
         taffy: &TaffyTree<()>,
         node: NodeId,
     ) -> bool {
-        let mut doc = AutoCommit::new();
-        let mut handled = false;
-        let mut focus = None;
-        list.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy,
-            },
-        );
-        handled
+        Dispatch::new()
+            .layout(taffy, node)
+            .send(list, event)
+            .handled
     }
 
     #[test]
@@ -2803,6 +2778,50 @@ mod tests {
         let row = short.mounted[0].widget.get_rect();
         assert!((row.x1 - (300.0 - bleed)).abs() < 0.5);
         assert!(short.scrollbar_track().is_none());
+    }
+
+    #[test]
+    fn a_filling_list_takes_its_parents_height_as_its_viewport() {
+        let mut list = plain_rows(1000).filling();
+        let doc = AutoCommit::new();
+        let mut taffy = TaffyTree::new();
+        let mut node_map = HashMap::new();
+        let mut lay_out_in = |list: &mut VirtualList<_>, taffy: &mut TaffyTree<()>| {
+            list.sync(&doc, &automerge::ROOT);
+            taffy.clear();
+            node_map.clear();
+            let node = list.build_layout(taffy, &Theme::dark(), &mut node_map);
+            let parent = taffy
+                .new_with_children(
+                    Style {
+                        size: Size {
+                            width: length(300.0_f32),
+                            height: length(600.0_f32),
+                        },
+                        ..Default::default()
+                    },
+                    &[node],
+                )
+                .unwrap();
+            taffy
+                .compute_layout(
+                    parent,
+                    Size {
+                        width: AvailableSpace::MaxContent,
+                        height: AvailableSpace::MaxContent,
+                    },
+                )
+                .unwrap();
+            list.apply_layout(taffy, node, Point::ZERO);
+        };
+        lay_out_in(&mut list, &mut taffy);
+        assert!((list.get_rect().height() - 600.0).abs() < 0.5);
+        lay_out_in(&mut list, &mut taffy);
+        let rows = list.visible_range();
+        assert!(
+            rows.end * 40 >= 600,
+            "the window covers the height: {rows:?}"
+        );
     }
 
     #[test]

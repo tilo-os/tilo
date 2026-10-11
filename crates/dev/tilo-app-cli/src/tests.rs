@@ -1722,7 +1722,10 @@ fn add_artifact_protects_work_and_stays_inside_the_app() {
 
         std::fs::create_dir_all(app.join("locales")).unwrap();
         std::fs::write(app.join("locales/en-US.ftl"), STARTER_APP_CATALOG).unwrap();
-        let registry = locale_registry_source(&["en-US".to_owned()]);
+        let registry = locale_registry_source(
+            &["en-US".to_owned()],
+            &catalog_message_ids(&parse_fluent_catalog(STARTER_APP_CATALOG).unwrap()),
+        );
         std::fs::write(app.join("src/locales.rs"), &registry).unwrap();
         let preview = add_app_artifact(AddRequest {
             start: app.clone(),
@@ -1999,9 +2002,16 @@ fn locales_are_registered_validated_and_synced_without_losing_translations() {
         })
         .unwrap();
         assert_eq!(preserved.checked, ["de-DE"]);
+        let registry_path = app.join("src/locales.rs");
         assert_eq!(
             preserved.files.as_slice(),
-            std::slice::from_ref(&translation_path)
+            [translation_path.clone(), registry_path.clone()],
+            "a new source message also becomes a label key"
+        );
+        assert!(
+            std::fs::read_to_string(&registry_path).unwrap().contains(
+                "pub const SETTINGS_TITLE: LabelKey = LabelKey::new(\"settings-title\");"
+            )
         );
         assert!(
             preserved
@@ -2487,6 +2497,9 @@ fn new_apps_are_created_whole_with_their_workspace_registration() {
         assert!(destination.join(sdk_path).join("Cargo.toml").is_file());
         assert!(destination.join("src/main.rs").is_file());
         assert!(destination.join("tests/app.rs").is_file());
+        let agent_guide =
+            std::fs::read_to_string(destination.join("AGENTS.md")).expect("agent guide");
+        assert_eq!(agent_guide, APP_AGENT_GUIDE);
         assert!(destination.join("tests/headless-actions.json").is_file());
         let catalog =
             std::fs::read_to_string(destination.join("locales/en-US.ftl")).expect("catalog");
@@ -2498,7 +2511,7 @@ fn new_apps_are_created_whole_with_their_workspace_registration() {
         assert!(library.contains("#[derive(Model, Default, Debug, Clone, PartialEq)]"));
         assert!(library.contains("#[resource(kind = \"local.dev.reading.list.greeting\""));
         assert!(library.contains("impl ResourceApp for App"));
-        assert!(library.contains(".input(|greeting| greeting.name.clone(), Greeting::SET_NAME)"));
+        assert!(library.contains(".input(cx.paths().name)"));
         assert!(library.contains("with_id(\"name-input\")"));
         assert!(library.contains("cx.button(\"starter-clear\", Greeting::CLEAR.invoke())"));
         assert!(library.contains("labeled_field(\"starter-name-label\", name)"));
@@ -3205,7 +3218,9 @@ fn creation_inputs_are_validated_and_printed_safely() {
         let outcome = create_app(req).expect("preview app");
         assert!(outcome.dry_run);
         assert!(!destination.exists());
-        assert_eq!(outcome.files.len(), 13);
+        assert_eq!(outcome.files.len(), 15);
+        assert!(outcome.files.contains(&PathBuf::from("AGENTS.md")));
+        assert!(outcome.files.contains(&PathBuf::from("surface.toml")));
     }
 
     // Phase: an_app_outside_every_repository_becomes_one.
@@ -3422,7 +3437,7 @@ fn each_template_composes_the_toolkit_patterns_it_teaches() {
             template: Template::Document,
         };
         let source = app_lib(&spec);
-        assert!(source.contains(".input(|document| document.title.clone(), Document::SET_TITLE)"));
+        assert!(source.contains(".input(p.title)"));
         assert!(source.contains(".text(|document| document.title.clone())"));
         assert!(source.contains("multiline(true)"));
         assert!(source.contains("#[action(destructive)]"));
@@ -4089,6 +4104,7 @@ fn packaging_is_scoped_safe_and_never_clobbers_output() {
         let error = package_app(
             &destination.join("src/lib.rs"),
             &PackageRequest {
+                sdk: None,
                 output: None,
                 identity: None,
                 profile: None,
@@ -4123,6 +4139,7 @@ fn packaging_is_scoped_safe_and_never_clobbers_output() {
         let error = package_app(
             &destination,
             &PackageRequest {
+                sdk: None,
                 output: None,
                 identity: None,
                 profile: None,
@@ -5196,7 +5213,8 @@ mod platform;
 #[cfg(test)]
 mod platform_tests;
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 fn test_symlink() {
     std::os::unix::fs::symlink("a", "b").unwrap();
 }

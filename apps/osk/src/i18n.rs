@@ -3,7 +3,7 @@
 
 use ui::i18n::{ArgValue, EmbeddedCatalog};
 
-static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new(
+pub(crate) static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new(
     "en-US",
     &[("en-US", include_str!("../locales/en-US.ftl"))],
     "osk-emoji-key",

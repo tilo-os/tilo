@@ -95,6 +95,36 @@ fi
 runtime_dylib="$thin_app_dir/libruntime_dylib.so"
 rust_libstd=$(find "$(rustc --print target-libdir)" -maxdepth 1 -name 'libstd-*.so' -print -quit)
 [[ -f $runtime_dylib && -f $rust_libstd ]]
+# The runtime engines build-thin-apps.sh built with this runtime, whichever
+# apps were selected: each is signed beside the runtime, which is
+# what makes the runtime id cover it, and only its app loads it.
+[[ -f $thin_app_dir/runtime-engines ]] || {
+    printf 'build-thin-apps.sh left no runtime engine list in %s\n' "$thin_app_dir" >&2
+    exit 1
+}
+runtime_engines=()
+while IFS= read -r engine; do
+    [[ $engine =~ ^lib[a-z0-9_]+\.so$ && -f $thin_app_dir/$engine ]] || {
+        printf 'runtime engine %s is not a built library in %s\n' "$engine" "$thin_app_dir" >&2
+        exit 1
+    }
+    runtime_engines+=("$thin_app_dir/$engine")
+done < "$thin_app_dir/runtime-engines"
+# The default SDK also serves osk/settings's native keyboard-map dependency.
+# Include this fixed platform root for every selection: using only the emitted
+# apps' dependencies would change the SDK identity for a partial release.
+keyboard_libdir=$(pkg-config --variable=libdir xkbcommon)
+keyboard_library="$keyboard_libdir/libxkbcommon.so.0"
+[[ -n $keyboard_libdir && -f $keyboard_library ]] || {
+    printf 'default SDK keyboard library is missing: %s\n' "$keyboard_library" >&2
+    exit 1
+}
+# Every retained SDK owns the product catalog its apps were compiled against.
+# Prepare verified bytes before signing; checkout cache paths are not available
+# inside an installed app's private namespace.
+runtime_fonts="$out/work/fonts"
+python3 "$repo_root/tools/font-catalog.py" prepare \
+    "$repo_root/crates/sdk/ui-core/assets/fonts" "$runtime_fonts" --scope product
 # Keep the public runtime and publisher key under the root transported by
 # release-apps.yml and consumed by assemble-collection.sh. Private identities
 # stay in work/ (or the caller's external identity files), outside that root.
@@ -103,11 +133,14 @@ OUT_DIR="$out/runtime" RUNTIME_RELEASE="$runtime_release" FROM=/ \
     SOURCE_DATE_EPOCH="$source_epoch" \
     ARCH="$(uname -m)" IDENTITY_JSON="$runtime_identity" \
     BUNDLE_BIN="$release_dir/tilo-runtime-bundle" \
-    EXTRA_LIBS="$runtime_dylib $rust_libstd" \
+    FONT_CATALOG_ROOT="$runtime_fonts" \
+    EXTRA_LIBS="$runtime_dylib ${runtime_engines[*]} $rust_libstd $keyboard_library" \
     "$repo_root/os/scripts/bake-runtime-bundle.sh"
 # Every app below links this exact runtime build and names it.
 runtime_version=$(<"$out/work/runtime-version")
 runtime_id="tilo-runtime/$runtime_version"
+"$repo_root/os/scripts/verify-runtime-bundle-closure.sh" \
+    "$out/runtime/tilo-runtime/$runtime_version" "${app_binaries[@]}"
 
 if [[ -z $identity ]]; then
     identity="$out/work/publisher.json"
@@ -133,6 +166,13 @@ while IFS=$'\t' read -r name package binary id version manifest; do
     staged_manifest="$out/work/manifest-$name.toml"
     mkdir -p "$payload/bin"
     install -pm 0755 "$built" "$payload/bin/$binary"
+    # The app's public surface ships at the payload root, as `tilo-app package`
+    # stages it: the launcher names that file to the app, which reads it from
+    # there, and relays fetch it from the registry by the hash its ops name.
+    surface="$repo_root/$(dirname "$manifest")/surface.toml"
+    if [[ -f $surface ]]; then
+        install -pm 0644 "$surface" "$payload/surface.toml"
+    fi
     sed "s|^\(identity  *= *\)\"ed25519:[0-9a-fA-F]*\"|\1\"ed25519:$pubkey\"|" \
         "$repo_root/$manifest" > "$staged_manifest"
     python3 "$repo_root/tools/apps/dev_app_versions.py" --manifest "$staged_manifest" --version "$version"
@@ -154,8 +194,14 @@ while IFS=$'\t' read -r name package binary id version manifest; do
         exit "$pack_status"
     fi
     tapp_bytes=$(stat -c %s "$tapp")
-    printf 'packed app=%s output=%s tapp_bytes=%s limit=%s\n' \
-        "$name" "$tapp" "$tapp_bytes" "$max_tapp_bytes"
+    # What a client downloads: the compressed twin the registry publishes
+    # beside the .tapp. Measured here, then dropped; publishing writes its own.
+    twin="$out/work/$name.tapp.zst"
+    "$release_dir/tilo-app-package" compress --output "$twin" "$tapp" >/dev/null
+    zst_bytes=$(stat -c %s "$twin")
+    rm -f "$twin"
+    printf 'packed app=%s output=%s tapp_bytes=%s limit=%s zst_bytes=%s\n' \
+        "$name" "$tapp" "$tapp_bytes" "$max_tapp_bytes" "$zst_bytes"
     "$release_dir/tilo-app-package" verify --trusted-key "$pubkey" "$tapp"
     (( tapp_bytes <= max_tapp_bytes )) || {
         printf '%s is %s bytes (limit %s); shared-runtime packaging regressed\n' \

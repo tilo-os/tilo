@@ -5,9 +5,11 @@ pub mod governance;
 pub mod hdr_metadata;
 pub mod join;
 pub mod protocol;
-pub use protocol::NeighbourMsg;
+pub use protocol::{NeighbourMsg, PresenceSlot};
 #[cfg(test)]
 mod admission_tests;
+#[cfg(test)]
+mod receipt_tests;
 #[cfg(test)]
 tilo_automerge_isolate::test_worker!();
 mod cached_document;
@@ -19,11 +21,12 @@ mod state;
 mod verified_certificate;
 pub use state::{
     BoundedPeerError, BoundedPeerInvalid, BoundedStatePeer, DocumentRow, GovernedAccess,
-    GovernedMember, LocalRecoveryReservation, NativePublicationCut, PeerDeliveryPolicy,
-    PeerDeliveryPolicyError, PeerDocumentRead, PeerDocumentReadError, PeerLimits, PeerMediaCall,
-    PeerMember, PeerPolicyBasis, PeerRead, PeerRevocations, PeerRoomAccess, ReceiveOutcome, Reseal,
-    SealCheckpoint, SeedDocument, SeedState, StatePeer, TransportOrigin,
-    VerifiedSecurityMetadataOnly, peer_handle, seed_room,
+    GovernedAgent, GovernedMember, LocalRecoveryReservation, MemberAuthority, NativePublicationCut,
+    PeerDeliveryPolicy, PeerDeliveryPolicyError, PeerDocumentRead, PeerDocumentReadError,
+    PeerLimits, PeerMediaCall, PeerMember, PeerPolicyBasis, PeerRead, PeerRevocations,
+    PeerRoomAccess, ReceiveOutcome, Reseal, SealCheckpoint, SeedDocument, SeedState, StatePeer,
+    TransportOrigin, VerifiedSecurityMetadataOnly, decide_with_surfaces, default_surfaces,
+    peer_handle, seed_room,
 };
 pub mod coverage;
 mod governed_routes;

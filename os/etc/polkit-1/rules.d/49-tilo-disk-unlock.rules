@@ -1,0 +1,18 @@
+// Settings shows, per encrypted volume enrolled for sibling unlock, how its
+// secrets are kept and which Wi-Fi networks may unlock it. That description
+// lives under /var/lib/tilo/sibling-unlock, readable by root alone, because
+// it names the networks the owner trusts to unlock this machine.
+//
+// Reading it (`tilo-sibling-unlock volumes`, which takes no argument and
+// prints no secret) is granted without a prompt to an administrator at this
+// machine's active seat. Anything else the program does through pkexec, such
+// as choosing the unlock networks again (`enrol --replace-networks`), falls
+// through to the action's default: administrator authentication.
+polkit.addRule(function (action, subject) {
+    if (action.id == "org.tilo.disk-unlock.manage" &&
+        action.lookup("command_line") == "/usr/bin/tilo-sibling-unlock volumes" &&
+        subject.local && subject.active && subject.isInGroup("wheel")) {
+        return polkit.Result.YES;
+    }
+    return polkit.Result.NOT_HANDLED;
+});

@@ -58,7 +58,7 @@ pub struct HelloAck {
     /// Ed25519 signature by the server's *device* signing key over
     /// `blake3(AUTH_NONCE_TAG || client_nonce)`. Proves the server
     /// holds the private key matching the cert.
-    #[serde(with = "crate::sig64")]
+    #[serde(with = "serde_bytes")]
     pub sig_over_client_nonce: [u8; 64],
 }
 
@@ -67,7 +67,7 @@ pub struct HelloAck {
 pub struct HelloAck2 {
     /// Ed25519 signature by the client's device signing key over
     /// `blake3(AUTH_NONCE_TAG || server_nonce)`.
-    #[serde(with = "crate::sig64")]
+    #[serde(with = "serde_bytes")]
     pub sig_over_server_nonce: [u8; 64],
 }
 
@@ -137,6 +137,151 @@ pub enum AuthError {
     /// a replay, or a bug in the peer's implementation.
     #[error("challenge signature did not verify")]
     BadChallengeSig,
+    /// An endpoint-bound certificate names a device other than the
+    /// transport endpoint that presented it.
+    #[error("certificate does not match the authenticated endpoint")]
+    EndpointMismatch,
+}
+
+/// Who a relay endpoint admits at the handshake, by name.
+///
+/// Every server endpoint states its requirement here rather than passing a
+/// [`TrustPolicy`] literal, so a reviewer reads the admission rule at the
+/// call site and a new endpoint has to choose one.
+#[derive(Clone, Copy, Debug)]
+pub enum HandshakeTrust<'a> {
+    /// The relay's live trust policy: its own user and every user it
+    /// currently admits (the main relay ALPN, content-endpoint discovery,
+    /// compute and browser sessions).
+    Live(&'a TrustPolicy),
+    /// Only devices of the relay's own user (home-peer management).
+    OwnerDevicesOnly,
+    /// Only devices of the relay's own user that may admit devices
+    /// (device-certification approvers).
+    OwnerDeviceAdmitters,
+    /// Any device whose certificate is valid and unrevoked, of any user.
+    /// Authentication only: the endpoint must authorize every request
+    /// itself (room administration, whose owner-only verbs check the
+    /// relay's user and whose members' receipts check room membership).
+    AnyCertifiedDevice,
+}
+
+impl HandshakeTrust<'_> {
+    fn admits(self, cert: &DeviceCert, own_user_public_key: &[u8; 32]) -> bool {
+        let owner = || TrustPolicy::AllowMatchingUser.admits(cert, own_user_public_key);
+        match self {
+            Self::Live(policy) => policy.admits(cert, own_user_public_key),
+            Self::OwnerDevicesOnly => owner(),
+            Self::OwnerDeviceAdmitters => owner() && cert.capabilities.can_admit_devices,
+            Self::AnyCertifiedDevice => true,
+        }
+    }
+}
+
+/// The relay's own identity, as the server side of a handshake needs it.
+#[derive(Clone, Copy)]
+pub struct ServerIdentity<'a> {
+    /// The relay's user root public key.
+    pub own_user: &'a [u8; 32],
+    /// The relay's device certificate, sent in [`HelloAck`].
+    pub cert: &'a DeviceCert,
+    /// The relay's device signing key, which signs the client's nonce.
+    pub key: &'a ed25519_dalek::SigningKey,
+}
+
+/// A server handshake that sent its [`HelloAck`] and waits for the client's
+/// [`HelloAck2`].
+#[derive(Clone, Debug)]
+pub struct PendingServer {
+    peer: AuthenticatedPeer,
+    server_nonce: [u8; 32],
+}
+
+impl PendingServer {
+    /// Second half: check the client's signature over the server nonce.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AuthError::BadChallengeSig`] if the signature does not
+    /// verify under the hello certificate's device key.
+    pub fn finish(self, ack2: &HelloAck2) -> Result<AuthenticatedPeer, AuthError> {
+        verify_hello_ack2(ack2, &self.peer.device_public_key, &self.server_nonce)?;
+        Ok(self.peer)
+    }
+}
+
+/// First half of the server handshake, without I/O: verify `hello` under
+/// `trust` and `revocations`, and return the [`HelloAck`] to send with the
+/// state [`PendingServer::finish`] completes.
+///
+/// `server_nonce` must be fresh randomness for every handshake.
+///
+/// # Errors
+///
+/// Returns [`AuthError::Cert`] if the client's cert doesn't verify or is
+/// expired, [`AuthError::Revoked`] if its device is revoked, or
+/// [`AuthError::PolicyReject`] if `trust` does not admit it.
+pub fn server_begin(
+    identity: &ServerIdentity<'_>,
+    trust: HandshakeTrust<'_>,
+    revocations: &RevocationList,
+    hello: &Hello,
+    now_ns: u64,
+    server_nonce: [u8; 32],
+) -> Result<(PendingServer, HelloAck), AuthError> {
+    let peer = admit_cert(&hello.cert, identity.own_user, trust, revocations, now_ns)?;
+    let ack = build_hello_ack(
+        identity.cert.clone(),
+        identity.key,
+        server_nonce,
+        &hello.client_nonce,
+    );
+    Ok((PendingServer { peer, server_nonce }, ack))
+}
+
+/// Authenticate a certificate offered over a transport that already proved
+/// possession of `remote`, the device key of its endpoint (an Iroh
+/// connection's remote id). Binds the certificate to that key and applies
+/// the handshake's validity, revocation and trust checks.
+///
+/// # Errors
+///
+/// Returns [`AuthError::EndpointMismatch`] if the certificate names another
+/// device, otherwise as [`server_begin`].
+pub fn authenticate_endpoint_bound(
+    cert: &DeviceCert,
+    remote: &[u8; 32],
+    own_user_public_key: &[u8; 32],
+    trust: HandshakeTrust<'_>,
+    revocations: &RevocationList,
+    now_ns: u64,
+) -> Result<AuthenticatedPeer, AuthError> {
+    if &cert.device_public_key != remote {
+        return Err(AuthError::EndpointMismatch);
+    }
+    admit_cert(cert, own_user_public_key, trust, revocations, now_ns)
+}
+
+fn admit_cert(
+    cert: &DeviceCert,
+    own_user_public_key: &[u8; 32],
+    trust: HandshakeTrust<'_>,
+    revocations: &RevocationList,
+    now_ns: u64,
+) -> Result<AuthenticatedPeer, AuthError> {
+    verify_device_cert_at(cert, now_ns)?;
+    if revocations.is_revoked_at(&cert.device_public_key, now_ns) {
+        return Err(AuthError::Revoked);
+    }
+    if !trust.admits(cert, own_user_public_key) {
+        return Err(AuthError::PolicyReject);
+    }
+    Ok(AuthenticatedPeer {
+        role: PeerRole::from_cert(cert),
+        cert: cert.clone(),
+        user_public_key: cert.user_public_key,
+        device_public_key: cert.device_public_key,
+    })
 }
 
 /// Compute the domain-bound challenge digest both sides sign.
@@ -151,6 +296,9 @@ pub fn challenge_digest(nonce: &[u8; 32]) -> [u8; 32] {
 /// `policy` + `revocations`. Returns the authenticated peer state
 /// on success.
 ///
+/// This is the hello check alone. A server endpoint runs the whole
+/// handshake through [`server_begin`] and [`PendingServer::finish`].
+///
 /// # Errors
 ///
 /// Returns [`AuthError::Cert`] if the client's cert doesn't verify or
@@ -163,19 +311,13 @@ pub fn accept_hello(
     revocations: &RevocationList,
     now_ns: u64,
 ) -> Result<AuthenticatedPeer, AuthError> {
-    verify_device_cert_at(&hello.cert, now_ns)?;
-    if revocations.is_revoked_at(&hello.cert.device_public_key, now_ns) {
-        return Err(AuthError::Revoked);
-    }
-    if !policy.admits(&hello.cert, own_user_public_key) {
-        return Err(AuthError::PolicyReject);
-    }
-    Ok(AuthenticatedPeer {
-        role: PeerRole::from_cert(&hello.cert),
-        cert: hello.cert.clone(),
-        user_public_key: hello.cert.user_public_key,
-        device_public_key: hello.cert.device_public_key,
-    })
+    admit_cert(
+        &hello.cert,
+        own_user_public_key,
+        HandshakeTrust::Live(policy),
+        revocations,
+        now_ns,
+    )
 }
 
 /// Server-side: build the `HelloAck` reply — signs the client's
@@ -478,6 +620,259 @@ mod tests {
         ));
     }
 
+    fn alice_relay_and_bob() -> (Party, Party, Party, [u8; 32], SigningKey) {
+        let (alice_root, alice) = UserIdentity::generate("Alice", 1);
+        let relay = enrol(
+            &alice_root,
+            alice.public_key,
+            "server",
+            DeviceCapabilities::host(),
+        );
+        let laptop = enrol(
+            &alice_root,
+            alice.public_key,
+            "laptop",
+            DeviceCapabilities::primary(),
+        );
+        let (bob_root, bob) = UserIdentity::generate("Bob", 1);
+        let collaborator = enrol(
+            &bob_root,
+            bob.public_key,
+            "bob-laptop",
+            DeviceCapabilities::primary(),
+        );
+        (relay, laptop, collaborator, alice.public_key, alice_root)
+    }
+
+    fn identity<'a>(relay: &'a Party, own_user: &'a [u8; 32]) -> ServerIdentity<'a> {
+        ServerIdentity {
+            own_user,
+            cert: &relay.cert,
+            key: &relay.sk,
+        }
+    }
+
+    fn hello(party: &Party) -> Hello {
+        Hello {
+            cert: party.cert.clone(),
+            client_nonce: [3; 32],
+        }
+    }
+
+    #[test]
+    fn server_begin_finish_round_trip() {
+        let (relay, laptop, _, alice, _) = alice_relay_and_bob();
+        let revocations = RevocationList::new();
+        let policy = TrustPolicy::default();
+        let (pending, ack) = server_begin(
+            &identity(&relay, &alice),
+            HandshakeTrust::Live(&policy),
+            &revocations,
+            &hello(&laptop),
+            1000,
+            [5; 32],
+        )
+        .unwrap();
+        // The client sees a valid ack for its own nonce.
+        verify_hello_ack(&ack, &alice, &revocations, 1000, &[3; 32]).unwrap();
+        assert_eq!(ack.server_nonce, [5; 32]);
+        let peer = pending
+            .finish(&build_hello_ack2(&laptop.sk, &ack.server_nonce))
+            .unwrap();
+        let expected = accept_hello(&hello(&laptop), &alice, &policy, &revocations, 1000).unwrap();
+        assert_eq!(peer.cert, expected.cert);
+        assert_eq!(peer.user_public_key, expected.user_public_key);
+        assert_eq!(peer.device_public_key, expected.device_public_key);
+        assert_eq!(peer.role, expected.role);
+    }
+
+    #[test]
+    fn owner_devices_only_rejects_admitted_collaborator() {
+        let (relay, laptop, collaborator, alice, _) = alice_relay_and_bob();
+        let revocations = RevocationList::new();
+        let live = TrustPolicy::AllowList {
+            users: vec![
+                hex::encode(alice),
+                hex::encode(collaborator.cert.user_public_key),
+            ],
+        };
+        let begin = |trust, party: &Party| {
+            server_begin(
+                &identity(&relay, &alice),
+                trust,
+                &revocations,
+                &hello(party),
+                1000,
+                [5; 32],
+            )
+        };
+        // The live policy admits the collaborator; the owner-only rules do not.
+        begin(HandshakeTrust::Live(&live), &collaborator).unwrap();
+        for trust in [
+            HandshakeTrust::OwnerDevicesOnly,
+            HandshakeTrust::OwnerDeviceAdmitters,
+        ] {
+            assert!(matches!(
+                begin(trust, &collaborator).unwrap_err(),
+                AuthError::PolicyReject
+            ));
+            begin(trust, &laptop).unwrap();
+        }
+        begin(HandshakeTrust::AnyCertifiedDevice, &collaborator).unwrap();
+    }
+
+    #[test]
+    fn owner_device_admitters_requires_can_admit_devices() {
+        let (relay, _, _, alice, alice_root) = alice_relay_and_bob();
+        let member = enrol(&alice_root, alice, "member", DeviceCapabilities::member());
+        assert!(!member.cert.capabilities.can_admit_devices);
+        let revocations = RevocationList::new();
+        let begin = |trust| {
+            server_begin(
+                &identity(&relay, &alice),
+                trust,
+                &revocations,
+                &hello(&member),
+                1000,
+                [5; 32],
+            )
+        };
+        begin(HandshakeTrust::OwnerDevicesOnly).unwrap();
+        assert!(matches!(
+            begin(HandshakeTrust::OwnerDeviceAdmitters).unwrap_err(),
+            AuthError::PolicyReject
+        ));
+    }
+
+    #[test]
+    fn revoked_device_rejected_in_begin() {
+        let (relay, laptop, _, alice, alice_root) = alice_relay_and_bob();
+        let mut entry = RevocationEntry {
+            user_public_key: alice,
+            revoked_device_public_key: laptop.cert.device_public_key,
+            revoked_at_ns: 500,
+            reason: RevocationReason::Compromised,
+            signature: [0u8; 64],
+        };
+        sign_revocation_entry(&mut entry, &alice_root).unwrap();
+        let mut revocations = RevocationList::new();
+        revocations.insert(entry).unwrap();
+        for trust in [
+            HandshakeTrust::OwnerDevicesOnly,
+            HandshakeTrust::AnyCertifiedDevice,
+        ] {
+            assert!(matches!(
+                server_begin(
+                    &identity(&relay, &alice),
+                    trust,
+                    &revocations,
+                    &hello(&laptop),
+                    1000,
+                    [5; 32],
+                )
+                .unwrap_err(),
+                AuthError::Revoked
+            ));
+            assert!(matches!(
+                authenticate_endpoint_bound(
+                    &laptop.cert,
+                    &laptop.cert.device_public_key,
+                    &alice,
+                    trust,
+                    &revocations,
+                    1000,
+                )
+                .unwrap_err(),
+                AuthError::Revoked
+            ));
+        }
+    }
+
+    #[test]
+    fn wrong_ack2_signature_rejected_in_finish() {
+        let (relay, laptop, collaborator, alice, _) = alice_relay_and_bob();
+        let start = || {
+            server_begin(
+                &identity(&relay, &alice),
+                HandshakeTrust::OwnerDevicesOnly,
+                &RevocationList::new(),
+                &hello(&laptop),
+                1000,
+                [5; 32],
+            )
+            .unwrap()
+            .0
+        };
+        // Another device's key, a different nonce, and a tampered signature.
+        for ack2 in [
+            build_hello_ack2(&collaborator.sk, &[5; 32]),
+            build_hello_ack2(&laptop.sk, &[6; 32]),
+            {
+                let mut ack2 = build_hello_ack2(&laptop.sk, &[5; 32]);
+                ack2.sig_over_server_nonce[0] ^= 1;
+                ack2
+            },
+        ] {
+            assert!(matches!(
+                start().finish(&ack2).unwrap_err(),
+                AuthError::BadChallengeSig
+            ));
+        }
+        start()
+            .finish(&build_hello_ack2(&laptop.sk, &[5; 32]))
+            .unwrap();
+    }
+
+    #[test]
+    fn endpoint_bound_rejects_mismatched_remote() {
+        let (_, laptop, collaborator, alice, _) = alice_relay_and_bob();
+        let revocations = RevocationList::new();
+        let bind = |remote: &[u8; 32], trust| {
+            authenticate_endpoint_bound(&laptop.cert, remote, &alice, trust, &revocations, 1000)
+        };
+        assert!(matches!(
+            bind(
+                &collaborator.cert.device_public_key,
+                HandshakeTrust::AnyCertifiedDevice
+            )
+            .unwrap_err(),
+            AuthError::EndpointMismatch
+        ));
+        let peer = bind(
+            &laptop.cert.device_public_key,
+            HandshakeTrust::AnyCertifiedDevice,
+        )
+        .unwrap();
+        assert_eq!(peer.device_public_key, laptop.cert.device_public_key);
+        // The same validity and trust checks as the handshake apply.
+        assert!(matches!(
+            authenticate_endpoint_bound(
+                &collaborator.cert,
+                &collaborator.cert.device_public_key,
+                &alice,
+                HandshakeTrust::OwnerDevicesOnly,
+                &revocations,
+                1000,
+            )
+            .unwrap_err(),
+            AuthError::PolicyReject
+        ));
+        let mut forged = laptop.cert.clone();
+        forged.capabilities.can_act_as_host = true;
+        assert!(matches!(
+            authenticate_endpoint_bound(
+                &forged,
+                &forged.device_public_key,
+                &alice,
+                HandshakeTrust::AnyCertifiedDevice,
+                &revocations,
+                1000,
+            )
+            .unwrap_err(),
+            AuthError::Cert(_)
+        ));
+    }
+
     /// `Hello` as a build from before the foreign-device marker encodes it.
     mod v1 {
         #[allow(
@@ -502,7 +897,7 @@ mod tests {
             pub capabilities: DeviceCapabilities,
             pub issued_at_ns: u64,
             pub expires_at_ns: Option<u64>,
-            #[serde(with = "crate::sig64")]
+            #[serde(with = "serde_bytes")]
             pub signature: [u8; 64],
         }
 

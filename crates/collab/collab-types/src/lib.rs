@@ -15,10 +15,10 @@
 //! - [`space`] — `Space`, the social-formation container grouping channels.
 //! - [`channel`] — `Channel`, `MemberRef`, `ChannelRef`, `ArtifactRef`,
 //!   `Artifact`: the working-area primitive mapping members to roles.
-//! - [`role`] — `Role`, `OpClass`, `ArtifactKind` plus the static
-//!   permission table ([`role::role_permits`]) — the coarse base layer.
-//! - [`caps`] — the richer `(subject × scope × verb)` capability model
-//!   stacked on the role table; wired into the validator's step 5a.
+//! - [`role`] — `Role`, `OpKind`, `ArtifactKind` of the op envelope; who may
+//!   make which change is decided by `tilo-action-policy` grants (step 5).
+//! - [`caps`] — the app sandbox: `(subject × scope × access)` capabilities
+//!   over paths, file records, devices and network hosts.
 //! - [`invite`] — attenuable capability invite tokens
 //!   ([`invite::InviteToken`]): a signed, delegable grant that can only narrow.
 //! - [`event`] — `ChannelEvent`, the append-only governance log.
@@ -31,6 +31,10 @@
 //! - [`validator`] — the eight-step inbound-op validation pipeline, a
 //!   single pure function ([`validator::validate_inbound_op`]) over a
 //!   [`validator::ChannelState`] snapshot.
+//!
+//! Filesystem records and control protocols live in `fs-protocol`, the
+//! first-party app catalogue in `tilo-desktop-model`, and the launcher's collab
+//! preamble in `launcher::services`; none of them is collaboration vocabulary.
 //!
 //! Non-goals: no network code (the validator operates on a snapshot;
 //! lazy-fetch of unknown attestations lives in the broker); no cryptographic
@@ -48,28 +52,22 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
 )]
 
+pub mod action_authority;
 pub mod canonical;
 pub mod caps;
 pub mod channel;
+pub mod claim;
 pub mod compaction;
 pub mod crypto;
 pub mod document_import;
 pub mod document_transfer;
 pub mod event;
-pub mod file_invite;
-pub mod files;
-pub mod first_party_app_ids;
-pub mod foreign_device;
 pub mod history;
 pub mod identity;
 pub mod invite;
@@ -77,27 +75,37 @@ pub mod mls_governance;
 pub mod op;
 pub mod ownership_transfer;
 pub mod peer;
-pub mod permission_profile;
 pub mod person_room;
-pub mod recipient_control;
+pub mod receipt;
 pub mod redaction;
 pub mod role;
-pub mod share_control;
 pub mod space;
+pub mod surface;
+pub mod task_budget;
+pub mod units;
 pub mod validator;
 
+/// The URI scheme that asks an app to open one of its own records
+/// (`tilo-record:<record id>`): how a launch delivers an invocation to the
+/// view of the record it addresses. Every app accepts it; it names a record
+/// in the app's own store and grants nothing.
+pub const RECORD_URI_SCHEME: &str = "tilo-record";
+
 // Convenience re-exports so downstream callers can do
-// `use collab_types::{SignedOp, Role, OpClass, ArtifactKind, ...}`
+// `use collab_types::{SignedOp, Role, OpKind, ArtifactKind, ...}`
 // without reaching into individual modules.
 pub use canonical::{CanonicalError, canonical_bytes};
 pub use caps::{
-    Actor, CapDecision, CapOverride, Effect, Expiry, Principal, ResourceRef, ResourceScope, Scope,
-    Subject, Verb, decide, decide_actor, decide_capability, host_covers, path_covers,
-    role_base_applies, role_caps, verb_for_opclass,
+    Access, Actor, CapDecision, CapOverride, Effect, Expiry, FsAuthority, LaunchGrants, Principal,
+    ResourceRef, RoomMember, Scope, Subject, decide_capability, host_covers, path_covers,
 };
 pub use channel::{
     Artifact, ArtifactId, ArtifactRef, Channel, ChannelId, ChannelRef, ChannelSettingsDelta,
     DocumentHandle, MemberRef,
+};
+pub use claim::{
+    ChangeClaim, ClaimError, ClaimedAction, CommitNamed, FrameworkChange, UnitPath, check_claimed,
+    claims_of, field_edit_mutation, mutation_claims, parse_changes, record_unit,
 };
 pub use compaction::{
     CompactionCheckpoint, CompactionError, SEALED_COMPACTION_VERSION, SealedCompaction,
@@ -113,30 +121,6 @@ pub use document_transfer::{
     MAX_DOCUMENT_TRANSFER_BYTES, ReassembledDocument, ReassemblyError,
 };
 pub use event::{ChannelEvent, RoleAttestation};
-pub use file_invite::{
-    BearerFileInvite, FILE_INVITE_DOMAIN_TAG, FILE_INVITE_LINK_PREFIX, FileInviteError,
-    FileInviteSpec, FileInviteSubject, FileInviteV1, FilePermission, bearer_secret_hash,
-    mint_bearer_file_invite, mint_file_invite,
-};
-pub use files::{
-    CONTENT_REVISION_VERSION, ConflictMergeCodecV1, ConflictResolution, ConflictStatus,
-    ConflictStrategy, ContentHash, ContentRevisionV1, FILE_BINDING_VERSION,
-    FILE_MUTATION_TRANSACTION_SIGNATURE_DOMAIN, FILE_MUTATION_TRANSACTION_VERSION, FileActor,
-    FileBindingV1, FileConflictV1, FileMetadataV1, FileMutationOperation, FileMutationParticipant,
-    FileMutationParticipantRole, FileMutationTransaction, FileMutationTransactionError,
-    FileMutationTransactionManifest, FileNameV1, FileNodeKind, FilePropertiesV1, FileProvenance,
-    FileRecordError, FileRecordId, FileVersionId, FileVersionV1, HISTORY_CONTROL_VERSION,
-    HISTORY_PREVIEW_XATTR_PREFIX, HistoryControlOperationV1, HistoryControlRequestV1, IndexStatus,
-    MAX_FILE_NAME_BYTES, MAX_HISTORY_CONTROL_BYTES, MAX_HISTORY_PREVIEW_BYTES,
-    MAX_MERGE_PREFLIGHT_BYTES, MAX_TRANSACTION_PARTICIPANTS, MERGE_PREFLIGHT_VERSION,
-    MERGE_PREFLIGHT_XATTR_PREFIX, MergePreflightProjectionV1, PreviewStatus, PreviewVariant,
-    prefer_conflict_resolution,
-};
-#[allow(deprecated, reason = "stable collab-types source compatibility")]
-pub use files::{
-    FileMutationOperationV1, FileMutationParticipantRoleV1, FileMutationParticipantV1,
-    FileMutationTransactionManifestV1, FileMutationTransactionV1,
-};
 pub use identity::{Attestation, AttestationId, Claim, Clearance, Identity};
 pub use invite::{
     INVITE_DOMAIN_TAG, InviteError, InviteSpec, InviteToken, attenuate, mint_root, verify_chain,
@@ -149,38 +133,28 @@ pub use op::{
     ContentRetention, DocumentMutation, DocumentMutationEncodeError, DocumentMutationError,
     EncryptionMetadata, EncryptionScheme, MAX_DOCUMENT_MUTATION_BYTES, RoutedDocumentPayload,
     SignedOp, WholeDocumentPayload, document_artifact_id, document_attestation_id,
-    document_channel_id, live_artifact_id, validate_document_payload_route,
-    validate_whole_document_payload_route,
+    document_channel_id, live_artifact_id, next_unordered_document_sequence,
+    validate_document_payload_route, validate_whole_document_payload_route,
 };
 pub use ownership_transfer::{
     OWNERSHIP_TRANSFER_VERSION, OwnershipTransferAcceptanceV1, OwnershipTransferAuditV1,
     OwnershipTransferCancellationV1, OwnershipTransferError, OwnershipTransferProposalV1,
 };
 pub use peer::{PeerPresence, PeerPresencePayload};
-pub use permission_profile::{PermissionProfile, PermissionProfileError, PermissionProfileRule};
-pub use person_room::{is_person_room, person_room, person_room_of};
-pub use recipient_control::{
-    MAX_RECIPIENT_CONTROL_CONNECTIONS, MAX_RECIPIENT_CONTROL_FRAME_BYTES,
-    MAX_RECIPIENT_CONTROL_REQUESTS_PER_CONNECTION, MAX_RECIPIENT_MOUNT_PATH_BYTES,
-    RECIPIENT_CONTROL_FRAMING, RECIPIENT_CONTROL_VERSION, RecipientControlErrorCode,
-    RecipientControlOperationV1, RecipientControlRequestV1, RecipientControlResponseV1,
-    RecipientControlResultV1, RecipientFailureCodeV1, RecipientFailureV1, RecipientMountStatusV1,
-    RecipientSubscriptionKeyV1, RecipientSubscriptionStatusV1,
+pub use person_room::{
+    is_person_room, person_record_id, person_record_kind, person_room, person_room_of,
+};
+pub use receipt::{
+    Receipt, ReceiptRefusal, ReceiptSurface, Record, SurfaceSource, Surfaces, check_claims,
+    claim_node, decide_op, decide_op_pinned, record_node,
 };
 pub use redaction::{
     MAX_REDACTION_REASON_BYTES, OpId, RedactRequest, RedactedMarker, RedactionError,
     encode_redact_payload, hash_target_op, parse_redact_payload,
 };
-pub use role::{ArtifactKind, OpClass, Role, role_permits};
-pub use share_control::{
-    MAX_SHARE_CONTROL_FRAME_BYTES, NamedGrantMetadataV1, NamedShareDeliveryStateV1,
-    SHARE_CONTROL_FRAMING, SHARE_CONTROL_VERSION, ShareControlErrorCode, ShareControlOperationV1,
-    ShareControlRequestV1, ShareControlResponseV1, ShareControlResultV1,
-};
+pub use role::{ArtifactKind, OpKind, Role};
 pub use space::{Space, SpaceId};
 pub use validator::{
-    ChannelState, ValidationError, validate_admitted_inbound_op, validate_inbound_op,
-    validate_replayed_inbound_op,
+    ChannelState, DEFAULT_ROOM, ValidationError, document_node, validate_admitted_inbound_op,
+    validate_inbound_op, validate_replayed_inbound_op,
 };
-
-pub mod local_transport;

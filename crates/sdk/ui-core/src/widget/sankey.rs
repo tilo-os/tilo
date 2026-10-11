@@ -8,11 +8,10 @@
 use std::collections::HashMap;
 
 use crate::widget::ModelPath;
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::event::WindowEvent;
 
 use crate::a11y::{AccessNode, AccessState, Role};
 use crate::color_compat::ColorCompat;
@@ -20,77 +19,12 @@ use crate::presence::PresenceCtx;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
+use crate::widget::Widget;
+use crate::widget::chart_data::{ChartLink, ChartNode};
+use crate::widget::chart_labels::format_compact;
 use crate::widget::chart_navigation::{
-    ChartNavAction, ChartTouchAction, ChartTouchTracker, chart_nav_action, moved_index,
+    ChartNavAction, ChartTouchTracker, InteractiveChart, handle_chart_event, moved_index,
 };
-use crate::widget::{TaffyTreeExt, Widget};
-
-#[derive(Clone, Debug)]
-pub struct SankeyNode {
-    pub id: String,
-    pub label: String,
-    pub color: Option<Color>,
-    pub detail: String,
-}
-
-impl SankeyNode {
-    pub fn new(id: impl Into<String>, label: impl Into<String>) -> Self {
-        Self {
-            id: id.into(),
-            label: label.into(),
-            color: None,
-            detail: String::new(),
-        }
-    }
-    #[must_use]
-    pub fn colored(mut self, color: Color) -> Self {
-        self.color = Some(color);
-        self
-    }
-    #[must_use]
-    pub fn with_detail(mut self, detail: impl Into<String>) -> Self {
-        self.detail = detail.into();
-        self
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct SankeyLink {
-    pub id: String,
-    pub source: String,
-    pub target: String,
-    pub value: f64,
-    pub color: Option<Color>,
-    pub detail: String,
-}
-
-impl SankeyLink {
-    pub fn new(
-        id: impl Into<String>,
-        source: impl Into<String>,
-        target: impl Into<String>,
-        value: f64,
-    ) -> Self {
-        Self {
-            id: id.into(),
-            source: source.into(),
-            target: target.into(),
-            value,
-            color: None,
-            detail: String::new(),
-        }
-    }
-    #[must_use]
-    pub fn colored(mut self, color: Color) -> Self {
-        self.color = Some(color);
-        self
-    }
-    #[must_use]
-    pub fn with_detail(mut self, detail: impl Into<String>) -> Self {
-        self.detail = detail.into();
-        self
-    }
-}
 
 #[derive(Clone, Debug)]
 pub struct SankeyStyle {
@@ -148,8 +82,8 @@ enum Hit {
 }
 
 pub struct SankeyChart {
-    nodes: Vec<SankeyNode>,
-    links: Vec<SankeyLink>,
+    nodes: Vec<ChartNode>,
+    links: Vec<ChartLink>,
     style: SankeyStyle,
     title: String,
     height: f32,
@@ -164,7 +98,7 @@ pub struct SankeyChart {
 }
 
 impl SankeyChart {
-    pub fn new(nodes: Vec<SankeyNode>, links: Vec<SankeyLink>) -> Self {
+    pub fn new(nodes: Vec<ChartNode>, links: Vec<ChartLink>) -> Self {
         Self {
             nodes,
             links,
@@ -205,7 +139,7 @@ impl SankeyChart {
         self.height = height.max(180.0);
         self
     }
-    pub fn set_data(&mut self, nodes: Vec<SankeyNode>, links: Vec<SankeyLink>) {
+    pub fn set_data(&mut self, nodes: Vec<ChartNode>, links: Vec<ChartLink>) {
         self.nodes = nodes;
         self.links = links;
         self.hovered = None;
@@ -465,29 +399,6 @@ impl SankeyChart {
         (boxes, bands)
     }
 
-    fn update_hover(&mut self) {
-        let (nodes, links) = self.geometry();
-        if let Some(node) = nodes
-            .iter()
-            .find(|node| node.rect.inflate(3.0, 3.0).contains(self.pointer))
-        {
-            self.hovered = Some(Hit::Node(node.index));
-            return;
-        }
-        self.hovered = links
-            .iter()
-            .find(|link| {
-                (0_u32..=20).any(|step| {
-                    let t = f64::from(step) / 20.0;
-                    let x = link.source.x + (link.target.x - link.source.x) * t;
-                    let smooth = t * t * (3.0 - 2.0 * t);
-                    let y = link.source.y + (link.target.y - link.source.y) * smooth;
-                    Point::new(x, y).distance(self.pointer) <= link.thickness / 2.0 + 4.0
-                })
-            })
-            .map(|link| Hit::Link(link.index));
-    }
-
     /// Where each node's label goes, laid out so no two collide at any size:
     /// after its node, in the gap before the next column (the last column's
     /// in the trailing room the chart reserves for them), elided to that
@@ -613,32 +524,68 @@ impl SankeyChart {
     }
 }
 
+impl InteractiveChart for SankeyChart {
+    fn interaction(&mut self) -> (&mut Point, &mut bool, &mut ChartTouchTracker) {
+        (
+            &mut self.pointer,
+            &mut self.keyboard_inspection,
+            &mut self.touch,
+        )
+    }
+    fn update_hover(&mut self) {
+        let (nodes, links) = self.geometry();
+        if let Some(node) = nodes
+            .iter()
+            .find(|node| node.rect.inflate(3.0, 3.0).contains(self.pointer))
+        {
+            self.hovered = Some(Hit::Node(node.index));
+            return;
+        }
+        self.hovered = links
+            .iter()
+            .find(|link| {
+                (0_u32..=20).any(|step| {
+                    let t = f64::from(step) / 20.0;
+                    let x = link.source.x + (link.target.x - link.source.x) * t;
+                    let smooth = t * t * (3.0 - 2.0 * t);
+                    let y = link.source.y + (link.target.y - link.source.y) * smooth;
+                    Point::new(x, y).distance(self.pointer) <= link.thickness / 2.0 + 4.0
+                })
+            })
+            .map(|link| Hit::Link(link.index));
+    }
+    fn clear_hover(&mut self) {
+        self.hovered = None;
+    }
+    fn activate_hovered(&mut self) -> bool {
+        let Some(hit) = self.hovered else {
+            return false;
+        };
+        self.activated = self.selection_for(hit);
+        self.activated.is_some()
+    }
+    fn move_keyboard_inspection(&mut self, action: ChartNavAction) -> bool {
+        let (_, links) = self.geometry();
+        let candidates = self
+            .nodes
+            .iter()
+            .enumerate()
+            .map(|(index, _)| Hit::Node(index))
+            .chain(links.iter().map(|link| Hit::Link(link.index)))
+            .collect::<Vec<_>>();
+        let current = self
+            .hovered
+            .and_then(|hit| candidates.iter().position(|candidate| *candidate == hit));
+        self.hovered = moved_index(current, candidates.len(), action)
+            .and_then(|index| candidates.get(index).copied());
+        self.update_inspection_anchor();
+        self.hovered.is_some()
+    }
+}
+
 impl Widget for SankeyChart {
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let node = taffy.leaf_node(Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::length(self.height),
-            },
-            ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
-    }
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x + layout.size.width),
-            origin.y + f64::from(layout.location.y + layout.size.height),
-        );
-    }
+    crate::widget::chart_navigation::chart_leaf!();
+
     #[allow(
         clippy::too_many_lines,
         reason = "ribbons, nodes, labels and inspector share one ordered flow paint pass"
@@ -757,117 +704,20 @@ impl Widget for SankeyChart {
                     )
                 }
             };
-            let (tw, _) = tr.measure_style(&title, None, &theme.text(TextRole::Caption));
-            let (dw, _) = tr.measure_style(&detail, None, &theme.text(TextRole::Caption));
-            let width = f64::from(tw.max(dw)).max(150.0) + 28.0;
-            let mut x = self.pointer.x + 16.0;
-            let mut y = self.pointer.y + 16.0;
-            if x + width > self.rect.x1 {
-                x = self.pointer.x - width - 16.0;
-            }
-            if y + 66.0 > self.rect.y1 {
-                y = self.pointer.y - 76.0;
-            }
-            let tooltip = Rect::new(x, y, x + width, y + 64.0);
-            scene.fill(
-                Fill::NonZero,
+            crate::widget::chart_labels::draw_tooltip(
+                scene,
                 transform,
-                theme.tokens.colors.surfaces.overlay,
-                None,
-                &RoundedRect::from_rect(tooltip, f64::from(theme.tokens.radii.control)),
-            );
-            tr.draw_style(
-                scene,
-                &title,
-                theme.tokens.colors.text_primary,
-                transform * Affine::translate((x + 14.0, y + 11.0)),
-                None,
-                &theme
-                    .text(TextRole::Label)
-                    .with_weight(TextWeight::Semibold),
-            );
-            tr.draw_style(
-                scene,
-                &detail,
-                theme.tokens.colors.text_dim,
-                transform * Affine::translate((x + 14.0, y + 37.0)),
-                None,
-                &theme.text(TextRole::Caption),
+                tr,
+                theme,
+                self.pointer,
+                self.rect,
+                150.0,
+                (&title, &detail),
             );
         }
     }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        if let Some(action) = self.touch.handle(event, ctx.scale_factor) {
-            match action {
-                ChartTouchAction::Inspect(point) => {
-                    self.pointer = point;
-                    self.update_hover();
-                    self.keyboard_inspection = false;
-                }
-                ChartTouchAction::Activate(point) => {
-                    self.pointer = point;
-                    self.update_hover();
-                    if let Some(hit) = self.hovered {
-                        self.activated = self.selection_for(hit);
-                        if self.activated.is_some() {
-                            *ctx.handled = true;
-                            *ctx.focus_target = Some(ctx.node_id);
-                        }
-                    }
-                }
-                ChartTouchAction::Clear => self.hovered = None,
-            }
-            return;
-        }
-        match event {
-            WindowEvent::CursorMoved { position, .. } => {
-                self.pointer =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
-                self.update_hover();
-                self.keyboard_inspection = false;
-            }
-            WindowEvent::CursorLeft { .. } if !self.keyboard_inspection => self.hovered = None,
-            WindowEvent::MouseInput {
-                state: ElementState::Released,
-                button: MouseButton::Left,
-                ..
-            } => {
-                if let Some(hit) = self.hovered {
-                    self.activated = self.selection_for(hit);
-                    if self.activated.is_some() {
-                        *ctx.handled = true;
-                        *ctx.focus_target = Some(ctx.node_id);
-                    }
-                }
-            }
-            _ if chart_nav_action(event).is_some() => {
-                let Some(action) = chart_nav_action(event) else {
-                    return;
-                };
-                if action == ChartNavAction::Activate {
-                    self.activated = self.hovered.and_then(|hit| self.selection_for(hit));
-                } else {
-                    let (_, links) = self.geometry();
-                    let candidates = self
-                        .nodes
-                        .iter()
-                        .enumerate()
-                        .map(|(index, _)| Hit::Node(index))
-                        .chain(links.iter().map(|link| Hit::Link(link.index)))
-                        .collect::<Vec<_>>();
-                    let current = self
-                        .hovered
-                        .and_then(|hit| candidates.iter().position(|candidate| *candidate == hit));
-                    self.hovered = moved_index(current, candidates.len(), action)
-                        .and_then(|index| candidates.get(index).copied());
-                    self.keyboard_inspection = self.hovered.is_some();
-                    self.update_inspection_anchor();
-                }
-                *ctx.handled = true;
-                *ctx.focus_target = Some(ctx.node_id);
-            }
-            _ => {}
-        }
+        handle_chart_event(self, event, ctx);
     }
     fn accessibility(&self) -> Option<AccessNode> {
         let mut children = self
@@ -913,27 +763,24 @@ impl Widget for SankeyChart {
                 .with_children(children),
         )
     }
-    fn perform_action_at(
+    fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],
         _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
-        if !matches!(action, crate::a11y::Action::Activate) {
-            return false;
-        }
-        let Some(key) = key_path.last() else {
+        let Some(key) = crate::widget::chart_navigation::activated_key(action, key_path) else {
             return false;
         };
         for node in &self.nodes {
-            if crate::a11y::hash_key(&format!("node:{}", node.id)) == *key {
+            if crate::a11y::hash_key(&format!("node:{}", node.id)) == key {
                 self.activated = Some(SankeySelection::Node(node.id.clone()));
                 return true;
             }
         }
         for link in &self.links {
-            if crate::a11y::hash_key(&format!("link:{}", link.id)) == *key {
+            if crate::a11y::hash_key(&format!("link:{}", link.id)) == key {
                 self.activated = Some(SankeySelection::Link(link.id.clone()));
                 return true;
             }
@@ -943,26 +790,8 @@ impl Widget for SankeyChart {
     fn name(&self) -> &'static str {
         "SankeyChart"
     }
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
     fn is_focusable(&self) -> bool {
         true
-    }
-    fn is_layout_dirty(&self) -> bool {
-        self.rect == Rect::ZERO
-    }
-}
-
-fn format_compact(value: f64) -> String {
-    if value.abs() >= 1_000_000.0 {
-        format!("{:.1}M", value / 1_000_000.0)
-    } else if value.abs() >= 1_000.0 {
-        format!("{:.1}K", value / 1_000.0)
-    } else if value.abs() >= 10.0 {
-        format!("{value:.0}")
-    } else {
-        format!("{value:.1}")
     }
 }
 
@@ -976,14 +805,14 @@ mod tests {
         SankeyChart::new(
             ["Visits", "Signup", "Trial", "Paid", "Churn"]
                 .into_iter()
-                .map(|label| SankeyNode::new(label, label))
+                .map(|label| ChartNode::new(label, label))
                 .collect(),
             vec![
-                SankeyLink::new("v-s", "Visits", "Signup", 72.0),
-                SankeyLink::new("v-t", "Visits", "Trial", 28.0),
-                SankeyLink::new("s-t", "Signup", "Trial", 54.0),
-                SankeyLink::new("t-p", "Trial", "Paid", 61.0),
-                SankeyLink::new("t-c", "Trial", "Churn", 21.0),
+                ChartLink::new("v-s", "Visits", "Signup", 72.0),
+                ChartLink::new("v-t", "Visits", "Trial", 28.0),
+                ChartLink::new("s-t", "Signup", "Trial", 54.0),
+                ChartLink::new("t-p", "Trial", "Paid", 61.0),
+                ChartLink::new("t-c", "Trial", "Churn", 21.0),
             ],
         )
     }
@@ -1037,10 +866,10 @@ mod tests {
     #[test]
     fn invalid_and_dangling_links_are_ignored() {
         let chart = SankeyChart::new(
-            vec![SankeyNode::new("a", "A")],
+            vec![ChartNode::new("a", "A")],
             vec![
-                SankeyLink::new("bad", "a", "missing", 2.0),
-                SankeyLink::new("self", "a", "a", 1.0),
+                ChartLink::new("bad", "a", "missing", 2.0),
+                ChartLink::new("self", "a", "a", 1.0),
             ],
         );
         assert!(chart.resolved_links().is_empty());

@@ -791,7 +791,7 @@ mod command_path_tests {
         collaborative_search_activation_resolves_the_latest_path_by_record_id();
     }
 
-    /// The 750ms metadata poll is real work, but an unchanged directory
+    /// A metadata poll is real work, but an unchanged directory
     /// must not look like a frame request. The native runner used to turn
     /// any due `next_wake_deadline` into a Wayland commit (~2 paints/s).
     #[cfg(unix)]
@@ -842,9 +842,9 @@ mod command_path_tests {
         ui::widget::Widget::mark_drawn(&mut widget);
         let _ = widget.take_structure_dirty();
 
-        widget.next_metadata_refresh = ui::time::now();
+        widget.next_metadata_refresh = Some(ui::time::now());
         let _ = widget.refresh_metadata_if_due(ui::time::now());
-        widget.next_metadata_refresh = ui::time::now();
+        widget.next_metadata_refresh = Some(ui::time::now());
         assert!(
             !widget.refresh_metadata_if_due(ui::time::now()),
             "an idle Files poll must not keep requesting frames"
@@ -897,6 +897,86 @@ mod command_path_tests {
         );
     }
 
+    /// Point the identity projection and the workspace roots at fixtures,
+    /// so the only refresh sources are the ones the test controls.
+    #[cfg(unix)]
+    fn quiet_refresh_sources(env: &mut tilo_test_env::ScopedEnv) -> tempfile::TempDir {
+        let identities = tempfile::tempdir().unwrap();
+        env.set(
+            crate::identity_directory::TRUSTED_IDENTITIES_ENV,
+            identities.path().join("trusted-identities.json"),
+        );
+        env.set("TILO_WORKSPACE_ROOTS", "");
+        identities
+    }
+
+    /// An idle window over an unchanged local directory has no metadata
+    /// deadline at all: its watch wakes it on change, so nothing is re-read
+    /// on a timer. Where the watch cannot vouch for every change, the poll
+    /// stays, never faster than the fallback interval.
+    #[cfg(unix)]
+    #[test]
+    fn idle_files_has_no_periodic_deadline_with_a_subscription() {
+        let mut env = tilo_test_env::ScopedEnv::new();
+        let _identities = quiet_refresh_sources(&mut env);
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), b"ok").unwrap();
+        let mut widget = FileExplorerWidget::new();
+        widget.load(dir.path().to_path_buf());
+        let now = ui::time::now();
+        let _ = widget.refresh_metadata_if_due(now);
+        assert!(!widget.directory_changed, "nothing changed");
+        assert_ne!(
+            widget.directory_watch.coverage(),
+            crate::directory_watch::Coverage::None,
+            "the open directory is watched"
+        );
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            widget.next_metadata_refresh, None,
+            "a fully watched directory is never polled"
+        );
+        if let Some(due) = widget.next_metadata_refresh {
+            assert!(
+                due >= now + metadata_refresh::LIVE_INTERVAL,
+                "only a partially watched directory keeps its poll"
+            );
+        }
+    }
+
+    /// A file another program creates in the open directory shows, read
+    /// because the watch reported it, before any poll is due.
+    #[cfg(unix)]
+    #[test]
+    fn a_file_created_in_the_open_directory_appears_without_a_poll() {
+        let mut env = tilo_test_env::ScopedEnv::new();
+        let _identities = quiet_refresh_sources(&mut env);
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), b"ok").unwrap();
+        let mut widget = FileExplorerWidget::new();
+        widget.load(dir.path().to_path_buf());
+        let _ = widget.refresh_metadata_if_due(ui::time::now());
+        let created = ui::time::now();
+        std::fs::write(dir.path().join("b.txt"), b"new").unwrap();
+        let shown =
+            |widget: &FileExplorerWidget| widget.entries.iter().any(|entry| entry.name == "b.txt");
+        while !shown(&widget) && created.elapsed() < std::time::Duration::from_secs(10) {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            // The earliest moment a reported change may be read, which is
+            // before any poll is due: only the watch can make this read.
+            let readable = widget.last_directory_read
+                + metadata_refresh::change_read_gap(widget.entries.len());
+            if let Some(due) = widget.next_metadata_refresh {
+                assert!(readable < due, "the change is read before the poll");
+            }
+            let _ = widget.refresh_metadata_if_due(readable);
+        }
+        // How soon is `change_read_gap`'s (under a second); wall time here
+        // would only measure the test machine's load.
+        assert!(shown(&widget), "the new file is listed");
+        assert!(!widget.directory_changed, "the reported change was read");
+    }
+
     fn opaque_hold_deadline_reaches_files_root_before_metadata_refresh() {
         let mut scroll = ui::widget::Scrollable::new_vertical();
         scroll.set_viewport_size(200.0, 300.0);
@@ -907,20 +987,21 @@ mod command_path_tests {
             .expect("opaque hold schedules fade start");
         let mut widget = FileExplorerWidget::new();
         widget.nav.set_content(Box::new(scroll));
-        widget.next_metadata_refresh = deadline + std::time::Duration::from_secs(60);
+        widget.next_metadata_refresh = Some(deadline + std::time::Duration::from_secs(60));
         assert!(
             widget
                 .next_wake_deadline()
                 .is_some_and(|wake| wake <= deadline),
             "the root must not schedule later than its scroll fade"
         );
-        widget.next_metadata_refresh = deadline
+        let refresh = deadline
             .checked_sub(std::time::Duration::from_millis(1))
             .expect("deadline lies in the future");
+        widget.next_metadata_refresh = Some(refresh);
         assert!(
             widget
                 .next_wake_deadline()
-                .is_some_and(|wake| wake <= widget.next_metadata_refresh),
+                .is_some_and(|wake| wake <= refresh),
             "the root must not schedule later than its metadata refresh"
         );
     }
@@ -978,15 +1059,14 @@ mod command_path_tests {
     }
 
     fn command_l_opens_the_editable_location_bar_without_a_pointer() {
-        use winit::keyboard::{Key, KeyLocation, ModifiersState, NativeKeyCode, PhysicalKey};
+        use winit::keyboard::{Key, ModifiersState};
 
         let mut widget = FileExplorerWidget::new();
-        let mut event: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-        event.logical_key = Key::Character(winit::keyboard::SmolStr::new("l"));
-        event.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-        event.location = KeyLocation::Standard;
-        event.state = winit::event::ElementState::Pressed;
-        event.repeat = false;
+        let event = ui::synthetic_input::key_event(
+            Key::Character(winit::keyboard::SmolStr::new("l")),
+            None,
+            winit::event::ElementState::Pressed,
+        );
 
         assert!(widget.handle_app_key(
             &event,
@@ -999,15 +1079,14 @@ mod command_path_tests {
     }
 
     fn shortcut_reference_is_a_keyboard_and_command_reachable_view() {
-        use winit::keyboard::{Key, KeyLocation, NamedKey, NativeKeyCode, PhysicalKey};
+        use winit::keyboard::{Key, NamedKey};
         let mut widget = FileExplorerWidget::new();
 
-        let mut event: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-        event.logical_key = Key::Named(NamedKey::F1);
-        event.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-        event.location = KeyLocation::Standard;
-        event.state = winit::event::ElementState::Pressed;
-        event.repeat = false;
+        let event = ui::synthetic_input::key_event(
+            Key::Named(NamedKey::F1),
+            None,
+            winit::event::ElementState::Pressed,
+        );
         assert!(widget.handle_app_key(&event, winit::event::Modifiers::default()));
         let panel = widget
             .collab_panel
@@ -1163,7 +1242,7 @@ mod command_path_tests {
             .expect("verified local undo is exported through the folder resource");
         assert_eq!(undo.kind, OperationKind::Effect);
         assert_eq!(undo.operation_type.as_deref(), Some("files.effects"));
-        assert_eq!(undo.contract.permission, PermissionRequirement::Write);
+        assert_eq!(undo.contract.kind, ActionKind::Outside);
         assert_eq!(
             undo.contract.retry,
             ui::tilo_actions::RetryPolicy::AtMostOnce
@@ -1742,8 +1821,9 @@ mod command_path_tests {
         let mut files = FileExplorerWidget::with_persistence(None, Some(root.path().into()));
         files.navigate(root.path().to_path_buf());
         let resources = crate::files_app::published::tree(&files, &automerge::AutoCommit::new());
-        let mut registry = ui::tilo_actions::ActionRegistry::new();
-        <crate::resource::FileExplorer as ui::tilo_resource::Resource>::register(&mut registry);
+        let registry = ui::tilo_actions::ActionRegistry::with(
+            <crate::resource::FileExplorer as ui::tilo_resource::Resource>::register,
+        );
         // The surface host answers the effect vocabulary beside the window's
         // own operations.
         let mut handlers = Widget::resource_operation_handlers(&files);
@@ -1879,7 +1959,7 @@ mod command_path_tests {
             }
         };
 
-        let opened = show("open", &downloads).unwrap();
+        let opened = show("open-folder", &downloads).unwrap();
         assert_eq!(
             opened["resource"],
             <crate::resource::FileExplorer as ui::tilo_resource::Resource>::KIND
@@ -2414,7 +2494,7 @@ mod command_path_tests {
                 .iter()
                 .find(|action| action.id == "status")
                 .expect("a read-only status action exists in every phase");
-            assert_eq!(status.contract.permission, PermissionRequirement::Read);
+            assert_eq!(status.contract.kind, ActionKind::Read);
             assert_eq!(status.contract.confirmation, ConfirmationPolicy::None);
             let ActionInput::Immediate(encoded) = &status.input else {
                 panic!("status uses the app's opaque row payload")
@@ -3075,11 +3155,14 @@ mod command_path_tests {
 
         let mut widget = FileExplorerWidget::new();
         widget.load(dir.path().to_path_buf());
+        // A workspace mount is FUSE: its watch reports local edits only, and
+        // remote ones (renames, sync state) are found by the poll.
+        widget.directory_watch.assume_partial_coverage();
         widget.selection.select_only(0);
         widget.scroll_offset.set((0.0, 137.0));
         std::fs::rename(&before, &after).unwrap();
         xattr::set(&after, crate::model::SYNC_XATTR, b"local").unwrap();
-        widget.next_metadata_refresh = ui::time::now();
+        widget.next_metadata_refresh = Some(ui::time::now());
 
         assert!(widget.refresh_metadata_if_due(ui::time::now()));
         assert_eq!(widget.entries[0].path, after);
@@ -3421,7 +3504,7 @@ mod command_path_tests {
         w.entries = vec![entry];
         w.selection.select_only(0);
         w.apply_command(FileCommand::ShowHistory);
-        let selected = collab_types::FileVersionId(uuid::Uuid::parse_str(older).unwrap());
+        let selected = fs_protocol::FileVersionId(uuid::Uuid::parse_str(older).unwrap());
         w.apply_command(FileCommand::ShowInWorkspaceActivity {
             record_id: record.into(),
             version_id: selected,
@@ -3461,10 +3544,10 @@ mod command_path_tests {
         .unwrap();
         let root_key = ed25519_dalek::SigningKey::from_bytes(&[81; 32]);
         let person_bytes = root_key.verifying_key().to_bytes();
-        let person = collab_types::Ed25519PublicKey::from_bytes(person_bytes);
+        let person = fs_protocol::Ed25519PublicKey::from_bytes(person_bytes);
         let device_key = ed25519_dalek::SigningKey::from_bytes(&[82; 32]);
         let device =
-            collab_types::Ed25519PublicKey::from_bytes(device_key.verifying_key().to_bytes());
+            fs_protocol::Ed25519PublicKey::from_bytes(device_key.verifying_key().to_bytes());
         let mut certificate = tilo_user_identity::DeviceCert {
             user_public_key: person_bytes,
             device_public_key: device_key.verifying_key().to_bytes(),
@@ -3507,7 +3590,7 @@ mod command_path_tests {
                     == Some(FileCommand::CreateShare(
                         crate::sharing::ShareComposerRequest {
                             subject: crate::sharing::ShareSubjectChoice::Named(person),
-                            permission: collab_types::FilePermission::Edit,
+                            permission: fs_protocol::FilePermission::Edit,
                             expiry: crate::sharing::ShareExpiryChoice::Never,
                             link_uses: None,
                             recipient_devices: vec![device],
@@ -3523,7 +3606,7 @@ mod command_path_tests {
                     == Some(FileCommand::CreateShare(
                         crate::sharing::ShareComposerRequest {
                             subject: crate::sharing::ShareSubjectChoice::Link,
-                            permission: collab_types::FilePermission::Edit,
+                            permission: fs_protocol::FilePermission::Edit,
                             expiry: crate::sharing::ShareExpiryChoice::Month,
                             link_uses: Some(crate::sharing::LinkUseChoice::Bounded(10)),
                             recipient_devices: Vec::new(),
@@ -3597,7 +3680,7 @@ mod command_path_tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("trusted-identities.json");
         let root = ed25519_dalek::SigningKey::from_bytes(&[93; 32]);
-        let person = collab_types::Ed25519PublicKey::from_bytes(root.verifying_key().to_bytes());
+        let person = fs_protocol::Ed25519PublicKey::from_bytes(root.verifying_key().to_bytes());
         let mut widget = FileExplorerWidget::new();
 
         std::fs::write(
@@ -3690,41 +3773,26 @@ mod command_path_tests {
         let source = ui::framework::testing::search_source::<crate::resource::FileExplorer>(
             widget.search_entries_shown(),
         );
-        // Find the collaborative hit by its stable record action rather than
+        // Find the collaborative hit by its stable record anchor rather than
         // by position or a developer's local account settings.
         let hit = ui::search::SearchProvider::search(&source, "renamed")
             .into_iter()
             .find(|result| {
-                result.action_address()
-                    == Some(crate::search_provider::record_reveal_address(record_id))
+                result.action_id == crate::search_provider::record_resource_id(record_id)
             })
             .expect("collaborative record is searchable");
-        let mut doc = automerge::AutoCommit::new();
-        let address = hit.action_address().expect("canonical reveal action");
-        let mut resources = crate::files_app::published::tree(&widget, &doc);
-        resources.push(
-            widget
-                .published_row(&address.resource)
-                .expect("late record materializes exactly for this address"),
+        let row = widget
+            .published_row(&hit.anchor())
+            .expect("late record materializes exactly for this anchor");
+        assert!(
+            row.actions
+                .iter()
+                .any(|spec| spec.id == crate::search_provider::REVEAL_ACTION),
+            "the anchored row reveals the record"
         );
-        let spec = ui::tilo_actions::door::resolve(&resources, &address)
-            .expect("search reveal action is exported");
-        let kind = spec.kind;
-        let encoded =
-            ui::tilo_actions::door::encode_json(&resources, &address, &serde_json::Map::new())
-                .expect("reveal action encodes");
-        assert!(matches!(
-            crate::files_app::published::start(
-                &mut widget,
-                kind,
-                &encoded.type_id,
-                &encoded.payload,
-                &mut doc,
-                &automerge::ROOT
-            )
-            .unwrap(),
-            Some(ui::framework::Effected::Done(_))
-        ));
+        widget
+            .open_anchor(&hit.anchor())
+            .expect("opening the anchor reveals the record");
         assert_eq!(widget.current_path, nested);
         assert_eq!(widget.selection.primary(), Some(0));
         assert_eq!(widget.entries[0].path, file);
@@ -3756,13 +3824,13 @@ mod command_path_tests {
             stream.read_exact(&mut request).unwrap();
             seen_tx.send(()).unwrap();
             release_rx.recv().unwrap();
-            let response = collab_types::ShareControlResponseV1 {
-                protocol_version: collab_types::SHARE_CONTROL_VERSION,
-                result: collab_types::ShareControlResultV1::BearerCreatedV2 {
+            let response = fs_protocol::ShareControlResponseV1 {
+                protocol_version: fs_protocol::SHARE_CONTROL_VERSION,
+                result: fs_protocol::ShareControlResultV1::BearerCreatedV2 {
                     uri: "tilo-file://bounded".into(),
                 },
             };
-            let response = collab_types::canonical_bytes(&response).unwrap();
+            let response = fs_protocol::canonical::canonical_bytes(&response).unwrap();
             stream
                 .write_all(&(response.len() as u32).to_be_bytes())
                 .unwrap();
@@ -3789,7 +3857,7 @@ mod command_path_tests {
         assert!(widget.apply_command(FileCommand::CreateShare(
             crate::sharing::ShareComposerRequest {
                 subject: crate::sharing::ShareSubjectChoice::Link,
-                permission: collab_types::FilePermission::Edit,
+                permission: fs_protocol::FilePermission::Edit,
                 expiry: crate::sharing::ShareExpiryChoice::Month,
                 link_uses: Some(crate::sharing::LinkUseChoice::Bounded(10)),
                 recipient_devices: Vec::new(),
@@ -3813,11 +3881,11 @@ mod command_path_tests {
 
     fn named_share_status_distinguishes_pending_from_delivered() {
         let pending = t_args(
-            named_delivery_status_key(collab_types::NamedShareDeliveryStateV1::Pending),
+            named_delivery_status_key(fs_protocol::NamedShareDeliveryStateV1::Pending),
             &[arg("person", "Ada")],
         );
         let delivered = t_args(
-            named_delivery_status_key(collab_types::NamedShareDeliveryStateV1::Delivered),
+            named_delivery_status_key(fs_protocol::NamedShareDeliveryStateV1::Delivered),
             &[arg("person", "Ada")],
         );
         assert!(pending.contains("pending"));
@@ -3863,7 +3931,7 @@ mod command_path_tests {
         let mut widget = FileExplorerWidget::new();
         widget.entries = vec![entry];
         widget.selection.select_only(0);
-        let expected = collab_types::FileVersionId(uuid::Uuid::parse_str(previous).unwrap());
+        let expected = fs_protocol::FileVersionId(uuid::Uuid::parse_str(previous).unwrap());
         assert!(
             widget
                 .context_menu_spec(&[])
@@ -3932,13 +4000,13 @@ mod command_path_tests {
         widget.entries = vec![entry];
         widget.selection.select_only(0);
         let menu = widget.context_menu_spec(&[]);
-        let current_id = collab_types::FileVersionId(uuid::Uuid::parse_str(current).unwrap());
-        let other_id = collab_types::FileVersionId(uuid::Uuid::parse_str(other).unwrap());
+        let current_id = fs_protocol::FileVersionId(uuid::Uuid::parse_str(current).unwrap());
+        let other_id = fs_protocol::FileVersionId(uuid::Uuid::parse_str(other).unwrap());
         assert!(menu.iter().any(|(_, command)| {
             *command
                 == Some(FileCommand::ResolveConflict {
                     conflict_id: conflict,
-                    strategy: collab_types::ConflictStrategy::KeepCurrent,
+                    strategy: fs_protocol::ConflictStrategy::KeepCurrent,
                     version_id: current_id,
                 })
         }));
@@ -3946,7 +4014,7 @@ mod command_path_tests {
             *command
                 == Some(FileCommand::ResolveConflict {
                     conflict_id: conflict,
-                    strategy: collab_types::ConflictStrategy::UseOther,
+                    strategy: fs_protocol::ConflictStrategy::UseOther,
                     version_id: other_id,
                 })
         }));
@@ -3954,7 +4022,7 @@ mod command_path_tests {
             *command
                 == Some(FileCommand::ResolveConflict {
                     conflict_id: conflict,
-                    strategy: collab_types::ConflictStrategy::KeepBoth,
+                    strategy: fs_protocol::ConflictStrategy::KeepBoth,
                     version_id: other_id,
                 })
         }));
@@ -3970,7 +4038,7 @@ mod command_path_tests {
 
     fn merge_review_only_enables_apply_after_a_safe_daemon_preflight() {
         let conflict_id = uuid::Uuid::from_u128(42);
-        let version_id = collab_types::FileVersionId(uuid::Uuid::from_u128(43));
+        let version_id = fs_protocol::FileVersionId(uuid::Uuid::from_u128(43));
         let mut widget = FileExplorerWidget::new();
         widget.show_collab_panel(CollabPanel {
             history: None,
@@ -3985,8 +4053,8 @@ mod command_path_tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((
             conflict_id,
             version_id,
-            Ok(collab_types::MergePreflightProjectionV1 {
-                schema_version: collab_types::MERGE_PREFLIGHT_VERSION,
+            Ok(fs_protocol::MergePreflightProjectionV1 {
+                schema_version: fs_protocol::MERGE_PREFLIGHT_VERSION,
                 conflict_id,
                 safe: true,
                 explanation: "Changes are disjoint.".into(),
@@ -4009,8 +4077,8 @@ mod command_path_tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((
             conflict_id,
             version_id,
-            Ok(collab_types::MergePreflightProjectionV1 {
-                schema_version: collab_types::MERGE_PREFLIGHT_VERSION,
+            Ok(fs_protocol::MergePreflightProjectionV1 {
+                schema_version: fs_protocol::MERGE_PREFLIGHT_VERSION,
                 conflict_id,
                 safe: false,
                 explanation: "Both revisions changed the same text region.".into(),
@@ -4030,7 +4098,7 @@ mod command_path_tests {
     fn late_merge_preflight_cannot_repurpose_an_unrelated_confirmation_sheet() {
         let stale_conflict = uuid::Uuid::from_u128(50);
         let current_conflict = uuid::Uuid::from_u128(51);
-        let version_id = collab_types::FileVersionId(uuid::Uuid::from_u128(52));
+        let version_id = fs_protocol::FileVersionId(uuid::Uuid::from_u128(52));
         let mut widget = FileExplorerWidget::new();
         widget.show_collab_panel(CollabPanel {
             history: None,
@@ -4046,8 +4114,8 @@ mod command_path_tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((
             stale_conflict,
             version_id,
-            Ok(collab_types::MergePreflightProjectionV1 {
-                schema_version: collab_types::MERGE_PREFLIGHT_VERSION,
+            Ok(fs_protocol::MergePreflightProjectionV1 {
+                schema_version: fs_protocol::MERGE_PREFLIGHT_VERSION,
                 conflict_id: stale_conflict,
                 safe: true,
                 explanation: "Changes are disjoint.".into(),
@@ -4279,33 +4347,23 @@ mod responsive_body_tests {
         }
 
         fn dispatch(&mut self, ev: &winit::event::WindowEvent) {
-            let mut handled = false;
-            let mut focus = None;
-            self.w.handle_event(
-                ev,
-                &mut ui::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &winit::event::Modifiers::default(),
-                    state: ui::widget::Edits::lend(&mut self.state.doc),
-                    path: &self.state.root,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: self.node,
-                    taffy: &self.taffy,
-                },
-            );
+            ui::testing::Dispatch::new()
+                .doc(&mut self.state.doc)
+                .path(&self.state.root)
+                .layout(&self.taffy, self.node)
+                .send(&mut self.w, ev);
         }
 
         fn cursor(&mut self, x: f64, y: f64) {
             self.dispatch(&winit::event::WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 position: winit::dpi::PhysicalPosition::new(x, y),
             });
         }
 
         fn right_press(&mut self) {
             self.dispatch(&winit::event::WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 state: winit::event::ElementState::Pressed,
                 button: winit::event::MouseButton::Right,
             });
@@ -4313,7 +4371,7 @@ mod responsive_body_tests {
 
         fn left_release(&mut self) {
             self.dispatch(&winit::event::WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 state: winit::event::ElementState::Released,
                 button: winit::event::MouseButton::Left,
             });
@@ -4321,7 +4379,7 @@ mod responsive_body_tests {
 
         fn left_press(&mut self) {
             self.dispatch(&winit::event::WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 state: winit::event::ElementState::Pressed,
                 button: winit::event::MouseButton::Left,
             });
@@ -4364,47 +4422,37 @@ mod responsive_body_tests {
         fn draw(&mut self) {
             let theme = Theme::dark();
             let presence = ui::presence::PresenceCtx::empty();
-            let permissions = ui::permissions::PermissionContext::permissive();
             let mut scene = vello::Scene::new();
-            self.w.draw_with_presence(
+            self.w.draw(
                 &mut scene,
                 vello::kurbo::Affine::IDENTITY,
                 &mut self.tr,
                 &theme,
                 &presence,
-                &permissions,
             );
         }
 
         fn press_named(&mut self, key: winit::keyboard::NamedKey) {
-            let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-            ev.logical_key = winit::keyboard::Key::Named(key);
-            ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-                winit::keyboard::NativeKeyCode::Unidentified,
+            let ev = ui::synthetic_input::key_event(
+                winit::keyboard::Key::Named(key),
+                None,
+                winit::event::ElementState::Pressed,
             );
-            ev.location = winit::keyboard::KeyLocation::Standard;
-            ev.state = winit::event::ElementState::Pressed;
-            ev.repeat = false;
-            ev.text = None;
             self.dispatch(&winit::event::WindowEvent::KeyboardInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 event: ev,
                 is_synthetic: false,
             });
         }
 
         fn type_char(&mut self, s: &str) {
-            let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-            ev.logical_key = winit::keyboard::Key::Character(winit::keyboard::SmolStr::new(s));
-            ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-                winit::keyboard::NativeKeyCode::Unidentified,
+            let ev = ui::synthetic_input::key_event(
+                winit::keyboard::Key::Character(winit::keyboard::SmolStr::new(s)),
+                Some(winit::keyboard::SmolStr::new(s)),
+                winit::event::ElementState::Pressed,
             );
-            ev.location = winit::keyboard::KeyLocation::Standard;
-            ev.state = winit::event::ElementState::Pressed;
-            ev.repeat = false;
-            ev.text = Some(winit::keyboard::SmolStr::new(s));
             self.dispatch(&winit::event::WindowEvent::KeyboardInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 event: ev,
                 is_synthetic: false,
             });
@@ -6153,7 +6201,7 @@ mod recent_resource_tests {
                 "Recent navigation and device history do not mutate shared files"
             );
         }
-        app.set_role(ui::permissions::Role::Denied);
+        app.leave_room();
         for action in ["reveal", "forget-recent"] {
             assert!(app.call_on(&row, action, serde_json::json!({})).is_err());
         }
@@ -6267,20 +6315,25 @@ fn completed_clipboard_undo_feedback_survives_the_actual_listing_refresh() {
     let home = tempfile::tempdir().unwrap();
     let mut widget = FileExplorerWidget::with_persistence(None, Some(home.path().to_owned()));
     widget.navigate(home.path().to_owned());
-    widget.follow_ops(&[]);
+    widget.follow_ops(&ui::tilo_resource::Outbox::new());
     let operation = "e44ac38c-627f-48a9-ad92-4a6cdf249216".to_owned();
-    let queued = crate::file_ops::QueuedOp {
-        id: "clipboard-undo".into(),
-        device: "local".into(),
-        order: 0,
-        op: crate::file_ops::FileOp::Revert {
-            op: operation.clone(),
+    let mut ops = ui::tilo_resource::Outbox::new();
+    let id = ops.push(
+        ui::tilo_resource::Id::from_raw("clipboard-undo"),
+        crate::resource::FileTask {
+            device: "local".into(),
+            op: crate::file_ops::FileOp::Revert {
+                op: operation.clone(),
+            },
         },
-        outcome: Some(crate::file_ops::Outcome::Done {
-            changes: vec![crate::file_ops::Change::ClipboardUndo { operation }],
-        }),
-    };
-    widget.follow_ops(&[queued]);
+    );
+    ops.settle(
+        &id,
+        ui::tilo_resource::Settled::Done(vec![crate::file_ops::Change::ClipboardUndo {
+            operation,
+        }]),
+    );
+    widget.follow_ops(&ops);
     assert_eq!(
         widget.status.as_deref(),
         Some(t("files-clipboard-undone").as_str())

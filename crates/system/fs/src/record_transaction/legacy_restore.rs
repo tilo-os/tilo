@@ -5,8 +5,8 @@ use super::{
     RecordTransactionJournal, RecordTransactionJournalError, RecordTransactionPhase, Serialize,
     Uuid, entry_path, persist_entry,
 };
-use collab_types::files::{CheckedHistoryRequestV1, FileRestoreReceiptV1};
-use collab_types::{FileProvenance, FileVersionV1};
+use fs_protocol::files::{CheckedHistoryRequestV1, FileRestoreReceiptV1};
+use fs_protocol::{FileProvenance, FileVersionV1};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -43,13 +43,13 @@ impl LegacyRestoreEntry {
             .validate()
             .map_err(|_| RecordTransactionJournalError::InvalidTransaction)?;
         let action_matches = match self.request.operation {
-            collab_types::files::CheckedHistoryOperationV1::Restore { version_id } => {
+            fs_protocol::files::CheckedHistoryOperationV1::Restore { version_id } => {
                 self.receipt.selected_version == version_id && self.receipt.compensates.is_none()
             }
-            collab_types::files::CheckedHistoryOperationV1::Undo { restore_intent } => {
+            fs_protocol::files::CheckedHistoryOperationV1::Undo { restore_intent } => {
                 self.receipt.compensates == Some(restore_intent)
             }
-            collab_types::files::CheckedHistoryOperationV1::Redo { undo_intent } => {
+            fs_protocol::files::CheckedHistoryOperationV1::Redo { undo_intent } => {
                 self.receipt.compensates == Some(undo_intent)
             }
         };
@@ -107,7 +107,7 @@ impl RecordTransactionJournal {
         if let Some(entry) = self.legacy_restores.get(&id) {
             return Some(entry.request);
         }
-        let collab_types::FileMutationOperation::RestoreContent { request, .. } =
+        let fs_protocol::FileMutationOperation::RestoreContent { request, .. } =
             &self.entries.get(&id)?.transaction.manifest.operation
         else {
             return None;
@@ -120,7 +120,7 @@ impl RecordTransactionJournal {
             return Some(entry.receipt.clone());
         }
         let entry = self.entries.get(&id)?;
-        let collab_types::FileMutationOperation::RestoreContent {
+        let fs_protocol::FileMutationOperation::RestoreContent {
             request,
             selected_version,
             prior_revision,
@@ -137,7 +137,7 @@ impl RecordTransactionJournal {
             record_id: request.review.record_id,
             selected_version: *selected_version,
             prior_revision: *prior_revision,
-            prior_reference: collab_types::files::FileRestorePriorReferenceV1::ObservedRevision,
+            prior_reference: fs_protocol::files::FileRestorePriorReferenceV1::ObservedRevision,
             restored_revision: entry
                 .transaction
                 .manifest

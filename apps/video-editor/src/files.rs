@@ -1,19 +1,15 @@
 //! Media, projects and renders by native path, through `tilo-files`.
 
-#![cfg_attr(
-    not(feature = "decode"),
-    allow(dead_code, reason = "renders and thumbnails need the decode feature")
-)]
-
 use std::path::Path;
 
-use tilo_files::{FsError, Meta, blocking};
+use tilo_files::{FsError, blocking};
 
 fn at(path: &Path) -> Result<(tilo_files::Dir, tilo_files::VPath), FsError> {
     tilo_files::file_at(path)
 }
 
-pub(crate) fn metadata(path: &Path) -> Result<Meta, FsError> {
+#[cfg(any(feature = "decode", feature = "gst"))]
+pub(crate) fn metadata(path: &Path) -> Result<tilo_files::Meta, FsError> {
     let (dir, name) = at(path)?;
     blocking::metadata(&dir, &name)
 }
@@ -41,12 +37,14 @@ pub(crate) fn save(path: &Path, bytes: &[u8]) -> Result<(), FsError> {
     blocking::save_document(&dir, &name, bytes)
 }
 
+#[cfg(feature = "gst")]
 pub(crate) fn create_dir_all(path: &Path) {
     if let Ok((dir, name)) = at(path) {
         let _ = blocking::create_dir_all(&dir, &name);
     }
 }
 
+#[cfg(feature = "gst")]
 pub(crate) fn remove(path: &Path) {
     if let Ok((dir, name)) = at(path) {
         let _ = blocking::remove(&dir, &name);

@@ -33,12 +33,14 @@ must hold the machine awake explicitly, and that hold must go away by itself.
 What can wake a device depends on its hardware, so the device advertises this
 itself instead of the admin guessing.
 
-- The OS image enables magic-packet Wake-on-LAN on Ethernet. Wi-Fi WoWLAN
-  stays off unless the machine is known to wake from it. On the Lenovo Yoga
-  Slim 7x the chip stays associated through suspend, but the SoC wakes on
-  neither `deep` nor `s2idle`. A machine that cannot be woken over the network
-  says so in its presence, and an admin keeps it awake instead (the leases
-  above). The wake address is the interface's MAC as the network sees it.
+- The OS image enables magic-packet Wake-on-LAN on Ethernet. Lenovo 83ED
+  hardware images default the WCN7850 Wi-Fi driver to `wake-on-wlan=0`:
+  observed deep-sleep WoW resume failed in MHI and left the interface unusable
+  until reboot. This is a targeted NetworkManager default, not a kernel fix or
+  proof that non-WoW deep resume succeeds. Explicit saved profile wake flags
+  override it; see `os/hardware/README.md` for diagnosis. Other hardware's
+  Wi-Fi wake policy is unchanged. The wake address is the interface's MAC as
+  the network sees it.
 - A device publishes its wake routes in its certified presence: MAC, interface
   kind and the subnet it was last seen on. Only same-identity devices receive
   them.
@@ -159,9 +161,55 @@ image's NetworkManager, only for a root enrolled for sibling unlock: wired
 links come up with DHCP, plus the networks the owner chose for unlocking
 (`tilo-disk-encrypt enrol --sibling --network NAME`), and no others. Their
 credentials are stored with the device half: sealed to the TPM where there is
-one, otherwise in the clear, readable by anyone holding the disk, which
-Settings tells the owner when they choose them (`tilo-sibling-unlock status`
-reports the sealing). They unlock nothing on their own.
+one, otherwise in the clear, readable by anyone holding the disk. They unlock
+nothing on their own.
+
+Settings (Privacy & Security, "Disk unlock") shows each enrolled volume: whether
+its secrets are sealed to the TPM or stored in the clear in the disk header,
+saying plainly that anyone holding the disk can read the clear ones, which
+devices are asked, and which Wi-Fi networks may unlock it, with a control to
+use or stop using each saved Wi-Fi network. The description of an enrolment
+(`/var/lib/tilo/sibling-unlock/<uuid>.json`) is root's alone, since it names
+the networks the owner trusts; Settings reads it with `pkexec
+tilo-sibling-unlock volumes`, which polkit grants an administrator at the
+machine's seat without a prompt. Changing the networks runs the same enrolment
+(`tilo-sibling-unlock enrol --replace-networks`, or `tilo-disk-encrypt enrol
+--sibling --replace-networks`) after administrator authentication; it keeps
+the slot, its certificate and the siblings, and seals the new networks the way
+the old ones were.
+
+The owner can enroll an already-open encrypted root over the existing
+authenticated device-admin route, using its declared semantic resource:
+
+```bash
+tilo-vm vm actions --device yoga list "disk unlock"
+tilo-vm vm actions --device yoga invoke device-unlock enroll@device-unlock --args-stdin
+```
+
+The adapter carries the same `actions_enumerate` and `actions_invoke` operations
+as `tilo-control`. VMD publishes `ActionSpec`s and uses the shared console
+catalogue and admission code; it has no additional control socket. The invoke
+command reads a JSON object on private stdin, containing `passphrase`, optional
+saved `networks`, and `confirm: true`. Obtain that input from a private producer;
+never put the disk passphrase in command arguments or shell history. The
+passphrase is a `Secret` parameter and is absent from the encoded operation,
+resource catalogue, state and results.
+
+This operation requires the device owner's current signed-in session and the
+normal administrator certificate/transport admission. It derives the current
+LUKS2 root and account from the host; callers cannot select a device path, key
+file, account, slot key or boot identity. The fixed enrollment helper receives
+the passphrase through a sealed anonymous descriptor. TPM sealing is required
+unless `allow_unsealed: true` explicitly permits readable device-factor and
+network material. The chosen sealing mode is pinned before a slot is added;
+TPM failure does not fall back to cleartext. Failed registration still removes
+the new slot through the normal helper rollback path.
+
+The device must contain both the typed VMD action and the matching
+`tilo-sibling-unlock --require-tpm` helper. Enrollment needs an existing disk
+passphrase or recovery key; a login password does not acquire that authority.
+This does not enroll a locked disk or replace the existing early-boot approval
+and certificate checks.
 
 The prompt for the passphrase is up while early boot asks; whichever answers
 first opens the volume. The client answers systemd-cryptsetup's passphrase

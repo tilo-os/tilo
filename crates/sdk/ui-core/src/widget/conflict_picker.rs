@@ -20,9 +20,10 @@
 //! [`PickerOutcome::PickedMerged`], [`PickerOutcome::KeepCurrent`],
 //! [`PickerOutcome::Cancel`] (Esc / scrim click).
 
+use crate::num::f64_of_usize;
 use std::collections::HashMap;
 
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::Color;
@@ -58,17 +59,6 @@ const MIN_CARD_W: f64 = 260.0;
 const CARD_H: f64 = 160.0;
 /// Scrim alpha — matches the command-palette dim treatment.
 const SCRIM_ALPHA: u8 = 153; // ~ 60%
-
-/// A card count is a handful of alternatives plus maybe a merged preview —
-/// always tiny, so the `usize -> f64` conversion used for layout division
-/// cannot lose precision.
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "card count is a small UI count, well within f64 precision"
-)]
-fn card_count_f64(n: usize) -> f64 {
-    n as f64
-}
 
 /// Composes `transform` with a translation by `(dx, dy)`. `kurbo::Affine`'s
 /// `Mul` impl trips `arithmetic_side_effects` like any operator overload,
@@ -287,7 +277,7 @@ impl ConflictPicker {
 
         let gap = ROW_GAP;
         let available_w = inner.width();
-        let total_f = card_count_f64(total_cards);
+        let total_f = f64_of_usize(total_cards);
         let side_by_side_card_w = (available_w - gap * (total_f - 1.0).max(0.0)) / total_f;
 
         if available_w >= NARROW_THRESHOLD && side_by_side_card_w >= MIN_CARD_W {
@@ -514,41 +504,27 @@ impl Widget for ConflictPicker {
         self.keep_pad = 2.0 * f64::from(theme.tokens.spacing.s3);
         // Sized by the host: expands to fill whatever rect the parent
         // assigns — typical use is a centered modal, e.g. 720×360.
-        let node = taffy.leaf_node(Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
-            ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.fill_leaf(node_map, self)
     }
 
     /// The keep button's label is measured here, during layout, so the
     /// width `keep_current_rect` hit-tests is the width paint draws. The
     /// button holds its label plus a sibling step each side, floored at the
     /// pinned width so the 1× label keeps 240 px.
-    fn adjust_layout_with_measure(
+    fn adjust_layout_style(
         &mut self,
-        taffy: &mut TaffyTree<()>,
-        node: NodeId,
+        _taffy: &mut TaffyTree<()>,
+        _node: NodeId,
         text: &mut TextRenderer,
     ) -> bool {
         self.keep_label = text.measure_style(KEEP_LABEL, None, &self.label_style);
         self.bands.keep_w = text_band(KEEP_W, f64::from(self.keep_label.0), self.keep_pad);
-        self.adjust_layout_style(taffy, node)
+        false
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
         let prev = self.rect;
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         if prev != self.rect {
             self.dirty = true;
         }
@@ -812,7 +788,7 @@ impl ConflictPicker {
         crate::surface::card(scene, transform, keep, keep_radius, keep_body);
         let keep_style = theme.text(TextRole::Caption);
         // Centre on the measurement the button was sized from (see
-        // `adjust_layout_with_measure`); a host that laid out without the
+        // `adjust_layout_style`); a host that laid out without the
         // renderer-aware hook measures here instead.
         let (kw, kh) = if self.keep_label.0 > 0.0 {
             self.keep_label
@@ -879,13 +855,11 @@ fn draw_merged_overlay(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::dispatch;
     use crate::time::{Duration, SystemTime};
-    use automerge::AutoCommit;
     use std::cell::RefCell;
     use std::rc::Rc;
     use std::sync::Arc;
-    use winit::event::Modifiers;
-    use winit::keyboard::PhysicalKey;
 
     fn alt(label: &str, author: &str) -> Alternative {
         Alternative {
@@ -1008,65 +982,11 @@ mod tests {
         picker_fits_in_narrow_viewport_via_stack();
     }
 
-    fn cursor_moved(x: f64, y: f64) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: winit::dpi::PhysicalPosition::new(x, y),
-        }
-    }
+    use crate::synthetic_input::cursor_moved;
 
-    fn mouse_press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
+    use crate::synthetic_input::mouse_press;
 
-    /// Synthesise a `WindowEvent::KeyboardInput` carrying `key`
-    /// in the `Pressed` state. Mirrors the zero-init workaround
-    /// used in `command_palette::tests` — winit 0.30 keeps
-    /// `KeyEventExtra` `pub(crate)` so we cannot construct a
-    /// `KeyEvent` through a struct literal.
-    fn key_press(key: NamedKey) -> WindowEvent {
-        // SAFETY: all pub fields of `KeyEvent` tolerate the
-        // all-zero bit pattern; `handle_event` only inspects
-        // `logical_key` + `state`.
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Named(key);
-        ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = None;
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        }
-    }
-
-    fn dispatch(p: &mut ConflictPicker, event: &WindowEvent) {
-        let mut tree = TaffyTree::<()>::new();
-        let node = tree.leaf_node(Style::default());
-        let mut handled = false;
-        let mut focus = None;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        p.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &tree,
-            },
-        );
-    }
+    use crate::synthetic_input::named_key;
 
     #[test]
     fn picker_buttons_and_dismissal_fire_the_matching_outcome() {
@@ -1122,7 +1042,7 @@ mod tests {
                 .on_pick(move |o| outcomes_clone.borrow_mut().push(o));
             p.rect = Rect::new(0.0, 0.0, 1280.0, 360.0);
 
-            dispatch(&mut p, &key_press(NamedKey::Escape));
+            dispatch(&mut p, &named_key(NamedKey::Escape));
             assert_eq!(outcomes.borrow().len(), 1);
             assert_eq!(outcomes.borrow()[0], PickerOutcome::Cancel);
         }
@@ -1181,38 +1101,11 @@ mod tests {
 
             let banner_chip = banner.review_chip_rect().unwrap();
 
-            let mut tree = TaffyTree::<()>::new();
-            let node = tree.leaf_node(Style::default());
-            let mut handled = false;
-            let mut focus = None;
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            banner.handle_event(
+            dispatch(
+                &mut banner,
                 &cursor_moved(banner_chip.center().x, banner_chip.center().y),
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &Modifiers::default(),
-                    state: crate::widget::Edits::lend(&mut doc),
-                    path: &root,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: node,
-                    taffy: &tree,
-                },
             );
-            banner.handle_event(
-                &mouse_press(),
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &Modifiers::default(),
-                    state: crate::widget::Edits::lend(&mut doc),
-                    path: &root,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: node,
-                    taffy: &tree,
-                },
-            );
+            dispatch(&mut banner, &mouse_press());
             assert!(*review_fired.borrow(), "banner [Review] must fire");
 
             // 2. Host opens the picker and the user picks alternative 0.

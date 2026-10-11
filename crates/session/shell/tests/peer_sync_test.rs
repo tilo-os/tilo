@@ -99,6 +99,7 @@ async fn wait_remote_input(events: &mut mpsc::Receiver<NetEvent>, surface: u64, 
 async fn two_actors_exchange_a_workspace_change() {
     let (cmd_a, mut events_a, addr_a) = spawn_actor().await;
     let (cmd_b, mut events_b, addr_b) = spawn_actor().await;
+    let a_id = addr_a.id;
     connect_pair(&cmd_a, addr_a, &cmd_b, addr_b).await;
     wait_peer_joined(&mut events_a).await;
     wait_peer_joined(&mut events_b).await;
@@ -135,6 +136,9 @@ async fn two_actors_exchange_a_workspace_change() {
     let mut target = WorkspaceTree::default();
     let target_id = target.append_empty_workspace("Placeholder");
     assert!(target.set_room(target_id, room));
+    // The invite names A's endpoint as the room's governor.
+    assert!(target.pin_room_authority(room, PeerOrigin::peer(&a_id)));
+    assert_eq!(sender, a_id, "the change arrives from A");
     assert!(
         target
             .apply_room_changes(room, &changes, &PeerOrigin::peer(&sender))
@@ -268,7 +272,7 @@ fn room_push_tree(room: RoomId, salt: u16) -> WorkspaceTree {
     let mut a = WorkspaceTree::default();
     a.set_salt_override(salt);
     let mut workspace = Workspace::new(WorkspaceId(id(1)), "Live");
-    workspace.room = room;
+    workspace.set_room(room);
     workspace.strips.push(Strip {
         id: StripId(id(2)),
         name: "Main".into(),
@@ -299,6 +303,7 @@ async fn a_pushed_tab_change_reaches_the_other_device_within_the_interactive_bud
 
     let (cmd_a, mut events_a, addr_a) = spawn_actor().await;
     let (cmd_b, mut events_b, addr_b) = spawn_actor().await;
+    let a_id = addr_a.id;
     connect_pair(&cmd_a, addr_a, &cmd_b, addr_b).await;
     wait_peer_joined(&mut events_a).await;
     wait_peer_joined(&mut events_b).await;
@@ -311,6 +316,8 @@ async fn a_pushed_tab_change_reaches_the_other_device_within_the_interactive_bud
     b.set_salt_override(SALT_B);
     let placeholder = b.append_empty_workspace("Placeholder");
     assert!(b.set_room(placeholder, room));
+    // The invite names A's endpoint as the room's governor.
+    assert!(b.pin_room_authority(room, PeerOrigin::peer(&a_id)));
 
     let publish = |changes: Vec<Vec<u8>>| NetCmd::Publish {
         ws: WS,
@@ -422,7 +429,7 @@ async fn a_document_edit_reaches_the_other_device_within_the_interactive_budget(
                     collab_types::ArtifactId(uuid::Uuid::from_bytes([0x11; 16])),
                     collab_types::Ed25519PublicKey::from_bytes([7; 32]),
                     collab_types::AttestationId(uuid::Uuid::from_bytes([0x22; 16])),
-                    collab_types::OpClass::Splice,
+                    collab_types::OpKind::Change,
                     std::time::SystemTime::now(),
                     sequence,
                 )),
@@ -539,7 +546,7 @@ fn invite_token_carries_an_authenticated_iroh_address() {
 }
 
 async fn spawn_same_identity_actor(
-    device_seed: u8,
+    device_label: u8,
 ) -> (
     mpsc::Sender<NetCmd>,
     mpsc::Receiver<NetEvent>,
@@ -550,11 +557,14 @@ async fn spawn_same_identity_actor(
     use std::sync::{Arc, Mutex};
     use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
     let root = ed25519_dalek::SigningKey::from_bytes(&[41; 32]);
-    let key = ed25519_dalek::SigningKey::from_bytes(&[device_seed; 32]);
+    // Parallel CI jobs must not claim the same Iroh device identity on N0's
+    // shared relays. Keep the fixture's person, but give each device its own key.
+    let transport_key = iroh::SecretKey::generate();
+    let key = ed25519_dalek::SigningKey::from_bytes(&transport_key.to_bytes());
     let mut cert = DeviceCert {
         user_public_key: root.verifying_key().to_bytes(),
         device_public_key: key.verifying_key().to_bytes(),
-        device_label: format!("Synthetic device {device_seed}"),
+        device_label: format!("Synthetic device {device_label}"),
         capabilities: DeviceCapabilities::primary(),
         issued_at_ns: 1,
         expires_at_ns: None,
@@ -563,7 +573,7 @@ async fn spawn_same_identity_actor(
     sign_device_cert(&mut cert, &root).unwrap();
     let lookup = MemoryLookup::new();
     let endpoint = iroh::Endpoint::builder(presets::N0)
-        .secret_key(iroh::SecretKey::from_bytes(&key.to_bytes()))
+        .secret_key(transport_key)
         .address_lookup(lookup.clone())
         .bind()
         .await
@@ -752,7 +762,7 @@ async fn send_native_connector_observation(
     events: &mut tokio::sync::mpsc::Receiver<NetEvent>,
     source: iroh::EndpointId,
     fabrics: (
-        &native_fabric::DeviceFabric,
+        &mut native_fabric::DeviceFabric,
         &mut native_fabric::DeviceFabric,
     ),
     owner: &DeviceId,
@@ -764,7 +774,8 @@ async fn send_native_connector_observation(
         .unwrap()
         .display
         .as_ref()
-        .unwrap();
+        .unwrap()
+        .clone();
     send_native_payload(
         command,
         target,
@@ -783,12 +794,64 @@ async fn send_native_connector_observation(
         .1
         .observe_display_connectors(owner, &stamp, outputs)
         .unwrap();
+    let rich_outputs: Vec<_> = display
+        .outputs
+        .iter()
+        .map(|connector| native_fabric::DisplayOutputObservation {
+            connector: connector.connector.clone(),
+            output: settings_store::person_displays::DeviceOutput {
+                id: format!("monitor:{}", connector.connector),
+                name: connector.label.clone(),
+                builtin: false,
+                x: connector.rect.x,
+                y: connector.rect.y,
+                width: connector.rect.width,
+                height: connector.rect.height,
+                mode_width: connector.rect.width,
+                mode_height: connector.rect.height,
+                refresh_mhz: 60_000,
+                scale_milli: connector.scale_milli,
+                connected: true,
+                enabled: true,
+            },
+        })
+        .collect();
+    fabrics
+        .0
+        .observe_display_outputs(owner, &display.stamp, rich_outputs.clone())
+        .unwrap();
+    send_native_payload(
+        command,
+        target,
+        PersonalFabricPayload::DisplayOutputs {
+            stamp: display.stamp.clone(),
+            outputs: rich_outputs.clone(),
+        },
+    )
+    .await;
+    let PersonalFabricPayload::DisplayOutputs { stamp, outputs } =
+        wait_native_payload(events, source).await
+    else {
+        panic!("expected rich native output observation")
+    };
+    fabrics
+        .1
+        .observe_display_outputs(owner, &stamp, outputs)
+        .unwrap();
+    assert_eq!(
+        fabrics.1.display_outputs(owner),
+        Some(rich_outputs.as_slice())
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn native_screen_crossing_reaches_the_two_peer_seat_without_video() {
     let (cmd_a, mut events_a, addr_a) = spawn_same_identity_actor(42).await;
-    let (cmd_b, mut events_b, addr_b) = spawn_same_identity_actor(43).await;
+    let (cmd_b, mut events_b, addr_b) = spawn_same_identity_actor(42).await;
+    assert_ne!(
+        addr_a.id, addr_b.id,
+        "equal device labels must retain distinct authenticated endpoints"
+    );
     let source = DeviceId::new(hex::encode(addr_a.id.as_bytes())).unwrap();
     let target = DeviceId::new(hex::encode(addr_b.id.as_bytes())).unwrap();
     let endpoint_a = addr_a.id;
@@ -817,7 +880,7 @@ async fn native_screen_crossing_reaches_the_two_peer_seat_without_video() {
         endpoint_a,
         &mut events_a,
         endpoint_b,
-        (&target_fabric, &mut source_fabric),
+        (&mut target_fabric, &mut source_fabric),
         &target,
     )
     .await;
@@ -847,7 +910,7 @@ async fn native_screen_crossing_reaches_the_two_peer_seat_without_video() {
         endpoint_b,
         &mut events_b,
         endpoint_a,
-        (&advertised_source, &mut target_fabric),
+        (&mut source_fabric, &mut target_fabric),
         &source,
     )
     .await;

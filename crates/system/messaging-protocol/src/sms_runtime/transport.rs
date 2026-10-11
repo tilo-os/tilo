@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use serde::Serialize;
 use zbus::names::OwnedUniqueName;
@@ -9,11 +10,19 @@ use zeroize::Zeroizing;
 use crate::sms::CreateText;
 use crate::{Error, ProtocolReference};
 
-const SERVICE: &str = "org.freedesktop.ModemManager1";
+pub(super) const SERVICE: &str = "org.freedesktop.ModemManager1";
 const MODEM: &str = "org.freedesktop.ModemManager1.Modem";
 const SIM: &str = "org.freedesktop.ModemManager1.Sim";
 pub(super) const MESSAGING: &str = "org.freedesktop.ModemManager1.Modem.Messaging";
 pub(super) const SMS: &str = "org.freedesktop.ModemManager1.Sms";
+
+/// The native host retains the original reviewed modem/SIM permission.
+/// This is not an application-supplied boolean or a replacement grant.
+pub trait SimAuthority: Send + Sync {
+    /// # Errors
+    /// Refuses retired personal admission or revoked permission for this SIM.
+    fn check(&self) -> Result<(), Error>;
+}
 
 /// Verified host inputs, not values accepted from an app's send parameters.
 /// Account/device/link generation is held separately by the runtime owner.
@@ -21,9 +30,9 @@ pub(super) const SMS: &str = "org.freedesktop.ModemManager1.Sms";
 pub struct SimBinding {
     pub(super) daemon: OwnedUniqueName,
     pub(super) modem: OwnedObjectPath,
-    sim: OwnedObjectPath,
-    iccid: Zeroizing<String>,
-    epoch: u64,
+    pub(super) sim: OwnedObjectPath,
+    pub(super) iccid: Zeroizing<String>,
+    pub(super) epoch: u64,
 }
 
 impl SimBinding {
@@ -38,6 +47,7 @@ impl SimBinding {
         iccid: String,
         epoch: u64,
     ) -> Result<Self, Error> {
+        let iccid = Zeroizing::new(iccid);
         if !object(&modem, "Modem")
             || !object(&sim, "SIM")
             || epoch == 0
@@ -51,7 +61,7 @@ impl SimBinding {
             daemon: daemon.try_into().map_err(|_| Error::InvalidIdentity)?,
             modem: modem.try_into().map_err(|_| Error::InvalidIdentity)?,
             sim: sim.try_into().map_err(|_| Error::InvalidIdentity)?,
-            iccid: Zeroizing::new(iccid),
+            iccid,
             epoch,
         })
     }
@@ -62,17 +72,38 @@ impl SimBinding {
 pub struct DbusTransport {
     pub(super) connection: zbus::Connection,
     pub(super) binding: SimBinding,
+    authority: Arc<dyn SimAuthority>,
 }
 
 impl DbusTransport {
-    pub fn new(connection: zbus::Connection, binding: SimBinding) -> Self {
-        Self {
+    /// # Errors
+    /// Refuses missing current authority before retaining a native bus handle.
+    pub fn new(
+        connection: zbus::Connection,
+        binding: SimBinding,
+        authority: Arc<dyn SimAuthority>,
+    ) -> Result<Self, Error> {
+        authority.check()?;
+        Ok(Self {
             connection,
             binding,
-        }
+            authority,
+        })
+    }
+
+    /// Check the selected daemon and physical SIM before private initialization.
+    /// # Errors
+    /// Refuses revoked permission, a replaced daemon, or a changed SIM.
+    pub async fn validate(&self) -> Result<(), Error> {
+        self.check_binding().await
+    }
+
+    pub(super) fn check_permission(&self) -> Result<(), Error> {
+        self.authority.check()
     }
 
     pub(super) async fn check_binding(&self) -> Result<(), Error> {
+        self.check_permission()?;
         let bus = zbus::fdo::DBusProxy::new(&self.connection)
             .await
             .map_err(unavailable)?;
@@ -80,11 +111,13 @@ impl DbusTransport {
             .get_name_owner(SERVICE.try_into().map_err(unavailable)?)
             .await
             .map_err(unavailable)?;
+        self.check_permission()?;
         if owner != self.binding.daemon {
             return Err(Error::WrongAccount);
         }
         let modem = self.proxy(self.binding.modem.as_str(), MODEM).await?;
         let sim: OwnedObjectPath = modem.get_property("Sim").await.map_err(unavailable)?;
+        self.check_permission()?;
         if sim != self.binding.sim {
             return Err(Error::WrongAccount);
         }
@@ -94,6 +127,7 @@ impl DbusTransport {
                 .await
                 .map_err(unavailable)?,
         );
+        self.check_permission()?;
         if iccid != self.binding.iccid {
             return Err(Error::WrongAccount);
         }
@@ -112,6 +146,7 @@ impl DbusTransport {
             epoch: u64,
             delivery_report_request: bool,
         }
+        self.check_permission()?;
         serde_json::to_vec(&Frozen {
             number: &properties.number,
             text: &properties.text,
@@ -136,10 +171,12 @@ impl DbusTransport {
             ),
         ]);
         let proxy = self.proxy(self.binding.modem.as_str(), MESSAGING).await?;
+        self.check_permission()?;
         let message: OwnedObjectPath = proxy
             .call("Create", &(dictionary,))
             .await
             .map_err(unavailable)?;
+        self.check_permission()?;
         if !object(message.as_str(), "SMS") {
             return Err(Error::InvalidFrame);
         }
@@ -181,11 +218,10 @@ impl DbusTransport {
     }
 
     pub(super) async fn send(&self, message: &OwnedObjectPath) -> Result<(), Error> {
-        self.proxy(message.as_str(), SMS)
-            .await?
-            .call("Send", &())
-            .await
-            .map_err(unavailable)
+        let proxy = self.proxy(message.as_str(), SMS).await?;
+        self.check_permission()?;
+        let _: () = proxy.call("Send", &()).await.map_err(unavailable)?;
+        self.check_permission()
     }
 
     pub(super) fn reference(&self, message: &OwnedObjectPath) -> ProtocolReference {
@@ -317,7 +353,8 @@ impl DbusTransport {
         path: &'a str,
         interface: &'a str,
     ) -> Result<zbus::Proxy<'a>, Error> {
-        zbus::proxy::Builder::new(&self.connection)
+        self.check_permission()?;
+        let proxy = zbus::proxy::Builder::new(&self.connection)
             .destination(self.binding.daemon.as_str())
             .map_err(unavailable)?
             .path(path)
@@ -327,7 +364,9 @@ impl DbusTransport {
             .cache_properties(CacheProperties::No)
             .build()
             .await
-            .map_err(unavailable)
+            .map_err(unavailable)?;
+        self.check_permission()?;
+        Ok(proxy)
     }
 }
 
