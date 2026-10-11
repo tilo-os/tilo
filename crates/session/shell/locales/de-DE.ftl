@@ -2537,3 +2537,7 @@ activity-morning-description = Ausgewählte Morgenquellen · bestehende Ressourc
 activity-morning-unavailable = Quelle in diesem Arbeitsbereich nicht verfügbar · keine aktuellen Nachweise
 activity-morning-source = { $source } · letzte aufgezeichnete Aktivität: { $time } · externe Aktualität unbekannt
 activity-morning-open = Morgenquelle öffnen
+
+# Kanonische Zulassung von Einrichtungsaktionen; keine privaten Identitätsdaten.
+onboarding-semantic-unavailable = Diese Einrichtungsaktion ist in diesem Schritt nicht mehr verfügbar.
+onboarding-semantic-failed = Die Einrichtung konnte diese Aktion nicht abschließen. Der Desktop bleibt geschützt.
