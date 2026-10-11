@@ -88,8 +88,6 @@ pub struct ContextMenuArea {
     menu: ContextMenu,
     runs: Vec<Option<Rc<dyn Fn()>>>,
     cursor: Point,
-    /// The right press that opened the menu, until its release or a real move.
-    opening_pointer: Option<Point>,
     /// The pointer's last move, replayed to the content once a command
     /// ran, so what the command asked of it (a rename beginning) happens
     /// at once rather than at the pointer's next move.
@@ -111,7 +109,6 @@ impl ContextMenuArea {
             menu: ContextMenu::new(),
             runs: Vec::new(),
             cursor: Point::ZERO,
-            opening_pointer: None,
             moved: None,
             pending: None,
             viewport: None,
@@ -152,14 +149,12 @@ impl ContextMenuArea {
         }
         menu.focus_first_action();
         self.menu = menu;
-        self.opening_pointer = pointer.then_some(at);
         true
     }
 
     /// Choose the entry at `index` as a click would.
     pub fn choose(&mut self, index: usize) {
         self.menu.close();
-        self.opening_pointer = None;
         if let Some(Some(run)) = self.runs.get(index) {
             let run = Rc::clone(run);
             run();
@@ -225,25 +220,9 @@ impl super::Decorator for ContextMenuArea {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
-        let mut stationary_opening_pointer = false;
         if let WindowEvent::CursorMoved { position, .. } = event {
-            let at = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
-            stationary_opening_pointer = self.opening_pointer == Some(at) && self.cursor == at;
-            if !stationary_opening_pointer {
-                self.opening_pointer = None;
-            }
-            self.cursor = at;
+            self.cursor = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
             self.moved = Some(event.clone());
-        }
-        if matches!(
-            event,
-            WindowEvent::MouseInput {
-                state: ElementState::Released,
-                button: MouseButton::Right,
-                ..
-            }
-        ) {
-            self.opening_pointer = None;
         }
         // A row pressed with the pointer runs when the button comes up,
         // and that release is the menu's: what the command started (a
@@ -266,14 +245,9 @@ impl super::Decorator for ContextMenuArea {
             }
         }
         if self.menu.is_open() {
-            if stationary_opening_pointer {
-                // Rebuilding after the opening right press replays the still
-                // pointer before release. That is no new hover choice: the
-                // first action (or a keyboard choice) stays ready for Enter.
-                self.menu.remember_pointer(self.cursor);
-            } else {
-                self.menu.handle_event(event, ctx);
-            }
+            // The menu itself tells the host's replay of the still opening
+            // pointer from a real move, so the keyboard keeps its row.
+            self.menu.handle_event(event, ctx);
             if let Some(index) = self.menu.take_selection() {
                 self.menu.close();
                 if matches!(
@@ -434,23 +408,6 @@ mod tests {
     }
 
     #[test]
-    fn opening_pointer_replay_keeps_the_fourth_keyboard_command_reachable() {
-        let (mut area, chosen, at) = opening_menu();
-        assert_eq!(area.menu().hovered(), Some(0));
-        // The real host replays this unchanged position after rebuilding
-        // the tree that the opening right press changed, before its release.
-        crate::testing::dispatch(&mut area, &moved(at));
-        crate::testing::dispatch(&mut area, &right_release());
-        assert_eq!(area.menu().hovered(), Some(0));
-        for _ in 0..3 {
-            crate::testing::dispatch(&mut area, &named_key(NamedKey::ArrowDown));
-        }
-        crate::testing::dispatch(&mut area, &named_key(NamedKey::Enter));
-        assert_eq!(chosen.get(), 4);
-        assert!(!area.is_open());
-    }
-
-    #[test]
     fn movement_during_opening_keeps_the_pointer_row_for_enter() {
         let (mut area, chosen, _) = opening_menu();
         let Some(row) = area.menu().item_rect(1) else {
@@ -568,10 +525,10 @@ mod tests {
         }
     }
 
-    /// A 300 px area offering First, Second and Third, in a window whose
-    /// host replays a still pointer after the widgets change, the pointer
-    /// resting at (100, 100).
-    fn three_entries() -> (crate::headless::FrameHarness, Chosen) {
+    /// A 300 px area offering First to Fourth, in a window whose host
+    /// replays a still pointer after the widgets change, the pointer resting
+    /// at (100, 100).
+    fn four_entries() -> (crate::headless::FrameHarness, Chosen) {
         let chosen = Chosen::default();
         let content = PicksOnRightPress {
             inner: Spacer::fixed(300.0),
@@ -580,7 +537,7 @@ mod tests {
         let area = ContextMenuArea::new(Box::new(content), {
             let chosen = Rc::clone(&chosen);
             move |_| {
-                ["First", "Second", "Third"]
+                ["First", "Second", "Third", "Fourth"]
                     .into_iter()
                     .map(|label| {
                         let chosen = Rc::clone(&chosen);
@@ -625,24 +582,28 @@ mod tests {
         );
     }
 
+    /// The fourth entry is three rows down, as Canvas's Duplicate is: a
+    /// keyboard row one off lands on another entry.
     #[test]
     fn a_right_click_menu_runs_the_entry_the_keyboard_chooses() {
-        let (mut harness, chosen) = three_entries();
+        let (mut harness, chosen) = four_entries();
         right_click(&mut harness);
         assert_eq!(
             harness.root::<ContextMenuArea>().menu().hovered(),
             Some(0),
             "the menu opens on its first entry, though the still pointer was replayed"
         );
-        harness.key("ArrowDown");
+        for _ in 0..3 {
+            harness.key("ArrowDown");
+        }
         harness.key("Enter");
-        assert_eq!(*chosen.borrow(), vec!["Second"]);
+        assert_eq!(*chosen.borrow(), vec!["Fourth"]);
         assert!(!harness.root::<ContextMenuArea>().is_open());
     }
 
     #[test]
     fn a_right_click_menu_runs_the_entry_the_pointer_clicks() {
-        let (mut harness, chosen) = three_entries();
+        let (mut harness, chosen) = four_entries();
         right_click(&mut harness);
         let second = harness
             .root::<ContextMenuArea>()
