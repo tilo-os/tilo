@@ -464,6 +464,20 @@ fn room_activity_window_shows_filters_and_survives_dismissal_gestures() {
         };
 
         ShellOverlayHost::open_room_activity_target(&chrome, &target);
+        // The open is queued off the compositor thread: its refusal arrives
+        // as a launch event that the host settles on its next drain.
+        let mut host =
+            ShellOverlayHost::new(Box::new(StubContent::new())).with_chrome(chrome.clone());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while chrome.borrow().notifications().is_empty() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the queued refusal never reached the host"
+            );
+            if !host.drain_launch_events() {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
 
         assert!(
             crate::shell::launcher::placement_for_toplevel(app_id, 91_001).is_none(),
@@ -1724,8 +1738,9 @@ fn print_screen_opens_the_requested_capture_and_preserves_transactional_surfaces
         ));
         assert_eq!(
             h.host.file_picker().map(ui::widget::FilePicker::filename),
-            Some("beforex"),
-            "the Save name field owns text input before capture opens"
+            Some("x"),
+            "the Save name field owns text input before capture opens (typing replaces \
+             the preset name, which opens selected)"
         );
 
         assert!(pump(
@@ -1754,7 +1769,7 @@ fn print_screen_opens_the_requested_capture_and_preserves_transactional_surfaces
         ));
         assert_eq!(
             h.host.file_picker().map(ui::widget::FilePicker::filename),
-            Some("beforexy"),
+            Some("xy"),
             "after capture closes, the exact prior Save field must regain keyboard input"
         );
     }
