@@ -2349,7 +2349,8 @@ fn share_dmabuf(
     surface: SurfaceId,
     opaque: bool,
 ) -> Option<Arc<crate::shell::gpu_frames::GpuFrame>> {
-    static REPORTED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    static REPORTED: Mutex<Vec<crate::shell::gpu_frames::ImportFallback>> =
+        Mutex::new(Vec::new());
     match crate::shell::gpu_frames::import_dmabuf(dmabuf, surface, opaque) {
         Ok(frame) => Some(frame),
         Err(reason) => {

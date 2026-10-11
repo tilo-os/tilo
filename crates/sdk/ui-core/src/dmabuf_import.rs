@@ -9,13 +9,19 @@
 //! # What is reachable, and what is not
 //!
 //! Import needs `VK_KHR_external_memory_fd` + `VK_EXT_external_memory_dma_buf`,
-//! which `wgpu-hal` enables. Interpreting a **tiled or compressed** layout
-//! additionally needs `VK_EXT_image_drm_format_modifier` — and `wgpu-hal` does
-//! not enable it (verified against wgpu-hal 29: `adapter.rs` pushes
-//! `external_memory_fd` and `external_memory_dma_buf`, and nothing else in
-//! that family). Without it Vulkan can only be told `VK_IMAGE_TILING_LINEAR`,
-//! so a buffer with any other DRM format modifier cannot be described and must
-//! not be imported: doing so would sample the tiling pattern as pixels.
+//! which `wgpu-hal` enables. Interpreting a **tiled or compressed** layout, or
+//! a linear one whose row pitch the driver would not have chosen itself,
+//! additionally needs `VK_EXT_image_drm_format_modifier`. The crates.io
+//! `wgpu-hal` 29 does not enable it; the repository's patched copy
+//! (`vendor/wgpu-hal`, see `vendor/PATCHES.md`) does on Vulkan 1.2 and up.
+//!
+//! * With the extension ([`explicit_layout_available`]) the image is created
+//!   with the producer's own modifier, plane offset and row pitch
+//!   (`VkImageDrmFormatModifierExplicitCreateInfoEXT`), after the driver
+//!   confirmed it can sample that exact combination. No pitch has to agree.
+//! * Without it Vulkan can only be told `VK_IMAGE_TILING_LINEAR`, so a buffer
+//!   with any other DRM format modifier cannot be described and must not be
+//!   imported: doing so would sample the tiling pattern as pixels.
 //!
 //! Two further limits are enforced rather than hoped for:
 //!
@@ -23,9 +29,9 @@
 //!   If `wgpu` fell back to GLES there is no Vulkan device to import into, and
 //!   [`ImportError::NotVulkan`] says so — the caller takes the CPU path
 //!   instead of silently rendering nothing.
-//! * **Row pitch must agree.** A `LINEAR` `VkImage`'s row pitch is chosen by
-//!   the driver, and there is no way to override it without the modifier
-//!   extension. If it disagrees with the producer's stride, the picture would
+//! * **Row pitch must agree, without the modifier extension.** A `LINEAR`
+//!   `VkImage`'s row pitch is chosen by the driver, and there is no way to
+//!   override it without the extension. If it disagrees with the producer's stride, the picture would
 //!   shear; [`ImportError::StrideMismatch`] reports it and the caller falls
 //!   back.
 //!
@@ -118,8 +124,10 @@ pub enum ImportError {
     /// `wgpu` is not running on Vulkan (GLES fallback, or another backend), so
     /// there is no Vulkan device to import external memory into.
     NotVulkan,
-    /// The buffer is tiled or compressed. Needs `VK_EXT_image_drm_format_modifier`,
-    /// which `wgpu-hal` does not enable.
+    /// The buffer is tiled or compressed and the device cannot sample it:
+    /// `VK_EXT_image_drm_format_modifier` is not enabled (the crates.io
+    /// `wgpu-hal` does not), or the driver lists no such modifier for the
+    /// format.
     UnsupportedModifier { modifier: u64 },
     /// No mapping from this DRM fourcc to a Vulkan format.
     UnsupportedFormat { fourcc: u32 },
@@ -151,7 +159,8 @@ impl std::fmt::Display for ImportError {
             ImportError::UnsupportedModifier { modifier } => write!(
                 f,
                 "dmabuf modifier {modifier:#x} is tiled or compressed; importing it \
-                 needs VK_EXT_image_drm_format_modifier, which wgpu-hal does not enable"
+                 needs VK_EXT_image_drm_format_modifier enabled on the device and \
+                 a driver that can sample the modifier"
             ),
             ImportError::UnsupportedFormat { fourcc } => {
                 write!(
@@ -292,6 +301,7 @@ pub fn import_render_target(
                 &spec,
                 0,
                 PlaneUsage {
+                    modifier: None,
                     vk: vk::ImageUsageFlags::COLOR_ATTACHMENT,
                     hal: vello::wgpu::wgt::TextureUses::COLOR_TARGET,
                     label: "dmabuf-scanout-target",
@@ -499,6 +509,20 @@ fn is_linear(modifier: u64) -> bool {
     modifier == DRM_FORMAT_MOD_LINEAR || modifier == DRM_FORMAT_MOD_INVALID
 }
 
+/// Whether `device` was opened with `VK_EXT_image_drm_format_modifier`, so an
+/// import can state the producer's exact layout instead of assuming the
+/// driver's linear one.
+pub fn explicit_layout_available(device: &wgpu::Device) -> bool {
+    // Safety: the guard only lends this device's Vulkan handles for the call.
+    unsafe { device.as_hal::<vulkan::Api>() }.is_some_and(|hal| has_modifier_extension(&hal))
+}
+
+fn has_modifier_extension(hal_device: &vulkan::Device) -> bool {
+    hal_device
+        .enabled_device_extensions()
+        .contains(&ash::ext::image_drm_format_modifier::NAME)
+}
+
 /// Import `image` as sampleable `wgpu` textures, aliasing its GPU memory.
 ///
 /// The returned textures own their `VkImage` + imported `VkDeviceMemory` (and
@@ -512,7 +536,7 @@ fn is_linear(modifier: u64) -> bool {
 /// is unsupported, the device is not backed by Vulkan, or Vulkan cannot import
 /// one of the planes.
 pub fn import(device: &wgpu::Device, image: &DmabufRef<'_>) -> Result<ImportedPlanes, ImportError> {
-    if !is_linear(image.modifier) {
+    if !is_linear(image.modifier) && !explicit_layout_available(device) {
         return Err(ImportError::UnsupportedModifier {
             modifier: image.modifier,
         });
@@ -547,7 +571,7 @@ pub fn import(device: &wgpu::Device, image: &DmabufRef<'_>) -> Result<ImportedPl
             // On failure, hal textures already built are dropped here without
             // ever reaching wgpu. Their drop callbacks are not run by `Drop`
             // (a hal texture is a plain handle), so free them explicitly.
-            let made = unsafe { importer.import_plane(plane, spec, i) };
+            let made = unsafe { importer.import_plane(plane, spec, i, image.modifier) };
             match made {
                 Ok(t) => built.push(t),
                 Err(e) => {
@@ -599,11 +623,16 @@ pub fn import(device: &wgpu::Device, image: &DmabufRef<'_>) -> Result<ImportedPl
 struct VulkanImporter<'a> {
     hal_device: &'a vulkan::Device,
     ext_fd: ash::khr::external_memory_fd::Device,
+    /// The device can import a plane with its producer's exact layout.
+    explicit_layout: bool,
 }
 
 /// How an imported image will be used: Vulkan usage, the wgpu HAL uses that
 /// describe it, and the debug label.
 struct PlaneUsage {
+    /// The buffer's DRM modifier, when the plane is imported with its exact
+    /// layout (offset, row pitch) rather than as the driver's own linear one.
+    modifier: Option<u64>,
     vk: vk::ImageUsageFlags,
     hal: vello::wgpu::wgt::TextureUses,
     label: &'static str,
@@ -615,7 +644,81 @@ impl<'a> VulkanImporter<'a> {
             hal_device.shared_instance().raw_instance(),
             hal_device.raw_device(),
         );
-        Self { hal_device, ext_fd }
+        Self {
+            hal_device,
+            ext_fd,
+            explicit_layout: has_modifier_extension(hal_device),
+        }
+    }
+
+    /// Ask the driver whether it can sample `spec`'s format laid out with
+    /// `modifier` as one plane, imported from a dma-buf, at this size.
+    fn check_modifier(
+        &self,
+        spec: &PlaneSpec,
+        modifier: u64,
+        usage: vk::ImageUsageFlags,
+    ) -> Result<(), ImportError> {
+        let phys = self.hal_device.raw_physical_device();
+        let instance = self.hal_device.shared_instance().raw_instance();
+        let unsupported = ImportError::UnsupportedModifier { modifier };
+        // Two calls: the count, then the properties.
+        let mut counted = vk::DrmFormatModifierPropertiesListEXT::default();
+        {
+            let mut query = vk::FormatProperties2::default().push_next(&mut counted);
+            unsafe {
+                instance.get_physical_device_format_properties2(phys, spec.format, &mut query)
+            };
+        }
+        let mut props = vec![
+            vk::DrmFormatModifierPropertiesEXT::default();
+            counted.drm_format_modifier_count as usize
+        ];
+        {
+            let mut list = vk::DrmFormatModifierPropertiesListEXT::default()
+                .drm_format_modifier_properties(&mut props);
+            let mut query = vk::FormatProperties2::default().push_next(&mut list);
+            unsafe {
+                instance.get_physical_device_format_properties2(phys, spec.format, &mut query)
+            };
+        }
+        let Some(found) = props.iter().find(|p| p.drm_format_modifier == modifier) else {
+            return Err(unsupported);
+        };
+        let wanted = vk::FormatFeatureFlags::SAMPLED_IMAGE | vk::FormatFeatureFlags::TRANSFER_SRC;
+        if found.drm_format_modifier_plane_count != 1
+            || !found.drm_format_modifier_tiling_features.contains(wanted)
+        {
+            return Err(unsupported);
+        }
+        let mut external = vk::PhysicalDeviceExternalImageFormatInfo::default()
+            .handle_type(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT);
+        let mut chosen = vk::PhysicalDeviceImageDrmFormatModifierInfoEXT::default()
+            .drm_format_modifier(modifier)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE);
+        let info = vk::PhysicalDeviceImageFormatInfo2::default()
+            .format(spec.format)
+            .ty(vk::ImageType::TYPE_2D)
+            .tiling(vk::ImageTiling::DRM_FORMAT_MODIFIER_EXT)
+            .usage(usage)
+            .push_next(&mut external)
+            .push_next(&mut chosen);
+        let mut external_props = vk::ExternalImageFormatProperties::default();
+        let mut out = vk::ImageFormatProperties2::default().push_next(&mut external_props);
+        unsafe { instance.get_physical_device_image_format_properties2(phys, &info, &mut out) }
+            .map_err(|_| unsupported.clone())?;
+        let extent = out.image_format_properties.max_extent;
+        if extent.width < spec.width || extent.height < spec.height {
+            return Err(unsupported);
+        }
+        if !external_props
+            .external_memory_properties
+            .external_memory_features
+            .contains(vk::ExternalMemoryFeatureFlags::IMPORTABLE)
+        {
+            return Err(unsupported);
+        }
+        Ok(())
     }
 
     /// Import one plane as a `wgpu::Texture`.
@@ -630,6 +733,7 @@ impl<'a> VulkanImporter<'a> {
         plane: &PlaneRef<'_>,
         spec: &PlaneSpec,
         index: usize,
+        modifier: u64,
     ) -> Result<<vulkan::Api as vello::wgpu::hal::Api>::Texture, ImportError> {
         unsafe {
             self.import_plane_with_usage(
@@ -637,6 +741,7 @@ impl<'a> VulkanImporter<'a> {
                 spec,
                 index,
                 PlaneUsage {
+                    modifier: Some(modifier),
                     vk: vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_SRC,
                     hal: vello::wgpu::wgt::TextureUses::RESOURCE
                         | vello::wgpu::wgt::TextureUses::COPY_SRC,
@@ -665,6 +770,7 @@ impl<'a> VulkanImporter<'a> {
         let instance = hal_device.shared_instance().raw_instance();
         let ext_fd = &self.ext_fd;
         let PlaneUsage {
+            modifier,
             vk: vk_usage,
             hal: hal_usage,
             label,
@@ -678,7 +784,35 @@ impl<'a> VulkanImporter<'a> {
 
         let mut ext_ci = vk::ExternalMemoryImageCreateInfo::default()
             .handle_types(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT);
-        let image_ci = vk::ImageCreateInfo::default()
+        // The exact layout the producer wrote, when the device can take it.
+        // An unstated modifier is the linear layout, as before.
+        let explicit = modifier.filter(|_| self.explicit_layout).map(|m| {
+            if m == DRM_FORMAT_MOD_INVALID {
+                DRM_FORMAT_MOD_LINEAR
+            } else {
+                m
+            }
+        });
+        if let Some(modifier) = explicit {
+            // The producer's pitch must at least hold a row, or the driver
+            // would be told a layout that overlaps itself.
+            let row = u64::from(spec.width).saturating_mul(u64::from(spec.texel_bytes));
+            if u64::from(plane.stride) < row {
+                return Err(ImportError::UnsupportedModifier { modifier });
+            }
+            self.check_modifier(spec, modifier, vk_usage)?;
+        }
+        let plane_layouts = [vk::SubresourceLayout {
+            offset: u64::from(plane.offset),
+            size: 0,
+            row_pitch: u64::from(plane.stride),
+            array_pitch: 0,
+            depth_pitch: 0,
+        }];
+        let mut explicit_ci = vk::ImageDrmFormatModifierExplicitCreateInfoEXT::default()
+            .drm_format_modifier(explicit.unwrap_or(DRM_FORMAT_MOD_LINEAR))
+            .plane_layouts(&plane_layouts);
+        let mut image_ci = vk::ImageCreateInfo::default()
             .image_type(vk::ImageType::TYPE_2D)
             .format(spec.format)
             .extent(vk::Extent3D {
@@ -689,12 +823,20 @@ impl<'a> VulkanImporter<'a> {
             .mip_levels(1)
             .array_layers(1)
             .samples(vk::SampleCountFlags::TYPE_1)
-            // The only tiling describable without VK_EXT_image_drm_format_modifier.
-            .tiling(vk::ImageTiling::LINEAR)
+            // Without VK_EXT_image_drm_format_modifier, linear is the only
+            // tiling that can be described.
+            .tiling(if explicit.is_some() {
+                vk::ImageTiling::DRM_FORMAT_MODIFIER_EXT
+            } else {
+                vk::ImageTiling::LINEAR
+            })
             .usage(vk_usage)
             .sharing_mode(vk::SharingMode::EXCLUSIVE)
             .initial_layout(vk::ImageLayout::UNDEFINED)
             .push_next(&mut ext_ci);
+        if explicit.is_some() {
+            image_ci = image_ci.push_next(&mut explicit_ci);
+        }
 
         let vk_image = unsafe { dev.create_image(&image_ci, None) }
             .map_err(|e| ImportError::Vulkan(format!("vkCreateImage: {e:?}")))?;
@@ -710,8 +852,13 @@ impl<'a> VulkanImporter<'a> {
             mip_level: 0,
             array_layer: 0,
         };
-        let sub_layout = unsafe { dev.get_image_subresource_layout(vk_image, sub) };
-        if sub_layout.row_pitch != u64::from(plane.stride) {
+        let sub_layout = if explicit.is_none() {
+            unsafe { dev.get_image_subresource_layout(vk_image, sub) }
+        } else {
+            // Not asked: with an explicit layout the driver's pitch is the producer's.
+            vk::SubresourceLayout::default()
+        };
+        if explicit.is_none() && sub_layout.row_pitch != u64::from(plane.stride) {
             // A stride that is merely *larger* is still unusable: the sampler
             // steps by the driver's pitch, so rows would drift.
             cleanup_image(dev);
@@ -743,6 +890,39 @@ impl<'a> VulkanImporter<'a> {
                 Err(_) => u32::MAX,
             }
         };
+        // The GPU reads `reqs.size` bytes (plus the bind offset) from this
+        // buffer. A dma-buf shorter than that, which a producer's pitch or
+        // offset can cause, would make the GPU read past it, so refuse before
+        // the driver is asked to map it.
+        let needed = reqs.size.saturating_add(if explicit.is_some() {
+            0
+        } else {
+            u64::from(plane.offset)
+        });
+        let have = {
+            use std::io::{Seek as _, SeekFrom};
+            let mut file = std::fs::File::from(
+                dup.try_clone()
+                    .map_err(|e| ImportError::Vulkan(format!("dup dmabuf fd: {e}")))?,
+            );
+            file.seek(SeekFrom::End(0))
+                .map_err(|e| ImportError::Vulkan(format!("dmabuf size: {e}")))
+        };
+        let have = match have {
+            Ok(have) => have,
+            Err(e) => {
+                cleanup_image(dev);
+                return Err(e);
+            }
+        };
+        if have < needed {
+            cleanup_image(dev);
+            return Err(ImportError::Vulkan(format!(
+                "dmabuf is {have} bytes but its image needs {needed} \
+                 (offset {}, pitch {})",
+                plane.offset, plane.stride
+            )));
+        }
         let allowed = reqs.memory_type_bits & fd_props;
         let Some(mem_type) = find_memory_type(instance, phys, allowed) else {
             cleanup_image(dev);
@@ -758,9 +938,16 @@ impl<'a> VulkanImporter<'a> {
         // A dedicated allocation binds at offset 0 only. Planes that live at an
         // offset inside a shared buffer need a plain allocation instead.
         let mut dedicated = vk::MemoryDedicatedAllocateInfo::default().image(vk_image);
-        let use_dedicated = plane.offset == 0;
+        // With an explicit layout the offset is part of the image's own layout,
+        // so the memory binds at zero and its size already covers the offset.
+        let bind_offset = if explicit.is_some() {
+            0
+        } else {
+            u64::from(plane.offset)
+        };
+        let use_dedicated = bind_offset == 0;
         // The allocation must cover the plane's offset as well as its size.
-        let Some(size) = reqs.size.checked_add(u64::from(plane.offset)) else {
+        let Some(size) = reqs.size.checked_add(bind_offset) else {
             cleanup_image(dev);
             return Err(ImportError::Vulkan(format!(
                 "dmabuf allocation size overflows (image size {}, plane offset {})",
@@ -789,8 +976,7 @@ impl<'a> VulkanImporter<'a> {
             }
         };
 
-        if let Err(e) = unsafe { dev.bind_image_memory(vk_image, memory, u64::from(plane.offset)) }
-        {
+        if let Err(e) = unsafe { dev.bind_image_memory(vk_image, memory, bind_offset) } {
             unsafe { dev.free_memory(memory, None) };
             cleanup_image(dev);
             return Err(ImportError::Vulkan(format!("vkBindImageMemory: {e:?}")));
