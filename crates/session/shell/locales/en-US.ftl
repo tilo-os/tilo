@@ -2537,8 +2537,7 @@ device-fabric-error-input-cleanup-pending = Previous input is still being releas
 search-provider-system-settings = System settings
 search-badge-settings = Settings
 setting-never = Never
-setting-minutes =
-    { $minutes ->
+setting-minutes = { $minutes ->
         [one] 1 minute
        *[other] { $minutes } minutes
     }
