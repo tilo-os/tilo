@@ -205,6 +205,7 @@ fn deliver(
     context: Option<tilo_actions::ActionContext>,
 ) {
     app.apply_collab_event_for_test(CollabEvent::Invocation {
+        lease: None,
         invocation: tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id))),
         id,
         resource: "test.doc".into(),

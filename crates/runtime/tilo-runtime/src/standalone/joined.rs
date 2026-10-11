@@ -445,6 +445,30 @@ impl OwnerCommitService for Joined {
         Box::pin(std::future::ready(receipt))
     }
 
+    fn commit_with_document_custody(
+        &self,
+        request: OwnerCommitRequest,
+        custody: Arc<dyn tilo_peer_state::owner_commit::DocumentCommitCustody>,
+        _record_kind: Option<String>,
+    ) -> CommitFuture {
+        let receipt = (|| {
+            let room = RoomId::parse(&request.room).ok_or("invalid scoped native room")?;
+            let keys = self
+                .keys
+                .get()
+                .ok_or("scoped native channel keys unavailable")?;
+            let receipt = self.owner.commit_document_with_custody(
+                request,
+                &mut |envelope| keys.open_new_write(room, envelope),
+                custody.as_ref(),
+                SystemTime::now(),
+            )?;
+            self.wake(room);
+            Ok(receipt)
+        })();
+        Box::pin(std::future::ready(receipt))
+    }
+
     fn health(&self) -> Result<(), String> {
         self.owner.health()
     }

@@ -150,3 +150,112 @@ fn owner_publication_blocked_checked_action_cannot_send_terminal() {
         fixture.app.close_components();
     }
 }
+
+// A controlled transport exercises the actual local action door. It supplies
+// no invocation authorization, so queued delivery alone cannot mutate a record.
+struct NativeLocalDoorTransport {
+    open: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    sent: std::sync::Arc<std::sync::Mutex<Vec<CollabRequest>>>,
+    acknowledgement: Option<crate::collaboration::RouteSpec>,
+}
+impl crate::collaboration::CollabTransport for NativeLocalDoorTransport {
+    fn status(&self) -> crate::collaboration::TransportStatus {
+        if self.open.load(std::sync::atomic::Ordering::Acquire) {
+            crate::collaboration::TransportStatus::Ready
+        } else {
+            crate::collaboration::TransportStatus::Closed("native connection ended".into())
+        }
+    }
+    fn submit(
+        &mut self,
+        command: crate::collaboration::TransportCommand,
+    ) -> Result<(), crate::collaboration::TransportError> {
+        use crate::collaboration::{TransportCommand, TransportError};
+        if !self.open.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(TransportError::Closed);
+        }
+        if let TransportCommand::Primary(request) = command {
+            if let CollabRequest::Hello {
+                app_id,
+                cluster_id,
+                record,
+                ..
+            } = &request
+            {
+                self.acknowledgement = Some(crate::collaboration::RouteSpec {
+                    app_id: app_id.clone(),
+                    cluster_id: *cluster_id,
+                    record: record.clone(),
+                });
+            }
+            self.sent.lock().unwrap().push(request);
+        }
+        Ok(())
+    }
+    fn drain(&mut self, _: &mut Vec<CollabEvent>) {}
+    fn take_primary_route_result(
+        &mut self,
+    ) -> Option<Result<crate::collaboration::RouteSpec, String>> {
+        self.acknowledgement.take().map(Ok)
+    }
+    fn take_action_directory_requests(
+        &mut self,
+        _: &mut Vec<crate::collaboration::ActionDirectoryRequest>,
+    ) {
+    }
+    fn committed_document_required(&self, _: &str) -> bool {
+        true
+    }
+}
+
+#[test]
+fn owner_publication_native_local_document_waits_for_real_delivery_and_refuses_closed_route() {
+    for connected in [true, false] {
+        let mut fixture = ActionFixture::broker();
+        let open = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let sent = std::sync::Arc::new(std::sync::Mutex::new(vec![]));
+        let route = fixture.bindings[0].broker_route().unwrap();
+        let mut manager =
+            CollaborationManager::with_transport(Box::new(NativeLocalDoorTransport {
+                open: open.clone(),
+                sent: sent.clone(),
+                acknowledgement: None,
+            }));
+        assert!(manager.send(CollabRequest::Hello {
+            app_id: route.app_id.clone(),
+            cluster_id: route.cluster_id,
+            record: route.record.clone(),
+            record_kind: None,
+            handle: None
+        }));
+        let _ = manager.poll();
+        assert!(manager.has_native_committed_primary());
+        open.store(connected, std::sync::atomic::Ordering::Release);
+        fixture.app.collaboration.manager = manager;
+        let target = fixture.target(0, "apply");
+        let record = fixture.bindings[0].checkout.id.clone();
+        let before = fixture
+            .records
+            .read(&record, |doc| doc.base_heads())
+            .unwrap();
+        let request = ResourceInvocation::new(&target.address.address, "fixture-user");
+        let result = fixture.app.invoke_bound_target(&target, &request);
+        assert_eq!(result.is_ok(), connected);
+        assert_eq!(
+            fixture
+                .records
+                .read(&record, |doc| doc.base_heads())
+                .unwrap(),
+            before,
+            "neither queued capture nor closed native custody may run a scopeNone handler"
+        );
+        assert_eq!(
+            sent.lock()
+                .unwrap()
+                .iter()
+                .filter(|request| matches!(request, CollabRequest::RemoteAction { .. }))
+                .count(),
+            usize::from(connected)
+        );
+    }
+}

@@ -448,7 +448,7 @@ impl NativeWorkspaceOwner {
         now: SystemTime,
     ) -> Result<tilo_peer_state::owner_commit::OwnerCommitReceipt, String> {
         let room = RoomId::parse(&request.room).ok_or("invalid native document room")?;
-        self.commit_document_prepared(room, |_| Ok(request), Some(open), now)
+        self.commit_document_prepared(room, |_| Ok(request), Some(open), None, now)
     }
 
     /// Prepare a signed local document mutation from the current committed
@@ -467,7 +467,24 @@ impl NativeWorkspaceOwner {
             -> Result<tilo_peer_state::owner_commit::OwnerCommitRequest, String>,
         now: SystemTime,
     ) -> Result<tilo_peer_state::owner_commit::OwnerCommitReceipt, String> {
-        self.commit_document_prepared(room, prepare, None, now)
+        self.commit_document_prepared(room, prepare, None, None, now)
+    }
+
+    /// Commit scoped publication using the actual retained original evaluator
+    /// and current sealed opening in the same serialized owner turn.
+    ///
+    /// # Errors
+    /// Refuses unavailable opening, retired originals, current policy, exact
+    /// incoming coverage or committed basis, before reserving a publication.
+    pub fn commit_document_with_custody(
+        &self,
+        request: tilo_peer_state::owner_commit::OwnerCommitRequest,
+        open: DocumentOpener<'_>,
+        custody: &dyn tilo_peer_state::owner_commit::DocumentCommitCustody,
+        now: SystemTime,
+    ) -> Result<tilo_peer_state::owner_commit::OwnerCommitReceipt, String> {
+        let room = RoomId::parse(&request.room).ok_or("invalid native document room")?;
+        self.commit_document_prepared(room, |_| Ok(request), Some(open), Some(custody), now)
     }
 
     fn commit_document_prepared(
@@ -477,7 +494,8 @@ impl NativeWorkspaceOwner {
             &crate::NativeCommittedView,
         )
             -> Result<tilo_peer_state::owner_commit::OwnerCommitRequest, String>,
-        open: Option<DocumentOpener<'_>>,
+        mut open: Option<DocumentOpener<'_>>,
+        custody: Option<&dyn tilo_peer_state::owner_commit::DocumentCommitCustody>,
         now: SystemTime,
     ) -> Result<tilo_peer_state::owner_commit::OwnerCommitReceipt, String> {
         use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitReceipt};
@@ -489,6 +507,7 @@ impl NativeWorkspaceOwner {
         }
         let outgoing = publication::prepare(&request)?;
         let binding = request.binding()?;
+        let scoped_request = custody.map(|_| request.clone());
         let CommitOperation::Document {
             app,
             record,
@@ -501,12 +520,22 @@ impl NativeWorkspaceOwner {
         if envelope.author.as_bytes() != &device {
             return Err("native local publication signer differs from selected device".into());
         }
-        if candidate
+        let exact = candidate
             .peer
             .lookup_exact_local_document(&app, &record, &envelope, now)
             .map_err(|e| e.to_string())?
-            .is_some()
-        {
+            .is_some();
+        // The held peer verified the actual signature, author and route first.
+        // Scoped evaluation opens that same envelope; caller cleartext is absent.
+        let mut scoped_opening = validate_scoped_opening(
+            &candidate.peer,
+            scoped_request.as_ref(),
+            &envelope,
+            open.as_mut(),
+            custody,
+            now,
+        )?;
+        if exact {
             if !publication::has_exact(&candidate, &outgoing)?
                 && !publication::retry_covered(&candidate, &outgoing)?
             {
@@ -520,7 +549,19 @@ impl NativeWorkspaceOwner {
         }
         publication::reserve(&candidate, &outgoing)?;
         if envelope.encryption.is_some() {
-            if let Some(open) = open {
+            if scoped_opening.is_some() {
+                candidate.peer.admit_new_opened_local_document(
+                    &app,
+                    &record,
+                    *envelope,
+                    &mut |_| {
+                        scoped_opening
+                            .take()
+                            .ok_or_else(|| "scoped native opening reused".into())
+                    },
+                    now,
+                )?;
+            } else if let Some(open) = open {
                 candidate
                     .peer
                     .admit_new_opened_local_document(&app, &record, *envelope, open, now)?;
@@ -617,4 +658,30 @@ pub(crate) fn ns(now: SystemTime) -> Result<u64, String> {
             .as_nanos(),
     )
     .map_err(|e| e.to_string())
+}
+
+// This is called only after the held peer verifies signature, author and route.
+fn validate_scoped_opening(
+    peer: &tilo_peer_state::StatePeer,
+    request: Option<&tilo_peer_state::owner_commit::OwnerCommitRequest>,
+    envelope: &collab_types::SignedOp,
+    open: Option<&mut DocumentOpener<'_>>,
+    custody: Option<&dyn tilo_peer_state::owner_commit::DocumentCommitCustody>,
+    now: SystemTime,
+) -> Result<Option<Vec<u8>>, String> {
+    let Some(custody) = custody else {
+        return Ok(None);
+    };
+    let plaintext = if envelope.encryption.is_some() {
+        open.ok_or("scoped native document opening unavailable")?(envelope)?
+    } else {
+        envelope.payload.clone()
+    };
+    custody.validate_opened(
+        peer,
+        request.ok_or("scoped request unavailable")?,
+        &plaintext,
+        now,
+    )?;
+    Ok(Some(plaintext))
 }

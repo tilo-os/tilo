@@ -32,6 +32,7 @@ mod file_clipboard;
 #[path = "invocation_journal.rs"]
 mod invocation_journal;
 mod invoker;
+mod native_document;
 #[cfg(test)]
 #[path = "collab_broker_capnp/native_effect_recovery_tests.rs"]
 mod native_effect_recovery_tests;
@@ -3318,6 +3319,17 @@ impl CapnpBrokerState {
         request: tilo_peer_state::owner_commit::OwnerCommitRequest,
         record_kind: Option<String>,
     ) -> Result<(), capnp::Error> {
+        self.commit_owner_request_with_custody(request, record_kind, None)
+            .await
+            .map(|_| ())
+    }
+
+    async fn commit_owner_request_with_custody(
+        &self,
+        request: tilo_peer_state::owner_commit::OwnerCommitRequest,
+        record_kind: Option<String>,
+        custody: Option<Arc<dyn tilo_peer_state::owner_commit::DocumentCommitCustody>>,
+    ) -> Result<tilo_peer_state::owner_commit::OwnerCommitReceipt, capnp::Error> {
         // Dropping the waiting RPC cannot convert an admitted effect into a
         // refusal or leave the standalone capability apparently healthy.
         struct Waiting<'a> {
@@ -3339,10 +3351,17 @@ impl CapnpBrokerState {
             failure: &self.owner_commit_failure,
             complete: false,
         };
-        let result = self.publisher.commit_owner(request, record_kind).await;
+        let result = match custody {
+            Some(custody) => {
+                self.publisher
+                    .commit_scoped_document(request, custody, record_kind)
+                    .await
+            }
+            None => self.publisher.commit_owner(request, record_kind).await,
+        };
         waiting.complete = true;
         match result {
-            Ok(_) => Ok(()),
+            Ok(receipt) => Ok(receipt),
             Err(reason) => {
                 // The owner answered: retain its actual refusal/failure for
                 // later clients instead of labeling this as a dropped RPC.
@@ -7474,6 +7493,41 @@ impl channel_handle::Server for CapnpChannelHandle {
         })
     }
 
+    fn retained_invocation(
+        self: Rc<Self>,
+        params: channel_handle::RetainedInvocationParams,
+        mut results: channel_handle::RetainedInvocationResults,
+    ) -> Promise<(), capnp::Error> {
+        let capture = (|| {
+            let params = params.get()?;
+            let invocation: [u8; 16] = params
+                .get_invocation()?
+                .try_into()
+                .map_err(|_| capnp::Error::failed("invalid original invocation UUID".into()))?;
+            let original = published_invocation::OriginalInvocation::from_retained_delivery(
+                &self,
+                params.get_id(),
+                tilo_actions::InvocationId(uuid::Uuid::from_bytes(invocation)),
+            )
+            .map_err(capnp::Error::failed)?;
+            let bytes = ui::invocation_scope::RetainedInvocationDeclaration::encode(
+                original.request(),
+                original.dispatch_spec(),
+            )
+            .map_err(capnp::Error::failed)?;
+            // Resample after encoding too; no terminal or cancellation can
+            // revive the private invocation retained at initial dispatch.
+            original.check_custody().map_err(capnp::Error::failed)?;
+            drop(original);
+            results.get().set_original(&bytes);
+            Ok(())
+        })();
+        match capture {
+            Ok(()) => Promise::ok(()),
+            Err(error) => Promise::err(error),
+        }
+    }
+
     fn approved_check(
         self: Rc<Self>,
         params: channel_handle::ApprovedCheckParams,
@@ -8243,6 +8297,75 @@ impl channel_handle::Server for CapnpChannelHandle {
         };
         results.get().set_handle(client);
         Promise::ok(())
+    }
+
+    fn send_scoped_document(
+        self: Rc<Self>,
+        params: channel_handle::SendScopedDocumentParams,
+        mut results: channel_handle::SendScopedDocumentResults,
+    ) -> Promise<(), capnp::Error> {
+        Promise::from_future(async move {
+            let params = params.get()?;
+            let op = params.get_op()?;
+            if op.len() > collab_types::op::MAX_DOCUMENT_MUTATION_BYTES + 4096 {
+                return Err(capnp::Error::failed(
+                    "scoped native signed envelope exceeds bound".into(),
+                ));
+            }
+            let envelope: SignedOp = postcard::from_bytes(op)
+                .map_err(|error| capnp::Error::failed(error.to_string()))?;
+            let route = self.route();
+            let identity = self
+                .state
+                .revalidate_admission(&route, &self.verified_identity)?;
+            verify_session_author(&identity, envelope.author).map_err(capnp::Error::failed)?;
+            self.state
+                .authorize_certified_document(&route, &identity, &envelope)?;
+            let custody =
+                native_document::NativeDocumentCustody::retain(&self, params.get_contributors()?)
+                    .map_err(capnp::Error::failed)?;
+            let _owner_order = self.state.owner_commit_order.lock().await;
+            self.state.owner_health().map_err(capnp::Error::failed)?;
+            let request = tilo_peer_state::owner_commit::OwnerCommitRequest {
+                room: route.cluster_id.clone(),
+                operation: tilo_peer_state::owner_commit::CommitOperation::Document {
+                    app: route.app_id.clone(),
+                    record: route.record_id.clone(),
+                    envelope: Box::new(envelope.clone()),
+                },
+            };
+            let receipt = self
+                .state
+                .commit_owner_request_with_custody(request, self.record_kind.clone(), Some(custody))
+                .await?;
+            let identity = self
+                .state
+                .revalidate_admission(&route, &self.verified_identity)?;
+            let authorized = self
+                .state
+                .authorize_certified_document(&route, &identity, &envelope)?;
+            handle_authorized_signed_op_send(
+                &self.state,
+                self.peer_id,
+                &route,
+                &identity,
+                &authorized,
+                envelope,
+            );
+            let receipt = ui::invocation_scope::NativeDocumentReceipt {
+                room: route.cluster_id.clone(),
+                app: route.app_id.clone(),
+                record: route.record_id.clone(),
+                basis: receipt.binding.basis,
+                request_digest: receipt.binding.request_digest,
+                generation: receipt.generation,
+                aggregate_hash: receipt.aggregate_hash,
+            };
+            let bytes = postcard::to_stdvec(&receipt)
+                .map_err(|error| capnp::Error::failed(error.to_string()))?;
+            results.get().set_receipt(&bytes);
+            Ok(())
+        })
     }
 
     fn send(
@@ -13571,6 +13694,8 @@ pub mod tests {
     include!("resolved_invocation_tests.rs");
     #[cfg(test)]
     include!("approved_check_rpc_tests.rs");
+    #[cfg(test)]
+    include!("native_document_rpc_tests.rs");
     #[cfg(test)]
     include!("reliable_resolution_tests.rs");
     #[cfg(test)]

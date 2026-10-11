@@ -39,6 +39,8 @@ mod directory_client;
 mod managed_sender_transport;
 #[path = "native_initial.rs"]
 pub(crate) mod native_initial;
+#[path = "native_invocation_custody.rs"]
+mod native_invocation_custody;
 #[path = "native_media.rs"]
 mod native_media;
 pub use committed_document::CommittedDocument;
@@ -1367,6 +1369,7 @@ fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<usize>) {
             "ScrollbackBatch"
         }
         CollabEvent::Invocation {
+            lease,
             resource,
             action,
             argument,
@@ -1374,6 +1377,9 @@ fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<usize>) {
             context,
             ..
         } => {
+            if let Some(lease) = lease {
+                meter.add(lease.native_retained_bytes());
+            }
             meter.string_capacity(resource);
             meter.string_capacity(action);
             if let Some(argument) = argument {
@@ -4585,6 +4591,7 @@ async fn spawn_invocation_stream(
         let tx = inbound_tx.clone();
         let cancellation_channel = channel.clone();
         let key = spec.channel_id();
+        let spec = spec.clone();
         tokio::task::spawn_local(async move {
             while let Ok(invocation) = stream.read().await {
                 let turn = match native_invocation_delivery_turn(&key, &tx.state).await {
@@ -4615,8 +4622,52 @@ async fn spawn_invocation_stream(
                 }
                 let id = invocation.id;
                 let context = parse_invocation_context(id, &invocation.context_json);
+                let request = crate::invocation_scope::PublishedInvocationRequest {
+                    wire_id: id,
+                    invocation: tilo_actions::InvocationId(uuid::Uuid::from_bytes(
+                        invocation.invocation_uuid,
+                    )),
+                    address: tilo_actions::ActionAddress::new(
+                        invocation.resource.clone(),
+                        invocation.action.clone(),
+                    ),
+                    argument: invocation.argument.clone(),
+                    actor: invocation.actor.clone(),
+                    participant:
+                        crate::invocation_scope::PublishedInvocationRequest::delivered_participant(
+                            &invocation.actor,
+                            context.as_ref(),
+                        ),
+                };
+                let capture_deadline = turn.as_ref().map_or_else(
+                    || std::time::Instant::now() + std::time::Duration::from_secs(3),
+                    |turn| turn.deadline,
+                );
+                let lease = match native_invocation_custody::capture(
+                    &cancellation_channel,
+                    &spec,
+                    request,
+                    &tx,
+                    capture_deadline,
+                )
+                .await
+                {
+                    Ok(lease) => lease,
+                    Err(error) => {
+                        tx.state
+                            .fail_closed("native original invocation capture; outcome unknown");
+                        tracing::warn!(%error, "accepted native invocation retains unavailable original custody");
+                        break;
+                    }
+                };
+                if crate::time::now() >= capture_deadline {
+                    tx.state
+                        .fail_closed("native original capture exceeded original delivery deadline");
+                    break;
+                }
                 if !tx.send_durable_turn(
                     CollabEvent::Invocation {
+                        lease: Some(lease),
                         id,
                         invocation: tilo_actions::InvocationId(uuid::Uuid::from_bytes(
                             invocation.invocation_uuid,
@@ -5069,19 +5120,12 @@ async fn send_document_mutation(
     wait_for_document_publication(route, &inbound.state).await?;
     if let Some(authorization) = &authorization {
         authorization
-            .check(&route.spec, &mutation)
+            .check_binding(&route.spec, &mutation)
             .map_err(|error| {
                 inbound
                     .state
                     .publication_failed("original document contributors", error, true)
             })?;
-    }
-    if authorization.is_some() {
-        return Err(inbound.state.publication_failed(
-            "scoped document evaluator unavailable",
-            "original custody requires the actual final owner",
-            true,
-        ));
     }
     let frames = match mutation.encode_frames() {
         Ok(frames) => frames,
@@ -5097,8 +5141,26 @@ async fn send_document_mutation(
         }
     };
     let count = frames.len();
+    if let Some(authorization) = &authorization {
+        if count != 1 {
+            return Err(inbound.state.publication_failed(
+                "scoped native mutation",
+                "original contributors require a complete bounded signed frame",
+                true,
+            ));
+        }
+        let frame = frames.into_iter().next().ok_or_else(|| {
+            inbound.state.publication_failed(
+                "scoped native mutation",
+                "complete mutation frame unavailable",
+                true,
+            )
+        })?;
+        return send_document_frame(route, signer, frame, &inbound.state, Some(authorization))
+            .await;
+    }
     for (index, frame) in frames.into_iter().enumerate() {
-        if let Err(error) = send_document_frame(route, signer, frame, &inbound.state).await {
+        if let Err(error) = send_document_frame(route, signer, frame, &inbound.state, None).await {
             if count > 1 {
                 tracing::warn!(
                     segment = index,
@@ -5126,15 +5188,16 @@ async fn send_document_frame(
     signer: &mut LocalSdkDocumentSigner,
     cleartext: Vec<u8>,
     state: &BridgeState,
+    authorization: Option<&crate::invocation_scope::DocumentAuthorization>,
 ) -> Result<(), DocumentPublicationError> {
-    match try_send_frame(route, signer, cleartext.clone(), state).await {
+    match try_send_frame(route, signer, cleartext.clone(), state, authorization).await {
         FrameSend::Sent | FrameSend::Held => Ok(()),
         FrameSend::Failed(error) => Err(error),
         FrameSend::Refused(refusal) => {
             if !refresh_route_keys(route, signer).await {
                 return Err(state.publication_failed("document commit RPC", refusal, true));
             }
-            match try_send_frame(route, signer, cleartext, state).await {
+            match try_send_frame(route, signer, cleartext, state, authorization).await {
                 FrameSend::Sent | FrameSend::Held => Ok(()),
                 FrameSend::Failed(error) => Err(error),
                 FrameSend::Refused(refusal) => {
@@ -5155,22 +5218,26 @@ async fn try_send_frame(
     signer: &mut LocalSdkDocumentSigner,
     cleartext: Vec<u8>,
     state: &BridgeState,
+    authorization: Option<&crate::invocation_scope::DocumentAuthorization>,
 ) -> FrameSend {
     let workspace_id = route.spec.cluster_id.to_string();
     let record_id = route.spec.record.as_deref().unwrap_or("");
     let artifact = collab_types::document_artifact_id(&route.spec.app_id, &workspace_id, record_id);
-    let (payload, encryption_metadata) =
-        match prepare_document_payload(&route.encryption, artifact, cleartext) {
-            PreparedFrame::Ready(payload, metadata) => (payload, metadata),
-            PreparedFrame::Held => return FrameSend::Held,
-            PreparedFrame::Failed => {
-                return FrameSend::Failed(state.publication_failed(
-                    "document encryption",
-                    "payload unavailable",
-                    true,
-                ));
-            }
-        };
+    let (payload, encryption_metadata) = match if authorization.is_some() {
+        prepare_scoped_document_payload(&route.encryption, artifact, cleartext)
+    } else {
+        prepare_document_payload(&route.encryption, artifact, cleartext)
+    } {
+        PreparedFrame::Ready(payload, metadata) => (payload, metadata),
+        PreparedFrame::Held => return FrameSend::Held,
+        PreparedFrame::Failed => {
+            return FrameSend::Failed(state.publication_failed(
+                "document encryption",
+                "payload unavailable",
+                true,
+            ));
+        }
+    };
     let now = crate::time::wall();
     let author = match signer {
         LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Certified(identity)) => {
@@ -5269,6 +5336,16 @@ async fn try_send_frame(
     };
     op.signature = collab_types::Signature::from_bytes(signature);
     match postcard::to_stdvec(&op) {
+        Ok(bytes) if authorization.is_some() => {
+            let Some(authorization) = authorization else {
+                return FrameSend::Failed(state.publication_failed(
+                    "scoped native custody",
+                    "original evidence unavailable",
+                    true,
+                ));
+            };
+            send_scoped_signed_frame(route, &bytes, authorization, state).await
+        }
         Ok(bytes) => match route.channel.send(&bytes).await {
             Ok(()) => FrameSend::Sent,
             Err(error) => {
@@ -5279,6 +5356,89 @@ async fn try_send_frame(
         Err(error) => {
             tracing::warn!(%error, "collab: signed document envelope would not encode; dropping");
             FrameSend::Failed(state.publication_failed("document encoding", error, true))
+        }
+    }
+}
+
+#[allow(
+    clippy::future_not_send,
+    reason = "scoped signed publication uses its authenticated Cap'n Proto handle on the shovel LocalSet"
+)]
+async fn send_scoped_signed_frame(
+    route: &SdkRoute,
+    signed: &[u8],
+    authorization: &crate::invocation_scope::DocumentAuthorization,
+    state: &BridgeState,
+) -> FrameSend {
+    let claims = match authorization
+        .native_publication_claims()
+        .and_then(|claims| claims.encode())
+    {
+        Ok(claims) => claims,
+        Err(error) => {
+            return FrameSend::Failed(state.publication_failed(
+                "original native contributors",
+                error,
+                true,
+            ));
+        }
+    };
+    let bytes = match route.channel.send_scoped_document(signed, &claims).await {
+        Ok(bytes) => bytes,
+        Err(error) => return FrameSend::Refused(error.to_string()),
+    };
+    let receipt: crate::invocation_scope::NativeDocumentReceipt = match postcard::from_bytes(&bytes)
+    {
+        Ok(receipt) => receipt,
+        Err(error) => {
+            return FrameSend::Failed(state.publication_failed(
+                "native durable receipt",
+                error,
+                true,
+            ));
+        }
+    };
+    let basis = *blake3::Hasher::new_derive_key("Tilo owner committed basis v1")
+        .update(signed)
+        .finalize()
+        .as_bytes();
+    if receipt.room != route.spec.cluster_id.to_string()
+        || receipt.app != route.spec.app_id
+        || receipt.record != route.spec.record.as_deref().unwrap_or("")
+        || receipt.basis != basis
+        || receipt.generation == 0
+        || receipt.aggregate_hash == [0; 32]
+        || receipt.request_digest == [0; 32]
+    {
+        return FrameSend::Failed(state.publication_failed(
+            "native durable receipt",
+            "receipt does not bind this signed publication",
+            true,
+        ));
+    }
+    // Only a concrete durable receipt acknowledges original contributions.
+    // The ordered shovel still waits here before sending queued terminal updates.
+    authorization.acknowledge_native_commit();
+    FrameSend::Sent
+}
+
+fn prepare_scoped_document_payload(
+    encryption: &SharedRouteKeys,
+    artifact: collab_types::ArtifactId,
+    cleartext: Vec<u8>,
+) -> PreparedFrame {
+    let Ok(keys) = encryption.lock() else {
+        return PreparedFrame::Failed;
+    };
+    let retention = document_frame_retention(&cleartext);
+    match keys.seal(artifact, retention, cleartext) {
+        super::route_keys::Sealed::Ready(payload, metadata) => {
+            PreparedFrame::Ready(payload, metadata)
+        }
+        // The ordinary held frame queue has no original custody. Never detach
+        // the mutation from its original contributors or ACK queue admission.
+        super::route_keys::Sealed::Hold | super::route_keys::Sealed::Refused(_) => {
+            PreparedFrame::Failed
         }
     }
 }
@@ -5604,7 +5764,7 @@ async fn deliver_waiting(
         return false;
     }
     for frame in outbound {
-        if send_document_frame(route, signer, frame, &inbound_tx.state)
+        if send_document_frame(route, signer, frame, &inbound_tx.state, None)
             .await
             .is_err()
         {

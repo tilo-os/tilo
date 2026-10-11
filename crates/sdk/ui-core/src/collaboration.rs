@@ -728,6 +728,9 @@ pub enum CollabEvent {
     /// One capability-checked invocation addressed to this application
     /// connection by the session action broker.
     Invocation {
+        /// Authenticated original-delivery custody supplied by the native transport.
+        /// Synthetic/local events carry none; this is never a serialized grant.
+        lease: Option<crate::invocation_scope::PublishedInvocationLease>,
         id: u64,
         invocation: tilo_actions::InvocationId,
         resource: String,

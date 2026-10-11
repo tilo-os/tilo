@@ -417,6 +417,16 @@ interface ChannelHandle {
   # endpoint asks on a timer as before.
   channelKeysChanged @59 (after :UInt64) -> (change :UInt64);
 
+  # Recheck the original accepted invocation on its actual target channel.
+  # The reply is an inert declaration, never a grant or serialized owner token.
+  # The broker retains the original caller and process/worker custody privately.
+  retainedInvocation @60 (id :UInt64, invocation :Data) -> (original :Data);
+
+  # Submit a signed native mutation with inert contributor correlations.
+  # Originals resolve only on this actual authenticated target channel.
+  # A reply is the concrete durable owner receipt, never queue acceptance.
+  sendScopedDocument @61 (op :Data, contributors :Data) -> (receipt :Data);
+
 }
 
 # Optional result on @35, minted from the same captured directory and worker.

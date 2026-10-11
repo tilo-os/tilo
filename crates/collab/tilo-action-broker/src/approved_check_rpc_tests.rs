@@ -43,6 +43,39 @@ async fn approved_check_rpc_requires_exact_retained_target_and_accepted_id() {
                 .unwrap();
             let delivered = stream.read().await.unwrap();
             assert_eq!(delivered.id, wire);
+            let declared = target
+                .handle
+                .retained_invocation(wire, &delivered.invocation_uuid)
+                .await
+                .unwrap();
+            let declared: ui::invocation_scope::RetainedInvocationDeclaration =
+                serde_json::from_slice(&declared).unwrap();
+            assert_eq!(declared.request.wire_id, wire);
+            assert_eq!(
+                declared.request.address.action,
+                runtime_collab::approved_checks::ACTION_ID
+            );
+            assert_eq!(
+                declared.request.argument.as_deref(),
+                Some(r#"{"check_id":"regression"}"#)
+            );
+            assert_eq!(declared.spec.contract, descriptor.contract);
+            assert!(
+                other
+                    .handle
+                    .retained_invocation(wire, &delivered.invocation_uuid)
+                    .await
+                    .is_err(),
+                "an equal route on another target cannot resolve original invocation custody"
+            );
+            assert!(
+                target
+                    .handle
+                    .retained_invocation(wire, &[0; 16])
+                    .await
+                    .is_err(),
+                "wire id alone cannot replace the original invocation UUID"
+            );
             let request = runtime_collab::approved_checks::Request {
                 version: 1,
                 invocation: uuid::Uuid::from_bytes(delivered.invocation_uuid).to_string(),
@@ -74,6 +107,14 @@ async fn approved_check_rpc_requires_exact_retained_target_and_accepted_id() {
                     .to_string()
                     .contains("semantic identity changed"),
                 "same kind cannot replace the accepted resource key"
+            );
+            assert!(
+                target
+                    .handle
+                    .retained_invocation(wire, &delivered.invocation_uuid)
+                    .await
+                    .is_err(),
+                "changed resource publication must refuse native original capture too"
             );
             let mut missing = descriptor.clone();
             missing.semantic_identity = None;
@@ -126,6 +167,14 @@ async fn approved_check_rpc_requires_exact_retained_target_and_accepted_id() {
                     .unwrap_err()
                     .to_string()
                     .contains("retired or cancelled")
+            );
+            assert!(
+                target
+                    .handle
+                    .retained_invocation(wire, &delivered.invocation_uuid)
+                    .await
+                    .is_err(),
+                "cancelled original delivery cannot be captured again"
             );
             room.state.remove_connection(981);
             assert!(
@@ -195,6 +244,19 @@ async fn approved_check_rpc_native_target_requires_live_launcher_connection() {
         let (wire, _) = connection.handle.invoke_published_action(991, "workspace:atlas", runtime_collab::approved_checks::ACTION_ID, Some(r#"{"check_id":"regression"}"#), "{}").await.unwrap();
         let delivered = stream.read().await.unwrap();
         assert_eq!(delivered.id, wire);
+            let original = connection
+                .handle
+                .retained_invocation(wire, &delivered.invocation_uuid)
+                .await
+                .unwrap();
+            let original: ui::invocation_scope::RetainedInvocationDeclaration =
+                serde_json::from_slice(&original).unwrap();
+            assert_eq!(original.request.wire_id, wire);
+            assert_eq!(original.spec.contract, descriptor.contract);
+            assert_eq!(
+                original.request.argument.as_deref(),
+                Some(r#"{"check_id":"regression"}"#)
+            );
         let request = runtime_collab::approved_checks::Request { version: 1, invocation: uuid::Uuid::from_bytes(delivered.invocation_uuid).to_string(), check_id: "regression".into() };
         let error = connection.handle.approved_check(&request).await.unwrap_err().to_string();
         assert!(error.contains("unsupported by this host"), "actual native custody must reach the trusted service gate: {error}");
@@ -214,6 +276,11 @@ async fn approved_check_rpc_native_target_requires_live_launcher_connection() {
             output: tilo_actions::ActionOutput::default(),
         };
         connection.handle.update_invocation(new_wire, &serde_json::to_string(&terminal).unwrap()).await.unwrap();
+        let retired = connection.handle.retained_invocation(new_wire, &next.invocation_uuid).await.unwrap_err().to_string();
+        assert!(retired.contains("no retained target invocation"),
+            "terminal success retires native capture before exact retries: {retired}");
+        assert!(connection.handle.retained_invocation(new_wire, &next.invocation_uuid).await.is_err(),
+            "an inert original reference cannot resurrect successful terminal custody");
         let ended = connection.handle.approved_check(&new_request).await.unwrap_err().to_string();
         assert!(ended.contains("no retained target invocation"),
             "successful target completion must retire original native custody: {ended}");

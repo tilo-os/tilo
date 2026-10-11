@@ -439,6 +439,23 @@ impl OriginalInvocation {
         }
         Ok(())
     }
+    pub(super) fn check_current_publication(&self) -> Result<(), String> {
+        let state = self
+            .broker
+            .upgrade()
+            .ok_or("original invocation broker retired")?;
+        self.check_resource_publication(&state)
+    }
+    pub(super) fn retained_foreign_restriction(&self) -> bool {
+        matches!(
+            &self.data.caller,
+            InvocationCaller::Certified {
+                foreign_restriction: true,
+                ..
+            }
+        )
+    }
+
     pub fn request(&self) -> &PublishedInvocationRequest {
         &self.data.request
     }
@@ -613,6 +630,41 @@ impl OriginalInvocation {
             return Err("approved check ID differs from accepted action".into());
         }
         Self::from_current_target(channel, data)
+    }
+
+    /// Resolve inert delivery correlation only on the authenticated target.
+    /// Original caller facts stay in the broker's exact retained Arc; neither
+    /// correlation nor the returned declaration is a document permission.
+    pub(super) fn from_retained_delivery(
+        channel: &super::CapnpChannelHandle,
+        wire_id: u64,
+        invocation: tilo_actions::InvocationId,
+    ) -> Result<Arc<Self>, String> {
+        let data = {
+            let pending = channel
+                .state
+                .pending_invocations
+                .lock()
+                .map_err(|_| "invocation registry unavailable")?;
+            let retained = pending
+                .get(&wire_id)
+                .filter(|pending| {
+                    pending.peer_id == channel.peer_id && pending.update.invocation() == invocation
+                })
+                .ok_or("original delivery has no retained target invocation")?;
+            let data = retained
+                .original
+                .clone()
+                .ok_or("original invocation authority unavailable")?;
+            drop(pending);
+            data
+        };
+        if data.request.wire_id != wire_id || data.request.invocation != invocation {
+            return Err("original invocation delivery identity changed".into());
+        }
+        let original = Self::from_current_target(channel, data)?;
+        original.check_resource_publication(&channel.state)?;
+        Ok(original)
     }
 
     /// Retain the broker's original accepted data on its actual target channel.

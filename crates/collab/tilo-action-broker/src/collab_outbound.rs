@@ -133,6 +133,31 @@ impl PeerPublisher {
         Ok(receipt)
     }
 
+    /// Admit scoped native documents only through the installed durable owner
+    /// carrying broker-private original custody outside the serialized request.
+    /// Commit with original host-local contributors at the installed owner.
+    ///
+    /// # Errors
+    /// Refuses unavailable owners, unsupported scoped publication, actual
+    /// contributor or admission failures and mismatched durable receipts.
+    pub async fn commit_scoped_document(
+        &self,
+        request: tilo_peer_state::owner_commit::OwnerCommitRequest,
+        custody: Arc<dyn tilo_peer_state::owner_commit::DocumentCommitCustody>,
+        record_kind: Option<String>,
+    ) -> Result<tilo_peer_state::owner_commit::OwnerCommitReceipt, String> {
+        let owner = self
+            .owner_commit
+            .as_ref()
+            .ok_or("durable scoped document owner unavailable")?;
+        owner.health()?;
+        let receipt = owner
+            .commit_with_document_custody(request.clone(), custody, record_kind)
+            .await?;
+        receipt.validate_for(&request)?;
+        Ok(receipt)
+    }
+
     /// Retain the certified member at the installed governor's original ledger.
     ///
     /// # Errors

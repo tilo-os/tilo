@@ -1086,6 +1086,7 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
         let publication_attempts = app.actions.action_surface_publication_attempts;
 
         app.apply_collab_event_for_test(CollabEvent::Invocation {
+            lease: None,
             invocation: tilo_actions::InvocationId(uuid::Uuid::from_u128(42)),
             id: 42,
             resource: "test.counter".into(),
@@ -1124,6 +1125,7 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
             0xa5a5_a5a5_a5a5_a5a5_0000_0000_0000_002b,
         ));
         app.apply_collab_event_for_test(CollabEvent::Invocation {
+            lease: None,
             invocation,
             id: 43,
             resource: "test.counter".into(),

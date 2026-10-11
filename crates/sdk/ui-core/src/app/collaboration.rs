@@ -859,6 +859,7 @@ impl App {
                 self.queue_committed_document(route, read);
             }
             CollabEvent::Invocation {
+                lease,
                 invocation,
                 id,
                 resource,
@@ -867,15 +868,17 @@ impl App {
                 actor,
                 context,
             } => {
-                self.invoke_published_action(
-                    id,
-                    invocation,
-                    resource,
-                    action,
-                    argument.as_deref(),
-                    &actor,
-                    context.as_deref(),
-                );
+                crate::invocation_scope::with_delivered_lease(lease, || {
+                    self.invoke_published_action(
+                        id,
+                        invocation,
+                        resource,
+                        action,
+                        argument.as_deref(),
+                        &actor,
+                        context.as_deref(),
+                    );
+                });
             }
             CollabEvent::InvocationCancellation { id } => {
                 self.request_invocation_cancellation(id);
@@ -1257,6 +1260,7 @@ impl App {
                 self.apply_collab_context(collaborators);
             }
             CollabEvent::Invocation {
+                lease,
                 invocation,
                 id,
                 resource,
@@ -1264,15 +1268,17 @@ impl App {
                 argument,
                 actor,
                 context,
-            } => self.invoke_published_action(
-                id,
-                invocation,
-                resource,
-                action,
-                argument.as_deref(),
-                &actor,
-                context.as_deref(),
-            ),
+            } => crate::invocation_scope::with_delivered_lease(lease, || {
+                self.invoke_published_action(
+                    id,
+                    invocation,
+                    resource,
+                    action,
+                    argument.as_deref(),
+                    &actor,
+                    context.as_deref(),
+                );
+            }),
             CollabEvent::InvocationCancellation { id } => {
                 self.request_invocation_cancellation(id);
             }

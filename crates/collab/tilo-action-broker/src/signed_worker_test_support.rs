@@ -344,7 +344,18 @@ impl OriginalRoom {
         expires_at_ns: Option<u64>,
         persist_path: Option<std::path::PathBuf>,
     ) -> Self {
-        Self::hosting(capabilities, expires_at_ns, persist_path, None)
+        Self::hosting(capabilities, expires_at_ns, persist_path, None, None, None)
+    }
+
+    pub fn in_room_as(key: SigningKey, cert: DeviceCert, room: tilo_desktop_model::RoomId) -> Self {
+        Self::hosting(
+            cert.capabilities.clone(),
+            None,
+            None,
+            None,
+            Some(room),
+            Some((key, cert)),
+        )
     }
 
     /// The room on a host that keeps record content through `content`:
@@ -358,6 +369,8 @@ impl OriginalRoom {
             None,
             None,
             Some((content, room)),
+            None,
+            None,
         )
     }
 
@@ -369,18 +382,35 @@ impl OriginalRoom {
             Arc<crate::record_content::RouteContent>,
             Option<tilo_desktop_model::RoomId>,
         )>,
+        enrolled_room: Option<tilo_desktop_model::RoomId>,
+        identity: Option<(SigningKey, DeviceCert)>,
     ) -> Self {
         let (record_content, room) = record_content.unzip();
         let root = SigningKey::from_bytes(&[83; 32]);
-        let key = SigningKey::from_bytes(&[84; 32]);
-        let cert = signed_device(&root, &key, "original worker", capabilities, expires_at_ns);
-        let (clock, time_control) = crate::peer_actions::OwnerPolicyClock::for_test(50_000_000_000);
+        let native = identity.is_some();
+        let (key, cert) = identity.unwrap_or_else(|| {
+            let key = SigningKey::from_bytes(&[84; 32]);
+            let cert = signed_device(&root, &key, "original worker", capabilities, expires_at_ns);
+            (key, cert)
+        });
+        let start = if native {
+            u64::try_from(
+                SystemTime::now()
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos(),
+            )
+            .unwrap()
+        } else {
+            50_000_000_000
+        };
+        let (clock, time_control) = crate::peer_actions::OwnerPolicyClock::for_test(start);
         let origin = clock.new_origin();
         let mut workspace = crate::test_support::Workspace::new(
             crate::test_support::WorkspaceId(83),
             "Original room",
         );
-        if let Some(room) = room.flatten() {
+        if let Some(room) = enrolled_room.or_else(|| room.flatten()) {
             workspace.room = room;
         }
         workspace.set_owner(principal_id_for_root(cert.user_public_key));
@@ -388,7 +418,7 @@ impl OriginalRoom {
         workspace.capabilities = workspace
             .capabilities
             .into_iter()
-            .map(|cap| cap.with_expiry(100))
+            .map(|cap| cap.with_expiry(start / 1_000_000_000 + 50))
             .collect();
         let route = CrdtRoute::record(
             "so.tilo.word-processor",

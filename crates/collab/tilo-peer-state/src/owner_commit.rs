@@ -272,6 +272,26 @@ impl OwnerCommitReceipt {
         Ok(())
     }
 }
+/// Host-local original contributor evaluator, carried separately from the
+/// serialized request. The actual owner invokes it only while its committed
+/// peer and mutation turn are held, after authentic signed opening.
+/// Implementations must validate original private custody and current policy,
+/// exact parsed incoming changes and the actual committed document basis.
+pub trait DocumentCommitCustody: Send + Sync {
+    /// Validate the actual opened mutation against held owner evidence.
+    ///
+    /// # Errors
+    /// Refuses missing, changed or ended original custody, current policy
+    /// denials, malformed ranges and uncommitted unattributed changes.
+    fn validate_opened(
+        &self,
+        peer: &crate::StatePeer,
+        request: &OwnerCommitRequest,
+        opened: &[u8],
+        now: std::time::SystemTime,
+    ) -> Result<(), String>;
+}
+
 /// Implemented by the single durable session owner, not by a remote caller.
 /// Failure may follow an application effect and therefore means uncertainty.
 pub trait OwnerCommitService: Send + Sync {
@@ -281,6 +301,17 @@ pub trait OwnerCommitService: Send + Sync {
         true
     }
     fn commit(&self, request: OwnerCommitRequest) -> CommitFuture;
+    /// Scoped native publication never falls back to an unscoped commit.
+    /// Original contributor custody is host-local and never a wire grant.
+    fn commit_with_document_custody(
+        &self,
+        request: OwnerCommitRequest,
+        custody: std::sync::Arc<dyn DocumentCommitCustody>,
+        record_kind: Option<String>,
+    ) -> CommitFuture {
+        let _ = (request, custody, record_kind);
+        Box::pin(async { Err("scoped native document owner unsupported".into()) })
+    }
     /// Commit a certified member's own terminal audit at the actual governor.
     /// The authenticated caller is retained by the broker, never decoded from
     /// the receipt. Implementations must recheck current member and signing custody.

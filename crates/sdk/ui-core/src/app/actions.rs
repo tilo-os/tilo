@@ -2334,17 +2334,21 @@ impl App {
         // per keystroke into a bound field (TIL-751).
         let has_delivery = broker_delivery.is_some();
         let connected = self.collaboration.manager.is_connected();
+        let native_document = self.collaboration.manager.has_native_committed_primary();
         let resolved = std::cell::Cell::new(None);
         let route = |spec: &tilo_actions::ActionSpec| {
             resolved.set(Some(spec.kind));
             !broker_admitted
-                && Self::bound_invocation_needs_broker(
-                    spec.kind,
-                    spec,
-                    invocation,
-                    has_delivery,
-                    connected,
-                )
+                && ((native_document
+                    && spec.kind == tilo_actions::OperationKind::Document
+                    && invocation.is_none())
+                    || Self::bound_invocation_needs_broker(
+                        spec.kind,
+                        spec,
+                        invocation,
+                        has_delivery,
+                        connected,
+                    ))
         };
         let id = invocation.unwrap_or_default();
         let started = crate::bound_dispatch::invoke_resource_action(
@@ -2530,6 +2534,18 @@ impl App {
                 Some(target),
             );
         }
+        if request.invocation.is_none()
+            && !request.broker_admitted
+            && self.collaboration.manager.has_native_committed_primary()
+        {
+            self.publish_action_surface();
+            return self.invoke_via_broker(
+                &target.address,
+                None,
+                request.argument,
+                request.confirmation_evidence,
+            );
+        }
         let outcome = invoke_legacy_document_scoped(
             self.root_widget.as_mut(),
             target,
@@ -2704,6 +2720,18 @@ impl App {
         // `broker_admitted=true`, so they execute exactly once when routed
         // back here. Standalone development runs retain the existing local
         // fallback below; installed Tilo apps always have the session broker.
+        if kind == tilo_actions::OperationKind::Document
+            && invocation.is_none()
+            && !broker_admitted
+            && self.collaboration.manager.has_native_committed_primary()
+        {
+            return self.invoke_via_broker(
+                address,
+                typed_arguments.as_ref(),
+                argument,
+                confirmation_evidence,
+            );
+        }
         if (kind == tilo_actions::OperationKind::Effect
             || (kind == tilo_actions::OperationKind::Document
                 && resolved.contract.execution != tilo_actions::ExecutionMode::Immediate))

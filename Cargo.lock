@@ -15866,6 +15866,7 @@ dependencies = [
  "tilo-paths",
  "tilo-peer-state",
  "tilo-relay",
+ "tilo-relay-protocol",
  "tilo-relay-session",
  "tilo-rt",
  "tilo-test-env",

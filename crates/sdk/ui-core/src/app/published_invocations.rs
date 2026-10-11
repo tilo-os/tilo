@@ -90,6 +90,16 @@ impl super::App {
             reason,
         };
         self.published_invocation_health().map_err(refused)?;
+        if let Some(lease) = crate::invocation_scope::delivered_lease() {
+            if !lease.matches(request) {
+                return Err(refused(
+                    "native original lease belongs to different delivered inputs".into(),
+                ));
+            }
+            lease.dispatch_spec().map_err(refused)?;
+            lease.check().map_err(refused)?;
+            return Ok(Some(lease));
+        }
         let runtime = &self.actions.published_invocations;
         if !runtime.required {
             return Ok(None);

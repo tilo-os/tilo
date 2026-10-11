@@ -1,4 +1,9 @@
 //! Host-local invocation custody. No wire caller can manufacture these checks.
+#[path = "invocation_scope/native_publication.rs"]
+mod native_publication;
+pub use native_publication::{
+    NativeContributionClaim, NativeDocumentReceipt, NativePublicationClaims,
+};
 
 /// A typed host check response, suitable for an existing effect worker.
 pub type ApprovedCheckFuture = std::pin::Pin<
@@ -10,7 +15,7 @@ pub type ApprovedCheckFuture = std::pin::Pin<
 
 /// Inert delivered inputs. Only the registered host can associate these with
 /// an original admitted caller, contract and exact worker connection.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PublishedInvocationRequest {
     pub wire_id: u64,
     pub invocation: tilo_actions::InvocationId,
@@ -245,13 +250,79 @@ pub fn view_operation_permitted(
 
 /// Inert declaration retained by the actual host at original admission. This
 /// is not authority, and is never decoded from a caller's wire request.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PublishedInvocationSpec {
     pub kind: tilo_actions::OperationKind,
     pub contract: tilo_actions::ActionContract,
     pub params: Vec<tilo_actions::ActionParam>,
     pub input: tilo_actions::InputSpec,
     pub directory_revision: Option<String>,
+}
+
+/// Inert original inputs returned only by the authenticated target channel.
+/// These fields cannot construct original caller custody or authorize a write.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RetainedInvocationDeclaration {
+    pub request: PublishedInvocationRequest,
+    pub spec: PublishedInvocationSpec,
+}
+
+impl RetainedInvocationDeclaration {
+    /// Bound the declaration before the client decodes it or retains it.
+    pub const MAX_BYTES: usize = 1024 * 1024;
+
+    /// Encode without cloning retained inputs or allocating an oversized reply.
+    pub fn encode(
+        request: &PublishedInvocationRequest,
+        spec: &PublishedInvocationSpec,
+    ) -> Result<Vec<u8>, String> {
+        #[derive(serde::Serialize)]
+        struct Borrowed<'a> {
+            request: &'a PublishedInvocationRequest,
+            spec: &'a PublishedInvocationSpec,
+        }
+        encode_native_json(&Borrowed { request, spec }, Self::MAX_BYTES)
+    }
+}
+
+fn encode_native_json(value: &impl serde::Serialize, limit: usize) -> Result<Vec<u8>, String> {
+    struct Bounded {
+        bytes: Vec<u8>,
+        limit: usize,
+    }
+    impl std::io::Write for Bounded {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if bytes.len() > self.limit - self.bytes.len() {
+                return Err(std::io::Error::other(
+                    "native original evidence exceeds bound",
+                ));
+            }
+            let required = self.bytes.len() + bytes.len();
+            if required > self.bytes.capacity() {
+                let capacity = self
+                    .bytes
+                    .capacity()
+                    .saturating_mul(2)
+                    .max(required)
+                    .min(self.limit);
+                self.bytes
+                    .try_reserve_exact(capacity - self.bytes.len())
+                    .map_err(std::io::Error::other)?;
+            }
+            self.bytes.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut writer = Bounded {
+        bytes: Vec::new(),
+        limit,
+    };
+    serde_json::to_writer(&mut writer, value).map_err(|error| error.to_string())?;
+    Ok(writer.bytes)
 }
 
 /// An opaque check minted by the actual host for this exact invocation.
@@ -312,6 +383,13 @@ impl PublishedInvocationLease {
     pub(crate) fn matches(&self, request: &PublishedInvocationRequest) -> bool {
         self.request == *request
     }
+    #[cfg(feature = "broker-transport")]
+    pub(crate) fn native_retained_bytes(&self) -> usize {
+        self.owner_token
+            .as_ref()
+            .and_then(|token| token.downcast_ref::<NativeInvocationReference>())
+            .map_or(0, |reference| reference.retained_bytes)
+    }
     pub(crate) fn same_invocation(&self, other: &Self) -> bool {
         self.request == other.request
             && self.route == other.route
@@ -328,6 +406,44 @@ impl std::fmt::Debug for PublishedInvocationLease {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("PublishedInvocationLease(..)")
     }
+}
+
+/// Inert correlation retained by the native SDK after an authenticated
+/// original-delivery check. Only that same broker target channel can resolve
+/// it back to private original custody; this type conveys no caller grant.
+#[derive(Clone, Debug)]
+pub(crate) struct NativeInvocationReference {
+    pub(crate) wire_id: u64,
+    pub(crate) invocation: [u8; 16],
+    pub(crate) retained_bytes: usize,
+}
+
+thread_local! {
+    static DELIVERED_LEASES: RefCell<Vec<PublishedInvocationLease>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Install only while applying the transport's exact delivered event.
+/// Continuations retain their own original lease rather than this stack.
+pub(crate) fn with_delivered_lease<R>(
+    lease: Option<PublishedInvocationLease>,
+    apply: impl FnOnce() -> R,
+) -> R {
+    struct Guard;
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            DELIVERED_LEASES.with_borrow_mut(|leases| {
+                leases.pop();
+            });
+        }
+    }
+    let Some(lease) = lease else { return apply() };
+    DELIVERED_LEASES.with_borrow_mut(|leases| leases.push(lease));
+    let _guard = Guard;
+    apply()
+}
+
+pub(crate) fn delivered_lease() -> Option<PublishedInvocationLease> {
+    DELIVERED_LEASES.with_borrow(|leases| leases.last().cloned())
 }
 
 pub type PublishedInvocationAuthorizer = std::sync::Arc<
@@ -1074,6 +1190,14 @@ impl DocumentAuthorization {
         let actual = actual.iter().copied().collect::<BTreeSet<_>>();
         if actual != self.0.exported {
             return Err("document authorization omits or invents actual changes".into());
+        }
+        if self
+            .0
+            .contributions
+            .iter()
+            .any(|group| !group.hashes.is_subset(&actual))
+        {
+            return Err("document contributor invents changes outside the actual mutation".into());
         }
         for hash in &actual {
             let contributor = self

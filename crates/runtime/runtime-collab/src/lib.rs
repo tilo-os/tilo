@@ -1772,6 +1772,53 @@ impl ChannelHandle {
         Ok(())
     }
 
+    /// Submit scoped native publication; no unscoped fallback is permitted.
+    /// Contributor correlations are inert and resolved by this target broker.
+    ///
+    /// # Errors
+    /// Refuses missing original custody, unavailable scoped owner or admission.
+    pub async fn send_scoped_document(
+        &self,
+        op: &[u8],
+        contributors: &[u8],
+    ) -> Result<Vec<u8>, NotAvailable> {
+        let mut request = self.inner.send_scoped_document_request();
+        request.get().set_op(op);
+        request.get().set_contributors(contributors);
+        let reply = request.send().promise.await?;
+        let receipt = reply.get()?.get_receipt()?;
+        if receipt.len() > 4096 {
+            return Err(NotAvailable::Capnp(capnp::Error::failed(
+                "native owner receipt exceeds bound".into(),
+            )));
+        }
+        Ok(receipt.to_vec())
+    }
+
+    /// Resample original accepted custody on this exact target channel.
+    /// The reply contains inert delivery inputs and its retained declaration,
+    /// not transferable caller authority.
+    ///
+    /// # Errors
+    /// Refuses missing, cancelled, replaced or terminal original custody.
+    pub async fn retained_invocation(
+        &self,
+        id: u64,
+        invocation: &[u8; 16],
+    ) -> Result<Vec<u8>, NotAvailable> {
+        let mut request = self.inner.retained_invocation_request();
+        request.get().set_id(id);
+        request.get().set_invocation(invocation);
+        let reply = request.send().promise.await?;
+        let original = reply.get()?.get_original()?;
+        if original.len() > 1024 * 1024 {
+            return Err(NotAvailable::Capnp(capnp::Error::failed(
+                "original invocation declaration exceeds bound".into(),
+            )));
+        }
+        Ok(original.to_vec())
+    }
+
     /// Whether the caller requested cooperative cancellation of this job.
     ///
     /// # Errors

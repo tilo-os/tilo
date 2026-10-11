@@ -339,6 +339,7 @@ mod owner_commit_tests {
         sent.borrow_mut().clear();
         let invocation = tilo_actions::InvocationId::new();
         events.borrow_mut().push(CollabEvent::Invocation {
+            lease: None,
             id: 1,
             invocation,
             resource,

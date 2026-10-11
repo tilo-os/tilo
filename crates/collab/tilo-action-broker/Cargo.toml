@@ -17,6 +17,8 @@ wire-frame = { path = "../../system/wire-frame", features = ["tokio"] }
 launcher = { path = "../../packaging/launcher" }
 parking_lot.workspace = true
 automerge.workspace = true
+# Parses the actual opened native document range in the bounded worker.
+tilo-automerge-isolate.workspace = true
 runtime-identity = { path = "../../runtime/runtime-identity" }
 capnp-rpc.workspace = true
 # The broker thread is a panic boundary the session restarts.
@@ -60,6 +62,7 @@ workspace-hack = { version = "0.1" }
 # Integration tests start a real relay.
 tilo-relay = { path = "../../hosting/tilo-relay" }
 tilo-joined-room = { path = "../tilo-joined-room", features = ["test-support"] }
+tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
 iroh.workspace = true
 tempfile.workspace = true
 tilo-test-env = { path = "../../dev/test-env" }
@@ -67,6 +70,5 @@ word-processor = { path = "../../../apps/word-processor" }
 settings = { path = "../../../apps/settings" }
 ed25519-dalek.workspace = true
 tilo-automerge.workspace = true
-tilo-automerge-isolate.workspace = true
 [lints]
 workspace = true
