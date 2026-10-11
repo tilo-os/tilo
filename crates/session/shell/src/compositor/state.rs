@@ -1603,9 +1603,16 @@ impl State {
             serde_json::json!({"surface": id, "root_surface": root, "app_id": app_id, "role": role})
         };
         let keyboard = self.seat.get_keyboard();
+        let pointer = self.seat.get_pointer();
+        let (grab_kind, grab_surface, buttons_down) = self.client_input.pointer_custody();
         serde_json::json!({
             "keyboard": keyboard.as_ref().and_then(smithay::input::keyboard::KeyboardHandle::current_focus).map(describe),
             "routed_keyboard_surface": self.client_input.keyboard_focus(),
+            "pointer_observable": pointer.is_some(),
+            "pointer": pointer.as_ref().and_then(smithay::input::pointer::PointerHandle::current_focus).map(describe),
+            "routed_pointer_surface": self.client_input.pointer_focus(),
+            "pointer_grab": pointer.as_ref().map(|_| serde_json::json!({"kind": grab_kind, "surface": grab_surface})),
+            "pointer_buttons_down": pointer.as_ref().map(|_| buttons_down),
             "text_input": self.seat.text_input().focus().map(describe),
             "text_input_active": self.text_input_active(),
             "input_method_connected": self.input_method_resource_client.is_some(),

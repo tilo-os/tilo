@@ -8657,6 +8657,59 @@ def physical_detached_task_control(socket, owner, child, composer, label, role, 
     return frame, access, target
 
 
+def closed_pointer_custody_observation(socket, child):
+    """Read content-free pointer custody once without exporting surface identities."""
+    sample = {
+        "pointer_observable": None,
+        "pointer_focus": "unknown",
+        "routed_pointer_focus": "unknown",
+        "pointer_grab": "unknown",
+        "pointer_buttons_down": None,
+    }
+    try:
+        response = call(socket, {"op": "state_dump"})
+        seat = response.get("state", {}).get("chrome", {}).get("seat_focus")
+        if not isinstance(seat, dict) or type(seat.get("pointer_observable")) is not bool:
+            return sample
+        sample["pointer_observable"] = seat["pointer_observable"]
+        if not seat["pointer_observable"]:
+            sample.update({
+                "pointer_focus": "unavailable",
+                "routed_pointer_focus": "unavailable",
+                "pointer_grab": "unavailable",
+            })
+            return sample
+        expected = native_surface_id(child)
+
+        def classify_surface(value):
+            if value is None:
+                return "none"
+            return "exact_child" if type(value) is int and value == expected \
+                else "other" if type(value) is int else "unknown"
+
+        pointer = seat.get("pointer")
+        if "pointer" in seat and pointer is None:
+            sample["pointer_focus"] = "none"
+        elif isinstance(pointer, dict) and "surface" in pointer:
+            sample["pointer_focus"] = classify_surface(pointer["surface"])
+        if "routed_pointer_surface" in seat:
+            sample["routed_pointer_focus"] = classify_surface(seat["routed_pointer_surface"])
+        grab = seat.get("pointer_grab")
+        if isinstance(grab, dict) and grab.get("kind") in ("none", "chrome", "client"):
+            kind = grab["kind"]
+            if kind == "client":
+                owner = classify_surface(grab.get("surface"))
+                sample["pointer_grab"] = f"client_{owner}"
+            elif grab.get("surface") is None:
+                sample["pointer_grab"] = kind
+        buttons = seat.get("pointer_buttons_down")
+        if type(buttons) is int and buttons >= 0:
+            sample["pointer_buttons_down"] = min(buttons, 64)
+    except (RuntimeError, KeyError, TypeError):
+        pass
+    return sample
+
+
 def detached_queue_click_observation(
         socket, access, child, target, instruction, provider, new_task_count):
     """Record only closed state after the one physical Queue click."""
@@ -8678,6 +8731,7 @@ def detached_queue_click_observation(
         "provider": provider.detached_task_phase_diagnostic(),
         "private_content_recorded": False,
     }
+    sample.update(closed_pointer_custody_observation(socket, child))
     try:
         frame = current_same_floating_presentation(
             call(socket, {"op": "foreign_frames"}), child

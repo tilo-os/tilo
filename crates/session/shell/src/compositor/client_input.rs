@@ -296,6 +296,17 @@ impl ClientInput {
         self.pointer_focus
     }
 
+    /// Content-free custody of the router's implicit pointer grab. This is
+    /// separate from both the actual Wayland focus and keyboard focus.
+    pub(super) fn pointer_custody(&self) -> (&'static str, Option<u64>, u32) {
+        let (kind, surface) = match self.grab {
+            None => ("none", None),
+            Some(PointerOwner::Chrome) => ("chrome", None),
+            Some(PointerOwner::Client(surface)) => ("client", Some(surface)),
+        };
+        (kind, surface, self.buttons_down)
+    }
+
     /// Whether `surface_id` is a live foreign toplevel this compositor can route input to.
     pub fn is_known(&self, surface_id: u64) -> bool {
         self.surfaces.contains_key(&surface_id)

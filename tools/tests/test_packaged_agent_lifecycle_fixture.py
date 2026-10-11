@@ -4681,7 +4681,71 @@ class PresentedEditorTargetTests(unittest.TestCase):
         self.assertEqual(observed["queue_enabled_count"], 2)
         self.assertEqual(observed["queue_action_count"], 2)
         self.assertEqual(observed["new_task_count"], 1)
+        self.assertIsNone(observed["pointer_observable"])
+        self.assertEqual(observed["pointer_focus"], "unknown")
+        self.assertEqual(observed["routed_pointer_focus"], "unknown")
+        self.assertEqual(observed["pointer_grab"], "unknown")
+        self.assertIsNone(observed["pointer_buttons_down"])
         self.assertNotIn("PRIVATE", json.dumps(observed))
+
+    def test_pointer_custody_compares_native_identity_without_exporting_it(self):
+        child = {"surface_id": 9}
+        seat = {
+            "pointer_observable": True,
+            "pointer": {"surface": 9, "root_surface": 9, "app_id": "so.tilo.chat"},
+            "routed_pointer_surface": 9,
+            "pointer_grab": {"kind": "client", "surface": 9},
+            "pointer_buttons_down": 1,
+        }
+        with patch.object(PROOF, "call", return_value={
+                "state": {"chrome": {"seat_focus": seat}}
+        }) as state_dump:
+            observed = PROOF.closed_pointer_custody_observation("socket", child)
+        self.assertEqual(state_dump.call_args.args[1], {"op": "state_dump"})
+        self.assertEqual(observed, {
+            "pointer_observable": True,
+            "pointer_focus": "exact_child",
+            "routed_pointer_focus": "exact_child",
+            "pointer_grab": "client_exact_child",
+            "pointer_buttons_down": 1,
+        })
+        self.assertNotIn("9", json.dumps(observed))
+        seat.update({
+            "pointer": {"surface": 10},
+            "routed_pointer_surface": None,
+            "pointer_grab": {"kind": "client", "surface": 10},
+            "pointer_buttons_down": 100,
+        })
+        with patch.object(PROOF, "call", return_value={
+                "state": {"chrome": {"seat_focus": seat}}
+        }):
+            observed = PROOF.closed_pointer_custody_observation("socket", child)
+        self.assertEqual(observed["pointer_focus"], "other")
+        self.assertEqual(observed["routed_pointer_focus"], "none")
+        self.assertEqual(observed["pointer_grab"], "client_other")
+        self.assertEqual(observed["pointer_buttons_down"], 64)
+
+    def test_pointer_custody_distinguishes_unavailable_from_unknown(self):
+        child = {"surface_id": 9}
+        with patch.object(PROOF, "call", return_value={
+                "state": {"chrome": {"seat_focus": {"pointer_observable": False}}}
+        }):
+            unavailable = PROOF.closed_pointer_custody_observation("socket", child)
+        self.assertEqual(unavailable, {
+            "pointer_observable": False,
+            "pointer_focus": "unavailable",
+            "routed_pointer_focus": "unavailable",
+            "pointer_grab": "unavailable",
+            "pointer_buttons_down": None,
+        })
+        for response in ({}, {"state": {"chrome": {"seat_focus": {
+                "pointer_observable": "yes",
+        }}}}):
+            with self.subTest(response=response), patch.object(PROOF, "call", return_value=response):
+                unknown = PROOF.closed_pointer_custody_observation("socket", child)
+            self.assertIsNone(unknown["pointer_observable"])
+            self.assertEqual(unknown["pointer_focus"], "unknown")
+            self.assertEqual(unknown["pointer_grab"], "unknown")
 
     def test_task_mode_editor_contract_is_exact_not_any_editable_text(self):
         for mode in ("Message composer", "Task instruction composer", "Task direction composer"):

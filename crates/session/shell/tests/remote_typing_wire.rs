@@ -819,6 +819,112 @@ fn seat_focus_metadata_tracks_actual_wayland_focus_and_clearing() {
 }
 
 #[test]
+fn seat_focus_metadata_tracks_pointer_custody_without_changing_it() {
+    use shell::compositor::{client_input::route_input, frame::FrameBuilder};
+    use winit::event::MouseButton;
+
+    let (mut h, surface, _presentation, buffer, _next_buffer, window) = presentation_fixture();
+    surface.attach(Some(&buffer), 0, 0);
+    surface.commit();
+    wait_for_presentation_pixels(&mut h, window);
+    let mut frame = FrameBuilder::new((1600, 900));
+    frame.set_transient_surfaces(&[(window, Rect::new(500.0, 300.0, 532.0, 332.0))]);
+    let modifiers = Modifiers::default();
+    let moved = WindowEvent::CursorMoved {
+        device_id: winit::event::DeviceId::dummy(),
+        position: winit::dpi::PhysicalPosition::new(516.0, 316.0),
+    };
+    assert!(route_input(&mut h.state, &mut frame, &moved, &modifiers));
+    let metadata = h.state.seat_focus_json();
+    assert_eq!(metadata["pointer_observable"], true);
+    assert_eq!(metadata["pointer"]["surface"], window);
+    assert_eq!(metadata["routed_pointer_surface"], window);
+    assert_eq!(metadata["pointer_grab"]["kind"], "none");
+    assert_eq!(metadata["pointer_grab"]["surface"], serde_json::Value::Null);
+    assert_eq!(metadata["pointer_buttons_down"], 0);
+
+    let button = |state| WindowEvent::MouseInput {
+        device_id: winit::event::DeviceId::dummy(),
+        state,
+        button: MouseButton::Left,
+    };
+    assert!(route_input(
+        &mut h.state,
+        &mut frame,
+        &button(ElementState::Pressed),
+        &modifiers
+    ));
+    h.state.set_client_keyboard_focus(None);
+    let held = h.state.seat_focus_json();
+    assert_eq!(held["keyboard"], serde_json::Value::Null);
+    assert_eq!(held["pointer"]["surface"], window);
+    assert_eq!(held["pointer_grab"]["kind"], "client");
+    assert_eq!(held["pointer_grab"]["surface"], window);
+    assert_eq!(held["pointer_buttons_down"], 1);
+    let pointer = h.state.seat.get_pointer().unwrap();
+    let actual_focus = pointer.current_focus();
+    assert_eq!(
+        h.state.seat_focus_json(),
+        held,
+        "inspection must not retire a held gesture"
+    );
+    assert_eq!(pointer.current_focus(), actual_focus);
+    assert_eq!(h.state.client_input.pointer_focus(), Some(window));
+    assert!(route_input(
+        &mut h.state,
+        &mut frame,
+        &button(ElementState::Released),
+        &modifiers
+    ));
+    assert_eq!(h.state.seat_focus_json()["pointer_grab"]["kind"], "none");
+    assert_eq!(h.state.seat_focus_json()["pointer_buttons_down"], 0);
+
+    // The seat can lose focus independently of the router's cached target.
+    pointer.motion(
+        &mut h.state,
+        None,
+        &smithay::input::pointer::MotionEvent {
+            location: (516.0, 316.0).into(),
+            serial: smithay::utils::SERIAL_COUNTER.next_serial(),
+            time: 0,
+        },
+    );
+    let metadata = h.state.seat_focus_json();
+    assert_eq!(metadata["pointer"], serde_json::Value::Null);
+    assert_eq!(metadata["routed_pointer_surface"], window);
+    let left = WindowEvent::CursorLeft {
+        device_id: winit::event::DeviceId::dummy(),
+    };
+    assert!(!route_input(&mut h.state, &mut frame, &left, &modifiers));
+    frame.set_transient_surfaces(&[]);
+    assert!(!route_input(
+        &mut h.state,
+        &mut frame,
+        &button(ElementState::Pressed),
+        &modifiers
+    ));
+    let metadata = h.state.seat_focus_json();
+    assert_eq!(metadata["pointer_grab"]["kind"], "chrome");
+    assert_eq!(metadata["pointer_grab"]["surface"], serde_json::Value::Null);
+    assert_eq!(metadata["pointer_buttons_down"], 1);
+    assert!(!route_input(
+        &mut h.state,
+        &mut frame,
+        &button(ElementState::Released),
+        &modifiers
+    ));
+    drop(frame);
+
+    h.state.seat.remove_pointer();
+    let metadata = h.state.seat_focus_json();
+    assert_eq!(metadata["pointer_observable"], false);
+    assert_eq!(metadata["pointer"], serde_json::Value::Null);
+    assert_eq!(metadata["routed_pointer_surface"], serde_json::Value::Null);
+    assert_eq!(metadata["pointer_grab"], serde_json::Value::Null);
+    assert_eq!(metadata["pointer_buttons_down"], serde_json::Value::Null);
+}
+
+#[test]
 fn a_trusted_osk_toplevel_never_adopts_a_tab_before_its_app_id_arrives() {
     use shell::compositor::input_method::TrustedInputMethod;
     let mut h = Harness::new();
