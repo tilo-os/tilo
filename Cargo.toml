@@ -27,6 +27,9 @@ exclude = [
     "vendor/librespot-core",
     "vendor/hyper-proxy2",
     "vendor/cosmic-text",
+    "vendor/iroh",
+    "vendor/iroh-gossip",
+    "vendor/netwatch",
 ]
 # Build `runtime-dylib` with `cargo build -p runtime-dylib --profile thin-app`;
 # it requires unwind support, unlike the default release profile.
@@ -975,6 +978,13 @@ rustls-native-certs = { path = "crates/system/tilo-native-certs" }
 # compositor alive and treat the vanished object as a disconnected client.
 # See vendor/wayland-backend/TILO-PATCH.md.
 wayland-backend = { path = "vendor/wayland-backend" }
+# An idle endpoint wakes for nothing: no re-STUN tick and no home relay once
+# the relay map is empty, no wall-clock poll on Linux (a timerfd that the
+# kernel cancels on resume or a clock step replaces it), and no gossip cache
+# sweep once a topic's caches are empty. See each crate's TILO-PATCH.md.
+iroh = { path = "vendor/iroh" }
+iroh-gossip = { path = "vendor/iroh-gossip" }
+netwatch = { path = "vendor/netwatch" }
 # Members depend on `workspace-hack = "0.1"`; this workspace builds the local
 # crate, while workspaces outside it get crates.io's empty stub (.config/hakari.toml).
 workspace-hack = { path = "crates/workspace-hack" }
