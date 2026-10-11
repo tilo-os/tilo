@@ -209,6 +209,19 @@ pub struct OverlayFlags {
     pub clock: bool,
 }
 
+/// Who the display sheet is open for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ProjectionFollow {
+    /// The person opened it, or has used it since: it is a picker they
+    /// close themselves.
+    Person,
+    /// A `display.layout.*` action opened it while its layout is stored.
+    Staging,
+    /// A `display.layout.*` action opened it for this display change; it
+    /// closes once the change is kept, reverted, refused or replaced.
+    Transaction(u64),
+}
+
 /// The live activity Clocks shows outside its windows: the timer or
 /// stopwatch running, and a due timer to announce once.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize)]
@@ -556,6 +569,9 @@ pub struct ChromeState {
     /// [`Self::tree`] / [`Self::tree_mut`].
     pub tree_handle: WorkspaceTreeHandle,
     pub overlays: OverlayFlags,
+    /// Who the open display sheet belongs to: the person, or the display
+    /// change an action opened it for. See [`ProjectionFollow`].
+    pub(crate) projection_follow: ProjectionFollow,
     pub quick_settings: QuickSettingsState,
     /// `Some` while the workspace lens's Name input is in
     /// text-entry mode — the edit buffer, which may diverge from the
@@ -840,6 +856,7 @@ impl ChromeState {
             native_app_opening: None,
             identity_source,
             overlays: OverlayFlags::default(),
+            projection_follow: ProjectionFollow::Person,
             quick_settings,
             editing_workspace_name: None,
             editing_workspace_name_selection: ui::text_selection::Selection::default(),
@@ -1461,6 +1478,44 @@ impl ChromeState {
 
     pub fn bump(&mut self) {
         self.revision = self.revision.wrapping_add(1);
+    }
+
+    /// Open the display sheet for the person: a sheet they asked for stays
+    /// until they close it, whatever happens to the layouts chosen in it.
+    pub(crate) fn open_projection(&mut self) {
+        self.overlays.projection = true;
+        self.projection_follow = ProjectionFollow::Person;
+    }
+
+    /// Close the display sheet and forget any change it followed.
+    pub(crate) fn close_projection(&mut self) {
+        self.overlays.projection = false;
+        self.projection_follow = ProjectionFollow::Person;
+    }
+
+    /// A `display.layout.*` action began staging a layout: show it in the
+    /// sheet, and follow it there unless the person has the sheet open.
+    pub(crate) fn open_projection_for_action(&mut self) {
+        if !self.overlays.projection || self.projection_follow != ProjectionFollow::Person {
+            self.overlays.projection = true;
+            self.projection_follow = ProjectionFollow::Staging;
+        }
+    }
+
+    /// The layout an action staged was stored as `transaction`: the sheet it
+    /// opened now follows that change.
+    pub(crate) fn projection_staged(&mut self, transaction: u64) {
+        if self.overlays.projection && self.projection_follow == ProjectionFollow::Staging {
+            self.projection_follow = ProjectionFollow::Transaction(transaction);
+        }
+    }
+
+    /// The layout an action was staging was refused before it took effect:
+    /// the sheet it opened for it closes, as there is nothing to answer.
+    pub(crate) fn projection_refused(&mut self) {
+        if self.projection_follow == ProjectionFollow::Staging {
+            self.close_projection();
+        }
     }
 
     /// This chrome's identity, unique in the process; see `instance`.

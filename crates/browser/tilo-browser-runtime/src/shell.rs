@@ -670,26 +670,9 @@ impl Widget for BrowserShell {
     ) {
         self.drawn_minute.set(minute());
         self.backdrop.draw(scene, transform, text, theme, presence);
-        self.area.draw(scene, transform, text, theme, presence);
+        ui::widget::draw_child(&mut self.area, scene, transform, text, theme, presence);
         self.overview.draw(scene, transform, text, theme, presence);
         // Last, so what the bar opens below its band stays above windows.
-        self.bar.draw(scene, transform, text, theme, presence);
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        permissions: &ui::permissions::PermissionContext,
-    ) {
-        self.drawn_minute.set(minute());
-        self.backdrop.draw(scene, transform, text, theme, presence);
-        self.area
-            .draw_with_presence(scene, transform, text, theme, presence, permissions);
-        self.overview.draw(scene, transform, text, theme, presence);
         self.bar.draw(scene, transform, text, theme, presence);
     }
 

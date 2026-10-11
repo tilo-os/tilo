@@ -2268,9 +2268,11 @@ impl Widget for TileHost {
             let anim_transform = scaled_about(transform, centre, scale);
             self.draw_steady_state(scene, anim_transform, tr, theme, presence);
             scene.pop_layer();
+            crate::widget::draw_gate_and_peer_focus(self, scene, transform, theme, presence);
             return;
         }
         self.draw_steady_state(scene, transform, tr, theme, presence);
+        crate::widget::draw_gate_and_peer_focus(self, scene, transform, theme, presence);
     }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         let _running = self.running();

@@ -1519,7 +1519,7 @@ impl Widget for Button {
         out_transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        _presence: &crate::presence::PresenceCtx,
+        presence: &crate::presence::PresenceCtx,
     ) {
         self.observe_i18n_revision();
         let current_state = (
@@ -1543,6 +1543,13 @@ impl Widget for Button {
             let dy = self.rect.y0 - self.cache_rect.y0;
             let inner = out_transform.pre_translate(Vec2::new(dx, dy));
             self.append_cached(out_scene, inner);
+            crate::widget::draw_gate_and_peer_focus(
+                self,
+                out_scene,
+                out_transform,
+                theme,
+                presence,
+            );
             return;
         }
         // cache_rect tracks *where* the cache was emitted so subsequent
@@ -1584,6 +1591,7 @@ impl Widget for Button {
         ));
         self.cache_rect = self.rect;
         self.append_cached(out_scene, out_transform);
+        crate::widget::draw_gate_and_peer_focus(self, out_scene, out_transform, theme, presence);
     }
 
     fn needs_redraw(&self) -> bool {

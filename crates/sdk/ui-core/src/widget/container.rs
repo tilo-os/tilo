@@ -525,8 +525,17 @@ impl Widget for Container {
         self.paint_surface(scene, transform, theme);
 
         if let Some(child) = &mut self.child {
-            child.draw(scene, transform, text_renderer, theme, presence);
+            crate::widget::draw_child(
+                child.as_mut(),
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+            );
         }
+
+        crate::widget::draw_gate_and_peer_focus(self, scene, transform, theme, presence);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
@@ -668,41 +677,6 @@ impl Widget for Container {
         self.child
             .as_mut()
             .is_some_and(|c| c.take_structure_dirty())
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &crate::presence::PresenceCtx,
-        permissions: &crate::permissions::PermissionContext,
-    ) {
-        if presence.should_cull(self.get_rect()) {
-            return;
-        }
-        self.paint_surface(scene, transform, theme);
-
-        if let Some(child) = &mut self.child {
-            child.draw_with_presence(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                presence,
-                permissions,
-            );
-        }
-
-        crate::widget::draw_gate_and_peer_focus(
-            self,
-            scene,
-            transform,
-            theme,
-            presence,
-            permissions,
-        );
     }
 }
 

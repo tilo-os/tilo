@@ -1310,22 +1310,6 @@ impl Decorator for ResourceRoot {
 
     // The host paints through this entry point: the ground, then the view
     // with the presence and permissions the host handed over.
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        permissions: &ui_core::permissions::PermissionContext,
-    ) {
-        if presence.should_cull(self.content.get_rect()) {
-            return;
-        }
-        self.paint_ground(scene, transform, theme, presence);
-        self.content
-            .draw_with_presence(scene, transform, text, theme, presence, permissions);
-    }
 
     fn needs_redraw(&self) -> bool {
         self.native_presentation.needs_redraw() || self.content.needs_redraw()
@@ -2075,20 +2059,18 @@ mod search_tests {
             Some(self)
         }
 
-        fn draw_with_presence(
+        fn draw(
             &mut self,
             scene: &mut Scene,
             transform: Affine,
             text: &mut TextRenderer,
             theme: &Theme,
             presence: &PresenceCtx,
-            permissions: &ui_core::permissions::PermissionContext,
         ) {
-            self.writable = permissions.check(&PermissionScope::workspace(
+            self.writable = presence.permits(&PermissionScope::workspace(
                 ui_core::permissions::Verb::Write,
             ));
-            self.inner
-                .draw_with_presence(scene, transform, text, theme, presence, permissions);
+            self.inner.draw(scene, transform, text, theme, presence);
         }
 
         fn accessibility(&self) -> Option<ui_core::a11y::AccessNode> {

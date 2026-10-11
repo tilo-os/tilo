@@ -10660,7 +10660,7 @@ pub fn run() {
                             }
                             Some(crate::shell::media_keys::Response::OpenDisplayModes) => {
                                 frame_builder.with_chrome(|st| {
-                                    st.overlays.projection = true;
+                                    st.open_projection();
                                     st.bump();
                                 });
                                 session_changed = true;

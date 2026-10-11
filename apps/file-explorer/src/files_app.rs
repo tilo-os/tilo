@@ -6021,8 +6021,7 @@ impl FileExplorerWidget {
     }
 
     /// Paint the app background and lazily build the composition if it is
-    /// missing (a tab activated after boot never ran `build_layout`). Shared
-    /// by [`Widget::draw`] and [`Widget::draw_with_presence`].
+    /// missing (a tab activated after boot never ran `build_layout`).
     fn paint_background(&mut self, theme: &ui::Theme) {
         // The window ground is the framework's; this only notices that the
         // chrome + body panes are normally built inside `build_layout`.
@@ -9065,34 +9064,6 @@ impl Widget for FileExplorerWidget {
         self.paint_background(theme);
         self.nav
             .draw(scene, transform, text_renderer, theme, presence);
-        self.draw_state_surface(scene, transform, text_renderer, theme, presence);
-        self.draw_empty_state(scene, transform, text_renderer, theme);
-        self.draw_rename_editor(scene, transform, text_renderer, theme, presence);
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut vello::Scene,
-        transform: vello::kurbo::Affine,
-        text_renderer: &mut ui::text_render::TextRenderer,
-        theme: &ui::Theme,
-        presence: &ui::presence::PresenceCtx,
-        permissions: &ui::permissions::PermissionContext,
-    ) {
-        self.paint_background(theme);
-        // Recurse with `draw_with_presence` (not the plain `draw`) so the
-        // inner `Scrollable` pushes its viewport rect and the file list culls
-        // rows outside it. The default trait impl would call our own `draw`,
-        // which breaks that chain — a long directory would then emit every
-        // row's glyphs every frame regardless of what's visible.
-        self.nav.draw_with_presence(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
-            permissions,
-        );
         self.draw_state_surface(scene, transform, text_renderer, theme, presence);
         self.draw_empty_state(scene, transform, text_renderer, theme);
         self.draw_rename_editor(scene, transform, text_renderer, theme, presence);

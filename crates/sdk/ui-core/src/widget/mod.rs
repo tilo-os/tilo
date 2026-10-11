@@ -194,6 +194,21 @@ pub fn route_to_children(
     }
 }
 
+/// Draw `child` unless what it paints misses the viewport. Off-viewport
+/// widgets stay dirty, so they re-emit when scrolled back in.
+pub fn draw_child(
+    child: &mut (impl Widget + ?Sized),
+    scene: &mut Scene,
+    transform: Affine,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+    presence: &PresenceCtx,
+) {
+    if !presence.should_cull(child.paint_bounds()) {
+        child.draw(scene, transform, text_renderer, theme, presence);
+    }
+}
+
 /// What a gated, presence-publishing widget draws over itself once drawn:
 /// the denied-permission scrim, then the focus ring of the first peer on it.
 pub(crate) fn draw_gate_and_peer_focus(
@@ -202,11 +217,10 @@ pub(crate) fn draw_gate_and_peer_focus(
     transform: Affine,
     theme: &Theme,
     presence: &PresenceCtx,
-    permissions: &crate::permissions::PermissionContext,
 ) {
     let rect = widget.get_rect();
     if let Some(scope) = crate::permissions::capability::permission_scope(widget)
-        && !permissions.check(&scope)
+        && !presence.permits(&scope)
     {
         scene.fill(
             vello::peniko::Fill::NonZero,
@@ -2334,29 +2348,14 @@ pub trait Widget {
         }
     }
 
-    /// Default forwards to `draw`, then overlays the denied-permission scrim and
-    /// the first peer's focus ring (for gated or presence-publishing widgets).
-    /// **Spatial culling**: short-circuits via [`PresenceCtx::should_cull`]
-    /// when the rect misses `presence.viewport` — overrides MUST call it
-    /// first. Off-viewport widgets stay dirty so they re-emit when scrolled
-    /// back in.
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        permissions: &crate::permissions::PermissionContext,
-    ) {
-        if presence.should_cull(self.get_rect()) {
-            return;
-        }
-        self.draw(scene, transform, text_renderer, theme, presence);
-        draw_gate_and_peer_focus(self, scene, transform, theme, presence, permissions);
+    /// Everything this widget paints, children included; [`draw_child`]
+    /// skips the draw when it misses the viewport. Override for widgets
+    /// that paint past their own rect.
+    fn paint_bounds(&self) -> vello::kurbo::Rect {
+        self.get_rect()
     }
 
-    /// **Top-layer pass**, run once after the whole `draw_with_presence`
+    /// **Top-layer pass**, run once after the whole `draw`
     /// recursion, so anything emitted here composites above every sibling
     /// regardless of tree order — the toolkit's overlay mechanism for
     /// content that escapes its layout box (an open [`Dropdown`], a
@@ -3107,7 +3106,9 @@ pub use chart::{
     Chart, ChartLabels, ChartStyle, RollingSeries, Series, Sparkline, TrendCurve, TrendFill,
     TrendRange, TrendStyle,
 };
+pub(crate) mod chart_data;
 pub(crate) mod chart_labels;
+pub use chart_data::{ChartItem, ChartLink, ChartNode};
 pub mod chart_legend;
 pub mod chart_navigation;
 pub use chart_navigation::{
@@ -3125,7 +3126,7 @@ pub use cartesian_plot::{
 pub mod pie_chart;
 pub use pie_chart::{PieChart, PieSlice, PieStyle, PieTooltipAnchor};
 pub mod polar_area_chart;
-pub use polar_area_chart::{PolarAreaChart, PolarAreaDatum, PolarAreaStyle};
+pub use polar_area_chart::{PolarAreaChart, PolarAreaStyle};
 pub mod heatmap;
 pub use heatmap::{Heatmap, HeatmapCell, HeatmapStyle};
 pub mod histogram;
@@ -3133,9 +3134,9 @@ pub use histogram::{Histogram, HistogramNormalization};
 pub mod candlestick_chart;
 pub use candlestick_chart::{Candle, CandlestickChart, CandlestickStyle};
 pub mod chord_chart;
-pub use chord_chart::{ChordChart, ChordLink, ChordNode, ChordSelection, ChordStyle};
+pub use chord_chart::{ChordChart, ChordSelection, ChordStyle};
 pub mod treemap;
-pub use treemap::{Treemap, TreemapItem, TreemapStyle};
+pub use treemap::{Treemap, TreemapStyle};
 pub mod radar_chart;
 pub use radar_chart::{RadarAxis, RadarChart, RadarLegendStyle, RadarSeries, RadarStyle};
 pub mod range_chart;
@@ -3149,11 +3150,11 @@ pub use distribution_chart::{
     DistributionChart, DistributionKind, DistributionSeries, DistributionStyle,
 };
 pub mod sankey;
-pub use sankey::{SankeyChart, SankeyLink, SankeyNode, SankeySelection, SankeyStyle};
+pub use sankey::{SankeyChart, SankeySelection, SankeyStyle};
 pub mod sunburst;
 pub use sunburst::{SunburstChart, SunburstNode, SunburstStyle};
 pub mod funnel_chart;
-pub use funnel_chart::{FunnelChart, FunnelDirection, FunnelStage, FunnelStyle};
+pub use funnel_chart::{FunnelChart, FunnelDirection, FunnelStyle};
 pub mod gauge;
 pub use gauge::{
     BarGauge, GaugeReading, GaugeStyle, GaugeThresholds, ProgressRing, ProgressRingFace,

@@ -31,7 +31,6 @@ use winit::event::WindowEvent;
 
 use ui::Widget;
 use ui::icons::Icon;
-use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -881,7 +880,7 @@ pub struct ChatApp {
 
     // The OS permission gate: routes channel participation + file-embed
     // hydration through the toolkit's permission model. Refreshed from the
-    // `PermissionContext` the compositor passes into `draw`.
+    // `PermissionContext` the compositor scopes around `draw`.
     pub(crate) perms: ChatPermissions,
 
     // The resource's dispatcher: every doc-mutating affordance (Send, a
@@ -1998,7 +1997,7 @@ impl ChatApp {
 
     /// Take the room's view of the participants off the presence store.
     ///
-    /// Called once per frame from `draw_with_presence`. The presence store is
+    /// Called once per frame from `draw`. The presence store is
     /// seeded from `CollabEvent::Context` — the broker's roster snapshot — so a
     /// name here is the room's answer, arrived over the same transport as the
     /// messages. Nothing a peer says about itself reaches this map.
@@ -6261,6 +6260,18 @@ impl Widget for ChatApp {
         // control is still genuinely present; every covered/alternate page
         // therefore withdraws the old gesture witness automatically.
         self.painted_queue_offer = None;
+        // Adopt the OS-provided permission context so channel participation and
+        // file-embed hydration are gated by the real grant policy (the
+        // compositor scopes each app's context around its draw every frame).
+        if let Some(permissions) = presence.permission_context() {
+            self.perms.adopt_context(permissions);
+        }
+        // Adopt the room's answer for who everybody is. Names and colours are
+        // the room's to give: they arrive on the collaboration context stream
+        // and land in the presence store, and this is the one door an app has
+        // onto that store. Taken first so the same frame that learns a name
+        // paints it.
+        self.adopt_room(presence);
         // Adopt this theme's chrome and advance the drawers for this frame.
         for surface in self.agent_surfaces.values_mut() {
             surface.update_frame_theme(theme);
@@ -6345,29 +6356,6 @@ impl Widget for ChatApp {
 
         self.hits = hits;
         self.navigation_drawn_offset = self.navigation_scroll.offset_y();
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        permissions: &PermissionContext,
-    ) {
-        // Adopt the OS-provided permission context so channel participation and
-        // file-embed hydration are gated by the real grant policy (the
-        // compositor hands each app its context here every frame).
-        self.perms.adopt_context(permissions.clone());
-        // Adopt the room's answer for who everybody is. Names and colours are
-        // the room's to give: they arrive on the collaboration context stream
-        // and land in the presence store, and this is the one door an app has
-        // onto that store. Taken before `draw` so the same frame that learns a
-        // name paints it.
-        self.adopt_room(presence);
-        // Root spans the whole window — always paint.
-        self.draw(scene, tf, tr, theme, presence);
     }
 
     fn draw_overlay(
