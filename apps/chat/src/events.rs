@@ -4093,12 +4093,12 @@ mod tests {
         let (mut queue, mut queue_doc, queue_host, queue_surface) = failed_agent_task_submission(
             AgentComposerIntent::Queue,
             "Queue this exact instruction",
-            "Task was not queued. Your instruction is still here.",
+            "Could not confirm that the task was queued. Your instruction is still here.",
         );
         let _steer = failed_agent_task_submission(
             AgentComposerIntent::Steer,
             "Steer with this exact direction",
-            "Direction was not saved. Your draft is still here.",
+            "Could not confirm that the direction was saved. Your draft is still here.",
         );
 
         queue_host.fail_task_submissions(false);
