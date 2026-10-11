@@ -129,7 +129,10 @@ fn write_a_long_note(frame: &mut FrameBuilder, label: &str, paragraphs: usize) -
     for paragraph in 0..paragraphs {
         type_text(
             frame,
-            &format!("Paragraph {paragraph}: the quick brown fox jumps over the lazy dog"),
+            &format!(
+                "Paragraph {paragraph}: the quick brown fox jumps over the lazy dog, \
+                 and a second clause so the line runs on a while."
+            ),
         );
         press_key(frame, &Key::Named(NamedKey::Enter));
         if paragraph % 10 == 9 {
