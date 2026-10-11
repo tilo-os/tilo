@@ -419,6 +419,20 @@ impl Table {
         Some(changed)
     }
 
+    /// Where [`Self::draw_projected_focus`] paints: the focused cell, its
+    /// stroke and the correction chip its field floats past it. `None`
+    /// while no cell has focus.
+    pub(super) fn projected_focus_paint(&self) -> Option<Rect> {
+        self.cells
+            .iter()
+            .find(|input| input.is_focused())
+            .map(|input| {
+                // The 1 px stroke straddles the cell's edge.
+                let rect = input.get_rect().inflate(1.0, 1.0);
+                input.overhang().map_or(rect, |chip| rect.union(chip))
+            })
+    }
+
     pub(super) fn draw_projected_focus(
         &mut self,
         scene: &mut Scene,

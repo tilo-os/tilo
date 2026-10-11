@@ -351,7 +351,7 @@ impl Widget for EmbeddedApp {
         // A durability that changed in this pass left the layout dirty
         // (`App::sync_model`), so the next frame shows it; a structure change
         // the pass made is rebuilt by that frame.
-        self.app.layout.structure_dirty |= self.app.root_widget.take_structure_dirty();
+        self.app.layout.structure_dirty |= self.app.take_root_structure_dirty();
         let visible = self.app.unsettled() || self.app.root_widget.needs_animation_frame();
         if visible {
             self.wants_frame.set(true);

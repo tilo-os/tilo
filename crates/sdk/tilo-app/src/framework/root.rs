@@ -1267,6 +1267,12 @@ impl Decorator for ResourceRoot {
         self.content.view_only_scroll(event)
     }
 
+    // The root adds no structure of its own: a change its content can
+    // describe stays described.
+    fn take_structure_change(&mut self) -> ui_core::widget::StructureChange {
+        self.content.take_structure_change()
+    }
+
     fn record_owners(&self) -> Vec<ui_core::history_mode::HistoryOwner> {
         let mut owners = self.storage.person_owners();
         owners.extend(self.content.record_owners());
