@@ -562,7 +562,7 @@ impl OriginalInvocation {
         request: &runtime_collab::approved_checks::Request,
     ) -> Result<Arc<Self>, String> {
         let route = channel.route();
-        let admitted = channel
+        channel
             .state
             .revalidate_admission(&route, &channel.verified_identity)
             .map_err(|error| error.to_string())?;
@@ -612,6 +612,25 @@ impl OriginalInvocation {
         if arguments.check_id != request.check_id {
             return Err("approved check ID differs from accepted action".into());
         }
+        Self::from_current_target(channel, data)
+    }
+
+    /// Retain the broker's original accepted data on its actual target channel.
+    /// This constructs custody, not permission: every final owner still needs
+    /// current policy checks under its own serialized authority turn. No caller
+    /// field or serialized token can replace the private retained data.
+    fn from_current_target(
+        channel: &super::CapnpChannelHandle,
+        data: Arc<OriginalInvocationData>,
+    ) -> Result<Arc<Self>, String> {
+        let route = channel.route();
+        if data.route != route {
+            return Err("original invocation target channel route mismatch".into());
+        }
+        let admitted = channel
+            .state
+            .revalidate_admission(&route, &channel.verified_identity)
+            .map_err(|error| error.to_string())?;
         let worker = if let Some(worker) = admitted.worker_registration.clone() {
             TargetCustody::Registered(Box::new(worker))
         } else {

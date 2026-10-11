@@ -209,6 +209,16 @@ async fn approved_check_rpc_native_target_requires_live_launcher_connection() {
         let new_request = runtime_collab::approved_checks::Request { invocation: uuid::Uuid::from_bytes(next.invocation_uuid).to_string(), ..request.clone() };
         assert!(connection.handle.approved_check(&new_request).await.unwrap_err().to_string().contains("unsupported by this host"),
             "fresh opaque address retains authenticated stable identity and reaches the real host service gate");
+        let terminal = tilo_actions::InvocationUpdate::Succeeded {
+            invocation: tilo_actions::InvocationId(uuid::Uuid::from_bytes(next.invocation_uuid)),
+            output: tilo_actions::ActionOutput::default(),
+        };
+        connection.handle.update_invocation(new_wire, &serde_json::to_string(&terminal).unwrap()).await.unwrap();
+        let ended = connection.handle.approved_check(&new_request).await.unwrap_err().to_string();
+        assert!(ended.contains("ended") || ended.contains("retired or cancelled"),
+            "successful target completion must retire original native custody: {ended}");
+        assert!(connection.handle.approved_check(&new_request).await.is_err(),
+            "an exact request retry cannot resurrect terminal native custody");
         let foreign_route = CrdtRoute::record(&room.route.app_id, &room.route.cluster_id, "foreign-record");
         let foreign = rpc.join_channel(&foreign_route.channel_key(), &signed_worker::presentation(&room.route.cluster_id, &room.cert, &room.key)).await.unwrap();
         assert!(foreign.approved_check(&request).await.unwrap_err().to_string().contains("target action or contract mismatch"), "same process and app cannot send an accepted invocation over a foreign record channel");
