@@ -3932,6 +3932,7 @@ impl ui::resources::PublishesResources for InstallerApp {
 mod tests {
     use super::*;
     use automerge::ReadDoc;
+    use ui::widget::find_test_id;
 
     fn find_test_id_mut<'a>(widget: &'a mut dyn Widget, id: &str) -> Option<&'a mut dyn Widget> {
         if widget.test_id() == Some(id) {
@@ -4061,21 +4062,7 @@ mod tests {
     }
 
     fn has_test_id(widget: &dyn Widget, id: &str) -> bool {
-        widget.test_id() == Some(id)
-            || widget
-                .children()
-                .into_iter()
-                .any(|child| has_test_id(child, id))
-    }
-
-    fn find_test_id<'a>(widget: &'a dyn Widget, id: &str) -> Option<&'a dyn Widget> {
-        if widget.test_id() == Some(id) {
-            return Some(widget);
-        }
-        widget
-            .children()
-            .into_iter()
-            .find_map(|child| find_test_id(child, id))
+        find_test_id(widget, id).is_some()
     }
 
     fn build(app: &mut InstallerApp) -> (TaffyTree<()>, NodeId) {

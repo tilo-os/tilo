@@ -71,17 +71,22 @@ impl NativeWorkspaceOwner {
             return Err("application initialization exceeds bootstrap limit".into());
         }
         let route = initialization.route;
-        let crate::DocumentRead::Unchanged(_) = candidate.read_document(
+        match candidate.read_document(
             creator.device_public_key,
             &route.app,
             &route.record,
             Some(initialization.revision),
             64 * 1024,
             now,
-        )?
-        else {
-            return Err("application initialization revision changed".into());
-        };
+        )? {
+            crate::DocumentRead::Unchanged(_) => {}
+            crate::DocumentRead::CheckpointPending => {
+                return Err("application initialization waits for a checkpoint".into());
+            }
+            crate::DocumentRead::Captured(_) => {
+                return Err("application initialization revision changed".into());
+            }
+        }
         let mut document = automerge::AutoCommit::load(initialization.document)
             .map_err(|error| error.to_string())?;
         // StatePeer's normal admitted snapshot merge preserves the original

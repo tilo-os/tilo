@@ -94,10 +94,6 @@ impl ResourceApp for VideoPlayerShell {
     /// The video to play: a path or a stream's URL.
     const ARGUMENTS: usize = 1;
 
-    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
-        (1280, 800)
-    }
-
     fn view(cx: &mut ViewCx<VideoPlayer>) -> Element {
         cx.surface(PlayerApp::new(cx.mode()))
     }

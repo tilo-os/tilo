@@ -1389,20 +1389,6 @@ fn dashboard(
     )))
 }
 
-/// Find the rect of the descendant whose test id is `id`.
-fn find_rect(widget: &dyn Widget, id: &str) -> Option<Rect> {
-    if widget.test_id() == Some(id) {
-        return Some(widget.get_rect());
-    }
-    let mut found = None;
-    widget.for_each_child(&mut |child| {
-        if found.is_none() {
-            found = find_rect(child, id);
-        }
-    });
-    found
-}
-
 /// The Resources tab: the system dashboard, scrolling as one page.
 pub(crate) struct ResourcesPane {
     shared: Shared,
@@ -1478,7 +1464,9 @@ impl ResourcesPane {
         let Some(page) = &self.page else {
             return;
         };
-        let Some(section) = find_rect(page, &stat.section_id()) else {
+        let Some(section) =
+            ui::widget::find_test_id(page, &stat.section_id()).map(Widget::get_rect)
+        else {
             return;
         };
         self.reveal = None;

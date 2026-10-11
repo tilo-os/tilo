@@ -102,7 +102,7 @@ pub fn age(time: i64) -> String {
 /// A commit's date and time in the local zone, in the active locale:
 /// `30 June 2026, 08:12`.
 pub fn date(time: i64) -> String {
-    use chrono::{Datelike, Timelike};
+    use chrono::Datelike;
     let Some(utc) = chrono::DateTime::from_timestamp(time, 0) else {
         return String::new();
     };
@@ -113,10 +113,7 @@ pub fn date(time: i64) -> String {
             ("day", local.day().to_string().into()),
             ("month", local.month().into()),
             ("year", local.year().to_string().into()),
-            (
-                "time",
-                format!("{:02}:{:02}", local.hour(), local.minute()).into(),
-            ),
+            ("time", ui::clock::time_of_day(&local).into()),
         ],
     )
 }

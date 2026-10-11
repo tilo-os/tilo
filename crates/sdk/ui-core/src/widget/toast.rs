@@ -115,7 +115,99 @@ impl ToastAnchor {
 /// toast keeps it in frame.
 #[must_use]
 pub fn transient_expired(shown: crate::time::Instant, ttl: Duration) -> bool {
-    !crate::time::wall_frozen() && shown.elapsed() > ttl
+    !crate::time::wall_frozen() && crate::time::now().saturating_duration_since(shown) > ttl
+}
+
+/// How long a [`Notice`] stays up.
+pub const NOTICE_LIFETIME: Duration = Duration::from_secs(4);
+
+/// The one transient message an app shows over its content: a confirmation,
+/// something under way, or a failure. The app shows it and paints it where
+/// it belongs; the notice keeps its own lifetime and its announcement.
+#[derive(Clone, Debug, Default)]
+pub struct Notice {
+    current: Option<(String, ToastKind, crate::time::Instant)>,
+}
+
+impl Notice {
+    /// Show `text`, replacing any notice already up.
+    pub fn show(&mut self, text: impl Into<String>, kind: ToastKind) {
+        self.current = Some((text.into(), kind, crate::time::now()));
+    }
+
+    /// Take the notice down; whether one was up.
+    pub fn dismiss(&mut self) -> bool {
+        self.current.take().is_some()
+    }
+
+    /// The notice's text and kind, while it is up.
+    pub fn get(&self) -> Option<(&str, ToastKind)> {
+        self.current
+            .as_ref()
+            .map(|(text, kind, _)| (text.as_str(), *kind))
+    }
+
+    pub fn is_shown(&self) -> bool {
+        self.current.is_some()
+    }
+
+    /// Take the notice down once its lifetime is over; whether it did.
+    pub fn expire(&mut self) -> bool {
+        let over = self
+            .current
+            .as_ref()
+            .is_some_and(|(_, _, shown)| transient_expired(*shown, NOTICE_LIFETIME));
+        over && self.dismiss()
+    }
+
+    /// When the notice expires, for a widget's `next_wake_deadline`. Under
+    /// the capture clock nothing expires.
+    pub fn deadline(&self) -> Option<crate::time::Instant> {
+        if crate::time::wall_frozen() {
+            return None;
+        }
+        self.current
+            .as_ref()
+            .map(|(_, _, shown)| *shown + NOTICE_LIFETIME)
+    }
+
+    /// Paint the notice in `area`, at `anchor`, with [`paint_transient`].
+    pub fn paint(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        area: Rect,
+        anchor: ToastAnchor,
+    ) -> ToastCardHit {
+        let Some((text, kind)) = self.get() else {
+            return ToastCardHit::default();
+        };
+        paint_transient(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            area,
+            anchor,
+            &ToastCard::new(text, kind),
+        )
+    }
+
+    /// The notice as a live region: a failure interrupts, anything else
+    /// waits its turn.
+    pub fn access_node(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, Politeness, Role};
+        let (text, kind) = self.get()?;
+        Some(AccessNode::new(Role::StaticText).with_name(text).with_live(
+            if kind == ToastKind::Error {
+                Politeness::Assertive
+            } else {
+                Politeness::Polite
+            },
+        ))
+    }
 }
 
 /// A single toast entry held by a [`ToastStack`]. Entries are produced

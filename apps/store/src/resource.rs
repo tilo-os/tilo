@@ -498,15 +498,7 @@ const SCENARIOS: &[&str] = &[
 /// The app the moderation screenshots report.
 const SHOT_REPORTED_APP: &str = "so.tilo.notes";
 
-pub(crate) static STORE_CATALOG: ui::i18n::EmbeddedCatalog = ui::i18n::EmbeddedCatalog::new(
-    "en-US",
-    &[
-        ("en-US", include_str!("../locales/en-US.ftl")),
-        ("de-DE", include_str!("../locales/de-DE.ftl")),
-    ],
-    "store-remotes-title",
-)
-.with_system_locale();
+ui::embedded_catalog!(pub(crate) static STORE_CATALOG, "store-remotes-title", ["en-US", "de-DE"]);
 
 /// Framework app.
 pub struct StoreShell;

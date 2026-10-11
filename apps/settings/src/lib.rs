@@ -69,6 +69,7 @@ pub(crate) mod input_sources;
 pub mod keyboard_preview;
 pub mod panes;
 pub mod prefs;
+pub(crate) mod radios;
 pub mod search;
 pub mod settings_app;
 pub mod sidebar;
