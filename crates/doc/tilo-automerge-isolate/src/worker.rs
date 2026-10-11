@@ -283,6 +283,10 @@ impl Cache {
         match request {
             #[cfg(test)]
             Request::Escape(escape) => try_escape(escape),
+            Request::ChangeHashes { incoming } => match engine::change_hashes(incoming) {
+                Ok(hashes) => Reply::ChangeHashes(hashes),
+                Err(error) => invalid(error),
+            },
             Request::Load { incoming } => {
                 self.rebuilt = true;
                 match engine::load(incoming) {

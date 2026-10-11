@@ -2,7 +2,6 @@
 //! process on untrusted bytes, and in the caller once the worker has shown
 //! the same work to finish within its limits.
 
-#[cfg(target_os = "linux")]
 use automerge::ChangeHash;
 use automerge::{AutoCommit, LoadOptions, OnPartialLoad, VerificationMode};
 use tilo_automerge::ApplyIncoming as _;
@@ -99,6 +98,41 @@ fn parse_alone(chunk: crate::precheck::Chunk<'_>) -> Result<(), Rejected> {
             Err(error) => Err(invalid(error)),
         },
     }
+}
+
+/// Every change encoded by the exact incoming storage, including changes
+/// already committed by its recipient and changes with external dependencies.
+/// Called only after framing checks, inside the bounded worker on Linux.
+pub(crate) fn change_hashes(incoming: &[u8]) -> Result<Vec<ChangeHash>, Rejected> {
+    let mut hashes = std::collections::BTreeSet::new();
+    for chunk in crate::precheck::chunks(incoming) {
+        parse_alone(chunk)?;
+        match chunk.kind {
+            crate::precheck::CHANGE | crate::precheck::COMPRESSED_CHANGE => {
+                let change = automerge::Change::try_from(chunk.bytes)
+                    .map_err(|error| Rejected::Invalid(error.to_string()))?;
+                hashes.insert(change.hash());
+            }
+            3 => {
+                let bundle = automerge::Bundle::try_from(chunk.bytes)
+                    .map_err(|error| Rejected::Invalid(error.to_string()))?;
+                let changes = bundle
+                    .to_changes()
+                    .map_err(|error| Rejected::Invalid(error.to_string()))?;
+                hashes.extend(changes.iter().map(automerge::Change::hash));
+            }
+            _ => {
+                let mut snapshot = load(chunk.bytes)?;
+                hashes.extend(
+                    snapshot
+                        .get_changes(&[])
+                        .iter()
+                        .map(automerge::Change::hash),
+                );
+            }
+        }
+    }
+    Ok(hashes.into_iter().collect())
 }
 
 /// [`apply`] without the standalone parse: for bytes already shown to be

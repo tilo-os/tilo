@@ -57,7 +57,7 @@ mod worker;
 
 use std::time::Duration;
 
-use automerge::AutoCommit;
+use automerge::{AutoCommit, ChangeHash};
 
 /// Ceilings for one untrusted input and for the workers that decode it.
 #[derive(Clone, Debug)]
@@ -198,6 +198,21 @@ impl Isolate {
         return self.pool.apply(doc, incoming, dependencies);
         #[cfg(not(target_os = "linux"))]
         return in_page::apply(doc, incoming, dependencies);
+    }
+
+    /// Enumerate the exact incoming change set under the same parser limits.
+    /// Unlike a recipient's before/after delta, this retains redundant changes
+    /// and changes whose dependencies are external to the input. It conveys
+    /// no admission or permission decision.
+    ///
+    /// # Errors
+    /// Malformed input, exhausted parser bounds or unavailable worker custody.
+    pub fn change_hashes(&self, incoming: &[u8]) -> Result<Vec<ChangeHash>, Rejected> {
+        precheck::check(incoming, self.limits())?;
+        #[cfg(target_os = "linux")]
+        return self.pool.change_hashes(incoming);
+        #[cfg(not(target_os = "linux"))]
+        return engine::change_hashes(incoming);
     }
 
     /// Load untrusted `bytes` as a complete document.

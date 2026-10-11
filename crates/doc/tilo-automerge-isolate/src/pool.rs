@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError, mpsc};
 use std::time::Duration;
 
-use automerge::{AutoCommit, SaveOptions};
+use automerge::{AutoCommit, ChangeHash, SaveOptions};
 
 use crate::engine::{self, Key};
 use crate::wire::{self, Prepare, Reply, Request};
@@ -122,6 +122,7 @@ impl Pool {
                         Base::Full(_) => return Err(Rejected::Crashed),
                     };
                 }
+                Reply::ChangeHashes(_) => return Err(Rejected::Crashed),
                 Reply::Invalid(message) => return Err(Rejected::Invalid(message)),
                 Reply::Applied(Applied::MissingDependencies) => {
                     return Ok(Applied::MissingDependencies);
@@ -155,7 +156,22 @@ impl Pool {
                 Ok(doc)
             }
             Reply::Invalid(message) => Err(Rejected::Invalid(message)),
-            Reply::Uncached(_) => Err(Rejected::Crashed),
+            Reply::Uncached(_) | Reply::ChangeHashes(_) => Err(Rejected::Crashed),
+        }
+    }
+
+    pub(crate) fn change_hashes(&self, incoming: &[u8]) -> Result<Vec<ChangeHash>, Rejected> {
+        let slot = self.any_slot();
+        let mut worker = lock(self.slots.get(slot).ok_or(Rejected::Crashed)?);
+        match self.call(
+            &mut worker,
+            &Request::ChangeHashes { incoming },
+            0,
+            incoming.len(),
+        )? {
+            Reply::ChangeHashes(hashes) => Ok(hashes),
+            Reply::Invalid(message) => Err(Rejected::Invalid(message)),
+            Reply::Applied(_) | Reply::Uncached(_) => Err(Rejected::Crashed),
         }
     }
 

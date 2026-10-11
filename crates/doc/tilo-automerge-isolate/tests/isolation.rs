@@ -521,3 +521,57 @@ fn admission_latency() {
         samples[samples.len() * 99 / 100]
     );
 }
+
+#[test]
+fn exact_change_hashes_retain_external_dependencies_and_redundant_changes() {
+    let isolate = Isolate::new(Limits::default());
+    let mut doc = seeded_doc();
+    let base = doc.get_heads();
+    doc.put(ROOT, "contributor", "original").unwrap();
+    let contributed = doc.commit().unwrap();
+    let expected = vec![contributed];
+    let incremental = doc.save_after(&base);
+    assert_eq!(isolate.change_hashes(&incremental).unwrap(), expected);
+    let bundle = doc.bundle(expected.clone()).unwrap();
+    assert_eq!(isolate.change_hashes(bundle.bytes()).unwrap(), expected);
+    let mut duplicated = incremental.clone();
+    duplicated.extend(&incremental);
+    assert_eq!(isolate.change_hashes(&duplicated).unwrap(), expected);
+    let all = doc
+        .get_changes(&[])
+        .iter()
+        .map(|change| change.hash())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    assert_eq!(isolate.change_hashes(&doc.save()).unwrap(), all);
+    let mut recipient = doc.clone();
+    assert_eq!(
+        isolate.apply(&mut recipient, &incremental, Dependencies::RequireComplete),
+        Ok(Applied::Changed(false))
+    );
+    assert_eq!(
+        isolate.change_hashes(&incremental).unwrap(),
+        expected,
+        "recipient delta is empty, but exact incoming range still includes the contributor"
+    );
+}
+
+#[test]
+fn exact_change_hashes_refuse_malformed_tail_and_recover_after_decoder_failure() {
+    let isolate = Isolate::new(Limits::default());
+    let mut doc = seeded_doc();
+    let good = doc.save();
+    let mut truncated = good.clone();
+    truncated.extend([0x85, 0x6f, 0x4a]);
+    assert!(isolate.change_hashes(&truncated).is_err());
+    let (name, bytes) = DECODER_CASES.first().unwrap();
+    assert!(
+        isolate.change_hashes(&hex::decode(bytes).unwrap()).is_err(),
+        "{name}"
+    );
+    assert!(
+        !isolate.change_hashes(&good).unwrap().is_empty(),
+        "refused input cannot poison the next exact parser request"
+    );
+}

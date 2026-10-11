@@ -7,17 +7,20 @@
 //!   (a full save of the caller's document) or `2 from delta` (bring the
 //!   cached copy at `from` up to `key` with the caller's newer changes).
 //! - `2 incoming…`: load `incoming` as a document.
+//! - `3 incoming…`: enumerate its exact change hashes in the confined worker.
 //!
 //! The worker's first frame is [`READY`], sent once it is confined; any other
 //! first frame says why it could not be.
 //!
 //! Replies: `0 changed`, `1` (missing dependencies), `2 count keys…` (no copy
-//! at `key`; the ones the worker holds), `3 message…` (Automerge refused it).
+//! at `key`; the ones the worker holds), `3 message…` (Automerge refused it),
+//! `4 count hashes…` (the exact incoming change set).
 
 use std::io::{self, Read, Write};
 
 use crate::engine::Key;
 use crate::{Applied, Dependencies};
+use automerge::ChangeHash;
 
 /// The first frame a worker sends, once confined and before reading anything.
 pub(crate) const READY: &[u8] = b"tilo-automerge-isolate 1";
@@ -40,6 +43,9 @@ pub(crate) enum Request<'a> {
     Load {
         incoming: &'a [u8],
     },
+    ChangeHashes {
+        incoming: &'a [u8],
+    },
     /// Make a syscall the sandbox must refuse, to show that it does.
     #[cfg(test)]
     Escape(Escape),
@@ -59,6 +65,7 @@ pub(crate) enum Reply {
     Applied(Applied),
     Uncached(Vec<Key>),
     Invalid(String),
+    ChangeHashes(Vec<ChangeHash>),
 }
 
 pub(crate) fn write_frame(out: &mut impl Write, payload: &[u8]) -> io::Result<()> {
@@ -145,6 +152,10 @@ impl Request<'_> {
                 out.push(2);
                 out.extend(*incoming);
             }
+            Self::ChangeHashes { incoming } => {
+                out.push(3);
+                out.extend(*incoming);
+            }
             #[cfg(test)]
             Self::Escape(escape) => {
                 out.push(0xff);
@@ -183,6 +194,7 @@ impl Request<'_> {
                 })
             }
             2 => Some(Request::Load { incoming: input }),
+            3 => Some(Request::ChangeHashes { incoming: input }),
             #[cfg(test)]
             0xff => Some(Request::Escape(match take_byte(&mut input)? {
                 0 => Escape::Open,
@@ -209,6 +221,17 @@ impl Reply {
                     push_bytes(&mut out, key.as_bytes());
                 }
             }
+            Self::ChangeHashes(hashes) => {
+                out.push(4);
+                out.extend(
+                    u64::try_from(hashes.len())
+                        .unwrap_or(u64::MAX)
+                        .to_le_bytes(),
+                );
+                for hash in hashes {
+                    out.extend(hash.0);
+                }
+            }
             Self::Invalid(message) => {
                 out.push(3);
                 out.extend(message.as_bytes());
@@ -231,6 +254,18 @@ impl Reply {
                 Some(Self::Uncached(keys))
             }
             3 => Some(Self::Invalid(String::from_utf8_lossy(input).into_owned())),
+            4 => {
+                let (count, rest) = input.split_first_chunk::<8>()?;
+                let count = usize::try_from(u64::from_le_bytes(*count)).ok()?;
+                if count.checked_mul(32)? != rest.len() {
+                    return None;
+                }
+                let hashes = rest
+                    .chunks_exact(32)
+                    .map(|bytes| bytes.try_into().ok().map(ChangeHash))
+                    .collect::<Option<Vec<_>>>()?;
+                Some(Self::ChangeHashes(hashes))
+            }
             _ => None,
         }
     }

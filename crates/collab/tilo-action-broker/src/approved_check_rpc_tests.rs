@@ -215,7 +215,7 @@ async fn approved_check_rpc_native_target_requires_live_launcher_connection() {
         };
         connection.handle.update_invocation(new_wire, &serde_json::to_string(&terminal).unwrap()).await.unwrap();
         let ended = connection.handle.approved_check(&new_request).await.unwrap_err().to_string();
-        assert!(ended.contains("ended") || ended.contains("retired or cancelled"),
+        assert!(ended.contains("no retained target invocation"),
             "successful target completion must retire original native custody: {ended}");
         assert!(connection.handle.approved_check(&new_request).await.is_err(),
             "an exact request retry cannot resurrect terminal native custody");
