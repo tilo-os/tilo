@@ -35,7 +35,7 @@ use ui::theme::Theme;
 use ui::tilo_resource::ActionDecl;
 use ui::widget::Embedded;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
-use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
+use ui::widget::toast::{Notice, ToastAnchor, ToastKind};
 use ui::widget::{
     AudiencePresentationProvider, ColorPicker, Dropdown, FullscreenProvider, NumberInput,
     PageSidebar, PageSidebarEvent, Scrollable, SidebarDrawer, SplitLayout, TextInput, Widget,
@@ -490,7 +490,7 @@ pub struct SlidesApp {
     tooltip_text: Option<String>,
     /// Visible result of a fallible open/save/image operation. Previously those
     /// paths failed silently, leaving users unsure whether a click worked.
-    io_toast: Option<(String, ToastKind)>,
+    io_toast: Notice,
 
     /// Right-click context menu (element / slide actions) — the shared
     /// [`ui::widget::ContextMenu`] primitive, driven standalone. `ctx_hits`
@@ -612,7 +612,7 @@ impl SlidesApp {
             chrome_metrics: ChromeMetrics::fallback(),
             inspector_scroll: Scrollable::new_vertical().always_visible(),
             tooltip_text: None,
-            io_toast: None,
+            io_toast: Notice::default(),
             ctx_menu: ContextMenu::new(),
             ctx_hits: Vec::new(),
             font_input: NumberInput::new(40.0)
@@ -758,7 +758,8 @@ impl SlidesApp {
             }
             // The failure toast a presentation the decoder rejects shows.
             "open_error" => {
-                self.io_toast = Some((tr("slides-toast-open-failed"), ToastKind::Error));
+                self.io_toast
+                    .show(tr("slides-toast-open-failed"), ToastKind::Error);
             }
             // Context menus open once the layout is known (see `draw`).
             "element_menu" => {
@@ -917,7 +918,8 @@ impl SlidesApp {
         let deck = state.deck();
         if deck != self.deck {
             if !actions::deck_within_aggregate_limits(&deck) {
-                self.io_toast = Some((tr("slides-toast-shared-limit"), ToastKind::Error));
+                self.io_toast
+                    .show(tr("slides-toast-shared-limit"), ToastKind::Error);
                 return;
             }
             // The slide shown stays shown wherever the change moved it; a
@@ -1425,7 +1427,7 @@ impl SlidesApp {
             };
             let Some(src) = crate::assets::store_asset(&app.content, &file.bytes) else {
                 let message = tr("slides-toast-image-import-failed");
-                app.io_toast = Some((message.clone(), ToastKind::Error));
+                app.io_toast.show(message.clone(), ToastKind::Error);
                 return Err(message);
             };
             app.insert_picture(&src);
@@ -1455,7 +1457,8 @@ impl SlidesApp {
                 };
                 let pptx = is_pptx(std::path::Path::new(&file.name));
                 if pptx {
-                    app.io_toast = Some((tr("slides-toast-opening-pptx"), ToastKind::Info));
+                    app.io_toast
+                        .show(tr("slides-toast-opening-pptx"), ToastKind::Info);
                 }
                 let content = app.content.clone();
                 Ok(cx.thread(
@@ -1477,11 +1480,13 @@ impl SlidesApp {
             Ok(deck) => {
                 cx.apply(&actions::replace_deck_action(&deck));
                 self.show_opened_deck();
-                self.io_toast = Some((tr("slides-toast-opened"), ToastKind::Success));
+                self.io_toast
+                    .show(tr("slides-toast-opened"), ToastKind::Success);
                 Ok(Effected::done())
             }
             Err(error) => {
-                self.io_toast = Some((tr("slides-toast-process-failed"), ToastKind::Error));
+                self.io_toast
+                    .show(tr("slides-toast-process-failed"), ToastKind::Error);
                 Err(error)
             }
         }
@@ -1497,7 +1502,7 @@ impl SlidesApp {
     ) -> EffectAnswer {
         if !actions::deck_within_aggregate_limits(&self.deck) {
             let message = tr("slides-toast-export-limit");
-            self.io_toast = Some((message.clone(), ToastKind::Error));
+            self.io_toast.show(message.clone(), ToastKind::Error);
             return Err(message);
         }
         let deck = self.deck.clone();
@@ -1529,15 +1534,13 @@ impl SlidesApp {
     fn finish_save(&mut self, saved: Result<bool, String>) -> EffectAnswer {
         match saved {
             Ok(true) => {
-                self.io_toast = Some(("Presentation saved".into(), ToastKind::Success));
+                self.io_toast.show("Presentation saved", ToastKind::Success);
                 Ok(Effected::done())
             }
             Ok(false) => Ok(Effected::done()),
             Err(error) => {
-                self.io_toast = Some((
-                    "Could not process the presentation".into(),
-                    ToastKind::Error,
-                ));
+                self.io_toast
+                    .show("Could not process the presentation", ToastKind::Error);
                 Err(error)
             }
         }
@@ -2700,17 +2703,14 @@ impl Widget for SlidesApp {
         // flag, suppress the overlay, and swallow all later navigation keys.
         self.help_overlay
             .draw(scene, transform, text_renderer, theme, self.rect);
-        if let Some((message, kind)) = self.io_toast.as_ref() {
-            paint_transient(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                self.rect,
-                ToastAnchor::BottomCenter,
-                &ToastCard::new(message, *kind),
-            );
-        }
+        self.io_toast.paint(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            self.rect,
+            ToastAnchor::BottomCenter,
+        );
         // Right-click context menu floats above everything else.
         self.ctx_menu
             .draw(scene, transform, text_renderer, theme, presence);
@@ -2761,7 +2761,7 @@ impl Widget for SlidesApp {
                 ..
             }
         ) {
-            self.io_toast = None;
+            self.io_toast.dismiss();
         }
         let mut routed = RoutedEvent {
             event,
@@ -2834,7 +2834,7 @@ impl Widget for SlidesApp {
         reason = "the custom-painted editor has editor, presentation, and modal semantic projections in one Widget hook"
     )]
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
-        use ui::a11y::{AccessNode, AccessState, Politeness, Role};
+        use ui::a11y::{AccessNode, AccessState, Role};
 
         if self.help_overlay.is_visible() {
             let shortcuts = [
@@ -3020,17 +3020,7 @@ impl Widget for SlidesApp {
                 .with_name(format!("Slide {} canvas", self.cur_slide + 1))
                 .with_children(elements),
         ];
-        if let Some((message, kind)) = &self.io_toast {
-            children.push(
-                AccessNode::new(Role::StaticText)
-                    .with_name(message)
-                    .with_live(if *kind == ToastKind::Error {
-                        Politeness::Assertive
-                    } else {
-                        Politeness::Polite
-                    }),
-            );
-        }
+        children.extend(self.io_toast.access_node());
         Some(
             AccessNode::new(Role::Document)
                 .with_name(self.deck.title.clone())
