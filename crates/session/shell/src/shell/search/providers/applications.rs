@@ -60,25 +60,13 @@ fn grouped_detail(package_id: &str, metadata: String) -> String {
     )
 }
 
-fn app_detail(needle: &str, app: &InstalledApp) -> String {
-    let metadata = match app.category.as_deref() {
-        Some(category) => format!("Tilo · {category} · {}", app.package_id),
-        None => format!("Tilo · {} · {}", app.package_id, app.version),
+fn app_detail(needle: &str, package_id: &str, category: Option<&str>, version: &str) -> String {
+    let metadata = match category {
+        Some(category) => format!("Tilo · {category} · {package_id}"),
+        None => format!("Tilo · {package_id} · {version}"),
     };
     if needle.is_empty() {
-        grouped_detail(&app.package_id, metadata)
-    } else {
-        metadata
-    }
-}
-
-fn catalogue_app_detail(needle: &str, app: &CatalogueApp) -> String {
-    let metadata = match app.category.as_deref() {
-        Some(category) => format!("Tilo · {category} · {}", app.package_id),
-        None => format!("Tilo · {} · {}", app.package_id, app.version),
-    };
-    if needle.is_empty() {
-        grouped_detail(&app.package_id, metadata)
+        grouped_detail(package_id, metadata)
     } else {
         metadata
     }
@@ -325,7 +313,12 @@ impl ApplicationsProvider {
             };
             let launch_app = app.clone();
             // A declared category is a more useful second line than the version.
-            let detail = app_detail(needle, &app);
+            let detail = app_detail(
+                needle,
+                &app.package_id,
+                app.category.as_deref(),
+                &app.version,
+            );
             // Where the window will land leads the line, since it's the
             // part of a launch row that changes with context.
             let subtitle = t_args(
@@ -544,7 +537,12 @@ impl ApplicationsProvider {
             };
             let package_id = app.package_id.clone();
             let display_name = app.display_name.clone();
-            let detail = catalogue_app_detail(needle, &app);
+            let detail = app_detail(
+                needle,
+                &app.package_id,
+                app.category.as_deref(),
+                &app.version,
+            );
             let trust = if app.trust.trim().is_empty() {
                 t("search-apps-verification-pending")
             } else {
