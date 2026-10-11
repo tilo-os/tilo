@@ -707,6 +707,15 @@ impl TubeApp {
         self.shell_stale = true;
     }
 
+    /// Test hook: fetch nothing, and fold the results the returned sender
+    /// sends as the network's, whenever the test lands one.
+    #[doc(hidden)]
+    pub fn script_worker_for_test(&mut self) -> std::sync::mpsc::SyncSender<crate::api::Update> {
+        let (worker, results) = crate::api::Worker::scripted();
+        self.worker = Some(worker);
+        results
+    }
+
     #[must_use]
     pub fn with_search_for_test(mut self, query: &str, video_ids: Vec<String>) -> Self {
         self.model.search_query = query.to_string();

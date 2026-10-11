@@ -373,7 +373,10 @@ enforces the budgets in four places:
   fails when an app is over its budget or has none, so nothing is published.
   To measure apps the pull request job did not pick, dispatch Release / apps
   on the branch with `apps=<dir>`, the architecture you need, and publish
-  off.
+  off. The same job also packages Calculator twice
+  (`tools/apps/check-reproducible-tapp.sh`, the second time compiled again
+  past the compiler cache) and fails on any byte that differs: an app whose
+  package changes without its source re-sends itself in every OS update.
 - **Perf / scheduled** (footprint group, nightly) holds every published app to
   its budget. It also holds the apps' median, p90 and max to the fleet
   ceilings: the KPI targets, or an interim ceiling where the fleet does not
@@ -543,9 +546,14 @@ every generic image it publishes out by content before anything consumes it
   component is the same blob in the next build. Whited-out bytes, the base's
   old kernel and `/sysroot`'s ostree objects are in no layer. Trees that change
   on their own schedule get a chunkah run and layers of their own
-  (`os/scripts/rechunk-chunkah.py`, today Proton and the Steam runtime):
+  (`os/scripts/rechunk-chunkah.py`: Proton and the Steam runtime, and the
+  preinstalled apps, whose binaries and archives change one app at a time):
   otherwise their small files share one layer with Tilo's, which change with
-  almost every build.
+  almost every build. Small files that are new in every build although
+  nothing they describe changed (the runtime bundles' signatures and
+  publisher keys, whose keys are minted per build because the launcher trusts
+  them; systemd's update stamp), and the app store's index, which changes
+  with any app, each get one small layer of their own for the same reason.
 - `os/scripts/oci-rechunk.py` takes extended attributes from the raw image's
   layers where chunkah's differ (BuildKit's snapshot of the image, which
   chunkah reads, lacks the base binaries' file capabilities), adds one layer
@@ -574,10 +582,20 @@ python3 tools/perf/image_size.py --image registry.tilo.so/tilo/tilo-ci:main-<new
   --update-from registry.tilo.so/tilo/tilo-ci:main-<old>-x86_64 --update-only
 ```
 
-An update between two commits that change one app downloads 215 MB of the
+An update between two commits that change one app downloaded 215 MB of the
 rechunked x86_64 image (5 %), where the layered image re-sent 3.69 GB (78 %)
 (`docs/benchmarks/os-image-size-2026-10-10-rechunk.md`). Most of the 215 MB
-is app packages that come out of every build with new bytes.
+was the ~60 preinstalled apps, byte-identical but signed by a key minted per
+build: the key is in each package's signed root, whose hash is the package id
+and names the payload directory, so every binary moved and every cohort
+archive changed. Build / OS dev now signs the apps it compiles with
+one identity, the repository secret `DEV_APP_PUBLISHER_IDENTITY`, passed to the
+image build as the BuildKit secret `app_publisher_identity`. It is in no trust
+list (`os/Containerfile`, the app store's COPY) and never reaches a
+publication, which takes the released collection. Without it (local builds)
+the image mints one as before. With it, an update between two builds that
+change nothing the image reads is 0.26 MB, and one that changes one app
+33 MB (`docs/benchmarks/os-image-size-2026-10-10-reproducible-apps.md`).
 
 ## Fast checks before assembly
 

@@ -3851,6 +3851,8 @@ impl ShellOverlayHost {
                 snapshot
             },
         );
+        // Best-effort: without a running network there is nothing to start.
+        let _ = self.peer_sync_call(PeerSyncRequest::PrepareInvitation);
         self.peer_sync_overlay.set_invite_context(context);
         self.peer_sync_overlay
             .merge_remembered_invitees(room_invitees);

@@ -1022,7 +1022,19 @@ RUN --mount=type=secret,id=browser_runtime_identity \
 # Packages take the ordinary route — `tilo-app-package pack` then `tilo-install install`
 # — so a preinstalled app is described exactly as a user-installed one is, and
 # the launcher grants it exactly the same thing. See os/scripts/pack-apps.sh.
-RUN export TILO_IMAGE_BUILD=1 \
+#
+# Apps compiled here are signed by the identity in the `app_publisher_identity`
+# secret when the build is given one (Build / OS dev: DEV_APP_PUBLISHER_IDENTITY),
+# else by one minted for this build. Ed25519 signs deterministically, so with
+# the one identity the same binaries give the same package ids, payload paths
+# and cohort archives in every build, and an update re-sends only the apps
+# that changed. The key is in no trust list: see the store's COPY
+# below. Secrets are not part of BuildKit's cache key and never enter a layer.
+RUN --mount=type=secret,id=app_publisher_identity \
+    export TILO_IMAGE_BUILD=1 \
+    && if [ -s /run/secrets/app_publisher_identity ]; then \
+         export IDENTITY_JSON=/run/secrets/app_publisher_identity; \
+       fi \
     && BIN_DIR=/out/thin-apps \
     TAPP_DIR=/out/prebuilt-apps \
     COHORT_TAPP_DIR=/usr/share/tilo-apps/cohort \

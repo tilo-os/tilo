@@ -237,6 +237,7 @@ impl ShellNetwork {
             persist_pending_invitations(path, &pending);
         }
         drop(pending);
+        self.note_session_reachability(true);
         Ok(token)
     }
 

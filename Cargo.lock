@@ -14321,6 +14321,7 @@ dependencies = [
  "iroh-base",
  "iroh-gossip",
  "iroh-mdns-address-lookup",
+ "iroh-relay",
  "launcher",
  "legacy-agent-protocol",
  "libc",

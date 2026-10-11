@@ -561,6 +561,9 @@ pub struct FrameHarness {
     last_layout_viewport: Option<(u32, u32)>,
     input_scale: f64,
     host_pointer_position: Option<winit::dpi::PhysicalPosition<f64>>,
+    /// As the live host: where the pointer last moved, replayed before a
+    /// press or release that follows a rebuild under a still pointer.
+    pointer_replay: crate::pointer_replay::PointerReplay,
     /// Records this driver has open, when the app under test uses them —
     /// without this a record-aware app would be driven against its room
     /// index instead of the record it checked out, testing something the
@@ -1670,6 +1673,7 @@ impl FrameHarness {
             last_layout_viewport: None,
             input_scale: 1.0,
             host_pointer_position: None,
+            pointer_replay: crate::pointer_replay::PointerReplay::default(),
             focused: None,
             focus_trap_active: false,
             active_input_instance: None,
@@ -3156,6 +3160,10 @@ impl FrameHarness {
         })?;
         self.last_layout_viewport = Some(self.viewport);
         self.last_relayout = stats;
+        if stats.rebuilt || viewport_changed {
+            // Fresh or resized controls have not seen where the pointer is.
+            self.pointer_replay.mark_unsettled();
+        }
         self.relayout_frames = self.relayout_frames.saturating_add(1);
         if !stats.rebuilt {
             self.retained_frames = self.retained_frames.saturating_add(1);
@@ -5568,6 +5576,22 @@ impl FrameHarness {
     }
 
     fn send_with_host_navigation(&mut self, event: &WindowEvent, host_navigation_allowed: bool) {
+        // Controls swapped in or moved under a still pointer learn it is
+        // there before the press or release that follows, as in the App.
+        if let Some(moved) = self.pointer_replay.before(event) {
+            self.dispatch_with_host_navigation(&moved, host_navigation_allowed);
+        }
+        self.dispatch_with_host_navigation(event, host_navigation_allowed);
+        if crate::pointer_replay::PointerReplay::ends_press(event) {
+            self.pointer_replay.end_press();
+        }
+    }
+
+    fn dispatch_with_host_navigation(
+        &mut self,
+        event: &WindowEvent,
+        host_navigation_allowed: bool,
+    ) {
         if let WindowEvent::ModifiersChanged(modifiers) = event {
             self.modifiers = *modifiers;
         }

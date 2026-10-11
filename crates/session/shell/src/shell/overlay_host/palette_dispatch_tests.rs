@@ -1785,6 +1785,7 @@ fn invite_tokens_travel_through_the_clipboard_exactly() {
             PeerSyncRequest::ResendInvitation(_) | PeerSyncRequest::CancelInvitation(_) => {
                 Err("not pending".into())
             }
+            PeerSyncRequest::PrepareInvitation => Ok(PeerSyncResponse::Message(String::new())),
         }));
         chrome
             .borrow_mut()

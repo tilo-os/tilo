@@ -146,16 +146,24 @@ to the secret store are tracked follow-ups.
 ### Load hints beside local records
 
 Loading a large record spends most of its time rebuilding every change to
-learn its hash, so a full save of a record of 64 KiB or more also writes the
-change hashes it listed to `state.hashes` beside `state.automerge`
-(`crates/system/app-state/src/load_hint.rs`), and the next load takes them
-instead (TIL-762). A hint skips verifying that each change matches its hash,
-so it is trusted exactly as far as the record bytes beside it:
+learn its hash, so a full save of a record of 64 KiB or more, or of 4,096
+changes or more, also writes the change hashes it listed to `state.hashes`
+beside `state.automerge` (`crates/system/app-state/src/load_hint.rs`), and
+the next load takes them instead. The compositor keeps the same
+hint for its desktop document, which gains a change on every workspace
+switch, as `state.automerge.hashes` beside it, and session start takes it.
+A hint skips verifying that each change matches its hash, so it is
+trusted exactly as far as the document bytes beside it:
 
-- Only `DocWriter` makes one, from the document it holds, whose changes were
-  verified when they entered it; the store keeps it on this device and never
-  syncs, sends or receives it. Documents and changes from peers are always
-  rebuilt and verified in full, through the isolate where it applies.
+- Only the writer that saved those bytes makes one (`DocWriter`'s full saves
+  and `DocStore::save` as the document's primary writer; the compositor's
+  `doc_log` when it writes the desktop document's base), from the document
+  it holds, whose changes were verified when they entered it; it stays on
+  this device and is never synced, sent or received. Documents and changes
+  from peers are always rebuilt and verified in full, through the isolate
+  where it applies, and so are the desktop document's log frames.
+- The compositor takes no hint for a record an app wrote: that hint is the
+  sandboxed app's, a different principal from the compositor reading it.
 - It names the document chunk it was made for by BLAKE3 digest and is used
   for those bytes only; anything else (a replacement, a restored file, a
   torn write) makes it stale and the load rebuilds every change.
