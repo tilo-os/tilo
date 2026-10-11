@@ -859,24 +859,19 @@ impl App {
         self.collaboration
             .manager
             .publish_action_directory(publication_app_id.clone());
-        let resources = match self.try_publication_resources() {
-            Ok(resources) => resources,
-            Err(_) => {
-                self.withdraw_unobservable_bound_surface(publication_app_id);
-                return;
-            }
+        let Ok(resources) = self.try_publication_resources() else {
+            self.withdraw_unobservable_bound_surface(publication_app_id);
+            return;
         };
         // Use this exact snapshot for coverage as well as publication. That
         // prevents recursive/repeated resource collection and makes the audit
         // correspond to the catalogue about to cross the wire.
-        let (control_resources, bound_declarations) =
-            match self.try_collect_resources_with_bound_declarations() {
-                Ok(discovery) => discovery,
-                Err(_) => {
-                    self.withdraw_unobservable_bound_surface(publication_app_id);
-                    return;
-                }
-            };
+        let Ok((control_resources, bound_declarations)) =
+            self.try_collect_resources_with_bound_declarations()
+        else {
+            self.withdraw_unobservable_bound_surface(publication_app_id);
+            return;
+        };
         let binding_coverage = self.control_binding_coverage_for(
             &control_resources,
             crate::widget::controls::action_control_bindings(self.root_widget.as_ref()),

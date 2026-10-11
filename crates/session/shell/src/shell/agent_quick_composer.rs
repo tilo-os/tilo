@@ -681,6 +681,13 @@ impl Default for AgentQuickComposer {
     }
 }
 
+fn origin_context_text(context: &LocalState<String>) -> Text {
+    Text::from_state(context, Clone::clone)
+        .with_id("agent-quick-origin-context")
+        .with_wrap_mode(ui::text_render::TextWrapMode::WordOrGlyph)
+        .dimmed()
+}
+
 fn quick_composer_popover(controls: &ComposerControls<'_>) -> Popover<Container> {
     let send_signal = controls.send_requested.clone();
     let conversation_signal = controls.conversation_requested.clone();
@@ -753,12 +760,7 @@ fn quick_composer_popover(controls: &ComposerControls<'_>) -> Popover<Container>
                 ))
                 .push(Box::new(Badge::text(t("agent-quick-kind")))),
         ))
-        .push(Box::new(
-            Text::from_state(controls.origin_context, Clone::clone)
-                .with_id("agent-quick-origin-context")
-                .with_wrap_mode(ui::text_render::TextWrapMode::WordOrGlyph)
-                .dimmed(),
-        ))
+        .push(Box::new(origin_context_text(controls.origin_context)))
         .push(Box::new(
             Container::new().with_no_padding().with_child(Box::new(
                 Text::from_state(controls.status, Clone::clone)
