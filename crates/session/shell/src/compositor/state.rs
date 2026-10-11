@@ -100,15 +100,29 @@ fn shm_regions(rects: &[BufferRect]) -> Vec<crate::compositor::surface_readback:
 
 type BufferRect = smithay::utils::Rectangle<i32, smithay::utils::Buffer>;
 
+/// A pending viewport (`wp_viewport`) and the buffer it crops or scales, for converting
+/// surface-local damage to buffer pixels.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ViewportMap {
+    /// The source rectangle, in surface-local units (buffer pixels over the buffer scale).
+    src: Option<Rectangle<f64, Logical>>,
+    /// The destination size, in surface-local units.
+    dst: Option<Size<i32, Logical>>,
+    /// The attached buffer's size in pixels.
+    buffer: (i32, i32),
+}
+
 /// The commit's damage in buffer pixels. Buffer-coordinate rectangles
 /// (`wl_surface.damage_buffer`) are taken as they are. Surface-coordinate
 /// ones (`wl_surface.damage`) cover `buffer_scale` buffer pixels per
-/// surface pixel while no viewport (`viewported`) crops or scales the
-/// buffer; with one, or with a transformed or offset buffer, or no damage,
-/// the whole buffer is damaged rather than guessing the conversion.
+/// surface pixel, or, under a viewport (`viewport`, set by every
+/// fractional-scale client), are mapped through its source crop and
+/// destination scale and rounded outwards. With a transformed or offset
+/// buffer, or no damage, the whole buffer is damaged rather than guessing
+/// the conversion.
 fn pending_buffer_rects(
     attrs: &wl_compositor::SurfaceAttributes,
-    viewported: bool,
+    viewport: Option<ViewportMap>,
 ) -> Option<Vec<BufferRect>> {
     if attrs.buffer_transform
         != smithay::reexports::wayland_server::protocol::wl_output::Transform::Normal
@@ -126,26 +140,84 @@ fn pending_buffer_rects(
         .map(|damage| {
             let rect = match damage {
                 wl_compositor::Damage::Buffer(rect) => *rect,
-                wl_compositor::Damage::Surface(rect) if !viewported => {
-                    surface_rect_in_buffer(*rect, attrs.buffer_scale)?
-                }
-                wl_compositor::Damage::Surface(_) => return None,
+                wl_compositor::Damage::Surface(rect) => match viewport {
+                    None => surface_rect_in_buffer(*rect, attrs.buffer_scale)?,
+                    Some(viewport) => viewport_rect_in_buffer(*rect, attrs.buffer_scale, viewport)?,
+                },
             };
             (rect.size.w > 0 && rect.size.h > 0).then_some(rect)
         })
         .collect()
 }
 
-/// Whether the commit's viewport crops or scales the buffer: surface-local
-/// damage then has no plain conversion to buffer pixels.
-fn pending_viewport(states: &wl_compositor::SurfaceData) -> bool {
+/// The pending viewport of `states` with the size of the buffer it applies to; `None` when no
+/// viewport is set or the buffer's size is unknown (surface damage is then the whole buffer).
+fn pending_viewport(
+    states: &wl_compositor::SurfaceData,
+    buffer: (i32, i32),
+) -> Option<ViewportMap> {
     let mut viewport = states
         .cached_state
         .get::<smithay::wayland::viewporter::ViewportCachedState>();
     let pending = viewport.pending();
-    let set = pending.src.is_some() || pending.dst.is_some();
+    let map = (pending.src.is_some() || pending.dst.is_some()).then_some(ViewportMap {
+        src: pending.src,
+        dst: pending.dst,
+        buffer,
+    });
     drop(viewport);
-    set
+    map
+}
+
+/// A surface-local rectangle in buffer pixels under `viewport`, rounded outwards and clipped to
+/// the buffer. `None` when the viewport is degenerate or the rectangle misses the buffer
+/// entirely (the caller then damages the whole buffer rather than nothing).
+fn viewport_rect_in_buffer(
+    rect: Rectangle<i32, Logical>,
+    scale: i32,
+    viewport: ViewportMap,
+) -> Option<BufferRect> {
+    if scale < 1 || viewport.buffer.0 <= 0 || viewport.buffer.1 <= 0 {
+        return None;
+    }
+    let scale = f64::from(scale);
+    let (buffer_w, buffer_h) = (f64::from(viewport.buffer.0), f64::from(viewport.buffer.1));
+    let src = viewport.src.unwrap_or_else(|| {
+        Rectangle::new(
+            (0.0, 0.0).into(),
+            (buffer_w / scale, buffer_h / scale).into(),
+        )
+    });
+    let (dst_w, dst_h) = viewport.dst.map_or((src.size.w, src.size.h), |dst| {
+        (f64::from(dst.w), f64::from(dst.h))
+    });
+    if !(dst_w > 0.0 && dst_h > 0.0 && src.size.w > 0.0 && src.size.h > 0.0) {
+        return None;
+    }
+    let (sx, sy) = (src.size.w / dst_w, src.size.h / dst_h);
+    let x0 = (src.loc.x + f64::from(rect.loc.x) * sx) * scale;
+    let y0 = (src.loc.y + f64::from(rect.loc.y) * sy) * scale;
+    let x1 = (src.loc.x + (f64::from(rect.loc.x) + f64::from(rect.size.w)) * sx) * scale;
+    let y1 = (src.loc.y + (f64::from(rect.loc.y) + f64::from(rect.size.h)) * sy) * scale;
+    let (x0, y0) = (
+        x0.floor().clamp(0.0, buffer_w),
+        y0.floor().clamp(0.0, buffer_h),
+    );
+    let (x1, y1) = (
+        x1.ceil().clamp(0.0, buffer_w),
+        y1.ceil().clamp(0.0, buffer_h),
+    );
+    if x1 <= x0 || y1 <= y0 {
+        return None;
+    }
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "clamped to the buffer, whose size is an i32, and rounded to whole pixels"
+    )]
+    Some(BufferRect::new(
+        (x0 as i32, y0 as i32).into(),
+        ((x1 - x0) as i32, (y1 - y0) as i32).into(),
+    ))
 }
 
 /// A surface-local rectangle in the pixels of an untransformed buffer drawn
@@ -195,19 +267,72 @@ mod commit_damage_tests {
             2,
         );
         assert_eq!(
-            pending_buffer_rects(&attrs, false),
+            pending_buffer_rects(&attrs, None),
             Some(vec![buffer(20, 40, 60, 8), buffer(1, 2, 3, 4)])
         );
     }
 
+    fn viewport(
+        src: Option<Rectangle<f64, Logical>>,
+        dst: Option<(i32, i32)>,
+        buffer: (i32, i32),
+    ) -> Option<super::ViewportMap> {
+        Some(super::ViewportMap {
+            src,
+            dst: dst.map(Into::into),
+            buffer,
+        })
+    }
+
     #[test]
-    fn surface_damage_under_a_viewport_damages_the_whole_buffer() {
+    fn surface_damage_under_a_viewport_maps_to_buffer_pixels_rounding_outwards() {
+        // A fractional-scale client: a 1472x920 logical surface drawn from a 2944x1840 buffer
+        // (scale 1 in the protocol sense, destination set by wp_viewport).
+        let full = viewport(None, Some((1472, 920)), (2944, 1840));
         let attrs = commit(vec![surface(10, 20, 30, 4)], 1);
-        assert_eq!(pending_buffer_rects(&attrs, true), None);
+        assert_eq!(
+            pending_buffer_rects(&attrs, full),
+            Some(vec![buffer(20, 40, 60, 8)])
+        );
+        // 1.5x: 1962x1226 buffer for a 1308x817 surface. 10.3..40.3 -> floor/ceil.
+        let fractional = viewport(None, Some((1308, 817)), (1962, 1226));
+        let attrs = commit(vec![surface(7, 3, 21, 9)], 1);
+        let [rect] = pending_buffer_rects(&attrs, fractional)
+            .expect("converted")
+            .try_into()
+            .expect("one rect");
+        assert!(rect.loc.x <= 10 && rect.loc.y <= 4);
+        assert!(rect.loc.x + rect.size.w >= 42 && rect.loc.y + rect.size.h >= 18);
+        assert!(rect.size.w <= 33 && rect.size.h <= 16, "{rect:?} is tight");
+        // A source crop offsets the damage into the buffer.
+        let crop = viewport(
+            Some(Rectangle::new((100.0, 50.0).into(), (200.0, 100.0).into())),
+            Some((200, 100)),
+            (1000, 1000),
+        );
+        let attrs = commit(vec![surface(10, 10, 20, 20)], 1);
+        assert_eq!(
+            pending_buffer_rects(&attrs, crop),
+            Some(vec![buffer(110, 60, 20, 20)])
+        );
+        // Everything, in surface pixels, clips to the buffer.
+        let attrs = commit(vec![surface(0, 0, i32::MAX, i32::MAX)], 1);
+        assert_eq!(
+            pending_buffer_rects(&attrs, full),
+            Some(vec![buffer(0, 0, 2944, 1840)])
+        );
+        // A degenerate viewport or damage off the buffer damages the whole buffer.
+        let attrs = commit(vec![surface(10, 20, 30, 4)], 1);
+        assert_eq!(
+            pending_buffer_rects(&attrs, viewport(None, Some((0, 0)), (100, 100))),
+            None
+        );
+        let attrs = commit(vec![surface(5000, 5000, 4, 4)], 1);
+        assert_eq!(pending_buffer_rects(&attrs, full), None);
         // Buffer damage needs no conversion, viewport or not.
         let attrs = commit(vec![wl_compositor::Damage::Buffer(buffer(1, 2, 3, 4))], 1);
         assert_eq!(
-            pending_buffer_rects(&attrs, true),
+            pending_buffer_rects(&attrs, full),
             Some(vec![buffer(1, 2, 3, 4)])
         );
     }
@@ -216,7 +341,7 @@ mod commit_damage_tests {
     fn damaging_everything_in_surface_pixels_saturates() {
         let attrs = commit(vec![surface(0, 0, i32::MAX, i32::MAX)], 2);
         assert_eq!(
-            pending_buffer_rects(&attrs, false),
+            pending_buffer_rects(&attrs, None),
             Some(vec![buffer(0, 0, i32::MAX, i32::MAX)])
         );
     }
@@ -303,7 +428,7 @@ use smithay::reexports::wayland_server::protocol::wl_output::WlOutput;
 use smithay::reexports::wayland_server::protocol::wl_seat::WlSeat;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::{Client, DisplayHandle};
-use smithay::utils::{Logical, Rectangle, Serial};
+use smithay::utils::{Logical, Rectangle, Serial, Size};
 use smithay::wayland::buffer::BufferHandler;
 use smithay::wayland::compositor::{
     self as wl_compositor, CompositorClientState, CompositorHandler, CompositorState,
@@ -4373,7 +4498,9 @@ impl State {
                     return (association, None);
                 }
             };
-            let rects = pending_buffer_rects(attrs.pending(), pending_viewport(states));
+            let size = smithay::backend::renderer::buffer_dimensions(&buffer)
+                .map_or((0, 0), |size| (size.w, size.h));
+            let rects = pending_buffer_rects(attrs.pending(), pending_viewport(states, size));
             let declared = DeclaredOpacity::of(attrs.pending());
             drop(attrs);
             let damage = rects.as_deref().map(buffer_damage);
