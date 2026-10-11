@@ -915,6 +915,13 @@ impl PersonDisplays {
     ///
     /// Returns an error when the file cannot be written.
     pub fn save_at(&self, path: &Path) -> std::io::Result<()> {
+        // Equality includes the publisher identity and every output fact.
+        // A regular observation is reusable only under its current live lease.
+        if tilo_files::native::is_regular_file(path).unwrap_or(false)
+            && Self::load_at(path).as_ref() == Some(self)
+        {
+            return Ok(());
+        }
         let mut body = serde_json::to_vec_pretty(self).map_err(std::io::Error::other)?;
         body.push(b'\n');
         tilo_files::native::atomic::write_creating_parent(path, &body)
@@ -1247,5 +1254,81 @@ mod tests {
             serde_json::json!({"arrangement": value, "scale": 1.0}),
         );
         assert_eq!(Arrangement::from_document(&document).displays.len(), 1);
+    }
+}
+
+#[cfg(all(test, any(unix, windows)))]
+mod publication_regressions {
+    use super::*;
+
+    #[test]
+    fn unchanged_live_person_observations_keep_the_published_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("person-displays.json");
+        let (publisher_pid, publisher_start_ticks) =
+            crate::hardware::publisher_identity_in(dir.path()).unwrap();
+        let mut view = PersonDisplays {
+            schema_version: SCHEMA_VERSION,
+            publisher_pid,
+            publisher_start_ticks,
+            local_device: "own-device".into(),
+            devices: Vec::new(),
+        };
+        view.save_at(&path).unwrap();
+        let retained = std::fs::File::open(&path).unwrap();
+        let original = tilo_files::native::atomic::FileIdentity::of(&retained).unwrap();
+        view.save_at(&path).unwrap();
+        let current = std::fs::File::open(&path).unwrap();
+        assert_eq!(
+            original,
+            tilo_files::native::atomic::FileIdentity::of(&current).unwrap(),
+            "an unchanged live observation must not perform durable replacement"
+        );
+        assert_eq!(PersonDisplays::load_at(&path), Some(view.clone()));
+        view.local_device = "changed-device".into();
+        view.save_at(&path).unwrap();
+        assert_eq!(PersonDisplays::load_at(&path), Some(view.clone()));
+        std::fs::write(&path, b"invalid observation").unwrap();
+        view.save_at(&path).unwrap();
+        assert_eq!(PersonDisplays::load_at(&path), Some(view.clone()));
+        std::fs::remove_file(&path).unwrap();
+        view.save_at(&path).unwrap();
+        assert_eq!(PersonDisplays::load_at(&path), Some(view.clone()));
+        let mut stale = view.clone();
+        stale.publisher_start_ticks = stale.publisher_start_ticks.saturating_add(1);
+        stale.save_at(&path).unwrap();
+        assert_eq!(
+            PersonDisplays::load_at(&path),
+            None,
+            "a previous publisher identity never becomes live by saving"
+        );
+        view.save_at(&path).unwrap();
+        assert_eq!(PersonDisplays::load_at(&path), Some(view));
+    }
+    #[cfg(unix)]
+    #[test]
+    fn matching_symlink_observations_are_replaced_under_the_owned_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("person-displays.json");
+        let alias = dir.path().join("alias.json");
+        let (publisher_pid, publisher_start_ticks) =
+            crate::hardware::publisher_identity_in(dir.path()).unwrap();
+        let view = PersonDisplays {
+            schema_version: SCHEMA_VERSION,
+            publisher_pid,
+            publisher_start_ticks,
+            local_device: "own-device".into(),
+            devices: Vec::new(),
+        };
+        view.save_at(&alias).unwrap();
+        let original = std::fs::read(&alias).unwrap();
+        std::os::unix::fs::symlink(&alias, &path).unwrap();
+        view.save_at(&path).unwrap();
+        assert!(
+            std::fs::symlink_metadata(&path).unwrap().is_file(),
+            "matching linked observations must still use atomic directory-entry replacement"
+        );
+        assert_eq!(std::fs::read(&alias).unwrap(), original);
+        assert_eq!(PersonDisplays::load_at(&path), Some(view));
     }
 }
