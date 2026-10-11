@@ -35,6 +35,7 @@
 )]
 
 pub mod actions;
+pub mod adopt;
 pub mod app;
 mod continuation;
 #[cfg(test)]

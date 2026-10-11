@@ -172,7 +172,29 @@ impl RecordId {
     /// browser, so they all meet on one document. Constant, so every
     /// device derives the same id without asking; the room scopes it.
     pub fn room_default() -> Self {
-        Self::derived("default", &Self::for_tab(0))
+        Self::window_default(0)
+    }
+
+    /// The record a fresh window (`instance`, the launcher's tab id) of an
+    /// app that keeps a record per window opens when nothing names another
+    /// one. Window `0` is [`Self::room_default`], what a launch outside the
+    /// launcher opens. See `NativeProcessHost` for which apps get one.
+    pub fn window_default(instance: u64) -> Self {
+        Self::derived("default", &Self::for_tab(instance))
+    }
+
+    /// The window whose [default record](Self::window_default) is stored
+    /// under `storage_key` ([`Self::storage_key`]), if that is what it is.
+    /// Exact: the whole key, hash included, must be that record's.
+    pub fn window_default_of_storage_key(storage_key: &str) -> Option<Self> {
+        let tab = storage_key
+            .strip_prefix("derived_default_tab_")?
+            .get(..16)?;
+        if !tab.bytes().all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f')) {
+            return None;
+        }
+        let id = Self::window_default(u64::from_str_radix(tab, 16).ok()?);
+        (id.storage_key() == storage_key).then_some(id)
     }
 
     /// Identity of the record that plays `role` for `of` — "the annotations
@@ -2878,6 +2900,47 @@ impl RecordStore {
     pub fn package_and_home(&self) -> (String, String) {
         let set = self.0.borrow();
         (set.package_id.clone(), set.home.clone())
+    }
+
+    /// Every [window default record](RecordId::window_default) of `kind`
+    /// this package keeps in this room, sorted by id, each as last made
+    /// durable: what an app that kept a record per window left behind once
+    /// it keeps one per room. Read without taking any writer, so a window
+    /// still showing one keeps it, and nothing here changes them. A record
+    /// that cannot be read, is retired, or is not of `kind` in this room is
+    /// left out (and logged), never an error: these are a migration's
+    /// sources, and one bad one must not keep the others out.
+    pub fn window_records(&self, kind: &RecordKind) -> Vec<(RecordId, AutoCommit)> {
+        let Some(store) = self.backend() else {
+            return Vec::new();
+        };
+        let (package, home) = self.package_and_home();
+        if home.is_empty() {
+            return Vec::new();
+        }
+        let keys = match store.records(&package, &home) {
+            Ok(keys) => keys,
+            Err(error) => {
+                tracing::warn!(%package, room = %home, %error, "listing the room's records failed");
+                return Vec::new();
+            }
+        };
+        let mut found = keys
+            .iter()
+            .filter_map(|key| RecordId::window_default_of_storage_key(key))
+            .filter_map(|id| {
+                let origin = transfer::Origin::Record(RecordCheckout::new(id.clone(), kind.clone()));
+                match transfer::read(&store, &package, &home, &origin) {
+                    Ok(doc) => Some((id, doc)),
+                    Err(error) => {
+                        tracing::warn!(record = %id, room = %home, %error, "window record not readable; left out");
+                        None
+                    }
+                }
+            })
+            .collect::<Vec<_>>();
+        found.sort_by(|a, b| a.0.cmp(&b.0));
+        found
     }
     /// Explicit immutable identity only: the store namespace, package and
     /// workspace. Legacy and memory sets have no canonical namespace.

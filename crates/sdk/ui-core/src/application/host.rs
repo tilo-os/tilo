@@ -68,11 +68,23 @@ impl NativeProcessHost {
         if let Some(person) = resolved.person_dir {
             host.keep_person_records_in(Rc::new(app_state::FsStore::new(person)));
         }
+        // One record per window or one per room: this is where a window
+        // that names no record gets its fallback, and the fallback is only
+        // half the answer. An app whose definition keeps a room record
+        // (`ApplicationDefinition::room_record`, a framework app's
+        // `ResourceApp::ROOM_RECORD`) never uses it: `prepare_default` opens
+        // the room's package primary for every one of its windows, so they
+        // all show one notebook or conversation, and the first creates it
+        // (adopting what the per-window records held, see
+        // `HostContext::window_records`). Every other app gets a record per
+        // launcher-issued window, so two windows of an editor are two
+        // documents; reopening the closed tab (same instance) brings its own
+        // record back through its saved view.
         Ok(Self {
             host,
             instance_id: resolved.instance_id,
             default_record: if launcher_instance {
-                RecordId::derived("default", &RecordId::for_tab(resolved.instance_id))
+                RecordId::window_default(resolved.instance_id)
             } else {
                 RecordId::room_default()
             },
@@ -1096,6 +1108,133 @@ mod native_process_tests {
             .unwrap();
         assert!(prepared.context.record().id.is_package_primary());
         assert!(matches!(prepared.target, LaunchTarget::PrimaryNew));
+    }
+
+    #[test]
+    fn room_record_windows_share_one_record_and_see_the_per_window_ones() {
+        use crate::application_test_support as probe;
+        use automerge::{ReadDoc, transaction::Transactable};
+        let temp = tempfile::tempdir().unwrap();
+        let per_window = definition(probe::APP);
+        let mut per_room = definition(probe::APP);
+        per_room.room_record = true;
+        let room = "3f2b1c00-0000-4000-8000-00000000000c";
+        let launch = |definition: &ApplicationDefinition, instance: u64| {
+            NativeProcessHost::open_with(
+                definition,
+                NativeProcessEnvironment {
+                    workspace_id: Some(room.into()),
+                    participation: Some("author".into()),
+                    continuity_instance: Some(instance.to_string()),
+                    ..environment(temp.path())
+                },
+                probe::author(),
+            )
+            .unwrap()
+        };
+        let note = |doc: &automerge::AutoCommit| -> Option<String> {
+            match doc.get(automerge::ROOT, "note").unwrap() {
+                Some((automerge::Value::Scalar(value), _)) => match value.as_ref() {
+                    automerge::ScalarValue::Str(text) => Some(text.to_string()),
+                    _ => None,
+                },
+                _ => None,
+            }
+        };
+        // Two windows from before: each kept its own record.
+        for (instance, text) in [(42, "second"), (41, "first")] {
+            let mut window = launch(&per_window, instance);
+            let mut prepared = window
+                .prepare_launch(&per_window, None, probe::runner_inputs())
+                .unwrap();
+            assert_eq!(
+                prepared.context.record().id,
+                RecordId::window_default(instance)
+            );
+            prepared
+                .context
+                .initialize_new_record(|doc| {
+                    doc.put(automerge::ROOT, "note", text)
+                        .map_err(|e| e.to_string())
+                })
+                .unwrap();
+        }
+        // The first window of the room record creates it, and sees what the
+        // per-window ones hold, in id order, without taking them over.
+        let mut first = launch(&per_room, 43);
+        let mut created = first
+            .prepare_launch(&per_room, None, probe::runner_inputs())
+            .unwrap();
+        assert!(created.context.record().id.is_package_primary());
+        assert!(matches!(created.target, LaunchTarget::PrimaryNew));
+        let windows = created.context.window_records();
+        assert_eq!(
+            windows
+                .iter()
+                .map(|(id, doc)| (id.clone(), note(doc)))
+                .collect::<Vec<_>>(),
+            [
+                (RecordId::window_default(41), Some("first".into())),
+                (RecordId::window_default(42), Some("second".into())),
+            ]
+        );
+        created
+            .context
+            .initialize_new_record(|doc| {
+                doc.put(automerge::ROOT, "note", "shared")
+                    .map_err(|e| e.to_string())
+            })
+            .unwrap();
+        drop(created);
+        drop(first);
+        // A later, different window opens that same record.
+        let mut second = launch(&per_room, 44);
+        let reopened = second
+            .prepare_launch(&per_room, None, probe::runner_inputs())
+            .unwrap();
+        assert!(reopened.context.record().id.is_package_primary());
+        assert!(matches!(reopened.target, LaunchTarget::Record { .. }));
+        assert_eq!(
+            reopened.context.read_record(note).unwrap(),
+            Some("shared".into())
+        );
+        // The per-window records are still there, unchanged.
+        assert_eq!(reopened.context.window_records().len(), 2);
+        drop(reopened);
+        drop(second);
+        let mut old = launch(&per_window, 41);
+        let old = old
+            .prepare_launch(&per_window, None, probe::runner_inputs())
+            .unwrap();
+        assert!(matches!(old.target, LaunchTarget::Record { .. }));
+        assert_eq!(old.context.read_record(note).unwrap(), Some("first".into()));
+        assert!(old.context.window_records().is_empty());
+    }
+
+    #[test]
+    fn window_default_storage_keys_name_exactly_their_record() {
+        for instance in [0, 0x42, 0xf276_0000_0000_0044, u64::MAX] {
+            let id = RecordId::window_default(instance);
+            assert_eq!(
+                RecordId::window_default_of_storage_key(&id.storage_key()),
+                Some(id)
+            );
+        }
+        assert_eq!(RecordId::window_default(0), RecordId::room_default());
+        for other in [
+            RecordId::package_primary(),
+            RecordId::for_tab(0x42),
+            RecordId::derived("notes", &RecordId::for_tab(0x42)),
+        ] {
+            assert_eq!(
+                RecordId::window_default_of_storage_key(&other.storage_key()),
+                None
+            );
+        }
+        let real = RecordId::window_default(0x42).storage_key();
+        let last = if real.ends_with('0') { '1' } else { '0' };
+        let forged = format!("{}{last}", real.get(..real.len() - 1).unwrap());
+        assert_eq!(RecordId::window_default_of_storage_key(&forged), None);
     }
 
     #[test]

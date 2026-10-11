@@ -133,7 +133,7 @@ impl TagData {
         }
     }
 
-    fn to_meta(&self) -> Option<TagMeta> {
+    pub(crate) fn to_meta(&self) -> Option<TagMeta> {
         let name = self.name.trim();
         if name.is_empty() {
             return None;
@@ -257,6 +257,13 @@ pub enum NotesAction {
         markdown: String,
         assets: Vec<(String, Vec<u8>)>,
     },
+    /// Copy the notebooks earlier windows kept, one each, into this one:
+    /// what the room's notebook is seeded with when it is created
+    /// ([`crate::adopt`]). Skips a notebook already adopted and a page or
+    /// tag already present, so applying it again adds nothing.
+    AdoptWindowNotebooks {
+        notebooks: Vec<crate::adopt::AdoptedNotebook>,
+    },
 }
 
 /// One block of a page, as an import carries it: the editor's kind (its
@@ -285,7 +292,7 @@ impl PageBlock {
     }
 
     /// The editor's block, when every part of it is valid.
-    fn content(&self) -> Option<BlockContent> {
+    pub(crate) fn content(&self) -> Option<BlockContent> {
         let marks = self
             .marks
             .iter()
@@ -548,6 +555,12 @@ pub fn history_context(action: &NotesAction) -> tilo_actions::ActionContext {
             "notes.page",
             title.clone(),
         ),
+        NotesAction::AdoptWindowNotebooks { .. } => (
+            "Bring in notes from earlier windows",
+            "notes.notebook".into(),
+            "notes.notebook",
+            "Notes".into(),
+        ),
         NotesAction::DuplicateSubtree { source, .. } => (
             "Duplicate note",
             format!("notes.page:{source}"),
@@ -804,6 +817,9 @@ impl Action for NotesAction {
             }
             NotesAction::UpdatePageTree { before, after } => {
                 update_page_tree(doc, before, after).map_err(ActionError::Refused)?;
+            }
+            NotesAction::AdoptWindowNotebooks { notebooks } => {
+                crate::adopt::adopt(doc, notebooks).map_err(ActionError::Refused)?;
             }
             NotesAction::UpsertPage(data) => {
                 if let Some(meta) = data.to_meta() {
