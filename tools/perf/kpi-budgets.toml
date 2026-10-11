@@ -19,8 +19,15 @@
 #                            compared with it (an accepted run counts at once)
 #   source                   where the number comes from
 #
-# A KPI with a budget whose group ran but produced no record fails the run, so
-# list every KPI a benchmark is expected to report.
+# A budgeted KPI whose group ran but produced no record fails the run as
+# `missing`, so list every KPI a benchmark is expected to report.
+#
+# [lanes.<workflow>] say which workflow produces which KPIs, so a run is owed
+# only its own: compare.py --lane names the run's workflow. `groups` are the
+# KPI id prefixes the workflow produces, each in exactly one lane; `kpis`
+# claims single KPIs whose prefix is another lane's group. Every budgeted KPI
+# needs exactly one lane, or the budgets do not load; tools/perf/test_compare.py
+# holds each workflow's selectable groups equal to its lane.
 
 [defaults]
 p50_tolerance = 1.10
@@ -28,6 +35,23 @@ p99_tolerance = 1.20
 baseline_runs = 5
 baseline_min_runs = 1
 min_delta = 0.0
+
+# Perf / scheduled (.forgejo/workflows/perf-scheduled.yml): one job per group,
+# selected by its `kpis` input; its `compare` job runs with the default lane.
+[lanes.perf-scheduled]
+groups = ["fs", "footprint", "agent", "latency", "render", "wakeups", "hosting"]
+
+# Dev / VM acceptance (.forgejo/workflows/vm-acceptance.yml): the installed
+# desktop in a KVM guest. Its R04 measures compositor CPU per painted frame on
+# that desktop, a render KPI the headless render benches cannot produce.
+[lanes.vm-acceptance]
+groups = ["boot", "session", "idle", "memory", "disk", "app"]
+kpis = ["render.frame_cpu_ms"]
+
+# The reference machines' weekly run (scripts/perf/device_latency_bench.py,
+# docs/benchmarks/reference-hardware.md), compared read-only.
+[lanes.reference-hardware]
+groups = ["hw"]
 
 # tilo-fs performance gate (crates/system/fs/tests/performance_gate.rs), a
 # debug build on the shared `runner` class. The ceilings are the gate's own
@@ -822,7 +846,7 @@ unit = "ms"
 p95 = 16.7
 p99 = 33.4
 min_delta = 2.0
-source = "run.py work_ms_p95 / work_ms_p99: compositor CPU per painted frame during interactions"
+source = "vm-acceptance R04: compositor CPU (frame trace cpu_us) per painted frame during overview, focus and zoom interactions"
 
 # Relay hosting cost (TIL-592): crates/hosting/tilo-relay/examples/relay_load,
 # 100 collaborators in rooms of four, ten measured minutes, one sample per
