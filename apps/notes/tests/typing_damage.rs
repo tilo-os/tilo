@@ -377,7 +377,7 @@ fn let_the_save_land(app: &mut App, host: &mut Host) {
 /// Let the window come to rest with no input: the save bubble shown for the
 /// last save fades away, so what a test measures next is its own change.
 fn let_it_rest(app: &mut App, host: &mut Host) {
-    let mut quiet = 0;
+    let mut quiet = 0_u32;
     for _ in 0..400 {
         std::thread::sleep(std::time::Duration::from_millis(25));
         host.presented.clear();
@@ -386,7 +386,7 @@ fn let_it_rest(app: &mut App, host: &mut Host) {
             .presented
             .iter()
             .all(|(_, damage)| damage.as_ref().is_ok_and(Vec::is_empty));
-        quiet = if still { quiet + 1 } else { 0 };
+        quiet = if still { quiet.saturating_add(1) } else { 0 };
         if quiet >= 8 {
             host.presented.clear();
             return;
