@@ -1377,3 +1377,39 @@ fn what_a_receiver_admits_is_allowed_by_the_persons_own_grants() {
         }
     }
 }
+
+/// A delegated agent acts with its person's grants bounded by its
+/// delegation, the Editor preset: an owner's agent changes the room but does
+/// not govern it, and a viewer's agent changes nothing.
+#[test]
+fn an_agent_delegation_bounds_its_person_by_the_editor_preset() {
+    use tilo_action_policy::Standing;
+    let room = room_with(&[(BOB, Role::Viewer)]);
+    let records = TreePath::room("r").app("notes").action("append");
+    let set_role = roles::governance_action("r", governance::SET_ROLE);
+    let owner_agent = Standing::person(room.clone(), ALICE)
+        .with_bound(roles::agent_delegation("r", "scribe", ALICE));
+    assert_eq!(
+        owner_agent.answer(&records, ActionKind::Undoable, &cx()),
+        Answer::Allow
+    );
+    assert_eq!(
+        owner_agent.answer(&set_role, roles::GOVERNANCE_KIND, &cx()),
+        Answer::Deny
+    );
+    assert_eq!(
+        Standing::person(room.clone(), ALICE).answer(&set_role, roles::GOVERNANCE_KIND, &cx()),
+        Answer::Allow,
+        "the owner governs"
+    );
+    let viewer_agent =
+        Standing::person(room, BOB).with_bound(roles::agent_delegation("r", "scribe", BOB));
+    assert_eq!(
+        viewer_agent.answer(&records, ActionKind::Undoable, &cx()),
+        Answer::Deny
+    );
+    assert_eq!(
+        viewer_agent.answer(&records, ActionKind::Read, &cx()),
+        Answer::Allow
+    );
+}

@@ -13,14 +13,13 @@
 //! an agent identity acts only while its delegation verifies against the
 //! certificate's own root, names that device and this room, is inside its
 //! validity window, and the governor has not withdrawn it. It acts with its
-//! person's grants bounded by its delegation, the Editor preset
-//! ([`agent_bound`]): an agent writes where its person may write and governs
-//! nothing. Outside its window the
+//! person's grants bounded by its delegation
+//! ([`tilo_action_policy::roles::agent_delegation`]): an agent writes where
+//! its person may write and governs nothing. Outside its window the
 //! identity stays on the roster, so the history it wrote stays attributed,
 //! but it is no reader of the room's channels and no op of it is admitted.
 
 use serde::{Deserialize, Serialize};
-use tilo_action_policy::{Bound, Lifetime, Subject, roles};
 use tilo_relay_protocol::agents::AgentDelegation;
 use tilo_user_identity::DeviceCert;
 
@@ -106,20 +105,6 @@ pub(crate) const fn agent_role(role: Role) -> Role {
         Role::Owner => Role::Editor,
         other => other,
     }
-}
-
-/// The delegation bounding agent `agent_id` of `person` in `room`: the
-/// Editor preset, so the agent acts with its person's grants but never above
-/// an Editor's, and never on the room's own governance.
-pub(crate) fn agent_bound(room: &str, agent_id: &str, person: &str) -> Bound {
-    let subject = Subject::Agent(agent_id.to_owned());
-    let grants = roles::role_preset(Role::Editor, room).assign(
-        &format!("agent-delegation:{agent_id}"),
-        &subject,
-        &Subject::Person(person.to_owned()),
-        &Lifetime::UntilRevoked,
-    );
-    Bound { subject, grants }
 }
 
 /// One delegated agent on a room's roster.
