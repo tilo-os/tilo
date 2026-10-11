@@ -96,12 +96,15 @@ pub fn compose(cache: &FrameCache) -> Scene {
 pub(crate) struct Shown {
     backdrop: Option<Scene>,
     chrome: Option<Scene>,
-    wheel: Option<Option<WheelSprite>>,
+    wheel: Option<ShownWheel>,
     strips: Option<ShownStrips>,
     /// The frame whose composite the output target was last given; `None`
     /// when the output was not composited from what the textures hold.
     pub(crate) revision: Option<u64>,
 }
+
+/// What the wheel's texture shows: the wheel, or no wheel.
+struct ShownWheel(Option<WheelSprite>);
 
 /// What the strips texture shows.
 struct ShownStrips {
@@ -129,7 +132,7 @@ impl Shown {
         Self {
             backdrop: Some(cache.layers.backdrop.clone()),
             chrome: Some(cache.layers.chrome.clone()),
-            wheel: Some(cache.layers.wheel.clone()),
+            wheel: Some(ShownWheel(cache.layers.wheel.clone())),
             strips: Some(ShownStrips::of(cache)),
             revision: Some(revision),
         }
@@ -170,7 +173,7 @@ impl Shown {
         match layer {
             Layer::Backdrop => self.backdrop = Some(cache.layers.backdrop.clone()),
             Layer::Workspace => self.strips = Some(ShownStrips::of(cache)),
-            Layer::Wheel => self.wheel = Some(cache.layers.wheel.clone()),
+            Layer::Wheel => self.wheel = Some(ShownWheel(cache.layers.wheel.clone())),
             Layer::Chrome => self.chrome = Some(cache.layers.chrome.clone()),
         }
     }
@@ -383,7 +386,7 @@ pub(crate) fn plan(
             workspace_work(strips, cache, size)
         });
     let (wheel, wheel_rects) = match shown.wheel.as_ref() {
-        Some(old) => wheel_work(old.as_ref(), cache.layers.wheel.as_ref(), size),
+        Some(ShownWheel(old)) => wheel_work(old.as_ref(), cache.layers.wheel.as_ref(), size),
         None => (cache.layers.wheel.as_ref().map(wheel_area), Vec::new()),
     };
     // A texture that holds nothing known was never composited into the

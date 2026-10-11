@@ -312,6 +312,22 @@ impl RetireBoard {
     }
 }
 
+/// Run [`Presenter::warm`] for `frame` while no frame is in flight: a frame
+/// handed over before or during it goes first. Its client frames go back
+/// once it is done.
+fn warm_while_idle(
+    presenter: &mut dyn Presenter,
+    frame: &FramePaint,
+    pins: crate::shell::gpu_frames::FramePins,
+    inflight: &AtomicUsize,
+) {
+    let idle = || inflight.load(Ordering::Acquire) == 0;
+    if idle() {
+        presenter.warm(frame, &idle);
+    }
+    drop(pins);
+}
+
 /// Log one presented frame: its lifecycle record and the presenter's own detail.
 fn report_frame(presenter: &mut dyn Presenter, serial: u64, revision: u64, timing: FrameLifecycle) {
     log_frame_lifecycle(serial, revision, timing);
@@ -440,12 +456,7 @@ impl PresentPipe {
                             on_retire();
                         }
                         PresentMsg::Warm { frame, pins } => {
-                            // A frame handed over meanwhile goes first.
-                            let idle = || board.inflight.load(Ordering::Acquire) == 0;
-                            if idle() {
-                                presenter.warm(&frame, &idle);
-                            }
-                            drop(pins);
+                            warm_while_idle(&mut *presenter, &frame, pins, &board.inflight)
                         }
                         PresentMsg::Resize(size) => presenter.resize(size),
                         PresentMsg::Dpms(on) => presenter.set_dpms(on),

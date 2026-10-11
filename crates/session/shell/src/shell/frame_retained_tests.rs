@@ -2237,18 +2237,9 @@ fn assert_pan_from_warmed_rest(desktop: PanDesktop) {
                          pan uncovered, not the layers ({raster} px of {output})"
                     );
                 }
-                let shown = layered.read_rgba_for_test();
-                let full = render_whole(&mut dense, &painted.scene, painted.revision, &label);
-                let apart = pixels_apart(&shown, &full, size.0);
-                let max = apart.iter().map(|&(_, _, step)| step).max().unwrap_or(0);
-                assert!(
-                    apart.len() <= OFFSET_PIXELS && max <= OFFSET_STEPS,
-                    "{label}: {} pixels differ from a full render by more than one step (max \
-                     {max}, first {:?})",
-                    apart.len(),
-                    &apart[..apart.len().min(16)]
-                );
+                assert_shows_a_full_render(&layered, &mut dense, &painted, &label);
                 if step == 0 {
+                    let shown = layered.read_rgba_for_test();
                     assert_nothing_lost(&mut frame, &mut dense, (&shown, &painted), size, &label);
                 }
             }
@@ -2397,7 +2388,7 @@ fn the_desktop_comes_to_rest_after_a_pan_without_a_dense_frame() {
 }
 
 /// `target` shows what a full render of `painted` shows, within vello's
-/// offset variance ([`OFFSET_PIXELS`]).
+/// offset variance ([`OFFSET_PIXELS`], [`OFFSET_STEPS`]).
 #[cfg(target_os = "linux")]
 fn assert_shows_a_full_render(
     target: &crate::shell::render::paint::RetainedGpuTarget,
@@ -2408,9 +2399,11 @@ fn assert_shows_a_full_render(
     let shown = target.read_rgba_for_test();
     let full = render_whole(dense, &painted.scene, painted.revision, label);
     let apart = pixels_apart(&shown, &full, target.size().0);
+    let max = apart.iter().map(|&(_, _, step)| step).max().unwrap_or(0);
     assert!(
-        apart.len() <= OFFSET_PIXELS,
-        "{label}: {} pixels differ from a full render by more than one step (first {:?})",
+        apart.len() <= OFFSET_PIXELS && max <= OFFSET_STEPS,
+        "{label}: {} pixels differ from a full render by more than one step (max {max}, first \
+         {:?})",
         apart.len(),
         &apart[..apart.len().min(16)]
     );
