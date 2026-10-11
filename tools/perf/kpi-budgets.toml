@@ -488,6 +488,103 @@ p99_tolerance = 2.0
 min_delta = 1000.0
 source = "KPI document: Frame time p99 at 4K/144 Hz, damage-limited (lavapipe; reported only)"
 
+# Strip pans at native 4K: strip_pan_bench drives a continuous
+# three-finger pan of a six-window strip, and strip-to-strip moves, through
+# FrameBuilder and the DRM direct path's GPU target, with the presenter
+# compositing pans from retained strip layers. Frame time takes the render
+# group's rules (lavapipe: reported, never enforced). The pixels a pan frame
+# rasterises do not depend on the runner, so their median is enforced: a pan
+# frame rasterises the columns it uncovered (35,904 px measured, 0.4 % of the
+# output, run 95313), and one that goes back to repainting the strip
+# (8,294,400 px) fails the run at once. The p99 is a frame whose chrome or
+# strips changed during the pan, rasterised whole, and is not budgeted.
+
+[kpi."render.shell.pan_us.4k"]
+unit = "us"
+p99 = 6900.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1000.0
+source = "KPI document: Frame time p99 at 4K/144 Hz, damage-limited (lavapipe; reported only)"
+
+[kpi."render.shell.pan_pixels.4k"]
+unit = "pixels"
+p50 = 100000.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 10000.0
+source = "strip_pan_bench, pixels a 4K six-window pan frame rasterises"
+
+[kpi."render.shell.strip_move_us.4k"]
+unit = "us"
+p99 = 16700.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1000.0
+source = "KPI document: Frame time p99 at 4K/144 Hz, full repaint (lavapipe; reported only)"
+
+# Opening a framework app over a long list (TIL-758): the framework-scaling
+# example (crates/sdk/tilo-app/examples/framework-scaling.rs, `open` mode)
+# reopens a checklist holding 5,000 and 50,000 items five times, to its first
+# laid-out frame, through adapters.py framework-open in the render job. Time
+# on the shared runner is noisy, so it takes the render group's tolerances;
+# allocations and heap per item are deterministic for one build, so a few
+# per cent is a regression. The time ceilings are the warm app-open target
+# (300 ms p95, TIL-691), reported and not yet met at 50,000 items; the count
+# ceilings are a quarter above the M5 Max measurement, reported too (TIL-762:
+# loading with the hashes the last save listed, 5k 121 -> 102 ms, 50k 1,170
+# -> 945 ms, allocations 1,707,519 / 16,556,849 -> 1,681,158 / 16,294,408).
+# The relative rule is what guards each.
+
+[kpi."render.framework_open.ms.5k"]
+unit = "ms"
+p95 = 300.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 20.0
+source = "framework-scaling open to first frame, 5,000 items (TIL-758)"
+
+[kpi."render.framework_open.ms.50k"]
+unit = "ms"
+p95 = 300.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 200.0
+source = "framework-scaling open to first frame, 50,000 items (TIL-758)"
+
+[kpi."render.framework_open.allocations.5k"]
+unit = "count"
+max = 2100000.0
+p50_tolerance = 1.05
+p99_tolerance = 1.05
+min_delta = 1000.0
+source = "framework-scaling allocations of one open, 5,000 items (TIL-758, TIL-762)"
+
+[kpi."render.framework_open.allocations.50k"]
+unit = "count"
+max = 20400000.0
+p50_tolerance = 1.05
+p99_tolerance = 1.05
+min_delta = 10000.0
+source = "framework-scaling allocations of one open, 50,000 items (TIL-758, TIL-762)"
+
+[kpi."render.framework_open.heap_per_item.5k"]
+unit = "bytes"
+max = 5900.0
+p50_tolerance = 1.1
+p99_tolerance = 1.1
+min_delta = 64.0
+source = "framework-scaling heap held per item with the window open, 5,000 items (TIL-758)"
+
+[kpi."render.framework_open.heap_per_item.50k"]
+unit = "bytes"
+max = 5600.0
+p50_tolerance = 1.1
+p99_tolerance = 1.1
+min_delta = 64.0
+source = "framework-scaling heap held per item with the window open, 50,000 items (TIL-758)"
+
 # The installed desktop (TIL-589): Dev / VM acceptance's nightly run on the newest
 # published dev disk, a KVM guest on `runner-disk-100g` rendering with lavapipe
 # (scripts/vm-acceptance, acceptance/records.py). Those runs compare and publish
@@ -503,6 +600,28 @@ unit = "s"
 max = 20.0
 min_delta = 1.0
 source = "os/tests/boot_performance_gate.sh budget under KVM (KPI document target: 10 s on the reference laptop)"
+
+# Userspace start to greetd active, and the greeter's sign-in request to a desktop that
+# has presented its first frame and answers its control socket (TIL-767). Boot to a usable
+# session is boot.to_greeter_s plus the person's typing plus session.sign_in_again.usable_s.
+# The KPI document has no sign-in target yet: these ceilings are run.py's VM budgets.
+[kpi."boot.userspace_to_greeter_s"]
+unit = "s"
+max = 10.0
+min_delta = 0.3
+source = "run.py userspace_to_greeter_s (R06), KVM guest"
+
+[kpi."session.sign_in_first.usable_s"]
+unit = "s"
+max = 10.0
+min_delta = 0.5
+source = "run.py sign_in_first_usable_s (R08): the account's first sign-in, cold caches, lavapipe"
+
+[kpi."session.sign_in_again.usable_s"]
+unit = "s"
+max = 10.0
+min_delta = 0.3
+source = "run.py sign_in_again_usable_s (R08): a later sign-in after signing out, lavapipe"
 
 [kpi."idle.shell_cpu_pct"]
 unit = "percent"
@@ -573,17 +692,62 @@ max = 1024.0
 min_delta = 64.0
 source = "KPI document target, without the dev VM's seat0 greeter and harness (resources.py footprint)"
 
+# The same once a user has opened and closed four apps (R03): what they leave behind
+# counts against the target too (TIL-731: 1295 MiB before the compositor gave back the
+# device memory and image atlas the windows had used).
+[kpi."idle.ram_mib.installed.after_close"]
+unit = "MiB"
+max = 1024.0
+min_delta = 64.0
+source = "KPI document target after four apps closed (TIL-731; resources.py footprint)"
+
+# The compositor's cgroup once the four apps have closed (TIL-731): at most its R01
+# idle figure (310-376 MiB on the dev VM, anon + shmem + kernel) plus 32 MiB; after the
+# close it is 331-335 MiB. It held 663-678 MiB while lavapipe kept every page closed
+# windows had touched.
+[kpi."memory.idle_mib.compositor.after_close"]
+unit = "MiB"
+max = 410.0
+min_delta = 32.0
+source = "TIL-731: the compositor returns to within 32 MiB of idle after four apps close"
+
+# Shmem allocated to the compositor's memfds after the four apps closed, mapped or not:
+# on lavapipe its device memory. R01 holds 73 MiB; after the close 105-109 MiB, the
+# renderer's pooled buffers and bump buffers sized for the desktop it last drew
+# (vm-acceptance 91838, 91987). It held 441-466 MiB before freed device memory was
+# punched out and the image atlas came down after a close (TIL-731).
+[kpi."memory.compositor_memfd_mib.after_close"]
+unit = "MiB"
+max = 120.0
+min_delta = 16.0
+source = "TIL-731: R01's compositor memfd shmem (73 MiB) plus the renderer's working set"
+
 [kpi."memory.shell_anon_mib"]
 unit = "MiB"
 max = 250.0
 min_delta = 32.0
 source = "KPI document: shell anon at most 250 MiB (run.py shell_anon_mb holds 500)"
 
+# The compositor with no app open (vm-acceptance R01, lavapipe): 238.7 MiB
+# on main (run 94055) and 159-167 MiB once startup's and every quiet moment's freed heap is
+# trimmed and the presenting renderer runs on Vulkan alone (runs 94419, 94637). Of what
+# remains, ~70 MiB is lavapipe's retained NIR (mtrace attribution, headless gate), which a
+# hardware GPU does not hold.
 [kpi."memory.shell_anon_mib.empty"]
 unit = "MiB"
-max = 250.0
-min_delta = 32.0
-source = "vm-acceptance R01: the compositor's anonymous RSS with no app open; no target of its own yet, so the four-app KPI caps it"
+max = 200.0
+enforce = true
+min_delta = 24.0
+source = "vm-acceptance R01: the compositor's anonymous RSS with no app open (run.py shell_idle_anon_mb holds the same)"
+
+# The idle compositor's threads (R01, the process_memory report). 86 on main, 73 once the
+# presenting renderer stopped initialising GL beside Vulkan: a second llvmpipe
+# rasteriser pool on a machine without a GPU.
+[kpi."memory.shell_threads"]
+unit = "count"
+max = 80.0
+min_delta = 4.0
+source = "vm-acceptance R01: compositor threads with no app open"
 
 # What one warm open and close of an app leaves in the compositor (A15, least-squares
 # slope over its 33 cycles): it should return to where it was.
@@ -644,10 +808,13 @@ p95 = 300.0
 min_delta = 100.0
 source = "KPI document: App open, warm (request to first frame, sandbox included)"
 
+# Settings builds only the pane it shows before its first frame and reads the
+# others off the UI thread afterwards (TIL-712, TIL-760), so a pane that comes
+# back onto the open path is a regression worth 50 ms, not 100.
 [kpi."app.open.warm_ms.settings"]
 unit = "ms"
 p95 = 300.0
-min_delta = 100.0
+min_delta = 50.0
 source = "KPI document: App open, warm (request to first frame, sandbox included)"
 
 [kpi."render.frame_cpu_ms"]
@@ -709,6 +876,34 @@ p50_tolerance = 1.5
 p99_tolerance = 2.0
 min_delta = 10.0
 source = "relay_load: one edit, publish to receipt by each other member of the room"
+
+# Presence delivery (TIL-776): publish to receipt of each pointer move and
+# caret the relay forwarded. The relay paces a pointer to 20 Hz, so a move
+# waits up to 50 ms; carets wait 5 ms, or up to 20 ms for the delta they
+# follow. Measured in Perf / scheduled A/B run 94883: pointer 18.2 ms p50 and
+# 39.5 ms p99, caret 5.2 and 28.3 ms (a 5-minute run, 94831: pointer 18.8 and
+# 48.0, caret 9.0 and 39.7). The pointer's p99 ceiling is the 100 ms cursor
+# bound the issue set; the rest sit about twice the measurement, with the
+# fan-out's tolerances for the shared runner.
+[kpi."hosting.relay.presence_pointer_ms.n100"]
+unit = "ms"
+p50 = 40.0
+p99 = 100.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 10.0
+source = "relay_load: one forwarded pointer move, publish to receipt by each other member of the room"
+
+[kpi."hosting.relay.presence_caret_ms.n100"]
+unit = "ms"
+p50 = 25.0
+p99 = 80.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 10.0
+source = "relay_load: one forwarded caret, publish to receipt by each other member of the room"
 
 # File and directory barriers per committed edit (TIL-732): two are the floor
 # of the one-file-per-record store (the record, then its directory). Measured

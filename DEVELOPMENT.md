@@ -34,8 +34,12 @@ driving, storage, platforms and troubleshooting; its source is
 Image-level changes (`os/`, units, packages) move the VM onto a new image
 instead: `tilo-vm vm upgrade --from sha:<commit>` for any commit CI has built,
 `--from local` for one that is not pushed yet (`tilo-vm guide images`). The
-`Build / OS dev` workflow builds every main push and every pull request that
-touches `os/`, fully cached, and publishes `tilo-ci:<ref>-<sha7>-<arch>` plus
+`Build / OS dev` workflow builds on explicit dispatch (select the smallest
+needed architecture list), or for an image-changing pull request labelled
+`os-image` (`os-arm64` also requests both architectures), fully cached. Ordinary
+pushes and unlabelled PRs keep the native slots available for required package
+checks; scheduled and tagged releases retain their existing verification.
+Architecture-specific main dispatches build the newest main commit only. It publishes `tilo-ci:<ref>-<sha7>-<arch>` plus
 the dev image `tilo-vm:<ref>-<sha7>-ci` (`<ref>` is `main` or `pr-<number>`);
 main also moves `tilo-vm:main-ci` to its newest dev images.
 `Release / OS` builds signed, reproduced releases only: tags, the nightly run
@@ -346,14 +350,25 @@ downloads, per architecture. The KPI targets are a median of at most 2 MB, a
 p90 of at most 4 MB and a max of at most 6 MB (decimal). Each app has its own
 budget in `tools/perf/tapp-size-budget/budget.toml`, set at its measured size
 plus 1 % headroom, rounded up to 64 KiB. `tools/perf/tapp_size_ratchet.py`
-enforces the budgets in three places:
+enforces the budgets in four places:
 
+- **CI / affected packages** (`tapps / <arch>`, pull requests only) packages
+  the tapps of up to eight apps the change affects, on x86_64 and aarch64,
+  and holds each to its budget. `tools/ci/select.sh` picks them with
+  `tapp_size_ratchet.py select`: apps of the default collection, those
+  closest to a budget in the registry first, so a toolkit change measures the
+  apps it pushes over first without packaging the whole collection. It
+  packages as Release / apps does, from the same compiler cache. A change
+  that affects no app runs no such job. A pull request runs its own
+  branch's `check.yml`, so a branch older than this job affecting an app
+  fails `select` and asks for main to be merged in, rather than landing
+  unmeasured.
 - **Release / apps** (`Shipped tapps within their size budget`) measures each
   tapp it has just packaged and signed, which is the affected apps only. It
   fails when an app is over its budget or has none, so nothing is published.
-  Pull requests do not package tapps. To measure a branch before merging,
-  dispatch Release / apps on it with `apps=<dir>`, the one architecture you
-  need, and publish off.
+  To measure apps the pull request job did not pick, dispatch Release / apps
+  on the branch with `apps=<dir>`, the architecture you need, and publish
+  off.
 - **Perf / scheduled** (footprint group, nightly) holds every published app to
   its budget. It also holds the apps' median, p90 and max to the fleet
   ceilings: the KPI targets, or an interim ceiling where the fleet does not
@@ -553,6 +568,11 @@ and OLD does not. `--update-only` reads only the two manifests:
 python3 tools/perf/image_size.py --image registry.tilo.so/tilo/tilo-ci:main-<new>-x86_64 \
   --update-from registry.tilo.so/tilo/tilo-ci:main-<old>-x86_64 --update-only
 ```
+
+An update between two commits that change one app downloads 215 MB of the
+rechunked x86_64 image (5 %), where the layered image re-sent 3.69 GB (78 %)
+(`docs/benchmarks/os-image-size-2026-10-10-rechunk.md`). Most of the 215 MB
+is app packages that come out of every build with new bytes.
 
 ## Fast checks before assembly
 

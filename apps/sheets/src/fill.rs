@@ -514,7 +514,8 @@ fn split_trailing_number(s: &str) -> Option<(String, f64, usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{CellFormat, CellValue, DateStyle};
+    use crate::model::{CellFormat, CellValue};
+    use tilo_locale::DateStyle;
 
     fn num(n: f64) -> FillCell {
         FillCell::new(num_to_raw(n), CellValue::Number(n), CellFormat::General)

@@ -1,18 +1,11 @@
-use crate::permissions::PermissionScope;
-use crate::presence::{PathSegment, PresenceKey};
+use super::flow::{Flow, flow_builders, flow_capabilities, flow_widget_methods};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::tokens::Rhythm;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
-use crate::widget::{AppModel, ModelPath};
-use automerge::ObjId;
 use std::any::Any;
 use taffy::style_helpers::{length, percent};
 use taffy::{NodeId, Style, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Point};
-use winit::event::WindowEvent;
 
 /// Keep the small savings from coalescing adjacent row children without
 /// turning sparse animation damage into a broad horizontal strip. A merged
@@ -25,35 +18,8 @@ fn can_merge_damage(a: vello::kurbo::Rect, b: vello::kurbo::Rect) -> bool {
         && a.union(b).width() * a.union(b).height() <= covered_area * MAX_DAMAGE_MERGE_OVERDRAW
 }
 
-/// `base` composed with a translation to `(dx, dy)`. Wrapped so the one
-/// `arithmetic_side_effects` allow lives in a single place: `Affine`'s
-/// `Mul` is pure floating-point matrix composition and cannot panic or
-/// overflow.
-#[allow(
-    clippy::arithmetic_side_effects,
-    reason = "Affine multiplication is floating-point matrix composition; it cannot panic or overflow"
-)]
-fn translated(base: Affine, dx: f64, dy: f64) -> Affine {
-    base * Affine::translate((dx, dy))
-}
-
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "independent invalidation and cache flags model orthogonal retained-widget state"
-)]
 pub struct Row {
-    children: Vec<Box<dyn Widget>>,
-    /// Retained Taffy identities for `children`. Rebuilt only with the layout
-    /// tree; hot event/layout traversal must not allocate `taffy.children()`.
-    child_nodes: Vec<NodeId>,
-    /// Stable graph / test identity when this row was built from a serialized
-    /// UI node.
-    id: Option<String>,
-    rect: vello::kurbo::Rect,
-    /// Overflow extent used for culling independently of an exact allocation.
-    paint_rect: vello::kurbo::Rect,
-    presence_path: Vec<PathSegment>,
-    permission_scope: Option<PermissionScope>,
+    flow: Flow,
     /// When set, the row keeps all children on one line (no flex wrap) —
     /// the right choice for a toolbar of fixed-size buttons.
     no_wrap: bool,
@@ -64,13 +30,6 @@ pub struct Row {
     /// Optional explicit insets for toolbars and sticky action rows.
     horizontal_padding: f32,
     vertical_padding: f32,
-    /// See [`Row::with_gap`]. `None` is the theme's `gap_standard` on both
-    /// axes (between children, and between wrapped lines).
-    gap_override: Option<f32>,
-    /// See [`Row::with_rhythm`].
-    rhythm: Option<Rhythm>,
-    /// See [`Row::with_padding_rhythm`]: horizontal, vertical.
-    padding_rhythm: Option<(Option<Rhythm>, Option<Rhythm>)>,
     /// See [`Row::with_justify`]. `None` leaves taffy's start packing.
     justify: Option<taffy::JustifyContent>,
     /// See [`Row::with_align_items`]. `None` keeps the fill-height /
@@ -84,17 +43,6 @@ pub struct Row {
     /// The gap, padding (across, along) and minimum height the last layout
     /// resolved from the theme, for [`Widget::measure`].
     resolved: (f32, f32, f32, f32),
-    /// Subtree cache — same pattern as `Column::subtree_cache`.
-    /// See that field for the gory rationale.
-    subtree_cache: Scene,
-    cache_rect: vello::kurbo::Rect,
-    cache_present: bool,
-    descendant_caches_released: bool,
-    /// The cache holds floating surfaces over the blurred material. A reused
-    /// cache would show them opaque, so it is redrawn while it does.
-    cache_carries_material: bool,
-    /// Whether the cached subtree shows a secret, replayed with the cache.
-    cache_shows_secret: bool,
 }
 
 impl Default for Row {
@@ -106,67 +54,27 @@ impl Default for Row {
 impl Row {
     pub fn new() -> Self {
         Self {
-            children: Vec::new(),
-            child_nodes: Vec::new(),
-            id: None,
-            rect: vello::kurbo::Rect::ZERO,
-            paint_rect: vello::kurbo::Rect::ZERO,
-            presence_path: Vec::new(),
-            permission_scope: None,
+            flow: Flow::new(),
             no_wrap: false,
             fill_height: false,
             horizontal_padding: 0.0,
             vertical_padding: 0.0,
-            gap_override: None,
-            rhythm: None,
-            padding_rhythm: None,
             justify: None,
             align_items_override: None,
             align_start: false,
             min_height: None,
             resolved: (0.0, 0.0, 0.0, 0.0),
-            subtree_cache: Scene::new(),
-            cache_rect: vello::kurbo::Rect::ZERO,
-            cache_present: false,
-            descendant_caches_released: false,
-            cache_carries_material: false,
-            cache_shows_secret: false,
         }
     }
 
-    #[must_use]
-    pub fn push(mut self, child: Box<dyn Widget>) -> Self {
-        self.children.push(child);
-        self
-    }
-
-    /// Address this row by a stable id in inspection and graph reconcile.
-    #[must_use]
-    pub fn with_id(mut self, id: impl Into<String>) -> Self {
-        self.id = Some(id.into());
-        self
-    }
-
-    /// Take ownership of the child list for identity-preserving reconcile.
-    pub fn take_children(&mut self) -> Vec<Box<dyn Widget>> {
-        self.child_nodes.clear();
-        self.cache_present = false;
-        std::mem::take(&mut self.children)
-    }
-
-    /// Replace the child list after a graph reconcile pass.
-    pub fn set_children(&mut self, children: Vec<Box<dyn Widget>>) {
-        self.children = children;
-        self.child_nodes.clear();
-        self.cache_present = false;
-    }
+    flow_builders!();
 
     /// Apply layout flags from a serialized row node without rebuilding.
     pub fn apply_graph_props(&mut self, id: &str, no_wrap: bool, fill_remaining_height: bool) {
-        self.id = Some(id.to_owned());
+        self.flow.id = Some(id.to_owned());
         self.no_wrap = no_wrap;
         self.fill_height = fill_remaining_height;
-        self.cache_present = false;
+        self.flow.invalidate();
     }
 
     #[must_use]
@@ -184,7 +92,7 @@ impl Row {
     /// Inset row contents without introducing a second layout wrapper.
     #[must_use]
     pub fn with_padding(mut self, horizontal: f32, vertical: f32) -> Self {
-        self.padding_rhythm = None;
+        self.flow.padding_rhythm = None;
         self.horizontal_padding = horizontal.max(0.0);
         self.vertical_padding = vertical.max(0.0);
         self
@@ -197,32 +105,8 @@ impl Row {
     /// carry their own spacing.
     #[must_use]
     pub fn with_gap(mut self, px: f32) -> Self {
-        self.gap_override = Some(px.max(0.0));
-        self.rhythm = None;
-        self
-    }
-
-    /// Space the children (and wrapped lines) by how they relate (HIG §7b):
-    /// `Rhythm::Related` for one cluster of controls, `Sibling` for
-    /// clusters of equal weight. Resolved from the theme at layout time,
-    /// so it follows density, `ui_scale` and a custom spacing scale.
-    #[must_use]
-    pub fn with_rhythm(mut self, rhythm: Rhythm) -> Self {
-        self.rhythm = Some(rhythm);
-        self.gap_override = None;
-        self
-    }
-
-    /// Inset the children by a rhythm step on each axis (`None` is no
-    /// inset on that axis), resolved from the theme like
-    /// [`Row::with_rhythm`]. Replaces [`Row::with_padding`] with pixels.
-    #[must_use]
-    pub fn with_padding_rhythm(
-        mut self,
-        horizontal: impl Into<Option<Rhythm>>,
-        vertical: impl Into<Option<Rhythm>>,
-    ) -> Self {
-        self.padding_rhythm = Some((horizontal.into(), vertical.into()));
+        self.flow.gap_override = Some(px.max(0.0));
+        self.flow.rhythm = None;
         self
     }
 
@@ -265,20 +149,6 @@ impl Row {
         self.align_start = true;
         self
     }
-
-    /// Opt this layout into presence tracking by binding it to a CRDT-style path.
-    #[must_use]
-    pub fn with_presence(mut self, path: Vec<PathSegment>) -> Self {
-        self.presence_path = path;
-        self
-    }
-
-    /// Gate this layout behind a permission scope.
-    #[must_use]
-    pub fn with_permission_scope(mut self, scope: PermissionScope) -> Self {
-        self.permission_scope = Some(scope);
-        self
-    }
 }
 
 impl Widget for Row {
@@ -287,26 +157,7 @@ impl Widget for Row {
         dyn crate::presence::capability::PublishesPresence
     );
 
-    fn start_operation(
-        &mut self,
-        op: &crate::widget::ResourceOperation<'_>,
-        doc: &mut crate::widget::Edits<'_>,
-        path: &ObjId,
-    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        // This container owns no operation handler: offer each child once.
-        crate::widget::start_in_children(self, op, doc, path)
-    }
-
-    /// Forward the per-frame update pass; every child runs, and a
-    /// change in any of them is a change here. Not short-circuited —
-    /// a child that skipped its pass would miss a frame of state.
-    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
-        let mut changed = false;
-        for child in &mut self.children {
-            changed |= child.update(state, path);
-        }
-        changed
-    }
+    flow_widget_methods!();
 
     fn build_layout(
         &mut self,
@@ -314,25 +165,14 @@ impl Widget for Row {
         theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        self.child_nodes = self
-            .children
-            .iter_mut()
-            .map(|c| c.build_layout(taffy, theme, node_map))
-            .collect();
-        yield_full_width_children(taffy, &self.child_nodes);
+        self.flow.build_children(taffy, theme, node_map);
+        yield_full_width_children(taffy, &self.flow.child_nodes);
 
-        let rhythm = theme.tokens.spacing.rhythm;
-        let gap = self
-            .gap_override
-            .or_else(|| self.rhythm.map(|step| rhythm.get(step)))
-            .unwrap_or(theme.gap_standard);
-        let (pad_x, pad_y) = match self.padding_rhythm {
-            Some((x, y)) => {
-                let at = |step: Option<Rhythm>| step.map_or(0.0, |s| rhythm.get(s));
-                (at(x), at(y))
-            }
-            None => (self.horizontal_padding, self.vertical_padding),
-        };
+        let gap = self.flow.gap(theme);
+        let (pad_x, pad_y) = self
+            .flow
+            .rhythm_padding(theme)
+            .unwrap_or((self.horizontal_padding, self.vertical_padding));
         let min_height = self
             .min_height
             .map_or(0.0, |size| crate::num::f32_of_f64(size.height(theme)));
@@ -381,7 +221,7 @@ impl Widget for Row {
             padding: super::layout::insets_xy(pad_x, pad_y),
             ..Default::default()
         };
-        let node = taffy.parent_node(style, &self.child_nodes);
+        let node = taffy.parent_node(style, &self.flow.child_nodes);
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
@@ -398,6 +238,7 @@ impl Widget for Row {
     ) -> taffy::Size<f32> {
         let (gap, pad_x, pad_y, min_height) = self.resolved;
         let sizes: Vec<taffy::Size<f32>> = self
+            .flow
             .children
             .iter_mut()
             .map(|child| Widget::measure(child.as_mut(), known, available, text_renderer))
@@ -418,48 +259,9 @@ impl Widget for Row {
         }
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        (self.rect, self.paint_rect) = super::layout::flow_rects(taffy, node, origin);
-        let new_origin = Point::new(self.rect.x0, self.rect.y0);
-
-        for (child_widget, child_node) in self.children.iter_mut().zip(&self.child_nodes) {
-            child_widget.apply_layout(taffy, *child_node, new_origin);
-        }
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &crate::presence::PresenceCtx,
-    ) {
-        for child in &mut self.children {
-            child.draw(scene, transform, text_renderer, theme, presence);
-        }
-    }
-
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        crate::widget::route_to_children(&mut self.children, &self.child_nodes, event, ctx);
-    }
-
-    /// Propagate pointer-capture intent from any descendant — mirrors
-    /// `Column::wants_pointer_capture`. See that comment for why.
-    fn wants_pointer_capture(&self) -> bool {
-        self.children.iter().any(|c| c.wants_pointer_capture())
-    }
-
-    /// Direct-field recurse — the default impl allocates a
-    /// `Vec` via `children()`, which the subtree-cache check
-    /// hits per frame.
-    fn needs_redraw(&self) -> bool {
-        self.children.iter().any(|c| c.needs_redraw())
-    }
-
     fn collect_damage(&self, regions: &mut Vec<vello::kurbo::Rect>) {
         let first = regions.len();
-        for child in &self.children {
+        for child in &self.flow.children {
             child.collect_damage(regions);
         }
         // Adjacent row children can share a pass, but unconditionally
@@ -480,161 +282,16 @@ impl Widget for Row {
         regions.extend(merged);
     }
 
-    fn is_layout_dirty(&self) -> bool {
-        self.children.iter().any(|c| c.is_layout_dirty())
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        self.children
-            .iter()
-            .map(std::convert::AsRef::as_ref)
-            .collect()
-    }
-
-    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
-        for child in &self.children {
-            visitor(child.as_ref());
-        }
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.children
-            .iter_mut()
-            .map(|c| c.as_mut() as &mut (dyn Widget + '_))
-            .collect()
-    }
-
-    fn mark_drawn(&mut self) {
-        for child in &mut self.children {
-            child.mark_drawn();
-        }
-    }
-
-    fn get_rect(&self) -> vello::kurbo::Rect {
-        self.rect
-    }
-
     fn name(&self) -> &'static str {
         "Row"
-    }
-
-    fn test_id(&self) -> Option<&str> {
-        self.id.as_deref()
     }
 
     fn as_any_mut(&mut self) -> Option<&mut dyn Any> {
         Some(self)
     }
-
-    fn is_focused(&self) -> bool {
-        false
-    }
-
-    // `.any` would short-circuit and skip `take_structure_dirty()` on later
-    // children once one reports dirty, leaving their flags uncleared --
-    // the non-short-circuiting `.fold` below is required, not incidental.
-    #[allow(
-        clippy::unnecessary_fold,
-        reason = "The fold must visit every child to drain every structure-dirty flag; any would stop after the first dirty child."
-    )]
-    fn take_structure_dirty(&mut self) -> bool {
-        self.children
-            .iter_mut()
-            .map(|c| c.take_structure_dirty())
-            .fold(false, |acc, d| acc || d)
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &crate::presence::PresenceCtx,
-        permissions: &crate::permissions::PermissionContext,
-    ) {
-        if presence.should_cull(self.paint_rect) {
-            return;
-        }
-        // Subtree cache — see `Column::draw_with_presence` for the
-        // `Affine::IDENTITY` rebuild requirement.
-        let size_changed = (self.rect.width() - self.cache_rect.width()).abs() > f64::EPSILON
-            || (self.rect.height() - self.cache_rect.height()).abs() > f64::EPSILON;
-        let any_child_dirty = self.children.iter().any(|c| c.needs_redraw());
-        let needs_rebuild =
-            !self.cache_present || size_changed || any_child_dirty || self.cache_carries_material;
-        if needs_rebuild {
-            // Drop the active viewport for the recursion — see
-            // `Column::draw_with_presence` for why.
-            let prev_vp = presence.viewport.replace(None);
-            let mut local = std::mem::take(&mut self.subtree_cache);
-            local.reset();
-            crate::backdrop::nest_scene(&local);
-            let secrets = crate::secret_paint::SecretPaint::begin();
-            for child in &mut self.children {
-                child.draw_with_presence(
-                    &mut local,
-                    Affine::IDENTITY,
-                    text_renderer,
-                    theme,
-                    presence,
-                    permissions,
-                );
-            }
-            self.cache_shows_secret = secrets.finish();
-            self.cache_carries_material =
-                crate::backdrop::append_nested(scene, &local, transform) > 0;
-            self.subtree_cache = local;
-            self.cache_rect = self.rect;
-            self.cache_present = true;
-            self.descendant_caches_released = false;
-            presence.viewport.set(prev_vp);
-        } else {
-            let dx = self.rect.x0 - self.cache_rect.x0;
-            let dy = self.rect.y0 - self.cache_rect.y0;
-            scene.append(&self.subtree_cache, Some(translated(transform, dx, dy)));
-            if self.cache_shows_secret {
-                crate::secret_paint::note_secret_painted();
-            }
-            if !self.descendant_caches_released {
-                for child in &mut self.children {
-                    child.release_scene_cache();
-                }
-                self.descendant_caches_released = true;
-            }
-        }
-
-        crate::widget::draw_gate_and_peer_focus(
-            self,
-            scene,
-            transform,
-            theme,
-            presence,
-            permissions,
-        );
-    }
-
-    fn release_scene_cache(&mut self) {
-        self.subtree_cache = Scene::new();
-        self.cache_present = false;
-        self.descendant_caches_released = true;
-        for child in &mut self.children {
-            child.release_scene_cache();
-        }
-    }
 }
 
-impl crate::presence::capability::PublishesPresence for Row {
-    fn presence_key(&self) -> Option<PresenceKey> {
-        PresenceKey::widget(&self.presence_path)
-    }
-}
-
-impl crate::permissions::capability::PermissionGated for Row {
-    fn permission_scope(&self) -> Option<PermissionScope> {
-        self.permission_scope.clone()
-    }
-}
+flow_capabilities!(Row);
 
 /// Along a row's axis, children ask only for the room they need:
 ///
@@ -683,6 +340,7 @@ fn yield_full_width_children(taffy: &mut TaffyTree<()>, children: &[NodeId]) {
 mod tests {
     use super::*;
     use crate::widget::Text;
+    use vello::kurbo::Point;
 
     /// Same five-pass layout the `Column` tests use, with the real text
     /// renderer measuring the `Text` children.

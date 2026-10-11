@@ -42,6 +42,8 @@ pub mod durable_backup;
 #[cfg(feature = "filesystem")]
 pub mod eviction;
 #[cfg(feature = "filesystem")]
+pub mod file_watch;
+#[cfg(feature = "filesystem")]
 pub mod fs;
 #[cfg(feature = "filesystem")]
 pub mod full_replica;
@@ -57,10 +59,14 @@ pub mod named_share_delivery;
 pub mod namespace;
 #[cfg(feature = "filesystem")]
 pub mod namespace_binding;
+#[cfg(feature = "filesystem")]
+pub mod namespace_persist;
 #[cfg(all(feature = "filesystem", target_os = "linux"))]
 pub mod native;
 #[cfg(feature = "filesystem")]
 pub mod peer_auth;
+#[cfg(feature = "filesystem")]
+pub mod reachability;
 #[cfg(feature = "filesystem")]
 pub mod recipient_control;
 #[cfg(feature = "filesystem")]

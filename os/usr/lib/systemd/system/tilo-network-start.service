@@ -1,0 +1,23 @@
+[Unit]
+Description=Start the firewall and network once logins are allowed
+# The greeter waits for systemd-user-sessions.service, which upstream orders
+# After=network.target. Any NetworkManager start job queued before logins are
+# allowed therefore holds the greeter for NetworkManager's whole startup: a
+# timer at OnBootSec=0 did exactly that on every boot (TIL-767). Queue the
+# network only once logins are allowed, without waiting for it, so the greeter
+# and the network come up side by side. Shutdown ordering is unchanged:
+# sessions still stop before the network, and NetworkManager still requires
+# and follows the firewall (NetworkManager.service.d/20-tilo-firewall-first.conf).
+After=systemd-user-sessions.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl --no-block start tilo-network-start.target
+NoNewPrivileges=yes
+RestrictAddressFamilies=AF_UNIX
+RestrictRealtime=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

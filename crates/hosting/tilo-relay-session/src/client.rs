@@ -181,6 +181,9 @@ fn action_in_scope(scope: &InteractiveWorkspaceScope, envelope: &EnvelopeV2) -> 
         | EnvelopeV2::CertifiedSignedDelivered { action: signed, .. } => {
             signed.action().room == scope.room
         }
+        // The session reader rebuilds a coded delta into `State`; one that
+        // reached this check whole names no scope.
+        EnvelopeV2::CodedDelta { .. } => false,
     }
 }
 
@@ -263,6 +266,9 @@ fn classify_connect_error(error: &iroh::endpoint::ConnectError) -> ClientError {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RelayWireProtocol {
+    /// [`Self::TiloV2Presence`] whose live deltas arrive coded against the
+    /// session's previous delta from the same author (TIL-755).
+    TiloV2CodedDelta,
     /// [`Self::TiloV2Compact`] whose presence arrives batched and
     /// slot-coded.
     TiloV2Presence,
@@ -277,6 +283,7 @@ enum RelayWireProtocol {
 impl RelayWireProtocol {
     fn alpn(self) -> &'static [u8] {
         match self {
+            Self::TiloV2CodedDelta => tilo_delivery_protocol::transport_v2::ALPN_CODED_DELTA_V1,
             Self::TiloV2Presence => tilo_delivery_protocol::transport_v2::ALPN_PRESENCE_BATCH_V1,
             Self::TiloV2Compact => tilo_delivery_protocol::transport_v2::ALPN_COMPACT_STATE_V1,
             Self::TiloV2Signed => tilo_delivery_protocol::transport_v2::ALPN_SIGNED_ACTIONS_V1,
@@ -292,13 +299,17 @@ impl RelayWireProtocol {
     fn signs_actions(self) -> bool {
         matches!(
             self,
-            Self::TiloV2Presence | Self::TiloV2Compact | Self::TiloV2Signed
+            Self::TiloV2CodedDelta
+                | Self::TiloV2Presence
+                | Self::TiloV2Compact
+                | Self::TiloV2Signed
         )
     }
 
     fn framing(self) -> tilo_delivery_protocol::transport_v2::StateFraming {
         use tilo_delivery_protocol::transport_v2::StateFraming;
         match self {
+            Self::TiloV2CodedDelta => StateFraming::CodedDelta,
             Self::TiloV2Presence => StateFraming::Presence,
             Self::TiloV2Compact => StateFraming::Compact,
             Self::TiloV2Signed | Self::TiloV2 => StateFraming::V2,
@@ -307,11 +318,12 @@ impl RelayWireProtocol {
     }
 
     /// The protocol a relay that does not speak this one may still speak.
-    /// Batched presence degrades to one frame per presence, compact state to
+    /// Coded deltas degrade to whole deltas, batched presence degrades to one frame per presence, compact state to
     /// the full delta envelope, and signing to unsigned actions, which
     /// current brokers serve for effect-free reads only.
     fn fallback(self) -> Option<Self> {
         match self {
+            Self::TiloV2CodedDelta => Some(Self::TiloV2Presence),
             Self::TiloV2Presence => Some(Self::TiloV2Compact),
             Self::TiloV2Compact => Some(Self::TiloV2Signed),
             Self::TiloV2Signed => Some(Self::TiloV2),
@@ -775,7 +787,7 @@ impl RelayClient {
                 revocations,
                 action_key: Some(own_sk.clone()),
             },
-            RelayWireProtocol::TiloV2Presence,
+            RelayWireProtocol::TiloV2CodedDelta,
         )
         .await
     }
@@ -821,7 +833,7 @@ impl RelayClient {
                 revocations,
                 action_key: Some(own_sk.clone()),
             },
-            RelayWireProtocol::TiloV2Presence,
+            RelayWireProtocol::TiloV2CodedDelta,
         )
         .await
     }
@@ -1883,16 +1895,31 @@ mod scheduling_tests {
     }
 
     #[test]
-    fn batched_presence_then_compact_state_degrade_before_signing_degrades() {
+    fn coded_deltas_then_batched_presence_then_compact_state_degrade_before_signing_degrades() {
         use super::RelayWireProtocol::{
-            TiloV1, TiloV2, TiloV2Compact, TiloV2Presence, TiloV2Signed,
+            TiloV1, TiloV2, TiloV2CodedDelta, TiloV2Compact, TiloV2Presence, TiloV2Signed,
         };
         use tilo_delivery_protocol::transport_v2::StateFraming;
-        let mut chain = vec![TiloV2Presence];
+        let mut chain = vec![TiloV2CodedDelta];
         while let Some(older) = chain.last().and_then(|protocol| protocol.fallback()) {
             chain.push(older);
         }
-        assert_eq!(chain, [TiloV2Presence, TiloV2Compact, TiloV2Signed, TiloV2]);
+        assert_eq!(
+            chain,
+            [
+                TiloV2CodedDelta,
+                TiloV2Presence,
+                TiloV2Compact,
+                TiloV2Signed,
+                TiloV2
+            ]
+        );
+        assert_eq!(TiloV2CodedDelta.framing(), StateFraming::CodedDelta);
+        assert_eq!(
+            TiloV2CodedDelta.alpn(),
+            tilo_delivery_protocol::transport_v2::ALPN_CODED_DELTA_V1
+        );
+        assert!(TiloV2CodedDelta.signs_actions());
         assert_eq!(TiloV2Presence.framing(), StateFraming::Presence);
         assert_eq!(TiloV2Compact.framing(), StateFraming::Compact);
         assert_eq!(TiloV2Signed.framing(), StateFraming::V2);

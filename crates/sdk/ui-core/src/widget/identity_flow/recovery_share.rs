@@ -8,6 +8,7 @@
 //! no independent recovery artifact exists, so the ceremony presents an
 //! unavailable state until a 2-of-N DKG has produced a share.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt::Write as _;
 
@@ -27,8 +28,9 @@ use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::identity_flow::ScreenOutcome;
 use crate::widget::identity_flow::sheet::{
-    Align, BodyScroll, GRID_SHEET_WIDTH, Resolved, Role, Rows, SheetSpec, WordGrid, check_box_rect,
-    paint_check_row, paint_text, paragraph_height, resolve, screen_style, with_layout_renderer,
+    Align, BodyScroll, GRID_SHEET_WIDTH, Resolved, Role, Rows, SheetFrame, SheetScreen, WordGrid,
+    check_box_rect, draw_screen, layout_screen, paint_check_row, paint_text, paragraph_height,
+    screen_style,
 };
 use crate::widget::modal_dialog::ModalAction;
 use tilo_identity_ceremony::IdentityRecord;
@@ -52,7 +54,7 @@ const WORD_COUNT: usize = 24;
 
 /// Every rect the screen paints and hit-tests, from one pass over the rows.
 #[derive(Clone, Debug, Default)]
-struct Plan {
+pub(super) struct Plan {
     explanation: Rect,
     /// The word grid's area, when there are words to show.
     grid: Option<Rect>,
@@ -63,7 +65,7 @@ struct Plan {
 
 /// Screen 2: recovery-share storage.
 pub struct RecoveryShareScreen {
-    rect: Rect,
+    frame: SheetFrame,
     mnemonic: String,
     acknowledged: bool,
     copy_hovered: bool,
@@ -79,11 +81,6 @@ pub struct RecoveryShareScreen {
     /// Most recent clipboard write status — surfaced so a sandbox
     /// failure ("clipboard owner refused") doesn't fail silently.
     clipboard_message: Option<String>,
-    /// The theme `build_layout` saw, so `apply_layout` can resolve the rows
-    /// without waiting for a paint.
-    layout_theme: Option<Theme>,
-    scroll: BodyScroll,
-    body_height: f64,
 }
 
 impl Default for RecoveryShareScreen {
@@ -95,7 +92,7 @@ impl Default for RecoveryShareScreen {
 impl RecoveryShareScreen {
     pub fn new() -> Self {
         Self {
-            rect: Rect::ZERO,
+            frame: SheetFrame::default(),
             mnemonic: String::new(),
             acknowledged: false,
             copy_hovered: false,
@@ -106,9 +103,6 @@ impl RecoveryShareScreen {
             ack_rect: Rect::ZERO,
             last_cursor: Point::ZERO,
             clipboard_message: None,
-            layout_theme: None,
-            scroll: BodyScroll::default(),
-            body_height: 0.0,
         }
     }
 
@@ -223,7 +217,7 @@ impl RecoveryShareScreen {
                 ScreenOutcome::Stay
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                if self.scroll.wheel(delta) {
+                if self.frame.wheel(delta) {
                     *ctx.handled = true;
                 }
                 ScreenOutcome::Stay
@@ -237,53 +231,12 @@ impl RecoveryShareScreen {
                     },
                 ..
             } => {
-                if self.scroll.key(logical_key, self.body_height) {
+                if self.frame.key(logical_key) {
                     *ctx.handled = true;
                 }
                 ScreenOutcome::Stay
             }
             _ => ScreenOutcome::Stay,
-        }
-    }
-
-    /// One geometry pass for both `apply_layout` and `draw`; the
-    /// acknowledgement row's target is the part of it inside the body, so
-    /// once it scrolls under the action row it cannot take Continue's click.
-    fn resolve(&mut self, theme: &Theme, text_renderer: &mut TextRenderer) -> Resolved<Plan> {
-        let actions = self.actions();
-        let spec = SheetSpec {
-            title: self.title(),
-            max_width: GRID_SHEET_WIDTH,
-            actions: &actions,
-        };
-        let mut scroll = self.scroll;
-        let resolved = resolve(
-            self.rect,
-            &spec,
-            &mut scroll,
-            text_renderer,
-            theme,
-            |rows, control_h, tr, theme| {
-                let plan = self.plan(rows, control_h, tr, theme);
-                let bottom = plan.bottom;
-                (plan, bottom)
-            },
-        );
-        self.scroll = scroll;
-        let body = resolved.sheet.body();
-        self.body_height = body.height();
-        self.ack_hit_rect = BodyScroll::visible(body, resolved.plan.ack_row);
-        self.ack_rect = BodyScroll::visible(body, check_box_rect(resolved.plan.ack_row, theme));
-        self.copy_rect = resolved.sheet.action(ACTION_COPY);
-        self.continue_rect = resolved.sheet.action(ACTION_CONTINUE);
-        resolved
-    }
-
-    fn title(&self) -> &'static str {
-        if self.mnemonic.is_empty() {
-            TITLE_UNAVAILABLE
-        } else {
-            TITLE_READY
         }
     }
 
@@ -293,6 +246,63 @@ impl RecoveryShareScreen {
         } else {
             EXPLANATION_READY
         }
+    }
+
+    /// The 24-word grid: ordinal in the label role, word in the value
+    /// role, each on its cell's centre line.
+    fn draw_word_grid(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        area: Rect,
+        control_h: f64,
+    ) {
+        let grid = WordGrid::new(area, control_h, text_renderer, theme);
+        for (i, word) in self.words().iter().take(WORD_COUNT).enumerate() {
+            let (ordinal, cell) = grid.cell(i, theme);
+            paint_text(
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
+                ordinal,
+                &format!("{}.", i.saturating_add(1)),
+                Role::Label,
+                Align::Start,
+                false,
+            );
+            paint_text(
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
+                cell,
+                word,
+                Role::Value,
+                Align::Start,
+                false,
+            );
+        }
+    }
+}
+
+impl SheetScreen for RecoveryShareScreen {
+    type Plan = Plan;
+    type Actions = [ModalAction<'static>; 2];
+
+    fn frame(&self) -> &SheetFrame {
+        &self.frame
+    }
+
+    fn frame_mut(&mut self) -> &mut SheetFrame {
+        &mut self.frame
+    }
+
+    fn title(&self) -> Cow<'static, str> {
+        if self.mnemonic.is_empty() {
+            TITLE_UNAVAILABLE.into()
+        } else {
+            TITLE_READY.into()
+        }
+    }
+    fn max_width(&self) -> f64 {
+        GRID_SHEET_WIDTH
     }
 
     fn actions(&self) -> [ModalAction<'static>; 2] {
@@ -305,7 +315,6 @@ impl RecoveryShareScreen {
                 .hovered(self.continue_hovered),
         ]
     }
-
     /// Walk the body rows once: explanation, the word grid (one control
     /// row per grid row, so the verify screen's blanks fit the same
     /// cells), the acknowledgement row, any clipboard status.
@@ -351,36 +360,62 @@ impl RecoveryShareScreen {
         }
     }
 
-    /// The 24-word grid: ordinal in the label role, word in the value
-    /// role, each on its cell's centre line.
-    fn draw_word_grid(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
+    fn bottom(plan: &Plan) -> f64 {
+        plan.bottom
+    }
+
+    fn place(
+        &mut self,
+        resolved: &Resolved<Plan>,
+        _text_renderer: &mut TextRenderer,
         theme: &Theme,
-        area: Rect,
-        control_h: f64,
     ) {
-        let grid = WordGrid::new(area, control_h, text_renderer, theme);
-        for (i, word) in self.words().iter().take(WORD_COUNT).enumerate() {
-            let (ordinal, cell) = grid.cell(i, theme);
-            paint_text(
-                &mut PaintCtx::new(scene, transform, text_renderer, theme),
-                ordinal,
-                &format!("{}.", i.saturating_add(1)),
-                Role::Label,
-                Align::Start,
-                false,
+        let body = resolved.sheet.body();
+        self.ack_hit_rect = BodyScroll::visible(body, resolved.plan.ack_row);
+        self.ack_rect = BodyScroll::visible(body, check_box_rect(resolved.plan.ack_row, theme));
+        self.copy_rect = resolved.sheet.action(ACTION_COPY);
+        self.continue_rect = resolved.sheet.action(ACTION_CONTINUE);
+    }
+
+    fn paint_body(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        _presence: &PresenceCtx,
+        resolved: &Resolved<Plan>,
+    ) {
+        let plan = &resolved.plan;
+        let control_h = resolved.sheet.control_height(ctx.theme);
+        paint_text(
+            ctx,
+            plan.explanation,
+            self.explanation(),
+            Role::Body,
+            Align::Start,
+            true,
+        );
+        if let Some(area) = plan.grid {
+            self.draw_word_grid(
+                ctx.scene,
+                ctx.transform,
+                ctx.text,
+                ctx.theme,
+                area,
+                control_h,
             );
-            paint_text(
-                &mut PaintCtx::new(scene, transform, text_renderer, theme),
-                cell,
-                word,
-                Role::Value,
-                Align::Start,
-                false,
-            );
+        }
+        let ack_hovered = self.ack_hit_rect.contains(self.last_cursor);
+        paint_check_row(
+            ctx.scene,
+            ctx.transform,
+            ctx.text,
+            ctx.theme,
+            plan.ack_row,
+            self.acknowledged,
+            ack_hovered,
+            ACK_LABEL,
+        );
+        if let (Some(rect), Some(msg)) = (plan.clipboard, self.clipboard_message.as_deref()) {
+            paint_text(ctx, rect, msg, Role::Caption, Align::Start, true);
         }
     }
 }
@@ -392,17 +427,12 @@ impl Widget for RecoveryShareScreen {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        self.layout_theme = Some(theme.clone());
+        self.frame.layout_theme = Some(theme.clone());
         taffy.widget_leaf(screen_style(), node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
-        if let Some(theme) = self.layout_theme.clone() {
-            with_layout_renderer(&theme, |tr| {
-                self.resolve(&theme, tr);
-            });
-        }
+        layout_screen(self, taffy, node, origin);
     }
 
     fn draw(
@@ -411,59 +441,9 @@ impl Widget for RecoveryShareScreen {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        _presence: &PresenceCtx,
+        presence: &PresenceCtx,
     ) {
-        // Identity ceremonies, invites and joins are security surfaces:
-        // every look-alike letter is set apart.
-        text_renderer.security_surface(|text_renderer| {
-            let resolved = self.resolve(theme, text_renderer);
-            let actions = self.actions();
-            let spec = SheetSpec {
-                title: self.title(),
-                max_width: GRID_SHEET_WIDTH,
-                actions: &actions,
-            };
-            let sheet = &resolved.sheet;
-            let plan = &resolved.plan;
-            let control_h = sheet.control_height(theme);
-
-            sheet.paint_frame(scene, transform, text_renderer, theme, &spec);
-            sheet.clip_body(scene, transform);
-            paint_text(
-                &mut PaintCtx::new(scene, transform, text_renderer, theme),
-                plan.explanation,
-                self.explanation(),
-                Role::Body,
-                Align::Start,
-                true,
-            );
-            if let Some(area) = plan.grid {
-                self.draw_word_grid(scene, transform, text_renderer, theme, area, control_h);
-            }
-            let ack_hovered = self.ack_hit_rect.contains(self.last_cursor);
-            paint_check_row(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                plan.ack_row,
-                self.acknowledged,
-                ack_hovered,
-                ACK_LABEL,
-            );
-            if let (Some(rect), Some(msg)) = (plan.clipboard, self.clipboard_message.as_deref()) {
-                paint_text(
-                    &mut PaintCtx::new(scene, transform, text_renderer, theme),
-                    rect,
-                    msg,
-                    Role::Caption,
-                    Align::Start,
-                    true,
-                );
-            }
-            scene.pop_layer();
-            sheet.paint_actions(scene, transform, text_renderer, theme, &spec);
-        });
+        draw_screen(self, scene, transform, text_renderer, theme, presence);
     }
 
     fn name(&self) -> &'static str {
@@ -475,7 +455,7 @@ impl Widget for RecoveryShareScreen {
     }
 
     fn get_rect(&self) -> Rect {
-        self.rect
+        self.frame.rect
     }
 
     fn needs_redraw(&self) -> bool {
@@ -584,7 +564,7 @@ mod tests {
                 .expect("layout");
             s.apply_layout(&taffy, node, Point::ORIGIN);
             assert!(
-                s.scroll.max() > 0.0,
+                s.frame.scroll.max() > 0.0,
                 "24 words at 2× do not fit a 420 px window"
             );
             let actions = Rect::new(
@@ -599,8 +579,8 @@ mod tests {
                 s.ack_hit_rect
             );
             // Scroll to the bottom: the row is now inside the body and clickable.
-            assert!(s.scroll.key(&Key::Named(NamedKey::PageDown), s.body_height));
-            while s.scroll.key(&Key::Named(NamedKey::PageDown), s.body_height) {}
+            assert!(s.frame.key(&Key::Named(NamedKey::PageDown)));
+            while s.frame.key(&Key::Named(NamedKey::PageDown)) {}
             s.apply_layout(&taffy, node, Point::ORIGIN);
             assert!(
                 s.ack_hit_rect.area() > 0.0,

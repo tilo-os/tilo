@@ -4121,20 +4121,8 @@ impl MusicApp {
         if !self.allow_network || !is_live_id(id) || self.artist_requested.contains(id) {
             return;
         }
-        self.ensure_worker();
-        if let Some(w) = &self.worker {
-            match w.request(StreamRequest::Artist(id.to_string())) {
-                Ok(()) => {
-                    self.artist_requested.insert(id.to_string());
-                }
-                Err(error) => {
-                    self.failed_pages.insert(id.to_string());
-                    self.notify(
-                        ToastKind::Error,
-                        format!("Couldn\u{2019}t load artist: {error}"),
-                    );
-                }
-            }
+        if self.request_page(id, StreamRequest::Artist(id.to_string()), "artist") {
+            self.artist_requested.insert(id.to_string());
         }
     }
 
@@ -4143,20 +4131,8 @@ impl MusicApp {
         if !self.allow_network || !is_live_album_id(id) || self.album_requested.contains(id) {
             return;
         }
-        self.ensure_worker();
-        if let Some(w) = &self.worker {
-            match w.request(StreamRequest::Album(id.to_string())) {
-                Ok(()) => {
-                    self.album_requested.insert(id.to_string());
-                }
-                Err(error) => {
-                    self.failed_pages.insert(id.to_string());
-                    self.notify(
-                        ToastKind::Error,
-                        format!("Couldn\u{2019}t load album: {error}"),
-                    );
-                }
-            }
+        if self.request_page(id, StreamRequest::Album(id.to_string()), "album") {
+            self.album_requested.insert(id.to_string());
         }
     }
 
@@ -4165,19 +4141,27 @@ impl MusicApp {
         if !self.allow_network || !is_live_playlist_id(id) || self.playlist_requested.contains(id) {
             return;
         }
+        if self.request_page(id, StreamRequest::Playlist(id.to_string()), "playlist") {
+            self.playlist_requested.insert(id.to_string());
+        }
+    }
+
+    /// Send the page `request` for `id` to the worker; whether it was sent.
+    /// A refused request marks the page failed and says so.
+    fn request_page(&mut self, id: &str, request: StreamRequest, what: &str) -> bool {
         self.ensure_worker();
-        if let Some(w) = &self.worker {
-            match w.request(StreamRequest::Playlist(id.to_string())) {
-                Ok(()) => {
-                    self.playlist_requested.insert(id.to_string());
-                }
-                Err(error) => {
-                    self.failed_pages.insert(id.to_string());
-                    self.notify(
-                        ToastKind::Error,
-                        format!("Couldn\u{2019}t load playlist: {error}"),
-                    );
-                }
+        let Some(w) = &self.worker else {
+            return false;
+        };
+        match w.request(request) {
+            Ok(()) => true,
+            Err(error) => {
+                self.failed_pages.insert(id.to_string());
+                self.notify(
+                    ToastKind::Error,
+                    format!("Couldn\u{2019}t load {what}: {error}"),
+                );
+                false
             }
         }
     }

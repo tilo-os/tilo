@@ -324,6 +324,11 @@ concurrent clients and the same no-op through the MCP server. Give it
 compositor through `spawn-headless.sh`. A spawned compositor is removed on
 exit. `spawn-headless.sh` runs `$TILO_HEADLESS_BINARY` when that is set. A
 release build serves the socket only with `--features dev-overrides`.
+`scripts/perf/agent_task.py` times a whole task the same way: a scripted,
+streamed fake model creates a note in Notes, writes its body and finds it by
+search, and the record splits the time between Tilo, the model and the
+agent loop. Its `--spawn` desktop is seeded by the `agent_task_desktop`
+example of `shell`.
 
 Configure the headless viewport via env var (defaults to 1600×900):
 ```bash
@@ -555,6 +560,28 @@ counts only voluntary switches, one per wakeup. Both gates in
 `idle_quiet_tests`, the lone desktop and the converged pair, use it, each
 together with a CPU bound that catches a thread spinning without blocking
 (TIL-749, TIL-752).
+
+## Idle memory
+
+An idle desktop should hold little memory. `idle_memory::` in the shell's `it`
+target starts the production binary headless with a signed-in, empty desktop,
+watched so frames rasterise, waits past the trim that returns startup's freed
+heap (`heap_trim::STARTUP_SETTLED`), and fails when the compositor's anonymous
+RSS is above `IDLE_ANON_BUDGET_MIB`.
+
+```bash
+cargo test --locked -p shell --test it idle_memory:: -- --nocapture
+```
+
+It prints two breakdowns. The compositor's own, `raw '{"op":"process_memory"}'`
+on the control socket, sums `mincore` over `/proc/self/maps` per kind of
+mapping (`heap_main`, `heap_arenas`, `thread_stacks`, `anon_other`,
+`gpu_memfd` for lavapipe's device memory, `fonts`, `binary`, `libraries`, …),
+with glibc's in-use and free bytes and the threads by name. It is the one that
+works on Tilo's kernel, which has no smaps (`CONFIG_PROC_PAGE_MONITOR=n`), so
+vm-acceptance R01 records the same report (`memory.shell_parts_mib.*`). The
+test then reads `/proc/<pid>/smaps` beside it for RSS, PSS and private dirty
+pages per mapping, which CI's kernel has.
 
 ## Where to look in source
 

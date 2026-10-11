@@ -222,30 +222,37 @@ fn hosted_keystrokes(tasks: u32) -> Result<Vec<usize>, String> {
     use tilo_app::synthetic_input::key_input;
     use tilo_app::winit::event::ElementState;
     GENESIS_TASKS.set(tasks);
-    let typed = drive_live_window::<Keystrokes, _>(|app| {
-        app.init_layout();
-        host_frame(app);
-        if !app.focus_order_edge(false) {
-            return Err("the window has no control to type into".to_owned());
-        }
-        host_frame(app);
-        let mut counts = Vec::new();
-        for key in ["a", "b", "c"] {
-            let key = tilo_app::winit::keyboard::Key::Character(key.into());
-            let ((), phases) = observe(|| {
-                app.surface_input(&Region, key_input(&key, ElementState::Pressed), false);
-                host_frame(app);
-                app.surface_input(&Region, key_input(&key, ElementState::Released), false);
-                host_frame(app);
-            });
-            counts.push(
-                phases
-                    .iter()
-                    .filter(|phase| phase.phase == "framework.publication")
-                    .count(),
-            );
-        }
-        Ok((counts, draft_value(app)))
+    // A save-status resample is an independent idle frame at 100 ms. Under
+    // CI load it can fall between press and release and publish again even
+    // though the keystroke did no extra work. Keep the real hosted path, but
+    // hold monotonic time during this input-only observation. The separate
+    // overdue-save test below advances it explicitly.
+    let typed = tilo_app::time::testing::with_monotonic_time(tilo_app::time::now(), || {
+        drive_live_window::<Keystrokes, _>(|app| {
+            app.init_layout();
+            host_frame(app);
+            if !app.focus_order_edge(false) {
+                return Err("the window has no control to type into".to_owned());
+            }
+            host_frame(app);
+            let mut counts = Vec::new();
+            for key in ["a", "b", "c"] {
+                let key = tilo_app::winit::keyboard::Key::Character(key.into());
+                let ((), phases) = observe(|| {
+                    app.surface_input(&Region, key_input(&key, ElementState::Pressed), false);
+                    host_frame(app);
+                    app.surface_input(&Region, key_input(&key, ElementState::Released), false);
+                    host_frame(app);
+                });
+                counts.push(
+                    phases
+                        .iter()
+                        .filter(|phase| phase.phase == "framework.publication")
+                        .count(),
+                );
+            }
+            Ok((counts, draft_value(app)))
+        })
     });
     GENESIS_TASKS.set(0);
     let (counts, draft) = typed.map_err(failure)??;
@@ -275,4 +282,144 @@ fn a_hosted_keystroke_publishes_at_most_twice() {
             "publications for the first keystroke with {tasks} tasks: {counts:?}"
         );
     }
+}
+
+#[test]
+fn an_overdue_save_status_frame_still_publishes_and_preserves_typed_content() {
+    use tilo_app::synthetic_input::key_input;
+    use tilo_app::winit::event::ElementState;
+
+    let at = tilo_app::time::now();
+    let seen = tilo_app::time::testing::with_monotonic_time(at, || {
+        drive_live_window::<Keystrokes, _>(|app| {
+            app.init_layout();
+            host_frame(app);
+            assert!(app.focus_order_edge(false));
+            host_frame(app);
+            let key = tilo_app::winit::keyboard::Key::Character("a".into());
+            app.surface_input(&Region, key_input(&key, ElementState::Pressed), false);
+            host_frame(app);
+            app.surface_input(&Region, key_input(&key, ElementState::Released), false);
+            host_frame(app);
+            assert_eq!(draft_value(app).as_deref(), Some("a"));
+            let later = at
+                .checked_add(tilo_app::time::Duration::from_millis(100))
+                .unwrap();
+            let ((), phases) = observe(|| {
+                tilo_app::time::testing::with_monotonic_time(later, || host_frame(app));
+            });
+            assert!(
+                phases
+                    .iter()
+                    .any(|phase| phase.phase == "framework.publication"),
+                "the real overdue save-status frame must still publish"
+            );
+            assert_eq!(draft_value(app).as_deref(), Some("a"));
+        })
+    });
+    seen.expect("a live window whose durability timer becomes due");
+}
+
+/// Which half of a keystroke [`hosted_frame_ms`] times.
+#[derive(Clone, Copy, PartialEq)]
+enum Half {
+    /// From the key's press to the end of the host frame that shows it.
+    Press,
+    /// From the key's release to the end of the host frame after it, a
+    /// frame that changes nothing.
+    Release,
+}
+
+/// p50, in ms, of one half of `KEYS` keystrokes into the draft of a live
+/// window with `tasks` tasks. Driven as [`hosted_keystrokes`] drives it,
+/// with the app's monotonic clock held for the same reason: an idle
+/// save-status frame is not this frame's cost. The stopwatch is
+/// `Instant::elapsed`, which that hold does not touch.
+fn hosted_frame_ms(tasks: u32, half: Half) -> Result<f64, String> {
+    use tilo_app::synthetic_input::key_input;
+    use tilo_app::winit::event::ElementState;
+    const KEYS: usize = 12;
+    GENESIS_TASKS.set(tasks);
+    let timed = tilo_app::time::testing::with_monotonic_time(tilo_app::time::now(), || {
+        drive_live_window::<Keystrokes, _>(|app| {
+            app.init_layout();
+            host_frame(app);
+            if !app.focus_order_edge(false) {
+                return Err("the window has no control to type into".to_owned());
+            }
+            host_frame(app);
+            let key = tilo_app::winit::keyboard::Key::Character("a".into());
+            let mut samples = Vec::with_capacity(KEYS);
+            // The first key moves the window to keyboard modality; not timed.
+            for typed in 0..=KEYS {
+                let start = std::time::Instant::now();
+                app.surface_input(&Region, key_input(&key, ElementState::Pressed), false);
+                host_frame(app);
+                let pressed = start.elapsed();
+                let start = std::time::Instant::now();
+                app.surface_input(&Region, key_input(&key, ElementState::Released), false);
+                host_frame(app);
+                let released = start.elapsed();
+                if typed > 0 {
+                    let elapsed = match half {
+                        Half::Press => pressed,
+                        Half::Release => released,
+                    };
+                    samples.push(elapsed.as_secs_f64() * 1e3);
+                }
+            }
+            Ok((samples, draft_value(app)))
+        })
+    });
+    GENESIS_TASKS.set(0);
+    let (mut samples, draft) = timed.map_err(failure)??;
+    if draft.map(|draft| draft.chars().count()) != Some(KEYS + 1) {
+        return Err("the keystrokes missed the draft".to_owned());
+    }
+    samples.sort_by(f64::total_cmp);
+    samples
+        .get(samples.len() / 2)
+        .copied()
+        .ok_or_else(|| "no frame was timed".to_owned())
+}
+
+/// The best of three rounds of [`hosted_frame_ms`]: a loaded runner slows a
+/// round, never speeds one.
+fn best_hosted_frame_ms(tasks: u32, half: Half) -> Result<f64, String> {
+    (0..3).try_fold(f64::INFINITY, |best, _| {
+        Ok(best.min(hosted_frame_ms(tasks, half)?))
+    })
+}
+
+#[test]
+fn a_hosted_frame_that_changes_nothing_costs_the_same_whatever_the_list() {
+    // Both windows are full: they mount the same rows, so only work that
+    // grows with the list can tell them apart. Before TIL-761 each such
+    // frame copied the whole published tree, re-filtered and re-surveyed
+    // every action for the controls, and rebuilt a semantic node per
+    // resource: at 1,000 tasks it cost several times what it does at 100.
+    let full = best_hosted_frame_ms(100, Half::Release).expect("keystrokes into a live window");
+    let long = best_hosted_frame_ms(1_000, Half::Release).expect("keystrokes into a live window");
+    assert!(
+        long <= 2.0 * full,
+        "a frame that changes nothing took {long:.3} ms with 1,000 tasks and {full:.3} ms with \
+         100: it grows with the list"
+    );
+}
+
+#[test]
+fn a_hosted_keystroke_costs_the_same_whatever_the_list() {
+    // Both windows are full: they mount the same rows, so only work that
+    // grows with the list can tell them apart. Before TIL-766 every edit
+    // rebuilt each item's published resource, copied and filtered the whole
+    // tree, re-surveyed every address for the controls and rebuilt a
+    // semantic node per item, although the draft is no item's: at 1,000
+    // tasks the key cost 4.7 times what it does at 100.
+    let full = best_hosted_frame_ms(100, Half::Press).expect("keystrokes into a live window");
+    let long = best_hosted_frame_ms(1_000, Half::Press).expect("keystrokes into a live window");
+    assert!(
+        long <= 2.0 * full,
+        "a keystroke took {long:.3} ms to its frame with 1,000 tasks and {full:.3} ms with 100: \
+         it grows with the list"
+    );
 }
