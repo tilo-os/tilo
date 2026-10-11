@@ -67,6 +67,11 @@ fn wheel(frame: &mut FrameBuilder, dy: f64) {
 /// pointer rests, in layout pixels.
 fn write_a_long_note(frame: &mut FrameBuilder, label: &str, paragraphs: usize) -> Point {
     let _ = open_a_note(frame, label);
+    // A new note may open naming itself: leave the title first.
+    if with_notes_on_screen(&*frame, |_, notes| notes.main_title_editing_for_test()) {
+        press_key(frame, &Key::Named(NamedKey::Escape));
+        settle(frame, 2);
+    }
     let body = with_notes_on_screen(&*frame, |rect, notes| {
         let panel = notes.main_panel_mut();
         let title = panel.title_rect_for_test();
@@ -90,6 +95,13 @@ fn write_a_long_note(frame: &mut FrameBuilder, label: &str, paragraphs: usize) -
     }
     press_key(frame, &Key::Named(NamedKey::Escape));
     settle(frame, 3);
+    let text = with_notes_on_screen(&*frame, |_, notes| notes.editor_text_for_test());
+    let last = format!("Paragraph {}", paragraphs.saturating_sub(1));
+    assert!(
+        text.contains(&last),
+        "{label}: the paragraphs reached the note's body: {:?}",
+        text.chars().take(200).collect::<String>()
+    );
     let rest = with_notes_on_screen(&*frame, |rect, _| {
         Point::new(rect.center().x, rect.y0 + rect.height() * 0.6)
     });
@@ -149,8 +161,18 @@ fn scroll_and_present(
     let notes = with_notes_on_screen(&*frame, |rect, _| rect);
     run.notes_area = (notes.area() * scale * scale) as u64;
     for index in 0..frames {
+        let scrolled_from = with_notes_on_screen(&*frame, |_, notes| {
+            notes.main_panel_mut().scroll_y_for_test()
+        });
         wheel(frame, -step);
         frame.relayout();
+        let scrolled_to = with_notes_on_screen(&*frame, |_, notes| {
+            notes.main_panel_mut().scroll_y_for_test()
+        });
+        assert!(
+            index > 0 || (scrolled_to - scrolled_from).abs() > f64::EPSILON,
+            "{label}: the wheel scrolls the note ({scrolled_from} -> {scrolled_to})"
+        );
         let previous = frame.last_produced_sections.clone();
         let painted = frame.paint_with_damage();
         if index == 0 {
