@@ -3882,15 +3882,19 @@ async fn drive_shovel(
                     Err(_) => Err(PRIMARY_ROUTE_TIMED_OUT.to_string()),
                 };
                 primary = primary_result.is_ok().then_some(key);
+                // The startup file splits the owner's wait for `PrimaryReady`.
+                tilo_startup_metrics::startup_mark("collab-route-joined");
                 if let Some(route) = primary.as_ref().and_then(|key| routes.get(key)) {
                     settings_link = link_settings(&route.channel, &inbound_tx).await;
                     if let Some(link) = settings_link.as_ref() {
                         link.flush(&inbound_tx).await;
                     }
+                    tilo_startup_metrics::startup_mark("collab-settings-linked");
                     live_activity_link = link_live_activity(&route.channel, &inbound_tx).await;
                     if let Some(link) = live_activity_link.as_ref() {
                         link.flush(true).await;
                     }
+                    tilo_startup_metrics::startup_mark("collab-activity-linked");
                 }
             }
             SdkCommand::Primary(request) => {
