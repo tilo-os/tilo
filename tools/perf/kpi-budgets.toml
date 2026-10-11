@@ -728,11 +728,26 @@ max = 250.0
 min_delta = 32.0
 source = "KPI document: shell anon at most 250 MiB (run.py shell_anon_mb holds 500)"
 
+# The compositor with no app open (vm-acceptance R01, lavapipe): 238.7 MiB
+# on main (run 94055) and 159-167 MiB once startup's and every quiet moment's freed heap is
+# trimmed and the presenting renderer runs on Vulkan alone (runs 94419, 94637). Of what
+# remains, ~70 MiB is lavapipe's retained NIR (mtrace attribution, headless gate), which a
+# hardware GPU does not hold.
 [kpi."memory.shell_anon_mib.empty"]
 unit = "MiB"
-max = 250.0
-min_delta = 32.0
-source = "vm-acceptance R01: the compositor's anonymous RSS with no app open; no target of its own yet, so the four-app KPI caps it"
+max = 200.0
+enforce = true
+min_delta = 24.0
+source = "vm-acceptance R01: the compositor's anonymous RSS with no app open (run.py shell_idle_anon_mb holds the same)"
+
+# The idle compositor's threads (R01, the process_memory report). 86 on main, 73 once the
+# presenting renderer stopped initialising GL beside Vulkan: a second llvmpipe
+# rasteriser pool on a machine without a GPU.
+[kpi."memory.shell_threads"]
+unit = "count"
+max = 80.0
+min_delta = 4.0
+source = "vm-acceptance R01: compositor threads with no app open"
 
 # What one warm open and close of an app leaves in the compositor (A15, least-squares
 # slope over its 33 cycles): it should return to where it was.
