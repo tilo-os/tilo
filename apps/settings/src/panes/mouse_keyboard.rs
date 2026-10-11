@@ -17,8 +17,8 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 
 use settings_store::hardware::{
-    EraserAction, InputDeviceKind, InputDeviceSnapshot, InputHardwareSnapshot, PadDial,
-    PadDialAction, ShortcutAction, StylusButtonAction, TabletConfig, TouchpadClickMethod,
+    AccelProfile, EraserAction, InputDeviceKind, InputDeviceSnapshot, InputHardwareSnapshot,
+    PadDial, PadDialAction, ShortcutAction, StylusButtonAction, TabletConfig, TouchpadClickMethod,
     TouchpadScrollMethod,
 };
 use taffy::{NodeId, TaffyTree};
@@ -172,19 +172,19 @@ fn caps_lock_options() -> Vec<String> {
         .collect()
 }
 
-fn accel_shown(profile: &str) -> String {
-    if profile == "flat" || profile == "Flat" {
-        t("input-accel-flat")
-    } else {
-        t("input-accel-adaptive")
+fn accel_shown(profile: AccelProfile) -> String {
+    match profile {
+        AccelProfile::Flat => t("input-accel-flat"),
+        AccelProfile::Adaptive => t("input-accel-adaptive"),
     }
 }
 
-pub(crate) fn accel_from_label(label: &str) -> Option<&'static str> {
-    if label == "Flat" || label == t("input-accel-flat") {
-        Some("flat")
-    } else if label == "Adaptive" || label == t("input-accel-adaptive") {
-        Some("adaptive")
+/// The profile a shown label, an English label or a serialised id names.
+fn accel_from_label(label: &str) -> Option<AccelProfile> {
+    if ["flat", "Flat"].contains(&label) || label == t("input-accel-flat") {
+        Some(AccelProfile::Flat)
+    } else if ["adaptive", "Adaptive"].contains(&label) || label == t("input-accel-adaptive") {
+        Some(AccelProfile::Adaptive)
     } else {
         None
     }
@@ -1039,7 +1039,7 @@ fn tablet_entry<'a>(
     if device.is_empty() || device.len() > 512 || device.chars().any(char::is_control) {
         return Err("unknown tablet".into());
     }
-    Ok(input.tablets.entry(device.to_string()).or_default())
+    Ok(input.config.tablets.entry(device.to_string()).or_default())
 }
 
 /// Apply `effect` to `input`, refusing what it cannot be.
@@ -1057,57 +1057,54 @@ fn apply(
     match effect {
         E::SetTouchpadEnabled { on } => input.touchpad_enabled = on,
         E::SetTouchpadOffWithMouse { on } => input.touchpad_disabled_on_external_mouse = on,
-        E::SetTouchpadSpeed { speed } => input.touchpad_pointer_speed = Some(fraction(speed)?),
-        E::SetMouseSpeed { speed } => input.mouse_pointer_speed = Some(fraction(speed)?),
-        E::SetTouchpadNaturalScroll { on } => input.touchpad_natural_scroll = on,
-        E::SetMouseNaturalScroll { on } => input.mouse_natural_scroll = on,
-        E::SetTapToClick { on } => input.tap_to_click = on,
-        E::SetTapDrag { on } => input.tap_drag = on,
-        E::SetTapDragLock { on } => input.tap_drag_lock = on,
-        E::SetDisableWhileTyping { on } => input.disable_while_typing = on,
-        E::SetTouchpadGestures { on } => input.touchpad_gestures = on,
+        E::SetTouchpadSpeed { speed } => {
+            input.config.touchpad_pointer_speed = Some(fraction(speed)?);
+        }
+        E::SetMouseSpeed { speed } => input.config.mouse_pointer_speed = Some(fraction(speed)?),
+        E::SetTouchpadNaturalScroll { on } => input.config.touchpad_natural_scroll = on,
+        E::SetMouseNaturalScroll { on } => input.config.mouse_natural_scroll = on,
+        E::SetTapToClick { on } => input.config.tap_to_click = on,
+        E::SetTapDrag { on } => input.config.tap_drag = on,
+        E::SetTapDragLock { on } => input.config.tap_drag_lock = on,
+        E::SetDisableWhileTyping { on } => input.config.disable_while_typing = on,
+        E::SetTouchpadGestures { on } => input.config.touchpad_gestures = on,
         E::SetTouchpadClickMethod { method } => {
-            input.touchpad_click_method = click_method_for_id(&method)
+            input.config.touchpad_click_method = click_method_for_id(&method)
                 .ok_or_else(|| format!("`{method}` is not a click method"))?;
         }
         E::SetTouchpadScrollMethod { method } => {
-            input.touchpad_scroll_method = scroll_method_for_id(&method)
+            input.config.touchpad_scroll_method = scroll_method_for_id(&method)
                 .ok_or_else(|| format!("`{method}` is not a scroll method"))?;
         }
-        E::SetLeftHanded { on } => input.left_handed = on,
-        E::SetMiddleEmulation { on } => input.middle_emulation = on,
+        E::SetLeftHanded { on } => input.config.left_handed = on,
+        E::SetMiddleEmulation { on } => input.config.middle_emulation = on,
         E::SetAccelerationProfile { profile } => {
-            accel_from_label(&profile)
-                .or_else(|| {
-                    ["adaptive", "flat"]
-                        .into_iter()
-                        .find(|known| *known == profile)
-                })
-                .ok_or_else(|| format!("`{profile}` is not an acceleration profile"))?
-                .clone_into(&mut input.accel_profile);
+            input.config.accel_profile = accel_from_label(&profile)
+                .ok_or_else(|| format!("`{profile}` is not an acceleration profile"))?;
         }
         E::SetScrollSpeed { speed } => {
-            input.scroll_speed =
+            input.config.scroll_speed =
                 settings_store::hardware::scroll_speed_from_slider(fraction(speed)?);
         }
         E::SetKeyRepeat { rate } => {
-            input.key_repeat = fraction(rate)?;
-            input.key_repeat_delay_ms = None;
-            input.key_repeat_rate_hz = None;
+            input.config.key_repeat = fraction(rate)?;
+            input.config.key_repeat_delay_ms = None;
+            input.config.key_repeat_rate_hz = None;
         }
         E::SetComposeKey { key } => {
-            input.compose_key = stored_for(COMPOSE_KEY_CHOICES, COMPOSE_DISABLED, &key)
+            input.config.compose_key = stored_for(COMPOSE_KEY_CHOICES, COMPOSE_DISABLED, &key)
                 .ok_or_else(|| format!("`{key}` is not a compose key"))?;
         }
         E::SetCapsLock { behaviour } => {
-            input.caps_lock = stored_for(&CAPS_LOCK_CHOICES, CAPS_LOCK_UNCHANGED, &behaviour)
-                .ok_or_else(|| format!("`{behaviour}` is not a Caps Lock behaviour"))?;
+            input.config.caps_lock =
+                stored_for(&CAPS_LOCK_CHOICES, CAPS_LOCK_UNCHANGED, &behaviour)
+                    .ok_or_else(|| format!("`{behaviour}` is not a Caps Lock behaviour"))?;
         }
         E::SetActiveSource { source } => {
-            if !input.keyboard_layouts.contains(&source) {
+            if !input.config.keyboard_layouts.contains(&source) {
                 return Err(format!("`{source}` is not an active input source"));
             }
-            input.keyboard_layout = source;
+            input.config.keyboard_layout = source;
         }
         E::PreviewLayout { source } => {
             if !installed(&source)
@@ -1127,7 +1124,7 @@ fn apply(
         E::SetPreviewExtraLevels { on } => {
             input
                 .keyboard_preview
-                .get_or_insert_with(|| input.keyboard_layout.clone());
+                .get_or_insert_with(|| input.config.keyboard_layout.clone());
             input.keyboard_preview_extra_levels = on;
             input.keyboard_preview_level = 0;
         }
@@ -1140,10 +1137,10 @@ fn apply(
             let source = input
                 .keyboard_preview
                 .as_deref()
-                .unwrap_or(&input.keyboard_layout);
+                .unwrap_or(&input.config.keyboard_layout);
             let map = crate::keyboard_preview::map_with_options(
                 source,
-                &input.keyboard_model,
+                &input.config.keyboard_model,
                 String::new(),
                 Some(""),
             )?;
@@ -1158,10 +1155,10 @@ fn apply(
             let source = input
                 .keyboard_preview
                 .as_deref()
-                .unwrap_or(&input.keyboard_layout);
+                .unwrap_or(&input.config.keyboard_layout);
             let map = crate::keyboard_preview::map_with_options(
                 source,
-                &input.keyboard_model,
+                &input.config.keyboard_model,
                 String::new(),
                 Some(""),
             )?;
@@ -1174,7 +1171,7 @@ fn apply(
             if !crate::keyboard_preview::valid_model(&model) {
                 return Err("unknown physical keyboard model".into());
             }
-            input.keyboard_model = model;
+            input.config.keyboard_model = model;
             input.keyboard_inspected_key = "AD01".into();
             input.keyboard_preview_level = 0;
             input.keyboard_preview_extra_levels = false;
@@ -1183,8 +1180,8 @@ fn apply(
             let source = input
                 .keyboard_preview
                 .clone()
-                .unwrap_or_else(|| input.keyboard_layout.clone());
-            let next = if input.keyboard_layouts.contains(&source) {
+                .unwrap_or_else(|| input.config.keyboard_layout.clone());
+            let next = if input.config.keyboard_layouts.contains(&source) {
                 E::SetActiveSource { source }
             } else {
                 E::AddSource { source }
@@ -1199,39 +1196,40 @@ fn apply(
             if !installed(&source) {
                 return Err(format!("`{source}` is not an installed input source"));
             }
-            if input.keyboard_layouts.contains(&source) {
+            if input.config.keyboard_layouts.contains(&source) {
                 return Err(format!("`{source}` is already active"));
             }
-            if !crate::input_sources::has_room_for(&input.keyboard_layouts, &source) {
+            if !crate::input_sources::has_room_for(&input.config.keyboard_layouts, &source) {
                 return Err("the most keyboard layouts are already active".into());
             }
-            input.keyboard_layout.clone_from(&source);
-            input.keyboard_layouts.push(source);
+            input.config.keyboard_layout.clone_from(&source);
+            input.config.keyboard_layouts.push(source);
         }
         E::MoveSourceUp { source } => {
             let index = position(input, &source)?;
             if index == 0 {
                 return Err(format!("`{source}` is already first"));
             }
-            input.keyboard_layouts.swap(index - 1, index);
+            input.config.keyboard_layouts.swap(index - 1, index);
         }
         E::MoveSourceDown { source } => {
             let index = position(input, &source)?;
-            if index + 1 >= input.keyboard_layouts.len() {
+            if index + 1 >= input.config.keyboard_layouts.len() {
                 return Err(format!("`{source}` is already last"));
             }
-            input.keyboard_layouts.swap(index, index + 1);
+            input.config.keyboard_layouts.swap(index, index + 1);
         }
         E::RemoveSource { source } => {
             let index = position(input, &source)?;
-            if input.keyboard_layouts.len() <= 1 {
+            if input.config.keyboard_layouts.len() <= 1 {
                 return Err("the last input source cannot be removed".into());
             }
-            input.keyboard_layouts.remove(index);
-            if input.keyboard_layout == source {
-                input.keyboard_layout = input
+            input.config.keyboard_layouts.remove(index);
+            if input.config.keyboard_layout == source {
+                input.config.keyboard_layout = input
+                    .config
                     .keyboard_layouts
-                    .get(index.min(input.keyboard_layouts.len() - 1))
+                    .get(index.min(input.config.keyboard_layouts.len() - 1))
                     .cloned()
                     .unwrap_or_default();
             }
@@ -1324,6 +1322,7 @@ fn apply(
 
 fn position(input: &InputPrefs, source: &str) -> Result<usize, String> {
     input
+        .config
         .keyboard_layouts
         .iter()
         .position(|active| active == source)
@@ -1429,9 +1428,9 @@ pub(crate) fn answer(
     }
     let settings = host.settings::<InputPrefs>();
     let mut input = settings.get();
-    input.normalise_keyboard_sources();
+    input.config.normalise_sources();
     keyboard_editor::apply_scoped(&mut input, effect, app.input())?;
-    input.normalise_keyboard_sources();
+    input.config.normalise_sources();
     settings
         .set(&input)
         .map(|()| Effected::done())
@@ -1485,17 +1484,19 @@ fn inspect_input_sources(
         return Err("Input source page is out of range".into());
     }
     let sources: Vec<_> = matches.into_iter().skip(page * 32).take(32).map(|entry| {
-        let configured = prefs.keyboard_layouts.contains(&entry.id);
+        let configured = prefs.config.keyboard_layouts.contains(&entry.id);
         serde_json::json!({"id": entry.id, "label": entry.label, "configured": configured,
-            "can_add": !configured && crate::input_sources::has_room_for(&prefs.keyboard_layouts, &entry.id)})
+            "can_add": !configured && crate::input_sources::has_room_for(&prefs.config.keyboard_layouts, &entry.id)})
     }).collect();
     let add_picker = (app.selected() == crate::categories::Category::MouseKeyboard)
         .then(|| input_picker_snapshot(app))
         .flatten();
-    Ok(serde_json::json!({"active_source": prefs.keyboard_layout,
-        "configured_sources": prefs.keyboard_layouts, "page": page, "pages": pages,
+    Ok(
+        serde_json::json!({"active_source": prefs.config.keyboard_layout,
+        "configured_sources": prefs.config.keyboard_layouts, "page": page, "pages": pages,
         "total": total, "sources": sources, "catalogue_live": area.live,
-        "catalogue_error": area.catalog_error(), "add_picker": add_picker}))
+        "catalogue_error": area.catalog_error(), "add_picker": add_picker}),
+    )
 }
 
 /// How often the attached-device snapshot is read again, so plugging a
@@ -1745,7 +1746,7 @@ impl MouseKeyboardPane {
         let input = cx.follow::<InputPrefs>();
         let text = cx.follow::<TextAssistancePrefs>();
         let mut last = input.get().clone();
-        last.normalise_keyboard_sources();
+        last.config.normalise_sources();
         let mut pane = Self {
             cx,
             input,
@@ -1803,8 +1804,8 @@ impl MouseKeyboardPane {
     fn keyboard_preview(&self, source: &str) -> Result<ui::KeyboardMap, String> {
         let input = self.preview_input(source);
         let options = settings_store::hardware::RichInputConfig {
-            compose_key: input.compose_key.clone(),
-            caps_lock: input.caps_lock.clone(),
+            compose_key: input.config.compose_key.clone(),
+            caps_lock: input.config.caps_lock.clone(),
             ..Default::default()
         }
         .xkb_options()
@@ -1813,21 +1814,21 @@ impl MouseKeyboardPane {
         let mut cache = self.map_cache.borrow_mut();
         if let Some(cache) = cache.as_ref()
             && cache.source == source
-            && cache.model == input.keyboard_model
+            && cache.model == input.config.keyboard_model
             && cache.options == options
         {
             return Ok(cache.map.clone());
         }
         let map = crate::keyboard_preview::map_with_options(
             source,
-            &input.keyboard_model,
+            &input.config.keyboard_model,
             t("input-map-title"),
             options.as_deref(),
         )?
         .with_input(self.map_input.clone());
         *cache = Some(KeyboardPreviewCache {
             source: source.to_owned(),
-            model: input.keyboard_model,
+            model: input.config.keyboard_model,
             options,
             map: map.clone(),
         });
@@ -2147,7 +2148,9 @@ impl MouseKeyboardPane {
                     &t("input-touchpad-speed"),
                     Box::new(
                         Slider::from_state(&ui::LocalState::new(
-                            last.touchpad_pointer_speed.unwrap_or(last.pointer_speed),
+                            last.config
+                                .touchpad_pointer_speed
+                                .unwrap_or(last.config.pointer_speed),
                         ))
                         .bound(&self.cx, effect(InputEffect::SET_TOUCHPAD_SPEED))
                         .with_id("input.touchpad_pointer_speed")
@@ -2159,42 +2162,42 @@ impl MouseKeyboardPane {
                     "input-touchpad-natural-scroll-description",
                     InputEffect::SET_TOUCHPAD_NATURAL_SCROLL,
                     "input.touchpad_natural_scroll",
-                    last.touchpad_natural_scroll,
+                    last.config.touchpad_natural_scroll,
                 ),
                 self.bool_row(
                     "input-tap-to-click",
                     "input-tap-to-click-description",
                     InputEffect::SET_TAP_TO_CLICK,
                     "input.tap_click",
-                    last.tap_to_click,
+                    last.config.tap_to_click,
                 ),
                 self.bool_row(
                     "input-tap-drag",
                     "input-tap-drag-description",
                     InputEffect::SET_TAP_DRAG,
                     "input.tap_drag",
-                    last.tap_drag,
+                    last.config.tap_drag,
                 ),
                 self.bool_row(
                     "input-tap-drag-lock",
                     "input-tap-drag-lock-description",
                     InputEffect::SET_TAP_DRAG_LOCK,
                     "input.tap_drag_lock",
-                    last.tap_drag_lock,
+                    last.config.tap_drag_lock,
                 ),
                 self.bool_row(
                     "input-disable-while-typing",
                     "input-disable-while-typing-description",
                     InputEffect::SET_DISABLE_WHILE_TYPING,
                     "input.disable_while_typing",
-                    last.disable_while_typing,
+                    last.config.disable_while_typing,
                 ),
                 self.bool_row(
                     "input-touchpad-gestures",
                     "input-touchpad-gestures-description",
                     InputEffect::SET_TOUCHPAD_GESTURES,
                     "input.touchpad_gestures",
-                    last.touchpad_gestures,
+                    last.config.touchpad_gestures,
                 ),
             ]),
         )
@@ -2212,7 +2215,7 @@ impl MouseKeyboardPane {
                     Box::new(
                         id_dropdown(
                             localized_choices(&CLICK_METHOD_CHOICES),
-                            click_method_id(self.last.touchpad_click_method),
+                            click_method_id(self.last.config.touchpad_click_method),
                             "input.touchpad_click_method",
                             &t("input-click-method"),
                         )
@@ -2225,7 +2228,7 @@ impl MouseKeyboardPane {
                     Box::new(
                         id_dropdown(
                             localized_choices(&SCROLL_METHOD_CHOICES),
-                            scroll_method_id(self.last.touchpad_scroll_method),
+                            scroll_method_id(self.last.config.touchpad_scroll_method),
                             "input.touchpad_scroll_method",
                             &t("input-scroll-method"),
                         )
@@ -2246,7 +2249,9 @@ impl MouseKeyboardPane {
                     &t("input-mouse-speed"),
                     Box::new(
                         Slider::from_state(&ui::LocalState::new(
-                            last.mouse_pointer_speed.unwrap_or(last.pointer_speed),
+                            last.config
+                                .mouse_pointer_speed
+                                .unwrap_or(last.config.pointer_speed),
                         ))
                         .bound(&self.cx, effect(InputEffect::SET_MOUSE_SPEED))
                         .with_id("input.mouse_pointer_speed")
@@ -2258,7 +2263,7 @@ impl MouseKeyboardPane {
                     "input-mouse-natural-scroll-description",
                     InputEffect::SET_MOUSE_NATURAL_SCROLL,
                     "input.mouse_natural_scroll",
-                    last.mouse_natural_scroll,
+                    last.config.mouse_natural_scroll,
                 ),
             ]),
         )
@@ -2277,30 +2282,25 @@ impl MouseKeyboardPane {
                     "input-left-handed-description",
                     InputEffect::SET_LEFT_HANDED,
                     "input.left_handed",
-                    self.last.left_handed,
+                    self.last.config.left_handed,
                 ),
                 self.bool_row(
                     "input-middle-emulation",
                     "input-middle-emulation-description",
                     InputEffect::SET_MIDDLE_EMULATION,
                     "input.middle_emulation",
-                    self.last.middle_emulation,
+                    self.last.config.middle_emulation,
                 ),
                 choice_row(
                     &t("input-acceleration"),
                     Box::new(
                         Dropdown::from_state(
                             accel_options(),
-                            &ui::LocalState::new(accel_shown(&self.last.accel_profile)),
+                            &ui::LocalState::new(accel_shown(self.last.config.accel_profile)),
                         )
-                        .bound(
-                            &self.cx,
-                            effect(InputEffect::SET_ACCELERATION_PROFILE).map(|shown: String| {
-                                accel_from_label(&shown).unwrap_or_default().to_owned()
-                            }),
-                        )
+                        .bound(&self.cx, effect(InputEffect::SET_ACCELERATION_PROFILE))
                         .with_id("input.accel_profile")
-                        .with_placeholder(&accel_shown(&self.last.accel_profile)),
+                        .with_placeholder(&accel_shown(self.last.config.accel_profile)),
                     ),
                 ),
                 setting_row_described(
@@ -2309,7 +2309,7 @@ impl MouseKeyboardPane {
                     Box::new(
                         Slider::from_state(&ui::LocalState::new(
                             settings_store::hardware::scroll_speed_to_slider(
-                                self.last.scroll_speed,
+                                self.last.config.scroll_speed,
                             ),
                         ))
                         .bound(&self.cx, effect(InputEffect::SET_SCROLL_SPEED))
@@ -2346,10 +2346,11 @@ impl MouseKeyboardPane {
     fn key_repeat_slider_value(&self) -> f64 {
         let Some((_, rate)) = self
             .last
+            .config
             .key_repeat_delay_ms
-            .zip(self.last.key_repeat_rate_hz)
+            .zip(self.last.config.key_repeat_rate_hz)
         else {
-            return self.last.key_repeat;
+            return self.last.config.key_repeat;
         };
         let min = settings_store::hardware::KEY_REPEAT_SLIDER_MIN_HZ;
         let max = settings_store::hardware::KEY_REPEAT_SLIDER_MAX_HZ;
@@ -2357,7 +2358,10 @@ impl MouseKeyboardPane {
     }
 
     fn key_repeat_description(&self) -> String {
-        match (self.last.key_repeat_delay_ms, self.last.key_repeat_rate_hz) {
+        match (
+            self.last.config.key_repeat_delay_ms,
+            self.last.config.key_repeat_rate_hz,
+        ) {
             (Some(_), Some(0)) => t("input-key-repeat-off"),
             (Some(delay), Some(rate)) => t_args(
                 "input-key-repeat-rate",
@@ -2539,6 +2543,7 @@ impl MouseKeyboardPane {
         device: &InputDeviceSnapshot,
     ) -> settings_store::hardware::TabletConfig {
         self.last
+            .config
             .tablets
             .get(&device.key)
             .cloned()
@@ -2776,7 +2781,7 @@ impl Widget for MouseKeyboardPane {
         // The controls are built from the values: a change rebuilds them.
         if self.input.refresh() {
             let mut last = self.input.get().clone();
-            last.normalise_keyboard_sources();
+            last.config.normalise_sources();
             self.last = last;
             self.composed.invalidate();
             self.composed.clear();
@@ -3049,7 +3054,7 @@ mod tests {
                 Some(t("input-spell-language-session").as_str()),
                 "the valid empty stable value must show its human language label",
             );
-            let active_before = app.settings::<InputPrefs>().get().keyboard_layout;
+            let active_before = app.settings::<InputPrefs>().get().config.keyboard_layout;
             show_add_source(&mut app, viewport);
             let snapshot = app.harness().inspection();
             let control = picker_node(&snapshot.root)
@@ -3091,6 +3096,7 @@ mod tests {
             assert!(
                 !app.settings::<InputPrefs>()
                     .get()
+                    .config
                     .keyboard_layouts
                     .contains(&"fr".into()),
                 "choosing a preview must not configure a source"
@@ -3100,12 +3106,13 @@ mod tests {
                 app.settle();
                 app.settings::<InputPrefs>()
                     .get()
+                    .config
                     .keyboard_layouts
                     .contains(&"fr".into())
             });
             let prefs = app.settings::<InputPrefs>().get();
             assert_eq!(
-                prefs.keyboard_layout, active_before,
+                prefs.config.keyboard_layout, active_before,
                 "adding a source preserves the active source"
             );
             app.harness().render_png(&out.join("selected.png"));
@@ -3180,9 +3187,12 @@ mod tests {
         {
             let disabled = pane_with(
                 &InputPrefs {
-                    key_repeat: 0.5,
-                    key_repeat_delay_ms: Some(500),
-                    key_repeat_rate_hz: Some(0),
+                    config: settings_store::hardware::RichInputConfig {
+                        key_repeat: 0.5,
+                        key_repeat_delay_ms: Some(500),
+                        key_repeat_rate_hz: Some(0),
+                        ..Default::default()
+                    },
                     ..Default::default()
                 },
                 catalog(),
@@ -3195,9 +3205,12 @@ mod tests {
 
             let exact = pane_with(
                 &InputPrefs {
-                    key_repeat: 0.5,
-                    key_repeat_delay_ms: Some(275),
-                    key_repeat_rate_hz: Some(37),
+                    config: settings_store::hardware::RichInputConfig {
+                        key_repeat: 0.5,
+                        key_repeat_delay_ms: Some(275),
+                        key_repeat_rate_hz: Some(37),
+                        ..Default::default()
+                    },
                     ..Default::default()
                 },
                 catalog(),
@@ -3210,8 +3223,11 @@ mod tests {
 
             let partial = pane_with(
                 &InputPrefs {
-                    key_repeat: 0.25,
-                    key_repeat_rate_hz: Some(50),
+                    config: settings_store::hardware::RichInputConfig {
+                        key_repeat: 0.25,
+                        key_repeat_rate_hz: Some(50),
+                        ..Default::default()
+                    },
                     ..Default::default()
                 },
                 catalog(),
@@ -3224,8 +3240,11 @@ mod tests {
 
             let clamped = pane_with(
                 &InputPrefs {
-                    key_repeat_delay_ms: Some(200),
-                    key_repeat_rate_hz: Some(1_000),
+                    config: settings_store::hardware::RichInputConfig {
+                        key_repeat_delay_ms: Some(200),
+                        key_repeat_rate_hz: Some(1_000),
+                        ..Default::default()
+                    },
                     ..Default::default()
                 },
                 catalog(),
@@ -3442,13 +3461,22 @@ mod tests {
         assert!(set(&mut app, model));
         assert!(set(&mut app, levels));
         let inspected = app.settings::<InputPrefs>().get();
-        assert_eq!(inspected.keyboard_layout, before.keyboard_layout);
-        assert_eq!(inspected.keyboard_layouts, before.keyboard_layouts);
-        assert_eq!(inspected.keyboard_model, "pc104");
+        assert_eq!(
+            inspected.config.keyboard_layout,
+            before.config.keyboard_layout
+        );
+        assert_eq!(
+            inspected.config.keyboard_layouts,
+            before.config.keyboard_layouts
+        );
+        assert_eq!(inspected.config.keyboard_model, "pc104");
         assert_eq!(inspected.keyboard_preview.as_deref(), Some("de"));
         assert!(inspected.keyboard_preview_extra_levels);
         assert!(set(&mut app, InputEffect::ApplyPreview));
-        assert_eq!(app.settings::<InputPrefs>().get().keyboard_layout, "de");
+        assert_eq!(
+            app.settings::<InputPrefs>().get().config.keyboard_layout,
+            "de"
+        );
         assert!(!set(
             &mut app,
             InputEffect::PreviewLayout {
@@ -3474,7 +3502,7 @@ mod tests {
         let input = app.settings::<InputPrefs>().get();
         assert!(input.keyboard_preview.is_none());
         assert_eq!(input.keyboard_preview_level, 0);
-        assert_eq!(input.keyboard_layout, "de");
+        assert_eq!(input.config.keyboard_layout, "de");
     }
 
     #[test]
@@ -3631,8 +3659,14 @@ mod tests {
         assert!(set(&mut app, inspect));
         let inspected = app.settings::<InputPrefs>().get();
         assert_eq!(inspected.keyboard_inspected_key, "AD06");
-        assert_eq!(inspected.keyboard_layout, before.keyboard_layout);
-        assert_eq!(inspected.keyboard_layouts, before.keyboard_layouts);
+        assert_eq!(
+            inspected.config.keyboard_layout,
+            before.config.keyboard_layout
+        );
+        assert_eq!(
+            inspected.config.keyboard_layouts,
+            before.config.keyboard_layouts
+        );
         assert_eq!(inspected.keyboard_preview, before.keyboard_preview);
         assert!(!set(
             &mut app,
@@ -3701,16 +3735,19 @@ mod tests {
         ));
         assert!(set(&mut app, InputEffect::SetSpellChecking { on: false }));
         let input = app.settings::<InputPrefs>().get();
-        assert_eq!(input.touchpad_pointer_speed, Some(0.9));
-        assert!(input.mouse_natural_scroll);
+        assert_eq!(input.config.touchpad_pointer_speed, Some(0.9));
+        assert!(input.config.mouse_natural_scroll);
         assert!(!input.touchpad_enabled);
         let active = settings_store::keyboard_sources::effective(
-            &input.rich_input(),
+            &input.config,
             settings_store::keyboard_sources::ALL,
         );
         assert_eq!(active.compose_key.as_deref(), Some("ralt"));
         assert_eq!(active.caps_lock.as_deref(), Some("ctrl"));
-        assert_eq!(input.touchpad_click_method, TouchpadClickMethod::Areas);
+        assert_eq!(
+            input.config.touchpad_click_method,
+            TouchpadClickMethod::Areas
+        );
         assert!(!app.settings::<TextAssistancePrefs>().get().check_spelling);
         assert!(set(
             &mut app,
@@ -3759,7 +3796,10 @@ mod tests {
         let mut app = TestApp::<SettingsShell>::new().unwrap();
         let sources = |app: &TestApp<SettingsShell>| {
             let input = app.settings::<InputPrefs>().get();
-            (input.keyboard_layouts.clone(), input.keyboard_layout)
+            (
+                input.config.keyboard_layouts.clone(),
+                input.config.keyboard_layout,
+            )
         };
         assert!(set(
             &mut app,
@@ -3833,9 +3873,9 @@ mod tests {
             }
         ));
         let input = app.settings::<InputPrefs>().get();
-        assert_eq!(input.tablets["pen-a"].eraser, EraserAction::Right);
+        assert_eq!(input.config.tablets["pen-a"].eraser, EraserAction::Right);
         assert_eq!(
-            input.tablets["pad-a"].dial_action(PadDial::Ring(0), 1),
+            input.config.tablets["pad-a"].dial_action(PadDial::Ring(0), 1),
             PadDialAction::Zoom
         );
         assert_eq!(
@@ -3881,10 +3921,10 @@ mod input_inspection_tests {
             )
             .unwrap()
             .unwrap();
-        assert_eq!(value["active_source"], before.keyboard_layout);
+        assert_eq!(value["active_source"], before.config.keyboard_layout);
         assert_eq!(
             value["configured_sources"],
-            serde_json::json!(before.keyboard_layouts)
+            serde_json::json!(before.config.keyboard_layouts)
         );
         assert_eq!(value["page"], 0);
         assert!(value["sources"].as_array().unwrap().len() <= 32);
