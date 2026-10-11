@@ -864,9 +864,8 @@ fn history_entries_render_as_the_apps_sentences() {
             .unwrap();
         let catalogue = tilo_history::Catalogue::new(locale, &[source]);
         let reader = tilo_history::Reader::new(locale).with_app(&catalogue);
-        app.versions()
+        app.history()
             .into_iter()
-            .filter_map(|version| version.context)
             .filter(|entry| {
                 entry
                     .invoker
