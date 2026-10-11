@@ -521,15 +521,15 @@ impl Widget for ConflictPicker {
     /// width `keep_current_rect` hit-tests is the width paint draws. The
     /// button holds its label plus a sibling step each side, floored at the
     /// pinned width so the 1× label keeps 240 px.
-    fn adjust_layout_with_measure(
+    fn adjust_layout_style(
         &mut self,
-        taffy: &mut TaffyTree<()>,
-        node: NodeId,
+        _taffy: &mut TaffyTree<()>,
+        _node: NodeId,
         text: &mut TextRenderer,
     ) -> bool {
         self.keep_label = text.measure_style(KEEP_LABEL, None, &self.label_style);
         self.bands.keep_w = text_band(KEEP_W, f64::from(self.keep_label.0), self.keep_pad);
-        self.adjust_layout_style(taffy, node)
+        false
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -798,7 +798,7 @@ impl ConflictPicker {
         crate::surface::card(scene, transform, keep, keep_radius, keep_body);
         let keep_style = theme.text(TextRole::Caption);
         // Centre on the measurement the button was sized from (see
-        // `adjust_layout_with_measure`); a host that laid out without the
+        // `adjust_layout_style`); a host that laid out without the
         // renderer-aware hook measures here instead.
         let (kw, kh) = if self.keep_label.0 > 0.0 {
             self.keep_label

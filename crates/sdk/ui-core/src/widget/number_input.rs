@@ -710,7 +710,7 @@ impl NumberInput {
     /// configured precision and suffix — beside its steppers. A host laying
     /// its own rows (a font-size stepper in an inspector) reserves this
     /// instead of guessing the field's type size; it is the same rule the
-    /// widget applies to itself in `adjust_layout_with_measure`, so a slot
+    /// widget applies to itself in `adjust_layout_style`, so a slot
     /// sized from it never clips a value the widget would have held.
     pub fn preferred_width(&self, theme: &Theme, text: &mut TextRenderer) -> f64 {
         let minimum = self.base_footprint(theme);
@@ -861,7 +861,7 @@ impl Widget for NumberInput {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    fn adjust_layout_with_measure(
+    fn adjust_layout_style(
         &mut self,
         tree: &mut TaffyTree<()>,
         node: NodeId,

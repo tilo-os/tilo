@@ -50,8 +50,7 @@
 //! * **Override the host's entry point.** Some [`Widget`] defaults are
 //!   derived from another method (`draw_with_presence` calls `draw`,
 //!   `perform_action_at` calls `perform_action`, `tooltip_target_at` calls
-//!   `tooltip`, `adjust_layout_with_measure` calls `adjust_layout_style`,
-//!   `collect_damage` calls `needs_redraw`). Here each forwards to the inner
+//!   `tooltip`, `collect_damage` calls `needs_redraw`). Here each forwards to the inner
 //!   widget's own method, so an override of the derived-from method alone is
 //!   not what the host calls: override the entry point the host uses
 //!   (`draw_with_presence` for painting in a live frame, and `draw` for
@@ -251,8 +250,13 @@ pub trait Decorator {
         self.inner_mut().measure(known, available, text_renderer)
     }
 
-    fn adjust_layout_style(&mut self, taffy: &mut TaffyTree<()>, node: NodeId) -> bool {
-        self.inner_mut().adjust_layout_style(taffy, node)
+    fn adjust_layout_style(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        node: NodeId,
+        text: &mut TextRenderer,
+    ) -> bool {
+        self.inner_mut().adjust_layout_style(taffy, node, text)
     }
 
     #[doc(hidden)]
@@ -262,16 +266,6 @@ pub trait Decorator {
 
     fn layout_info(&self) -> Option<LayoutInfo> {
         self.inner().layout_info()
-    }
-
-    fn adjust_layout_with_measure(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        node: NodeId,
-        text: &mut TextRenderer,
-    ) -> bool {
-        self.inner_mut()
-            .adjust_layout_with_measure(taffy, node, text)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: vello::kurbo::Point) {
@@ -903,8 +897,13 @@ impl<T: Decorator + 'static> Widget for T {
         Decorator::measure(self, known, available, text_renderer)
     }
 
-    fn adjust_layout_style(&mut self, taffy: &mut TaffyTree<()>, node: NodeId) -> bool {
-        Decorator::adjust_layout_style(self, taffy, node)
+    fn adjust_layout_style(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        node: NodeId,
+        text: &mut TextRenderer,
+    ) -> bool {
+        Decorator::adjust_layout_style(self, taffy, node, text)
     }
 
     #[doc(hidden)]
@@ -914,15 +913,6 @@ impl<T: Decorator + 'static> Widget for T {
 
     fn layout_info(&self) -> Option<LayoutInfo> {
         Decorator::layout_info(self)
-    }
-
-    fn adjust_layout_with_measure(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        node: NodeId,
-        text: &mut TextRenderer,
-    ) -> bool {
-        Decorator::adjust_layout_with_measure(self, taffy, node, text)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: vello::kurbo::Point) {
