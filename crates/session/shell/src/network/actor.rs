@@ -768,7 +768,7 @@ impl TopicRuntime {
     /// when it joins (`NetEvent::PeerJoined`). All a broadcast into an
     /// empty topic would do is start the topic's cache sweep
     /// ([`GOSSIP_CACHE_SWEEP`]), which then runs until the message expires
-    /// ([`gossip_caches_drain_within`]), so a desktop alone with its rooms
+    /// (`gossip_caches_drain_within`), so a desktop alone with its rooms
     /// would wake for every local change. Only a linked topic broadcasts.
     async fn broadcast(&self, bytes: Bytes) -> Result<(), iroh_gossip::api::ApiError> {
         if !self.linked {
@@ -4063,7 +4063,7 @@ async fn sleep_until_lapse(at: Option<Instant>) {
 /// [`GOSSIP_CACHE_SWEEP`] instead, a topic with messages wakes its runtime
 /// a tenth as often. The vendored iroh-gossip (`vendor/iroh-gossip/
 /// TILO-PATCH.md`) arms it on a topic's first cached message and stops it
-/// once the caches are empty ([`gossip_caches_drain_within`]); a topic that
+/// once the caches are empty (`gossip_caches_drain_within`); a topic that
 /// never had a neighbour caches nothing ([`TopicRuntime::broadcast`]).
 const GOSSIP_CACHE_SWEEP: Duration = Duration::from_secs(10);
 /// How long gossip keeps a message to answer a neighbour's graft for it.
@@ -4076,6 +4076,7 @@ const GOSSIP_MESSAGE_RETENTION: Duration = Duration::from_secs(20);
 /// How long after its last message a topic stops sweeping: the message id
 /// outlives the message itself (iroh-gossip's 90 s, to refuse a late
 /// duplicate), and the sweep that finds both gone is the last.
+#[cfg(test)]
 pub(crate) fn gossip_caches_drain_within() -> Duration {
     let config = broadcast_config();
     config

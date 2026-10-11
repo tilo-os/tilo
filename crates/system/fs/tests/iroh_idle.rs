@@ -9,6 +9,12 @@
 //! the relays were removed. And iroh-gossip swept each topic's message cache
 //! every 10 s for as long as the topic lived, empty or not.
 
+#![allow(
+    clippy::expect_used,
+    clippy::arithmetic_side_effects,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::time::Duration;
 
 /// Long enough to span each removed period at least once: the 15 s
@@ -82,8 +88,12 @@ fn an_endpoint_whose_relays_were_removed_sleeps() {
         .await;
         endpoint
     });
+    // The relay counts the connection once it has registered the client,
+    // which may be just after the client saw itself connected.
+    tilo_test_env::wait_until("the relay to count the endpoint's connection", || {
+        server.metrics().server.accepts.get() >= 1
+    });
     let accepts = server.metrics().server.accepts.get();
-    assert!(accepts >= 1, "the relay saw the endpoint connect");
 
     runtime.block_on(endpoint.remove_relay(&url));
     tilo_test_env::wait_until("the endpoint to give up its home relay", || {
@@ -209,7 +219,7 @@ mod netns {
         let mut request: libc::ifreq = unsafe { std::mem::zeroed() };
         assert!(name.len() < request.ifr_name.len(), "interface name fits");
         for (slot, byte) in request.ifr_name.iter_mut().zip(name.bytes()) {
-            *slot = byte as libc::c_char;
+            *slot = libc::c_char::from_ne_bytes([byte]);
         }
         request
     }
@@ -231,7 +241,7 @@ mod netns {
         ioctl(&mut request, libc::SIOCGIFFLAGS);
         // SAFETY: SIOCGIFFLAGS filled the flags member.
         let flags = unsafe { request.ifr_ifru.ifru_flags };
-        let up_flag = libc::IFF_UP as libc::c_short;
+        let up_flag = libc::c_short::try_from(libc::IFF_UP).expect("IFF_UP is a short flag");
         request.ifr_ifru.ifru_flags = if up {
             flags | up_flag
         } else {
@@ -244,7 +254,7 @@ mod netns {
         let mut request = request(name);
         // SAFETY: `sockaddr_in` is plain data; all zeroes is a valid value.
         let mut sin: libc::sockaddr_in = unsafe { std::mem::zeroed() };
-        sin.sin_family = libc::AF_INET as libc::sa_family_t;
+        sin.sin_family = libc::sa_family_t::try_from(libc::AF_INET).expect("AF_INET fits");
         sin.sin_addr.s_addr = u32::from_ne_bytes(addr.octets());
         // SAFETY: `sockaddr_in` fits in the `sockaddr` member and both are
         // plain data.
