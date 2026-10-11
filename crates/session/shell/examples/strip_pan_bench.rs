@@ -30,7 +30,8 @@
 //!
 //! Without a selection the cases are 1080p and 4K, three and six windows, at
 //! 100 % on one strip (pans and strip moves), then 4K with six windows at
-//! 150 % and 200 % on one strip and at 100 % and 200 % on two strips (pans).
+//! 150 % and 200 % on one strip (pans and strip moves) and at 100 % and 200 %
+//! on two strips (pans).
 //! A selection flag runs every combination of the values it names with the
 //! defaults of the others. `--size` names the panel in device pixels; at a
 //! scale the desktop is laid out at the panel's size divided by it.
@@ -142,7 +143,7 @@ fn selected_cases(
 
 /// 1080p and 4K with three and six windows at 100 % on one strip (pans and
 /// strip moves), then 4K with six windows at 150 % and 200 % on one strip
-/// and at 100 % and 200 % on two strips (pans).
+/// (pans and strip moves) and at 100 % and 200 % on two strips (pans).
 fn default_cases() -> Vec<Case> {
     let mut cases = selected_cases(None, None, None, None);
     let (size_name, size) = FOUR_K;
@@ -153,7 +154,9 @@ fn default_cases() -> Vec<Case> {
             windows: 6,
             scale,
             strips,
-            strip_moves: false,
+            // Strip moves need a second strip of their own: measured from
+            // the one-strip cases.
+            strip_moves: strips == 1,
         });
     }
     cases
