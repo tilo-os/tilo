@@ -69,6 +69,10 @@ collect() {
   # alone says why a session ended right after login.
   "$vm" ssh 'cat "$HOME"/.local/state/tilo/session-logs/*.log' \
     > "$out/compositor-session.log" 2>&1 || true
+  # A compositor killed by a signal leaves no stack in its own log; the
+  # kernel names the faulting thread and module.
+  "$vm" ssh 'journalctl -k -b --no-pager -o short-monotonic -n 400' \
+    > "$out/kernel-journal.txt" 2>&1 || true
   "$vm" ssh "ls -la $identity_dir /var/lib/tilo /var/lib/tilo/device /var/lib/tilo/device/certs \
     /var/lib/tilo/device-private /var/lib/tilo/user-identity; id" \
     > "$out/identity-layout.txt" 2>&1 || true
@@ -176,6 +180,11 @@ identity_manifest="cd $identity_dir && find . -printf '%p %y %m %i %s %T@\n' | L
   || die "could not record the identity directory"
 "$vm" ssh '/usr/libexec/tilo/installed-atspi-apps.sh open Notes' > "$out/notes-open.txt" 2>&1 || {
   cat "$out/notes-open.txt" >&2
+  # A desktop that died under the launch leaves no app to find on the bus;
+  # say that, with the status the session wrapper recorded, rather than
+  # blame the app.
+  session_end="$("$vm" ssh 'grep -a "^tilo-flight-record-v1 end=" "$HOME/.local/state/tilo/session-logs/latest.log"' 2>/dev/null || true)"
+  [ -z "$session_end" ] || die "the desktop session ended while Notes opened: $session_end"
   die "Notes did not open on the joined device"
 }
 "$vm" ssh "$identity_manifest" > "$out/identity-after-notes.txt" \
