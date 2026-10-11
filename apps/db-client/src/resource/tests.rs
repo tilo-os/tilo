@@ -412,25 +412,12 @@ fn history_entries_render_as_the_apps_sentences() {
     )
     .expect_err("removing asks for confirmation");
 
-    let english = LOCALES
-        .iter()
-        .find(|(locale, _)| *locale == "en-US")
-        .map(|(_, source)| *source)
-        .unwrap();
-    let catalogue = tilo_history::Catalogue::new("en-US", &[english]);
-    let reader = tilo_history::Reader::new("en-US").with_app(&catalogue);
-    let sentences: Vec<String> = app
-        .versions()
-        .into_iter()
-        .filter_map(|version| version.context)
-        .filter(|entry| {
-            entry
-                .invoker
-                .as_ref()
-                .is_some_and(|invoker| invoker.actor == "agent:claude")
-        })
-        .map(|entry| reader.sentence(&entry))
-        .collect();
+    let sentences = app.sentences(app.history().iter().filter(|entry| {
+        entry
+            .invoker
+            .as_ref()
+            .is_some_and(|invoker| invoker.actor == "agent:claude")
+    }));
     assert_eq!(
         sentences,
         [

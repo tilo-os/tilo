@@ -993,9 +993,8 @@ mod editor_sql_tests {
     /// The SQL buffer's edits in history: those naming the SQL as the field
     /// edited.
     fn sql_edits(app: &TestApp<DbClientShell>) -> usize {
-        app.versions()
+        app.history()
             .into_iter()
-            .filter_map(|version| version.context)
             .filter(|context| matches!(&context.what, Some(Did::Edit(edit)) if edit.field == "sql"))
             .count()
     }

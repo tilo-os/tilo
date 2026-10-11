@@ -119,21 +119,12 @@ fn history_entries_render_as_the_apps_sentences() {
         serde_json::json!({"capture": serde_json::to_value(capture("IMG_9.jpg", "Pier")).unwrap()}),
     )
     .unwrap();
-    let source = crate::LOCALES[0].1;
-    let catalogue = tilo_history::Catalogue::new("en-US", &[source]);
-    let reader = tilo_history::Reader::new("en-US").with_app(&catalogue);
-    let sentences: Vec<String> = app
-        .versions()
-        .into_iter()
-        .filter_map(|version| version.context)
-        .filter(|entry| {
-            entry
-                .invoker
-                .as_ref()
-                .is_some_and(|invoker| invoker.actor == "agent:claude")
-        })
-        .map(|entry| reader.sentence(&entry))
-        .collect();
+    let sentences = app.sentences(app.history().iter().filter(|entry| {
+        entry
+            .invoker
+            .as_ref()
+            .is_some_and(|invoker| invoker.actor == "agent:claude")
+    }));
     assert_eq!(
         sentences,
         ["Scanned https://tilo.test", "Handed off a new capture"]

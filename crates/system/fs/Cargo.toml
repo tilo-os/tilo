@@ -8,6 +8,10 @@ repository.workspace = true
 homepage.workspace = true
 description = "Portable content-addressed storage and the default Tilo filesystem service."
 
+[package.metadata.cargo-machete]
+# Used only as `#[serde(with = "serde_bytes")]`, a string machete does not read.
+ignored = ["serde_bytes"]
+
 [lib]
 name = "fs"
 path = "src/lib.rs"
