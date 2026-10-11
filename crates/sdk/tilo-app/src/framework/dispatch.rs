@@ -406,6 +406,34 @@ impl<R: Resource> Dispatcher<R> {
         );
     }
 
+    /// Whether the person at this device may do `effect` at once, as their
+    /// own gesture on the surface: a shortcut, a pointer gesture, a row of
+    /// the surface's own menu, whose arguments the gesture itself supplied
+    /// (the clipboard they paste). Like a keystroke, such a gesture is its
+    /// own confirmation, so a surface told `true` performs the effect
+    /// itself. The confirmation a destructive declaration asks for stays
+    /// with the callers who supply its arguments — the palette, a script,
+    /// an agent — because automation is the same door: under any
+    /// invocation (an invoked action, an effect's handler or completion, a
+    /// dispatcher lent to one) this is `false`, and the surface submits
+    /// the effect ([`Self::effect`]) for the host to check and confirm as
+    /// for any caller. So it is in a past version, and when the
+    /// participant's role does not grant what the declaration needs.
+    pub fn is_own_gesture<E: Effect>(&self, effect: &E) -> bool {
+        if self.past
+            || self.custody.is_some()
+            || super::effect::acting_for().is_some()
+            || ui_core::invocation_scope::current_invoker().is_some()
+        {
+            return false;
+        }
+        let id = effect.id();
+        E::declarations()
+            .iter()
+            .find(|decl| decl.id == id)
+            .is_some_and(|decl| self.may(decl.permission))
+    }
+
     /// Invoke `effect` as the live row `row` offers it
     /// ([`LiveRow::effect`](super::LiveRow::effect)): under the row's
     /// contract, so a confirmation the row asks for (typing the name of the

@@ -1489,6 +1489,105 @@ fn clipboard_gestures_route_through_confirmed_actions() {
     }
 }
 
+/// In a session the framework hosts, the person's own paste — the shortcut
+/// or the menu row — reaches the process at once, while the published Paste
+/// a script or an agent invokes still waits for confirmation.
+#[test]
+#[serial_test::serial]
+fn person_paste_is_immediate_while_published_paste_asks_for_confirmation() {
+    use crate::resource::TerminalEffect;
+    use vello::kurbo::Point;
+    let mut app = ui::framework::testing::TestApp::<crate::resource::TerminalShell>::new()
+        .expect("terminal");
+    let writes = app
+        .with_surface(|terminal: &mut TerminalWidget| {
+            terminal.accept_input_for_test();
+            terminal.attach_input_probe()
+        })
+        .expect("hosted terminal");
+    app.settle();
+
+    // Diagnostics: the framework's own-gesture verdict and the direct path.
+    let (own, direct) = app
+        .with_surface(|terminal: &mut TerminalWidget| {
+            let probe = TerminalEffect::Paste { text: "d".into() };
+            (
+                terminal.own_gesture_verdict(&probe),
+                terminal.perform(probe),
+            )
+        })
+        .expect("hosted terminal");
+    assert_eq!((own, direct), (Some(true), Ok(())));
+    let _ = drain_writes(&writes);
+
+    // Case `ctrl_shift_v_pastes_without_confirmation`.
+    ui::clipboard_copy("person shortcut paste");
+    app.with_surface(|terminal: &mut TerminalWidget| {
+        use winit::keyboard::{Key, NamedKey, SmolStr};
+        let mut doc = AutoCommit::new();
+        terminal.set_focus(true);
+        send_key(
+            terminal,
+            &mut doc,
+            Key::Character(SmolStr::new_static("V")),
+            true,
+            true,
+        );
+        // Case `shift_insert_pastes_without_confirmation`.
+        send_key(terminal, &mut doc, Key::Named(NamedKey::Insert), false, true);
+    })
+    .expect("hosted terminal");
+    app.settle();
+    assert_eq!(
+        drain_writes(&writes),
+        b"person shortcut pasteperson shortcut paste",
+        "the person's Ctrl+Shift+V and Shift+Insert paste with no confirmation step"
+    );
+
+    // Case `context_menu_paste_pastes_without_confirmation`.
+    ui::clipboard_copy("person menu paste");
+    app.with_surface(|terminal: &mut TerminalWidget| {
+        terminal.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
+        terminal.open_context_menu_at(Point::new(20.0, 20.0));
+        let paste = terminal
+            .context_menu_labels()
+            .iter()
+            .position(|item| item == "Paste")
+            .expect("menu has Paste");
+        terminal.activate_menu_row_for_test(paste);
+    })
+    .expect("hosted terminal");
+    app.settle();
+    assert_eq!(drain_writes(&writes), b"person menu paste");
+
+    // Case `agent_and_script_paste_still_ask_for_confirmation`.
+    let paste = TerminalEffect::Paste {
+        text: "invoked paste".into(),
+    };
+    assert!(
+        matches!(
+            app.effect_by("agent:paste-test", &paste),
+            Err(ui::tilo_actions::DoorError::ConfirmationRequired)
+        ),
+        "an agent's paste waits for confirmation"
+    );
+    assert!(
+        matches!(
+            app.effect(&paste),
+            Err(ui::tilo_actions::DoorError::ConfirmationRequired)
+        ),
+        "a script's or the palette's paste waits for confirmation"
+    );
+    app.settle();
+    assert!(
+        drain_writes(&writes).is_empty(),
+        "an unconfirmed paste never reaches the process"
+    );
+    app.effect_confirmed(&paste).expect("confirmed paste");
+    app.settle();
+    assert_eq!(drain_writes(&writes), b"invoked paste");
+}
+
 // ---------------------------------------------------------------
 // Scrollback viewing — real VT bytes through `feed`/`sync`.
 // ---------------------------------------------------------------

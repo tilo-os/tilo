@@ -1618,6 +1618,19 @@ impl TerminalWidget {
         self.banner_rect
     }
 
+    /// A hosted terminal in a test has no process behind it and starts
+    /// disconnected; this lets its input reach an attached probe.
+    #[cfg(test)]
+    pub(crate) fn accept_input_for_test(&self) {
+        self.session_disconnected.store(false, Ordering::Release);
+    }
+
+    /// The framework's verdict on `effect` as this terminal's own gesture.
+    #[cfg(test)]
+    pub(crate) fn own_gesture_verdict(&self, effect: &crate::resource::TerminalEffect) -> Option<bool> {
+        self.dispatch.as_ref().map(|d| d.is_own_gesture(effect))
+    }
+
     /// Tee subsequent PTY writes so a compositor-path test can see them.
     #[cfg(any(test, debug_assertions))]
     pub fn attach_input_probe(&self) -> std::sync::mpsc::Receiver<Vec<u8>> {
@@ -2402,18 +2415,23 @@ impl TerminalWidget {
         }
     }
 
-    /// Ask for `effect` as the person's own gesture: through the session's
-    /// host, which checks their role and asks for confirmation as it would
-    /// for any caller, or — for a terminal that has no session record —
-    /// directly.
+    /// Do `effect` as the person's own gesture: a shortcut, a click or a
+    /// menu row in this terminal. Like a keystroke, it reaches the process
+    /// at once when the framework says it is the person's own gesture
+    /// ([`Dispatcher::is_own_gesture`](ui::framework::Dispatcher::is_own_gesture)):
+    /// the person pasting their own clipboard already chose the text. Under
+    /// any invocation, or when the role does not allow it, it goes through
+    /// the session's host, which checks and confirms as for any caller; a
+    /// terminal with no session record performs it directly.
     fn submit_effect(&mut self, effect: crate::resource::TerminalEffect) {
-        match &self.dispatch {
-            Some(dispatch) => dispatch.effect(&effect),
-            None => {
-                if let Err(error) = self.perform(effect) {
-                    tracing::warn!(%error, "terminal gesture failed");
-                }
-            }
+        if let Some(dispatch) = &self.dispatch
+            && !dispatch.is_own_gesture(&effect)
+        {
+            dispatch.effect(&effect);
+            return;
+        }
+        if let Err(error) = self.perform(effect) {
+            tracing::warn!(%error, "terminal gesture failed");
         }
     }
 }
