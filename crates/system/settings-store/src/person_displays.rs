@@ -917,7 +917,7 @@ impl PersonDisplays {
     pub fn save_at(&self, path: &Path) -> std::io::Result<()> {
         // Equality includes the publisher identity and every output fact.
         // A regular observation is reusable only under its current live lease.
-        if std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_file())
+        if tilo_files::native::is_regular_file(path).unwrap_or(false)
             && Self::load_at(path).as_ref() == Some(self)
         {
             return Ok(());
