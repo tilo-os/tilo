@@ -38,8 +38,6 @@ blake3.workspace = true
 ui = { version = "0.1.0", package = "tilo-ui", path = "../../sdk/ui-core", default-features = false, optional = true }
 # The browser is a channel member device, as native peers are.
 channel-crypto = { version = "0.1.0", path = "../../collab/channel-crypto" }
-# The HTTPS carrier on the platform HTTP stack (`NetHttp`).
-tilo-net = { version = "0.1.0", path = "../../platform/tilo-net", optional = true, features = ["http"] }
 
 [features]
 default = ["iroh"]
@@ -47,8 +45,6 @@ default = ["iroh"]
 # without it, so the wasm bundle links no iroh.
 iroh = ["dep:iroh", "dep:iroh-base", "dep:tilo-relay-session", "tilo-relay-client/iroh"]
 toolkit = ["dep:ui"]
-# `NetHttp`: `HttpClient` over `tilo_net::Client`, on every target.
-net = ["dep:tilo-net"]
 
 [dev-dependencies]
 tilo-automerge-isolate.workspace = true
