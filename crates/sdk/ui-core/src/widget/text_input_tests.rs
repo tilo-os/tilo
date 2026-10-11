@@ -4547,3 +4547,84 @@ fn single_line_batch_metrics_preserve_graphemes_preedit_and_theme_geometry() {
         }
     }
 }
+
+#[test]
+fn read_only_text_selects_and_copies_but_never_changes() {
+    let mut ti = TextInput::local()
+        .with_initial_value("read me")
+        .with_read_only(true);
+    ti.set_focus(true);
+    ti.set_cursor_pos(7);
+    let mut doc = AutoCommit::new();
+    for key in [
+        char_key("x"),
+        named_key(NamedKey::Backspace),
+        named_key(NamedKey::Enter),
+    ] {
+        assert!(
+            !drive(&mut ti, &mut doc, &key, Modifiers::default()),
+            "an edit key is left to the app"
+        );
+    }
+    assert!(!drive(
+        &mut ti,
+        &mut doc,
+        &crate::synthetic_input::key_press(Key::Character("v".into()), None),
+        mods(true, false)
+    ));
+    assert_eq!(ti.value(), "read me");
+    assert!(drive(
+        &mut ti,
+        &mut doc,
+        &named_key(NamedKey::ArrowLeft),
+        mods(false, true)
+    ));
+    assert_eq!(
+        ti.selection_range(),
+        Some((6, 7)),
+        "shift+Left still selects"
+    );
+}
+
+#[test]
+fn read_only_text_links_its_addresses_and_the_ranges_it_is_given() {
+    let ti = TextInput::local()
+        .with_initial_value("see https://example.com/a, or www.example.org and click here")
+        .with_read_only(true);
+    let at = |needle: &str| ti.text.find(needle).unwrap();
+    assert_eq!(
+        ti.link_at(at("example.com")).as_deref(),
+        Some("https://example.com/a")
+    );
+    assert_eq!(
+        ti.link_at(at("example.org")).as_deref(),
+        Some("https://www.example.org"),
+        "a bare host opens over https"
+    );
+    assert_eq!(ti.link_at(at("see")), None);
+
+    let here = at("click here");
+    let ti = ti.with_links(vec![(here..here + 10, "https://example.net/x".into())]);
+    assert_eq!(
+        ti.link_at(here + 2).as_deref(),
+        Some("https://example.net/x")
+    );
+
+    let editable = TextInput::local().with_initial_value("https://example.com");
+    assert_eq!(editable.link_at(3), None, "an editable field links nothing");
+}
+
+#[test]
+fn only_the_web_and_mail_open_from_a_link() {
+    use crate::text_detect::Detected;
+    assert_eq!(
+        link_target(Detected::Url, "javascript://x/%0aalert(1)"),
+        None
+    );
+    assert_eq!(link_target(Detected::Url, "ftp://example.com"), None);
+    assert_eq!(
+        link_target(Detected::Email, "me@example.com").as_deref(),
+        Some("mailto:me@example.com")
+    );
+    assert_eq!(link_target(Detected::Mention, "@ilya"), None);
+}
