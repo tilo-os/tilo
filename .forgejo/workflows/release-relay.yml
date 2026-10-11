@@ -104,7 +104,10 @@ on:
       - "os/dev/verify-rpm-snapshot-package-set.sh"
       - "os/tests/test_rpm_snapshot_buildkit.py"
       - "vendor/automerge/**"
+      - "vendor/iroh/**"
+      - "vendor/iroh-gossip/**"
       - "vendor/genawaiter-proc-macro/**"
+      - "vendor/netwatch/**"
       - "vendor/wayland-backend/**"
   pull_request:
     branches: ["main"]
@@ -203,7 +206,10 @@ on:
       - "os/dev/verify-rpm-snapshot-package-set.sh"
       - "os/tests/test_rpm_snapshot_buildkit.py"
       - "vendor/automerge/**"
+      - "vendor/iroh/**"
+      - "vendor/iroh-gossip/**"
       - "vendor/genawaiter-proc-macro/**"
+      - "vendor/netwatch/**"
       - "vendor/wayland-backend/**"
   workflow_dispatch:
     inputs:

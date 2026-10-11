@@ -631,8 +631,28 @@ struct BufferProperties {
 
 #[derive(Default)]
 struct ResourcePool {
-    bufs: HashMap<BufferProperties, Vec<Buffer>>,
+    /// Free buffers per size class, each with the recording that returned it.
+    bufs: HashMap<BufferProperties, Vec<(Buffer, u64)>>,
+    /// Recordings run so far: the clock free buffers are stamped with.
+    recordings: u64,
+    /// Destroy free buffers no recording has taken for this many recordings;
+    /// `None` keeps them until the pool is cleared (upstream).
+    keep: Option<u64>,
+    /// Recordings left in which [`POOL_KEEP_SOON`] applies instead.
+    soon: u64,
 }
+
+/// Recordings a free buffer may go untaken before it is destroyed, in an
+/// engine that opted in ([`WgpuEngine::set_pool_keep`]). A size class every
+/// frame asks for is taken every frame; one a larger scene asked for is not
+/// asked for again once the scene got smaller.
+pub(crate) const POOL_KEEP_RECORDINGS: u64 = 120;
+/// The same for the recordings after [`WgpuEngine::shrink_pool_soon`]: a
+/// window closed, and an idle desktop draws few frames after it. Still a few
+/// frames' worth: a frame may record a blur, a second pass and each output.
+const POOL_KEEP_SOON: u64 = 16;
+/// Recordings a soon request stays live for.
+const POOL_SOON_RECORDINGS: u64 = 64;
 
 /// The transient bind map contains short-lifetime resources.
 ///
@@ -2783,7 +2803,7 @@ impl WgpuEngine {
                             usages: gpu_buf.usage(),
                             name: buf.label,
                         };
-                        self.pool.bufs.entry(props).or_default().push(gpu_buf);
+                        self.pool.put(props, gpu_buf);
                     }
                     MaterializedBuffer::Cpu(cpu_buf) => match buf.label {
                         CPU_PATHTAG_REDUCED_LABEL | CPU_PATHTAG_MONOID_LABEL
@@ -2820,7 +2840,40 @@ impl WgpuEngine {
                 texture.destroy();
             }
         }
+        self.release_unused_pool();
         Ok(submission)
+    }
+
+    /// Destroy the free buffers [`ResourcePool::end_recording`] found unused,
+    /// with the cached bind groups that name them.
+    fn release_unused_pool(&mut self) {
+        let unused = self.pool.end_recording();
+        if unused.is_empty() {
+            return;
+        }
+        self.bind_group_cache.retain(|key, _| {
+            !key.resources.iter().any(|resource| {
+                matches!(resource, BoundResource::Buffer(bound, _, _) if unused.contains(bound))
+            })
+        });
+        for buffer in unused {
+            buffer.destroy();
+        }
+    }
+
+    /// Destroy free buffers no recording has taken for `keep` recordings
+    /// (see [`POOL_KEEP_RECORDINGS`]); `None` keeps them until
+    /// [`Self::clear_pool`], as upstream does.
+    pub(crate) fn set_pool_keep(&mut self, keep: Option<u64>) {
+        self.pool.keep = keep;
+    }
+
+    /// The scene got smaller for good: for the next few recordings, free
+    /// buffers go after [`POOL_KEEP_SOON`] recordings untaken.
+    pub(crate) fn shrink_pool_soon(&mut self) {
+        if self.pool.keep.is_some() {
+            self.pool.soon = POOL_SOON_RECORDINGS;
+        }
     }
 
     pub fn get_download(&self, buf: BufferProxy) -> Option<&Buffer> {
@@ -2845,7 +2898,7 @@ impl WgpuEngine {
         // On WebGPU a dropped buffer lives until JavaScript collects it, so a
         // cleared pool would stay resident beside its replacements. destroy()
         // waits for submitted work that still uses the buffer.
-        for buffer in self.pool.bufs.drain().flat_map(|(_, buffers)| buffers) {
+        for (buffer, _) in self.pool.bufs.drain().flat_map(|(_, buffers)| buffers) {
             buffer.destroy();
         }
         self.cpu_pathtag_pool.clear();
@@ -2939,7 +2992,7 @@ impl WgpuEngine {
                 usages: buffer.usage(),
                 name: "download",
             };
-            self.pool.bufs.entry(props).or_default().push(buffer);
+            self.pool.put(props, buffer);
         }
     }
 
@@ -3290,7 +3343,7 @@ impl ResourcePool {
             name,
         };
         if let Some(buf_vec) = self.bufs.get_mut(&props)
-            && let Some(buf) = buf_vec.pop()
+            && let Some((buf, _)) = buf_vec.pop()
         {
             return buf;
         }
@@ -3300,6 +3353,41 @@ impl ResourcePool {
             usage,
             mapped_at_creation: false,
         })
+    }
+
+    /// Keep `buf` for reuse, stamped with the current recording.
+    fn put(&mut self, props: BufferProperties, buf: Buffer) {
+        self.bufs
+            .entry(props)
+            .or_default()
+            .push((buf, self.recordings));
+    }
+
+    /// A recording finished: take out every free buffer no recording has
+    /// taken within the keep window, for the caller to destroy. Buffers are
+    /// taken from the end of their list, so the ones left at its start are
+    /// the class's surplus and go first.
+    fn end_recording(&mut self) -> Vec<Buffer> {
+        self.recordings += 1;
+        let keep = if self.soon > 0 {
+            self.soon -= 1;
+            Some(POOL_KEEP_SOON)
+        } else {
+            self.keep
+        };
+        let Some(keep) = keep else {
+            return Vec::new();
+        };
+        let oldest = self.recordings.saturating_sub(keep);
+        let mut unused = Vec::new();
+        self.bufs.retain(|_, bufs| {
+            unused.extend(
+                bufs.extract_if(.., |(_, returned)| *returned < oldest)
+                    .map(|(buf, _)| buf),
+            );
+            !bufs.is_empty()
+        });
+        unused
     }
 
     /// Quantize a size up to the nearest size class.
