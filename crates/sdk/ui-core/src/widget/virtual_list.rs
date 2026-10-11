@@ -336,6 +336,8 @@ pub struct VirtualList<M: ListModel> {
     bleed: f64,
     /// Whether the rows were last laid out beside a scroll bar.
     rows_beside_bar: bool,
+    /// The list takes its parent's height, and its viewport follows it.
+    fill_height: bool,
     last_tick: Option<Instant>,
     last_anchor: Option<SparseAnchor<M::Key>>,
     requested_range: Option<Range<usize>>,
@@ -431,6 +433,7 @@ impl<M: ListModel> VirtualList<M> {
             gutter: f64::from(crate::tokens::Metrics::BASE.scrollbar_gutter),
             bleed: f64::from(crate::tokens::Spacing::BASE.s2),
             rows_beside_bar: false,
+            fill_height: false,
             last_tick: None,
             last_anchor: None,
             requested_range: None,
@@ -480,6 +483,14 @@ impl<M: ListModel> VirtualList<M> {
     pub fn set_viewport_height(&mut self, height: f32) {
         self.viewport.set_viewport(f64::from(height));
         self.visible_window_changed();
+    }
+
+    /// Take the parent's full height (a pane's one list) instead of a fixed
+    /// viewport; the viewport follows the laid-out height.
+    #[must_use]
+    pub fn filling(mut self) -> Self {
+        self.fill_height = true;
+        self
     }
 
     #[must_use]
@@ -1324,7 +1335,11 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
             Style {
                 size: Size {
                     width: percent(1.0_f32),
-                    height: Dimension::length(px(self.viewport.viewport())),
+                    height: if self.fill_height {
+                        percent(1.0_f32)
+                    } else {
+                        Dimension::length(px(self.viewport.viewport()))
+                    },
                 },
                 overflow: taffy::Point {
                     x: taffy::Overflow::Clip,
@@ -1341,6 +1356,13 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = crate::widget::layout_rect(taffy, node, origin);
+        if self.fill_height
+            && self.rect.height() > 0.0
+            && (self.rect.height() - self.viewport.viewport()).abs() > 0.5
+        {
+            self.viewport.set_viewport(self.rect.height());
+            self.visible_window_changed();
+        }
         let child_origin = Point::new(self.rect.x0, self.rect.y0);
         let mut measurements = Vec::with_capacity(self.mounted.len());
         for row in &mut self.mounted {
@@ -2756,6 +2778,50 @@ mod tests {
         let row = short.mounted[0].widget.get_rect();
         assert!((row.x1 - (300.0 - bleed)).abs() < 0.5);
         assert!(short.scrollbar_track().is_none());
+    }
+
+    #[test]
+    fn a_filling_list_takes_its_parents_height_as_its_viewport() {
+        let mut list = plain_rows(1000).filling();
+        let doc = AutoCommit::new();
+        let mut taffy = TaffyTree::new();
+        let mut node_map = HashMap::new();
+        let mut lay_out_in = |list: &mut VirtualList<_>, taffy: &mut TaffyTree<()>| {
+            list.sync(&doc, &automerge::ROOT);
+            taffy.clear();
+            node_map.clear();
+            let node = list.build_layout(taffy, &Theme::dark(), &mut node_map);
+            let parent = taffy
+                .new_with_children(
+                    Style {
+                        size: Size {
+                            width: length(300.0_f32),
+                            height: length(600.0_f32),
+                        },
+                        ..Default::default()
+                    },
+                    &[node],
+                )
+                .unwrap();
+            taffy
+                .compute_layout(
+                    parent,
+                    Size {
+                        width: AvailableSpace::MaxContent,
+                        height: AvailableSpace::MaxContent,
+                    },
+                )
+                .unwrap();
+            list.apply_layout(taffy, node, Point::ZERO);
+        };
+        lay_out_in(&mut list, &mut taffy);
+        assert!((list.get_rect().height() - 600.0).abs() < 0.5);
+        lay_out_in(&mut list, &mut taffy);
+        let rows = list.visible_range();
+        assert!(
+            rows.end * 40 >= 600,
+            "the window covers the height: {rows:?}"
+        );
     }
 
     #[test]
