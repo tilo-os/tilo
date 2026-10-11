@@ -156,6 +156,7 @@ class CiRunMemoryTests(unittest.TestCase):
             bash_command(shell_path(CI_RUN), 'outer tests', '--', 'bash', shell_path(CI_RUN),
                          'inner tests', '--', 'true'),
             cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            env={key: value for key, value in os.environ.items() if key != 'TILO_CI_MEASURE_ACTIVE'},
             timeout=HANG_BOUND, check=False,
         )
         self.assertEqual(result.returncode, 0, result.stdout)
@@ -166,6 +167,7 @@ class CiRunMemoryTests(unittest.TestCase):
             bash_command("-c", 'export TILO_CGROUP_MEMORY_PATH="$1"; exec bash "$2" memory -- bash -c "$3"',
                          "fixture", shell_path(directory), shell_path(CI_RUN), command),
             cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            env={key: value for key, value in os.environ.items() if key != 'TILO_CI_MEASURE_ACTIVE'},
             timeout=HANG_BOUND, check=False,
         )
         self.assertEqual(result.returncode, status, result.stdout)
