@@ -1862,11 +1862,12 @@ impl MouseKeyboardPane {
         {
             return Ok(cache.map.clone());
         }
-        let map = crate::keyboard_preview::map_with_options(
+        let map = crate::keyboard_preview::map_for_form(
             source,
             &input.keyboard_model,
             t("input-map-title"),
             options.as_deref(),
+            crate::keyboard_preview::device_keyboard_is_compact(),
         )?
         .with_input(self.map_input.clone());
         *cache = Some(KeyboardPreviewCache {
