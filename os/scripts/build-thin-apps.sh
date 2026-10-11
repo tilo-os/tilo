@@ -150,7 +150,10 @@ for index in "${!binaries[@]}"; do
         exit 1
     }
     set +e
-    LD_LIBRARY_PATH="$TARGET_DIR/$PROFILE:$rust_target_libdir" \
+    # Every symbol bound at exec, whatever the app was linked with: the
+    # runtime keeps only what something exported reaches, so a missing one
+    # fails here rather than at first use.
+    LD_BIND_NOW=1 LD_LIBRARY_PATH="$TARGET_DIR/$PROFILE:$rust_target_libdir" \
         "$TARGET_DIR/$PROFILE/$binary" --help \
         >/dev/null 2>"$TARGET_DIR/$PROFILE/.${crate}.loader-check.err"
     status=$?

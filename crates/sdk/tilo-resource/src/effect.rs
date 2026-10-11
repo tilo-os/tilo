@@ -119,11 +119,7 @@ pub trait Effect: Sized + 'static {
     /// The published action of every effect offered on the resource: all
     /// but the `row` ones, which are offered only [bound](Self::bound).
     fn specs() -> Vec<ActionSpec> {
-        Self::declarations()
-            .into_iter()
-            .filter(|decl| !decl.row)
-            .map(|decl| decl.spec(Self::OPERATION))
-            .collect()
+        offered_specs(Self::declarations(), Self::OPERATION)
     }
 
     /// This effect with its arguments as one action that takes none: what a
@@ -133,29 +129,7 @@ pub trait Effect: Sized + 'static {
     /// declaration.
     fn bound(&self) -> ActionSpec {
         let id = self.id();
-        let encoded = EncodedAction::encode_operation(
-            Self::OPERATION,
-            &Payload {
-                effect: id.to_owned(),
-                args: self.arguments(),
-            },
-        )
-        .unwrap_or_else(|_| EncodedAction {
-            type_id: Self::OPERATION.to_owned(),
-            payload: Vec::new(),
-        });
-        match Self::declaration(id) {
-            Some(decl) => decl.spec_with(Self::OPERATION, Vec::new(), move |_| encoded.clone()),
-            None => ActionSpec::typed_operation(
-                id,
-                id,
-                id,
-                OperationKind::Effect,
-                Self::OPERATION,
-                Vec::new(),
-                move |_| encoded.clone(),
-            ),
-        }
+        bound_spec(Self::OPERATION, id, Self::declaration(id), self.arguments())
     }
 
     /// This effect bound to the item it acts on, as [`bound`](Self::bound),
@@ -179,58 +153,17 @@ pub trait Effect: Sized + 'static {
     /// file as the choices of `app`.
     fn bound_asking_params(&self, params: Vec<ActionParam>) -> ActionSpec {
         let id = self.id();
-        let Some(decl) = Self::declaration(id) else {
-            return self.bound();
-        };
-        let bound = self.arguments();
-        decl.spec_with(Self::OPERATION, params, move |args| {
-            let mut merged = bound.clone();
-            merged.extend(args.to_json());
-            EncodedAction::encode_operation(
-                Self::OPERATION,
-                &Payload {
-                    effect: id.to_owned(),
-                    args: merged,
-                },
-            )
-            .unwrap_or_else(|_| EncodedAction {
-                type_id: Self::OPERATION.to_owned(),
-                payload: Vec::new(),
-            })
-        })
+        match Self::declaration(id) {
+            Some(decl) => asking_spec(Self::OPERATION, &decl, params, self.arguments()),
+            None => self.bound(),
+        }
     }
 
     /// The effects offered on the item `item` of the collection `field`
     /// (`#[effect(item = field)]`), each with its first parameter bound to
     /// the item and the rest still asked.
     fn item_specs(field: &str, item: &crate::Id) -> Vec<ActionSpec> {
-        Self::declarations()
-            .into_iter()
-            .filter(|decl| decl.item == Some(field))
-            .filter_map(|decl| {
-                let (first, rest) = decl.params.split_first()?;
-                let bound = (
-                    first.name.to_string(),
-                    serde_json::Value::String(item.as_str().to_owned()),
-                );
-                let id = decl.id;
-                Some(decl.spec_with(Self::OPERATION, rest.to_vec(), move |args| {
-                    let mut merged = args.to_json();
-                    merged.insert(bound.0.clone(), bound.1.clone());
-                    EncodedAction::encode_operation(
-                        Self::OPERATION,
-                        &Payload {
-                            effect: id.to_owned(),
-                            args: merged,
-                        },
-                    )
-                    .unwrap_or_else(|_| EncodedAction {
-                        type_id: Self::OPERATION.to_owned(),
-                        payload: Vec::new(),
-                    })
-                }))
-            })
-            .collect()
+        item_specs(Self::declarations(), Self::OPERATION, field, item)
     }
 
     /// Decode one invocation's payload, as the operation's specs encode it.
@@ -250,6 +183,163 @@ struct Payload {
     effect: String,
     #[serde(default)]
     args: serde_json::Map<String, serde_json::Value>,
+}
+
+/// How an encoded invocation's arguments are made of the caller's and the
+/// ones bound to the item the effect was offered on.
+#[derive(Clone, Copy)]
+enum Bound {
+    /// The caller's alone.
+    None,
+    /// The bound ones alone: the spec asks for nothing.
+    Only,
+    /// The bound ones, any the caller gives replacing them.
+    UnderCaller,
+    /// The caller's, the bound ones replacing them.
+    OverCaller,
+}
+
+/// The one encoder of every effect spec: the invocation of effect `effect`
+/// under `operation`, with its arguments made as `mode` says of `bound` and
+/// the caller's.
+fn encoder(
+    operation: &'static str,
+    effect: &'static str,
+    bound: serde_json::Map<String, serde_json::Value>,
+    mode: Bound,
+) -> impl Fn(&tilo_actions::ActionArgs) -> EncodedAction + Send + Sync + 'static {
+    move |args| {
+        let args = match mode {
+            Bound::None => args.to_json(),
+            Bound::Only => bound.clone(),
+            Bound::UnderCaller => {
+                let mut merged = bound.clone();
+                merged.extend(args.to_json());
+                merged
+            }
+            Bound::OverCaller => {
+                let mut merged = args.to_json();
+                merged.extend(
+                    bound
+                        .iter()
+                        .map(|(name, value)| (name.clone(), value.clone())),
+                );
+                merged
+            }
+        };
+        EncodedAction::encode_operation(
+            operation,
+            &Payload {
+                effect: effect.to_owned(),
+                args,
+            },
+        )
+        .unwrap_or_else(|_| EncodedAction {
+            type_id: operation.to_owned(),
+            payload: Vec::new(),
+        })
+    }
+}
+
+/// [`Effect::specs`] of the declarations `decls`.
+fn offered_specs(decls: Vec<EffectDecl>, operation: &'static str) -> Vec<ActionSpec> {
+    decls
+        .into_iter()
+        .filter(|decl| !decl.row)
+        .map(|decl| decl.spec(operation))
+        .collect()
+}
+
+/// [`Effect::bound`] of the effect `id`, declared as `decl`, with `args`.
+fn bound_spec(
+    operation: &'static str,
+    id: &'static str,
+    decl: Option<EffectDecl>,
+    args: serde_json::Map<String, serde_json::Value>,
+) -> ActionSpec {
+    let build = encoder(operation, id, args, Bound::Only);
+    match decl {
+        Some(decl) => decl.spec_with(operation, Vec::new(), build),
+        None => ActionSpec::typed_operation(
+            id,
+            id,
+            id,
+            OperationKind::Effect,
+            operation,
+            Vec::new(),
+            build,
+        ),
+    }
+}
+
+/// [`Effect::bound_asking_params`] of the effect `decl` declares, bound to
+/// `args`, asking `params`.
+fn asking_spec(
+    operation: &'static str,
+    decl: &EffectDecl,
+    params: Vec<ActionParam>,
+    args: serde_json::Map<String, serde_json::Value>,
+) -> ActionSpec {
+    let build = encoder(operation, decl.id, args, Bound::UnderCaller);
+    decl.spec_with(operation, params, build)
+}
+
+/// [`Effect::item_specs`] of the declarations `decls`.
+fn item_specs(
+    decls: Vec<EffectDecl>,
+    operation: &'static str,
+    field: &str,
+    item: &crate::Id,
+) -> Vec<ActionSpec> {
+    decls
+        .into_iter()
+        .filter(|decl| decl.item == Some(field))
+        .filter_map(|decl| {
+            let (first, rest) = decl.params.split_first()?;
+            let bound = serde_json::Map::from_iter([(
+                first.name.to_string(),
+                serde_json::Value::String(item.as_str().to_owned()),
+            )]);
+            let build = encoder(operation, decl.id, bound, Bound::OverCaller);
+            Some(decl.spec_with(operation, rest.to_vec(), build))
+        })
+        .collect()
+}
+
+/// One effect of a derived vocabulary, as a constant: its declaration but for
+/// the parameters, which [`Self::params`] builds. `#[derive(Effect)]` writes
+/// one per variant; [`EffectDecl::of_rows`] and [`EffectDecl::of_row`] read
+/// them, the same code for every vocabulary.
+#[doc(hidden)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each flag is an independent property a declaration states, as the derive's options do"
+)]
+pub struct EffectRow {
+    pub id: &'static str,
+    pub label: &'static str,
+    pub description: &'static str,
+    pub params: fn() -> Vec<ActionParam>,
+    pub kind: OperationKind,
+    pub row: bool,
+    pub answers: Answers,
+    pub risk: RiskLevel,
+    pub idempotent: bool,
+    pub action_kind: ActionKind,
+    pub device_only: bool,
+    pub risk_of: Option<fn(&tilo_actions::ActionArgs) -> RiskLevel>,
+    pub programmatic: bool,
+    pub untrusted: bool,
+    pub participant: bool,
+    pub edits: bool,
+    pub item: Option<&'static str>,
+}
+
+/// The parameters of an effect that takes none.
+#[doc(hidden)]
+#[must_use]
+pub fn no_params() -> Vec<ActionParam> {
+    Vec::new()
 }
 
 /// The declaration of one effect: what callers see of it.
@@ -332,20 +422,44 @@ pub enum Answers {
 impl EffectDecl {
     /// The published action of this effect under `operation`.
     pub fn spec(&self, operation: &'static str) -> ActionSpec {
-        let id = self.id;
-        self.spec_with(operation, self.params.clone(), move |args| {
-            EncodedAction::encode_operation(
-                operation,
-                &Payload {
-                    effect: id.to_owned(),
-                    args: args.to_json(),
-                },
-            )
-            .unwrap_or_else(|_| EncodedAction {
-                type_id: operation.to_owned(),
-                payload: Vec::new(),
-            })
-        })
+        let build = encoder(operation, self.id, serde_json::Map::new(), Bound::None);
+        self.spec_with(operation, self.params.clone(), build)
+    }
+
+    /// Every effect of a derived vocabulary, declared as `rows` say.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn of_rows(rows: &'static [EffectRow]) -> Vec<Self> {
+        rows.iter().map(Self::of_row).collect()
+    }
+
+    /// The effect `id` of a derived vocabulary declared as `rows` say.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn find_row(rows: &'static [EffectRow], id: &str) -> Option<Self> {
+        rows.iter().find(|row| row.id == id).map(Self::of_row)
+    }
+
+    fn of_row(row: &EffectRow) -> Self {
+        Self {
+            id: row.id,
+            label: row.label,
+            description: row.description,
+            params: (row.params)(),
+            kind: row.kind,
+            row: row.row,
+            answers: row.answers,
+            risk: row.risk,
+            idempotent: row.idempotent,
+            action_kind: row.action_kind,
+            device_only: row.device_only,
+            risk_of: row.risk_of,
+            programmatic: row.programmatic,
+            untrusted: row.untrusted,
+            participant: row.participant,
+            edits: row.edits,
+            item: row.item,
+        }
     }
 
     /// The published action of this effect, taking `params` and encoding
