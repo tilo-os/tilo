@@ -298,6 +298,8 @@ fn every_operation_is_a_published_action() {
         .expect("the drafts are a published resource");
     for action in [
         "new-draft",
+        "draft-shortcut",
+        "set-schedule",
         "add-step",
         "set-argument",
         "remove-step",
@@ -596,4 +598,114 @@ fn a_saved_shortcut_opens_its_page_runs_with_its_inputs_and_a_run_leads_back() {
     app.harness()
         .wait_for_named("run-quick-note", tilo_test_env::hang_bound())
         .expect("the run opens the shortcut it started");
+}
+
+#[test]
+fn morning_refresh_draft_requires_schedule_choice_and_keyboard_save_review() {
+    let mut fixture = FakeHost::new();
+    let mut refresh = row(
+        "weather",
+        "so.tilo.weather",
+        "weather.location:fixture",
+        "weather.location",
+        "refresh",
+        Vec::new(),
+        PermissionRequirement::Read,
+        ResultSpec::Job,
+    );
+    refresh.resource.label = "Chosen weather".into();
+    refresh.action.as_mut().unwrap().kind = OperationKind::Effect;
+    refresh.action.as_mut().unwrap().resource_label = "Chosen weather".into();
+    fixture.rows.push(refresh);
+    let (host, _guard, mut app) = open_with(fixture);
+    app.invoke(Workbench::DRAFT_SHORTCUT.with(json!({
+        "id": "fixture-refresh", "name": "Refresh chosen weather", "steps": [{"id": "refresh", "step": "invoke", "app_id": "so.tilo.weather", "resource": {"fixed": "weather.location:fixture"}, "action": "refresh"}]
+    }))).unwrap();
+    act(&mut app, "schedule-enabled", &Action::Focus);
+    assert!(host.library_calls("create").is_empty());
+    assert!(
+        app.state()
+            .drafts
+            .values()
+            .next()
+            .unwrap()
+            .program()
+            .triggers
+            .is_empty()
+    );
+    act(&mut app, "schedule-enabled", &Action::ToggleCheck);
+    act(&mut app, "schedule-hour", &Action::SetValue("09".into()));
+    act(&mut app, "schedule-minute", &Action::SetValue("15".into()));
+    let program = app.state().drafts.values().next().unwrap().program();
+    assert_eq!(
+        program.triggers,
+        vec![tilo_automation::TriggerSpec::Schedule {
+            schedule: tilo_automation::Schedule::Calendar {
+                at: tilo_automation::TimeOfDay {
+                    hour: 9,
+                    minute: 15
+                },
+                weekdays: Vec::new()
+            },
+            catch_up: tilo_automation::CatchUp::RunOnce
+        }]
+    );
+    assert!(
+        host.library_calls("create").is_empty(),
+        "schedule choice edits only the draft"
+    );
+    let output = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/morning-refresh-renders");
+    std::fs::create_dir_all(&output).unwrap();
+    render_morning_matrix(&mut app, &output, "draft");
+    app.harness().set_theme(ui::Theme::light());
+    app.harness().resize((1600, 1000)).unwrap();
+    act(&mut app, "review-save", &Action::Activate);
+    app.harness()
+        .expect(
+            &SemanticExpectation::named("schedule-review-0")
+                .name(ui::i18n::I18nManager::format(
+                    "shortcuts-schedule-review",
+                    &[("time", ui::i18n::ArgValue::from("09:15"))],
+                ))
+                .within(tilo_test_env::hang_bound()),
+        )
+        .expect("the actual save review must disclose the chosen schedule");
+    render_morning_matrix(&mut app, &output, "review");
+    app.harness().set_theme(ui::Theme::light());
+    app.harness().resize((1600, 1000)).unwrap();
+    act(&mut app, "shortcuts-save-sheet.primary", &Action::Focus);
+    app.harness().key("Enter");
+    let saved = host.library_calls("create");
+    assert_eq!(saved.len(), 1);
+    let saved: tilo_automation::Shortcut =
+        serde_json::from_value(saved[0]["shortcut"].clone()).unwrap();
+    assert_eq!(saved.triggers, program.triggers);
+    assert_eq!(
+        saved.grant,
+        vec![collab_types::PermissionProfileRule::grant(
+            collab_types::Scope::Action {
+                app: "so.tilo.weather".into(),
+                resource: "weather.location:fixture".into(),
+                action: "refresh".into()
+            },
+            collab_types::Verb::Read
+        )]
+    );
+    assert!(saved.consents.is_empty());
+}
+
+fn render_morning_matrix(app: &mut TestApp<App>, output: &std::path::Path, page: &str) {
+    for (name, theme) in [
+        ("light", ui::Theme::light()),
+        ("dark", ui::Theme::dark()),
+        ("hc200", ui::Theme::high_contrast().with_text_scale(2.0)),
+    ] {
+        for (size, width, height) in [("normal", 1600, 1000), ("compact", 640, 900)] {
+            app.harness().set_theme(theme.clone());
+            app.harness().resize((width, height)).unwrap();
+            app.harness()
+                .render_png(&output.join(format!("{name}-{size}-{page}.png")));
+        }
+    }
 }
