@@ -170,6 +170,7 @@ impl NativeDocumentReads for NativeOwnerCommitService {
                 revision: document.revision,
                 body: Box::new(Captured(document.bytes)),
             },
+            DocumentRead::CheckpointPending => NativeDocumentRead::Pending,
         })
     }
 }

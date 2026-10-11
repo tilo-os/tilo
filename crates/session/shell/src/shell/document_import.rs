@@ -120,6 +120,9 @@ impl HostedRooms for NativeHostedRooms {
             )? {
                 DocumentRead::Captured(document) => Ok(document.bytes),
                 DocumentRead::Unchanged(_) => Err("nothing was read".into()),
+                DocumentRead::CheckpointPending => {
+                    Err("the record's checkpoint is still arriving".into())
+                }
             }
         })
     }
