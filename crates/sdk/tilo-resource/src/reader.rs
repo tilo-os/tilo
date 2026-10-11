@@ -259,7 +259,21 @@ impl<R: Resource> Reader<R> {
                 None
             }
             _ => {
-                let mut state = R::read(doc)?;
+                // A view still holds the last state: bring a copy up to date
+                // rather than read the whole document again.
+                let copied = (!delta.is_everything())
+                    .then(|| R::copy_state(&self.state))
+                    .flatten();
+                let mut state = match copied {
+                    Some(mut copy) => {
+                        if R::refresh(&mut copy, doc, delta).is_err() {
+                            copy = R::read(doc)?;
+                            applied = Delta::everything();
+                        }
+                        copy
+                    }
+                    None => R::read(doc)?,
+                };
                 R::load(&mut state, doc, &self.demand)?;
                 Some(state)
             }

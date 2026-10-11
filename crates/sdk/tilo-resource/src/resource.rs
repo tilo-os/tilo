@@ -75,6 +75,15 @@ pub trait Resource: Sized + 'static {
         Ok(())
     }
 
+    /// A copy of `state` for [`refresh`](Self::refresh) to bring up to date
+    /// while the state the reader holds is shared (a view still holds the
+    /// last one): refreshing a copy reads only what a change touched, where
+    /// without one the state is read whole. `#[resource]` copies a `Clone`
+    /// record; the default has none.
+    fn copy_state(_state: &Self::State) -> Option<Self::State> {
+        None
+    }
+
     /// Opt in to reusing the document-owned publication between changes.
     ///
     /// Return an epoch for every non-document input used by declarations,

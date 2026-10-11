@@ -1774,6 +1774,12 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
                 <Self as #krate::Fields>::read_fields(doc, &#krate::__private::ROOT)
             }
 
+            fn copy_state(state: &Self) -> ::core::option::Option<Self> {
+                #[allow(unused_imports, reason = "only one of the two snapshot traits applies to a given record")]
+                use #krate::__private::{SnapshotByClone as _, SnapshotUnavailable as _};
+                (&&#krate::__private::Snapshot(state)).snapshot()
+            }
+
             fn refresh(
                 state: &mut Self,
                 doc: &#krate::Doc,
