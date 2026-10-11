@@ -13,10 +13,13 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from acceptance import gpu  # noqa: E402
+from acceptance.checks import apps  # noqa: E402
 from acceptance.checks.apps import (FLAT_STDDEV, AppLaunch, Proc, app_launch,  # noqa: E402
                                     first_textured, lingering, parse_procs)
 from acceptance.checks.startup import (ATSPI_PROBE, first_frame_budget, judge_listing,  # noqa: E402
@@ -139,6 +142,124 @@ class AttributionTests(unittest.TestCase):
     def test_a_parent_cycle_ends_the_walk(self):
         table = {2: Proc("b", 3, 50), 3: Proc("c", 2, 50)}
         self.assertFalse(AppLaunch(frozenset({99}), frozenset()).owns(3, table[3], table))
+
+
+
+def undo_toast(title, body="Select to undo, or press Ctrl+Shift+T later", **fields):
+    return {"title": title, "body": body, "severity": "Info", "persistent": False, **fields}
+
+
+class UndoCloseTests(unittest.TestCase):
+    def test_only_captured_titles_match_independent_of_reopen_binding(self):
+        titles = {"Wine File", "Wine Mono Installer"}
+        for heading, body in [
+            ("Closed Wine File", "Select to undo, or press Ctrl+Shift+T later"),
+            ("Closed Wine Mono Installer", "Select to undo, or press Alt+R later"),
+            ("Closed Wine Mono Installer", "Select to undo"),
+            ("Wine Mono Installer geschlossen", "Zum Rückgängigmachen auswählen oder später Strg+Umschalt+T drücken"),
+            ("Wine File geschlossen", "Zum Rückgängigmachen auswählen"),
+        ]:
+            with self.subTest(heading=heading, body=body):
+                self.assertTrue(any(apps._is_undo_close(undo_toast(heading, body), title) for title in titles))
+
+    def test_unrelated_titles_and_non_undo_messages_are_rejected(self):
+        for heading, body in [
+            ("Closed Notes", "Select to undo, or press Super+Shift+T later"),
+            ("Closed Wine File backup", "Select to undo"),
+            ("Wine File crashed", "Select to undo, or press Super+Shift+T later"),
+            ("Closed Wine File", "Wine File crashed"),
+            ("Wine File updated", "Select to undo"),
+        ]:
+            with self.subTest(heading=heading, body=body):
+                self.assertFalse(apps._is_undo_close(undo_toast(heading, body), "Wine File"))
+
+    def test_errors_and_persistent_toasts_are_rejected_even_for_closed_titles(self):
+        for fields in [{"severity": "Error"}, {"severity": "Warning"}, {"persistent": True}]:
+            with self.subTest(fields=fields):
+                self.assertFalse(apps._is_undo_close(undo_toast("Closed Wine File", **fields), "Wine File"))
+
+    def test_missing_or_empty_titles_cannot_match_a_reopen_hint(self):
+        for title in [None, "", "   "]:
+            with self.subTest(title=title):
+                self.assertFalse(apps._is_undo_close(undo_toast("Closed ", "Select to undo, or press Super+Shift+T later"), title))
+        for heading in [None, ""]:
+            self.assertFalse(apps._is_undo_close(undo_toast(heading), "Wine File"))
+
+
+class CloseFixture:
+    """VM boundary fixture; run the production close and process/window checks."""
+    def __init__(self, extra_toast=None, cascade=False, processes="", keep_main=False):
+        self.groups = [{"id": 1, "tabs": [{"title": "Existing"}]},
+                       {"id": 2, "tabs": [{"title": "Wine File"}]},
+                       {"id": 3, "tabs": [{"title": "Wine Mono Installer"}]}]
+        self.toasts = [undo_toast("Old notification")]
+        self.extra_toast = extra_toast
+        self.cascade = cascade
+        self.processes = processes
+        self.keep_main = keep_main
+        self.facts = {"groups_before:A07-x11": {1},
+                      "launch:A07-x11": AppLaunch(frozenset({4100}), frozenset({4101}))}
+        self.vm = self
+
+    def state(self):
+        return {"workspace_tree": {"workspaces": [{"strips": [{"window_groups": self.groups}]}]},
+                "chrome": {"notifications": self.toasts}}
+
+    def invoke(self, provider, action):
+        gid = int(action.split(":")[1])
+        closing = [g for g in self.groups if g["id"] == gid or self.cascade and g["id"] == 3]
+        if self.keep_main and gid == 2:
+            return
+        self.groups = [g for g in self.groups if g not in closing]
+        for group in closing:
+            self.toasts.append(undo_toast("Closed " + group["tabs"][0]["title"]))
+        if gid == 2 and self.extra_toast:
+            self.toasts.append(self.extra_toast)
+
+    def wait_state(self, predicate, timeout, why):
+        apps.expect(predicate(self.state()), why)
+
+    def exec(self, script):
+        return self.processes
+
+
+class CloseNotificationRegressionTests(unittest.TestCase):
+    def close(self, ctx):
+        res = SimpleNamespace(metrics={})
+        with patch.object(apps, "CLOSE_GRACE_S", 0):
+            apps._close(ctx, res, "A07-x11", 2, {}, 1)
+        return res.metrics
+
+    def test_main_and_first_run_dialog_undo_toasts_pass(self):
+        for cascade in [False, True]:
+            with self.subTest(cascade=cascade):
+                ctx = CloseFixture(cascade=cascade)
+                try:
+                    metrics = self.close(ctx)
+                except apps.CheckFailed as exc:
+                    self.fail(str(exc))
+                self.assertEqual(len(metrics["undo_toasts"]), 2)
+                self.assertEqual(metrics["toasts"], [])
+                self.assertEqual(metrics["extra_windows"], 1)
+                self.assertEqual([g["id"] for g in ctx.groups], [1])
+
+    def test_unrelated_errors_persistent_and_crash_notifications_still_fail(self):
+        for toast in [undo_toast("Closed Notes", "Select to undo, or press Super+Shift+T later"),
+                      undo_toast("Closed Wine File", severity="Error"),
+                      undo_toast("Closed Wine Mono Installer", persistent=True),
+                      undo_toast("Wine File crashed", "Exited unexpectedly")]:
+            with self.subTest(toast=toast):
+                with self.assertRaisesRegex(apps.CheckFailed, "unexpected notifications"):
+                    self.close(CloseFixture(extra_toast=toast))
+
+    def test_lingering_app_process_still_fails(self):
+        ctx = CloseFixture(processes=row(4101, 900, 4101, "wine winefile.exe"))
+        with self.assertRaisesRegex(apps.CheckFailed, "processes still running"):
+            self.close(ctx)
+
+    def test_main_window_that_lingers_still_fails(self):
+        with self.assertRaisesRegex(apps.CheckFailed, "window gone after close"):
+            self.close(CloseFixture(keep_main=True))
 
 
 class FirstTexturedTests(unittest.TestCase):
