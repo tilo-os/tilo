@@ -40,6 +40,8 @@ needs, one unquoted token each. The preparer writes them to
 `/usr/lib/bootc/kargs.d/10-hardware-profile.toml`, after the image's own
 drop-ins, so they are sealed into the UKI command line and a console named
 there is the last `console=`, which the kernel makes `/dev/console`.
+The optional `internal_keyboards` (version 2) names built-in I2C or SPI
+keyboards libinput must treat as internal; see the Lenovo keyboard section.
 
 The reviewed definition is copied into the immutable rootfs beside the
 generated profile. The UKI builder checks both files' ownership and permissions,
@@ -359,3 +361,24 @@ a controlled resume test. These commands require normal device-owner authority;
 the generated default neither executes them nor silently migrates explicit
 settings. A NetworkManager restart alone cannot repair an already failed MHI
 transport.
+
+### Lenovo 83ED keyboard and disable-while-typing
+
+libinput enables a touchpad's disable-while-typing only against a keyboard it
+tags internal, and its shipped quirks tag only PS/2 keyboards that way. The
+83ED's built-in keyboard is I2C HID (`hid-over-i2c 048D:8987`, bus `0x18`), so
+without help libinput never pairs it with the `0488:1054` touchpad and the
+Settings toggle has nothing to switch on.
+
+Each `internal_keyboards` entry names the keyboard's bus (`i2c` or `spi`),
+uppercase vendor and product ids, exact evdev name and the board's first
+device-tree `compatible` string. The preparer writes them, ANDed, into
+`/usr/share/libinput/50-tilo-<profile>.quirks` as
+`AttrKeyboardIntegration=internal`. Values are literal: no glob characters,
+so the section can match only that keyboard on that board. Entries require a
+device-tree profile; a firmware-described board would need a DMI match first.
+`/etc/libinput/local-overrides.quirks` stays the administrator's.
+
+On the laptop, `libinput quirks list /dev/input/event<N>` (libinput-utils)
+names the attribute for the keyboard node; with stock quirks alone it
+prints nothing.
