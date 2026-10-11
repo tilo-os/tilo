@@ -292,6 +292,40 @@ difference is gossip's sweeps of the three topics the pair linked, which
 iroh-gossip cannot stop; `reachability_tests` gates it at the lone budget
 plus those sweeps, 0.9/s.
 
+### iroh's own timers stop when they have nothing to do
+
+What was left on the lone desktop, the rested one and an idle `fs serve`
+was iroh's: netwatch's 15 s wall-clock poll, the socket's 20-26 s re-STUN
+tick with no relays, the 15 s ping of a home relay kept after the relays
+were removed, and iroh-gossip's 10 s cache sweep for the life of a topic.
+No release changes them (iroh 1.3.0, netwatch 0.19.3 and iroh-gossip
+0.101.0 have the same code), so the locked versions are vendored with one
+patch each (`vendor/iroh`, `vendor/netwatch`, `vendor/iroh-gossip`, each
+with a `TILO-PATCH.md`). The re-STUN tick waits for a relay, emptying the
+map releases the home relay, netwatch waits on a timerfd the kernel cancels
+on resume or a clock step (its poll could not see a sleep on Linux, where
+`Instant` stands still while suspended), and gossip sweeps only while
+something is cached. Network changes still arrive through netlink:
+`crates/system/fs/tests/iroh_idle.rs` sees `lo` come up and an address come
+and go in an endpoint's own network namespace after about 270 ms each.
+
+Focused runs, blocking (voluntary) switches per second:
+
+| gate | main `7180919b15` (96742-96744) | branch (96812, 96954-96958) |
+| -- | --: | --: |
+| lone desktop, all threads | 0.35-0.40 | 0.20 |
+| lone desktop, `tilo-net-rt` | 0.30-0.35 | 0.15 |
+| desktop whose collaborator left, all threads | 0.60-0.65 | 0.05 |
+| desktop whose collaborator left, `tilo-net-rt` | 0.55-0.65 | 0.00 |
+| endpoint with its relays removed (`iroh_idle`, 30 s) | | 0.00 |
+
+The rested desktop is now measured once gossip's caches have drained (100 s
+after its relays rest; a real desktop rests them five minutes after the last
+collaborator), and gated at 0.10/s instead of the lone budget plus 0.3/s of
+sweeps. The lone budget is 0.25/s (p95 0.20/s plus a quarter). What the lone
+desktop's network runtime still does 15 to 35 s after it starts is not
+periodic: the rested desktop, two minutes into its run, shows none.
+
 ## The collaboration-plane gate in the shell shard
 
 `idle_quiet_tests` (two converged desktops) had a 15/s budget, set from
