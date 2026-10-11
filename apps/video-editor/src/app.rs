@@ -28,7 +28,6 @@ use winit::keyboard::{Key, NamedKey};
 use ui::a11y::{AccessNode, AccessState, Role};
 use ui::icons::Icon;
 use ui::paint::PaintCtx;
-use ui::permissions::PermissionContext;
 use ui::presence::{PresenceCtx, PresenceKey};
 use ui::text_render::{TextRenderer, TextStyle};
 use ui::theme::Theme;
@@ -7504,18 +7503,6 @@ impl Widget for VideoEditorApp {
 
     fn get_rect(&self) -> Rect {
         self.rect
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        _permissions: &PermissionContext,
-    ) {
-        self.draw(scene, transform, tr, theme, presence);
     }
 }
 

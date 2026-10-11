@@ -172,26 +172,6 @@ impl ui::widget::Decorator for VersionPreview {
         self.paint(scene, transform, text_renderer, theme);
     }
 
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        permissions: &ui::permissions::PermissionContext,
-    ) {
-        self.canvas.draw_with_presence(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
-            permissions,
-        );
-        self.paint(scene, transform, text_renderer, theme);
-    }
-
     fn needs_redraw(&self) -> bool {
         self.canvas.needs_redraw() || self.preview.with(Option::is_some) != self.shown.is_some()
     }

@@ -24,7 +24,6 @@ use tilo_automerge::ApplyIncoming;
 use automerge::{ActorId, AutoCommit, AutomergeError, ROOT};
 use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
 use tilo_ui::offscreen::OffscreenRenderer;
-use tilo_ui::permissions::PermissionContext;
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::widget::{ActivityTimeline, Column, HistoryScrubber};
 use tilo_ui::{App, AuthorDirectory, HistoryAuthor, HistorySource, PresenceCtx, State, Widget};
@@ -195,7 +194,6 @@ fn render_shot(mut widget: Box<dyn Widget>, viewport: (u32, u32), out: &Path) {
     let state = State::new();
     let theme = crate::registry::shot_theme();
     let presence = PresenceCtx::empty();
-    let permission = PermissionContext::permissive();
     let mut tr = TextRenderer::new();
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
@@ -243,14 +241,7 @@ fn render_shot(mut widget: Box<dyn Widget>, viewport: (u32, u32), out: &Path) {
     widget.apply_layout(&taffy, child, Point::ORIGIN);
 
     let mut scene = Scene::new();
-    widget.draw_with_presence(
-        &mut scene,
-        Affine::IDENTITY,
-        &mut tr,
-        &theme,
-        &presence,
-        &permission,
-    );
+    widget.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
     if let Some(parent) = out.parent() {
         std::fs::create_dir_all(parent).ok();
     }

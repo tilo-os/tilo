@@ -91,19 +91,6 @@ impl<K: Clone + PartialEq + 'static> Widget for Switch<K> {
         self.part.draw(scene, transform, text, theme, presence);
     }
 
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        permissions: &ui_core::permissions::PermissionContext,
-    ) {
-        self.part
-            .draw_with_presence(scene, transform, text, theme, presence, permissions);
-    }
-
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui_core::widget::EventCtx<'_>) {
         self.part.handle_event(event, ctx);
     }

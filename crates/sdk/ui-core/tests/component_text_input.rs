@@ -62,18 +62,6 @@ impl Widget for Page {
     fn wants_pointer_capture(&self) -> bool {
         self.0.wants_pointer_capture()
     }
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut tilo_ui::vello::Scene,
-        transform: tilo_ui::kurbo::Affine,
-        text: &mut tilo_ui::TextRenderer,
-        theme: &tilo_ui::Theme,
-        presence: &tilo_ui::presence::PresenceCtx,
-        permissions: &tilo_ui::permissions::PermissionContext,
-    ) {
-        self.0
-            .draw_with_presence(scene, transform, text, theme, presence, permissions);
-    }
     fn build_layout(
         &mut self,
         tree: &mut tilo_ui::taffy::TaffyTree<()>,

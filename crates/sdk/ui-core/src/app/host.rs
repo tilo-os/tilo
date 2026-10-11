@@ -83,14 +83,16 @@ fn draw_frame_content(
         || (app.history.is_some() && !app_live);
     if app_live {
         crate::widget::native_view_frame_start(app.root_widget.as_mut());
-        app.root_widget.draw_with_presence(
-            scene,
-            transform,
-            &mut app.text_renderer,
-            &app.theme,
-            &app.presence_ctx,
-            &app.permission_ctx,
-        );
+        app.presence_ctx
+            .with_permissions(app.permission_ctx.clone(), || {
+                app.root_widget.draw(
+                    scene,
+                    transform,
+                    &mut app.text_renderer,
+                    &app.theme,
+                    &app.presence_ctx,
+                )
+            });
     }
     // Everything from here on paints outside the widgets' layout boxes, where
     // their damage cannot describe it.

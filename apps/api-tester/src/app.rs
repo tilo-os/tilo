@@ -1278,14 +1278,13 @@ impl ui::widget::Decorator for ApiTesterApp {
         self.nav.handle_event(event, ctx);
     }
 
-    fn draw_with_presence(
+    fn draw(
         &mut self,
         scene: &mut vello::Scene,
         transform: vello::kurbo::Affine,
         text_renderer: &mut ui::text_render::TextRenderer,
         theme: &ui::theme::Theme,
         presence: &ui::presence::PresenceCtx,
-        permissions: &ui::permissions::PermissionContext,
     ) {
         match self.pose.take() {
             Some(Pose::SidebarOpen) => {
@@ -1298,14 +1297,8 @@ impl ui::widget::Decorator for ApiTesterApp {
             }
             None => {}
         }
-        self.nav.draw_with_presence(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
-            permissions,
-        );
+        self.nav
+            .draw(scene, transform, text_renderer, theme, presence);
     }
 
     fn needs_redraw(&self) -> bool {

@@ -935,10 +935,23 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
         presence: &PresenceCtx,
     ) {
         // Children first — the divider paints on top.
-        self.left
-            .draw(scene, transform, text_renderer, theme, presence);
-        self.right
-            .draw(scene, transform, text_renderer, theme, presence);
+        use crate::widget::draw_child;
+        draw_child(
+            &mut self.left,
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            presence,
+        );
+        draw_child(
+            &mut self.right,
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            presence,
+        );
         self.handle.paint(
             scene,
             transform,
@@ -1060,42 +1073,6 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
         self.handle.is_dragging()
             || self.left.wants_pointer_capture()
             || self.right.wants_pointer_capture()
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        permissions: &crate::permissions::PermissionContext,
-    ) {
-        if presence.should_cull(self.get_rect()) {
-            return;
-        }
-        self.left.draw_with_presence(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
-            permissions,
-        );
-        self.right.draw_with_presence(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
-            permissions,
-        );
-        self.handle.paint(
-            scene,
-            transform,
-            theme.tokens.colors.surfaces.content,
-            theme,
-        );
     }
 }
 
