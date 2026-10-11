@@ -1754,17 +1754,14 @@ fn focused_widget_snapshot(widget: &dyn Widget) -> Option<(String, Option<String
 }
 
 fn restore_widget_focus(widget: &mut dyn Widget, id: &str, state: Option<&str>) -> bool {
-    if widget.test_id() == Some(id) {
-        widget.set_focus(true);
-        if let Some(state) = state {
-            crate::undo::set_state(widget, state);
-        }
-        return true;
+    let Some(widget) = crate::widget::find_test_id_mut(widget, id) else {
+        return false;
+    };
+    widget.set_focus(true);
+    if let Some(state) = state {
+        crate::undo::set_state(widget, state);
     }
-    widget
-        .children_mut()
-        .into_iter()
-        .any(|child| restore_widget_focus(child, id, state))
+    true
 }
 
 #[derive(Clone, Copy)]
@@ -3332,29 +3329,21 @@ mod tests {
         action: &Action,
         doc: &mut AutoCommit,
     ) -> bool {
-        if widget.test_id() == Some(id) {
-            return Widget::perform_action(
+        crate::widget::find_test_id_mut(widget, id).is_some_and(|widget| {
+            Widget::perform_action(
                 widget,
                 action,
                 &[],
                 &mut crate::widget::Edits::lend(doc),
                 &ROOT,
-            );
-        }
-        widget
-            .children_mut()
-            .into_iter()
-            .any(|child| perform_named(child, id, action, doc))
+            )
+        })
     }
 
     fn named_value(widget: &dyn Widget, id: &str) -> Option<String> {
-        if widget.test_id() == Some(id) {
-            return widget.accessibility().and_then(|node| node.value);
-        }
-        widget
-            .children()
-            .into_iter()
-            .find_map(|child| named_value(child, id))
+        crate::widget::find_test_id(widget, id)?
+            .accessibility()?
+            .value
     }
 
     fn run_operation(
@@ -3866,35 +3855,21 @@ mod tests {
     }
 
     fn set_named_state(widget: &mut dyn Widget, id: &str, state: &str) -> bool {
-        if widget.test_id() == Some(id) {
-            widget.set_focus(true);
-            crate::undo::set_state(widget, state);
-            return true;
-        }
-        widget
-            .children_mut()
-            .into_iter()
-            .any(|child| set_named_state(child, id, state))
+        let Some(widget) = crate::widget::find_test_id_mut(widget, id) else {
+            return false;
+        };
+        widget.set_focus(true);
+        crate::undo::set_state(widget, state);
+        true
     }
 
     fn named_state(widget: &dyn Widget, id: &str) -> Option<String> {
-        if widget.test_id() == Some(id) {
-            return crate::undo::get_state(widget);
-        }
-        widget
-            .children()
-            .into_iter()
-            .find_map(|child| named_state(child, id))
+        crate::undo::get_state(crate::widget::find_test_id(widget, id)?)
     }
 
     fn named_widget_ptr(widget: &dyn Widget, id: &str) -> Option<usize> {
-        if widget.test_id() == Some(id) {
-            return Some((widget as *const dyn Widget).cast::<()>().addr());
-        }
-        widget
-            .children()
-            .into_iter()
-            .find_map(|child| named_widget_ptr(child, id))
+        crate::widget::find_test_id(widget, id)
+            .map(|widget| (widget as *const dyn Widget).cast::<()>().addr())
     }
 
     #[test]

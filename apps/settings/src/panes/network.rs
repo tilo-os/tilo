@@ -3182,15 +3182,6 @@ impl NetworkModel {
 mod tests {
     use super::*;
 
-    fn find<'a>(root: &'a dyn Widget, id: &str) -> Option<&'a dyn Widget> {
-        if root.test_id() == Some(id) {
-            return Some(root);
-        }
-        root.children()
-            .into_iter()
-            .find_map(|child| find(child, id))
-    }
-
     #[test]
     fn network_pane_relabels_retained_controls_when_locale_changes() -> Result<(), String> {
         use crate::panes::model::ModelPane;
@@ -3218,7 +3209,7 @@ mod tests {
             I18nManager::set_locale(locale);
             host.relayout_themed(viewport((1000.0, 1800.0)), ui::Theme::dark())
                 .map_err(|error| error.to_string())?;
-            let name = find(host.root_widget(), "settings.network.refresh")
+            let name = ui::widget::find_test_id(host.root_widget(), "settings.network.refresh")
                 .and_then(Widget::accessibility)
                 .and_then(|node| node.name);
             if name.as_deref() != Some(expected) {
@@ -3304,7 +3295,7 @@ mod tests {
         use ui::headless::{Framed, viewport};
 
         fn expanded(host: &ui::headless::FrameHarness) -> Result<bool, String> {
-            find(host.root_widget(), "network.hotspot.band")
+            ui::widget::find_test_id(host.root_widget(), "network.hotspot.band")
                 .and_then(Widget::accessibility)
                 .and_then(|node| node.state.expanded)
                 .ok_or_else(|| "the actual band picker must expose its expanded state".into())

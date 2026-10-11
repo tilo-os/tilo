@@ -325,6 +325,27 @@ pub fn published_search_providers(
     crate::bound_dispatch::search_providers(widget)
 }
 
+/// The first widget of `root`'s subtree, `root` included, whose
+/// [`Widget::test_id`] is `id`.
+pub fn find_test_id<'a>(root: &'a dyn Widget, id: &str) -> Option<&'a dyn Widget> {
+    if root.test_id() == Some(id) {
+        return Some(root);
+    }
+    root.children()
+        .into_iter()
+        .find_map(|child| find_test_id(child, id))
+}
+
+/// [`find_test_id`] for a widget to change.
+pub fn find_test_id_mut<'a>(root: &'a mut dyn Widget, id: &str) -> Option<&'a mut dyn Widget> {
+    if root.test_id() == Some(id) {
+        return Some(root);
+    }
+    root.children_mut()
+        .into_iter()
+        .find_map(|child| find_test_id_mut(child, id))
+}
+
 /// Test traversal probe; production callers retain bound provenance.
 #[cfg(test)]
 pub(crate) fn resolve_widget_resource(

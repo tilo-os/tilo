@@ -532,7 +532,7 @@ mod tests {
     use automerge::AutoCommit;
     use automerge::ReadDoc;
     use std::collections::HashMap;
-    use vello::kurbo::{Point, Rect};
+    use vello::kurbo::Point;
 
     #[test]
     fn preference_defaults_are_sensible() {
@@ -614,19 +614,6 @@ mod tests {
             // widget tree and assert the CRDT bool changed.
             use winit::event::{ElementState, MouseButton, WindowEvent};
 
-            // Locate the ad-block toggle's rect by walking the live tree.
-            fn find_toggle_rect(w: &dyn Widget, id: &str) -> Option<Rect> {
-                if w.test_id() == Some(id) {
-                    return Some(w.get_rect());
-                }
-                for c in w.children() {
-                    if let Some(r) = find_toggle_rect(c, id) {
-                        return Some(r);
-                    }
-                }
-                None
-            }
-
             let mut pane = SettingsPane::new();
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
@@ -649,8 +636,9 @@ mod tests {
             // Re-sync so the toggle adopts its retained presentation state.
             pane.sync(&doc, &root);
 
-            let rect = find_toggle_rect(&pane, "settings.adblock")
-                .expect("ad-block toggle is addressable in the tree");
+            let rect = ui::widget::find_test_id(&pane, "settings.adblock")
+                .expect("ad-block toggle is addressable in the tree")
+                .get_rect();
             let center = rect.center();
 
             let device = winit::event::DeviceId::dummy();
