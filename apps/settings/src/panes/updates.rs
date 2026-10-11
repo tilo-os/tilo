@@ -667,9 +667,12 @@ type FirmwareRefreshEvent = Result<
 
 /// A real wall-clock "last checked" stamp, e.g. `Monday, 4 July 2026 14:05`.
 fn now_stamp() -> String {
-    let date = os_actions::now_date().unwrap_or_default();
-    let time = os_actions::now_clock(true).unwrap_or_default();
-    format!("{date} {time}").trim().to_string()
+    let now = ui::clock::local_now();
+    format!(
+        "{} {}",
+        now.format("%A, %-d %B %Y"),
+        ui::clock::time_of_day(&now)
+    )
 }
 
 #[allow(

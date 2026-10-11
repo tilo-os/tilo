@@ -5,7 +5,7 @@
 //! timezone juggling, no `Local` reads (the live app's "today" is read
 //! once at construction; tests pin a fixed anchor for determinism).
 
-use chrono::{Datelike, Duration, NaiveDate, NaiveDateTime, Timelike};
+use chrono::{Datelike, Duration, NaiveDate, NaiveDateTime};
 
 /// 6×7 = 42 dates covering the month that `anchor` falls in, Monday
 /// first, including the spill-in days from the previous month and the
@@ -102,9 +102,9 @@ fn weekday_short(date: NaiveDate) -> &'static str {
         .unwrap_or("")
 }
 
-/// "9:00", "14:30" — 24-hour, no leading zero on the hour.
+/// "14:30" or "2:30 PM", as the person reads clocks.
 pub fn fmt_time(dt: &NaiveDateTime) -> String {
-    format!("{}:{:02}", dt.hour(), dt.minute())
+    ui::clock::time_of_day(dt)
 }
 
 /// "Mon 15 Jun"

@@ -25,7 +25,8 @@ use ui::doc::{read_bool, read_i64_coerced, read_str};
 
 use crate::model::{Addr, CellFormat, GridEdit};
 use crate::settings::DocSettings;
-use tilo_locale::{Currency, DateStyle, TimeStyle};
+use tilo_locale::{Currency, DateStyle};
+use ui::clock::TimeStyle;
 
 /// One sheet's snapshot pulled out of the CRDT for rendering.
 #[derive(Clone, Debug, Default)]
