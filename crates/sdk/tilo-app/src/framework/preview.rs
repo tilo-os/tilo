@@ -295,6 +295,20 @@ pub(crate) fn draw_past<A: ResourceApp>(
     transform: Affine,
     theme: &Theme,
 ) -> Result<(), String> {
+    // Lay out `preview` in `bounds` and draw it. An item of its own, not
+    // generic over `A`, so it is compiled once rather than in every app.
+    fn draw_preview(
+        mut preview: ViewPreview,
+        bounds: Rect,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+    ) -> Result<(), String> {
+        let mut text = TextRenderer::new();
+        preview.layout(bounds, &mut text, theme)?;
+        preview.draw(scene, transform, &mut text, theme);
+        Ok(())
+    }
     let root = past_root::<A>(&doc)?;
     let preview = ViewPreview::new(
         root.into_root_widget(),
@@ -303,21 +317,6 @@ pub(crate) fn draw_past<A: ResourceApp>(
         PreviewView::default(),
     );
     draw_preview(preview, bounds, scene, transform, theme)
-}
-
-/// Lay out `preview` in `bounds` and draw it.
-#[cfg(not(target_family = "wasm"))]
-fn draw_preview(
-    mut preview: ViewPreview,
-    bounds: Rect,
-    scene: &mut Scene,
-    transform: Affine,
-    theme: &Theme,
-) -> Result<(), String> {
-    let mut text = TextRenderer::new();
-    preview.layout(bounds, &mut text, theme)?;
-    preview.draw(scene, transform, &mut text, theme);
-    Ok(())
 }
 
 struct ViewPreview {
