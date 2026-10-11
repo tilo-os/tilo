@@ -9,7 +9,8 @@
 //! ([`DocSettings`], stored in the document); [`EffectiveLocale`] is the two
 //! layered.
 
-use tilo_locale::{Currency, DateStyle, Locale, TimeStyle};
+use tilo_locale::{Currency, DateStyle, Locale};
+use ui::clock::TimeStyle;
 
 /// Per-document locale overrides. `None` on a field means "inherit the
 /// global default". Stored in the workbook's CRDT so collaborators share

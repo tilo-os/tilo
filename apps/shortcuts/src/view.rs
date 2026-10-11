@@ -1959,7 +1959,10 @@ fn grant_body(_ui: &Ui, input: &EditorInput) -> Element {
                     "shortcuts-schedule-review",
                     &[(
                         "time",
-                        ui::i18n::ArgValue::from(format!("{:02}:{:02}", at.hour, at.minute)),
+                        ui::i18n::ArgValue::from(ui::clock::hour_minute(
+                            at.hour.into(),
+                            at.minute.into(),
+                        )),
                     )],
                 )
                 .with_role(TextRole::Caption)

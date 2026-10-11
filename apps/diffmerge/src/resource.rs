@@ -84,10 +84,6 @@ impl ResourceApp for DiffmergeShell {
     const ID: &'static str = "so.tilo.diffmerge";
     const TITLE: &'static str = "Diff & Merge";
     const ICON: Option<&'static str> = Some("diffmerge");
-    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
-        (1280, 800)
-    }
-
     fn label(state: &MergeState) -> String {
         state.title.clone()
     }

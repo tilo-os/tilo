@@ -11,11 +11,13 @@
 //! }
 //! ```
 //!
-//! The string values are the serde variant names of the enums below. Reads
+//! The string values are the serde variant names of the enums below and of
+//! [`TimeStyle`], which the toolkit owns so every clock display follows it. Reads
 //! are forgiving: a missing section or an unknown value falls back to the
 //! built-in default, key by key.
 
 use serde::{Deserialize, Serialize};
+use ui::clock::TimeStyle;
 
 /// World currency, by ISO-4217 code. Each carries its own symbol,
 /// placement, and conventional number of decimals — `$1,234.50` vs
@@ -173,43 +175,6 @@ impl DateStyle {
             DateStyle::Us => "US (03/15/2023)",
             DateStyle::Eu => "European (15/03/2023)",
             DateStyle::Long => "Long (15 Mar 2023)",
-        }
-    }
-}
-
-/// How times render.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum TimeStyle {
-    /// `14:05`
-    H24,
-    /// `2:05 PM`
-    H12,
-}
-
-impl TimeStyle {
-    pub const ALL: [TimeStyle; 2] = [TimeStyle::H24, TimeStyle::H12];
-
-    pub fn example(self) -> &'static str {
-        match self {
-            TimeStyle::H24 => "14:05",
-            TimeStyle::H12 => "2:05 PM",
-        }
-    }
-
-    /// The time now in this style, read through the toolkit clock.
-    pub fn now(self) -> String {
-        ui::clock::local_now()
-            .format(match self {
-                TimeStyle::H24 => "%H:%M",
-                TimeStyle::H12 => "%-I:%M %p",
-            })
-            .to_string()
-    }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            TimeStyle::H24 => "24-hour (14:05)",
-            TimeStyle::H12 => "12-hour (2:05 PM)",
         }
     }
 }

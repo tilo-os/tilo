@@ -5,9 +5,9 @@ use std::collections::BTreeMap;
 
 use tilo_actions::{ActionAddress, Availability, Resource};
 
-use crate::kind::ResourceKind;
 use crate::model::{ActionTarget, Hit, Source, Target};
-use crate::rank::{self, MAX_PROVIDER_SCORE};
+use crate::rank;
+use ui::search::system::{MAX_PROVIDER_SCORE, ResourceKind, rank_fields};
 
 /// An application the desktop can open.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -160,7 +160,7 @@ impl Source for Commands {
                 let score = if needle.trim().is_empty() {
                     20
                 } else {
-                    rank::rank_fields(
+                    rank_fields(
                         needle,
                         &[
                             (&command.title, ui::search::FieldWeight::TITLE),

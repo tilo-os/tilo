@@ -357,10 +357,6 @@ impl ResourceApp for SheetsShell {
         SCENARIOS
     }
 
-    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
-        (1280, 800)
-    }
-
     /// The annotated scenarios show a workbook other people wrote: Alex
     /// shared the budget and commented on it, Sam replied.
     fn fixture(fixture: &mut Fixture<SheetsWorkbook>) {
