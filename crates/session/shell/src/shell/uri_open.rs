@@ -136,8 +136,10 @@ pub fn open_in_workspace(uri: &str, chrome: &Chrome) -> Result<UriOpened, UriOpe
             .ok_or(UriOpenError::NoWorkspace)?;
         (workspace.room, workspace.capabilities.clone())
     };
-    launcher::launch_uri_in_room(&app.package_id, room, capabilities, uri)
-        .map(UriOpened::Package)
+    // Queued: the launch's file work runs on the preflight worker, not on
+    // this (the compositor) thread. A refusal arrives as a launch event.
+    launcher::queue_uri_in_room(app.clone(), room, capabilities, uri.to_owned())
+        .map(|()| UriOpened::Package(app))
         .map_err(UriOpenError::Launch)
 }
 
