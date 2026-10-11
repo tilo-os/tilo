@@ -1430,6 +1430,68 @@ fn group_actions_target_exactly_their_group_or_surface() {
         assert_eq!(group.active_tab_id(), 2);
     }
 
+    fn a_deferred_close_click_keeps_the_window_and_animates_once_at_exit() {
+        let (mut tree, strip_id, group_id) = one_group_seed();
+        let _ = group_id;
+        let group = &mut tree.desktop.workspaces[0].strips[0].window_groups[0];
+        group.tabs = vec![Tab {
+            id: 1,
+            title: "Editor".into(),
+            tile: TileContent::Foreign {
+                app_id: "org.example.Editor".into(),
+                surface_id: 51,
+            },
+        }];
+        group.active_tab = 1;
+        tree.seed_doc_from_cache();
+        crate::shell::foreign::store().note_adopted(51);
+        let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+        let mut theme = Theme::dark();
+        theme.tokens.motion.durations.base_ms = 40;
+        layout_close_fixture(&mut host, &theme);
+
+        // The close button: the widget starts retiring, the shell asks the
+        // client, which has not exited.
+        assert!(
+            host.group_at_for_tests(strip_id, 0)
+                .expect("window")
+                .click_close_for_tests(1)
+        );
+        host.harvest_pending_tab_closes();
+        assert_eq!(chrome.borrow_mut().take_surface_close_requests(), vec![51]);
+        let group = host.group_at_for_tests(strip_id, 0).expect("window");
+        assert!(
+            !group.is_closing(),
+            "a client that has not exited keeps its window; no retirement runs"
+        );
+        assert_eq!(group.tab_count(), 1);
+
+        // The refusal period outlasts the close duration: nothing animates
+        // away, is pruned, or is rebuilt with a spawn animation.
+        std::thread::sleep(Duration::from_millis(100));
+        chrome.borrow_mut().bump();
+        let _ = host.take_structure_dirty();
+        let group = host.group_at_for_tests(strip_id, 0).expect("still there");
+        assert!(!group.is_closing() && group.tab_count() == 1);
+
+        // The client finally exits: exactly one retirement, from the live tab.
+        crate::shell::tab_binding::close_tab_for_destroyed_surface_and_persist(
+            &mut chrome.borrow_mut().tree_mut(),
+            51,
+        );
+        crate::shell::foreign::store().forget(51);
+        chrome.borrow_mut().bump();
+        let _ = host.take_structure_dirty();
+        assert!(
+            host.group_at_for_tests(strip_id, 0)
+                .is_some_and(|group| group.is_closing()),
+            "the destroy starts the single retirement"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+        let _ = host.take_structure_dirty();
+        assert!(host.group_at_for_tests(strip_id, 0).is_none());
+    }
+
     fn group_plus_is_a_workspace_scoped_app_picker_targeting_that_group() {
         use crate::shell::chrome_state::{OpenTarget, SearchScope};
         use crate::shell::search::ResourceKind;
@@ -1454,5 +1516,6 @@ fn group_actions_target_exactly_their_group_or_surface() {
     }
 
     closing_one_of_two_same_app_windows_targets_only_its_surface();
+    a_deferred_close_click_keeps_the_window_and_animates_once_at_exit();
     group_plus_is_a_workspace_scoped_app_picker_targeting_that_group();
 }
