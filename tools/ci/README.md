@@ -52,7 +52,7 @@ the smaller `os/Containerfile.ci-fast`.
 
 | Workflow / job | Local command |
 |---|---|
-| `check.yml` select | `python3 tools/ci/affected_packages.py --base origin/main` prints the plan: packages per shard, suites, examples |
+| `check.yml` select | `python3 tools/ci/affected_packages.py --metadata "$TILO_CURRENT_WORKTREE_METADATA" --base origin/main` previews the plan: packages per shard, suites, examples |
 | `check.yml` security | `bash tools/run-security-boundary-invariants.sh` |
 | `check.yml` suites | `python3 tools/ci/suites.py run <suite>...` (`suites.py list` names them) |
 | `check.yml` test | `scripts/test-local.sh -p <package>...` (see [Running tests like CI](../../DEVELOPMENT.md#running-tests-like-ci)) |
@@ -118,3 +118,34 @@ Jobs that need more than an unprivileged container:
 | `dev-disk.yml`, `build-legacy-guest.yml` | `/dev/fuse`, loop devices and, for speed, `/dev/kvm` |
 | `release-imager.yml` | `/dev/kvm` |
 | Image, kernel and buildroot builds | Docker with Buildx |
+
+## Planning without local Cargo
+
+`affected_packages.py` invokes local `cargo metadata` by default. On a machine
+where local Cargo is prohibited, pass an existing metadata export explicitly:
+
+```sh
+python3 tools/ci/affected_packages.py \
+  --metadata "${TILO_CURRENT_WORKTREE_METADATA:?validated current-worktree export required}" \
+  --base origin/main --shards 2
+```
+
+Use a complete `cargo metadata --locked --no-deps --format-version 1` export
+from the existing remote builder or CI, verified against this checkout's
+workspace manifest, lockfile and every member manifest. Package manifest,
+dependency and target paths in the export must refer to this checkout; a
+remote absolute path cannot be consumed unchanged. A stale or incomplete
+export is not selection evidence. Do not substitute a hand-written partial
+graph. Bind the export to the exact source revision and compare every root/member
+manifest and the lockfile with the producing worktree before setting
+`TILO_CURRENT_WORKTREE_METADATA`. Keep that validation evidence beside the export;
+refresh it after any source, manifest, lockfile or target-inventory change. The
+prescribed `AGENTS.md` invocation fails before starting Python when the validated
+export variable is unset or empty. Missing JSON fails rather than invoking Cargo.
+
+A Cargo drop-in may execute `metadata` locally because it is a noncompiling
+subcommand. Verify where it runs instead of assuming a remote export. Until a
+verified export is available, leave the affected plan to the normal CI selector. The regression
+`tools/tests/test_ci_plan_without_cargo.py` exercises the real metadata-file
+CLI with a Cargo blocker and retains target, optional and build dependency
+selection plus the security gate.
