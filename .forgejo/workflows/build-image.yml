@@ -11,8 +11,8 @@ name: Release / OS
 #            manifests must match byte for byte before the image is signed and
 #            tilo:latest / genN move. The nightly run builds nothing when
 #            latest already carries main.
-#   dev      Explicit Build / OS dev requests call this workflow: dispatches
-#            or image pull requests labelled os-image / os-arm64. Fully cached
+#   dev      Build / OS dev (os-dev.yml) calls this workflow for every main
+#            push and every pull request that touches the image. Fully cached
 #            (shared compiler and layer caches, no LTO), no reproduction lane,
 #            no signing, no disk install. It publishes
 #            tilo-ci:<ref>-<sha7>-<arch> and the dev image
@@ -4124,8 +4124,8 @@ jobs:
   # Integration images remain unsigned and outside the production tilo
   # repository. Publish a multi-architecture index once both native lanes
   # complete. Nothing waits on it: each lane has already published its own
-  # tilo-ci child and dev disk. Explicit main requests build each architecture,
-  # newest commit only, so whichever of
+  # tilo-ci child and dev disk. Main builds x86_64 in Build / OS dev and
+  # aarch64 in Build / OS dev (aarch64), newest commit only, so whichever of
   # the two finishes second promotes; a commit aarch64 skipped has none.
   promote-integration:
     needs: [plan, build-and-push]
