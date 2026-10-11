@@ -8,7 +8,6 @@
 //! unsupervised.
 
 use std::io;
-use std::os::fd::FromRawFd;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -300,10 +299,13 @@ pub(crate) fn listen(
     paths: &SessionPaths,
     socket: Option<PathBuf>,
 ) -> Result<UnixListener, ProjectorError> {
-    if let Some(listener) = systemd_listener()? {
+    let socket = socket.unwrap_or_else(|| paths.root.join(CONTROL_SOCKET_NAME));
+    // SAFETY: taken as `serve` starts, before any thread is spawned.
+    if let Some(listener) = unsafe { tilo_files::native::private::activated_socket(&socket) }
+        .map_err(ProjectorError::io("cannot take systemd's control socket"))?
+    {
         return Ok(listener);
     }
-    let socket = socket.unwrap_or_else(|| paths.root.join(CONTROL_SOCKET_NAME));
     if UnixStream::connect(&socket).is_ok() {
         return Err(ProjectorError::Unavailable(format!(
             "a projector already serves {}",
@@ -312,53 +314,6 @@ pub(crate) fn listen(
     }
     tilo_files::native::private::bind_socket(&socket)
         .map_err(ProjectorError::io("cannot bind the control socket"))
-}
-
-/// The control socket systemd's `tilo-projector.socket` passed in, if this
-/// process was socket-activated.
-#[allow(
-    clippy::disallowed_methods,
-    reason = "systemd socket activation: LISTEN_* must not leak to the sender helpers; cleared once, as `serve` starts, before any thread is spawned"
-)]
-fn systemd_listener() -> Result<Option<UnixListener>, ProjectorError> {
-    const SYSTEMD_LISTEN_FD: i32 = 3;
-
-    let pid_matches = std::env::var("LISTEN_PID")
-        .ok()
-        .and_then(|value| value.parse::<u32>().ok())
-        == Some(std::process::id());
-    if !pid_matches {
-        return Ok(None);
-    }
-    if std::env::var("LISTEN_FDS").as_deref() != Ok("1") {
-        return Err(ProjectorError::Unavailable(
-            "systemd must pass exactly one projector control socket".to_owned(),
-        ));
-    }
-    // SAFETY: fcntl only checks whether fd 3 is open; it takes no pointer.
-    if unsafe { libc::fcntl(SYSTEMD_LISTEN_FD, libc::F_GETFD) } == -1 {
-        return Err(ProjectorError::Unavailable(
-            "systemd's projector control socket is closed".to_owned(),
-        ));
-    }
-    // systemd passes activation descriptors without CLOEXEC; the sender
-    // helpers this broker starts must not inherit the control socket.
-    // SAFETY: as above, fcntl on an open descriptor with integer arguments.
-    if unsafe { libc::fcntl(SYSTEMD_LISTEN_FD, libc::F_SETFD, libc::FD_CLOEXEC) } == -1 {
-        return Err(ProjectorError::io(
-            "cannot mark the control socket close-on-exec",
-        )(io::Error::last_os_error()));
-    }
-    // SAFETY: systemd's LISTEN_PID/LISTEN_FDS contract hands fd 3 to this
-    // process exactly once, and nothing else in it has taken ownership.
-    let listener = unsafe { UnixListener::from_raw_fd(SYSTEMD_LISTEN_FD) };
-    // SAFETY: activation is consumed once, before any other thread exists.
-    unsafe {
-        std::env::remove_var("LISTEN_PID");
-        std::env::remove_var("LISTEN_FDS");
-        std::env::remove_var("LISTEN_FDNAMES");
-    }
-    Ok(Some(listener))
 }
 
 #[cfg(test)]

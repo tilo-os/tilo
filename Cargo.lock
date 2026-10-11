@@ -17659,7 +17659,6 @@ dependencies = [
  "getrandom 0.4.3",
  "google-cast-protocol",
  "hex",
- "libc",
  "mdns-sd",
  "postcard",
  "prost",
