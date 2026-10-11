@@ -543,18 +543,6 @@ impl ColorPicker {
         self
     }
 
-    /// Narrows a layout/measurement value to `f32` for vello/taffy. Every
-    /// call site here is a screen-space coordinate or a fraction already
-    /// clamped to `0.0..=1.0`, always far below `f32::MAX`, so the
-    /// truncation the lint warns about can't actually occur.
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "screen-space pixel values and 0.0..=1.0 fractions in this widget never approach f32::MAX"
-    )]
-    fn px(v: f64) -> f32 {
-        v as f32
-    }
-
     /// Round a float already known to sit in `0.0..=255.0` down to its
     /// `u8` channel value. Callers clamp immediately before calling this,
     /// so the cast can never truncate or lose a sign.
@@ -642,8 +630,12 @@ impl ColorPicker {
     /// Map a press inside `sv_rect` to saturation (x) and value (y): top
     /// left is sat=0/value=1, matching the standard SV-square convention.
     fn sv_from_point(&self, p: Point) -> (f32, f32) {
-        let sx = Self::px(((p.x - self.sv_rect.x0) / self.sv_rect.width()).clamp(0.0, 1.0));
-        let sy = Self::px(((p.y - self.sv_rect.y0) / self.sv_rect.height()).clamp(0.0, 1.0));
+        let sx = crate::num::f32_of_f64(
+            ((p.x - self.sv_rect.x0) / self.sv_rect.width()).clamp(0.0, 1.0),
+        );
+        let sy = crate::num::f32_of_f64(
+            ((p.y - self.sv_rect.y0) / self.sv_rect.height()).clamp(0.0, 1.0),
+        );
         let s = sx;
         let v = 1.0 - sy;
         (s, v)
@@ -651,11 +643,13 @@ impl ColorPicker {
 
     /// Hue from cursor y in the hue strip rect, 0..1 top to bottom.
     fn hue_from_point(&self, p: Point) -> f32 {
-        Self::px(((p.y - self.hue_strip_rect.y0) / self.hue_strip_rect.height()).clamp(0.0, 1.0))
+        crate::num::f32_of_f64(
+            ((p.y - self.hue_strip_rect.y0) / self.hue_strip_rect.height()).clamp(0.0, 1.0),
+        )
     }
 
     fn channel_from_point(slider_rect: Rect, p: Point) -> f32 {
-        Self::px(crate::widget::SliderFace::new(slider_rect, 0.0).value_at(p))
+        crate::num::f32_of_f64(crate::widget::SliderFace::new(slider_rect, 0.0).value_at(p))
     }
 
     fn target_at(&self, p: Point) -> Option<DragTarget> {
@@ -879,7 +873,7 @@ impl ColorPicker {
             title,
             theme.tokens.colors.text_primary,
             transform.pre_translate(Vec2::new(self.title_rect.x0, y)),
-            Some(Self::px(self.title_rect.width())),
+            Some(crate::num::f32_of_f64(self.title_rect.width())),
             &style.clone().with_weight(TextWeight::Semibold),
         );
     }
@@ -998,8 +992,10 @@ impl Widget for ColorPicker {
         // then follows the width it got (`adjust_layout_style`).
         let style = Style {
             size: Size {
-                width: Dimension::length(Self::px(PICKER_WIDTH)),
-                height: Dimension::length(Self::px(self.content_height(PICKER_WIDTH))),
+                width: Dimension::length(crate::num::f32_of_f64(PICKER_WIDTH)),
+                height: Dimension::length(crate::num::f32_of_f64(
+                    self.content_height(PICKER_WIDTH),
+                )),
             },
             max_size: Size {
                 width: Dimension::percent(1.0),
@@ -1029,7 +1025,7 @@ impl Widget for ColorPicker {
             return false;
         };
         let mut style = current.clone();
-        style.size.height = Dimension::length(Self::px(self.content_height(width)));
+        style.size.height = Dimension::length(crate::num::f32_of_f64(self.content_height(width)));
         if style == *current {
             return false;
         }

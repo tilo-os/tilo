@@ -9,10 +9,10 @@
 use super::{
     Addr, Affine, AnnotationClick, Button, CellValue, ChartKind, ChartSnapshot, ChromeMetrics,
     Fill, HashMap, Point, Rect, Scene, SheetsApp, TextRenderer, TextRole, Theme, WindowEvent,
-    count_f64,
 };
 use ui::charts::legend;
 use ui::charts::{Sparkline, TrendFill, TrendRange, TrendStyle};
+use ui::num::f64_of_usize;
 use ui::paint::PaintCtx;
 use ui::surface::separator;
 use ui::widget::{BadgeFace, ButtonFace, ButtonRole, CardFace, ChipStyle, ControlSize, Tone};
@@ -59,7 +59,7 @@ impl ChromeMetrics {
     pub(super) fn comment_rows(&self) -> CommentRows {
         let range_h = self.lh_caption;
         let text_top = range_h + self.s1;
-        let text_h = self.lh_body * count_f64(COMMENT_LINES);
+        let text_h = self.lh_body * f64_of_usize(COMMENT_LINES);
         let replies_top = text_top + text_h + self.s1;
         let actions_top = replies_top + self.lh_caption + self.s3;
         CommentRows {
@@ -115,7 +115,7 @@ impl CardMetrics {
                         .intrinsic_width(tr, theme)
                 })
                 .sum();
-            buttons + m.s1 * count_f64(labels.len().saturating_sub(1)) + 2.0 * pad
+            buttons + m.s1 * f64_of_usize(labels.len().saturating_sub(1)) + 2.0 * pad
         };
         let chart_min_w = row(&["Open", "Edit", "Delete"]);
         let comment_min_w = row(&["Reply", "Edit", "Resolve", "Delete"])
@@ -177,7 +177,7 @@ impl SheetsApp {
             .map(|card| cm.height(*card))
             .fold(0.0, f64::max);
         let avail = (area.width() - 2.0 * pad).max(0.0);
-        let gaps = pad * count_f64(cards.len().saturating_sub(1));
+        let gaps = pad * f64_of_usize(cards.len().saturating_sub(1));
         let mins: Vec<f64> = cards.iter().map(|card| cm.min_width(*card)).collect();
         let room = avail - gaps - mins.iter().sum::<f64>();
         // Every card gets what its action row needs; what is left over grows
@@ -201,7 +201,7 @@ impl SheetsApp {
         };
         let dock_h = card_h + 2.0 * pad + lane;
         let min_grid = m.grid.col_header_h()
-            + count_f64(MIN_GRID_ROWS) * m.grid.default_row_h()
+            + f64_of_usize(MIN_GRID_ROWS) * m.grid.default_row_h()
             + self.grid.scrollbar_thickness();
         if cards.is_empty() || area.height() - dock_h < min_grid {
             return (0.0, Vec::new(), 0.0);
@@ -519,10 +519,10 @@ impl SheetsApp {
         let names: Vec<&str> = series.iter().map(|series| series.name.as_str()).collect();
         let entries = legend::measure(ctx.text, theme, names.iter().copied());
         let gap = f64::from(sp.rhythm.section);
-        let gaps = gap * count_f64(entries.len().saturating_sub(1));
+        let gaps = gap * f64_of_usize(entries.len().saturating_sub(1));
         let natural: f64 = entries.iter().map(|entry| entry.width).sum::<f64>() + gaps;
         let share = if natural > area.width() {
-            (area.width() - gaps).max(0.0) / count_f64(entries.len().max(1))
+            (area.width() - gaps).max(0.0) / f64_of_usize(entries.len().max(1))
         } else {
             f64::INFINITY
         };
@@ -561,12 +561,13 @@ impl SheetsApp {
             .unwrap_or(0);
         match kind {
             ChartKind::Column => {
-                let cluster = plot.width() / count_f64(points.max(1));
-                let bar_w = (cluster - 2.0 * inset) / count_f64(series.len().max(1));
+                let cluster = plot.width() / f64_of_usize(points.max(1));
+                let bar_w = (cluster - 2.0 * inset) / f64_of_usize(series.len().max(1));
                 for (s, line) in series.iter().enumerate() {
                     let ink = theme.tokens.colors.presence.series(s);
                     for (i, value) in line.values.iter().enumerate() {
-                        let x0 = plot.x0 + cluster * count_f64(i) + inset + bar_w * count_f64(s);
+                        let x0 =
+                            plot.x0 + cluster * f64_of_usize(i) + inset + bar_w * f64_of_usize(s);
                         let (a, b) = (y_of(*value), y_of(0.0));
                         let (top, bottom) = (a.min(b), a.max(b));
                         let bar = Rect::new(x0, top, x0 + bar_w, bottom.max(top + 1.0));
@@ -660,7 +661,7 @@ impl SheetsApp {
                 ctx.transform
                     * Affine::translate((
                         body.x0,
-                        body.y0 + rows.text_top + self.metrics.lh_body * count_f64(i),
+                        body.y0 + rows.text_top + self.metrics.lh_body * f64_of_usize(i),
                     )),
                 None,
                 &style,

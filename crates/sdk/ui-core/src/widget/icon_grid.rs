@@ -9,6 +9,7 @@
 //! selection with [`set_selection`](IconGrid::set_selection) and react to
 //! `on_item_click(index, ctrl, shift)`.
 
+use crate::num::f64_of_usize;
 use crate::num::{f32_of_f64, usize_of_f64};
 use std::collections::HashMap;
 
@@ -171,7 +172,7 @@ impl IconGrid {
         if rows == 0 {
             0.0
         } else {
-            count_to_f64(rows) * self.cell_h + count_to_f64(rows.saturating_sub(1)) * self.gap
+            f64_of_usize(rows) * self.cell_h + f64_of_usize(rows.saturating_sub(1)) * self.gap
         }
     }
 
@@ -180,8 +181,8 @@ impl IconGrid {
         let col = i.checked_rem(columns).unwrap_or(0);
         let row = i.checked_div(columns).unwrap_or(0);
         Point::new(
-            self.rect.x0 + count_to_f64(col) * (self.cell_w + self.gap),
-            self.rect.y0 + count_to_f64(row) * (self.cell_h + self.gap),
+            self.rect.x0 + f64_of_usize(col) * (self.cell_w + self.gap),
+            self.rect.y0 + f64_of_usize(row) * (self.cell_h + self.gap),
         )
     }
 
@@ -207,10 +208,10 @@ impl IconGrid {
             return None;
         }
         // Reject points that land in the inter-cell gap.
-        if rel_x - count_to_f64(col) * stride_x > self.cell_w {
+        if rel_x - f64_of_usize(col) * stride_x > self.cell_w {
             return None;
         }
-        if rel_y - count_to_f64(row) * stride_y > self.cell_h {
+        if rel_y - f64_of_usize(row) * stride_y > self.cell_h {
             return None;
         }
         let idx = row.saturating_mul(self.columns).saturating_add(col);
@@ -231,13 +232,6 @@ impl IconGrid {
 )]
 fn translated(transform: Affine, x: f64, y: f64) -> Affine {
     transform * Affine::translate((x, y))
-}
-
-/// Widens a column/row count to `f64` for layout math. Goes through `u32`
-/// (exactly representable in `f64`) with a saturating fallback rather than
-/// an `as` cast, so it's lossless for any realistic grid size.
-fn count_to_f64(n: usize) -> f64 {
-    f64::from(u32::try_from(n).unwrap_or(u32::MAX))
 }
 
 impl Widget for IconGrid {

@@ -23,6 +23,7 @@
 //! [`Segment::with_hint`] shortcut) is its tooltip; the label is its
 //! accessible name.
 use crate::num::f32_of_f64;
+use crate::num::f64_of_usize;
 use crate::widget::binding::{BoxedBinding, Pulled};
 use crate::widget::toolbar::Orientation;
 use crate::widget::{AppModel, ModelPath};
@@ -212,13 +213,6 @@ impl SegmentedTouch {
             _ => SegmentedTouchResult::Unhandled,
         }
     }
-}
-
-/// Lossless `usize -> f64` widening for segment-strip geometry. Segment
-/// counts are bounded far below `u32::MAX`, so routing through `u32` (which
-/// `f64` represents exactly) avoids the precision loss a direct cast risks.
-fn usize_to_f64(n: usize) -> f64 {
-    f64::from(u32::try_from(n).unwrap_or(u32::MAX))
 }
 
 /// One choice of a [`ToggleGroup`] or a [`SegmentedFace`].
@@ -907,7 +901,7 @@ impl ToggleGroup {
 
     fn strip_height(&self) -> f64 {
         if self.chosen.is_some() {
-            let rows = usize_to_f64(self.rows.max(1));
+            let rows = f64_of_usize(self.rows.max(1));
             rows * self.metrics.height + (rows - 1.0) * self.metrics.gap
         } else {
             self.metrics.height
@@ -919,11 +913,11 @@ impl ToggleGroup {
 /// between them sharing the height left over.
 fn stack(rect: Rect, n: usize) -> Vec<Rect> {
     let side = rect.width();
-    let gaps = usize_to_f64(n.saturating_sub(1)).max(1.0);
-    let gap = ((rect.height() - side * usize_to_f64(n)) / gaps).max(0.0);
+    let gaps = f64_of_usize(n.saturating_sub(1)).max(1.0);
+    let gap = ((rect.height() - side * f64_of_usize(n)) / gaps).max(0.0);
     (0..n)
         .map(|i| {
-            let y = rect.y0 + usize_to_f64(i) * (side + gap);
+            let y = rect.y0 + f64_of_usize(i) * (side + gap);
             Rect::new(rect.x0, y, rect.x1, y + side)
         })
         .collect()
@@ -935,15 +929,15 @@ fn partition(rect: Rect, n: usize) -> Vec<Rect> {
     if n == 0 {
         return Vec::new();
     }
-    let seg_w = rect.width() / usize_to_f64(n);
+    let seg_w = rect.width() / f64_of_usize(n);
     let last = n.saturating_sub(1);
     (0..n)
         .map(|i| {
-            let x0 = rect.x0 + usize_to_f64(i) * seg_w;
+            let x0 = rect.x0 + f64_of_usize(i) * seg_w;
             let x1 = if i == last {
                 rect.x1
             } else {
-                rect.x0 + usize_to_f64(i.saturating_add(1)) * seg_w
+                rect.x0 + f64_of_usize(i.saturating_add(1)) * seg_w
             };
             Rect::new(x0, rect.y0, x1, rect.y1)
         })
@@ -999,7 +993,7 @@ fn partition_sized(rect: Rect, naturals: &[(f64, f64)]) -> (Vec<Rect>, Vec<bool>
         return (Vec::new(), Vec::new());
     }
     let avail = rect.width().max(0.0);
-    let count = usize_to_f64(n);
+    let count = f64_of_usize(n);
     let full: Vec<f64> = naturals.iter().map(|(full, _)| *full).collect();
     let widest = full.iter().copied().fold(0.0, f64::max);
     if widest * count <= avail + 1e-6 {
@@ -1189,7 +1183,7 @@ impl StripMetrics {
             return naturals.iter().map(|(full, _)| full).sum::<f64>().ceil();
         }
         let widest = naturals.iter().map(|(full, _)| *full).fold(0.0, f64::max);
-        (widest * usize_to_f64(segments.len()) + 2.0 * self.inset).ceil()
+        (widest * f64_of_usize(segments.len()) + 2.0 * self.inset).ceil()
     }
 }
 
@@ -2000,7 +1994,7 @@ impl Widget for ToggleGroup {
                 .max(f64::from(theme.tokens.metrics.min_pointer_target));
             let gap = f64::from(theme.tokens.spacing.s1);
             self.stacked = (side, gap);
-            let n = usize_to_f64(self.segments.len().max(1));
+            let n = f64_of_usize(self.segments.len().max(1));
             let node = taffy.leaf_node(Style {
                 size: Size {
                     width: Dimension::length(f32_of_f64(side)),
@@ -2054,7 +2048,7 @@ impl Widget for ToggleGroup {
     ) -> Size<f32> {
         if self.orientation == Orientation::Vertical {
             let (side, gap) = self.stacked;
-            let n = usize_to_f64(self.segments.len().max(1));
+            let n = f64_of_usize(self.segments.len().max(1));
             return Size {
                 width: known.width.unwrap_or(f32_of_f64(side)),
                 height: known
@@ -2613,15 +2607,15 @@ mod tests {
         // Populate segment_rects manually (mirrors apply_layout).
         let n = g.segments.len();
         if n > 0 {
-            let w = rect.width() / usize_to_f64(n);
+            let w = rect.width() / f64_of_usize(n);
             let last = n.saturating_sub(1);
             g.segment_rects = (0..n)
                 .map(|i| {
-                    let x0 = rect.x0 + usize_to_f64(i) * w;
+                    let x0 = rect.x0 + f64_of_usize(i) * w;
                     let x1 = if i == last {
                         rect.x1
                     } else {
-                        rect.x0 + usize_to_f64(i.saturating_add(1)) * w
+                        rect.x0 + f64_of_usize(i.saturating_add(1)) * w
                     };
                     Rect::new(x0, rect.y0, x1, rect.y1)
                 })

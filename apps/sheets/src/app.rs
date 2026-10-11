@@ -295,13 +295,6 @@ fn tile_count(sel: u32, block: u32) -> u32 {
     }
 }
 
-/// An item count as an `f64` for layout maths. Menus, chip rows and labels run
-/// to tens of items, far inside `f64`'s exact-integer range; an absurd count
-/// clamps rather than silently losing precision.
-fn count_f64(n: usize) -> f64 {
-    f64::from(u32::try_from(n).unwrap_or(u32::MAX))
-}
-
 fn tab_action_label(act: TabAction) -> &'static str {
     match act {
         TabAction::Rename => "Rename",
