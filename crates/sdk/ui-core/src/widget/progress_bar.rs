@@ -467,26 +467,6 @@ impl Widget for ProgressBar {
     fn is_layout_dirty(&self) -> bool {
         self.rect == Rect::ZERO
     }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &crate::presence::PresenceCtx,
-        permissions: &crate::permissions::PermissionContext,
-    ) {
-        crate::widget::draw_gated_leaf(
-            self,
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
-            permissions,
-        );
-    }
 }
 
 impl crate::presence::capability::PublishesPresence for ProgressBar {

@@ -223,24 +223,6 @@ pub(crate) fn draw_gate_and_peer_focus(
     }
 }
 
-/// The whole `draw_with_presence` of a gated, presence-publishing leaf:
-/// culled off-viewport, drawn, then overlaid by [`draw_gate_and_peer_focus`].
-pub(crate) fn draw_gated_leaf(
-    widget: &mut (impl Widget + ?Sized),
-    scene: &mut Scene,
-    transform: Affine,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
-    presence: &PresenceCtx,
-    permissions: &crate::permissions::PermissionContext,
-) {
-    if presence.should_cull(widget.get_rect()) {
-        return;
-    }
-    widget.draw(scene, transform, text_renderer, theme, presence);
-    draw_gate_and_peer_focus(widget, scene, transform, theme, presence, permissions);
-}
-
 /// Hand `event` to the widgets a virtualizing container has mounted: the
 /// first one holding pointer capture gets it alone, otherwise each laid-out
 /// widget sees it, topmost first, until one handles it.
@@ -2302,10 +2284,12 @@ pub trait Widget {
         }
     }
 
-    /// Default forwards to `draw`. **Spatial culling**: short-circuits via
-    /// [`PresenceCtx::should_cull`] when the rect misses
-    /// `presence.viewport` — overrides MUST call it first. Off-viewport
-    /// widgets stay dirty so they re-emit when scrolled back in.
+    /// Default forwards to `draw`, then overlays the denied-permission scrim and
+    /// the first peer's focus ring (for gated or presence-publishing widgets).
+    /// **Spatial culling**: short-circuits via [`PresenceCtx::should_cull`]
+    /// when the rect misses `presence.viewport` — overrides MUST call it
+    /// first. Off-viewport widgets stay dirty so they re-emit when scrolled
+    /// back in.
     fn draw_with_presence(
         &mut self,
         scene: &mut Scene,
@@ -2313,12 +2297,13 @@ pub trait Widget {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
         presence: &PresenceCtx,
-        _permissions: &crate::permissions::PermissionContext,
+        permissions: &crate::permissions::PermissionContext,
     ) {
         if presence.should_cull(self.get_rect()) {
             return;
         }
         self.draw(scene, transform, text_renderer, theme, presence);
+        draw_gate_and_peer_focus(self, scene, transform, theme, presence, permissions);
     }
 
     /// **Top-layer pass**, run once after the whole `draw_with_presence`
