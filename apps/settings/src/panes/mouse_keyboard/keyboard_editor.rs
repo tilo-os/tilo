@@ -875,48 +875,9 @@ impl MouseKeyboardPane {
                 } else {
                     map
                 }
-                .with_live_layout(live);
-                // Any key can be inspected, from the map itself or by name:
-                // the symbols it types on each layer, or live, what the seat
-                // really types.
-                let inspected = self.last.keyboard_inspected_key.clone();
-                let details = map.clone();
-                let map = map.with_single_level(level);
-                let selected = inspected.clone();
-                let keys = map.inspection_keys();
-                body = body.push(Box::new(self.cx.bind(
-                    map.with_inspected_key(&inspected).selectable(),
-                    effect(InputEffect::INSPECT_KEYBOARD_KEY),
-                )));
-                body = body.push(Box::new(self.cx.bind(
-                    super::id_dropdown(
-                        keys,
-                        &inspected,
-                        "input.map.inspect-key",
-                        &t("input-map-inspect-key"),
-                    ),
-                    effect(InputEffect::INSPECT_KEYBOARD_KEY),
-                )));
-                body = body.push(Box::new(
-                    Text::dynamic(move || match details.inspection_values(&selected) {
-                        Some(values) if values.iter().any(|value| !value.is_empty()) => format!(
-                            "{}\n{}",
-                            selected,
-                            values
-                                .iter()
-                                .enumerate()
-                                .map(|(level, value)| if live {
-                                    format!("{}: {}", t("input-map-current-symbols"), value)
-                                } else {
-                                    format!("{} {}: {}", t("input-map-level"), level + 1, value)
-                                })
-                                .collect::<Vec<_>>()
-                                .join("\n")
-                        ),
-                        _ => t("input-map-inspection-unavailable"),
-                    })
-                    .with_id("input.keyboard-map.details"),
-                ));
+                .with_live_layout(live)
+                .with_single_level(level);
+                body = body.push(Box::new(map));
                 if live {
                     // Asked for by automation or a person: what the seat
                     // really types, not the configured layout.
