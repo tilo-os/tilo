@@ -575,36 +575,58 @@ fn task_action_admission_and_direction_commit_are_one_serialized_owner_turn() {
         .unwrap();
 }
 
-fn sealed_edit(joined: &Enrolled) -> (OwnerCommitRequest, Vec<u8>) {
+fn sealed_edit(
+    joined: &Enrolled,
+    plaintext: Option<Vec<u8>>,
+) -> (OwnerCommitRequest, channel_crypto::ChannelContentKeys) {
     let mut request = edit(&joined.owner, joined.room, joined.now);
     let CommitOperation::Document { envelope, .. } = &mut request.operation else {
         panic!("test edit is a document");
     };
-    let opened = envelope.payload.clone();
-    envelope.payload = b"sealed local document".to_vec();
-    envelope.encryption = Some(collab_types::EncryptionMetadata::mls_application(
-        1,
-        collab_types::document_channel_id(APP, ROOM, ""),
-    ));
+    let (keys, _) = rotated_channel();
+    let (metadata, ciphertext) = keys
+        .seal_content(
+            envelope.artifact,
+            collab_types::ContentRetention::Delta,
+            plaintext.as_deref().unwrap_or(&envelope.payload),
+        )
+        .unwrap();
+    envelope.payload = ciphertext;
+    envelope.encryption = Some(metadata);
     collab_types::sign_op(envelope, &member()).unwrap();
-    (request, opened)
+    (request, keys)
+}
+
+fn open_sealed(
+    keys: &channel_crypto::ChannelContentKeys,
+    envelope: &collab_types::SignedOp,
+) -> Result<Vec<u8>, String> {
+    keys.open_current_content(
+        envelope.artifact,
+        envelope
+            .encryption
+            .as_ref()
+            .ok_or("test envelope must be sealed")?,
+        &envelope.payload,
+    )
+    .map(|bytes| bytes.to_vec())
+    .map_err(|error| error.to_string())
 }
 
 #[test]
 fn opened_sealed_local_write_refuses_bad_plaintext_without_publication() {
     let joined = enrolled();
-    let (request, _) = sealed_edit(&joined);
+    let malformed = collab_types::DocumentMutation::Incremental(b"not Automerge storage".to_vec())
+        .encode()
+        .unwrap();
+    let (request, keys) = sealed_edit(&joined, Some(malformed));
     let before = std::fs::read(&joined.path).unwrap();
     let mut opened = 0;
     let result = joined.owner.commit_document_with_opening(
         request,
-        &mut |_| {
+        &mut |envelope| {
             opened += 1;
-            Ok(
-                collab_types::DocumentMutation::Incremental(b"not Automerge storage".to_vec())
-                    .encode()
-                    .unwrap(),
-            )
+            open_sealed(&keys, envelope)
         },
         joined.now,
     );
@@ -622,7 +644,6 @@ fn opened_sealed_local_write_refuses_bad_plaintext_without_publication() {
 #[test]
 fn opened_sealed_local_write_refuses_missing_dependencies_without_publication() {
     let joined = enrolled();
-    let (request, _) = sealed_edit(&joined);
     let before = std::fs::read(&joined.path).unwrap();
     let mut alien = AutoCommit::new();
     alien.put(ROOT, "unadmitted", "basis").unwrap();
@@ -633,10 +654,15 @@ fn opened_sealed_local_write_refuses_missing_dependencies_without_publication() 
     let plaintext = collab_types::DocumentMutation::Incremental(alien.save_after(&basis))
         .encode()
         .unwrap();
+    let (request, keys) = sealed_edit(&joined, Some(plaintext));
     assert!(
         joined
             .owner
-            .commit_document_with_opening(request, &mut |_| Ok(plaintext.clone()), joined.now,)
+            .commit_document_with_opening(
+                request,
+                &mut |envelope| open_sealed(&keys, envelope),
+                joined.now
+            )
             .is_err(),
         "a sealed write cannot admit an uncommitted dependency basis"
     );
@@ -646,7 +672,7 @@ fn opened_sealed_local_write_refuses_missing_dependencies_without_publication() 
 #[test]
 fn opened_sealed_local_write_verifies_signature_before_opening() {
     let joined = enrolled();
-    let (mut request, plaintext) = sealed_edit(&joined);
+    let (mut request, keys) = sealed_edit(&joined, None);
     let CommitOperation::Document { envelope, .. } = &mut request.operation else {
         panic!("test edit is a document");
     };
@@ -658,9 +684,9 @@ fn opened_sealed_local_write_verifies_signature_before_opening() {
             .owner
             .commit_document_with_opening(
                 request,
-                &mut |_| {
+                &mut |envelope| {
                     opened += 1;
-                    Ok(plaintext.clone())
+                    open_sealed(&keys, envelope)
                 },
                 joined.now,
             )
@@ -676,7 +702,7 @@ fn opened_sealed_local_write_verifies_signature_before_opening() {
 #[test]
 fn opened_sealed_local_write_recovers_from_key_refusal_and_reopens_exact_history() {
     let joined = enrolled();
-    let (request, plaintext) = sealed_edit(&joined);
+    let (request, keys) = sealed_edit(&joined, None);
     let before = std::fs::read(&joined.path).unwrap();
     assert!(
         joined
@@ -691,7 +717,11 @@ fn opened_sealed_local_write_recovers_from_key_refusal_and_reopens_exact_history
     assert_eq!(std::fs::read(&joined.path).unwrap(), before);
     let receipt = joined
         .owner
-        .commit_document_with_opening(request.clone(), &mut |_| Ok(plaintext.clone()), joined.now)
+        .commit_document_with_opening(
+            request.clone(),
+            &mut |envelope| open_sealed(&keys, envelope),
+            joined.now,
+        )
         .unwrap();
     receipt.validate_for(&request).unwrap();
     let committed = std::fs::read(&joined.path).unwrap();
