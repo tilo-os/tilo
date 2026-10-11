@@ -28,7 +28,7 @@ const SCRATCHPAD: &str = "so.tilo.scratchpad";
 struct Canned(Answer);
 
 impl PlanModel for Canned {
-    fn choose(&mut self, _: &str, _: &Catalogue, _: usize) -> Result<Answer, String> {
+    fn choose(&mut self, _: &str, _: &Catalogue, _: Option<usize>) -> Result<Answer, String> {
         Ok(self.0.clone())
     }
 }
@@ -45,6 +45,9 @@ fn context_with_scratchpad() -> (PlanContext, DocumentRoute, Replica) {
         open: vec![(route.clone(), app.survey())],
         known: Vec::new(),
         apps: vec![SCRATCHPAD.into(), "so.tilo.notes".into()],
+        produced: Vec::new(),
+        observed: Vec::new(),
+        ..PlanContext::default()
     };
     (context, route, app)
 }

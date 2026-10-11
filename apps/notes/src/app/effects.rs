@@ -37,6 +37,9 @@ impl NotesApp {
                 })))
             }
             NotesEffect::ExportMarkdown { page } => self.export_markdown(&state, page, cx),
+            NotesEffect::ExportMarkdownContent { page } => {
+                self.export_markdown_content(&state, page)
+            }
             NotesEffect::InsertImage { page } => {
                 state.get(page).ok_or("the note no longer exists")?;
                 Ok(Self::choose_image(page, cx))
@@ -92,6 +95,7 @@ impl NotesApp {
         };
         match effect {
             NotesEffect::ExportMarkdown { page }
+            | NotesEffect::ExportMarkdownContent { page }
             | NotesEffect::InsertImage { page }
             | NotesEffect::CopyLink { page } => {
                 dispatcher.effect_on(&actions::page_resource_id(*page), effect);
@@ -308,6 +312,36 @@ impl NotesApp {
                 Ok(Effected::done())
             },
         ))
+    }
+
+    /// Keep note `page` as Markdown in the window's content store rather than
+    /// a chosen file, and answer its content address: an export a caller with
+    /// no files of its own (an agent) reads back by address. With no file
+    /// name to carry it, the title leads as the note's first heading.
+    fn export_markdown_content(&self, state: &Workspace, page: PageId) -> EffectAnswer {
+        let title = state
+            .get(page)
+            .ok_or("the note no longer exists")?
+            .title
+            .trim();
+        let body = actions::page_markdown(state, page);
+        let assets = self
+            .canonical_assets
+            .read()
+            .map(|assets| assets.clone())
+            .unwrap_or_default();
+        let portable = super::inline_images(&body, &assets);
+        let markdown = if title.is_empty() {
+            portable
+        } else {
+            format!("# {title}\n\n{portable}")
+        };
+        let content = ui::tilo_resource::content::current()
+            .ok_or("this window keeps no content to export into")?;
+        let hash = content
+            .put(markdown.as_bytes())
+            .map_err(|error| format!("the note could not be kept: {error}"))?;
+        Effected::content(&hash)
     }
 
     fn choose_image(page: PageId, cx: &mut Cx) -> Effected {

@@ -116,6 +116,13 @@ pub enum SheetsEffect {
         #[param("Where to write it; omit to choose")]
         path: Option<String>,
     },
+    /// Export Excel workbook as content
+    ///
+    /// Keeps every sheet as an `.xlsx` workbook in the content store, with no
+    /// file to write: the caller reads the bytes by the content address it
+    /// answers.
+    #[effect(content, permission = "read")]
+    ExportXlsxContent,
     /// Open command palette
     #[effect(view)]
     Commands,

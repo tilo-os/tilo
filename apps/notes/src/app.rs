@@ -3636,6 +3636,28 @@ mod tests {
         );
     }
 
+    /// A new note can come with its text: one action makes the note and
+    /// writes it, a paragraph per line.
+    #[test]
+    fn a_new_note_is_written_with_its_text() {
+        let mut app = ui::framework::testing::TestApp::<crate::NotesShell>::new().unwrap();
+        app.call(
+            "new-page",
+            serde_json::json!({"value": "Launch headline", "text": "Small desk. Clear head.\nSecond line"}),
+        )
+        .unwrap();
+        app.settle();
+        let page = app.state().pages()[0].id;
+        assert_eq!(app.state().pages()[0].title, "Launch headline");
+        let texts: Vec<String> = app.read_document(|doc| {
+            NotesDoc::page_block_snapshots(doc, page)
+                .into_iter()
+                .map(|(_, text)| text)
+                .collect()
+        });
+        assert_eq!(texts, ["Small desk. Clear head.", "Second line"]);
+    }
+
     #[test]
     fn published_block_range_selects_unicode_in_the_real_editor_without_editing() {
         use tilo_document::{RichText, RichTextAction};
@@ -4009,6 +4031,7 @@ mod tests {
                 id: page.to_string(),
                 title: "Retry receipt".into(),
                 parent: String::new(),
+                text: String::new(),
             })
             .unwrap(),
         )

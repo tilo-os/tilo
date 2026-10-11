@@ -45,8 +45,16 @@ impl Resource for Document {
     type State = RichTextState;
     type Action = RichTextAction;
 
+    /// A short document is read whole, so its document operations find a
+    /// paragraph by its text without a view (`insert-image` after one); a
+    /// view's own demand then keeps only what it shows.
     fn read(doc: &Doc) -> Result<Self::State, ModelError> {
-        <RichText as Resource>::read(doc)
+        let mut state = <RichText as Resource>::read(doc)?;
+        let len = state.body().len();
+        if len <= crate::actions::MAX_FOUND_PARAGRAPHS {
+            <RichText as Resource>::load(&mut state, doc, &Demand::range(0..len))?;
+        }
+        Ok(state)
     }
 
     fn locate(state: &Self::State, obj: &automerge::ObjId) -> Option<ui::tilo_resource::Path> {
@@ -157,7 +165,10 @@ impl Resource for Document {
     }
 
     fn bound_actions(state: &Self::State) -> Vec<tilo_actions::ActionSpec> {
-        crate::actions::toc_action(state).into_iter().collect()
+        crate::actions::toc_action(state)
+            .into_iter()
+            .chain([crate::actions::insert_image_spec(state)])
+            .collect()
     }
 }
 
@@ -412,6 +423,108 @@ mod tests {
     }
 
     #[test]
+    fn a_docx_exported_as_content_carries_its_text_and_placed_picture() {
+        use ui::tilo_resource::{Effect, Invoke, Resource};
+        let spec = super::WordProcessorEffect::specs()
+            .into_iter()
+            .find(|spec| spec.id == "export-content")
+            .expect("exporting as content is a published effect");
+        assert_eq!(
+            spec.contract.result,
+            tilo_actions::ResultSpec::Resource {
+                resource_kind: tilo_actions::CONTENT_RESOURCE_KIND.to_owned(),
+            }
+        );
+        assert!(
+            !spec
+                .contract
+                .tags
+                .iter()
+                .any(|tag| tag == tilo_actions::LOCAL_DEVICE_ONLY),
+            "it needs no device of its own"
+        );
+
+        let mut app = ui::framework::testing::TestApp::<WordProcessorApp>::new().unwrap();
+        app.invoke(
+            Invoke::apply(&super::RichTextAction::AppendParagraph {
+                text: "Exported without a file".into(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        app.settle();
+        let png = ui::png::encode_rgba8(2, 1, &[255, 160, 40, 255, 30, 70, 180, 255]).unwrap();
+        let hash = app.content().put(&png).unwrap();
+        let resource = <super::Document as Resource>::KIND;
+        app.call_on(
+            resource,
+            "place-image",
+            serde_json::json!({tilo_actions::PROMPTED_PARAM: hash}),
+        )
+        .expect("the picture is placed from content");
+        app.settle();
+
+        let output = app
+            .effect(&super::WordProcessorEffect::ExportContent {
+                format: "docx".into(),
+            })
+            .unwrap();
+        let [address] = output.resources.as_slice() else {
+            panic!("one content resource: {output:?}");
+        };
+        let docx = app
+            .content()
+            .read(
+                address
+                    .strip_prefix("tilo.content:")
+                    .expect("a content address"),
+            )
+            .expect("the bytes are kept");
+        assert!(docx.starts_with(b"PK"), "a .docx is a zip package");
+        let parts =
+            tilo_doc_codecs::safety::read_zip_parts(&docx, &tilo_doc_codecs::ZipLimits::default())
+                .unwrap();
+        let part = |name: &str| {
+            parts
+                .iter()
+                .find(|(part, _)| part == name)
+                .map(|(_, bytes)| bytes.as_slice())
+        };
+        let document = String::from_utf8_lossy(part("word/document.xml").expect("a body"));
+        assert!(document.contains("Exported without a file"), "{document}");
+        let media: Vec<&[u8]> = parts
+            .iter()
+            .filter(|(name, _)| {
+                name.starts_with("word/media/")
+                    && std::path::Path::new(name)
+                        .extension()
+                        .is_some_and(|ext| ext.eq_ignore_ascii_case("png"))
+            })
+            .map(|(_, bytes)| bytes.as_slice())
+            .collect();
+        assert_eq!(
+            media,
+            [png.as_slice()],
+            "the placed PNG travels byte for byte"
+        );
+
+        for format in ["odt", "md", "html", "rtf", "txt"] {
+            let output = app
+                .effect(&super::WordProcessorEffect::ExportContent {
+                    format: format.into(),
+                })
+                .unwrap_or_else(|error| panic!("{format}: {error}"));
+            assert_eq!(output.resources.len(), 1, "{format}");
+        }
+        assert!(
+            app.effect(&super::WordProcessorEffect::ExportContent {
+                format: "exe".into(),
+            })
+            .is_err()
+        );
+    }
+
+    #[test]
     fn page_margins_are_a_published_document_action() {
         use ui::tilo_resource::Resource;
         let decl = super::Document::declarations()
@@ -456,5 +569,199 @@ mod tests {
             .find(|action| action.id == "read-text")
             .expect("read-text is on the published document");
         assert_eq!(read.kind, tilo_actions::OperationKind::Effect);
+    }
+
+    /// The running Writer with three paragraphs, a picture in its content
+    /// store, and an agent joined from its record with write access, as an
+    /// agent's worker holds it: no view and no caret.
+    fn joined() -> (
+        ui::framework::testing::TestApp<WordProcessorApp>,
+        ui::framework::Participant,
+        Vec<u8>,
+        String,
+    ) {
+        use ui::permissions::{Actor, CapOverride, PermissionContext, Scope, Subject, Verb};
+        use ui::tilo_resource::Invoke;
+        let mut app = ui::framework::testing::TestApp::<WordProcessorApp>::new().unwrap();
+        for text in ["Intro", "The lamp in use", "Closing"] {
+            app.invoke(
+                Invoke::apply(&super::RichTextAction::AppendParagraph { text: text.into() })
+                    .unwrap(),
+            )
+            .unwrap();
+        }
+        app.settle();
+        let png = ui::png::encode_rgba8(2, 1, &[255, 160, 40, 255, 30, 70, 180, 255]).unwrap();
+        let hash = app.content().put(&png).unwrap();
+        let snapshot = app.read_document(|doc| doc.clone().save());
+        let agent = PermissionContext::from_capabilities(
+            Actor::agent("carrier"),
+            vec![CapOverride::grant(
+                Subject::agent("carrier"),
+                Scope::App(<WordProcessorApp as ui::framework::ResourceApp>::ID.to_owned()),
+                Verb::Write,
+            )],
+        );
+        let participant = ui::framework::Participant::from_snapshot(
+            ui::framework::resource_kind::<WordProcessorApp>(),
+            &snapshot,
+            "carrier",
+            agent,
+        )
+        .unwrap();
+        (app, participant, png, hash)
+    }
+
+    fn insert_image(
+        participant: &mut ui::framework::Participant,
+        hash: &str,
+        after: Option<&str>,
+    ) -> Result<Option<Vec<u8>>, tilo_actions::DoorError> {
+        let mut arguments = serde_json::Map::new();
+        arguments.insert(tilo_actions::PROMPTED_PARAM.into(), hash.into());
+        if let Some(after) = after {
+            arguments.insert("after".into(), after.into());
+        }
+        participant.invoke(
+            &tilo_actions::ActionAddress::new(
+                <super::Document as ui::tilo_resource::Resource>::KIND,
+                "insert-image",
+            ),
+            &arguments,
+        )
+    }
+
+    /// Each body block's kind, its text, and the picture it shows.
+    fn body(doc: &automerge::AutoCommit) -> Vec<(String, String, Option<String>)> {
+        let containers = tilo_doc::model::open(doc, &automerge::ROOT).unwrap();
+        tilo_doc::model::materialize(doc, &containers)
+            .blocks
+            .into_iter()
+            .map(|block| {
+                let blob = match block.attrs.get("blob") {
+                    Some(tilo_doc::AttrVal::Str(hash)) => Some(hash.clone()),
+                    _ => None,
+                };
+                (block.kind, block.text, blob)
+            })
+            .collect()
+    }
+
+    /// An agent places the picture the step before it produced through the
+    /// record's own document operation: after the paragraph it names by its
+    /// text, or at the end; content it does not hold and text no paragraph
+    /// has are refused before anything is written.
+    #[test]
+    fn an_agent_inserts_produced_content_after_a_paragraph_or_at_the_end() {
+        let (app, mut participant, _png, hash) = joined();
+        let operation = participant
+            .operations()
+            .into_iter()
+            .find(|operation| operation.address.action == "insert-image")
+            .expect("the record publishes insert-image as a document operation");
+        assert!(operation.input.wants_content(), "the image is carried");
+        assert!(
+            operation
+                .params
+                .iter()
+                .any(|param| param.name == "after" && !param.required)
+        );
+        assert_eq!(
+            operation.contract.permission,
+            tilo_actions::PermissionRequirement::Write
+        );
+
+        let store = app.content();
+        let window = ui::WakeScope::new();
+        ui::tilo_resource::content::register(&window.handle(), store);
+        let _entered = window.enter();
+
+        let unknown = tilo_content::hash_bytes(b"never produced");
+        let error = insert_image(&mut participant, &unknown, None).unwrap_err();
+        assert!(error.to_string().contains("not available"), "{error}");
+        let error = insert_image(&mut participant, &hash, Some("no such words")).unwrap_err();
+        assert!(
+            error.to_string().contains("no paragraph contains"),
+            "{error}"
+        );
+        assert!(
+            body(participant.doc())
+                .iter()
+                .all(|(kind, ..)| kind != "image"),
+            "a refusal writes nothing"
+        );
+
+        insert_image(&mut participant, &hash, Some("lamp in"))
+            .expect("the picture is placed after the paragraph");
+        let blocks = body(participant.doc());
+        let named = blocks
+            .iter()
+            .position(|(_, text, _)| text == "The lamp in use")
+            .unwrap();
+        assert_eq!(
+            blocks.get(named + 1),
+            Some(&("image".to_owned(), String::new(), Some(hash.clone()))),
+            "{blocks:?}"
+        );
+        assert_eq!(
+            blocks.get(named + 3).map(|(_, text, _)| text.as_str()),
+            Some("Closing"),
+            "the paragraph after it is untouched: {blocks:?}"
+        );
+
+        insert_image(&mut participant, &format!("tilo.content:{hash}"), None)
+            .expect("without `after` the picture is appended");
+        let blocks = body(participant.doc());
+        let closing = blocks
+            .iter()
+            .position(|(_, text, _)| text == "Closing")
+            .unwrap();
+        assert_eq!(
+            blocks.get(closing + 1),
+            Some(&("image".to_owned(), String::new(), Some(hash.clone()))),
+            "{blocks:?}"
+        );
+        assert_eq!(
+            blocks.iter().filter(|(kind, ..)| kind == "image").count(),
+            2
+        );
+    }
+
+    /// The picture an agent inserted travels into the .docx the record is
+    /// exported as, byte for byte.
+    #[test]
+    fn an_inserted_image_is_exported_in_the_docx() {
+        let (mut app, mut participant, png, hash) = joined();
+        {
+            let window = ui::WakeScope::new();
+            ui::tilo_resource::content::register(&window.handle(), app.content());
+            let _entered = window.enter();
+            insert_image(&mut participant, &hash, Some("Intro")).expect("the picture is placed");
+        }
+        let mut peer = participant.doc().clone();
+        app.merge_peer(&mut peer).unwrap();
+        app.settle();
+
+        let output = app
+            .effect(&super::WordProcessorEffect::ExportContent {
+                format: "docx".into(),
+            })
+            .unwrap();
+        let [address] = output.resources.as_slice() else {
+            panic!("one content resource: {output:?}");
+        };
+        let docx = app
+            .content()
+            .read(tilo_actions::content_hash(address).expect("a content address"))
+            .expect("the bytes are kept");
+        let parts =
+            tilo_doc_codecs::safety::read_zip_parts(&docx, &tilo_doc_codecs::ZipLimits::default())
+                .unwrap();
+        let media: Vec<&[u8]> = parts
+            .iter()
+            .filter(|(name, _)| name.starts_with("word/media/"))
+            .map(|(_, bytes)| bytes.as_slice())
+            .collect();
+        assert_eq!(media, [png.as_slice()], "the inserted PNG is in word/media");
     }
 }

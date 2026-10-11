@@ -442,6 +442,8 @@ impl ManagedRuntime {
     ///
     /// # Errors
     /// Refuses missing trust, policy bypasses, or an untrusted/missing runtime.
+    // Runtime resolution lives in the Linux-only `run` module.
+    #[cfg(target_os = "linux")]
     pub fn from_launch_options(
         manifest: &ManifestView,
         options: &crate::run::RunOptions,

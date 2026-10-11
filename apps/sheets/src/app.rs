@@ -1633,6 +1633,7 @@ impl SheetsApp {
             E::ExportCsv { path } => self.export(Interchange::Csv, path, cx),
             E::ExportXlsx { path } => self.export(Interchange::Xlsx, path, cx),
             E::ExportOds { path } => self.export(Interchange::Ods, path, cx),
+            E::ExportXlsxContent => self.export_content(Interchange::Xlsx, cx),
             E::Commands => {
                 let resources = cx.live().with(|state| self.published_for(state));
                 self.open_palette_with(&resources);
@@ -1846,6 +1847,34 @@ impl SheetsApp {
                 Err(error) => app.failed(error),
             }
         }))
+    }
+
+    /// Keep the workbook as a spreadsheet file in the window's content store
+    /// rather than on disk, and answer its content address: an export a
+    /// caller with no files of its own (an agent) reads back by address.
+    fn export_content(
+        &mut self,
+        format: Interchange,
+        cx: &ui::framework::EffectCx<crate::resource::SheetsWorkbook, Self>,
+    ) -> ui::framework::EffectAnswer {
+        let sheets = cx.live().with(|state| state.sheets.clone());
+        if sheets.is_empty() {
+            return self.failed("there is no sheet to export".into());
+        }
+        let content = ui::tilo_resource::content::current()
+            .ok_or_else(|| "this window keeps no content to export into".to_string())?;
+        let stored = Self::encode_tables(format, &sheets).and_then(|bytes| {
+            content
+                .put(&bytes)
+                .map_err(|error| format!("the export could not be kept: {error}"))
+        });
+        match stored {
+            Ok(hash) => {
+                self.status = format!("Exported .{} as content", format.ext());
+                ui::framework::Effected::content(&hash)
+            }
+            Err(error) => self.failed(error),
+        }
     }
 
     /// Report a failed import or export, and fail its effect.
@@ -4850,6 +4879,59 @@ pub(crate) mod tests {
             assert!(app.undo(), "the import is one undo step");
             assert_eq!(app.state().sheets.len(), before);
         }
+    }
+
+    /// Exporting as content keeps the whole workbook as `.xlsx` bytes in the
+    /// window's content store and answers their address: no file is written
+    /// and no chooser asked, so a caller without files reads it back.
+    #[test]
+    fn an_xlsx_export_kept_as_content_holds_every_sheet() {
+        use tilo_actions::{ExecutionMode, ResultSpec};
+        use ui::tilo_resource::Effect as _;
+        let spec = SheetsEffect::specs()
+            .into_iter()
+            .find(|spec| spec.id == "export-xlsx-content")
+            .expect("exporting as content is a published effect");
+        assert_eq!(spec.contract.execution, ExecutionMode::Immediate);
+        assert_eq!(
+            spec.contract.result,
+            ResultSpec::Resource {
+                resource_kind: tilo_actions::CONTENT_RESOURCE_KIND.to_owned(),
+            }
+        );
+        assert!(
+            !spec
+                .contract
+                .tags
+                .iter()
+                .any(|tag| tag == tilo_actions::LOCAL_DEVICE_ONLY),
+            "it needs no device of its own"
+        );
+
+        let (services, recorder) = ui::host::HostServices::recording();
+        let _host = ui::host::enter(&services);
+        let mut app = sample_app();
+        let output = app.effect(&SheetsEffect::ExportXlsxContent).unwrap();
+        assert!(recorder.pick_requests().is_empty(), "no chooser is asked");
+        let [address] = output.resources.as_slice() else {
+            panic!("one content resource: {output:?}");
+        };
+        let hash = address
+            .strip_prefix("tilo.content:")
+            .expect("a content address");
+        let bytes = app.content().read(hash).expect("the bytes are kept");
+        assert!(bytes.starts_with(b"PK"), "an .xlsx is a zip package");
+        let tables = crate::xlsx::parse_xlsx(&bytes).unwrap();
+        let names: Vec<&str> = tables.iter().map(|table| table.name.as_str()).collect();
+        assert_eq!(names, ["Budget", "Sales"]);
+        let first = |index: usize| {
+            tables[index].rows[0][0]
+                .as_ref()
+                .map(|cell| cell.raw.clone())
+        };
+        assert_eq!(first(0).as_deref(), Some("Category"));
+        assert_eq!(first(1).as_deref(), Some("Region"));
+        assert!(shown(&mut app).1.starts_with("Exported .xlsx"));
     }
 
     /// Without a path, the host's chooser picks where an export is saved and

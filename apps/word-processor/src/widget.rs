@@ -9977,6 +9977,10 @@ impl WordProcessorWidget {
             WordProcessorEffect::SaveAs { path: None } => {
                 return Ok(self.choose_where_to_save(cx));
             }
+            WordProcessorEffect::ExportContent { format } => {
+                let doc = cx.document().ok_or("the document is not at hand")?;
+                return self.export_content(&doc, &format);
+            }
             WordProcessorEffect::Find => {
                 let doc = cx.document().ok_or("the document is not at hand")?.clone();
                 self.open_find(&doc);
@@ -10035,6 +10039,41 @@ impl WordProcessorWidget {
     ) -> Result<(), String> {
         let doc = cx.document().ok_or("the document is not at hand")?.clone();
         self.try_write_to_path(&doc, path, WpFormat::from_path(path))
+    }
+
+    /// Keep `doc` as a file of `format` in the content store rather than on
+    /// disk, its pictures read from that store, and answer its content
+    /// address: an export a caller with no files of its own (an agent) reads
+    /// back by address.
+    fn export_content(&self, doc: &AutoCommit, format: &str) -> ui::framework::EffectAnswer {
+        let format = match format {
+            "docx" => WpFormat::Docx,
+            "odt" => WpFormat::Odt,
+            "md" => WpFormat::Markdown,
+            "html" => WpFormat::Html,
+            "rtf" => WpFormat::Rtf,
+            "txt" => WpFormat::Text,
+            other => return Err(format!("`{other}` is not a format to export as content")),
+        };
+        // The store of the window or worker this runs in, where placed
+        // pictures are kept; else the one the editor was lent.
+        let content = ui::tilo_resource::content::current()
+            .unwrap_or_else(|| self.inner.content_store().clone());
+        let containers =
+            tilo_doc::model::open(doc, &automerge::ROOT).map_err(|error| error.to_string())?;
+        let bytes = format
+            .export(
+                tilo_doc::DocRef {
+                    doc,
+                    c: &containers,
+                },
+                &content,
+            )
+            .map_err(|error| format!("export failed: {error}"))?;
+        let hash = content
+            .put(&bytes)
+            .map_err(|error| format!("the export could not be kept: {error}"))?;
+        ui::framework::Effected::content(&hash)
     }
 
     /// Ask the person where to save with the host's chooser; the chosen file

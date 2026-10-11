@@ -7,7 +7,8 @@
 //! declared and bound document operations — checked against the agent's
 //! permissions, applied under its own actor and attributed to it, exactly as
 //! a person's window applies them. Views and effects are the app's own to
-//! run where it is open.
+//! run where it is open: an agent's confined worker mounts the record's
+//! component for the effects it runs (`worker/effects.rs`).
 //!
 //! Durable state moves as Automerge changes: [`Replica::take_mutation`]
 //! returns this participant's own changes since the last call (never ones it
@@ -80,6 +81,19 @@ impl AppCatalogue {
             return Vec::new();
         };
         discover_views(kind, app_id, doc, wanted, permissions)
+    }
+
+    /// What the record `doc` of `app_id` is called, as its app names it in
+    /// the palette and in history (a document's first heading): its root
+    /// resource's label. `None` when the app gives it no name of its own
+    /// (its resource type's generic label) or `doc` is not such a record.
+    #[must_use]
+    pub fn resource_title(&self, app_id: &str, doc: &automerge::AutoCommit) -> Option<String> {
+        let kind = self.kind(app_id)?;
+        let state = kind.read(doc).ok()?;
+        let name = kind.name(state.as_ref());
+        let name = name.trim();
+        (!name.is_empty() && name != kind.label()).then(|| name.to_owned())
     }
 
     /// The resource type `app_id`'s records hold.
@@ -312,6 +326,27 @@ impl Replica {
             self.pending.push(changes);
         }
         Ok(ActionOutput::default())
+    }
+
+    /// The record's current heads.
+    pub(crate) fn heads(&mut self) -> Vec<automerge::ChangeHash> {
+        self.participant.heads()
+    }
+
+    /// The whole record, saved from a copy so that what
+    /// [`Self::take_mutation`] returns next is unchanged.
+    pub(crate) fn snapshot(&self) -> Vec<u8> {
+        self.participant.doc().clone().save()
+    }
+
+    /// The participant's permissions.
+    pub(crate) fn permissions(&self) -> &PermissionContext {
+        self.participant.permissions()
+    }
+
+    /// Who the participant is.
+    pub(crate) fn participant_id(&self) -> &str {
+        self.participant.me()
     }
 
     /// Read the record's document.

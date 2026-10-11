@@ -194,8 +194,14 @@ pub fn pixels(
     let at = if let Some(at) = kept.iter().position(|(size, _)| *size == (width, height)) {
         at
     } else {
-        let offscreen = ui::offscreen::OffscreenRenderer::try_new(width, height)
-            .map_err(|error| format!("no renderer for a {width}x{height} picture: {error}"))?;
+        let offscreen = match ui::offscreen::OffscreenRenderer::try_new(width, height) {
+            Ok(offscreen) => offscreen,
+            Err(error) => {
+                drop(kept);
+                return ui::offscreen::render_without_gpu(&scene, width, height, backdrop, &error)
+                    .map(|rgba| (rgba, width, height));
+            }
+        };
         if kept.len() >= KEPT_RENDERERS {
             kept.remove(0);
         }

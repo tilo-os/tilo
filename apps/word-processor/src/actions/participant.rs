@@ -284,9 +284,10 @@ impl ParticipantView {
                 .take(MAX_RESOURCE_SEARCH_HITS)
                 .cloned()
                 .collect(),
-            // The view owns no content; a host publishing these resources
-            // replaces this with its document's store.
-            content: tilo_content::ContentStore::memory(),
+            // The view owns no content: it reads the store of the window or
+            // worker it runs in, else an empty one.
+            content: ui::tilo_resource::content::current()
+                .unwrap_or_else(tilo_content::ContentStore::memory),
         })
     }
 }

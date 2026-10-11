@@ -242,11 +242,24 @@ impl Resource for SheetsWorkbook {
             ActionDecl::new(
                 "new-sheet",
                 "New sheet",
-                vec![ActionParam::optional(
-                    "name",
-                    ParamType::Text,
-                    "The new sheet's name; omit for the next free SheetN",
-                )],
+                vec![
+                    ActionParam::optional(
+                        "name",
+                        ParamType::Text,
+                        "The new sheet's name; omit for the next free SheetN",
+                    ),
+                    ActionParam::optional(
+                        "rows",
+                        ParamType::Array,
+                        "Its first content: rows of values from A1, \"=…\" a formula",
+                    ),
+                    ActionParam::optional(
+                        "formats",
+                        ParamType::Object,
+                        "Number formats of its ranges, e.g. {\"D2:D5\": \"percent\"}: general, number, \
+                         currency, percent, date, time or text",
+                    ),
+                ],
                 move |args, _| {
                     let name = args.text("name").map_or("", str::trim);
                     let name = if name.is_empty() {
@@ -254,10 +267,28 @@ impl Resource for SheetsWorkbook {
                     } else {
                         name.to_owned()
                     };
-                    Ok(add_sheet_action(&name))
+                    let Some(rows) = args.array("rows") else {
+                        return Ok(add_sheet_action(&name));
+                    };
+                    // A sheet and its content in one change, as an import
+                    // makes them; a new workbook's blank first sheet gives
+                    // way to it.
+                    let mut cells = crate::cell_actions::cells_from_rows((0, 0), rows)?;
+                    if let Some(formats) = args.object("formats") {
+                        cells = crate::cell_actions::with_formats(cells, formats)?;
+                    }
+                    Ok(SheetsAction::ImportSheets {
+                        sheets: vec![crate::actions::ImportedSheet {
+                            name,
+                            sheet_id: uuid::Uuid::new_v4().to_string(),
+                            cells,
+                        }],
+                        replace_blank: true,
+                        source: None,
+                    })
                 },
             )
-            .describe("Add a sheet at the end of the workbook."),
+            .describe("Add a sheet at the end of the workbook, with its content when given."),
         ]
     }
 

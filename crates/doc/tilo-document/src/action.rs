@@ -3007,6 +3007,12 @@ impl ImageInput {
             height: (meta.h > 0).then(|| i64::from(meta.h)),
         }
     }
+
+    /// Whether the bytes are a picture a document can show.
+    #[must_use]
+    pub fn is_picture(&self) -> bool {
+        self.mime.starts_with("image/")
+    }
 }
 
 /// Insert the image `image` at `(block, at)`.

@@ -125,6 +125,66 @@ fn an_inserted_image_leaves_and_returns_inside_its_exported_note() {
 }
 
 #[test]
+fn a_note_exported_as_content_is_markdown_read_back_by_address() {
+    use ui::tilo_resource::Effect as _;
+    let (services, recorder) = ui::host::HostServices::recording();
+    let _host = ui::host::enter(&services);
+    let (mut app, page) = with_note("Guide", "Intro to the guide");
+    let spec = NotesEffect::ExportMarkdownContent { page }.bound();
+    assert_eq!(
+        spec.contract.result,
+        tilo_actions::ResultSpec::Resource {
+            resource_kind: tilo_actions::CONTENT_RESOURCE_KIND.to_owned(),
+        }
+    );
+    assert!(
+        !spec
+            .contract
+            .tags
+            .iter()
+            .any(|tag| tag == tilo_actions::LOCAL_DEVICE_ONLY),
+        "keeping a note as content needs no device of its own"
+    );
+
+    let output = app
+        .effect_on(
+            &page_resource_id(page),
+            &NotesEffect::ExportMarkdownContent { page },
+        )
+        .unwrap();
+    assert!(recorder.pick_requests().is_empty(), "no chooser is asked");
+    let [address] = output.resources.as_slice() else {
+        panic!("one content resource: {output:?}");
+    };
+    let hash = address
+        .strip_prefix("tilo.content:")
+        .expect("a content address");
+    let bytes = app.content().read(hash).expect("the bytes are kept");
+    let markdown = String::from_utf8(bytes).unwrap();
+    assert_eq!(markdown, "# Guide\n\nIntro to the guide\n");
+
+    app.effect(&NotesEffect::ImportMarkdownContent {
+        title: "Guide".into(),
+        body: markdown,
+    })
+    .unwrap();
+    app.settle();
+    let again = app
+        .state()
+        .pages()
+        .iter()
+        .rfind(|note| note.title == "Guide")
+        .map(|note| note.id)
+        .unwrap();
+    assert_ne!(again, page);
+    assert_eq!(
+        body(&app, again),
+        ["Intro to the guide"],
+        "the title is not repeated"
+    );
+}
+
+#[test]
 fn a_chosen_file_that_is_no_image_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     let text = dir.path().join("notes.png");

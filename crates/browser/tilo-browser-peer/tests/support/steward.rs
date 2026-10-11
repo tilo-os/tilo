@@ -226,59 +226,80 @@ async fn admit(
     let mut requests: HashMap<ChannelId, BTreeMap<Ed25519PublicKey, MlsAccessRequestV1>> =
         HashMap::new();
     let mut delivery = 1_u64;
-    while let Some(inbound) = session.recv().await {
-        let Inbound::Delta { data, .. } = inbound else {
-            continue;
-        };
-        let message = postcard::from_bytes::<NeighbourMsg>(&data);
-        if let Ok(NeighbourMsg::MlsAccessRequest { request, .. }) = &message
-            && request.verify().is_ok()
+    while let Some(first) = session.recv().await {
+        // Everything already waiting is taken together: a channel many
+        // members ask for at once (a record just made) is reconciled once
+        // for all of them rather than once per request.
+        let mut batch = vec![first];
+        while let Ok(Some(next)) =
+            tokio::time::timeout(std::time::Duration::ZERO, session.recv()).await
         {
-            let gate = admissions
-                .lock()
-                .unwrap()
-                .remove(&(request.channel, request.device));
-            if let Some(gate) = gate {
-                gate.entered.notify_one();
-                let permit = gate.release.acquire().await.unwrap();
-                drop(permit);
+            batch.push(next);
+        }
+        let mut asked: Vec<ChannelId> = Vec::new();
+        for inbound in batch {
+            let Inbound::Delta { data, .. } = inbound else {
+                continue;
+            };
+            let message = postcard::from_bytes::<NeighbourMsg>(&data);
+            if let Ok(NeighbourMsg::MlsAccessRequest { request, .. }) = &message
+                && request.verify().is_ok()
+            {
+                let gate = admissions
+                    .lock()
+                    .unwrap()
+                    .remove(&(request.channel, request.device));
+                if let Some(gate) = gate {
+                    gate.entered.notify_one();
+                    let permit = gate.release.acquire().await.unwrap();
+                    drop(permit);
+                }
+            }
+            let mut channels = channels.lock().unwrap();
+            match message {
+                Ok(NeighbourMsg::MlsAccessRequest { request, .. }) => {
+                    if request.verify().is_err() {
+                        continue;
+                    }
+                    requests
+                        .entry(request.channel)
+                        .or_default()
+                        .insert(request.device, *request.clone());
+                    if !asked.contains(&request.channel) {
+                        asked.push(request.channel);
+                    }
+                }
+                Ok(NeighbourMsg::MlsGovernanceAck { ack, .. }) if ack.verify().is_ok() => {
+                    let _ = channels.steward(ack.channel).acknowledge(&ack);
+                }
+                _ => {}
             }
         }
         let mut channels = channels.lock().unwrap();
-        match message {
-            Ok(NeighbourMsg::MlsAccessRequest { request, .. }) => {
-                if request.verify().is_err() {
-                    continue;
-                }
-                let pending = requests.entry(request.channel).or_default();
-                pending.insert(request.device, *request.clone());
-                let already = channels.steward(request.channel).members();
-                let allowed: BTreeSet<Ed25519PublicKey> = pending
-                    .keys()
-                    .copied()
-                    .chain(already)
-                    .chain([Ed25519PublicKey::from_bytes(own)])
-                    .collect();
-                let steward = channels.steward(request.channel);
-                steward.reconcile(&allowed, pending, &vault()).unwrap();
-                for outgoing in steward.outbox() {
-                    for frame in outgoing.frames {
-                        delivery = delivery.checked_add(1).unwrap();
-                        publish(
-                            &session,
-                            &NeighbourMsg::MlsGovernance {
-                                room: ROOM.into(),
-                                frame: Box::new(frame),
-                                delivery,
-                            },
-                        );
-                    }
+        for channel in asked {
+            let pending = requests.entry(channel).or_default();
+            let already = channels.steward(channel).members();
+            let allowed: BTreeSet<Ed25519PublicKey> = pending
+                .keys()
+                .copied()
+                .chain(already)
+                .chain([Ed25519PublicKey::from_bytes(own)])
+                .collect();
+            let steward = channels.steward(channel);
+            steward.reconcile(&allowed, pending, &vault()).unwrap();
+            for outgoing in steward.outbox() {
+                for frame in outgoing.frames {
+                    delivery = delivery.checked_add(1).unwrap();
+                    publish(
+                        &session,
+                        &NeighbourMsg::MlsGovernance {
+                            room: ROOM.into(),
+                            frame: Box::new(frame),
+                            delivery,
+                        },
+                    );
                 }
             }
-            Ok(NeighbourMsg::MlsGovernanceAck { ack, .. }) if ack.verify().is_ok() => {
-                let _ = channels.steward(ack.channel).acknowledge(&ack);
-            }
-            _ => {}
         }
     }
 }

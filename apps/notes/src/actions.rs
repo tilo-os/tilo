@@ -198,6 +198,11 @@ pub enum NotesAction {
         title: String,
         /// Parent page uuid, or `""` for a root page.
         parent: String,
+        /// The new note's first text, a paragraph per line; empty for an
+        /// empty note. Written with the note, so whoever makes a note and
+        /// its text does it in one step.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        text: String,
     },
     /// Change an existing tree atomically against its complete metadata preimage.
     UpdatePageTree {
@@ -818,7 +823,12 @@ impl Action for NotesAction {
                     }
                 }
             }
-            NotesAction::AppendPage { id, title, parent } => {
+            NotesAction::AppendPage {
+                id,
+                title,
+                parent,
+                text,
+            } => {
                 let (Ok(id), Ok(parent)) = (
                     id.parse::<PageId>(),
                     (!parent.is_empty())
@@ -845,6 +855,15 @@ impl Action for NotesAction {
                         order,
                     },
                 );
+                let blocks: Vec<BlockContent> = text
+                    .lines()
+                    .map(str::trim)
+                    .filter(|line| !line.is_empty())
+                    .map(|line| BlockContent::paragraph("", line))
+                    .collect();
+                if !blocks.is_empty() {
+                    NotesDoc::fill_page_body(doc, id, &blocks).map_err(ActionError::Refused)?;
+                }
             }
             NotesAction::DuplicateSubtree { source, pages } => {
                 let source = source
@@ -1026,6 +1045,7 @@ pub fn append_page_action(id: PageId, parent: Option<PageId>, title: &str) -> No
         id: id.to_string(),
         title: title.to_string(),
         parent: parent.map(|p| p.to_string()).unwrap_or_default(),
+        text: String::new(),
     }
 }
 
@@ -1802,6 +1822,7 @@ fn page_resource_from_index(
         }
     }
     res = res.with_action(NotesEffect::ExportMarkdown { page: m.id }.bound());
+    res = res.with_action(NotesEffect::ExportMarkdownContent { page: m.id }.bound());
     res = res.with_action(NotesEffect::InsertImage { page: m.id }.bound());
 
     // Rename — a prompted action carrying the rest of the page's metadata
@@ -2152,6 +2173,9 @@ pub(crate) fn notebook_child(workspace: &crate::Workspace, id: &str) -> Option<R
     Some(resource)
 }
 
+/// The `new-page` parameter holding the new note's text.
+const NOTE_TEXT_PARAM: &str = "text";
+
 /// The notebook's state-bound edits: a new root note after the last one, and
 /// today's note when the notebook has none yet.
 pub(crate) fn notebook_bound_declarations(
@@ -2161,21 +2185,30 @@ pub(crate) fn notebook_bound_declarations(
         ui::tilo_resource::ActionDecl::new(
             "new-page",
             "New note",
-            vec![ActionParam::required(
-                tilo_actions::PROMPTED_PARAM,
-                ParamType::Text,
-                "Title",
-            )],
+            vec![
+                ActionParam::required(tilo_actions::PROMPTED_PARAM, ParamType::Text, "Title"),
+                ActionParam::optional(
+                    NOTE_TEXT_PARAM,
+                    ParamType::Text,
+                    "The note's text, a paragraph per line",
+                ),
+            ],
             move |args, _| {
                 let title = args
                     .text(tilo_actions::PROMPTED_PARAM)
                     .map(str::trim)
                     .filter(|title| !title.is_empty())
                     .unwrap_or("Untitled");
-                Ok(append_page_action(Uuid::new_v4(), None, title))
+                let mut action = append_page_action(Uuid::new_v4(), None, title);
+                if let (NotesAction::AppendPage { text, .. }, Some(given)) =
+                    (&mut action, args.text(NOTE_TEXT_PARAM))
+                {
+                    given.clone_into(text);
+                }
+                Ok(action)
             },
         )
-        .describe("Create a new root note."),
+        .describe("Create a new root note, with its text when given."),
     ];
     let title = today_title();
     if !workspace.pages().iter().any(|page| page.title == title) {
@@ -3712,7 +3745,10 @@ mod tests {
             let encoded = new_child_spec.build_text("Child").unwrap();
             let decoded: NotesAction =
                 serde_json::from_slice(&encoded.payload).expect("payload decodes to NotesAction");
-            let NotesAction::AppendPage { id, title, parent } = &decoded else {
+            let NotesAction::AppendPage {
+                id, title, parent, ..
+            } = &decoded
+            else {
                 panic!("new-child built the wrong action: {decoded:?}");
             };
             assert_eq!(

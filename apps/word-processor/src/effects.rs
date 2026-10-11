@@ -41,6 +41,19 @@ pub enum WordProcessorEffect {
         #[param("Direct filesystem path; omit to choose one")]
         path: Option<String>,
     },
+    /// Export document as content.
+    ///
+    /// Keeps the document in a format, its pictures inside it, in the content
+    /// store, with no file to write: the caller reads the bytes by the
+    /// content address it answers.
+    #[effect(content, permission = "read")]
+    ExportContent {
+        #[param(
+            "The format to export",
+            choices = ["docx", "odt", "md", "html", "rtf", "txt"]
+        )]
+        format: String,
+    },
     /// Find in document.
     #[effect(view, idempotent)]
     Find,

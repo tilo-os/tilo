@@ -23,6 +23,8 @@ mod canonical_component;
 mod concurrent_paragraph_edits;
 #[path = "headless_launch.rs"]
 mod headless_launch;
+#[path = "render_without_gpu.rs"]
+mod render_without_gpu;
 mod support;
 
 #[path = "framework_host.rs"]

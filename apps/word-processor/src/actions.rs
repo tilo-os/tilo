@@ -1147,6 +1147,128 @@ pub(crate) fn toc_action(state: &tilo_document::RichTextState) -> Option<ActionS
     ))
 }
 
+/// Body paragraphs the document resource reads whole when it is read
+/// ([`crate::framework::Document`]), so a document operation can find one by
+/// its text without a view. A longer document is read around its views only.
+pub(crate) const MAX_FOUND_PARAGRAPHS: usize = MAX_RESOURCE_OBJECTS.saturating_mul(4);
+
+/// The paragraph kinds `insert-image` places an image after.
+const TEXT_BLOCKS: &[&str] = &["paragraph", "heading", "list_item"];
+
+/// The body as `insert-image` finds its place in it: each text block's id
+/// and text in order, and the last block's id and length.
+struct ImagePlaces {
+    paragraphs: Vec<(String, String)>,
+    end: Option<(String, usize)>,
+}
+
+impl ImagePlaces {
+    /// `None` for a body `state` did not read whole.
+    fn of(state: &tilo_document::RichTextState) -> Option<Self> {
+        let len = state.body().len();
+        if len > MAX_FOUND_PARAGRAPHS || state.blocks(0..len).count() != len {
+            return None;
+        }
+        let blocks: Vec<_> = state.blocks(0..len).collect();
+        Some(Self {
+            paragraphs: blocks
+                .iter()
+                .filter(|block| TEXT_BLOCKS.contains(&block.kind.as_str()))
+                .map(|block| (block.id.clone(), block.text.clone()))
+                .collect(),
+            end: blocks
+                .last()
+                .map(|block| (block.id.clone(), block.text.chars().count())),
+        })
+    }
+
+    /// Where the image goes: after the first paragraph containing `after`,
+    /// else at the end of the body.
+    fn place(&self, after: Option<&str>) -> Result<(String, usize), String> {
+        match after {
+            Some(after) => self
+                .paragraphs
+                .iter()
+                .find(|(_, text)| text.contains(after))
+                .map(|(id, text)| (id.clone(), text.chars().count()))
+                .ok_or_else(|| format!("no paragraph contains the text `{after}`")),
+            None => self
+                .end
+                .clone()
+                .ok_or_else(|| "the document has no body to insert into".to_string()),
+        }
+    }
+}
+
+/// Insert an image another action produced (its content hash, carried as
+/// the prompted content) after a paragraph named by its text, or at the end
+/// of the document: a document operation on the record, so a participant
+/// without a view or caret (an agent) places a picture too. The paragraphs
+/// are captured as `state` holds them; a document longer than
+/// [`MAX_FOUND_PARAGRAPHS`] that was not read whole refuses, and a view
+/// places at its caret with `place-image`.
+pub(crate) fn insert_image_spec(state: &tilo_document::RichTextState) -> ActionSpec {
+    let places = ImagePlaces::of(state);
+    let refused = |reason: String| EncodedAction {
+        type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+        payload: reason.into_bytes(),
+    };
+    let mut spec = ActionSpec::typed(
+        "insert-image",
+        "Insert image",
+        "Image content produced by the preceding action",
+        ExecutionLocus::ClientLocal,
+        vec![
+            ActionParam::required_owned(
+                tilo_actions::PROMPTED_PARAM,
+                ParamType::Text,
+                "Image content produced by the preceding action",
+            ),
+            ActionParam::optional_owned(
+                "after",
+                ParamType::Text,
+                "Text of the paragraph to insert the image after (the first paragraph containing it); omit to insert at the end of the document",
+            ),
+        ],
+        move |args: &ActionArgs| {
+            let value = args.text(tilo_actions::PROMPTED_PARAM).unwrap_or_default();
+            let hash = tilo_actions::content_hash(value).unwrap_or(value);
+            let Some(bytes) = ui::tilo_resource::content::current()
+                .and_then(|content| content.read(hash))
+            else {
+                return refused(format!("content `{hash}` is not available on this machine"));
+            };
+            let Some(places) = &places else {
+                return refused(format!(
+                    "the document is longer than {MAX_FOUND_PARAGRAPHS} paragraphs; place the image at a caret with place-image"
+                ));
+            };
+            let image = ImageInput::of(hash.to_string(), &bytes);
+            if !image.is_picture() {
+                return refused(format!(
+                    "content `{hash}` is {}, not a picture: insert the image an export produced",
+                    image.mime
+                ));
+            }
+            let after = args.text("after").filter(|after| !after.trim().is_empty());
+            match places.place(after) {
+                Ok((block, at)) => encode(&insert_image_action(&block, at, image)),
+                Err(reason) => refused(reason),
+            }
+        },
+    )
+    .with_description(
+        "Insert the image the preceding action produced: after the first paragraph containing the text `after`, or at the end of the document without it",
+    )
+    .requiring(tilo_actions::PermissionRequirement::Write)
+    .reversible();
+    // The image is carried from the step before, as `place-image` takes it.
+    if let tilo_actions::ActionInput::Prompted { collects, .. } = &mut spec.input {
+        *collects = tilo_actions::Collects::Content;
+    }
+    spec
+}
+
 /// Images, tables, headings, notes, review, paragraph styles, and the page
 /// header and footer the document resource publishes as its own children.
 /// Structural objects are bounded in document order; a caret listing adds

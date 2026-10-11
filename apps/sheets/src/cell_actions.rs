@@ -78,7 +78,7 @@ fn raw_of(value: &serde_json::Value) -> Result<Option<String>, String> {
     }))
 }
 
-fn format_code(name: &str) -> Option<String> {
+pub(crate) fn format_code(name: &str) -> Option<String> {
     Some(
         match name {
             "general" => CellFormat::General,
@@ -92,6 +92,83 @@ fn format_code(name: &str) -> Option<String> {
         }
         .as_str(),
     )
+}
+
+/// The cells `rows` write rightward and down from `start`: "=…" a formula,
+/// "" a clear, null a skip.
+///
+/// # Errors
+///
+/// Why the rows cannot be written: not rows of values, none at all, or
+/// more than [`MAX_WRITES`].
+pub(crate) fn cells_from_rows(
+    start: (u32, u32),
+    rows: &[serde_json::Value],
+) -> Result<Vec<CellWrite>, String> {
+    let mut cells = Vec::new();
+    for (dr, row) in (0u32..).zip(rows) {
+        let row = row
+            .as_array()
+            .ok_or("each row must be an array of values")?;
+        for (dc, value) in (0u32..).zip(row) {
+            if let Some(raw) = raw_of(value)? {
+                cells.push(CellWrite {
+                    col: start.0.saturating_add(dc),
+                    row: start.1.saturating_add(dr),
+                    raw,
+                    fmt: None,
+                });
+            }
+        }
+    }
+    if cells.is_empty() {
+        return Err("rows hold no values to write".into());
+    }
+    if cells.len() > MAX_WRITES {
+        return Err(format!("at most {MAX_WRITES} cells per call"));
+    }
+    Ok(cells)
+}
+
+/// `cells` with the formats `formats` gives their ranges (`{"D2:D5":
+/// "percent"}`); a format on a cell no row wrote writes it empty.
+///
+/// # Errors
+///
+/// Why the formats cannot apply: not an object of ranges to known format
+/// names.
+pub(crate) fn with_formats(
+    mut cells: Vec<CellWrite>,
+    formats: &serde_json::Map<String, serde_json::Value>,
+) -> Result<Vec<CellWrite>, String> {
+    for (range, name) in formats {
+        let ((c0, r0), (c1, r1)) =
+            parse_range(range).ok_or_else(|| format!("`{range}` is not a cell or range"))?;
+        let fmt = name
+            .as_str()
+            .and_then(format_code)
+            .ok_or_else(|| format!("`{name}` is not one of {}", FORMATS.join(", ")))?;
+        for row in r0.min(r1)..=r0.max(r1) {
+            for col in c0.min(c1)..=c0.max(c1) {
+                match cells
+                    .iter_mut()
+                    .find(|cell| cell.col == col && cell.row == row)
+                {
+                    Some(cell) => cell.fmt = Some(fmt.clone()),
+                    None => cells.push(CellWrite {
+                        col,
+                        row,
+                        raw: String::new(),
+                        fmt: Some(fmt.clone()),
+                    }),
+                }
+            }
+        }
+    }
+    if cells.len() > MAX_WRITES {
+        return Err(format!("at most {MAX_WRITES} cells per call"));
+    }
+    Ok(cells)
 }
 
 fn set_cells_spec(sheet: usize, sheet_id: &str) -> ActionSpec {
@@ -116,30 +193,10 @@ fn set_cells_spec(sheet: usize, sheet_id: &str) -> ActionSpec {
             let Some(rows) = args.array("rows") else {
                 return invalid("rows must be an array of rows");
             };
-            let mut cells = Vec::new();
-            for (dr, row) in (0u32..).zip(rows) {
-                let Some(row) = row.as_array() else {
-                    return invalid("each row must be an array of values");
-                };
-                for (dc, value) in (0u32..).zip(row) {
-                    match raw_of(value) {
-                        Ok(Some(raw)) => cells.push(CellWrite {
-                            col: start.0.saturating_add(dc),
-                            row: start.1.saturating_add(dr),
-                            raw,
-                            fmt: None,
-                        }),
-                        Ok(None) => {}
-                        Err(message) => return invalid(message),
-                    }
-                }
-            }
-            if cells.is_empty() {
-                return invalid("rows hold no values to write");
-            }
-            if cells.len() > MAX_WRITES {
-                return invalid(format!("at most {MAX_WRITES} cells per call"));
-            }
+            let cells = match cells_from_rows(start, rows) {
+                Ok(cells) => cells,
+                Err(message) => return invalid(message),
+            };
             encode(&SheetsAction::SetCells {
                 sheet,
                 sheet_id: sheet_id.clone(),

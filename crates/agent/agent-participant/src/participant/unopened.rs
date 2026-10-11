@@ -334,6 +334,9 @@ pub(super) struct Unopened {
     held: BTreeMap<DocumentRoute, Packed>,
     /// When each record last changed, as a count of changes seen.
     arrived: HashMap<DocumentRoute, u64>,
+    /// What each record was called when last asked ([`Self::title`]), and
+    /// when it had last changed then: asked again only once it changed.
+    titles: HashMap<DocumentRoute, (u64, Option<String>)>,
     changes_seen: u64,
 }
 
@@ -344,6 +347,7 @@ impl Unopened {
             desktop: None,
             held: BTreeMap::new(),
             arrived: HashMap::new(),
+            titles: HashMap::new(),
             changes_seen: 0,
         }
     }
@@ -399,8 +403,39 @@ impl Unopened {
         self.held.get_mut(route).map(Packed::seed)
     }
 
+    /// What the record at `route` is called, as `read` finds it in the
+    /// record's document (saved, admitted through the isolate). Read once
+    /// per change of the record: asked again with nothing new, the last
+    /// answer stands, a failed read included. `None` for a record the room
+    /// does not have, one whose app gives it no name, or one not read.
+    pub(super) fn title(
+        &mut self,
+        route: &DocumentRoute,
+        read: impl FnOnce(Vec<u8>) -> Result<Option<String>, String>,
+    ) -> Option<String> {
+        let changed = self.arrived.get(route).copied().unwrap_or(0);
+        if let Some((at, title)) = self.titles.get(route)
+            && *at == changed
+        {
+            return title.clone();
+        }
+        let title = match self.seed(route)? {
+            Ok(doc) => read(doc).unwrap_or_else(|reason| {
+                tracing::warn!(%reason, "agent: a record's title could not be read");
+                None
+            }),
+            Err(reason) => {
+                tracing::warn!(%reason, "agent: a record's title waits for the isolate");
+                return None;
+            }
+        };
+        self.titles.insert(route.clone(), (changed, title.clone()));
+        title
+    }
+
     /// Stop holding `route`: its replica holds it now.
     pub(super) fn forget(&mut self, route: &DocumentRoute) {
+        self.titles.remove(route);
         if *route == self.desktop_route {
             self.desktop = None;
         } else {
@@ -593,6 +628,31 @@ mod tests {
         unopened.forget(&notes);
         assert!(unopened.seed(&notes).is_none());
         assert!(unopened.routes().is_empty());
+    }
+
+    /// A record's title is read from its document once per change of it:
+    /// asked again with nothing new, the last answer stands.
+    #[test]
+    fn a_title_is_read_once_per_change() {
+        let (changes, _) = history(2);
+        let notes = route("so.tilo.notes", "rec-notes");
+        let mut unopened = Unopened::new("room");
+        let reads = std::cell::Cell::new(0_u32);
+        let read = |doc: Vec<u8>| {
+            assert!(!doc.is_empty(), "the record's document is read");
+            reads.set(reads.get().saturating_add(1));
+            Ok(Some(format!("Plans {}", reads.get())))
+        };
+        assert_eq!(unopened.title(&notes, read), None, "no such record yet");
+        unopened.receive(notes.clone(), changes[0].clone());
+        assert_eq!(unopened.title(&notes, read).as_deref(), Some("Plans 1"));
+        assert_eq!(unopened.title(&notes, read).as_deref(), Some("Plans 1"));
+        assert_eq!(reads.get(), 1);
+        unopened.receive(notes.clone(), changes[1].clone());
+        assert_eq!(unopened.title(&notes, read).as_deref(), Some("Plans 2"));
+        unopened.forget(&notes);
+        assert_eq!(unopened.title(&notes, read), None);
+        assert_eq!(reads.get(), 2);
     }
 
     /// A change that arrives before one it builds on is kept until that one

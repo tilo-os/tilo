@@ -452,6 +452,9 @@ pub struct AgentStep {
     /// Refusal or failure text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Content the action produced, by address (`tilo.content:<hash>`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub content: Vec<String>,
 }
 
 /// One task.
@@ -682,6 +685,25 @@ mod tests {
         assert_eq!(json["agents"][0]["status"], "running");
         assert_eq!(json["agents"][0]["color"], "#7c3aed");
         assert_eq!(json["agents"][0]["tasks"][0]["state"], "running");
+    }
+
+    #[test]
+    fn a_step_names_the_content_it_produced_only_when_it_produced_some() {
+        let mut step = AgentStep {
+            app: "so.tilo.canvas".into(),
+            resource: "canvas.artwork".into(),
+            action: "export".into(),
+            state: TaskState::Completed,
+            error: None,
+            content: Vec::new(),
+        };
+        let json = serde_json::to_value(&step).unwrap();
+        assert!(json.get("content").is_none(), "{json}");
+        assert_eq!(serde_json::from_value::<AgentStep>(json).unwrap(), step);
+        step.content = vec!["tilo.content:abc".into()];
+        let json = serde_json::to_value(&step).unwrap();
+        assert_eq!(json["content"][0], "tilo.content:abc");
+        assert_eq!(serde_json::from_value::<AgentStep>(json).unwrap(), step);
     }
 
     #[test]

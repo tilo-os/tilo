@@ -921,6 +921,37 @@ it. `--agent-model` chooses the planner:
 - `scripted`: `ScriptedModel`, a deterministic keyword planner for tests and
   demos. It reads clauses (`;`, "then"), opens the app a clause names and
   fills text parameters from quoted phrases.
+- `responses:<base url>`: `OpenAiModel` over the OpenAI Responses API, which
+  reasoning models (the GPT-6 family) need for function tools.
+- `anthropic:<base url>` (`https://api.anthropic.com/v1`) with the key in
+  `TILO_AGENT_API_KEY`: `AnthropicModel`, the same tools over the Messages
+  API (Claude), the conversation resent each turn with cache breakpoints
+  after the tools, the apps' reference and the latest turn. A tool call is
+  asked for outright; a model that refuses that (one that thinks before it
+  answers) is left the choice from then on, and reminded once if it writes
+  instead.
+
+How a planning model is called comes from its size and what the operator
+wants most (`tilo_agent_participant::profile`). `TILO_AGENT_PRESET=fastest`,
+`balanced` or `cheapest` picks the service tier, reasoning effort and hedging
+for the model's class, which its name implies (`luna`, `haiku`: small;
+`sol`, `terra`, `sonnet`: medium; `opus`: large; `astra`, `fable`: very
+large) or `TILO_AGENT_MODEL_CLASS` names:
+
+| Class | `fastest` | `balanced` | `cheapest` |
+| --- | --- | --- | --- |
+| small | priority tier, low effort, hedge after 3.5 s | standard, low | Flex, low |
+| medium | priority, low | standard, low | Flex, low |
+| large | priority, low | standard, low | Flex, low |
+| very large | Flex, low | Flex, low | Flex, low |
+
+A hedged call that has not answered by then is sent again and the first
+answer taken; both are logged and priced. Flex or the fast tier answered
+"no capacity" is asked again at the standard tier. Anthropic takes neither
+tier, so its presets differ in hedging only. `TILO_AGENT_SERVICE_TIER`,
+`TILO_AGENT_REASONING_EFFORT` and `TILO_AGENT_HEDGE_MS` override the preset's
+setting each. Measured on the campaign benchmark in
+`docs/benchmarks/agent-campaign-presets-2026-10-10.md`.
 
 `ModelPlanner` also offers the room's existing records of an app before a
 new one, so "add a sheet named …" edits the sheet people already have.

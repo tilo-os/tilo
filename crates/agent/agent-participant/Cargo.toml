@@ -87,6 +87,10 @@ workspace-hack = { version = "0.1" }
 # isolate before the host signs it.
 wire-frame = { path = "../../system/wire-frame", features = ["postcard"] }
 tilo-automerge-isolate = { path = "../../doc/tilo-automerge-isolate" }
+# The content records reference: in memory in a worker, kept per room under
+# the host's state directory.
+tilo-content = { path = "../../system/content" }
+uuid.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 # The worker's confinement: detach, resource limits and, on macOS, Seatbelt.
@@ -123,6 +127,7 @@ tokio = { workspace = true, features = ["full"] }
 channel-crypto = { path = "../../collab/channel-crypto" }
 neighbour-wire = { path = "../../collab/neighbour-wire" }
 postcard = { workspace = true, features = ["use-std"] }
+base64.workspace = true
 
 [package.metadata.cargo-machete]
 # Used by tilo-browser-peer's test support, which the tests include by path.

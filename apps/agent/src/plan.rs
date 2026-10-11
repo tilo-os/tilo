@@ -281,6 +281,73 @@ impl Step {
     }
 }
 
+/// The one content hash `previous` produced: the argument a step that
+/// [carries](Step::carries) is given.
+///
+/// # Errors
+///
+/// Why `previous` cannot feed a content input: it produced nothing, more
+/// than one resource, or a resource that is not `tilo.content`.
+pub fn carried_content(previous: &tilo_actions::ActionOutput) -> Result<&str, String> {
+    match previous.resources.as_slice() {
+        [] => Err("the previous action produced no content resource".into()),
+        [resource] => tilo_actions::content_hash(resource).ok_or_else(|| {
+            "the previous action produced a resource that is not tilo.content".into()
+        }),
+        _ => Err("the previous action must produce exactly one content resource".into()),
+    }
+}
+
+/// The arguments a step is invoked with: `planned` as written, or — when
+/// the operation `wants_content` — with its one content input bound to
+/// what the immediately preceding action produced.
+///
+/// # Errors
+///
+/// Why a content-consuming step cannot run: there is no preceding action
+/// result, or it does not name exactly one piece of content.
+pub fn carried_arguments(
+    planned: &serde_json::Map<String, serde_json::Value>,
+    wants_content: bool,
+    previous: Option<&tilo_actions::ActionOutput>,
+) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+    if !wants_content {
+        return Ok(planned.clone());
+    }
+    // What the preceding action produced is what the step takes; with none
+    // before it, a content address the plan names outright (an image a
+    // step of an earlier task exported) is taken as it is.
+    let hash = match previous.map(carried_content) {
+        Some(Ok(hash)) => hash.to_owned(),
+        carried => named_content(planned).ok_or_else(|| match carried {
+            Some(Err(error)) => error,
+            _ => "a content-consuming action has no preceding action result".to_string(),
+        })?,
+    };
+    let hash = hash.as_str();
+    let mut arguments = planned.clone();
+    // `prompted_content` always projects its one input under this shared
+    // parameter name. Replace any model-authored value: the descriptor says
+    // the value is carried, so only the preceding application may supply it.
+    arguments.insert(
+        tilo_actions::PROMPTED_PARAM.to_string(),
+        serde_json::Value::String(hash.to_string()),
+    );
+    Ok(arguments)
+}
+
+/// The content hash `planned` names outright in its content input: a
+/// `tilo.content:` address of a well-formed hash, not a placeholder.
+#[must_use]
+pub fn named_content(planned: &serde_json::Map<String, serde_json::Value>) -> Option<String> {
+    planned
+        .get(tilo_actions::PROMPTED_PARAM)
+        .and_then(serde_json::Value::as_str)
+        .and_then(tilo_actions::content_hash)
+        .filter(|hash| hash.len() == 64 && hash.chars().all(|c| c.is_ascii_hexdigit()))
+        .map(str::to_owned)
+}
+
 /// An instruction, resolved: the ordered steps that carry it out.
 ///
 /// Most requests are one step and always were. The reason this type exists

@@ -49,6 +49,16 @@ pub enum NotesEffect {
         #[param("The note")]
         page: Uuid,
     },
+    /// Export Markdown as content
+    ///
+    /// Keep a note as Markdown in the content store, its title as the first
+    /// heading and its images inside it, with no file to write: the caller
+    /// reads the bytes by the content address it answers.
+    #[effect(row, content, permission = "read")]
+    ExportMarkdownContent {
+        #[param("The note")]
+        page: Uuid,
+    },
     /// Insert image
     ///
     /// Choose an image and add it to a note.

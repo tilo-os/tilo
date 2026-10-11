@@ -468,6 +468,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
             host: host.iroh(),
             host_cert: host_cert.clone(),
             room: ROOM.into(),
+            content: tilo_content::ContentStore::memory(),
         },
         identity,
         control.clone(),

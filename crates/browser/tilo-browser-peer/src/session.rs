@@ -286,6 +286,7 @@ enum Command {
     InstallCipher(DocumentRoute, Box<dyn ContentCipher>),
     InstallChannelKeys(DocumentRoute, channel_crypto::ChannelContentKeys),
     OpenRoute(DocumentRoute),
+    IgnoreApps(Vec<String>),
     PinGovernor(String, [u8; 32]),
     LiveJoin(u64),
     Live(u64, Vec<u8>),
@@ -479,6 +480,7 @@ impl PeerHandle {
             opened: BTreeMap::new(),
             refused: (0, String::new()),
             held_inbound: BTreeMap::new(),
+            ignored_apps: BTreeSet::new(),
             held_live: crate::held_live::HeldLive::new(),
             held_outbound: saved.held.into_iter().collect(),
             reassembly: Reassembly::default(),
@@ -595,6 +597,19 @@ impl PeerHandle {
     /// Returns an error once the session is closed.
     pub fn open_route(&self, route: DocumentRoute) -> Result<(), String> {
         self.send(Command::OpenRoute(route))
+    }
+
+    /// Take no documents of `apps` from now on: their channels are not
+    /// asked for and their frames are dropped. For a device that may only
+    /// work in some of a room's apps (an agent and its grant), so it is not
+    /// admitted to every record's channel, each admission a change every
+    /// member of that channel processes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error once the session is closed.
+    pub fn ignore_apps(&self, apps: Vec<String>) -> Result<(), String> {
+        self.send(Command::IgnoreApps(apps))
     }
 
     /// Name the device that governs `room` (a room id), as the room itself
@@ -1009,6 +1024,8 @@ struct Task {
     /// Sealed documents that arrived before this device held their keys,
     /// with their authenticated authors.
     held_inbound: BTreeMap<DocumentRoute, VecDeque<HeldFrame>>,
+    /// Apps whose documents this session does not take ([`PeerHandle::ignore_apps`]).
+    ignored_apps: BTreeSet<String>,
     /// Live frames waiting for their record's keys.
     held_live: crate::held_live::HeldLive,
     /// Frames published on an encrypted route before this device held its
@@ -1551,22 +1568,7 @@ impl Task {
                 true
             }
             Command::RemoteAction(workspace_id, to, frame) => {
-                if let Some(client) = client {
-                    let _ = client.send(Envelope::RemoteAction {
-                        workspace_id,
-                        version: tilo_relay_protocol::transport::REMOTE_ACTION_ENVELOPE_VERSION,
-                        to_device_public_key: to,
-                        from_device_public_key: self.config.cert.device_public_key,
-                        from_user_public_key: self.config.cert.user_public_key,
-                        frame,
-                    });
-                } else {
-                    self.emit(&PeerEvent::RemoteActionUndeliverable {
-                        workspace_id,
-                        to,
-                        reason: "not connected to the host".into(),
-                    });
-                }
+                self.send_remote_action(workspace_id, to, frame, client);
                 true
             }
             Command::InstallCipher(route, cipher) => {
@@ -1586,6 +1588,10 @@ impl Task {
             Command::OpenRoute(route) => {
                 let changes = self.channels.open(&route, tilo_clock::unix_now_ms());
                 self.absorb(changes);
+                true
+            }
+            Command::IgnoreApps(apps) => {
+                self.ignored_apps.extend(apps);
                 true
             }
             Command::PinGovernor(room, governor) => {
@@ -1771,6 +1777,33 @@ impl Task {
             #[cfg(feature = "iroh")]
             Some(Link::Iroh(_)) => done(Err("rooms are administered over HTTPS".into())),
             None => done(Err("not connected to the host".into())),
+        }
+    }
+
+    /// Send a remote action `frame` to device `to` in `workspace_id`, or
+    /// say it is undeliverable while not connected.
+    fn send_remote_action(
+        &self,
+        workspace_id: u64,
+        to: [u8; 32],
+        frame: Vec<u8>,
+        client: Option<&Link>,
+    ) {
+        if let Some(client) = client {
+            let _ = client.send(Envelope::RemoteAction {
+                workspace_id,
+                version: tilo_relay_protocol::transport::REMOTE_ACTION_ENVELOPE_VERSION,
+                to_device_public_key: to,
+                from_device_public_key: self.config.cert.device_public_key,
+                from_user_public_key: self.config.cert.user_public_key,
+                frame,
+            });
+        } else {
+            self.emit(&PeerEvent::RemoteActionUndeliverable {
+                workspace_id,
+                to,
+                reason: "not connected to the host".into(),
+            });
         }
     }
 
@@ -2185,6 +2218,9 @@ impl Task {
                 envelope,
                 ..
             }) => {
+                if self.ignored_apps.contains(&app_id) {
+                    return;
+                }
                 let route = DocumentRoute {
                     app_id,
                     cluster_id,

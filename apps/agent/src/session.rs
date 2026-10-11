@@ -90,38 +90,17 @@ impl StepOutcome {
                 .map_err(|_| "the committed step output is not valid".to_string())?,
         })
     }
-
-    fn content_hash(&self) -> Result<&str, String> {
-        match self.output.resources.as_slice() {
-            [] => Err("the previous action produced no content resource".into()),
-            [resource] => tilo_actions::content_hash(resource).ok_or_else(|| {
-                "the previous action produced a resource that is not tilo.content".into()
-            }),
-            _ => Err("the previous action must produce exactly one content resource".into()),
-        }
-    }
 }
 
+/// The arguments `planned` is invoked with: bound to the preceding step's
+/// one content result when the operation `carries` it
+/// ([`plan::carried_arguments`]).
 fn arguments_for_step(
     carries: bool,
     planned: &serde_json::Map<String, serde_json::Value>,
     previous: Option<&StepOutcome>,
 ) -> Result<serde_json::Map<String, serde_json::Value>, String> {
-    if !carries {
-        return Ok(planned.clone());
-    }
-    let hash = previous
-        .ok_or_else(|| "a content-consuming action has no preceding action result".to_string())?
-        .content_hash()?;
-    let mut arguments = planned.clone();
-    // `prompted_content` always projects its one input under this shared
-    // parameter name. Replace any model-authored value: the descriptor says
-    // the value is carried, so only the preceding application may supply it.
-    arguments.insert(
-        tilo_actions::PROMPTED_PARAM.to_string(),
-        serde_json::Value::String(hash.to_string()),
-    );
-    Ok(arguments)
+    plan::carried_arguments(planned, carries, previous.map(|previous| &previous.output))
 }
 
 fn dispatched_action_key(
@@ -2637,7 +2616,7 @@ impl Session {
             None => catalogue,
         };
         let offers = &catalogue.offers;
-        let decision = self.chooser.choose_actions(asked, blocks, &catalogue, 8);
+        let decision = self.chooser.choose_actions(asked, blocks, &catalogue, None);
         let (plan, route) = match decision {
             Ok(answer) => {
                 let mut steps = Vec::new();

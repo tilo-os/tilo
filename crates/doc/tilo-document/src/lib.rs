@@ -757,6 +757,7 @@ impl Resource for RichText {
             // An editor with a caret refines it (`bind_declaration`) to also
             // leave its writer's caret after the text.
             .describe("Add a new paragraph containing the text at the end of the document."),
+            write_markdown_declaration(),
         ]
     }
 
@@ -1016,6 +1017,29 @@ impl RichText {
         }
         Ok(())
     }
+}
+
+/// `write-markdown`: the whole text from Markdown, a new document in one
+/// step.
+fn write_markdown_declaration() -> tilo_resource::ActionDecl<RichText> {
+    use tilo_actions::{ActionParam, ParamType};
+    tilo_resource::ActionDecl::new(
+        "write-markdown",
+        "Write document from Markdown",
+        vec![ActionParam::required_owned(
+            "markdown",
+            ParamType::Text,
+            "The whole text as Markdown",
+        )],
+        |args, _| {
+            let markdown = args.text("markdown").ok_or("missing markdown")?.to_owned();
+            Ok(RichTextAction::ReplaceBody { markdown })
+        },
+    )
+    .describe(
+        "Replace the document's whole text with Markdown: # heading, ## subheading, - list \
+         item, a blank line between paragraphs. Writes a new document in one step.",
+    )
 }
 
 #[cfg(test)]

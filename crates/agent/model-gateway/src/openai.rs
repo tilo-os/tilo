@@ -324,6 +324,20 @@ impl Failure {
     #[must_use]
     pub fn from_http(status: u16, body: &str, retry_after: Option<&str>) -> Self {
         let parsed: Value = serde_json::from_str(body).unwrap_or(Value::Null);
+        // The parameter an endpoint refused names a request field, never a
+        // secret, so it is kept beside the code (`unsupported_parameter`
+        // alone does not say which).
+        let param = parsed
+            .get("error")
+            .and_then(|error| error.get("param"))
+            .and_then(Value::as_str)
+            .filter(|param| {
+                param.len() <= 64
+                    && param
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '[' | ']'))
+            })
+            .map(str::to_owned);
         let (code, message) = match parsed.get("error") {
             Some(Value::String(message)) => (
                 parsed
@@ -375,6 +389,11 @@ impl Failure {
                  it was not retried so it cannot be charged twice"
                 .into(),
             _ => message.unwrap_or_else(|| format!("the model endpoint answered HTTP {status}")),
+        };
+        let code = match (code, param) {
+            (Some(code), Some(param)) => Some(format!("{code}: {param}")),
+            (None, Some(param)) => Some(format!("refused parameter {param}")),
+            (code, None) => code,
         };
         Self {
             kind,

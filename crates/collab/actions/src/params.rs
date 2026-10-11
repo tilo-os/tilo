@@ -668,6 +668,14 @@ impl ActionArgs {
         }
     }
 
+    /// The JSON object bound to `name`, if any.
+    pub fn object(&self, name: &str) -> Option<&serde_json::Map<String, serde_json::Value>> {
+        match self.values.get(name) {
+            Some(ArgValue::Object(object)) => Some(object),
+            _ => None,
+        }
+    }
+
     /// The JSON array bound to `name`, if any.
     pub fn array(&self, name: &str) -> Option<&[serde_json::Value]> {
         match self.values.get(name) {

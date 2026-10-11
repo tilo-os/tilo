@@ -61,6 +61,25 @@ pub fn capture_device_scale() -> u32 {
     CAPTURE_DEVICE_SCALE.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// Set once by [`disable_gpu`]: this process draws nothing through wgpu.
+static GPU_DISABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Make every following [`shared_gpu`] and [`OffscreenRenderer`] in this
+/// process answer [`OffscreenError::NoAdapter`] without looking for an
+/// adapter, so callers take their CPU fallback. For a process about to be
+/// confined where the GPU driver cannot start (a sandbox denying IOKit and
+/// Mach lookups): probing the adapter there fails slowly or aborts inside
+/// the driver. Cannot be undone.
+pub fn disable_gpu() {
+    GPU_DISABLED.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether [`disable_gpu`] was called in this process.
+#[must_use]
+pub fn gpu_disabled() -> bool {
+    GPU_DISABLED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Ensures only ONE `wgpu::Instance` per process — constructing several in
 /// parallel (the default `cargo test` pattern) races inside
 /// `vkCreateInstance` on at least radv + intel-iris and SIGSEGVs. `Arc` lets
@@ -553,15 +572,18 @@ pub struct SharedGpu {
 ///
 /// # Errors
 ///
-/// Returns [`OffscreenError::NoAdapter`] when no usable GPU adapter exists or the
-/// device cannot be waited for (a browser page), or
+/// Returns [`OffscreenError::NoAdapter`] when no usable GPU adapter exists, the
+/// device cannot be waited for (a browser page) or [`disable_gpu`] was
+/// called, or
 /// [`OffscreenError::ContextPoisoned`] when another thread panicked while
 /// holding the shared render-context lock.
 pub fn shared_gpu() -> Result<SharedGpu, OffscreenError> {
     // Acquiring the device waits on it, which a browser page cannot do: the
     // caller gets the same answer as a machine without an adapter and falls
     // back, instead of the page panicking.
-    if tilo_rt::availability(tilo_rt::Feature::BlockOn) != tilo_rt::Availability::Available {
+    if gpu_disabled()
+        || tilo_rt::availability(tilo_rt::Feature::BlockOn) != tilo_rt::Availability::Available
+    {
         return Err(OffscreenError::NoAdapter);
     }
     let context = shared_render_context();
@@ -612,6 +634,127 @@ impl std::error::Error for OffscreenError {
         match self {
             Self::Renderer(e) => Some(e),
             Self::NoAdapter | Self::ContextPoisoned => None,
+        }
+    }
+}
+
+/// What `scene` draws over `bg` at `width` x `height`, as straight-alpha
+/// RGBA8 — the bytes [`OffscreenRenderer::try_render_resilient`] answers
+/// with. Drawn on the GPU when a renderer can be built; otherwise (a
+/// confined worker after [`disable_gpu`], a machine without an adapter) on
+/// the CPU through [`render_on_cpu`]. In a browser page, which has no CPU
+/// rasterizer, a missing GPU stays an error.
+///
+/// Each call builds a fresh renderer; a caller drawing many pictures of one
+/// size keeps its own [`OffscreenRenderer`] and calls [`render_on_cpu`]
+/// when that fails to build.
+///
+/// # Errors
+/// Returns why neither renderer could draw the picture.
+///
+/// # Panics
+/// Panics if `width` or `height` is zero, as [`OffscreenRenderer::try_new`]
+/// does.
+pub fn render_picture(
+    scene: &Scene,
+    width: u32,
+    height: u32,
+    bg: Color,
+) -> Result<Vec<u8>, String> {
+    match OffscreenRenderer::try_new(width, height) {
+        Ok(mut offscreen) => offscreen.try_render_resilient(scene, bg),
+        Err(why) => render_without_gpu(scene, width, height, bg, &why),
+    }
+}
+
+/// What [`render_picture`] draws when no GPU renderer could be built
+/// (`why`): the picture from [`render_on_cpu`], or in a browser page, which
+/// has no CPU rasterizer, an error naming `why`. For a caller that keeps its
+/// own [`OffscreenRenderer`]s and falls back when building one fails.
+///
+/// # Errors
+/// Returns why the picture could not be drawn without a GPU.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn render_without_gpu(
+    scene: &Scene,
+    width: u32,
+    height: u32,
+    bg: Color,
+    why: &OffscreenError,
+) -> Result<Vec<u8>, String> {
+    tracing::debug!(%why, width, height, "drawing a picture on the CPU");
+    render_on_cpu(scene, width, height, bg)
+}
+
+/// Without a GPU renderer, a browser page draws no picture.
+///
+/// # Errors
+/// Always: names `why` no renderer could be built.
+#[cfg(target_arch = "wasm32")]
+pub fn render_without_gpu(
+    _scene: &Scene,
+    width: u32,
+    height: u32,
+    _bg: Color,
+    why: &OffscreenError,
+) -> Result<Vec<u8>, String> {
+    Err(format!("no renderer for a {width}x{height} picture: {why}"))
+}
+
+/// What `scene` draws over `bg` at `width` x `height`, rasterised on the
+/// CPU by `tilo-cpu-raster`: straight-alpha RGBA8, as the GPU renderer
+/// returns it. For when no [`OffscreenRenderer`] can be built.
+///
+/// # Errors
+/// Returns why the CPU rasterizer has no target of this size.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn render_on_cpu(scene: &Scene, width: u32, height: u32, bg: Color) -> Result<Vec<u8>, String> {
+    let stride = (width as usize).saturating_mul(4);
+    let mut rgba = vec![0; stride.saturating_mul(height as usize)];
+    let mut target = tilo_cpu_raster::Target::new(&mut rgba, width, height, stride)
+        .map_err(|error| format!("no CPU renderer for a {width}x{height} picture: {error}"))?;
+    let base = tilo_cpu_raster::color::AlphaColor::new(bg.components);
+    let mut rasterizer = CPU_RASTERIZER
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    rasterizer
+        .get_or_insert_with(tilo_cpu_raster::CpuRasterizer::default)
+        .render(scene.encoding(), &mut target, None, base);
+    drop(rasterizer);
+    if bg.components[3] >= 1.0 {
+        // Everything drawn over an opaque backdrop is opaque; the 8-bit
+        // pipeline's rounding leaves a few pixels at 254, which the GPU path
+        // does not. Premultiplied and straight colour agree at full alpha.
+        for pixel in rgba.chunks_exact_mut(4) {
+            if let Some(alpha) = pixel.last_mut() {
+                *alpha = u8::MAX;
+            }
+        }
+    } else {
+        unpremultiply(&mut rgba);
+    }
+    Ok(rgba)
+}
+
+/// The CPU rasterizer [`render_on_cpu`] draws with, kept for the glyph
+/// outlines and images it has converted.
+#[cfg(not(target_arch = "wasm32"))]
+static CPU_RASTERIZER: Mutex<Option<tilo_cpu_raster::CpuRasterizer>> = Mutex::new(None);
+
+/// Premultiplied RGBA8 to straight alpha, in place.
+#[cfg(not(target_arch = "wasm32"))]
+fn unpremultiply(rgba: &mut [u8]) {
+    for pixel in rgba.chunks_exact_mut(4) {
+        let Some((&mut alpha, colour)) = pixel.split_last_mut() else {
+            continue;
+        };
+        if alpha == 0 || alpha == u8::MAX {
+            continue;
+        }
+        let alpha = u16::from(alpha);
+        for channel in colour {
+            let straight = (u16::from(*channel) * 255 + alpha / 2) / alpha;
+            *channel = u8::try_from(straight).unwrap_or(u8::MAX);
         }
     }
 }
@@ -981,7 +1124,7 @@ impl OffscreenRenderer {
     ///
     /// Returns [`OffscreenError::NoAdapter`] when no wgpu adapter is
     /// available (a headless machine typically needs llvmpipe/lavapipe
-    /// installed), [`OffscreenError::Renderer`] when vello fails to build a
+    /// installed) or [`disable_gpu`] was called, [`OffscreenError::Renderer`] when vello fails to build a
     /// renderer for the adapter, and [`OffscreenError::ContextPoisoned`]
     /// when the shared `RenderContext` mutex was poisoned by a panic on
     /// another thread.
@@ -1036,6 +1179,9 @@ impl OffscreenRenderer {
         use_cpu: bool,
     ) -> Result<Self, OffscreenError> {
         assert!(width > 0 && height > 0, "width and height must be > 0");
+        if gpu_disabled() {
+            return Err(OffscreenError::NoAdapter);
+        }
 
         let context = shared_render_context();
         let mut ctx = context
@@ -4481,5 +4627,69 @@ mod tests {
                 0
             );
         }
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod cpu_fallback_tests {
+    use super::{OffscreenError, render_on_cpu, render_without_gpu};
+    use vello::Scene;
+    use vello::kurbo::{Affine, Rect};
+    use vello::peniko::{Color, Fill};
+
+    fn pixel(rgba: &[u8], width: u32, x: u32, y: u32) -> [u8; 4] {
+        let at = ((y * width + x) * 4) as usize;
+        let mut out = [0; 4];
+        out.copy_from_slice(&rgba[at..at + 4]);
+        out
+    }
+
+    /// Without an adapter, a picture is still drawn — on the CPU, at the
+    /// asked size, in straight alpha like the GPU path.
+    #[test]
+    fn a_picture_without_a_gpu_is_drawn_on_the_cpu() {
+        let (width, height) = (40, 30);
+        let mut scene = Scene::new();
+        let red = Color::from_rgb8(0xff, 0x00, 0x00);
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            red,
+            None,
+            &Rect::new(0.0, 0.0, 20.0, 30.0),
+        );
+        let half_blue = Color::from_rgba8(0x00, 0x00, 0xff, 0x80);
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            half_blue,
+            None,
+            &Rect::new(20.0, 0.0, 40.0, 30.0),
+        );
+        let rgba = render_without_gpu(
+            &scene,
+            width,
+            height,
+            Color::TRANSPARENT,
+            &OffscreenError::NoAdapter,
+        )
+        .expect("the CPU rasterizer draws it");
+        assert_eq!(rgba.len(), (width * height * 4) as usize);
+        assert_eq!(pixel(&rgba, width, 5, 5), [0xff, 0x00, 0x00, 0xff]);
+        let [r, g, b, a] = pixel(&rgba, width, 30, 15);
+        assert_eq!((r, g), (0, 0));
+        assert!(b >= 0xfe, "straight alpha keeps the full blue, got {b}");
+        assert!(a.abs_diff(0x80) <= 1, "half coverage, got {a}");
+    }
+
+    /// The backdrop fills what the scene leaves uncovered.
+    #[test]
+    fn the_backdrop_shows_where_nothing_is_drawn() {
+        let grey = Color::from_rgb8(0x33, 0x44, 0x55);
+        let rgba = render_on_cpu(&Scene::new(), 8, 4, grey).expect("drawn");
+        assert!(
+            rgba.chunks_exact(4)
+                .all(|pixel| pixel == [0x33, 0x44, 0x55, 0xff])
+        );
     }
 }

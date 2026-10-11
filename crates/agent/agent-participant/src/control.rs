@@ -1045,7 +1045,8 @@ impl AgentSupervisor {
     }
 
     /// Start the agent of grant `grant` in `room` (the grant's first room
-    /// when `None`) on `task`. Returns the agent and task ids.
+    /// when `None`) on `task`, or idle until it is given one. Returns the
+    /// agent's id and the task's, if any.
     ///
     /// # Errors
     ///
@@ -1054,9 +1055,9 @@ impl AgentSupervisor {
     pub fn spawn(
         &self,
         grant: &str,
-        task: &str,
+        task: Option<&str>,
         room: Option<&str>,
-    ) -> Result<(String, String), String> {
+    ) -> Result<(String, Option<String>), String> {
         let (identity, control) = {
             let mut state = self.state();
             let entry = state
@@ -1096,7 +1097,11 @@ impl AgentSupervisor {
             drop(state);
             (identity, control)
         };
-        let task_id = control.message(task).map_err(|error| error.to_string())?;
+        // Without a task the agent joins the room and waits for one: it is
+        // there, holding the room's keys, when the work it is for begins.
+        let task_id = task
+            .map(|task| control.message(task).map_err(|error| error.to_string()))
+            .transpose()?;
         (self.spawner)(identity, control.clone()).inspect_err(|error| {
             control.fail(error);
         })?;
@@ -1269,7 +1274,7 @@ impl AgentSupervisor {
                     .map_err(|error| refused(error.to_string()))?,
                 SPAWN_ACTION => {
                     let InvokeArgument::Json(arguments) = &request.argument else {
-                        return Err(invalid("spawn takes {grant, task}"));
+                        return Err(invalid("spawn takes {grant, task?}"));
                     };
                     let text = |key: &str| {
                         arguments
@@ -1282,9 +1287,11 @@ impl AgentSupervisor {
                         .get("room")
                         .and_then(serde_json::Value::as_str)
                         .filter(|value| !value.is_empty());
-                    let (agent, task) = self
-                        .spawn(text("grant")?, text("task")?, room)
-                        .map_err(refused)?;
+                    let task = arguments
+                        .get("task")
+                        .and_then(serde_json::Value::as_str)
+                        .filter(|task| !task.is_empty());
+                    let (agent, task) = self.spawn(text("grant")?, task, room).map_err(refused)?;
                     serde_json::json!({"agentId": agent, "taskId": task})
                 }
                 REQUEST_GRANT_ACTION => {

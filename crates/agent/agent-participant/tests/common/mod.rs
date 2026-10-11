@@ -193,7 +193,7 @@ impl PlanModel for KeywordModel {
         &mut self,
         task: &str,
         catalogue: &Catalogue,
-        most_steps: usize,
+        most_steps: Option<usize>,
     ) -> Result<Answer, String> {
         let task = task.to_lowercase();
         let words: Vec<&str> = task

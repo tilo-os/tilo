@@ -137,12 +137,14 @@ impl Presentation {
             content.draw(&mut scene, transform, text, &theme, &PresenceCtx::empty());
             revision(doc)
         };
-        let mut offscreen = ui_core::offscreen::OffscreenRenderer::try_new(width, height)
-            .map_err(|error| format!("no renderer for a {width}x{height} picture: {error}"))?;
-        // A new renderer reserves room for a modest scene; a denser view
-        // overflows its first frame, which then comes back blank. Answer
-        // only a frame that kept all of its geometry.
-        let rgba = offscreen.try_render_resilient(&scene, theme.tokens.colors.surfaces.content)?;
+        // On the GPU, only a frame that kept all of its geometry; without
+        // one (a confined worker, a machine without an adapter), on the CPU.
+        let rgba = ui_core::offscreen::render_picture(
+            &scene,
+            width,
+            height,
+            theme.tokens.colors.surfaces.content,
+        )?;
         let png =
             ui_core::png::encode_rgba8(width, height, &rgba).map_err(|error| error.to_string())?;
         let hash = self

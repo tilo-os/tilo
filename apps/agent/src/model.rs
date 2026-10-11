@@ -259,7 +259,7 @@ impl Chooser {
         rest: &str,
         blocks: &[Block],
         catalogue: &Catalogue,
-        most_steps: usize,
+        most_steps: Option<usize>,
     ) -> Result<tools::Answer, Route> {
         self.choose_actions_live(rest, blocks, catalogue, most_steps, &mut |_| {})
     }
@@ -277,7 +277,7 @@ impl Chooser {
         rest: &str,
         blocks: &[Block],
         catalogue: &Catalogue,
-        most_steps: usize,
+        most_steps: Option<usize>,
         live: &mut dyn FnMut(StreamSignal<'_>),
     ) -> Result<tools::Answer, Route> {
         let fallback = |reason| Err(Route::Keywords(reason));
@@ -339,7 +339,7 @@ impl Chooser {
         rest: &str,
         blocks: &[Block],
         catalogue: &Catalogue,
-        most_steps: usize,
+        most_steps: Option<usize>,
         live: &mut dyn FnMut(StreamSignal<'_>),
     ) -> Result<tools::Answer, AskError> {
         let began = ui::time::now();
@@ -376,7 +376,7 @@ struct ActionDecision<'a> {
     rest: &'a str,
     blocks: &'a [Block],
     catalogue: &'a Catalogue,
-    most_steps: usize,
+    most_steps: Option<usize>,
 }
 
 impl ActionDecision<'_> {
@@ -507,7 +507,12 @@ impl Dialect {
         }
     }
 
-    fn body(self, selection: &ProviderSelection, messages: &[Value], most_steps: usize) -> Value {
+    fn body(
+        self,
+        selection: &ProviderSelection,
+        messages: &[Value],
+        most_steps: Option<usize>,
+    ) -> Value {
         match self {
             Self::Anthropic => action_request_body_for(selection, messages, most_steps),
             Self::OpenAi => openai_action_request_body(selection, messages, most_steps),
@@ -605,7 +610,7 @@ fn fold_anthropic_results(messages: &mut Vec<Value>) {
 fn action_request_body_for(
     selection: &ProviderSelection,
     messages: &[Value],
-    most_steps: usize,
+    most_steps: Option<usize>,
 ) -> Value {
     serde_json::json!({
         "model": selection.model.id,
@@ -624,7 +629,7 @@ fn action_request_body_for(
 fn openai_action_request_body(
     selection: &ProviderSelection,
     messages: &[Value],
-    most_steps: usize,
+    most_steps: Option<usize>,
 ) -> Value {
     serde_json::json!({
         "model": selection.model.id,
@@ -811,7 +816,35 @@ pub fn action_user_turn(
     catalogue: &Catalogue,
     revealed: &mut Revealed,
 ) -> FirstTurn {
-    let summary = tools::catalogue_summary(catalogue, revealed, tools::MOST_SUMMARISED);
+    action_user_turn_listing(
+        rest,
+        blocks,
+        catalogue,
+        revealed,
+        tools::MOST_SUMMARISED,
+        &|_| false,
+    )
+}
+
+/// [`action_user_turn`] listing at most `most` operations: a caller whose
+/// open documents publish many (a section's alignments each) lists more,
+/// so their exports and reads are not cut off.
+pub fn action_user_turn_listing(
+    rest: &str,
+    blocks: &[Block],
+    catalogue: &Catalogue,
+    revealed: &mut Revealed,
+    most: usize,
+    described: &dyn Fn(&crate::surface::Offer) -> bool,
+) -> FirstTurn {
+    // A resource the request names is listed on its own; many alike that
+    // it does not name share a line.
+    let lower = rest.to_lowercase();
+    let named = |label: &str| {
+        let label = label.trim().to_lowercase();
+        label.chars().count() >= 3 && lower.contains(&label)
+    };
+    let summary = tools::catalogue_summary_with(catalogue, revealed, most, described, Some(&named));
     let operations = format!("Operations published right now:\n\n{summary}\n");
     let mut text = String::new();
     if !blocks.is_empty() {
@@ -1736,7 +1769,7 @@ mod tests {
             rest,
             blocks: &blocks,
             catalogue: &catalogue,
-            most_steps: 4,
+            most_steps: Some(4),
         };
         let mut answers = answers.into_iter();
         let mut sent = Vec::new();

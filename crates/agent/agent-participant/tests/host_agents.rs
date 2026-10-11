@@ -593,7 +593,8 @@ async fn the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart() {
     assert!(offered.pairing_code.is_none());
 
     // 2. The page spawns the agent with plain words; the scripted model
-    // plans them against what Notes publishes once it is open.
+    // plans them against what a new Notes record publishes (the room has
+    // none yet), and the step opens that record itself.
     let spawned = browser
         .call(
             SUPERVISOR_RESOURCE,
@@ -640,7 +641,7 @@ async fn the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart() {
         .iter()
         .map(|step| step.action.as_str())
         .collect();
-    assert_eq!(steps, ["open", "new-page"]);
+    assert_eq!(steps, ["new-page"]);
     let agent_key: [u8; 32] = hex::decode(&info.device).unwrap().try_into().unwrap();
     browser.until_edited(NOTES, agent_key, "Groceries").await;
 

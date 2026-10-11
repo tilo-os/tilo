@@ -36,12 +36,14 @@
 #![deny(rust_2018_idioms)]
 #![warn(missing_docs)]
 
+pub mod anthropic;
 pub mod apps;
 pub mod control;
 pub mod host;
 pub mod model;
 pub mod participant;
 pub mod planner;
+pub mod profile;
 pub mod room_actions;
 mod web_apps;
 pub mod worker;
@@ -53,12 +55,12 @@ pub use control::{
 };
 pub use host::{AgentHost, CatalogueFactory, HostEndpoint};
 pub use model::{
-    ApiKey, CLOUD_MODEL, GatewayModel, ModelChoice, ModelPlanner, OpenAiModel, PlanModel,
-    ScriptedModel,
+    ApiKey, Briefing, CLOUD_MODEL, GatewayModel, ModelChoice, ModelPlanner, OpenAiModel, PlanModel,
+    READ_VIEW, ReadView, ScriptedModel,
 };
 pub use participant::actions::{RECORD_PROVIDER, record_provider};
 pub use participant::{AgentParticipant, Next, ParticipantConfig, Pumped};
-pub use planner::{DirectPlanner, PlanContext, Planner, Step, StepAction};
+pub use planner::{DirectPlanner, NoReads, PlanContext, Planner, Reads, Step, StepAction};
 pub use room_actions::{HostActions, RoomActions, RoomRecordsLink};
 pub use worker::ConfinedReplica;
 
