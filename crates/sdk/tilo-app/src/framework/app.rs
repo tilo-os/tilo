@@ -413,8 +413,6 @@ pub(crate) struct AppHooks {
     action_registry: fn() -> tilo_actions::ActionRegistry,
     history: fn() -> &'static ui_core::history_mode::HistoryDefinition,
     file_history_witness: fn() -> &'static ui_core::history_mode::HistoryDefinition,
-    #[cfg(not(target_family = "wasm"))]
-    draw_past: crate::runner::DrawPast,
 }
 
 /// [`AppHooks::new_record`]: the context, and what the launch named.
@@ -455,8 +453,6 @@ impl<A: ResourceApp> Hooks<A> {
         action_registry: action_registry::<A>,
         history: super::preview::history_definition::<A>,
         file_history_witness: super::preview::file_history_witness::<A>,
-        #[cfg(not(target_family = "wasm"))]
-        draw_past: super::preview::draw_past::<A>,
     };
 }
 
@@ -529,25 +525,23 @@ impl RootShell {
     }
 
     /// `root` following the participant, with the app's presentation and
-    /// its History.
+    /// its History, and whether it draws past versions: a live root of a
+    /// resource that keeps document history does.
     fn finish(
         app: &AppHooks,
         root: ResourceRoot,
         permissions: Option<LivePermissions>,
         scope: PermissionScope,
-    ) -> ResourceRoot {
+    ) -> (ResourceRoot, bool) {
         let live = permissions.is_some();
         let root = root
             .following(permissions, scope)
             .with_presentation((app.local_operations)());
-        if !app.document_history {
-            return root.without_history();
+        if app.document_history {
+            (root, live)
+        } else {
+            (root.without_history(), false)
         }
-        if live {
-            #[cfg(not(target_family = "wasm"))]
-            return root.drawing_past(app.draw_past);
-        }
-        root
     }
 }
 
@@ -587,7 +581,12 @@ pub(crate) fn build_root<A: ResourceApp>(
     }
     let content = A::view(&mut cx);
     let root = ResourceRoot::new(app.title, icon(app), label, cx, alive, content);
-    RootShell::finish(app, root, permissions, scope)
+    let (root, draws_past) = RootShell::finish(app, root, permissions, scope);
+    if draws_past {
+        #[cfg(not(target_family = "wasm"))]
+        return root.drawing_past(super::preview::drawing::draw_past::<A>);
+    }
+    root
 }
 /// The decoders of every edit `A`'s document takes: its resource's actions
 /// and History's restores.

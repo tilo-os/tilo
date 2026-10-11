@@ -333,11 +333,6 @@ impl ResourceRoot {
         self.typed.as_any().downcast_ref::<Typed<R>>()
     }
 
-    /// Whether the root shows a resource of type `R`.
-    pub(crate) fn is_of<R: Resource>(&self) -> bool {
-        self.resource.id == std::any::TypeId::of::<R>()
-    }
-
     /// [`Resource::LABEL`] of the resource the root shows.
     pub(crate) fn resource_label(&self) -> &'static str {
         self.resource.label

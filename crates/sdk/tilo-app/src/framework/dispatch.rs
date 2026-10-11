@@ -612,11 +612,6 @@ impl<R: Resource> Dispatcher<R> {
         self.core.refused()
     }
 
-    /// Record that the door refused `action`, submitted here.
-    pub(crate) fn refuse(&self, action: &str, reason: String) {
-        self.core.refuse(action, reason);
-    }
-
     /// Invoke one of the app's effects (`dispatcher.effect(&Backups::BackUp)`)
     /// through the same door as a button bound to it: permission, the
     /// effect's availability and a destructive effect's confirmation are
@@ -848,15 +843,6 @@ impl<R: Resource> Dispatcher<R> {
     /// steps while every value one drag passes through is one.
     pub fn settle(&self) {
         self.last.borrow_mut().take();
-    }
-
-    /// The next queued invocation, with the effect invocation it continues.
-    pub(crate) fn take_attributed(&self) -> Option<AttributedControlInvocation> {
-        self.core.take_attributed()
-    }
-
-    pub(crate) fn resource_id(&self) -> &str {
-        self.core.resource_id()
     }
 
     /// The id of the app whose resource this is, which presence keys name
