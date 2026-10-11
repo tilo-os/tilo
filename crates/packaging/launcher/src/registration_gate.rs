@@ -123,13 +123,11 @@ mod tests {
             "the descriptor-number handoff is never set alongside"
         );
         println!("waiting");
-        match wait_on_stdin() {
-            Ok(()) => println!("released"),
-            Err(_) => {
-                println!("closed");
-                return;
-            }
+        if wait_on_stdin().is_err() {
+            println!("closed");
+            return;
         }
+        println!("released");
         // `/dev/null`: end-of-file at once, where the gate would have
         // blocked or handed over another byte.
         let mut rest = Vec::new();
