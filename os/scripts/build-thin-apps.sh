@@ -94,7 +94,8 @@ if [[ ${RUSTC_WRAPPER:-} == */sccache || ${RUSTC_WRAPPER:-} == sccache ]]; then
     export TILO_THIN_SCCACHE="$cache_path"
     export RUSTC_WRAPPER="$REPO/tools/ci/thin-app/sccache"
     extra_cargo_args+=(--config "build.rustc-wrapper=\"$RUSTC_WRAPPER\""
-                      --config "env.TILO_THIN_SCCACHE={value=$cache_config,force=true}")
+                      --config "env.TILO_THIN_SCCACHE.value=$cache_config"
+                      --config "env.TILO_THIN_SCCACHE.force=true")
 fi
 if [ -n "${SDK_COMPILER_UNITS:-}" ]; then
     extra_cargo_args+=(--message-format=json-render-diagnostics)
