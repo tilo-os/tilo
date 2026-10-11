@@ -48,7 +48,6 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use ui::permissions::PermissionContext;
 use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
 use ui::surface::Region;
@@ -1190,19 +1189,6 @@ impl Widget for TypstApp {
         // This frame reflects the latest interaction state; clear the move-dirty
         // flag so idle hover doesn't spin the render loop.
         self.dirty = false;
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        _permissions: &PermissionContext,
-    ) {
-        // Root rect is the whole window — always paint, never cull.
-        self.draw(scene, transform, text_renderer, theme, presence);
     }
 
     fn draw_overlay(
