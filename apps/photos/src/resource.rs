@@ -31,8 +31,7 @@ use crate::model::{
 /// Photos' Fluent catalogs, source locale first.
 pub const LOCALES: &[(&str, &str)] = &[("en-US", include_str!("../locales/en-US.ftl"))];
 
-static CATALOG: EmbeddedCatalog =
-    EmbeddedCatalog::new("en-US", LOCALES, "photos-timeline").with_system_locale();
+static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new("en-US", LOCALES).with_system_locale();
 
 /// The most photographs one verb changes at once.
 pub(crate) const MAX_BATCH_PHOTOS: usize = 256;

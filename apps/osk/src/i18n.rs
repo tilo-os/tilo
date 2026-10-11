@@ -3,12 +3,9 @@
 
 use ui::i18n::{ArgValue, EmbeddedCatalog};
 
-pub(crate) static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new(
-    "en-US",
-    &[("en-US", include_str!("../locales/en-US.ftl"))],
-    "osk-emoji-key",
-)
-.with_system_locale();
+pub(crate) static CATALOG: EmbeddedCatalog =
+    EmbeddedCatalog::new("en-US", &[("en-US", include_str!("../locales/en-US.ftl"))])
+        .with_system_locale();
 
 /// Resolve a keyboard string key.
 pub fn t(key: &str) -> String {

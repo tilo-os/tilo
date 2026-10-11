@@ -56,7 +56,7 @@ pub const LOCALES: &[(&str, &str)] = &[("en-US", include_str!("../locales/en-US.
 
 /// Camera's messages, in every host that mounts it.
 pub(crate) static CATALOG: ui::i18n::EmbeddedCatalog =
-    ui::i18n::EmbeddedCatalog::new("en-US", LOCALES, "camera-record-scan").with_system_locale();
+    ui::i18n::EmbeddedCatalog::new("en-US", LOCALES).with_system_locale();
 
 /// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {

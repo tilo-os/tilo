@@ -12,7 +12,7 @@ pub const LOCALES: &[(&str, &str)] = &[("en-US", include_str!("../locales/en-US.
 static CATALOG: EmbeddedCatalog = catalog();
 
 const fn catalog() -> EmbeddedCatalog {
-    let catalog = EmbeddedCatalog::new("en-US", LOCALES, "empty-title").with_system_locale();
+    let catalog = EmbeddedCatalog::new("en-US", LOCALES).with_system_locale();
     // Unit tests assert the source copy on any developer or CI machine.
     #[cfg(test)]
     let catalog = catalog.with_pinned_locale("en-US");

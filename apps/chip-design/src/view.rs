@@ -14,8 +14,7 @@ use crate::verification::{CheckStatus, ReceiptStatus, VerificationReceipt, Verif
 /// The app's Fluent catalogs, source locale first.
 pub const LOCALES: &[(&str, &str)] = &[("en-US", include_str!("../locales/en-US.ftl"))];
 
-static CATALOG: EmbeddedCatalog =
-    EmbeddedCatalog::new("en-US", LOCALES, "chip-title").with_system_locale();
+static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new("en-US", LOCALES).with_system_locale();
 
 fn tr(key: &str) -> String {
     I18nManager::lookup_plain(key)

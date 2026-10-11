@@ -26,8 +26,7 @@ pub const LOCALES: &[(&str, &str)] = &[
     ("de-DE", include_str!("../locales/de-DE.ftl")),
 ];
 
-static CATALOG: EmbeddedCatalog =
-    EmbeddedCatalog::new("en-US", LOCALES, "snippets-body-placeholder").with_system_locale();
+static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new("en-US", LOCALES).with_system_locale();
 
 #[resource(kind = "snippets.library", label = "Snippets", children = Snippets::places)]
 impl Snippets {

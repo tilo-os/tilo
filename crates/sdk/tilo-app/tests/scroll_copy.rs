@@ -37,7 +37,6 @@ use tilo_app::winit::window::CursorIcon;
 static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new(
     "en-US",
     &[("en-US", "copy-draft = Next task\ncopy-done = Completed\n")],
-    "copy-draft",
 );
 
 #[derive(Model, Default, Debug, Clone, PartialEq)]
