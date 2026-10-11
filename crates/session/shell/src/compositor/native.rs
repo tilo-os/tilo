@@ -15466,6 +15466,25 @@ mod tests {
             );
         }
 
+        fn assert_waiting_after_wake(
+            &mut self,
+            conn: &mut TestControlConn,
+            reader: &mut BufReader<UnixStream>,
+            settle_by: Instant,
+        ) {
+            self.event_loop
+                .dispatch(Some(Duration::ZERO), &mut self.state)
+                .expect("dispatch");
+            self.pump(conn);
+            assert_socket_pending(reader);
+            assert!(!conn.closed, "the original connection must remain open");
+            assert_eq!(
+                control_invocation_deadline(std::slice::from_ref(conn), Instant::now()),
+                Some(settle_by),
+                "an early wake must preserve the original settle deadline"
+            );
+        }
+
         fn wait_for_invoke_response(
             &mut self,
             conn: &mut TestControlConn,
@@ -15602,15 +15621,20 @@ mod tests {
 
     #[test]
     fn wait_ms_answers_the_settled_outcome_in_one_call() {
-        wait_ms_answer_with_loop_wake(false);
+        wait_ms_answer_with_loop_wake(false, false);
     }
 
     #[test]
     fn wait_ms_tolerates_an_unrelated_wake_before_the_completion_watch() {
-        wait_ms_answer_with_loop_wake(true);
+        wait_ms_answer_with_loop_wake(true, false);
     }
 
-    fn wait_ms_answer_with_loop_wake(unrelated_wake: bool) {
+    #[test]
+    fn wait_ms_tolerates_the_status_index_wake_before_job_progress() {
+        wait_ms_answer_with_loop_wake(false, true);
+    }
+
+    fn wait_ms_answer_with_loop_wake(unrelated_wake: bool, early_index_wake: bool) {
         use std::io::Write as _;
 
         let mut fixture = ControlFixture::new();
@@ -15630,7 +15654,7 @@ mod tests {
                 runs: std::rc::Rc::clone(&runs),
                 receipt: crate::shell::search::ActionReceipt {
                     broker_invocation_id: Some(job),
-                    update: accepted,
+                    update: accepted.clone(),
                 },
             }),
         );
@@ -15644,21 +15668,38 @@ mod tests {
         writer
             .write_all(format!("{invoke}\n").as_bytes())
             .expect("invoke");
+        let deadline = Instant::now()
+            .checked_add(Duration::from_secs(10))
+            .expect("observation deadline");
         fixture.pump(&mut conn);
         assert_socket_pending(&mut reader);
-        fixture
-            .event_loop
-            .dispatch(Some(Duration::ZERO), &mut fixture.state)
-            .expect("dispatch");
-        assert!(!woken.get(), "nothing has moved the job yet");
+        let settle_by = control_invocation_deadline(std::slice::from_ref(&conn), Instant::now())
+            .expect("the original request has a settle deadline");
+        if early_index_wake {
+            // Resolving the status starts the production action index worker.
+            // Observe its ping before recording any job progress, rather than
+            // relying on which thread wins the initial zero-time dispatch.
+            assert!(park_until_woken(
+                &mut fixture.event_loop,
+                &mut fixture.state,
+                &woken,
+                deadline.saturating_duration_since(Instant::now()),
+            ));
+        }
+        // Index readiness shares the invocation loop ping. A wake is a reason
+        // to serve the original request again, not proof that its job moved.
+        fixture.assert_waiting_after_wake(&mut conn, &mut reader, settle_by);
+        assert_eq!(
+            broker.status_for_actor(job, &actor),
+            Some(accepted),
+            "index readiness must not change the job's accepted receipt"
+        );
+        woken.set(false);
 
         let held = unrelated_wake.then(hold_session_workers);
         if held.is_some() {
             wake();
         }
-        let deadline = Instant::now()
-            .checked_add(Duration::from_secs(10))
-            .expect("observation deadline");
         broker.record_completion_for_test(
             job,
             &actor,
