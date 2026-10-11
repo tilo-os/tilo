@@ -517,16 +517,20 @@ fn a_registry_build_for_another_runtime_fetches_that_runtime_or_is_refused() {
         .into_iter()
         .find(|app| app.package_id == APP_ID)
         .unwrap();
-    let entries_before = served.hits("/entries");
-    app_cli::install::install_app(&offer)
-        .unwrap_or_else(|error| panic!("install must fetch the runtime: {}", error.user_message()));
     // Finding the runtime's offer verifies one snapshot, however many runtime
     // packages it lists; it is not downloaded again per package.
+    let entries_before = served.hits("/entries");
+    let found = app_cli::runtime_offer(&needed, "local")
+        .expect("the offer is found")
+        .expect("the registry offers the runtime");
+    assert_eq!(found.package_id, registry_types::NATIVE_RUNTIME_PACKAGE_ID);
     assert_eq!(
         served.hits("/entries") - entries_before,
         1,
         "the registry snapshot is fetched once to find the runtime"
     );
+    app_cli::install::install_app(&offer)
+        .unwrap_or_else(|error| panic!("install must fetch the runtime: {}", error.user_message()));
     let fetched = runtimes.join(&registry_version);
     let verified = runtime_bundle::verify_bundle(&fetched).expect("fetched runtime verifies");
     assert_eq!(verified.version, registry_version);
@@ -666,7 +670,7 @@ fn a_registry_build_for_another_runtime_fetches_that_runtime_or_is_refused() {
             &new_needed,
         )],
         &owner,
-        Some(&second),
+        Some(&fourth),
     );
     served.put("/entries", serde_json::to_vec(&newer).unwrap());
     let update = std::process::Command::new(env!("CARGO_BIN_EXE_app"))

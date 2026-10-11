@@ -4753,11 +4753,16 @@ mod identity_resolution_tests {
                 Some(ident)
             );
         }
-        // Phase `the_user_store_resolves_nothing_without_a_home`.
+        // Phase `the_user_store_falls_back_to_the_account_home_without_an_environment`.
+        // Only the location is asserted: the account's own store is the
+        // developer's real one, and resolving its active identity would read it.
         {
             let mut env = tilo_test_env::ScopedEnv::new();
             env.remove("XDG_CONFIG_HOME").remove("HOME");
-            assert_eq!(resolve_identity_host_path(&RunOptions::default()), None);
+            assert_eq!(
+                identity_store(&IdentitySource::UserStore),
+                std::env::home_dir().map(|home| home.join(".config/tilo/identity"))
+            );
         }
     }
 }
