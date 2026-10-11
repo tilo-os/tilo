@@ -2667,14 +2667,20 @@ impl WorkspaceTree {
         let started = std::time::Instant::now();
         let export = self.fs_capability_export();
         let actions = crate::shell::launcher::action_authority::Export::of(self);
+        let failure = actions.failure_handle();
         match (&self.persist_path, export) {
             (Some(path), export) => {
-                crate::shell::persist::queue_save(self, path, move || {
-                    actions.publish();
-                    if let Some(export) = export {
-                        export.write();
-                    }
-                });
+                crate::shell::persist::queue_save_or_report(
+                    self,
+                    path,
+                    move || {
+                        actions.publish();
+                        if let Some(export) = export {
+                            export.write();
+                        }
+                    },
+                    move |error| failure.fail(error),
+                );
             }
             (None, Some(export)) => {
                 export.submit();
