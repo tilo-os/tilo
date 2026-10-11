@@ -2533,3 +2533,38 @@ device-fabric-error-input-decline-save-failed = Input control was revoked, but t
 device-fabric-error-input-sequence-exhausted = Input sequencing is exhausted. Request a new control lease.
 
 device-fabric-error-input-cleanup-pending = Previous input is still being released. Try again.
+
+search-provider-system-settings = System settings
+search-badge-settings = Settings
+setting-never = Never
+setting-minutes =
+    { $minutes ->
+        [one] 1 minute
+       *[other] { $minutes } minutes
+    }
+setting-on = On
+setting-off = Off
+setting-mode-dark = Dark
+setting-mode-light = Light
+setting-mode-automatic = Automatic
+setting-mode-unset = Follows the theme
+setting-get = { $name }: { $value }
+setting-get-detail = Read the current value and the values that are allowed
+setting-current = Currently { $value }
+setting-toggle = Toggle { $name }
+setting-power-lock-after = Lock screen after
+setting-power-lock-after-words = lock screen automatically sperren sperrzeit
+setting-power-blank-after = Turn screen off after
+setting-power-blank-after-words = screen off blank display dark bildschirm ausschalten abschalten dunkel
+setting-power-suspend-after = Suspend after
+setting-power-suspend-after-words = sleep standby energy saving bereitschaft ruhezustand energiesparen
+setting-power-auto-suspend = Suspend when idle
+setting-power-auto-suspend-words = automatic sleep standby inactivity automatisch inaktiv
+setting-display-scale = Display scale
+setting-display-scale-words = scaling zoom size bildschirm skalierung groesse
+setting-display-refresh-rate = Display refresh rate
+setting-display-refresh-rate-words = hertz frequency frames bildwiederholrate bildfrequenz
+setting-keyboard-layout = Keyboard layout
+setting-keyboard-layout-words = language input source keymap tastatur sprache belegung
+setting-appearance-mode = Appearance mode
+setting-appearance-mode-words = dark light night theme design dunkel hell nacht
