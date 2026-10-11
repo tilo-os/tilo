@@ -41,7 +41,7 @@ class OsDevArchesTests(unittest.TestCase):
                 self.assertTrue(selected(path), path)
                 self.assertTrue(any(selected(item) for item in host + [path]))
         self.assertFalse(any(selected(path) for path in host))
-        # Main pushes build in os-dev-x86.yml and os-dev-arm.yml, not here.
+        # Full dev images are explicit; ordinary pushes never request one.
         self.assertNotRegex(workflow, r"(?m)^  push:$")
         self.assertEqual(MODULE.arches("push", paths=host), ["x86_64"])
 
@@ -57,11 +57,28 @@ class OsDevArchesTests(unittest.TestCase):
                 self.assertEqual(MODULE.arches("pull_request", paths=[path]), both)
         self.assertEqual(MODULE.arch_specific(["os/Containerfile", "os/kernel/x"]), ["os/kernel/x"])
 
-    def test_main_builds_newest_commit_one_at_a_time_per_arch(self):
+    def test_image_requests_are_explicit_before_native_admission(self):
+        workflow = (ROOT / ".forgejo/workflows/os-dev.yml").read_text()
+        self.assertIn("    types: [opened, synchronize, reopened, labeled]", workflow)
+        self.assertIn("  workflow_dispatch:", workflow)
+        arches = workflow.split("  arches:\n", 1)[1].split("\n  image:", 1)[0]
+        self.assertIn("    if: github.event_name == 'workflow_dispatch' || "
+                      "contains(github.event.pull_request.labels.*.name, 'os-image') || "
+                      "contains(github.event.pull_request.labels.*.name, 'os-arm64')", arches)
+        image = workflow.split("\n  image:\n", 1)[1]
+        self.assertIn("    needs: arches\n", image)
+        self.assertNotIn("always()", image)
+        self.assertIn("    uses: ./.forgejo/workflows/build-image.yml", image)
+        release = (ROOT / ".forgejo/workflows/build-image.yml").read_text()
+        self.assertRegex(release, r"(?m)^  push:$")
+        self.assertIn('tags: ["v*"]', release)
+
+    def test_explicit_main_builds_newest_commit_one_at_a_time_per_arch(self):
         for name, arch in (("os-dev-arm.yml", "aarch64"), ("os-dev-x86.yml", "x86_64")):
             with self.subTest(arch=arch):
                 workflow = (ROOT / ".forgejo/workflows" / name).read_text()
-                self.assertRegex(workflow, r"(?m)^  push:\n    branches: \[main\]$")
+                self.assertRegex(workflow, r"(?m)^  workflow_dispatch:$")
+                self.assertNotRegex(workflow, r"(?m)^  push:$")
                 self.assertIn(f"  group: os-dev-{arch}-main\n  cancel-in-progress: false\n", workflow)
                 self.assertIn('if [[ $head == "$GITHUB_SHA" ]]; then', workflow)
                 self.assertIn("    if: needs.newest.outputs.build == 'true'\n"
