@@ -2,8 +2,7 @@
 //! already recorded at session start counts, two desktops whose relays wait
 //! still find each other, after which both are reachable, an invite names a
 //! home relay, and once the last collaborator has left the relays rest again
-//! and the desktop sleeps as one that never collaborated, but for gossip's
-//! cache sweeps.
+//! and the desktop sleeps as one that never collaborated.
 
 #![allow(
     clippy::unwrap_used,
@@ -21,20 +20,13 @@ use super::idle_quiet_tests::{
     LONE_CPU_BUDGET, LONE_IDLE, LONE_SETTLE, LONE_WAKEUP_BUDGET, device_reaching, session_threads,
 };
 use super::{NetCmd, Reach, ShellNetwork, host_identity_for_key, needs_reachability};
+use crate::network::actor::gossip_caches_drain_within;
 use crate::shell::state::{RoomAuthority, RoomId, WorkspaceTree, WorkspaceTreeHandle};
 
 /// How long a test desktop's relays stay up once nothing needs them: long
 /// enough that a pair still converging keeps them, short enough to watch
 /// them rest.
 pub(super) const REST_AFTER: Duration = Duration::from_secs(2);
-
-/// What a desktop that has had a neighbour wakes for on top of a lone one:
-/// iroh-gossip sweeps a topic's message cache every 10 s from the topic's
-/// first neighbour on, and has no way to stop the sweep when the last one
-/// leaves. The pair below links three topics (the compatibility topic, the
-/// room, the person's continuity topic): three sweeps per 10 s. Measured
-/// 0.65/s against the lone desktop's 0.30/s in the same focused run.
-const SWEEPS_AFTER_A_NEIGHBOUR: f64 = 0.3;
 
 /// Relays nobody listens on, so a woken test desktop's probes fail at once
 /// and its peers are reached directly over loopback.
@@ -260,7 +252,13 @@ fn an_invite_minted_on_an_idle_desktop_names_its_home_relay() {
 /// come back and dial, so the relays stay up; once its membership lapses,
 /// nobody is named and the delay passes, the desktop left alone rests its
 /// relays, and from then on it wakes no more than one that never
-/// collaborated, but for gossip's sweeps ([`SWEEPS_AFTER_A_NEIGHBOUR`]).
+/// collaborated. Gossip sweeps the topics the pair linked until their last
+/// messages expire ([`gossip_caches_drain_within`], 100 s), long before a
+/// real desktop rests its relays five minutes after the last collaborator;
+/// this one rests them after [`REST_AFTER`], so it waits that out before it
+/// is measured. Before iroh-gossip stopped the sweep on empty caches it ran
+/// for the session: 0.60 to 0.65 blocking wakeups a second here against the
+/// lone desktop's 0.35 to 0.40 (focused runs 96742-96744).
 #[test]
 #[serial_test::serial]
 fn after_the_last_collaborator_leaves_the_relays_rest_and_the_desktop_sleeps() {
@@ -331,7 +329,12 @@ fn after_the_last_collaborator_leaves_the_relays_rest_and_the_desktop_sleeps() {
         first.tick();
         std::thread::sleep(Duration::from_millis(20));
     }
-    std::thread::sleep(LONE_SETTLE);
+    let rested = Instant::now();
+    std::thread::sleep(LONE_SETTLE.max(gossip_caches_drain_within()));
+    eprintln!(
+        "a desktop whose collaborator left is measured {} s after it rested its relays",
+        rested.elapsed().as_secs()
+    );
 
     // Nothing drives this desktop now, so every thread of the process counts.
     let before = session_threads(None);
@@ -344,9 +347,9 @@ fn after_the_last_collaborator_leaves_the_relays_rest_and_the_desktop_sleeps() {
         wakeups.blocking_per_second()
     );
     assert!(
-        wakeups.blocking_per_second() <= LONE_WAKEUP_BUDGET + SWEEPS_AFTER_A_NEIGHBOUR,
+        wakeups.blocking_per_second() <= LONE_WAKEUP_BUDGET,
         "a desktop whose collaborator left woke {:.2} times a second, over the lone desktop's \
-         {LONE_WAKEUP_BUDGET}/s and its topics' sweeps' {SWEEPS_AFTER_A_NEIGHBOUR}/s:\n{wakeups}",
+         {LONE_WAKEUP_BUDGET}/s:\n{wakeups}",
         wakeups.blocking_per_second(),
     );
     assert!(
