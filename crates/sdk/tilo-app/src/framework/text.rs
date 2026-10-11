@@ -221,24 +221,11 @@ impl<W: EditsText + 'static> Decorator for TextControl<W> {
     fn perform_action(
         &mut self,
         action: &ui_core::a11y::Action,
-        state: &mut ui_core::widget::Edits<'_>,
-        path: &ModelPath,
-    ) -> bool {
-        let handled = self.control.perform_action(action, state, path);
-        self.submit(state);
-        handled
-    }
-
-    fn perform_action_at(
-        &mut self,
-        action: &ui_core::a11y::Action,
         key_path: &[u64],
         state: &mut ui_core::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
-        let handled = self
-            .control
-            .perform_action_at(action, key_path, state, path);
+        let handled = self.control.perform_action(action, key_path, state, path);
         self.submit(state);
         handled
     }

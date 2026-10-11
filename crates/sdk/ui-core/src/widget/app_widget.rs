@@ -1303,22 +1303,12 @@ mod component_adapter {
         fn perform_action(
             &mut self,
             action: &crate::a11y::Action,
-            state: &mut crate::widget::Edits<'_>,
-            _path: &crate::widget::ModelPath,
-        ) -> bool {
-            self.with_root_edits(state, |root, edits, record_root| {
-                root.perform_action(action, edits, record_root)
-            })
-        }
-        fn perform_action_at(
-            &mut self,
-            action: &crate::a11y::Action,
             key_path: &[u64],
             state: &mut crate::widget::Edits<'_>,
             _path: &crate::widget::ModelPath,
         ) -> bool {
             self.with_root_edits(state, |root, edits, record_root| {
-                root.perform_action_at(action, key_path, edits, record_root)
+                root.perform_action(action, key_path, edits, record_root)
             })
         }
         fn perform_semantic_action(

@@ -8771,6 +8771,7 @@ impl Widget for BlockEditor {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        _key_path: &[u64],
         _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
@@ -9524,7 +9525,9 @@ impl Widget for BlockEditor {
                 self.focus_block(index, CursorPlacement::Byte(cursor));
             }
             self.begin_edit();
-            let handled = self.blocks[index].line.perform_action(action, state, path);
+            let handled = self.blocks[index]
+                .line
+                .perform_action(action, &[], state, path);
             if handled {
                 self.dirty = true;
                 if matches!(action, crate::a11y::Action::SetValue(_)) {

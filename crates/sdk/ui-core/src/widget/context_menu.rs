@@ -1832,6 +1832,7 @@ impl crate::widget::Decorator for MenuButton {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        _key_path: &[u64],
         state: &mut crate::widget::Edits<'_>,
         root: &ModelPath,
     ) -> bool {
@@ -1843,7 +1844,7 @@ impl crate::widget::Decorator for MenuButton {
             }
             return true;
         }
-        Widget::perform_action(&mut self.button, action, state, root)
+        Widget::perform_action(&mut self.button, action, &[], state, root)
     }
 
     fn draw_overlay(

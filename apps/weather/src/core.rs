@@ -1375,7 +1375,7 @@ impl Core {
             self.begin_search();
         }
         let before = self.search.text().to_string();
-        let handled = self.search.perform_action_at(action, key_path, state, path);
+        let handled = self.search.perform_action(action, key_path, state, path);
         self.finish_search_edit(&before, handled).unwrap_or(false)
     }
 

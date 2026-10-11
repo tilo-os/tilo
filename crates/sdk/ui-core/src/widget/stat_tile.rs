@@ -721,6 +721,7 @@ impl Widget for StatTile {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        _key_path: &[u64],
         _state: &mut crate::widget::Edits<'_>,
         _root: &crate::widget::ModelPath,
     ) -> bool {
@@ -1081,6 +1082,7 @@ mod tests {
         assert!(Widget::perform_action(
             &mut tile,
             &crate::a11y::Action::Activate,
+            &[],
             &mut crate::widget::Edits::lend(&mut doc),
             &automerge::ROOT
         ));

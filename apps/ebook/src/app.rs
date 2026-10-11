@@ -5000,7 +5000,7 @@ impl Widget for BooksApp {
             let handled = self
                 .renaming
                 .as_mut()
-                .is_some_and(|rename| rename.field.perform_action(action, doc, path));
+                .is_some_and(|rename| rename.field.perform_action(action, &[], doc, path));
             if handled {
                 self.poll_rename_outcome(doc);
                 self.refresh_from_doc(doc);

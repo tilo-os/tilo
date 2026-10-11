@@ -594,7 +594,12 @@ impl App {
                 for _ in 0..times {
                     any |= app
                         .dispatch_node(fid, |widget, doc, root| {
-                            widget.perform_action(&act, &mut crate::widget::Edits::lend(doc), root)
+                            widget.perform_action(
+                                &act,
+                                &[],
+                                &mut crate::widget::Edits::lend(doc),
+                                root,
+                            )
                         })
                         .unwrap_or(false);
                 }

@@ -722,6 +722,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut first,
                 &Action::Activate,
+                &[],
                 &mut crate::widget::Edits::lend(&mut document),
                 &automerge::ROOT,
             ));
@@ -830,6 +831,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut toggle,
                 &crate::a11y::Action::ToggleCheck,
+                &[],
                 &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));

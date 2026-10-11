@@ -1133,6 +1133,7 @@ impl Widget for NumberInput {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        _key_path: &[u64],
         _state: &mut crate::widget::Edits<'_>,
         _root: &ModelPath,
     ) -> bool {
@@ -1599,6 +1600,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut first,
                 &Action::Increment,
+                &[],
                 &mut crate::widget::Edits::lend(&mut document),
                 &automerge::ROOT,
             ));
@@ -1636,6 +1638,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut n,
                 &Action::Increment,
+                &[],
                 &mut crate::widget::Edits::lend(&mut doc),
                 &root
             ));
@@ -1643,6 +1646,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut n,
                 &Action::SetValue("100".into()),
+                &[],
                 &mut crate::widget::Edits::lend(&mut doc),
                 &root
             ));
@@ -1670,6 +1674,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut number,
                 &crate::a11y::Action::SetValue("42".into()),
+                &[],
                 &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
