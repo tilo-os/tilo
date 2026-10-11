@@ -2530,6 +2530,22 @@ device-fabric-error-input-sequence-exhausted = Die Eingabesequenz ist ausgeschö
 
 device-fabric-error-input-cleanup-pending = Vorherige Eingaben werden noch freigegeben. Versuche es erneut.
 
+display-remote-heading = Deine anderen Bildschirme
+display-remote-title = { $number } · { $name } · { $device }
+display-remote-row = { $status } · { $title }
+display-remote-row-description = Diesen Bildschirm in dein gemeinsames Display-Layout aufnehmen
+display-remote-offline = Offline
+display-remote-offline-excluded = Offline · Nicht im Layout
+display-remote-switched-off = Auf dem Gerät ausgeschaltet
+display-remote-in-layout = Im Layout
+display-remote-out-of-layout = Nicht im Layout
+display-remote-unavailable = Dieser gemeinsame Bildschirm ist nicht mehr verfügbar.
+display-remote-permission = Deine Workspace-Rolle erlaubt keine Änderung des gemeinsamen Display-Layouts.
+display-remote-stale = Die Display-Anordnung hat sich geändert. Aktualisiere sie vor der Änderung.
+search-action-shared-display-inspect = Gemeinsame Bildschirme prüfen
+search-action-shared-display-inspect-subtitle = Bestätigte Ausgänge, Display-Nummern, Layout-Teilnahme und aktuelle Revisionen
+search-action-shared-display-include = Gemeinsame Display-Teilnahme festlegen
+search-action-shared-display-include-subtitle = Einen bestätigten Ausgang aufnehmen oder ausschließen, ohne Eingabezugriff zu gewähren
 activity-morning-choose = Für den Morgen auswählen
 activity-morning-remove = Morgenquelle entfernen
 activity-morning-empty = Morgenquellen: Ressource unter Erkunden → Details auswählen. Bis zu acht Quellen; keine automatische Verbindung.
