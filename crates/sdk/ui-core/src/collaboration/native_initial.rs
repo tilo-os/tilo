@@ -382,24 +382,6 @@ pub(crate) fn take_manager() -> Option<CollaborationManager> {
     // A nested App must never fall through to ambient FD discovery.
     Some(CollaborationManager::disabled())
 }
-pub(crate) fn file_bridge() -> Result<Option<InitialReadBridge>, String> {
-    if let Some(state) = current() {
-        if let Some(error) = state.failure.borrow().clone() {
-            return Err(error);
-        }
-        if let Some(bridge) = &state.bridge {
-            bridge.check()?;
-        }
-        return Ok(state.bridge.clone());
-    }
-    if crate::host::environment()
-        .identity
-        .collab_service_configured
-    {
-        return Err("file record mode must be resolved by the native launch owner".into());
-    }
-    Ok(None)
-}
 pub(crate) fn capture_bridge() -> Option<InitialReadBridge> {
     current()?.bridge.clone()
 }
