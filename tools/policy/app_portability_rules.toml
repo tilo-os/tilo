@@ -193,7 +193,10 @@ severity = "warn"
 allowed-packages = ["tilo-app", "runtime-dylib"]
 # `vendor/*` holds forks of third-party crates (winit, vello, …), which stand
 # in for the upstream crate an app would otherwise depend on.
-allowed-paths = ["crates/platform/*", "apps/*-model", "vendor/*"]
+# `crates/runtime/engines/*` are engine libraries beside the runtime,
+# the optional backend of an app's `runtime-engine` feature like
+# `runtime-dylib` is of `thin`.
+allowed-paths = ["crates/platform/*", "apps/*-model", "vendor/*", "crates/runtime/engines/*"]
 
 [rules.F1]
 summary = "selects an SDK backend feature"
