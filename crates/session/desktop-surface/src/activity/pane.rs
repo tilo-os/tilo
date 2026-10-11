@@ -7690,6 +7690,7 @@ impl RoomActivityPane {
         let root = automerge::ROOT;
         let _ = button.widget_mut().perform_action(
             &ui::a11y::Action::Activate,
+            &[],
             &mut ui::widget::Edits::lend(tree.document_mut()),
             &root,
         );

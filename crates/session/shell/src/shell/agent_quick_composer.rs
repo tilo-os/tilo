@@ -1800,7 +1800,7 @@ mod tests {
         edits: &mut ui::widget::Edits<'_>,
     ) -> bool {
         if widget.test_id() == Some(target) {
-            return widget.perform_action(action, edits, &automerge::ROOT);
+            return widget.perform_action(action, &[], edits, &automerge::ROOT);
         }
         widget
             .children_mut()
