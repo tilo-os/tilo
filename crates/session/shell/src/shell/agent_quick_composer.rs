@@ -58,6 +58,7 @@ pub(crate) struct AgentQuickComposerOrigin {
 }
 
 impl AgentQuickComposerOrigin {
+    #[cfg(test)]
     pub(crate) fn marker_only(marker: Rect) -> Self {
         Self {
             marker,
