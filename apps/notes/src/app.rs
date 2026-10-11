@@ -802,11 +802,12 @@ impl NotesApp {
         // the app: past its edge a window or a tile clips the shadow (the
         // bubble sits in the corner a tile shares with the app), and damage
         // there would repaint whatever lies beyond, another display included.
-        let reach = ui::widget::floating_surface::shadow_reach(theme);
         let status_damage = [self.status_drawn, self.status_painted]
             .into_iter()
             .flatten()
-            .map(|rect| rect.inflate(reach, reach).intersect(self.rect))
+            .map(|rect| {
+                ui::widget::floating_surface::painted_bounds(rect, theme).intersect(self.rect)
+            })
             .filter(|rect| !rect.is_zero_area())
             .collect();
         let part = |key: &str, rect: Rect, scene: &Scene, damage: Vec<Rect>| {
@@ -2598,11 +2599,13 @@ impl Widget for NotesApp {
             .draw(scene, transform, text_renderer, theme, presence);
         let toasts_scene = std::mem::take(scene);
         self.main_scroll_copy = self.main.scroll_copy();
-        let reach = ui::widget::floating_surface::shadow_reach(theme);
         self.status_over_main = [self.status_drawn, self.status_painted]
             .into_iter()
             .flatten()
-            .map(|rect| rect.inflate(reach, reach).intersect(self.main.get_rect()))
+            .map(|rect| {
+                ui::widget::floating_surface::painted_bounds(rect, theme)
+                    .intersect(self.main.get_rect())
+            })
             .filter(|rect| !rect.is_zero_area())
             .collect();
         let frame = self.paint_frame(
