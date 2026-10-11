@@ -509,8 +509,17 @@ impl State {
         self.set_selection_focus(selection_client);
         keyboard.set_focus(self, target.clone().map(|(_, s)| s), serial);
         self.tablet_pads_follow_keyboard(target.as_ref().map(|(_, surface)| surface));
-        if let Some((surface_id, _)) = target {
+        if let Some((surface_id, surface)) = target {
             record_activation_serial(self, serial, surface_id);
+            // The focused app's scope gets the foreground tier and the one it
+            // replaces is demoted. Queued to a worker thread: this is the
+            // compositor's input path and must never wait on systemd.
+            if let Some(pid) = surface
+                .client()
+                .and_then(|client| client.get_data::<crate::compositor::state::ClientState>().and_then(|state| state.pid))
+            {
+                ::launcher::priority::notify_focus(pid);
+            }
         }
     }
 

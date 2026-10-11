@@ -187,6 +187,10 @@ fn register_launched_process(
     let Some((_, start_time)) = proc_stat(pid) else {
         return;
     };
+    // Its scope starts in the foreground tier; the focus policy keeps it
+    // there only until the window appears and settles.
+    #[cfg(target_os = "linux")]
+    ::launcher::priority::notify_launch(pid);
     if let Ok(mut map) = LAUNCHED_PROCESSES.lock() {
         map.insert(
             pid,
@@ -460,6 +464,8 @@ pub fn windows_compat_entry_generation() -> u64 {
 
 #[cfg(any(test, target_os = "linux"))]
 fn unregister_launched_process(pid: u32) {
+    #[cfg(target_os = "linux")]
+    ::launcher::priority::notify_launch_exited(pid);
     if let Ok(mut map) = LAUNCHED_PROCESSES.lock() {
         map.remove(&pid);
     }

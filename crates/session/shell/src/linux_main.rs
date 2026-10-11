@@ -515,6 +515,18 @@ pub fn run() -> std::process::ExitCode {
     tilo_startup_metrics::init();
     let _startup_dump = tilo_startup_metrics::ScopedDumper;
     tilo_startup_metrics::mark("main-start");
+    // The compositor is the session's most latency-critical process: ask for
+    // its scope to be protected and start boosting the focused app. Both are
+    // asynchronous and cost nothing when no user or system manager answers.
+    if !early_args
+        .iter()
+        .any(|arg| matches!(arg.as_str(), "--firstboot-only" | "--provision-identity" | "--verify-collaboration-identity"))
+    {
+        ::launcher::priority::protect_session();
+        ::launcher::priority::enable_focus_boost();
+        // Input is dispatched on this thread's main loop, not its own thread.
+        ::launcher::priority::request_main_loop_nice(::launcher::priority::MAIN_LOOP_NICE);
+    }
 
     // The shell's copy and every toolkit widget it draws, in the desktop's
     // language.
