@@ -20,10 +20,14 @@
 //!
 //! Every motion starts from a desktop at rest: two frames in a row that
 //! change nothing, with nothing animating, each kept rather than rendered as
-//! the DRM presenter keeps it. A pan also reports, apart from its samples,
-//! its first frame from rest (`start`, which builds the presenter's layers)
+//! the DRM presenter keeps it. Once at rest the layered presenter warms its
+//! strip layers as the session does when the desktop rests after a frame
+//! that changed it (`FrameBuilder::layers_at_rest`,
+//! `RetainedGpuTarget::warm_layers`); that idle work is reported apart
+//! (`warm`, `rewarm`: its time and raster pixels), never as a frame. A pan
+//! also reports, apart from its samples, its first frame from rest (`start`)
 //! and the first frame of a second pan once the desktop came to rest again
-//! (`restart`).
+//! (`restart`), each with its scene and render time and render attempts.
 //!
 //! The windows are the in-process apps the populated fixture supports
 //! (Notes, Files, Terminal, Document): vector content the compositor draws
@@ -352,14 +356,63 @@ struct Samples {
     pixels: Vec<u64>,
     composited: Vec<u64>,
     paths: Vec<u64>,
+    /// Vello submissions per frame, sparse and dense (bump-budget retries
+    /// included).
+    attempts: Vec<(usize, usize)>,
     dense: usize,
     layered: usize,
-    /// A pan's first frame from rest, before the warm-up: the one that
-    /// builds the presenter's layers. Frame time and raster pixels.
-    start: Option<(u64, u64)>,
+    /// The idle work before the motion: the presenter warming its layers
+    /// once the desktop rested. Time and raster pixels.
+    warm: Option<(u64, u64)>,
+    /// The same before the second pan.
+    rewarm: Option<(u64, u64)>,
+    /// A pan's first frame from rest, before the warm-up.
+    start: Option<One>,
     /// The first frame of a second pan, once the desktop came to rest after
-    /// the first: what a pan from rest costs once the layers exist.
-    restart: Option<(u64, u64)>,
+    /// the first.
+    restart: Option<One>,
+}
+
+/// One frame measured on its own.
+#[derive(Clone, Copy)]
+struct One {
+    frame_us: u64,
+    scene_us: u64,
+    render_us: u64,
+    pixels: u64,
+    composited: u64,
+    attempts: (usize, usize),
+}
+
+impl One {
+    /// The only frame `samples` holds.
+    fn of(samples: &Samples) -> Option<Self> {
+        Some(Self {
+            frame_us: *samples.frame_us.first()?,
+            scene_us: *samples.scene_us.first()?,
+            render_us: *samples.render_us.first()?,
+            pixels: *samples.pixels.first()?,
+            composited: *samples.composited.first()?,
+            attempts: *samples.attempts.first()?,
+        })
+    }
+
+    /// ` name[frame_us=… …]`.
+    fn report(name: &str, one: Option<Self>) -> String {
+        one.map_or_else(String::new, |one| {
+            format!(
+                " {name}[frame_us={} scene_us={} render_us={} pixels={} composited={} \
+                 attempts={}/{}]",
+                one.frame_us,
+                one.scene_us,
+                one.render_us,
+                one.pixels,
+                one.composited,
+                one.attempts.0,
+                one.attempts.1
+            )
+        })
+    }
 }
 
 fn micros(duration: Duration) -> u64 {
@@ -451,8 +504,35 @@ fn frame(
         samples
             .paths
             .push(u64::from(paint.scene.encoding().n_paths));
+        samples
+            .attempts
+            .push((stats.sparse_attempts, stats.full_attempts));
     }
     Ok(paint.damage_regions.as_ref().is_some_and(Vec::is_empty))
+}
+
+/// The idle work the session does once the desktop rests after a frame that
+/// changed it: the producer draws the desktop as layers and the presenter
+/// warms its layer textures from them. Its time and raster pixels; `None`
+/// when there was nothing to warm.
+fn warm(
+    fixture: &mut Fixture,
+    target: &mut RetainedGpuTarget,
+) -> Result<Option<(u64, u64)>, String> {
+    if !fixture.frame.layers_stale() {
+        return Ok(None);
+    }
+    let started = Instant::now();
+    let Some(layers) = fixture.frame.layers_at_rest() else {
+        return Ok(None);
+    };
+    let deadline = started
+        .checked_add(RENDER_DEADLINE)
+        .ok_or("render deadline overflows")?;
+    let pixels = target
+        .warm_layers(&layers, deadline, &|| true)
+        .map_err(|error| format!("warm: {error}"))?;
+    Ok(pixels.map(|pixels| (micros(started.elapsed()), pixels)))
 }
 
 /// Draw frames until the desktop is at rest: [`QUIET_FRAMES`] frames in a
@@ -503,7 +583,10 @@ fn pan(
     if max < PAN_STEP * 4.0 {
         return Err(format!("the strip does not pan: max scroll {max}"));
     }
-    let mut samples = Samples::default();
+    let mut samples = Samples {
+        warm: warm(fixture, target)?,
+        ..Samples::default()
+    };
     let mut travel = 0.0;
     let mut direction = 1.0;
     fixture.frame.host_mut().update_active_strip_pan(0.0, true);
@@ -533,6 +616,7 @@ fn pan(
         .host_mut()
         .end_active_strip_pan(Instant::now());
     settle(fixture, target, size)?;
+    samples.rewarm = warm(fixture, target)?;
     fixture.frame.host_mut().update_active_strip_pan(0.0, true);
     fixture
         .frame
@@ -546,19 +630,15 @@ fn pan(
     Ok(samples)
 }
 
-/// One frame, measured on its own: its frame time and raster pixels.
+/// One frame, measured on its own.
 fn single_frame(
     fixture: &mut Fixture,
     target: &mut RetainedGpuTarget,
     size: (u32, u32),
-) -> Result<Option<(u64, u64)>, String> {
+) -> Result<Option<One>, String> {
     let mut one = Samples::default();
     let _ = frame(fixture, target, size, Some(&mut one))?;
-    Ok(one
-        .frame_us
-        .first()
-        .copied()
-        .zip(one.pixels.first().copied()))
+    Ok(One::of(&one))
 }
 
 fn strip_move(
@@ -567,7 +647,10 @@ fn strip_move(
     size: (u32, u32),
 ) -> Result<Samples, String> {
     settle(fixture, target, size)?;
-    let mut samples = Samples::default();
+    let mut samples = Samples {
+        warm: warm(fixture, target)?,
+        ..Samples::default()
+    };
     for index in 0..STRIP_MOVES {
         let direction = if index.is_multiple_of(2) { 1 } else { -1 };
         let mut moved = false;
@@ -618,20 +701,21 @@ fn summary(values: &[u64]) -> String {
     )
 }
 
-/// ` name[frame_us=… pixels=…]` for a frame measured on its own, if any.
-fn one_frame(name: &str, measured: Option<(u64, u64)>) -> String {
-    measured.map_or_else(String::new, |(frame_us, pixels)| {
-        format!(" {name}[frame_us={frame_us} pixels={pixels}]")
+/// ` name[us=… pixels=…]` for idle work, if any was done.
+fn idle_work(name: &str, measured: Option<(u64, u64)>) -> String {
+    measured.map_or_else(String::new, |(us, pixels)| {
+        format!(" {name}[us={us} pixels={pixels}]")
     })
 }
 
 fn report(label: &str, size: (u32, u32), samples: &Samples) {
     let output = output_pixels(size);
     let pixels_p50 = percentile(&samples.pixels, 500);
+    let first = samples.attempts.first().copied().unwrap_or_default();
     println!(
         "{label}: frames={} dense={} layered={} frame_us[{}] layout_us[{}] scene_us[{}] \
          render_us[{}] pixels[p50={pixels_p50} p99={} output={output} share_p50={}%] \
-         composited_p50={} paths_p50={} first[frame_us={} pixels={}]{}{}",
+         composited_p50={} paths_p50={} first[frame_us={} pixels={} attempts={}/{}]{}{}{}{}",
         samples.frame_us.len(),
         samples.dense,
         samples.layered,
@@ -645,19 +729,32 @@ fn report(label: &str, size: (u32, u32), samples: &Samples) {
         percentile(&samples.paths, 500),
         samples.frame_us.first().copied().unwrap_or(0),
         samples.pixels.first().copied().unwrap_or(0),
-        one_frame("start", samples.start),
-        one_frame("restart", samples.restart),
+        first.0,
+        first.1,
+        idle_work("warm", samples.warm),
+        One::report("start", samples.start),
+        idle_work("rewarm", samples.rewarm),
+        One::report("restart", samples.restart),
     );
 }
 
 fn write_samples(dir: &Path, label: &str, samples: &Samples) -> Result<(), String> {
+    // A pan's first frames from rest, the first pan's and the second's.
+    let starts: Vec<One> = samples.start.into_iter().chain(samples.restart).collect();
+    let start_us: Vec<u64> = starts.iter().map(|one| one.frame_us).collect();
+    let start_pixels: Vec<u64> = starts.iter().map(|one| one.pixels).collect();
     for (name, values) in [
         ("frame-us", &samples.frame_us),
         ("scene-us", &samples.scene_us),
         ("render-us", &samples.render_us),
         ("pixels", &samples.pixels),
         ("composited", &samples.composited),
+        ("start-us", &start_us),
+        ("start-pixels", &start_pixels),
     ] {
+        if values.is_empty() {
+            continue;
+        }
         let mut text = values
             .iter()
             .map(u64::to_string)

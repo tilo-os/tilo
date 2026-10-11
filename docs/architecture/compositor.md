@@ -353,7 +353,20 @@ lands a fraction of a pixel apart and twitches when the pan ends. Layout and
 input use the same drawn pan. A rotated, calibrated or HDR output composites
 the layers the same way and then turns, calibrates or PQ-encodes the result
 in its final pass, as it would a render of the scene. Frames at rest keep the
-screen-space damage above, and a blurred surface, an HDR surface or several
+screen-space damage above, so the layers fall behind while the desktop
+changes at rest; once it has rested a second after such a frame
+(`LAYER_WARM_SETTLE`), the loop draws the desktop as layers once
+(`FrameBuilder::layers_at_rest`, which is no frame: revisions, damage and the
+pans' motion stay as the frames left them) and hands them to the render
+thread as idle work (`PresentPipe::warm`). The presenter rasterises only the
+layers whose scenes changed into their textures, a whole one in bands of
+about four million pixels, and stops between two bands as soon as a frame is
+handed over (`RetainedGpuTarget::warm_layers`); nothing reaches KMS. The next
+pan's first frame then copies and composites like any other instead of
+rasterising every layer. When a pan ends, the first frame drawn in screen
+space again also carries the layers, so it is composited from the textures
+that already show it rather than rendered whole, and an unchanged frame kept
+after it keeps them current. A blurred surface, an HDR surface or several
 displays (each draws its own view of the desktop, and a strip spanning two
 pans per display) render the scene as before.
 Night light and the

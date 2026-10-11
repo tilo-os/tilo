@@ -144,6 +144,15 @@ pub trait Presenter: Send {
     fn frame_detail(&mut self) -> Option<String> {
         None
     }
+
+    /// Idle work, not a frame: bring whatever this presenter retains for
+    /// `frame`'s layers up to them while the desktop rests, without showing
+    /// anything ([`PresentPipe::warm`]). Asks `keep_going` between steps
+    /// and stops as soon as it says a frame waits. Presenters that retain
+    /// nothing do nothing.
+    fn warm(&mut self, frame: &FramePaint, keep_going: &dyn Fn() -> bool) {
+        let _ = (frame, keep_going);
+    }
 }
 
 enum PresentMsg {
@@ -164,6 +173,12 @@ enum PresentMsg {
         inflight_at_enqueue: usize,
         /// The client frames `frame` draws, held until it was presented: their
         /// buffers do not go back to their clients while it can be rendered.
+        pins: crate::shell::gpu_frames::FramePins,
+    },
+    /// Idle work for [`Presenter::warm`]; never presented, never counted in
+    /// flight. Its client frames stay pinned until it is done.
+    Warm {
+        frame: Box<FramePaint>,
         pins: crate::shell::gpu_frames::FramePins,
     },
     Resize((u32, u32)),
@@ -424,6 +439,14 @@ impl PresentPipe {
                             // Then wake the loop — strictly after the decrement, so a loop that wakes on this signal is guaranteed to see the capacity.
                             on_retire();
                         }
+                        PresentMsg::Warm { frame, pins } => {
+                            // A frame handed over meanwhile goes first.
+                            let idle = || board.inflight.load(Ordering::Acquire) == 0;
+                            if idle() {
+                                presenter.warm(&frame, &idle);
+                            }
+                            drop(pins);
+                        }
                         PresentMsg::Resize(size) => presenter.resize(size),
                         PresentMsg::Dpms(on) => presenter.set_dpms(on),
                         PresentMsg::Stop => break,
@@ -600,6 +623,21 @@ impl PresentPipe {
             return None;
         }
         Some(serial)
+    }
+
+    /// Hand the render thread idle work: `frame`'s layers, drawn while the
+    /// desktop rests, for the presenter to retain ([`Presenter::warm`]).
+    /// It runs after the frames already handed over and yields to any frame
+    /// handed over after it; it is not a frame, so it takes no capacity and
+    /// gets no serial. Returns `false` if the render thread has gone away.
+    pub fn warm(&self, frame: FramePaint) -> bool {
+        let pins = frame.client_frame_pins();
+        self.tx
+            .send(PresentMsg::Warm {
+                frame: Box::new(frame),
+                pins,
+            })
+            .is_ok()
     }
 
     pub fn resize(&self, size: (u32, u32)) {
