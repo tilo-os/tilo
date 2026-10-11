@@ -488,6 +488,42 @@ p99_tolerance = 2.0
 min_delta = 1000.0
 source = "KPI document: Frame time p99 at 4K/144 Hz, damage-limited (lavapipe; reported only)"
 
+# Strip pans at native 4K: strip_pan_bench drives a continuous
+# three-finger pan of a six-window strip, and strip-to-strip moves, through
+# FrameBuilder and the DRM direct path's GPU target, with the presenter
+# compositing pans from retained strip layers. Frame time takes the render
+# group's rules (lavapipe: reported, never enforced). The pixels a pan frame
+# rasterises do not depend on the runner, so their median is enforced: a pan
+# frame rasterises the columns it uncovered (35,904 px measured, 0.4 % of the
+# output, run 95313), and one that goes back to repainting the strip
+# (8,294,400 px) fails the run at once. The p99 is a frame whose chrome or
+# strips changed during the pan, rasterised whole, and is not budgeted.
+
+[kpi."render.shell.pan_us.4k"]
+unit = "us"
+p99 = 6900.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1000.0
+source = "KPI document: Frame time p99 at 4K/144 Hz, damage-limited (lavapipe; reported only)"
+
+[kpi."render.shell.pan_pixels.4k"]
+unit = "pixels"
+p50 = 100000.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 10000.0
+source = "strip_pan_bench, pixels a 4K six-window pan frame rasterises"
+
+[kpi."render.shell.strip_move_us.4k"]
+unit = "us"
+p99 = 16700.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1000.0
+source = "KPI document: Frame time p99 at 4K/144 Hz, full repaint (lavapipe; reported only)"
+
 # Opening a framework app over a long list (TIL-758): the framework-scaling
 # example (crates/sdk/tilo-app/examples/framework-scaling.rs, `open` mode)
 # reopens a checklist holding 5,000 and 50,000 items five times, to its first
