@@ -244,7 +244,8 @@ impl Writer {
         match self.lists.last_mut() {
             Some(Some(number)) => {
                 *number += 1;
-                mark.push_str(&format!("{number}. "));
+                mark.push_str(&number.to_string());
+                mark.push_str(". ");
             }
             _ => mark.push_str("• "),
         }
@@ -561,15 +562,12 @@ fn decode(text: &str) -> String {
             .split_once(';')
             .map(|(name, _)| name)
             .filter(|name| name.len() <= 10);
-        match reference.and_then(|name| entity(name).map(|c| (name, c))) {
-            Some((name, c)) => {
-                out.push(c);
-                rest = after(tail, name.len() + 2);
-            }
-            None => {
-                out.push('&');
-                rest = after(tail, 1);
-            }
+        if let Some((name, c)) = reference.and_then(|name| entity(name).map(|c| (name, c))) {
+            out.push(c);
+            rest = after(tail, name.len() + 2);
+        } else {
+            out.push('&');
+            rest = after(tail, 1);
         }
     }
     out.push_str(rest);

@@ -5095,6 +5095,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines, reason = "one scenario read top to bottom")]
     fn launch_failure_copy_and_logs_are_bounded_and_never_leak_detail() {
         fn failed_launch_banner_never_contains_raw_stderr() {
             let raw = "error: could not connect\nWAYLAND_DISPLAY=wayland-1\nbacktrace: 0xdeadbeef";

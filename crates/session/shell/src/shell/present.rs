@@ -54,7 +54,8 @@ pub const MAX_UNRETIRED: usize = 1;
 /// [`MAX_UNRETIRED`] beyond those: a presenter owing more than it should is refused frames until
 /// they retire, rather than growing the distance between the newest frame and the screen.
 pub fn admits(inflight: usize, unretired: usize, depth: usize) -> bool {
-    inflight <= depth && inflight.saturating_add(unretired) <= depth.saturating_add(MAX_UNRETIRED)
+    let unretired_limit = depth.saturating_add(MAX_UNRETIRED);
+    inflight <= depth && inflight.saturating_add(unretired) <= unretired_limit
 }
 
 /// The queue depth the pipe enforces: the presenter's own, raised to the loop's render-bound
@@ -302,6 +303,10 @@ struct FrameLifecycle {
     overlapped: bool,
 }
 
+#[allow(
+    clippy::large_types_passed_by_value,
+    reason = "consumed once at retirement; a reference would only add a lifetime to the retire path"
+)]
 fn log_frame_lifecycle(serial: u64, revision: u64, timing: FrameLifecycle) {
     let FrameLifecycle {
         queue_wait,
@@ -452,6 +457,10 @@ impl<T> RetireQueue<T> {
 }
 
 /// A frame the presenter returned from, until its retirement is published.
+#[allow(
+    clippy::struct_field_names,
+    reason = "`rendered_at` is the timestamp of the render, named for the event it marks"
+)]
 struct Rendered {
     serial: u64,
     revision: u64,

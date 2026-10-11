@@ -321,6 +321,10 @@ impl Flow<'_, '_> {
     }
 }
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent view flags of one reader, each toggled on its own event"
+)]
 pub struct MessageReader {
     shared: Shared,
     rect: Rect,
@@ -507,11 +511,11 @@ impl MessageReader {
         let theme = flow.ctx.theme;
         let style = crate::html_mail::DocumentStyle::from_theme(theme);
         let key = (message.id, html.is_some());
-        let stale = self
+        let needs_rebuild = self
             .body
             .as_ref()
             .is_none_or(|body| body.key != key || body.style != style);
-        if stale {
+        if needs_rebuild {
             let mut body = BodyText::new(key, style, message, html, theme);
             body.input.set_focus(self.focused);
             self.body = Some(body);

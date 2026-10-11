@@ -297,7 +297,9 @@ impl GbmScanoutBuffers {
                 .map_err(|error| format!("GBM scanout buffer[{index}]: {error}"))?;
         }
         let export = |index: usize| {
-            buffers[index]
+            buffers
+                .get(index)
+                .ok_or_else(|| format!("no GBM scanout buffer[{index}]"))?
                 .fd_for_plane(0)
                 .map_err(|error| format!("export GBM scanout buffer[{index}]: {error}"))
         };
@@ -4350,6 +4352,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines, reason = "one scenario read top to bottom")]
     fn direct_scanout_slots_never_reuse_busy_buffers_and_fail_safe() {
         // Phase `direct_scanout_never_renders_front_or_flip_pending_slots`.
         {

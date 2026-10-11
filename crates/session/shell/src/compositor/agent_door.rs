@@ -230,10 +230,11 @@ impl Door {
         let spawned = std::thread::Builder::new()
             .name("tilo-agent-door".into())
             .spawn(move || {
-                let host = crate::shell::remote_actions::BrokerActionHost::new(broker);
-                let ended = tilo_runtime::session_door::serve(stream, host, |hello, connected| {
-                    ask_person(&requests, &wake, facts, hello, connected)
-                });
+                let ended = tilo_runtime::session_door::serve(
+                    stream,
+                    crate::shell::remote_actions::BrokerActionHost::new(broker),
+                    |hello, connected| ask_person(&requests, &wake, facts, hello, connected),
+                );
                 if let Err(error) = ended {
                     tracing::debug!(%error, "agent door: client disconnected");
                 }
@@ -387,6 +388,11 @@ mod tests {
     /// through the `permission-prompts` decision, then lists the live apps
     /// its grants reach as its own agent, and loses them with its membership.
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        clippy::significant_drop_tightening,
+        reason = "one scenario read top to bottom; the broker handle lives for all of it"
+    )]
     fn an_admitted_agent_lists_the_live_apps_through_the_door_and_loses_them_on_removal() {
         use crate::shell::chrome_state::SearchScope;
         use crate::shell::chrome_state::{ChromeState, PromptRequest};

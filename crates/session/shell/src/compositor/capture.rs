@@ -462,6 +462,10 @@ impl CaptureExecutor {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one frame: capture, scene, present and retirement stay in order"
+    )]
     fn execute_ready_frame(
         &mut self,
         frame_builder: &mut FrameBuilder,

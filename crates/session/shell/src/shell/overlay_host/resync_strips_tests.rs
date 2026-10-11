@@ -1360,6 +1360,7 @@ fn focus_changes_are_flushed_before_restart_and_never_resurrect_removed_tabs() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines, reason = "one scenario read top to bottom")]
 fn group_actions_target_exactly_their_group_or_surface() {
     fn closing_one_of_two_same_app_windows_targets_only_its_surface() {
         let (mut tree, strip_id, group_id) = one_group_seed();

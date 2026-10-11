@@ -1,3 +1,7 @@
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "tests hold the chrome borrow across the assertions that read it"
+)]
 use super::*;
 use crate::shell::chrome_state::PromptRequest;
 use crate::shell::search::providers::permission_prompts::answer_pending_prompt_as;

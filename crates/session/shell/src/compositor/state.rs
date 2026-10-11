@@ -1103,6 +1103,10 @@ fn subsurface_tree_root(surface: &WlSurface) -> WlSurface {
 
 /// How the buffer `states` last committed lies on its surface: the buffer
 /// scale and the `wp_viewport` rectangles.
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the cached-state guard owns the viewport the result is read from"
+)]
 pub(crate) fn committed_surface_scale(
     states: &wl_compositor::SurfaceData,
 ) -> crate::compositor::foreign::SurfaceScale {

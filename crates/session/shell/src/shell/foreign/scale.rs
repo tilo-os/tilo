@@ -118,6 +118,10 @@ impl SurfaceScale {
 /// The image a toplevel and its subsurfaces are flattened into: the
 /// toplevel's logical extent at the density of its densest surface.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[allow(
+    clippy::struct_field_names,
+    reason = "`root_is_canvas` reads as the claim it makes about the toplevel buffer"
+)]
 pub(super) struct Canvas {
     /// Canvas pixels per logical pixel.
     pub density: (f64, f64),
@@ -209,7 +213,7 @@ pub(super) struct FrameLayout {
 
 impl FrameLayout {
     /// The image pixel showing surface-local `(x, y)`.
-    pub fn to_image(&self, (x, y): (f64, f64)) -> (f64, f64) {
+    pub fn to_image(self, (x, y): (f64, f64)) -> (f64, f64) {
         (
             x * self.canvas.density.0 - f64::from(self.content.0),
             y * self.canvas.density.1 - f64::from(self.content.1),
@@ -217,7 +221,7 @@ impl FrameLayout {
     }
 
     /// The surface-local point image pixel `(x, y)` shows.
-    pub fn to_surface(&self, (x, y): (f64, f64)) -> (f64, f64) {
+    pub fn to_surface(self, (x, y): (f64, f64)) -> (f64, f64) {
         (
             (x + f64::from(self.content.0)) / self.canvas.density.0,
             (y + f64::from(self.content.1)) / self.canvas.density.1,

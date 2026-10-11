@@ -1044,6 +1044,10 @@ impl SearchRegistry {
         self.query_inner(args, true, true)
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one planning pass over every provider round"
+    )]
     fn query_rounds(
         &self,
         args: &QueryArgs<'_>,

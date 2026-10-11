@@ -69,7 +69,7 @@ fn spawn() -> Session {
         .spawn()
         .expect("spawn compositor");
     let mut session = Session { child, runtime_dir };
-    let deadline = Instant::now() + tilo_test_env::hang_bound();
+    let deadline = tilo_test_env::hang_deadline();
     while UnixStream::connect(session.control()).is_err() || !session.door().exists() {
         assert!(
             session.child.try_wait().unwrap().is_none(),
@@ -94,7 +94,7 @@ fn control(socket: &Path, request: &serde_json::Value) -> serde_json::Value {
 
 /// The waiting agent admission's prompt id, as the decision rows name it.
 fn waiting_prompt(socket: &Path) -> String {
-    let deadline = Instant::now() + tilo_test_env::hang_bound();
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         let listed = control(
             socket,
