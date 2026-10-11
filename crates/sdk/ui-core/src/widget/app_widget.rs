@@ -745,14 +745,9 @@ mod component_adapter {
                 return false;
             }
             let permissions = binding.permissions.borrow().clone();
-            root.draw_with_presence(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                presence,
-                &permissions,
-            );
+            presence.with_permissions(permissions, || {
+                root.draw(scene, transform, text_renderer, theme, presence);
+            });
             let _ = crate::widget::layout::lay_out_detached(root, live, theme, text_renderer);
             if let Some(offset) = offset {
                 let _ = root.apply_primary_vertical_scroll(
@@ -960,14 +955,22 @@ mod component_adapter {
         fn sync(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
             let (state, _) = crate::doc::document_ref(state, path);
             let binding = self.component.callback_binding();
-            binding
-                .read_document(state, |document, record_root| {
-                    if let Some(root) = self.component.root.as_deref_mut() {
-                        root.sync(document, record_root);
-                    }
-                })
-                .unwrap_or(());
-            self.component.project_record_save_status();
+            let sync_root = |component: &mut AppComponent| {
+                binding
+                    .read_document(state, |document, record_root| {
+                        if let Some(root) = component.root.as_deref_mut() {
+                            root.sync(document, record_root);
+                        }
+                    })
+                    .unwrap_or(());
+            };
+            sync_root(&mut self.component);
+            // The record's durability, sampled once the root has synced. A
+            // change is shown by syncing the root again with it, so the frame
+            // needs no rebuilt tree (which repaints the whole window).
+            if self.component.project_record_save_status() {
+                sync_root(&mut self.component);
+            }
         }
         fn settle(&mut self, edits: &mut crate::widget::Edits<'_>, _path: &ObjId) {
             let binding = self.component.callback_binding();
@@ -1079,17 +1082,11 @@ mod component_adapter {
             if self.component.behaviour.capture_protected {
                 crate::secret_paint::note_secret_painted();
             }
-            // TileHost's clipped/animated steady-state paint uses ordinary draw.
-            // Canonical roots must still receive their permission-aware hook.
+            // The component's own authority, not whatever its container holds.
             let permissions = binding.permissions.borrow().clone();
-            root.draw_with_presence(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                presence,
-                &permissions,
-            );
+            presence.with_permissions(permissions, || {
+                root.draw(scene, transform, text_renderer, theme, presence);
+            });
         }
         fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
             let binding = self.component.callback_binding();
@@ -1295,22 +1292,12 @@ mod component_adapter {
         fn perform_action(
             &mut self,
             action: &crate::a11y::Action,
-            state: &mut crate::widget::Edits<'_>,
-            _path: &crate::widget::ModelPath,
-        ) -> bool {
-            self.with_root_edits(state, |root, edits, record_root| {
-                root.perform_action(action, edits, record_root)
-            })
-        }
-        fn perform_action_at(
-            &mut self,
-            action: &crate::a11y::Action,
             key_path: &[u64],
             state: &mut crate::widget::Edits<'_>,
             _path: &crate::widget::ModelPath,
         ) -> bool {
             self.with_root_edits(state, |root, edits, record_root| {
-                root.perform_action_at(action, key_path, edits, record_root)
+                root.perform_action(action, key_path, edits, record_root)
             })
         }
         fn perform_semantic_action(
@@ -1651,16 +1638,25 @@ mod component_adapter {
             root.modal_capture()
         }
         fn take_structure_dirty(&mut self) -> bool {
-            let relayout = std::mem::take(&mut self.relayout);
+            self.take_structure_change().rebuilds()
+        }
+        /// The root's change as it says it; the component's own reasons (a
+        /// relayout it asked for, a save status no `App` presented) rebuild.
+        fn take_structure_change(&mut self) -> crate::widget::StructureChange {
+            use crate::widget::StructureChange;
+            let relayout = StructureChange::of(std::mem::take(&mut self.relayout));
             let binding = self.component.callback_binding();
             let Ok(_entry) = binding.enter() else {
                 return relayout;
             };
-            let save_status_changed = self.component.take_save_status_changed();
+            let save_status_changed =
+                StructureChange::of(self.component.take_save_status_changed());
             let Some(root) = self.component.root.as_deref_mut() else {
                 return relayout;
             };
-            root.take_structure_dirty() | save_status_changed | relayout
+            root.take_structure_change()
+                .join(save_status_changed)
+                .join(relayout)
         }
         fn needs_redraw(&self) -> bool {
             let binding = self.component.callback_binding();
@@ -1721,35 +1717,6 @@ mod component_adapter {
                 return false;
             };
             root.layout_needs_measure()
-        }
-        fn draw_with_presence(
-            &mut self,
-            scene: &mut Scene,
-            transform: Affine,
-            text_renderer: &mut TextRenderer,
-            theme: &Theme,
-            presence: &PresenceCtx,
-            _permissions: &crate::permissions::PermissionContext,
-        ) {
-            if self.component.behaviour.capture_protected {
-                crate::secret_paint::note_secret_painted();
-            }
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return;
-            };
-            let Some(root) = self.component.root.as_deref_mut() else {
-                return;
-            };
-            let permissions = binding.permissions.borrow().clone();
-            root.draw_with_presence(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                presence,
-                &permissions,
-            );
         }
         fn draw_overlay(
             &mut self,
@@ -1827,6 +1794,9 @@ mod component_adapter {
         }
         fn take_replacement(&mut self) -> Option<crate::application::ComponentReplacement> {
             self.component.take_replacement()
+        }
+        fn take_save_status_presentation(&mut self) -> bool {
+            self.component.take_save_status_changed()
         }
         fn take_component_close_reports(
             &mut self,

@@ -3941,7 +3941,7 @@ mod tests {
         let mut doc = AutoCommit::new();
         VideoDoc::write_project(&mut doc, p);
         let encoded = match arg {
-            Some(a) => prompted_encode(spec, a),
+            Some(a) => spec.build_text(a).unwrap(),
             None => spec_encoding(spec, None),
         };
         let action: VideoEditorAction =
@@ -3951,7 +3951,7 @@ mod tests {
     }
 
     fn rejects(spec: &ActionSpec, arg: &str) -> bool {
-        serde_json::from_slice::<VideoEditorAction>(&prompted_encode(spec, arg).payload).is_err()
+        serde_json::from_slice::<VideoEditorAction>(&spec.build_text(arg).unwrap().payload).is_err()
     }
 
     /// A project with one clip under the playhead.
@@ -4315,7 +4315,7 @@ mod tests {
                 // "add a marker" are two different markers, and should be.
                 let sp = spec(&ctx, id);
                 let encoded = match arg {
-                    Some(a) => prompted_encode(&sp, a),
+                    Some(a) => sp.build_text(a).unwrap(),
                     None => spec_encoding(&sp, None),
                 };
                 let apply_once = || {
@@ -4334,7 +4334,7 @@ mod tests {
     use super::*;
     use crate::app::VideoEditorApp;
     use automerge::AutoCommit;
-    use tilo_actions::{ActionInput, ActionRegistry, LocalTransport};
+    use tilo_actions::{ActionRegistry, LocalTransport};
     use tilo_actions::{ExecutionMode, ResultSpec};
     use ui::testing::action_contract::{find_spec, spec_encoding};
     use ui::widget::Widget;
@@ -4355,15 +4355,6 @@ mod tests {
         >::present(&mut app, &std::rc::Rc::new(VideoDoc::load_project(&doc)));
         app.sync(&doc, &automerge::ROOT);
         (app, doc)
-    }
-
-    fn prompted_encode(spec: &ActionSpec, arg: &str) -> EncodedAction {
-        match &spec.input {
-            ActionInput::Prompted { build, .. } => build(arg),
-            ActionInput::Immediate(_) | ActionInput::Deferred { .. } => {
-                panic!("expected a prompted action: {}", spec.id)
-            }
-        }
     }
 
     #[test]
@@ -4546,7 +4537,7 @@ mod tests {
                 .iter()
                 .find(|a| a.id == "add-effect")
                 .expect("add-effect action");
-            let encoded = prompted_encode(spec, "sepia");
+            let encoded = spec.build_text("sepia").unwrap();
             let decoded = registry().decode(&encoded).unwrap();
             let mut tx = LocalTransport::new();
             tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
@@ -4691,7 +4682,7 @@ mod tests {
             let (app, doc) = seeded();
             let resources = published(&app, &doc);
             let (clip_res, spec) = find_spec(&resources, "video.clip", "set-brightness");
-            let from_spec = prompted_encode(spec, "0.9");
+            let from_spec = spec.build_text("0.9").unwrap();
 
             let before = VideoDoc::load_project(&doc)
                 .clip(clip_id(clip_res))
@@ -5569,7 +5560,7 @@ mod tests {
         {
             let (ctx, cid) = ctx_fixture();
             let sp = spec(&ctx, "set-speed");
-            let from_spec = prompted_encode(&sp, "2");
+            let from_spec = sp.build_text("2").unwrap();
             let mut expected = ctx.project.clip(cid).expect("the clip").clone();
             expected.set_speed(2.0, false);
             let mut after = ctx.project.clone();
@@ -5773,7 +5764,10 @@ mod tests {
             // A captured amount action applies after an unrelated opacity edit,
             // and only writes `effects` — it must not restore old opacity.
             let amount: VideoEditorAction = serde_json::from_slice(
-                &prompted_encode(&spec_on(&ctx, &second_resource, "set-amount"), "0.25").payload,
+                &spec_on(&ctx, &second_resource, "set-amount")
+                    .build_text("0.25")
+                    .unwrap()
+                    .payload,
             )
             .expect("effect action decodes");
             let mut doc = AutoCommit::new();
@@ -5849,7 +5843,10 @@ mod tests {
         {
             let (ctx, clip_id) = ctx_fixture();
             let action: VideoEditorAction = serde_json::from_slice(
-                &prompted_encode(&spec(&ctx, "set-brightness"), "0.9").payload,
+                &spec(&ctx, "set-brightness")
+                    .build_text("0.9")
+                    .unwrap()
+                    .payload,
             )
             .expect("field action decodes");
             assert!(

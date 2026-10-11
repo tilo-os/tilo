@@ -312,13 +312,131 @@ impl<'a> Untangler<'a> {
     }
 }
 
+// TILO(seq-apply-skip): a list or text walk visits only the elements a batch
+// can affect and seeks over the rest (vendor/automerge/TILO-PATCH.md).
+//
+// An element (an insert op and the ops after it that update it) is inert if
+// none of its ops is in the pred cache, no change op inserts after it or
+// updates it, and the walk reaches it with no change insert waiting for its
+// place (`stack`), no change update waiting for its place in an element
+// (`updates_stack`) and, in a text, the same marks before and after the
+// batch. Walking an inert element adds its visible width to `index`, feeds
+// its mark ops (if any) to the mark state, and flushes neither a patch nor a
+// conflict: its values are neither deleted nor exposed, `Top` ends where it
+// started, and a text logs a mark patch for it only if the marks before and
+// after the batch differ. Nothing it does makes any of those conditions
+// false. So a run of inert elements is seeked over: `index` gains the width
+// the op set's `top`/`text` index columns hold for the run, and its mark ops
+// are replayed, leaving the walk with the same state, the same patches and
+// the same insert position for every change op as stepping over it op by op.
+struct SeqSkip<'a> {
+    op_set: &'a OpSet,
+    /// End of the object's ops.
+    end: usize,
+    /// Sorted starts of the elements the walk must visit.
+    stops: Vec<usize>,
+}
+
+impl<'a> SeqSkip<'a> {
+    fn new(
+        op_set: &'a OpSet,
+        obj: Range<usize>,
+        ut: &Untangler<'_>,
+        preds: &[usize],
+    ) -> Option<Self> {
+        if ut
+            .change_ops
+            .len()
+            .saturating_mul(MapSkip::MIN_OPS_PER_CHANGE_OP)
+            > obj.len()
+        {
+            return None;
+        }
+        let first = preds.partition_point(|&p| p < obj.start);
+        let last = preds.partition_point(|&p| p < obj.end);
+        let mut stops = Vec::with_capacity(last - first + ut.entry.len() + ut.updates.len());
+        for &pos in &preds[first..last] {
+            stops.push(op_set.element_start(pos, obj.clone())?);
+        }
+        // Change ops insert after, or update, elements by their insert op's
+        // id. One that names anything else walks op by op, as it always did.
+        let elements = ut.entry.keys().copied();
+        for id in elements.chain(ut.updates.keys().map(|e| e.0)) {
+            let pos = op_set.op_id_pos(id)?;
+            if op_set.element_start(pos, obj.clone())? != pos {
+                return None;
+            }
+            stops.push(pos);
+        }
+        stops.sort_unstable();
+        stops.dedup();
+        Some(Self {
+            op_set,
+            end: obj.end,
+            stops,
+        })
+    }
+
+    /// The first element the walk must visit at or after `from`, else the
+    /// object's end.
+    fn next_stop(&self, from: usize) -> usize {
+        let next = self.stops.partition_point(|&s| s < from);
+        self.stops.get(next).copied().unwrap_or(self.end)
+    }
+}
+
+impl<'a> Untangler<'a> {
+    // TILO(seq-apply-skip): the walk is at `from`, the start of an element it
+    // has not taken yet; seek over the inert elements from there, if any.
+    fn skip_inert(
+        &mut self,
+        skip: &SeqSkip<'a>,
+        from: usize,
+        log: &mut PatchLog,
+    ) -> Option<OpIter<'a>> {
+        if !self.stack.is_empty() || !self.updates_stack.is_empty() {
+            return None;
+        }
+        // Marks are read by text patches only.
+        let text = self.seq_type == SequenceType::Text;
+        if text && self.value.marks.before != self.value.marks.after {
+            return None;
+        }
+        let to = skip.next_stop(from);
+        if to <= from {
+            return None;
+        }
+        // What `untangle_inserts` does first at `from`.
+        self.flush(log);
+        if text {
+            let mut at = from;
+            while let Some(pos) = skip.op_set.next_mark(at..to) {
+                if let Some(op) = skip.op_set.iter_range(&(pos..pos + 1)).next() {
+                    self.value.process_doc_op(&op, false);
+                }
+                at = pos + 1;
+            }
+        }
+        self.index += skip.op_set.visible_width(from..to, self.seq_type);
+        Some(skip.op_set.iter_range(&(to..skip.end)))
+    }
+}
+
 fn walk_list<'a>(
     mut ut: Untangler<'a>,
-    doc_ops: OpIter<'a>,
+    mut doc_ops: OpIter<'a>,
     succ: &mut Vec<SuccInsert>,
     log: &mut PatchLog,
+    skip: Option<SeqSkip<'a>>,
 ) {
-    for op in doc_ops {
+    while let Some(op) = doc_ops.next() {
+        // TILO(seq-apply-skip)
+        if let (true, Some(skip)) = (op.insert, &skip) {
+            if let Some(rest) = ut.skip_inert(skip, op.pos, log) {
+                doc_ops = rest;
+                continue;
+            }
+        }
         ut.element_update(&op);
 
         if op.insert {
@@ -1076,6 +1194,13 @@ impl BatchApply {
             .saturating_mul(MapSkip::MIN_OPS_PER_CHANGE_OP)
             <= doc.ops().len();
         let mut pred_pos: Option<Vec<usize>> = None;
+        let pred_positions = |pred: &PredCache| {
+            let mut pos = (pred.keys())
+                .filter_map(|id| doc.ops().op_id_pos(*id))
+                .collect::<Vec<_>>();
+            pos.sort_unstable();
+            pos
+        };
 
         for os in &self.obj_spans {
             let obj_range = walker.seek_to_obj(os.obj);
@@ -1086,13 +1211,7 @@ impl BatchApply {
             match obj_type {
                 Some(ObjType::Map) => {
                     let skip = if may_skip {
-                        let preds = pred_pos.get_or_insert_with(|| {
-                            let mut pos = (self.pred.keys())
-                                .filter_map(|id| doc.ops().op_id_pos(*id))
-                                .collect::<Vec<_>>();
-                            pos.sort_unstable();
-                            pos
-                        });
+                        let preds = pred_pos.get_or_insert_with(|| pred_positions(&self.pred));
                         MapSkip::new(
                             doc.ops(),
                             obj_range.clone(),
@@ -1121,6 +1240,10 @@ impl BatchApply {
                         ObjType::List => SequenceType::List,
                         _ => unreachable!(),
                     };
+                    // TILO(seq-apply-skip)
+                    if may_skip {
+                        pred_pos.get_or_insert_with(|| pred_positions(&self.pred));
+                    }
                     let ut = Untangler::new(
                         os.obj,
                         sequence_type,
@@ -1130,7 +1253,10 @@ impl BatchApply {
                         &mut self.pred,
                         doc_ops.end_pos(),
                     );
-                    walk_list(ut, doc_ops, &mut succ, log);
+                    // TILO(seq-apply-skip)
+                    let skip = (pred_pos.as_deref())
+                        .and_then(|preds| SeqSkip::new(doc.ops(), obj_range.clone(), &ut, preds));
+                    walk_list(ut, doc_ops, &mut succ, log, skip);
                 }
                 _ => panic!("Obj {:?} Missing from Index", os.obj),
             }

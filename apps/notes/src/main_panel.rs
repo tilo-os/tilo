@@ -307,6 +307,10 @@ pub struct MainPanel {
     /// title change, on rect resize, on editor mutations.
     dirty: bool,
     paint_damage: ui::widget::paint_damage::PaintDamage,
+    /// What this draw's title painted past its band (a correction chip),
+    /// and what the last drawn frame's did.
+    title_overhang: Option<Rect>,
+    drawn_title_overhang: Option<Rect>,
     /// Vertical scroll offset for the panel body (in CSS-like px).
     /// Bumped by mouse-wheel events; clamped each frame to the
     /// content overflow extent in `apply_layout`. We hand-roll this
@@ -374,6 +378,8 @@ impl MainPanel {
             title_node: None,
             dirty: true,
             paint_damage: ui::widget::paint_damage::PaintDamage::default(),
+            title_overhang: None,
+            drawn_title_overhang: None,
             scroll_y: 0.0,
             scroll_content_height: 0.0,
             bottom_inset: 0.0,
@@ -643,14 +649,19 @@ impl MainPanel {
     /// The lines under the tags, in document order: where the note sits in
     /// the tree and when it was written.
     fn refresh_captions(&mut self) {
+        let lines = self.caption_lines();
+        if self.header.set_captions(lines) {
+            self.header_changed();
+        }
+    }
+
+    fn caption_lines(&self) -> Vec<String> {
         let mut lines = Vec::new();
         if !self.parent_path.is_empty() {
             lines.push(self.parent_path_label());
         }
         lines.extend(self.dates.labels());
-        if self.header.set_captions(lines) {
-            self.header_changed();
-        }
+        lines
     }
 
     pub fn set_transclusion_previews(
@@ -1147,9 +1158,15 @@ impl Widget for MainPanel {
             .unwrap_or_default();
         if self.dates != dates {
             self.dates = dates;
-            self.refresh_captions();
+            // The edit time turning over a minute changes a line's words, not
+            // the header's widgets: rebuilding them would repaint the window.
+            let lines = self.caption_lines();
+            if !self.header.retext_captions(&lines) {
+                self.refresh_captions();
+            }
             self.dirty = true;
         }
+        self.header.sync_built(state, path);
         self.editor.sync(state, path);
     }
 
@@ -1439,9 +1456,11 @@ impl Widget for MainPanel {
         if let Some(page_id) = self.page_id {
             // Prominent, editable page title, drawn OUTSIDE the scroll clip so
             // it stays pinned while the body scrolls under it.
+            // Its own part: naming the note repaints the title, not the page.
             self.title_label.apply_layout_external(self.title_rect);
+            let mut title_scene = Scene::new();
             self.title_label
-                .draw(scene, transform, text_renderer, theme, presence);
+                .draw(&mut title_scene, transform, text_renderer, theme, presence);
             // Once the document has moved under the pinned title, one hairline
             // says where the title stops and the document is cut off.
             if self.scroll_y > f64::EPSILON {
@@ -1492,9 +1511,12 @@ impl Widget for MainPanel {
             scene.pop_layer();
             outside.pop_layer();
             let mut complete = std::mem::take(scene);
+            // Its own part: a paragraph that came or went moves the thumb of
+            // a long note, which repaints the track, not the page.
+            let mut scrollbar_scene = Scene::new();
             if self.scroll_thumb().is_some() {
                 self.scrollbar.draw(
-                    scene,
+                    &mut scrollbar_scene,
                     transform,
                     self.scroll_track,
                     self.scroll_metrics(),
@@ -1502,6 +1524,7 @@ impl Widget for MainPanel {
                     self.scroll_focused,
                 );
             }
+            complete.append(&scrollbar_scene, None);
             // Overlay popovers (slash menu / link popover) — drawn AFTER the
             // main editor scene so they land on top of every block, and
             // OUTSIDE the scroll clip so they stay visible at their anchor.
@@ -1511,17 +1534,51 @@ impl Widget for MainPanel {
             let suffix = std::mem::take(scene);
             complete.append(&suffix, None);
             outside.append(&suffix, None);
-            *scene = complete;
+            scene.append(&title_scene, None);
+            scene.append(&complete, None);
             let mut editor_damage = Vec::new();
             self.editor.collect_damage(&mut editor_damage);
+            // The editor's top edge and width, not its height: a paragraph
+            // that came or went grows or shrinks it, and its damage says
+            // where its blocks were and are.
+            let editor_rect = self.editor.get_rect();
             parts.push(ui::widget::paint_damage::PaintPart::new(
                 page_id.to_string(),
-                self.editor.get_rect(),
+                Rect::new(
+                    editor_rect.x0,
+                    editor_rect.y0,
+                    editor_rect.x1,
+                    editor_rect.y0 + 1.0,
+                ),
                 editor_scene,
                 editor_damage,
             ));
+            // The thumb and its focus ring stay within a spacing step of the
+            // track.
+            let track_reach = f64::from(theme.tokens.spacing.s2);
+            parts.push(ui::widget::paint_damage::PaintPart::new(
+                "note-scrollbar".into(),
+                self.scroll_track,
+                scrollbar_scene,
+                vec![self.scroll_track.inflate(track_reach, track_reach)],
+            ));
+            // The field's caret, selection and focus ring stay within a
+            // spacing step of its band.
+            let title_reach = f64::from(theme.tokens.spacing.s2);
+            // A correction chip the field floats past its band, where it is
+            // and where it was.
+            self.title_overhang = self.title_label.overhang();
+            let mut title_damage = vec![self.title_rect.inflate(title_reach, title_reach)];
+            title_damage.extend(self.title_overhang);
+            title_damage.extend(self.drawn_title_overhang);
+            parts.push(ui::widget::paint_damage::PaintPart::new(
+                "note-title".into(),
+                self.title_rect,
+                title_scene,
+                title_damage,
+            ));
             self.paint_damage.record(
-                self.rect,
+                self.paint_extent(),
                 Some(ui::widget::paint_damage::PaintFrame::new(
                     vec![self.rect, self.title_rect, body_clip, self.scroll_track],
                     transform,
@@ -1531,6 +1588,7 @@ impl Widget for MainPanel {
                 )),
             );
         } else {
+            self.title_overhang = None;
             self.paint_damage.record(self.rect, None);
             // No note open: a composed zero-state rather than a bare line —
             // this is what a fresh, unseeded workspace shows, so it should
@@ -1887,6 +1945,7 @@ impl Widget for MainPanel {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
+        _key_path: &[u64],
         _state: &mut ui::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
@@ -1935,10 +1994,10 @@ impl Widget for MainPanel {
             return true;
         }
         if target == "notes.first_note" && self.page_id.is_none() {
-            return self.perform_action(action, state, path);
+            return self.perform_action(action, &[], state, path);
         }
         if target == "notes.page-title" {
-            return Widget::perform_action(&mut self.title_label, action, state, path);
+            return Widget::perform_action(&mut self.title_label, action, &[], state, path);
         }
         false
     }
@@ -1949,7 +2008,7 @@ impl Widget for MainPanel {
 
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
         if self.needs_redraw() || self.paint_damage.is_recorded() {
-            self.paint_damage.collect(self.rect, regions);
+            self.paint_damage.collect(self.paint_extent(), regions);
         }
     }
 
@@ -1961,16 +2020,31 @@ impl Widget for MainPanel {
     }
 
     fn mark_drawn(&mut self) {
+        if self.paint_damage.is_recorded() {
+            self.drawn_title_overhang = self.title_overhang;
+        }
         self.paint_damage.mark_drawn();
         self.dirty = false;
         self.editor.mark_drawn();
     }
 
     fn take_structure_dirty(&mut self) -> bool {
-        // Forward the editor's structure-dirty flag (split/merge
-        // shifted the block count) so the host App rebuilds the
-        // taffy tree.
-        std::mem::take(&mut self.tag_layout_dirty) || self.editor.take_structure_dirty()
+        self.take_structure_change().rebuilds()
+    }
+
+    /// The header rebuilt its widgets: the host rebuilds its tree, but the
+    /// panel's damage describes it (the header is a part of its own, and a
+    /// header that grew or shrank moves the parts below it, which repaints
+    /// the panel). The editor's flag (a split or merge changed the block
+    /// count) rebuilds.
+    fn take_structure_change(&mut self) -> ui::widget::StructureChange {
+        use ui::widget::StructureChange;
+        let header = if std::mem::take(&mut self.tag_layout_dirty) {
+            StructureChange::Described
+        } else {
+            StructureChange::None
+        };
+        header.join(self.editor.take_structure_change())
     }
 
     fn is_layout_dirty(&self) -> bool {
@@ -1983,6 +2057,13 @@ impl Widget for MainPanel {
 }
 
 impl MainPanel {
+    /// Everything the last draw painted: the panel, and a correction chip
+    /// the title's field floats above it.
+    fn paint_extent(&self) -> Rect {
+        self.title_overhang
+            .map_or(self.rect, |overhang| self.rect.union(overhang))
+    }
+
     pub(crate) fn view_only_scroll(&self, event: &WindowEvent) -> bool {
         let delta = match event {
             WindowEvent::MouseWheel { delta, .. } => match delta {
@@ -2090,6 +2171,7 @@ mod tests {
             let mut doc = AutoCommit::new();
             assert!(p.perform_action(
                 &ui::a11y::Action::Activate,
+                &[],
                 &mut Edits::lend(&mut doc),
                 &ObjId::Root
             ));

@@ -23,8 +23,7 @@ use std::rc::Rc;
 use std::sync::{Arc, RwLock};
 use taffy::style_helpers::percent;
 use taffy::{NodeId, Style, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Rect};
+use vello::kurbo::Rect;
 
 /// Directory of live `*.json` screen graphs. When set, graph apps load and
 /// hot-reload screens from disk instead of the embed baked by `include_str!`.
@@ -1632,25 +1631,6 @@ impl Widget for LiveUi {
         self.invoke_graph_operation(request.type_id, request.payload)
             .map(|output| Some(crate::widget::ResourceOperationStart::Completed(output)))
     }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut crate::text_render::TextRenderer,
-        theme: &Theme,
-        presence: &crate::presence::PresenceCtx,
-        permissions: &crate::permissions::PermissionContext,
-    ) {
-        self.child.draw_with_presence(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
-            permissions,
-        );
-    }
 }
 
 impl crate::resources::PublishesResources for LiveUi {
@@ -3178,25 +3158,6 @@ impl Widget for UiGraphEditor {
             || self.handle.revision() != Some(self.seen_graph_revision)
             || self.child.needs_idle_sync()
     }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut crate::text_render::TextRenderer,
-        theme: &Theme,
-        presence: &crate::presence::PresenceCtx,
-        permissions: &crate::permissions::PermissionContext,
-    ) {
-        self.child.draw_with_presence(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
-            permissions,
-        );
-    }
 }
 
 impl crate::undo::LocalUndo for UiGraphEditor {
@@ -3369,7 +3330,13 @@ mod tests {
         doc: &mut AutoCommit,
     ) -> bool {
         crate::widget::find_test_id_mut(widget, id).is_some_and(|widget| {
-            Widget::perform_action(widget, action, &mut crate::widget::Edits::lend(doc), &ROOT)
+            Widget::perform_action(
+                widget,
+                action,
+                &[],
+                &mut crate::widget::Edits::lend(doc),
+                &ROOT,
+            )
         })
     }
 

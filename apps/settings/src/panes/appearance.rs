@@ -519,7 +519,6 @@ pub struct AppearancePane {
     /// Where the last wallpaper request stands, written by its effect.
     wallpaper_status: LocalState<Option<String>>,
     status_shown: Option<String>,
-    structure_dirty: bool,
     composed: ui::widget::Composed,
 }
 
@@ -536,7 +535,6 @@ impl AppearancePane {
             shown,
             wallpaper_status,
             status_shown,
-            structure_dirty: false,
             composed: ui::widget::Composed::default(),
         }
     }
@@ -821,12 +819,12 @@ impl Widget for AppearancePane {
         if self.prefs.refresh() {
             self.shown.show(self.prefs.get());
             // The schedule's rows and the applied theme follow the values.
-            self.structure_dirty = true;
+            self.composed.invalidate();
         }
         let status = self.wallpaper_status.get();
         if status != self.status_shown {
             self.status_shown = status;
-            self.structure_dirty = true;
+            self.composed.invalidate();
         }
         self.composed.sync(state, root);
     }
@@ -855,12 +853,6 @@ impl Widget for AppearancePane {
 
     fn name(&self) -> &'static str {
         "AppearancePane"
-    }
-
-    fn take_structure_dirty(&mut self) -> bool {
-        let own = std::mem::take(&mut self.structure_dirty);
-        let child = self.composed.take_structure_dirty();
-        own || child
     }
 
     /// Surface the user's current appearance choice so the running Settings

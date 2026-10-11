@@ -69,7 +69,7 @@ impl App {
         self.accessibility.text_scale = factor;
         self.rebuild_theme();
         self.layout.layout_dirty = true;
-        self.layout.structure_dirty = true;
+        self.layout.request_rebuild();
     }
 
     pub fn ui_scale(&self) -> f32 {
@@ -81,7 +81,7 @@ impl App {
         self.accessibility.ui_scale = factor;
         self.rebuild_theme();
         self.layout.layout_dirty = true;
-        self.layout.structure_dirty = true;
+        self.layout.request_rebuild();
     }
 
     /// Override the host-detected input environment. Useful for platform
@@ -134,7 +134,7 @@ impl App {
         self.accessibility.a11y.high_contrast = on;
         self.rebuild_theme();
         self.layout.layout_dirty = true;
-        self.layout.structure_dirty = true;
+        self.layout.request_rebuild();
     }
 
     pub fn toggle_high_contrast(&mut self) -> bool {
@@ -163,7 +163,7 @@ impl App {
         self.accessibility.base_theme = theme;
         self.rebuild_theme();
         self.layout.layout_dirty = true;
-        self.layout.structure_dirty = true;
+        self.layout.request_rebuild();
     }
 
     /// Disabling stops in-flight speech and returns every narration call
@@ -1133,14 +1133,14 @@ impl App {
                         root,
                     )
                 } else if synthetic {
-                    widget.perform_action_at(
+                    widget.perform_action(
                         action,
                         &key_path,
                         &mut crate::widget::Edits::lend(doc),
                         root,
                     )
                 } else {
-                    widget.perform_action(action, &mut crate::widget::Edits::lend(doc), root)
+                    widget.perform_action(action, &[], &mut crate::widget::Edits::lend(doc), root)
                 }
             })
             .ok()?;
@@ -1476,7 +1476,7 @@ impl App {
                     let handled = self
                         .dispatch_node(taffy_id, |widget, doc, root| {
                             if let Some(key_path) = keyed_path {
-                                widget.perform_action_at(
+                                widget.perform_action(
                                     &verb,
                                     &key_path,
                                     &mut crate::widget::Edits::lend(doc),

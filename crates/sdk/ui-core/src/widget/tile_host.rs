@@ -31,19 +31,37 @@ const EDGE_STROKE_WIDTH: f64 = 1.0;
 /// the focused surface reads as lit rather than fenced.
 const FOCUS_EDGE_STROKE_WIDTH: f64 = 1.6;
 
-/// Four bands along `rect`'s outline that hold every pixel of an edge drawn
-/// around it at corner `radius`: the edge reaches its widest stroke outside
-/// the outline, and its rounded corners curve up to `radius` inside it.
-/// One more pixel each way covers antialiasing.
-fn edge_bands(rect: Rect, radius: f64) -> [Rect; 4] {
+/// Rects along `rect`'s outline that hold every pixel of an edge drawn
+/// around it at corner `radius`: a square at each corner, where the edge
+/// curves up to `radius` inside the outline, and between them a thin band
+/// along each side, where it is a straight stroke at most its widest width
+/// from the outline (outside it, or inside it when drawn flush). One more
+/// pixel each way covers antialiasing. A focus change repaints these, so
+/// the sides stay as thin as the stroke rather than as deep as the corners.
+fn edge_bands(rect: Rect, radius: f64) -> Vec<Rect> {
     let outside = FOCUS_EDGE_STROKE_WIDTH.max(EDGE_STROKE_WIDTH) + 1.0;
-    let inside = radius.max(0.0) + outside;
+    let corner = radius.max(0.0) + outside;
     let outer = rect.inflate(outside, outside);
-    [
-        Rect::new(outer.x0, outer.y0, outer.x1, rect.y0 + inside),
-        Rect::new(outer.x0, rect.y1 - inside, outer.x1, outer.y1),
-        Rect::new(outer.x0, outer.y0, rect.x0 + inside, outer.y1),
-        Rect::new(rect.x1 - inside, outer.y0, outer.x1, outer.y1),
+    let (left, right) = (rect.x0 + corner, rect.x1 - corner);
+    let (top, bottom) = (rect.y0 + corner, rect.y1 - corner);
+    if left >= right || top >= bottom {
+        // Corners meeting: no straight side to keep thin.
+        return vec![
+            Rect::new(outer.x0, outer.y0, outer.x1, top.min(outer.y1)),
+            Rect::new(outer.x0, bottom.max(outer.y0), outer.x1, outer.y1),
+            Rect::new(outer.x0, outer.y0, left.min(outer.x1), outer.y1),
+            Rect::new(right.max(outer.x0), outer.y0, outer.x1, outer.y1),
+        ];
+    }
+    vec![
+        Rect::new(outer.x0, outer.y0, left, top),
+        Rect::new(right, outer.y0, outer.x1, top),
+        Rect::new(outer.x0, bottom, left, outer.y1),
+        Rect::new(right, bottom, outer.x1, outer.y1),
+        Rect::new(left, outer.y0, right, rect.y0 + outside),
+        Rect::new(left, rect.y1 - outside, right, outer.y1),
+        Rect::new(outer.x0, top, rect.x0 + outside, bottom),
+        Rect::new(rect.x1 - outside, top, outer.x1, bottom),
     ]
 }
 
@@ -2245,9 +2263,11 @@ impl Widget for TileHost {
             let anim_transform = scaled_about(transform, centre, scale);
             self.draw_steady_state(scene, anim_transform, tr, theme, presence);
             scene.pop_layer();
+            crate::widget::draw_gate_and_peer_focus(self, scene, transform, theme, presence);
             return;
         }
         self.draw_steady_state(scene, transform, tr, theme, presence);
+        crate::widget::draw_gate_and_peer_focus(self, scene, transform, theme, presence);
     }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         let _running = self.running();
@@ -2792,7 +2812,8 @@ impl TileHost {
         });
         scene.pop_layer();
         // The edge, and the focus ring it becomes, is a band along the
-        // tile's outline: four damage bands, not the tile they surround.
+        // tile's outline: corner squares and thin side bands, not the
+        // tile they surround.
         let edge = crate::scene_parts::PartKey::new("ui.tile-edge", ());
         let bounds = edge_bands(self.rect, radius)
             .into_iter()
@@ -5114,6 +5135,64 @@ mod tests {
                 (true, 0),
                 "returning to toolbar restores its input ownership"
             );
+        }
+    }
+
+    /// Every pixel an edge paints, focused or not, flush or not, at 100 %,
+    /// 150 % and 200 %, lies in the damage bands the edge part reports: a
+    /// focus change repaints them and nothing the edge drew outside them.
+    #[test]
+    fn edge_bands_hold_every_pixel_the_edge_paints() {
+        use crate::offscreen::OffscreenRenderer;
+        let theme = Theme::default();
+        let ground = vello::peniko::Color::from_rgb8(0, 255, 0);
+        let size = 320_u32;
+        let mut renderer = OffscreenRenderer::new(size, size);
+        let radius = f64::from(theme.tokens.radii.tile);
+        for scale in [1.0, 1.5, 2.0] {
+            for rect in [
+                Rect::new(20.5, 18.0, 190.0, 200.25),
+                Rect::new(30.0, 30.0, 30.0 + radius, 120.0),
+            ] {
+                for (focused, flush) in [(false, false), (true, false), (true, true)] {
+                    let mut host = TileHost::new(TileContent::Stub {
+                        kind: AppKind::Editor,
+                        label: String::new(),
+                    });
+                    host.rect = rect;
+                    host.set_flush_edges(flush);
+                    host.set_focused(focused);
+                    let transform = Affine::scale(scale);
+                    let mut scene = Scene::new();
+                    host.draw_edge(&mut scene, transform, &theme, radius);
+                    let bands: Vec<Rect> = edge_bands(rect, radius)
+                        .into_iter()
+                        .map(|band| transform.transform_rect_bbox(band))
+                        .collect();
+                    let rgba = renderer.render(&scene, ground);
+                    let mut painted = 0;
+                    for y in 0..size {
+                        for x in 0..size {
+                            if OffscreenRenderer::sample(&rgba, size, x, y) == (0, 255, 0, 255) {
+                                continue;
+                            }
+                            painted += 1;
+                            let pixel = Rect::new(
+                                f64::from(x),
+                                f64::from(y),
+                                f64::from(x) + 1.0,
+                                f64::from(y) + 1.0,
+                            );
+                            assert!(
+                                bands.iter().any(|band| band.overlaps(pixel)),
+                                "edge pixel ({x},{y}) outside its bands: scale={scale}, \
+                                 rect={rect:?}, focused={focused}, flush={flush}, bands={bands:?}"
+                            );
+                        }
+                    }
+                    assert!(painted > 0, "the edge paints: {rect:?} at {scale}");
+                }
+            }
         }
     }
 

@@ -621,7 +621,7 @@ impl Widget for Card {
             if *ctx.handled {
                 // A child's own control took the press; the card stays put.
                 if self.activation.state.pressed {
-                    self.activation.state.pressed = false;
+                    self.activation.cancel_press();
                     self.dirty = true;
                 }
                 return;
@@ -711,6 +711,7 @@ impl Widget for Card {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        _key_path: &[u64],
         _state: &mut crate::widget::Edits<'_>,
         _root: &crate::widget::ModelPath,
     ) -> bool {
@@ -955,7 +956,12 @@ impl Widget for CardGrid {
         node
     }
 
-    fn adjust_layout_style(&mut self, taffy: &mut TaffyTree<()>, node: NodeId) -> bool {
+    fn adjust_layout_style(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        node: NodeId,
+        _text: &mut crate::text_render::TextRenderer,
+    ) -> bool {
         let Ok(layout) = taffy.layout(node) else {
             return false;
         };

@@ -782,19 +782,6 @@ impl Widget for LogsApp {
         self.shell.draw(scene, transform, tr, theme, presence);
     }
 
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        permissions: &ui::permissions::PermissionContext,
-    ) {
-        self.shell
-            .draw_with_presence(scene, transform, tr, theme, presence, permissions);
-    }
-
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         // Ctrl+L follows or pauses the journal, like a terminal's `-f`.
         if let WindowEvent::KeyboardInput { event: key, .. } = event

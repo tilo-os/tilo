@@ -1274,6 +1274,7 @@ impl FrameHarness {
             .dispatch_node(focused, |widget, doc, root| {
                 widget.perform_action(
                     &crate::a11y::Action::Activate,
+                    &[],
                     &mut crate::widget::Edits::lend(doc),
                     root,
                 )
@@ -2738,6 +2739,10 @@ impl FrameHarness {
         use crate::widget::layout::{
             CompositionFocus, composition_geometry, settle_widget_composition,
         };
+        // A pointer at rest sees no event when a relayout moves a control
+        // under it; compare the geometry to replay it, as the live host does.
+        let resting_geometry = (self.pointer_replay.is_resting() && self.layout_built)
+            .then(|| crate::pointer_replay::widget_geometry(self.root.as_ref()));
         self.swap_requested_component();
         let viewport_changed = self.last_layout_viewport != Some(self.viewport);
         self.presence_redraw = false;
@@ -3073,8 +3078,14 @@ impl FrameHarness {
         })?;
         self.last_layout_viewport = Some(self.viewport);
         self.last_relayout = stats;
-        if stats.rebuilt || viewport_changed {
-            // Fresh or resized controls have not seen where the pointer is.
+        if stats.rebuilt
+            || viewport_changed
+            || resting_geometry.is_some_and(|before| {
+                before != crate::pointer_replay::widget_geometry(self.root.as_ref())
+            })
+        {
+            // Fresh, resized or moved controls have not seen where the
+            // pointer is.
             self.pointer_replay.mark_unsettled();
         }
         self.relayout_frames = self.relayout_frames.saturating_add(1);
@@ -3228,14 +3239,16 @@ impl FrameHarness {
             && self.history_layout.is_none_or(|layout| layout.app_visible)
         {
             crate::widget::native_view_frame_start(self.root.as_mut());
-            self.root.draw_with_presence(
-                &mut self.scene,
-                transform,
-                &mut self.text,
-                &self.theme,
-                &self.presence,
-                &self.permissions,
-            );
+            self.presence
+                .with_permissions(self.permissions.clone(), || {
+                    self.root.draw(
+                        &mut self.scene,
+                        transform,
+                        &mut self.text,
+                        &self.theme,
+                        &self.presence,
+                    )
+                });
         }
         if self.history_chrome_enabled {
             let context = crate::standalone_history::HistoryReadContext {
@@ -4403,7 +4416,7 @@ impl FrameHarness {
         let (taffy_id, key_path, ordinal_path, semantic_target) = match resolved {
             A11yTarget::Root => return Err("the window root cannot be operated".into()),
             A11yTarget::Widget(id) => (id, Vec::new(), Vec::new(), None),
-            // Keys here: the driver dispatches through `perform_action_at`,
+            // Keys here: the driver dispatches through `perform_action`,
             // which identifies a synthetic child by identity.
             A11yTarget::Synthetic {
                 owner,
@@ -4451,7 +4464,7 @@ impl FrameHarness {
                         root,
                     )
                 } else {
-                    widget.perform_action_at(
+                    widget.perform_action(
                         action,
                         &key_path,
                         &mut crate::widget::Edits::lend(doc),
@@ -4486,7 +4499,7 @@ impl FrameHarness {
                 }
                 // Fall back the way the App does: a click at the widget's
                 // centre. Widget-granular by nature — it cannot reach inside a
-                // canvas, which is why `perform_action_at` exists.
+                // canvas, which is why `perform_action` exists.
                 crate::a11y::Action::Activate | crate::a11y::Action::ToggleCheck => {
                     let rect = (!ordinal_path.is_empty())
                         .then(|| {
@@ -4507,7 +4520,7 @@ impl FrameHarness {
                 _ => return Err(format!("the current control did not handle {action:?}")),
             }
         }
-        // The widget may have mutated the document from `perform_action_at` —
+        // The widget may have mutated the document from `perform_action` —
         // dispatching an action, or asking for a commit — and this route does
         // not go through `send`. Close the tick here too, or an app driven the
         // way an assistive technology drives it leaves no history behind.
@@ -4712,7 +4725,12 @@ impl FrameHarness {
                             root,
                         )
                     } else {
-                        widget.perform_action(action, &mut crate::widget::Edits::lend(doc), root)
+                        widget.perform_action(
+                            action,
+                            &[],
+                            &mut crate::widget::Edits::lend(doc),
+                            root,
+                        )
                     }
                 })
                 .map_err(|error| format!("History input refused: {error:?}"))?;
@@ -4748,7 +4766,7 @@ impl FrameHarness {
                         root,
                     )
                 } else {
-                    widget.perform_action(action, &mut crate::widget::Edits::lend(doc), root)
+                    widget.perform_action(action, &[], &mut crate::widget::Edits::lend(doc), root)
                 }
             })
             .map_err(|error| format!("component dispatch refused: {error:?}"))?;
@@ -10344,6 +10362,7 @@ mod tests {
         fn perform_action(
             &mut self,
             action: &crate::a11y::Action,
+            _key_path: &[u64],
             _state: &mut crate::widget::Edits<'_>,
             _path: &crate::widget::ModelPath,
         ) -> bool {
@@ -11949,11 +11968,11 @@ mod a11y_driver_tests {
                     )
                     // This is the high-complexity custom-canvas path: one
                     // keyed tree becomes searchable/agent-driveable while AT
-                    // still reaches the existing `perform_action_at` switch.
+                    // still reaches the existing `perform_action` switch.
                     .with_keyed_action_routes("test-strip"),
             )
         }
-        fn perform_action_at(
+        fn perform_action(
             &mut self,
             action: &Action,
             key_path: &[u64],
@@ -12477,7 +12496,7 @@ mod dispatched_action_driver_tests {
     /// whole distinction under test.
     ///
     /// Two ways in, because a canvas app has two: a keystroke, and an
-    /// accessibility verb routed to `perform_action_at` (how an assistive
+    /// accessibility verb routed to `perform_action` (how an assistive
     /// technology, and every headless scenario over a canvas, drives it).
     struct ActionEditor {
         rect: vello::kurbo::Rect,
@@ -12584,7 +12603,7 @@ mod dispatched_action_driver_tests {
             *handled = self.claims;
         }
 
-        fn perform_action_at(
+        fn perform_action(
             &mut self,
             action: &crate::a11y::Action,
             _key_path: &[u64],

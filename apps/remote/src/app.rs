@@ -33,7 +33,7 @@ use vello::peniko::{
     Blob, Fill, ImageAlphaType, ImageBrush, ImageData as PenikoImage, ImageFormat,
 };
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
-use winit::keyboard::{Key, KeyCode, ModifiersState, NamedKey, PhysicalKey};
+use winit::keyboard::{Key, ModifiersState, NamedKey, PhysicalKey};
 
 use ui::icons::Icon;
 use ui::presence::PresenceCtx;
@@ -2027,27 +2027,6 @@ impl Widget for RemoteApp {
             .draw(scene, transform, text_renderer, theme, presence);
     }
 
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        permissions: &ui::permissions::PermissionContext,
-    ) {
-        self.pump_session();
-        self.check_views();
-        self.body_mut().draw_with_presence(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
-            permissions,
-        );
-    }
-
     fn draw_overlay(
         &mut self,
         scene: &mut Scene,
@@ -2698,7 +2677,7 @@ impl SessionPane {
         );
         if tilo_connected {
             if let PhysicalKey::Code(code) = event.physical_key
-                && let Some(keycode) = tilo_keycode(code)
+                && let Some(keycode) = ui::evdev::from_key_code(code)
             {
                 core.queue_tilo_input(runtime_collab::WorkspaceControlInput::Key {
                     keycode,
@@ -2857,63 +2836,6 @@ impl Widget for SessionPane {
     fn get_rect(&self) -> Rect {
         self.rect
     }
-}
-
-fn tilo_keycode(code: KeyCode) -> Option<u32> {
-    Some(match code {
-        KeyCode::KeyA => 30,
-        KeyCode::KeyB => 48,
-        KeyCode::KeyC => 46,
-        KeyCode::KeyD => 32,
-        KeyCode::KeyE => 18,
-        KeyCode::KeyF => 33,
-        KeyCode::KeyG => 34,
-        KeyCode::KeyH => 35,
-        KeyCode::KeyI => 23,
-        KeyCode::KeyJ => 36,
-        KeyCode::KeyK => 37,
-        KeyCode::KeyL => 38,
-        KeyCode::KeyM => 50,
-        KeyCode::KeyN => 49,
-        KeyCode::KeyO => 24,
-        KeyCode::KeyP => 25,
-        KeyCode::KeyQ => 16,
-        KeyCode::KeyR => 19,
-        KeyCode::KeyS => 31,
-        KeyCode::KeyT => 20,
-        KeyCode::KeyU => 22,
-        KeyCode::KeyV => 47,
-        KeyCode::KeyW => 17,
-        KeyCode::KeyX => 45,
-        KeyCode::KeyY => 21,
-        KeyCode::KeyZ => 44,
-        KeyCode::Digit1 => 2,
-        KeyCode::Digit2 => 3,
-        KeyCode::Digit3 => 4,
-        KeyCode::Digit4 => 5,
-        KeyCode::Digit5 => 6,
-        KeyCode::Digit6 => 7,
-        KeyCode::Digit7 => 8,
-        KeyCode::Digit8 => 9,
-        KeyCode::Digit9 => 10,
-        KeyCode::Digit0 => 11,
-        KeyCode::Enter => 28,
-        KeyCode::Escape => 1,
-        KeyCode::Backspace => 14,
-        KeyCode::Tab => 15,
-        KeyCode::Space => 57,
-        KeyCode::ArrowUp => 103,
-        KeyCode::ArrowDown => 108,
-        KeyCode::ArrowLeft => 105,
-        KeyCode::ArrowRight => 106,
-        KeyCode::ShiftLeft => 42,
-        KeyCode::ShiftRight => 54,
-        KeyCode::ControlLeft => 29,
-        KeyCode::ControlRight => 97,
-        KeyCode::AltLeft => 56,
-        KeyCode::AltRight => 100,
-        _ => return None,
-    })
 }
 
 /// Translate a key press into the bytes an interactive PTY expects.

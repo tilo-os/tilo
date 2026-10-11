@@ -1478,22 +1478,13 @@ mod tests {
     use super::*;
     use crate::resource::{Contacts, sample_book};
     use automerge::AutoCommit;
-    use tilo_actions::{ActionInput, LocalTransport};
+    use tilo_actions::LocalTransport;
     use tilo_actions::{ExecutionMode, ResultSpec};
     use tilo_automerge::ApplyIncoming;
     use ui::tilo_resource::Resource as _;
 
     fn registry() -> ActionRegistry {
         ActionRegistry::with(register)
-    }
-
-    fn prompted_encode(spec: &ActionSpec, arg: &str) -> EncodedAction {
-        match &spec.input {
-            ActionInput::Prompted { build, .. } => build(arg),
-            ActionInput::Immediate(_) | ActionInput::Deferred { .. } => {
-                panic!("expected a prompted action: {}", spec.id)
-            }
-        }
     }
 
     /// The sample address book created in a fresh document through its
@@ -2058,7 +2049,7 @@ mod tests {
                 .unwrap();
             let before = ContactsDoc::list_contacts(&doc).len();
 
-            let encoded = prompted_encode(spec, "Dana Scott");
+            let encoded = spec.build_text("Dana Scott").unwrap();
             let decoded = registry().decode(&encoded).unwrap();
             let mut tx = LocalTransport::new();
             tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();

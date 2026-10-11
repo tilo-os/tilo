@@ -1093,7 +1093,7 @@ impl Widget for FindBar {
             };
             // The shared text core owns edits, selection and validation;
             // unsupported field operations remain explicitly unhandled.
-            return field.perform_action(action, state, path);
+            return field.perform_action(action, &[], state, path);
         }
         if !matches!(action, crate::a11y::Action::Activate) {
             return false;

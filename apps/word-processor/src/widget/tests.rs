@@ -7,7 +7,6 @@ fn seed_text(wp: &mut WordProcessorWidget, state: &mut ui::State, text: &str) {
 }
 use std::fmt::Write as _;
 use ui::headless::Framed;
-use ui::permissions::PermissionContext;
 use ui::testing::Dispatch;
 
 /// Minimal, valid 2×3 RGB PNG shared by image layout, accessibility, portal,
@@ -1343,6 +1342,7 @@ fn the_styles_panel_picks_edits_and_commits_styles() {
         assert!(Widget::perform_action(
             &mut slot.input,
             &ui::a11y::Action::SetValue((before + 5.0).to_string()),
+            &[],
             &mut edits(&mut state.doc),
             &state.root
         ));
@@ -1381,6 +1381,7 @@ fn the_styles_panel_picks_edits_and_commits_styles() {
         assert!(Widget::perform_action(
             &mut slot.input,
             &ui::a11y::Action::SetValue("40".into()),
+            &[],
             &mut edits(&mut state.doc),
             &state.root
         ));
@@ -1715,7 +1716,7 @@ fn the_toolbar_keeps_character_formatting_and_every_colour_action() {
             ToolAction::TextColor(Some(STYLE_PALETTE[4])),
         );
         wp.open_compact_swatch_palette(PaletteKind::Text);
-        assert!(Widget::perform_action_at(
+        assert!(Widget::perform_action(
             wp,
             &ui::a11y::Action::Focus,
             &[ui::a11y::hash_key(&"compact-swatch:clear")],
@@ -1728,7 +1729,7 @@ fn the_toolbar_keeps_character_formatting_and_every_colour_action() {
             wp.compact_swatch_palette.clear_rect(),
             true,
         );
-        assert!(Widget::perform_action_at(
+        assert!(Widget::perform_action(
             wp,
             &ui::a11y::Action::Activate,
             &[ui::a11y::hash_key(&"compact-swatch:clear")],
@@ -1762,7 +1763,7 @@ fn the_toolbar_keeps_character_formatting_and_every_colour_action() {
             ToolAction::Highlight(Some(HIGHLIGHT_PALETTE[4])),
         );
         wp.open_compact_swatch_palette(PaletteKind::Highlight);
-        assert!(Widget::perform_action_at(
+        assert!(Widget::perform_action(
             wp,
             &ui::a11y::Action::Activate,
             &[ui::a11y::hash_key(&"compact-swatch:clear")],
@@ -4081,6 +4082,7 @@ fn the_zoom_field_drives_zoom_and_the_scroll_range() {
         assert!(Widget::perform_action(
             &mut wp.zoom_input,
             &ui::a11y::Action::Increment,
+            &[],
             &mut edits(&mut state.doc),
             &state.root
         ));
@@ -4089,6 +4091,7 @@ fn the_zoom_field_drives_zoom_and_the_scroll_range() {
         assert!(Widget::perform_action(
             &mut wp.zoom_input,
             &ui::a11y::Action::SetValue("100".into()),
+            &[],
             &mut edits(&mut state.doc),
             &state.root
         ));
@@ -5819,7 +5822,7 @@ fn review_markup_registers_card_hits_and_toggles_off() {
 
         let resolve_target = review_action_target(&ReviewAction::ResolveComment(cid.clone()));
         let root = state.root.clone();
-        assert!(Widget::perform_action_at(
+        assert!(Widget::perform_action(
             wp,
             &ui::a11y::Action::Activate,
             &[ui::a11y::hash_key(&resolve_target)],
@@ -7122,7 +7125,7 @@ fn accessibility_exposes_and_activates_real_toolbar_buttons() {
         let (wp, state) = Framed::split(&mut framed);
         assert!(!wp.view.styles_panel_visible);
         let target = "word-processor.toolbar:toggle-styles".to_string();
-        assert!(Widget::perform_action_at(
+        assert!(Widget::perform_action(
             wp,
             &ui::a11y::Action::Activate,
             &[ui::a11y::hash_key(&target)],
@@ -7701,8 +7704,8 @@ fn remote_peers_resolve_independently_and_draw_through_production() {
         );
     }
 
-    // Phase: draw_with_presence_renders_remote_caret_through_production_path.
-    // The full `draw_with_presence` path consumes a populated `PresenceCtx`
+    // Phase: draw_renders_remote_caret_through_production_path.
+    // The full `draw` path consumes a populated `PresenceCtx`
     // without panicking AND the resolver agrees — i.e. the production draw and
     // the asserted helper are the same path, not a parallel re-implementation.
     {
@@ -8128,7 +8131,7 @@ fn image_controls_are_named_and_resize_and_flip() {
         }));
 
         let target = "word-processor.image-placement:left".to_string();
-        assert!(Widget::perform_action_at(
+        assert!(Widget::perform_action(
             wp,
             &ui::a11y::Action::Activate,
             &[ui::a11y::hash_key(&target)],
@@ -8451,7 +8454,6 @@ fn clipped_document_text_matches_reference_raster_and_preserves_review_state() {
     let mut renderer = ui::offscreen::OffscreenRenderer::new(w, h);
     let theme = Theme::dark();
     let presence = PresenceCtx::empty();
-    let permission = PermissionContext::permissive();
     for (scroll, zoom) in [(0.0, 1.0), (932.25, 0.87), (5000.5, 1.25)] {
         wp.zoom.set(zoom);
         wp.scroll_y = scroll;
@@ -8460,14 +8462,7 @@ fn clipped_document_text_matches_reference_raster_and_preserves_review_state() {
         for reference in [true, false] {
             wp.reference_text_rendering = reference;
             let mut scene = Scene::new();
-            wp.draw_with_presence(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut tr,
-                &theme,
-                &presence,
-                &permission,
-            );
+            wp.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
             wp.draw_overlay(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
             geometry.push(
                 wp.laid

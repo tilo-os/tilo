@@ -30,7 +30,7 @@ use ui::theme::Theme;
 use ui::tilo_actions::ActionAddress;
 use ui::time::{Duration, Instant};
 use ui::widget::context_menu::{ContextMenu, MenuItem};
-use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
+use ui::widget::toast::ToastKind;
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
     AppModel, Button, ButtonRole, ControlSize, Element, InspectorPlacement, ModelPath, NavShell,
@@ -123,9 +123,6 @@ impl SortKey {
 
 /// The header's cadence button, by its test id.
 const CADENCE_BUTTON_ID: &str = "monitor.cadence";
-
-/// How long the "PID copied" toast stays up after a Copy PID action.
-const TOAST_MS: u64 = 2200;
 
 /// A process table can contain thousands of kernel entries. Keep the
 /// contextual resource projection small; exact process resources remain
@@ -290,9 +287,6 @@ pub struct MonitorApp {
     context: ContextMenu,
     context_pid: Option<u32>,
     context_choices: Vec<Option<MenuChoice>>,
-    /// The pid most recently copied, for the transient toast.
-    copied_pid: Option<u32>,
-    copied_at: Option<Instant>,
 
     // ---- sampling ----
     last_refresh: Instant,
@@ -407,8 +401,6 @@ impl MonitorApp {
             context: ContextMenu::new(),
             context_pid: None,
             context_choices: Vec::new(),
-            copied_pid: None,
-            copied_at: None,
             last_refresh,
             sample_only: false,
             rect: Rect::ZERO,
@@ -975,15 +967,10 @@ impl MonitorApp {
     /// the current process resource and its availability contract.
     fn copy_pid(&mut self, pid: u32) {
         ui::clipboard_copy(&pid.to_string());
-        self.copied_pid = Some(pid);
-        self.copied_at = Some(ui::time::now());
+        self.shell
+            .toast(format!("Copied PID {pid}"), ToastKind::Success);
         self.selected_pid = Some(pid);
         self.stale = true;
-    }
-
-    fn copy_toast_active(&self) -> bool {
-        self.copied_at
-            .is_some_and(|t| t.elapsed() < Duration::from_millis(TOAST_MS))
     }
 
     // ---- the cadence menu -------------------------------------------------
@@ -1517,25 +1504,6 @@ impl Widget for MonitorApp {
             .draw(scene, transform, text_renderer, theme, presence);
     }
 
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        permissions: &ui::permissions::PermissionContext,
-    ) {
-        self.shell.draw_with_presence(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
-            permissions,
-        );
-    }
-
     fn draw_overlay(
         &mut self,
         scene: &mut Scene,
@@ -1553,20 +1521,6 @@ impl Widget for MonitorApp {
         if self.context.is_open() {
             self.context
                 .draw_overlay(scene, transform, text_renderer, theme, presence);
-        }
-        if self.copy_toast_active()
-            && let Some(pid) = self.copied_pid
-        {
-            let label = format!("Copied PID {pid}");
-            paint_transient(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                self.rect,
-                ToastAnchor::BottomCenter,
-                &ToastCard::new(&label, ToastKind::Success),
-            );
         }
     }
 
@@ -1652,7 +1606,7 @@ impl Widget for MonitorApp {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.copy_toast_active() || self.shell.needs_animation_frame()
+        self.shell.needs_animation_frame()
     }
 
     fn next_wake_deadline(&self) -> Option<Instant> {
@@ -1664,15 +1618,6 @@ impl Widget for MonitorApp {
             consider(
                 self.last_refresh
                     .checked_add(Duration::from_millis(self.prefs.interval_ms))
-                    .unwrap_or_else(Instant::now),
-            );
-        }
-        if let Some(copied_at) = self.copied_at
-            && self.copy_toast_active()
-        {
-            consider(
-                copied_at
-                    .checked_add(Duration::from_millis(TOAST_MS))
                     .unwrap_or_else(Instant::now),
             );
         }
@@ -1741,12 +1686,14 @@ mod tests {
 
     /// The centre of the first widget whose test id or accessible name is
     /// `name`, or of the first accessible node naming it or holding it as
-    /// its value (a table cell).
+    /// its value (a table cell), among those on screen.
     fn center_of(harness: &FrameHarness, name: &str) -> Option<(f64, f64)> {
         fn number(value: &serde_json::Value, key: &str) -> Option<f64> {
             value.get(key)?.as_f64()
         }
-        fn find(value: &serde_json::Value, name: &str) -> Option<(f64, f64)> {
+        fn find(value: &serde_json::Value, name: &str, window: Rect) -> Option<(f64, f64)> {
+            let on_screen =
+                |(x, y): (f64, f64)| window.contains(Point::new(x, y)).then_some((x, y));
             let text = |node: &serde_json::Value, key: &str| {
                 node.get(key)
                     .and_then(serde_json::Value::as_str)
@@ -1759,26 +1706,33 @@ mod tests {
                     let r: Vec<f64> = r.iter().filter_map(serde_json::Value::as_f64).collect();
                     <[f64; 4]>::try_from(r).ok()
                 })
+                && let Some(center) = on_screen((x + w / 2.0, y + h / 2.0))
             {
-                return Some((x + w / 2.0, y + h / 2.0));
+                return Some(center);
             }
             if (text(value, "name").as_deref() == Some(name)
                 || text(value, "value").as_deref() == Some(name))
                 && let Some(bounds) = value.get("bounds").filter(|b| !b.is_null())
-            {
-                return Some((
+                && let Some(center) = on_screen((
                     f64::midpoint(number(bounds, "x0")?, number(bounds, "x1")?),
                     f64::midpoint(number(bounds, "y0")?, number(bounds, "y1")?),
-                ));
+                ))
+            {
+                return Some(center);
             }
             match value {
-                serde_json::Value::Array(values) => values.iter().find_map(|v| find(v, name)),
-                serde_json::Value::Object(values) => values.values().find_map(|v| find(v, name)),
+                serde_json::Value::Array(values) => {
+                    values.iter().find_map(|v| find(v, name, window))
+                }
+                serde_json::Value::Object(values) => {
+                    values.values().find_map(|v| find(v, name, window))
+                }
                 _ => None,
             }
         }
         let inspection = harness.inspection_json().ok()?;
-        find(&serde_json::from_str(&inspection).ok()?, name)
+        let window = harness.root::<MonitorApp>().get_rect();
+        find(&serde_json::from_str(&inspection).ok()?, name, window)
     }
 
     fn click(harness: &mut FrameHarness, name: &str) {
@@ -2098,7 +2052,7 @@ mod tests {
             assert!(a.model.processes.iter().any(|p| p.pid == process.pid));
         }
 
-        // Phase `copy_pid_records_the_copy_and_its_toast_expires`.
+        // Phase `copy_pid_selects_the_process_and_shows_a_toast`.
         {
             let mut a = app();
             let process = a.model.processes[3].clone();
@@ -2106,10 +2060,9 @@ mod tests {
                 process: process_resource_id(process.pid, process.started_at),
             })
             .unwrap();
-            assert_eq!(a.copied_pid, Some(process.pid));
-            assert!(a.copy_toast_active());
-            a.copied_at = ui::time::now().checked_sub(Duration::from_millis(TOAST_MS + 100));
-            assert!(!a.copy_toast_active());
+            assert_eq!(a.selected_pid, Some(process.pid));
+            let copied = format!("Copied PID {}", process.pid);
+            assert_eq!(a.shell.toast_text(), Some(copied.as_str()));
         }
 
         // Phase `inspect_selects_the_process_and_an_unknown_tab_is_refused`.

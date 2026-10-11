@@ -1,6 +1,6 @@
 //! A signed-in person's desktop with one empty Notes notebook, written into
 //! a `scripts/headless-examples/spawn-headless.sh` profile for the agent-task
-//! benchmark (`scripts/perf/agent_task.py`, TIL-759).
+//! benchmark (`scripts/perf/agent_task.py`).
 //!
 //! The same desktop `tests/idle_wakeups.rs` measures: the demo tree cut down
 //! to its first workspace and its Notes tab, the tab's record created before

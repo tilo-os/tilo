@@ -8,7 +8,6 @@
 use std::fs::File;
 use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, RawFd};
-use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -966,8 +965,11 @@ fn serve_client(mut stream: UnixStream) {
     serve_requests(&mut stream, |action| run_local(cli_for_rpc(action)));
 }
 
-fn serve(socket: &PathBuf) -> Result<Option<String>, String> {
-    let listener = if let Some(listener) = systemd_listener(socket)? {
+fn serve(socket: &Path) -> Result<Option<String>, String> {
+    // SAFETY: activation is taken over before any thread is spawned.
+    let activated = unsafe { tilo_files::native::private::activated_socket(socket) }
+        .map_err(|error| error.to_string())?;
+    let listener = if let Some(listener) = activated {
         listener
     } else {
         bind_listener(socket)?
@@ -981,65 +983,13 @@ fn serve(socket: &PathBuf) -> Result<Option<String>, String> {
     Ok(None)
 }
 
-fn bind_listener(socket: &PathBuf) -> Result<UnixListener, String> {
+fn bind_listener(socket: &Path) -> Result<UnixListener, String> {
     if let Some(parent) = socket.parent() {
         std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
-    if socket.exists() {
-        let metadata = std::fs::symlink_metadata(socket).map_err(|error| error.to_string())?;
-        if !metadata.file_type().is_socket() {
-            return Err("refusing to replace a non-socket model service path".into());
-        }
-        std::fs::remove_file(socket).map_err(|error| error.to_string())?;
-    }
-    let listener = UnixListener::bind(socket).map_err(|error| error.to_string())?;
-    std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600))
-        .map_err(|error| error.to_string())?;
-    Ok(listener)
+    tilo_files::native::private::bind_socket(socket).map_err(|error| error.to_string())
 }
 
-#[allow(
-    clippy::disallowed_methods,
-    reason = "systemd socket activation: LISTEN_* must not leak to spawned children; cleared once, right after the descriptor is taken at the start of `serve`, before any thread is spawned"
-)]
-fn systemd_listener(expected: &Path) -> Result<Option<UnixListener>, String> {
-    const SYSTEMD_LISTEN_FD: RawFd = 3;
-
-    let pid_matches = std::env::var("LISTEN_PID")
-        .ok()
-        .and_then(|value| value.parse::<u32>().ok())
-        == Some(std::process::id());
-    if !pid_matches {
-        return Ok(None);
-    }
-    if std::env::var("LISTEN_FDS").as_deref() != Ok("1") {
-        return Err("systemd must pass exactly one model-manager listener".into());
-    }
-    // SAFETY: fcntl only validates whether fd 3 is open; it consumes no pointer.
-    if unsafe { libc::fcntl(SYSTEMD_LISTEN_FD, libc::F_GETFD) } == -1 {
-        return Err("systemd model-manager listener fd is closed".into());
-    }
-    // SAFETY: systemd's LISTEN_PID/FDS contract transfers ownership of fd 3
-    // to this process exactly once.
-    let listener = unsafe { UnixListener::from_raw_fd(SYSTEMD_LISTEN_FD) };
-    let actual = listener.local_addr().map_err(|error| error.to_string())?;
-    if actual.as_pathname() != Some(expected) {
-        return Err("systemd model-manager listener has an unexpected path".into());
-    }
-    // The manager starts Podman/model processes. Keep the authenticated
-    // control listener and systemd's one-shot activation metadata out of every
-    // child process spawned after activation.
-    if unsafe { libc::fcntl(SYSTEMD_LISTEN_FD, libc::F_SETFD, libc::FD_CLOEXEC) } == -1 {
-        return Err("cannot mark systemd model-manager listener close-on-exec".into());
-    }
-    // SAFETY: activation is consumed once, before worker threads exist.
-    unsafe {
-        std::env::remove_var("LISTEN_PID");
-        std::env::remove_var("LISTEN_FDS");
-        std::env::remove_var("LISTEN_FDNAMES");
-    }
-    Ok(Some(listener))
-}
 fn validate_developer_mode(cli: &Cli) -> Result<(), String> {
     // NoNewPrivs is kernel state and cannot be unset by an app. Unknown/error
     // state fails closed; launcher markers and service FDs are extra refusals.

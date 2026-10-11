@@ -714,9 +714,13 @@ async fn separate_process_exact_share_evicts_restarts_and_rehydrates() {
 /// the shipped capability list: 9.95/s before (probe run 94694; its two
 /// one-second file polls were 3-4/s, iroh's relays 5.8/s), 0.60/s after
 /// (run 94886: one runtime worker, on iroh's own netwatch and re-STUN
-/// timers). The budget is the 1/s target: any of those timers coming back
+/// timers), 0.65/s on main later (runs 96747, 96755, 96761, 96779). The
+/// vendored iroh and netwatch stop those two timers
+/// (`vendor/iroh/TILO-PATCH.md`, `vendor/netwatch/TILO-PATCH.md`): 0.30/s
+/// (run 97069), one runtime worker, not attributed further. The budget sits
+/// between that and the 0.65/s the iroh timers cost, so their coming back
 /// breaks it.
-const IDLE_SERVE_WAKEUP_BUDGET: f64 = 1.0;
+const IDLE_SERVE_WAKEUP_BUDGET: f64 = 0.5;
 
 /// How long the mount may keep serving a file after its capability is
 /// revoked: the one-second poll's bound, which the file watch must keep.

@@ -1012,7 +1012,12 @@ impl Widget for ColorPicker {
     }
 
     /// A picker narrowed by its parent is as tall as that width needs.
-    fn adjust_layout_style(&mut self, taffy: &mut TaffyTree<()>, node: NodeId) -> bool {
+    fn adjust_layout_style(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        node: NodeId,
+        _text: &mut crate::text_render::TextRenderer,
+    ) -> bool {
         let Ok(layout) = taffy.layout(node) else {
             return false;
         };
@@ -1339,7 +1344,7 @@ impl Widget for ColorPicker {
                 self.confirm();
                 true
             }
-            (TARGET_VALUE, _) => self.perform_action(action, state, root),
+            (TARGET_VALUE, _) => self.perform_action(action, &[], state, root),
             _ => false,
         }
     }
@@ -1347,6 +1352,7 @@ impl Widget for ColorPicker {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        _key_path: &[u64],
         _state: &mut crate::widget::Edits<'_>,
         _root: &ModelPath,
     ) -> bool {
@@ -1657,6 +1663,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut picker,
                 &crate::a11y::Action::SetValue("#36A2EB".into()),
+                &[],
                 &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
@@ -1670,6 +1677,7 @@ mod tests {
             assert!(!Widget::perform_action(
                 &mut picker,
                 &crate::a11y::Action::SetValue("blue".into()),
+                &[],
                 &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));

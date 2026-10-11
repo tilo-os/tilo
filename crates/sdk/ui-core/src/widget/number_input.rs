@@ -710,7 +710,7 @@ impl NumberInput {
     /// configured precision and suffix — beside its steppers. A host laying
     /// its own rows (a font-size stepper in an inspector) reserves this
     /// instead of guessing the field's type size; it is the same rule the
-    /// widget applies to itself in `adjust_layout_with_measure`, so a slot
+    /// widget applies to itself in `adjust_layout_style`, so a slot
     /// sized from it never clips a value the widget would have held.
     pub fn preferred_width(&self, theme: &Theme, text: &mut TextRenderer) -> f64 {
         let minimum = self.base_footprint(theme);
@@ -861,7 +861,7 @@ impl Widget for NumberInput {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    fn adjust_layout_with_measure(
+    fn adjust_layout_style(
         &mut self,
         tree: &mut TaffyTree<()>,
         node: NodeId,
@@ -1133,6 +1133,7 @@ impl Widget for NumberInput {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        _key_path: &[u64],
         _state: &mut crate::widget::Edits<'_>,
         _root: &ModelPath,
     ) -> bool {
@@ -1599,6 +1600,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut first,
                 &Action::Increment,
+                &[],
                 &mut crate::widget::Edits::lend(&mut document),
                 &automerge::ROOT,
             ));
@@ -1636,6 +1638,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut n,
                 &Action::Increment,
+                &[],
                 &mut crate::widget::Edits::lend(&mut doc),
                 &root
             ));
@@ -1643,6 +1646,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut n,
                 &Action::SetValue("100".into()),
+                &[],
                 &mut crate::widget::Edits::lend(&mut doc),
                 &root
             ));
@@ -1670,6 +1674,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut number,
                 &crate::a11y::Action::SetValue("42".into()),
+                &[],
                 &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));

@@ -615,3 +615,6 @@ async fn member_terminal_audit_uses_exact_authenticated_current_admission() {
     );
     relay.shutdown().await;
 }
+
+#[path = "governed_rooms/topology_namespace.rs"]
+mod topology_namespace;

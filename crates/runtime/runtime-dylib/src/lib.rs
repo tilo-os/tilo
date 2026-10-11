@@ -25,6 +25,8 @@
 //! (`tilo-fs`), sandbox launcher, app host or install CLI. An app that calls
 //! into one of those links it statically and gets only the code it reaches;
 //! `tools/policy/check_runtime_dylib_surface.py` keeps them out of this graph.
+//! Nor does it carry an engine only one app uses once that engine has a
+//! library of its own beside this one (`crates/runtime/engines/`).
 
 // `pub use`, not a bare `extern crate`: that's what keeps the symbols and
 // records these crates as provided-by-this-dylib in the metadata, which
@@ -45,7 +47,6 @@ pub use async_imap;
 pub use chrono_tz;
 pub use cli;
 pub use collab_types;
-pub use comemo;
 pub use desktop_entry;
 pub use desktop_policy;
 pub use media;
@@ -68,27 +69,9 @@ pub use tilo_model_gateway;
 pub use tilo_oauth;
 pub use tilo_pdf;
 pub use tilo_relay_protocol;
-pub use tilo_spotify;
 pub use tilo_subject;
 pub use tilo_user_identity;
 pub use tilo_wet_media;
-pub use tiny_skia;
-pub use typst;
-pub use typst_assets;
-pub use typst_layout;
-pub use typst_pdf;
-pub use typst_render;
 pub use ui;
 pub use vte;
 pub use xattr;
-
-/// Parse the runtime-bundled Typst fonts without making each thin app retain
-/// `typst-assets`' multi-megabyte static font table in its own executable.
-///
-/// Returning the concrete vector keeps iteration over the embedded byte table
-/// on this side of the dylib boundary; thin apps receive only parsed fonts.
-pub fn typst_fonts() -> Vec<typst::text::Font> {
-    typst_assets::fonts()
-        .flat_map(|data| typst::text::Font::iter(typst::foundations::Bytes::new(data)))
-        .collect()
-}

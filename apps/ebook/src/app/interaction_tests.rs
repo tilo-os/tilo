@@ -4187,6 +4187,94 @@ fn reading_position_persists_across_reopen() {
     }
 }
 
+/// A continued book must actually open from the live app's library screen.
+#[test]
+fn continuation_opens_the_reader_from_the_library() {
+    let mut sender = app_with_sample();
+    sender.book_idx = 1;
+    sender.chapter = 1;
+    sender.pending_jump_block = Some(3);
+    let metadata = sender
+        .continuation_metadata(&AutoCommit::new(), &automerge::ROOT)
+        .expect("the reading target is portable");
+    let mut receiver = app_with_sample();
+    receiver.view = View::Library;
+    let mut doc = AutoCommit::new();
+    let before = doc.save();
+    assert!(receiver.restore_continuation_metadata(
+        &metadata,
+        &mut Edits::lend(&mut doc),
+        &automerge::ROOT,
+    ));
+    assert_eq!(
+        doc.save(),
+        before,
+        "restoring presentation grants no document mutation"
+    );
+    frame(&mut receiver, &mut doc, 600.0, 900.0);
+    assert_eq!(
+        receiver.view,
+        View::Reader,
+        "the first frame must show the continued book"
+    );
+    assert_eq!(receiver.library[receiver.book_idx].id, sender.book_id());
+    assert!(
+        find_semantic_target(
+            &Widget::accessibility(&receiver).expect("reader semantics"),
+            "books.reader.back"
+        )
+        .is_some()
+    );
+}
+
+/// The first sync must not replace an accepted passage with stale shared progress.
+#[test]
+fn continuation_keeps_the_received_passage_through_first_frame() {
+    let mut sender = app_with_sample();
+    sender.book_idx = 1;
+    sender.chapter = 1;
+    sender.pending_jump_block = Some(3);
+    let metadata = sender
+        .continuation_metadata(&AutoCommit::new(), &automerge::ROOT)
+        .expect("the reading target is portable");
+    let mut receiver = app_with_sample();
+    let mut doc = AutoCommit::new();
+    assert!(receiver.restore_continuation_metadata(
+        &metadata,
+        &mut Edits::lend(&mut doc),
+        &automerge::ROOT,
+    ));
+    frame(&mut receiver, &mut doc, 600.0, 900.0);
+    assert_eq!(
+        receiver.chapter, 1,
+        "received chapter survives ordinary sync"
+    );
+    let layout = receiver
+        .layout
+        .as_ref()
+        .expect("the receiver rendered its own layout");
+    let top = layout
+        .blocks
+        .iter()
+        .find(|block| block.index == 3)
+        .expect("received passage")
+        .top;
+    let start = layout
+        .pages
+        .get(receiver.page)
+        .copied()
+        .expect("current page");
+    let end = layout
+        .pages
+        .get(receiver.page + 1)
+        .copied()
+        .unwrap_or(f32::MAX);
+    assert!(
+        (start - 0.5..end).contains(&top),
+        "the receiver's page holds the received passage"
+    );
+}
+
 /// Clicking a highlight opens the comment overlay, which adds, edits and deletes comments through the palette action.
 #[allow(
     clippy::too_many_lines,

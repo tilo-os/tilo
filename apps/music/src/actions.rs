@@ -2100,23 +2100,12 @@ mod tests {
     use super::*;
     use crate::app::MusicApp;
     use automerge::AutoCommit;
-    use tilo_actions::{
-        ActionInput, ArgValue, ExecutionMode, LocalTransport, OperationKind, ResultSpec,
-    };
+    use tilo_actions::{ArgValue, ExecutionMode, LocalTransport, OperationKind, ResultSpec};
     use tilo_automerge::ApplyIncoming;
     use ui::widget::Widget;
 
     fn registry() -> ActionRegistry {
         ActionRegistry::with(register)
-    }
-
-    fn prompted_encode(spec: &ActionSpec, arg: &str) -> EncodedAction {
-        match &spec.input {
-            ActionInput::Prompted { build, .. } => build(arg),
-            ActionInput::Immediate(_) | ActionInput::Deferred { .. } => {
-                panic!("expected a prompted action: {}", spec.id)
-            }
-        }
     }
 
     fn tiny_portable_png() -> String {
@@ -2624,7 +2613,7 @@ mod tests {
                 .unwrap();
             let before = crate::doc::load_library(&doc).playlists.len();
 
-            let encoded = prompted_encode(spec, "Late Night");
+            let encoded = spec.build_text("Late Night").unwrap();
             let decoded = registry().decode(&encoded).unwrap();
             let mut tx = LocalTransport::new();
             tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();

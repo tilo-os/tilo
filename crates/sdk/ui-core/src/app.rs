@@ -888,7 +888,7 @@ impl App {
         let component = assembly.component.insert(component);
         let _entry = scope.enter();
         let handle = scope.handle();
-        if let Err(error) = component.mount(move |_| handle.wake()) {
+        if let Err(error) = component.mount(move |event| forward_component_wake(&handle, &event)) {
             return Err(component.setup_error(error));
         }
         let binding = component.callback_binding();
@@ -1171,6 +1171,7 @@ impl App {
             .dispatch_node(focused, |widget, doc, root| {
                 widget.perform_action(
                     &crate::a11y::Action::Activate,
+                    &[],
                     &mut crate::widget::Edits::lend(doc),
                     root,
                 )
@@ -1977,7 +1978,7 @@ impl App {
         self.accessibility.window = appearance;
         self.rebuild_theme();
         self.layout.layout_dirty = true;
-        self.layout.structure_dirty = true;
+        self.layout.request_rebuild();
         true
     }
 
@@ -2042,7 +2043,7 @@ impl App {
         if changed {
             self.rebuild_theme();
             self.layout.layout_dirty = true;
-            self.layout.structure_dirty = true;
+            self.layout.request_rebuild();
         }
         changed
     }
@@ -2061,7 +2062,7 @@ impl App {
             self.apply_configured_theme();
             self.rebuild_theme();
             self.layout.layout_dirty = true;
-            self.layout.structure_dirty = true;
+            self.layout.request_rebuild();
             return true;
         }
         self.reconcile_configured_theme_with(
@@ -2094,7 +2095,7 @@ impl App {
         apply(self);
         self.rebuild_theme();
         self.layout.layout_dirty = true;
-        self.layout.structure_dirty = true;
+        self.layout.request_rebuild();
         true
     }
 
@@ -2287,6 +2288,24 @@ impl App {
     }
 }
 
+/// Hand a component's wake on to the App that runs it, as it was raised: a
+/// model-dirty wake stays one, and an event-queue notification (a directory
+/// request, a reply) stays one, whose consumer decides whether the model
+/// changed. Forwarding every event as model-dirty made the App sync and
+/// invalidate its directory on each, so a directory continuation it had just
+/// issued was gone before it was asked for, and a hosted app's listing never
+/// settled.
+pub(crate) fn forward_component_wake(
+    handle: &crate::wake::WakeHandle,
+    event: &crate::wake::WakeEvent,
+) {
+    if event.requires_sync() {
+        handle.wake();
+    } else {
+        handle.notify_events();
+    }
+}
+
 impl App {
     #[doc(hidden)]
     pub fn state_mut_for_test(&mut self) -> &mut crate::state::State {
@@ -2441,12 +2460,27 @@ impl App {
     /// The root's structure flag, and framework History's: it is composed
     /// as a separate root, so its replaced controls are not the app's.
     pub(crate) fn take_composition_dirty(&mut self) -> bool {
-        let root = self.root_widget.take_structure_dirty();
+        let root = self.take_root_structure_dirty();
         let history = self
             .history
             .as_mut()
             .is_some_and(|history| history.take_structure_dirty());
+        if history {
+            self.layout.rebuild_described = false;
+        }
         root || history
+    }
+
+    /// Whether the root's widgets changed their structure since the last
+    /// call; a change they do not describe
+    /// ([`crate::widget::StructureChange::Rebuild`]) leaves the rebuild that
+    /// follows undescribed.
+    pub(crate) fn take_root_structure_dirty(&mut self) -> bool {
+        let change = self.root_widget.take_structure_change();
+        if change == crate::widget::StructureChange::Rebuild {
+            self.layout.rebuild_described = false;
+        }
+        change.rebuilds()
     }
 
     /// When [`Self::autofocus_on_structure_change`] is set, restores the
@@ -2460,6 +2494,10 @@ impl App {
         let _entry = self.enter_wake_scope();
         // A reported mutation can already have invalidated old widget pointers.
         let topology_changed = self.layout.structure_dirty || self.take_composition_dirty();
+        // Whether this rebuild is one the widgets describe, for a frame that
+        // compares itself with the last; none is outstanding after it.
+        self.layout.frame_rebuilds_described &= self.layout.rebuild_described;
+        self.layout.rebuild_described = true;
         // Node ids below are about to be invalidated.
         let (prev_focus_idx, prev_focus_state, focus_reset) = if self.autofocus_on_structure_change
         {
@@ -2528,9 +2566,13 @@ impl App {
         // ran against, so without this they draw blank until the next event.
         self.root_widget.sync(&self.state.doc, &self.state.root);
         self.needs_sync = false;
+        // This rebuild's frame presents a durability the sync just took up;
+        // it is not another structure change.
+        let _ =
+            crate::component_lifecycle::take_save_status_presentation(self.root_widget.as_mut());
         if self.root_widget.take_structure_dirty() {
             // Fresh sync can replace delegates. Rebuild before any map access.
-            self.layout.structure_dirty = true;
+            self.layout.request_rebuild();
             self.bindings.clear();
             self.layout.node_map.clear();
         } else if self.focused_node.is_none() {
@@ -3010,7 +3052,7 @@ mod legacy_owner_routing_tests {
                 _ => false,
             }
         }
-        fn perform_action_at(
+        fn perform_action(
             &mut self,
             action: &crate::a11y::Action,
             keys: &[u64],
@@ -3743,7 +3785,7 @@ pub(crate) mod ordinary_confirmation_tests {
         // rebuilding clears it; unchanged trees must use the normal fast path.
         app.layout.structure_dirty |= app.layout.root_node.is_none()
             || app.layout.node_map.is_empty()
-            || app.root_widget.take_structure_dirty();
+            || app.take_root_structure_dirty();
         let structure_rebuilt = app.layout.structure_dirty;
         if structure_rebuilt {
             app.rebuild_structure();
@@ -4748,7 +4790,7 @@ pub(crate) mod ordinary_confirmation_tests {
             "replacement-control",
             "Unrelated control",
         ));
-        app.layout.structure_dirty = true;
+        app.layout.request_rebuild();
         layout(app);
         host.activate("Cancel");
         let Host::Native(app) = &mut host else {

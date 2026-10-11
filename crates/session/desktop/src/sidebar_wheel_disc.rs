@@ -138,11 +138,11 @@ pub struct SidebarWheelDisc {
     cached_scene: Scene,
     /// Cache-validity fingerprint — see [`SidebarWheelDisc::current_fingerprint`].
     cached_fp: WheelCacheFp,
-    /// Whole-pixel origin the cached hit rects currently sit at, advanced
-    /// by [`SidebarWheelDisc::retarget_hit_rects`] on each pan frame that
-    /// takes the translate fast path, so the shift is applied once per
-    /// move rather than re-applied cumulatively.
-    hit_rects_origin_px: (i64, i64),
+    /// Origin the cached hit rects currently sit at, advanced by
+    /// [`SidebarWheelDisc::retarget_hit_rects`] on each pan frame that takes
+    /// the translate fast path, so the shift is applied once per move rather
+    /// than re-applied cumulatively.
+    hit_rects_origin: Point,
     /// `Some(p)`: summoned — detached from the strip's canvas, rim passing
     /// through `p`. `None`: docked, at the strip's left edge, panning with
     /// it. Summoning exists because docking scrolls off-screen with the strip.
@@ -154,11 +154,16 @@ pub struct SidebarWheelDisc {
 /// invalidate on every micro-step while still being comparable.
 #[derive(Default, Clone, Debug, PartialEq, Eq)]
 struct WheelCacheFp {
-    /// Top-left of the footprint. Split out from `size_px` because a
-    /// plain strip pan changes only this, not a single painted pixel —
-    /// letting `draw` replay the cached scene under a translation
-    /// instead of re-encoding it. See [`WheelCacheFp::content_eq`].
-    origin_px: (i64, i64),
+    /// Top-left of the footprint, exactly (`f64` bits). Split out from
+    /// `size_px` because a plain strip pan changes only this, not a single
+    /// painted pixel — letting `draw` replay the cached scene under a
+    /// translation instead of re-encoding it. See
+    /// [`WheelCacheFp::content_eq`]. Exact, not rounded: the replay moves
+    /// the disc by exactly as far as the strip it rides moved, so a strip
+    /// panned by a fraction of a layout pixel (a device pixel on a scaled
+    /// display) carries the disc with it to the same place whether it is
+    /// drawn on screen or in a retained canvas.
+    origin_bits: (u64, u64),
     size_px: (u64, u64),
     /// `visual_rotation_deg() * 100` rounded to i64 — hundredths keep
     /// the cache stable across float noise while still invalidating on
@@ -184,6 +189,14 @@ impl WheelCacheFp {
             && self.spoke_count == other.spoke_count
             && self.spoke_signature == other.spoke_signature
             && self.diameter_px == other.diameter_px
+    }
+
+    /// Top-left of the footprint.
+    fn origin(&self) -> Point {
+        Point::new(
+            f64::from_bits(self.origin_bits.0),
+            f64::from_bits(self.origin_bits.1),
+        )
     }
 
     /// A zero-width footprint means the disc has not laid out yet.
@@ -336,7 +349,7 @@ impl SidebarWheelDisc {
             spoke_hit_rects: Vec::new(),
             cached_scene: Scene::new(),
             cached_fp: WheelCacheFp::default(),
-            hit_rects_origin_px: (0, 0),
+            hit_rects_origin: Point::ZERO,
             summon_at: None,
         }
     }
@@ -743,10 +756,7 @@ impl SidebarWheelDisc {
     /// Used by [`Widget::draw`] to decide whether `self.cached_scene`
     /// can be reused. See [`WheelCacheFp`] for the field semantics.
     fn current_fingerprint(&self) -> WheelCacheFp {
-        let origin_px = (
-            f64_round_to_i64_lossy(self.rect.x0),
-            f64_round_to_i64_lossy(self.rect.y0),
-        );
+        let origin_bits = (self.rect.x0.to_bits(), self.rect.y0.to_bits());
         let size_px = (
             f64_round_to_u64_lossy(self.rect.width()),
             f64_round_to_u64_lossy(self.rect.height()),
@@ -764,7 +774,7 @@ impl SidebarWheelDisc {
         }
         let h = std::hash::Hasher::finish(&hasher);
         WheelCacheFp {
-            origin_px,
+            origin_bits,
             size_px,
             rotation_centi_deg,
             active_idx: self.active_idx,
@@ -820,6 +830,11 @@ fn f64_round_to_i64_lossy(v: f64) -> i64 {
     v.round() as i64
 }
 
+/// How far `to` lies from `from`, exactly.
+fn offset(from: Point, to: Point) -> (f64, f64) {
+    (to.x - from.x, to.y - from.y)
+}
+
 /// Same rationale as [`f64_round_to_i64_lossy`], for the always-non-negative
 /// size/diameter fingerprint fields.
 #[allow(
@@ -852,16 +867,6 @@ fn f64_saturating_to_i32(v: f64) -> i32 {
 )]
 fn f64_to_f32_lossy(v: f64) -> f32 {
     v as f32
-}
-
-/// Pixel-coordinate delta, `i64 -> f64`: screen-space deltas between two
-/// fingerprints never approach f64's 53-bit exact-integer range.
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "pixel-coordinate deltas are always tiny relative to f64's exact-integer range"
-)]
-fn i64_to_f64_lossy(v: i64) -> f64 {
-    v as f64
 }
 
 /// Clamps an alpha-channel value into `u8`'s range before the (otherwise
@@ -1119,7 +1124,7 @@ impl Widget for SidebarWheelDisc {
         // the next idle frame takes the fast path.
         out_scene.append(&local, Some(out_transform));
         self.cached_scene = local;
-        self.hit_rects_origin_px = fp.origin_px;
+        self.hit_rects_origin = fp.origin();
         self.cached_fp = fp;
     }
 
@@ -1308,7 +1313,7 @@ impl Widget for SidebarWheelDisc {
 
     /// Key-path route for hosts that address nodes by ordinal; the same
     /// nodes, the same effect as [`Widget::perform_semantic_action`].
-    fn perform_action_at(
+    fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
         key_path: &[u64],
@@ -1433,9 +1438,7 @@ impl SidebarWheelDisc {
             return true;
         }
         if fp.content_eq(&self.cached_fp) {
-            let dx = i64_to_f64_lossy(fp.origin_px.0.saturating_sub(self.cached_fp.origin_px.0));
-            let dy = i64_to_f64_lossy(fp.origin_px.1.saturating_sub(self.cached_fp.origin_px.1));
-            let shift = Affine::translate((dx, dy));
+            let shift = Affine::translate(offset(self.cached_fp.origin(), fp.origin()));
             // `Affine * Affine` is matrix composition — total, no
             // overflow/panic path, unlike scalar arithmetic.
             #[allow(
@@ -1444,7 +1447,7 @@ impl SidebarWheelDisc {
             )]
             let shifted = out_transform * shift;
             out_scene.append(&self.cached_scene, Some(shifted));
-            self.retarget_hit_rects(fp.origin_px);
+            self.retarget_hit_rects(fp.origin());
             return true;
         }
         false
@@ -2019,20 +2022,11 @@ impl SidebarWheelDisc {
         false
     }
 
-    /// Slide cached click targets to `target_origin_px` — used on the pan
+    /// Slide cached click targets to `target_origin` — used on the pan
     /// fast-path, where the scene replays under a translation instead of
     /// re-encoding, so the absolute-coordinate hit rects would otherwise go stale.
-    fn retarget_hit_rects(&mut self, target_origin_px: (i64, i64)) {
-        let dx = i64_to_f64_lossy(
-            target_origin_px
-                .0
-                .saturating_sub(self.hit_rects_origin_px.0),
-        );
-        let dy = i64_to_f64_lossy(
-            target_origin_px
-                .1
-                .saturating_sub(self.hit_rects_origin_px.1),
-        );
+    fn retarget_hit_rects(&mut self, target_origin: Point) {
+        let (dx, dy) = offset(self.hit_rects_origin, target_origin);
         if dx == 0.0 && dy == 0.0 {
             return;
         }
@@ -2046,7 +2040,7 @@ impl SidebarWheelDisc {
                 .plus_rect
                 .with_origin(Point::new(self.plus_rect.x0 + dx, self.plus_rect.y0 + dy));
         }
-        self.hit_rects_origin_px = target_origin_px;
+        self.hit_rects_origin = target_origin;
     }
 
     /// Snap `rotation_deg` to the nearest spoke, exposed so tests can
@@ -2383,6 +2377,55 @@ mod tests {
     /// that care which rows are visible need this, not `mk`'s square rect.
     fn live_slot() -> Rect {
         Rect::new(0.0, 40.0, 234.0, 830.0)
+    }
+
+    /// A strip panned by a fraction of a layout pixel (one device pixel at
+    /// 150 % is two thirds of one) carries the docked disc exactly as far:
+    /// the cached drawing replays where a fresh encode at the new place
+    /// would draw, so the disc a retained canvas shows and the one drawn on
+    /// screen land on the same pixels, and its click targets follow.
+    #[test]
+    fn a_fractional_pan_moves_the_cached_disc_exactly_as_far() {
+        let spokes = || {
+            vec![
+                SpokeLabel {
+                    text: "Home".into(),
+                    workspace_id: None,
+                },
+                SpokeLabel {
+                    text: "Work".into(),
+                    workspace_id: None,
+                },
+            ]
+        };
+        let mut panned = SidebarWheelDisc::new(spokes());
+        layout_into_slot(&mut panned, live_slot());
+        paint(&mut panned);
+        let before = panned.plus_rect;
+        assert!(before.area() > 0.0, "the first paint places the add row");
+        let step = 2.0 / 3.0;
+        let mut at = live_slot();
+        for _ in 0..4 {
+            panned.rect.x0 -= step;
+            panned.rect.x1 -= step;
+            at.x0 -= step;
+            at.x1 -= step;
+            paint(&mut panned);
+            let mut fresh = SidebarWheelDisc::new(spokes());
+            layout_into_slot(&mut fresh, at);
+            paint(&mut fresh);
+            assert!(
+                (panned.plus_rect.x0 - fresh.plus_rect.x0).abs() < 1e-9
+                    && (panned.plus_rect.y0 - fresh.plus_rect.y0).abs() < 1e-9,
+                "the replayed disc's add row {:?} is where a fresh encode puts it, {:?}",
+                panned.plus_rect,
+                fresh.plus_rect
+            );
+        }
+        assert!(
+            (panned.plus_rect.x0 - (before.x0 - 4.0 * step)).abs() < 1e-9,
+            "four device-pixel steps move the add row by exactly 8/3 layout pixels"
+        );
     }
 
     #[test]
@@ -4215,7 +4258,7 @@ mod tests {
             "a stale address is refused, never guessed"
         );
         assert!(
-            !d.perform_action_at(
+            !d.perform_action(
                 &Action::Activate,
                 &[9],
                 &mut ui::widget::Edits::lend(&mut doc),
@@ -4223,7 +4266,7 @@ mod tests {
             ),
             "a stale key is refused, never guessed"
         );
-        assert!(d.perform_action_at(
+        assert!(d.perform_action(
             &Action::Activate,
             &[1],
             &mut ui::widget::Edits::lend(&mut doc),

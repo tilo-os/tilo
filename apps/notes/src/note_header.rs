@@ -7,9 +7,12 @@
 //! toolkit. A press invokes the published tag's or note's "open", the same
 //! operation a command-palette entry does.
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use ui::theme::Theme;
 use ui::tokens::TextRole;
-use ui::widget::{Chip, Column, Row, Text};
+use ui::widget::{Chip, Column, Row, Text, Widget};
 
 use crate::main_panel::{BacklinkChip, TagChip};
 
@@ -29,6 +32,10 @@ pub struct NoteHeader {
     tags: Vec<TagChip>,
     backlinks: Vec<BacklinkChip>,
     captions: Vec<String>,
+    /// What the built caption lines read when they sync: a line's words can
+    /// change (the edit time turning over a minute) without rebuilding the
+    /// header's widgets.
+    shown_captions: Rc<RefCell<Vec<String>>>,
     column: Option<Column>,
     stale: bool,
 }
@@ -63,6 +70,32 @@ impl NoteHeader {
             self.stale = true;
         }
         changed
+    }
+
+    /// Show these caption lines in the built widgets when only their words
+    /// changed: the same number of lines, in a header that is built and not
+    /// about to be rebuilt. They show it at their next [`Self::sync_built`].
+    /// Returns whether it did; otherwise use [`Self::set_captions`].
+    pub fn retext_captions(&mut self, captions: &[String]) -> bool {
+        if self.stale
+            || self.column.is_none()
+            || captions.is_empty()
+            || captions.len() != self.captions.len()
+        {
+            return false;
+        }
+        if self.captions != captions {
+            self.captions = captions.to_vec();
+            self.shown_captions.replace(self.captions.clone());
+        }
+        true
+    }
+
+    /// Sync the built widgets, so retexted captions read their new words.
+    pub fn sync_built(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) {
+        if let Some(column) = self.column.as_mut() {
+            column.sync(state, path);
+        }
     }
 
     /// Whether there is nothing to show: no tags, no captions, no links.
@@ -122,9 +155,11 @@ impl NoteHeader {
             }
             top = top.push(Box::new(row));
         }
-        for (index, caption) in self.captions.iter().enumerate() {
+        self.shown_captions.replace(self.captions.clone());
+        for index in 0..self.captions.len() {
+            let shown = Rc::clone(&self.shown_captions);
             top = top.push(Box::new(
-                Text::new(caption)
+                Text::dynamic(move || shown.borrow().get(index).cloned().unwrap_or_default())
                     .with_id(format!("notes.caption:{index}"))
                     .with_role(TextRole::Caption)
                     .dimmed(),
