@@ -308,11 +308,17 @@ struct ReadyReader {
     graph: automerge::AutoCommit,
     /// Committed reads delivered while the test waited for something else.
     delivered: Vec<CommittedDocument>,
+    /// Wakes the broker's held `Await`s, where it holds them.
+    awaits: Option<Arc<tokio::sync::Notify>>,
 }
 
 impl ReadyReader {
-    fn start() -> Self {
+    /// A ready reader. With `awaits` its broker holds `Await` as a current
+    /// one does; without, it refuses it as an older one does and the reader
+    /// polls.
+    fn start(awaits: bool) -> Self {
         use automerge::transaction::Transactable as _;
+        let awaits = awaits.then(|| Arc::new(tokio::sync::Notify::new()));
         let mut graph = automerge::AutoCommit::new();
         graph.put(automerge::ROOT, "body", "first read").unwrap();
         graph.commit();
@@ -320,6 +326,7 @@ impl ReadyReader {
             captures: Arc::new(std::sync::Mutex::new(Captures {
                 committed_history_fixture: Some(graph.save()),
                 committed_private_binding: Some(7),
+                committed_awaits: awaits.clone(),
                 ..Captures::default()
             })),
             op_backlog: vec![],
@@ -340,6 +347,7 @@ impl ReadyReader {
             key,
             graph,
             delivered: Vec::new(),
+            awaits,
         };
         assert_eq!(reader.apply_next_read("the first committed read"), 1);
         reader
@@ -372,8 +380,21 @@ impl ReadyReader {
     /// sender fires: from the reader's side, a poll starved past its deadline.
     fn starve_next_poll(&self) -> tokio::sync::oneshot::Sender<()> {
         let (release, gate) = tokio::sync::oneshot::channel();
-        self.captures.lock().unwrap().committed_recheck_gate = Some(gate);
+        {
+            let mut captures = self.captures.lock().unwrap();
+            captures.committed_recheck_gate = Some(gate);
+            // A waiting reader Opens when its wait ends.
+            captures.committed_await_stale = self.awaits.is_some();
+        }
+        self.wake_waits();
         release
+    }
+
+    /// Something the broker's held wait reads changed: it looks again.
+    fn wake_waits(&self) {
+        if let Some(awaits) = &self.awaits {
+            awaits.notify_waiters();
+        }
     }
 
     /// Apply every committed read the owner receives until the route is
@@ -451,7 +472,14 @@ impl ReadyReader {
 /// twice, the runner that stalls twice.
 #[test]
 fn a_slow_poll_after_a_renewed_read_renews_again() {
-    let mut reader = ReadyReader::start();
+    slow_poll_after_a_renewed_read(false);
+}
+#[test]
+fn a_slow_open_after_a_wait_and_a_renewed_read_renews_again() {
+    slow_poll_after_a_renewed_read(true);
+}
+fn slow_poll_after_a_renewed_read(awaits: bool) {
+    let mut reader = ReadyReader::start(awaits);
     let _first = reader.recover_from_one_slow_poll();
     reader.commit("after the second slow poll");
     let _second = reader.starve_next_poll();
@@ -481,7 +509,14 @@ fn a_slow_poll_after_a_renewed_read_renews_again() {
 /// runner stalls for longer than both (3.8 s in run 97868).
 #[test]
 fn a_slow_renewal_is_retried_instead_of_closing() {
-    let mut reader = ReadyReader::start();
+    slow_renewal_is_retried(false);
+}
+#[test]
+fn a_slow_renewal_after_a_wait_is_retried_instead_of_closing() {
+    slow_renewal_is_retried(true);
+}
+fn slow_renewal_is_retried(awaits: bool) {
+    let mut reader = ReadyReader::start(awaits);
     let (release_join, held_join) = tokio::sync::oneshot::channel();
     reader
         .captures
@@ -524,7 +559,17 @@ fn a_slow_renewal_is_retried_instead_of_closing() {
 /// reader closes on that very poll, exactly as it does without a renewal.
 #[test]
 fn a_refused_poll_after_a_renewed_read_still_closes_on_that_poll() {
-    let mut reader = ReadyReader::start();
+    refused_poll_after_a_renewed_read(false);
+}
+/// The same revocation reaching a reader that waits: the broker's held
+/// wait looks again on the announcement and the reader's next Open, the
+/// first, is refused and closes it.
+#[test]
+fn a_revocation_while_waiting_closes_on_the_first_open() {
+    refused_poll_after_a_renewed_read(true);
+}
+fn refused_poll_after_a_renewed_read(awaits: bool) {
+    let mut reader = ReadyReader::start(awaits);
     let _first = reader.recover_from_one_slow_poll();
     // Count and revoke under one lock, so no unrefused poll slips between.
     let opens = {
@@ -532,6 +577,7 @@ fn a_refused_poll_after_a_renewed_read_still_closes_on_that_poll() {
         captures.committed_open_failure = Some("committed read refused: peer revoked".into());
         open_count(&captures)
     };
+    reader.wake_waits();
     reader.wait_for_close("the revoked peer's refused poll to close the reader");
     let ready = reader.ready();
     let refused_opens = reader.opens() - opens;
@@ -552,19 +598,21 @@ fn a_refused_poll_after_a_renewed_read_still_closes_on_that_poll() {
 
 #[test]
 fn a_refused_renewal_after_a_slow_poll_still_closes() {
-    refused_renewal(false);
+    refused_renewal(false, false);
+    refused_renewal(false, true);
 }
 
 #[test]
 fn a_refused_renewal_after_a_held_one_still_closes() {
-    refused_renewal(true);
+    refused_renewal(true, false);
+    refused_renewal(true, true);
 }
 
 /// A revoked peer whose poll stalls: the broker's fresh admission check
 /// refuses its rejoin and the reader closes, whether or not an earlier rejoin
 /// only missed its deadline.
-fn refused_renewal(held_first: bool) {
-    let mut reader = ReadyReader::start();
+fn refused_renewal(held_first: bool, awaits: bool) {
+    let mut reader = ReadyReader::start(awaits);
     let _first = reader.recover_from_one_slow_poll();
     let mut release = None;
     {
@@ -592,4 +640,95 @@ fn refused_renewal(held_first: bool) {
         if held_first { 4 } else { 3 },
         "the first refused rejoin closes the reader; it is never retried"
     );
+}
+
+fn waits(captures: &Captures) -> usize {
+    captures
+        .committed_reads
+        .iter()
+        .filter(|request| {
+            matches!(
+                request,
+                runtime_collab::committed_document::Request::Await { .. }
+            )
+        })
+        .count()
+}
+
+/// The idle measurement for a shared workspace: a native reader nobody
+/// touches asks its broker nothing. It used to Open its record five times a
+/// second, each a broker round trip and its wakeups, forever.
+#[test]
+fn an_idle_native_reader_asks_the_broker_nothing_while_nothing_changes() {
+    let mut reader = ReadyReader::start(true);
+    tilo_test_env::wait_until("the ready reader to wait for a change", || {
+        reader.pump();
+        waits(&reader.captures.lock().unwrap()) == 1
+    });
+    let (opens, held) = {
+        let captures = reader.captures.lock().unwrap();
+        (open_count(&captures), waits(&captures))
+    };
+    let window = Duration::from_millis(1500);
+    let started = std::time::Instant::now();
+    while started.elapsed() < window {
+        reader.pump();
+        thread::sleep(Duration::from_millis(20));
+    }
+    let (idle_opens, idle_waits) = {
+        let captures = reader.captures.lock().unwrap();
+        (
+            open_count(&captures).saturating_sub(opens),
+            waits(&captures).saturating_sub(held),
+        )
+    };
+    let requests = idle_opens.saturating_add(idle_waits);
+    eprintln!(
+        "IDLE-SHARED-READER requests_per_s={:.2} window_ms={}",
+        f64::from(u32::try_from(requests).unwrap_or(u32::MAX)) / window.as_secs_f64(),
+        window.as_millis()
+    );
+    let ready = reader.ready();
+    let connected = reader.manager.is_connected();
+
+    // Another collaborator's edit commits a new revision: the held wait
+    // ends and the reader takes it in, with no poll.
+    reader.commit("edited elsewhere");
+    reader.captures.lock().unwrap().committed_revision = Some([8; 32]);
+    reader.wake_waits();
+    let applied = reader.apply_next_read("the committed edit to reach the owner");
+    let ready_after = reader.ready();
+    reader.finish();
+    assert_eq!(
+        requests, 0,
+        "an idle reader sent {idle_opens} Opens and {idle_waits} waits in {window:?}: is it polling again?"
+    );
+    assert!(
+        connected && ready,
+        "an idle reader stays connected and ready"
+    );
+    assert_eq!(
+        applied, 1,
+        "a committed change reaches the app without the poll"
+    );
+    assert!(ready_after, "the reader is ready on the new revision");
+}
+
+/// An app newer than its shell: the broker refuses `Await`, and the reader
+/// stays healthy and polls as it always did.
+#[test]
+fn a_reader_whose_broker_cannot_hold_a_wait_keeps_polling() {
+    let mut reader = ReadyReader::start(false);
+    let opens = reader.opens();
+    tilo_test_env::wait_until("an older broker's reader to poll again", || {
+        reader.pump();
+        reader.opens() >= opens + 3
+    });
+    let connected = reader.manager.is_connected();
+    let ready = reader.ready();
+    let asked = waits(&reader.captures.lock().unwrap());
+    reader.finish();
+    assert!(connected, "a refused wait is not a refused read");
+    assert!(ready);
+    assert_eq!(asked, 1, "the reader asks once, then polls as before");
 }
