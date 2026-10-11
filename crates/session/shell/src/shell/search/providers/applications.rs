@@ -37,66 +37,9 @@ pub const APPLICATIONS_KIND: &str = "Applications";
 const NOT_INSTALLED_TIEBREAK: i32 = 1;
 const STORE_PACKAGE_ID: &str = "so.tilo.store";
 
-/// Product-owned ordering for the empty Applications palette. Search queries
-/// continue to rank purely by match quality; this only prevents a fresh system
-/// from presenting forty alphabetised tools as though they were equally likely
-/// starting points. The first group is deliberately useful to curious
-/// tinkerers without assuming they are developers. The group is a catalogue
-/// key, resolved where the subtitle is built.
-fn empty_palette_presentation(package_id: &str) -> (&'static str, i32) {
-    // A local build publishes the same apps under `dev.tilo.`.
-    let canonical = package_id
-        .strip_prefix("dev.tilo.")
-        .map(|name| format!("so.tilo.{name}"));
-    match canonical.as_deref().unwrap_or(package_id) {
-        "so.tilo.browser" => ("search-apps-group-start-here", 90),
-        "so.tilo.file-explorer" => ("search-apps-group-start-here", 89),
-        "so.tilo.notes" => ("search-apps-group-start-here", 88),
-        "so.tilo.terminal" => ("search-apps-group-start-here", 87),
-        "so.tilo.settings" => ("search-apps-group-start-here", 86),
-        "so.tilo.store" => ("search-apps-group-start-here", 85),
-
-        "so.tilo.calendar" => ("search-apps-group-everyday", 74),
-        "so.tilo.mail" => ("search-apps-group-everyday", 73),
-        "so.tilo.contacts" => ("search-apps-group-everyday", 72),
-        "so.tilo.chat" => ("search-apps-group-everyday", 71),
-        "so.tilo.calculator" => ("search-apps-group-everyday", 70),
-
-        "so.tilo.word-processor" => ("search-apps-group-work", 59),
-        "so.tilo.sheets" => ("search-apps-group-work", 58),
-        "so.tilo.slides" => ("search-apps-group-work", 57),
-        "so.tilo.pdf-viewer" => ("search-apps-group-work", 56),
-        "so.tilo.typst-editor" => ("search-apps-group-work", 55),
-
-        "so.tilo.music" => ("search-apps-group-media", 49),
-        "so.tilo.tube" => ("search-apps-group-media", 48),
-        "so.tilo.video-player" => ("search-apps-group-media", 47),
-        "so.tilo.photos" => ("search-apps-group-media", 46),
-        "so.tilo.camera" => ("search-apps-group-media", 45),
-        "so.tilo.weather" => ("search-apps-group-everyday", 44),
-        "so.tilo.maps" => ("search-apps-group-everyday", 43),
-        "so.tilo.feeds" => ("search-apps-group-everyday", 42),
-        "so.tilo.ebook" => ("search-apps-group-media", 41),
-        "so.tilo.totp" => ("search-apps-group-everyday", 40),
-
-        "so.tilo.monitor" | "so.tilo.disks" | "so.tilo.logs" | "so.tilo.firewall"
-        | "so.tilo.vpn" | "so.tilo.remote" | "so.tilo.backups" | "so.tilo.imager"
-        | "so.tilo.themes" => ("search-apps-group-system-tools", 25),
-        "so.tilo.api-tester"
-        | "so.tilo.snippets"
-        | "so.tilo.diffmerge"
-        | "so.tilo.db-client"
-        | "so.tilo.containers"
-        | "so.tilo.hex-editor"
-        | "so.tilo.git-client"
-        | "so.tilo.code-editor" => ("search-apps-group-developer-tools", 5),
-        _ => ("search-apps-group-more-apps", 10),
-    }
-}
-
 fn presentation_score(needle: &str, package_id: &str, match_score: i32) -> i32 {
     if needle.is_empty() {
-        empty_palette_presentation(package_id).1
+        ui::search::system::starting_point_rank(package_id)
     } else {
         match_score
     }
@@ -108,7 +51,10 @@ fn grouped_detail(package_id: &str, metadata: String) -> String {
     t_args(
         "search-apps-detail-grouped",
         &[
-            ("group", t(empty_palette_presentation(package_id).0).into()),
+            (
+                "group",
+                ui::search::system::starting_point_group(package_id).into(),
+            ),
             ("detail", metadata.into()),
         ],
     )
